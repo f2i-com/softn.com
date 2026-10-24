@@ -580,11 +580,20 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         }
         break;
       }
-      case 'update':
-        xdb.update(this.resolveId(m.id), m.data);
+      case 'update': {
+        const id = this.resolveId(m.id);
+        // The worker's copy had the record and told the script the update was
+        // made; the page's no longer has it (deleted meanwhile, by sync or the
+        // page). It was dropped with no word: it is reported, as any write
+        // the page could not keep is.
+        if (xdb.update(id, m.data) === null) {
+          console.warn(`[Worker Bridge] db.update("${id}") was not kept: the record no longer exists.`);
+          this.onPersistenceFailure?.({ operation: 'update', key: id, error: new Error(`The record ${id} no longer exists; the update was not kept.`) });
+        }
         // update doesn't carry collection name, so mark all dirty
         this.dbDirtyCollections = null;
         break;
+      }
       case 'delete':
         xdb.delete(this.resolveId(m.id));
         this.dbDirtyCollections = null;
@@ -1075,12 +1084,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       if (this.disposed) return;
       let next: EntryResult;
       try {
+        // With the database as it is now, as every other entry has it: a
+        // callback that waited on a fetch ran against the records from
+        // before it, missing what sync or the page wrote meanwhile.
         next = await this.call<EntryResult>('resolve_host_call', {
           callId: call.id,
           result,
-          lsSnapshot: this.takeLocalStorageSnapshotIfDirty(),
-          syncStatus: this.getSyncStatus(),
-          savedSyncRoom: this.getSavedSyncRoom(),
+          ...this.storagePayload(),
         });
       } catch (err) {
         console.error('[SoftN] Error resolving host callback:', err);
@@ -1115,9 +1125,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         this.call<EntryResult>('dispatch_event', {
           eventType,
           event: props,
-          lsSnapshot: this.takeLocalStorageSnapshotIfDirty(),
-          syncStatus: this.getSyncStatus(),
-          savedSyncRoom: this.getSavedSyncRoom(),
+          ...this.storagePayload(),
         })
           .then((out) => {
             if (out.failure !== undefined) {
