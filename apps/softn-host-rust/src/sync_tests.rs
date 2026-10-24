@@ -182,8 +182,9 @@ fn a_create_sent_again_does_not_overwrite_what_changed_since() {
     assert_eq!(acked(&again), vec!["c1"], "{again:?}");
     assert!(rejected(&again).is_empty(), "{again:?}");
     assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
-    // And no peer is told to apply the stale payload.
-    assert!(deltas.try_recv().is_err(), "a replayed create was broadcast");
+    // And no peer is told to apply the stale payload; its pusher is sent the record as it stands.
+    assert!(!reaches_another(&drained(&mut deltas), "a"), "a replayed create was broadcast");
+    assert_eq!(told(&again).iter().map(|op| op.data.clone()).collect::<Vec<_>>(), vec![Some(serde_json::json!({"title":"final"}))], "{again:?}");
 }
 
 /// An op as a client stamps it, `minutes` before now.
@@ -209,6 +210,43 @@ fn a_stale_offline_update_does_not_overwrite_a_newer_one() {
     assert!(rejected(&offline).is_empty(), "{offline:?}");
     assert_eq!(db.write().get_record("n1").unwrap().data, serde_json::json!({"title":"final"}));
     assert!(!reaches_another(&drained(&mut deltas), "a"), "an overtaken update was broadcast");
+}
+
+/// A device that never synced sends every record it has as a create. One
+/// the host holds already is acknowledged and not written, as a create sent
+/// again is; and its pusher is sent the record as it stands, or one deleted
+/// here meanwhile stayed on that device as if it were not.
+#[test]
+fn a_create_for_a_record_deleted_here_is_answered_with_the_record_deleted() {
+    let (sync, db) = manager(None);
+    sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"kept"})), 60)], "b");
+    sync.handle_sync_push(vec![stamped(op("d1", "notes", "delete", "n1", serde_json::json!({})), 30)], "b");
+    let answer = sync.handle_sync_push(vec![stamped(op("c9", "notes", "create", "n1", serde_json::json!({"title":"kept"})), 50)], "a");
+    assert_eq!(acked(&answer), vec!["c9"], "{answer:?}");
+    let current = told(&answer);
+    assert_eq!(current.len(), 1, "{answer:?}");
+    assert_eq!((current[0].operation.as_str(), current[0].record_id.as_str(), current[0].id.as_str()), ("delete", "n1", "c9"));
+    assert!(db.write().get_record("n1").unwrap().deleted, "nothing was written");
+}
+
+/// A client leaves another's edit to a record it edited until its own edit
+/// is answered. The plain acknowledgement went on the connection's own
+/// queue, which its writer interleaves with the stream of the other
+/// clients' edits as the two are ready: an edit stored after this one could
+/// reach the pusher first, be left, and then be written over by the
+/// pusher's next edit, which sends its whole record. It goes in the stream
+/// now, in the order the store wrote it.
+#[test]
+fn a_push_is_acknowledged_in_the_stream_before_the_edits_stored_after_it() {
+    let (sync, _db) = manager(None);
+    sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", serde_json::json!({"title":"first"})), 60)], "a");
+    let mut stream = sync.subscribe();
+    let (mine, _) = sync.apply_sync_push(vec![stamped(op("u1", "notes", "update", "n1", serde_json::json!({"title":"a's"})), 30)], "a");
+    assert!(acked(&mine).is_empty(), "the acknowledgement is not on the connection's own queue: {mine:?}");
+    sync.handle_sync_push(vec![stamped(op("u2", "notes", "update", "n1", serde_json::json!({"title":"b's"})), 10)], "b");
+    let to_a = reaching(&drained(&mut stream), "a");
+    assert!(matches!(to_a.first(), Some(ServerMessage::SyncAck { op_ids }) if op_ids == &vec!["u1".to_string()]), "{to_a:?}");
+    assert!(matches!(to_a.get(1), Some(ServerMessage::SyncDelta { ops }) if ops[0].id == "u2"), "{to_a:?}");
 }
 
 /// The ops of the `sync_delta` messages in a push's answer: what the
@@ -489,11 +527,14 @@ fn the_after_sync_hooks_have_a_deadline_and_hold_no_permit() {
     let permit = sync.sync_permits.clone().try_acquire_owned().unwrap();
     let (answered_tx, answered_rx) = std::sync::mpsc::channel();
     let pusher = Arc::clone(&sync);
+    let mut stream = sync.subscribe();
     let pushing = std::thread::spawn(move || {
         pusher.push_and_hook(ops("later", 20), "a", permit, |responses| { let _ = answered_tx.send(responses); });
     });
     let responses = answered_rx.recv().unwrap();
-    assert_eq!(acked(&responses).len(), 20);
+    assert!(rejected(&responses).is_empty(), "{responses:?}");
+    // Acknowledged in the stream, before the answer was handed back.
+    assert_eq!(acked(&reaching(&drained(&mut stream), "a")).len(), 20);
     assert_eq!(sync.sync_permits.available_permits(), total, "the hooks are holding the permit");
     pushing.join().unwrap();
 }
@@ -767,8 +808,11 @@ fn a_push_is_answered_and_broadcast_before_its_after_hooks_run() {
     };
 
     let (responses, stored) = sync.apply_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "x"}))], "a");
-    assert_eq!(acked(&responses), vec!["c1"], "{responses:?}");
-    assert!(deltas.try_recv().is_ok(), "the other clients are told with the answer");
+    assert!(rejected(&responses).is_empty(), "{responses:?}");
+    // The pusher's acknowledgement, and the other clients' edit, are in the stream already.
+    let told = drained(&mut deltas);
+    assert_eq!(acked(&reaching(&told, "a")), vec!["c1"], "{told:?}");
+    assert!(reaches_another(&told, "a"), "the other clients are told with the answer");
     assert_eq!(audited(), 0, "the after-hook ran before the push was answered");
     assert_eq!(stored.len(), 1);
     sync.run_after_sync(&stored);
@@ -1238,10 +1282,10 @@ fn the_pusher_is_sent_what_a_before_hook_stored() {
             op("c1", "notes", "create", "n1", serde_json::json!({"title": "  hello  "})),
             op("c2", "notes", "create", "n2", serde_json::json!({"body": "untouched"})),
         ], "a").0;
-        // The untouched op is answered as ever.
-        assert_eq!(acked(&answer), vec!["c2"], "{script}: {answer:?}");
+        // Both are acknowledged in the stream, the record the hook changed just after.
+        assert!(acked(&answer).is_empty(), "{script}: {answer:?}");
         let to_a = reaching(&drained(&mut stream), "a");
-        assert!(matches!(to_a.first(), Some(ServerMessage::SyncAck { op_ids }) if op_ids == &vec!["c1".to_string()]), "{to_a:?}");
+        assert!(matches!(to_a.first(), Some(ServerMessage::SyncAck { op_ids }) if { let mut ids = op_ids.clone(); ids.sort(); ids == vec!["c1".to_string(), "c2".to_string()] }), "{to_a:?}");
         let told: Vec<&SyncOp> = to_a.iter().flat_map(|m| match m { ServerMessage::SyncDelta { ops } => ops.iter().collect(), _ => Vec::new() }).collect();
         assert_eq!(told.len(), 1, "{to_a:?}");
         assert_eq!((told[0].id.as_str(), told[0].record_id.as_str(), told[0].client_id.as_str()), ("c1", "n1", "server"));

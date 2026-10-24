@@ -408,9 +408,13 @@ impl Audience {
 /// it, and handed to the [`SyncManager`].
 pub type SyncStream = broadcast::Sender<(Audience, Arc<ServerMessage>)>;
 
-/// A new, empty sync stream.
+/// A new, empty sync stream. A connection that falls this many messages
+/// behind is closed to re-sync. Every push puts its acknowledgement in the
+/// stream as well as its edits (`store_sync_push` says why), so it holds
+/// twice the 256 it held when only the edits went in it, and a slow client
+/// is as far behind as before when it is closed.
 pub fn sync_stream() -> SyncStream {
-    broadcast::channel(256).0
+    broadcast::channel(512).0
 }
 
 /// `ops` as `sync_delta` messages in order, each at most
@@ -1330,7 +1334,6 @@ impl SyncManager {
         // The acknowledgement of ops answered with their records, and those
         // records as they stand, for the pusher alone.
         let mut to_pusher: Option<(Vec<String>, Vec<SyncOp>)> = None;
-        let mut acked_in_stream: HashSet<String> = HashSet::new();
         if !validated_ops.is_empty() || !refused.is_empty() {
             // Collect op IDs before moving ops into the transaction closure,
             // so we can reference them in error paths after the move.
@@ -1391,7 +1394,17 @@ impl SyncManager {
                     // brought a deleted record back. It is acknowledged, so
                     // the client stops sending it, and nothing is written,
                     // broadcast or handed to the after-sync hooks.
+                    // Its pusher is sent the record as it stands, too: a
+                    // device that never synced sends every record it has as
+                    // a create, and one deleted here meanwhile stayed on that
+                    // device as if it were not, until an edit of it there
+                    // was refused and it went.
                     if exists && op.operation == "create" {
+                        if let Some(record) = &existing {
+                            if batch_overtaken.iter().all(|(id, _)| *id != record.id) {
+                                batch_overtaken.push((record.id.clone(), op.id.clone()));
+                            }
+                        }
                         batch_replayed.push(op.id.clone());
                         continue;
                     }
@@ -1548,17 +1561,22 @@ impl SyncManager {
                     if !batch_replayed.is_empty() {
                         tracing::debug!("sync_push: {} op(s) already applied or overtaken by a newer edit, acknowledged without writing", batch_replayed.len());
                     }
-                    if batch_current.is_empty() {
-                        if !batch_replayed.is_empty() {
-                            responses.push(ServerMessage::SyncAck { op_ids: batch_replayed });
-                        }
-                    } else {
-                        // Sent below, with the stream of other clients' edits,
-                        // and so is the acknowledgement of the ops a hook
-                        // changed: the record answers them.
-                        acked_in_stream.extend(batch_accepted.iter().filter(|op| hook_changed.contains(&op.id)).map(|op| op.id.clone()));
-                        let mut acked = batch_replayed;
-                        acked.extend(acked_in_stream.iter().cloned());
+                    // Every acknowledgement goes below, in the stream of the
+                    // other clients' edits while the writer lock is held, so
+                    // it reaches the pusher in the order the store wrote it
+                    // among them. A client leaves another's edit to a record
+                    // it edited until its own edit is answered, and a plain
+                    // acknowledgement went on the connection's own queue,
+                    // which its writer interleaves with the stream as the two
+                    // are ready: an edit stored after this one (another
+                    // client's, or an after-sync hook's of this very record)
+                    // could arrive before it, be left, and then be written
+                    // over by this client's next edit, which sends its whole
+                    // record. Only the acknowledgements of ops a hook changed,
+                    // and of overtaken ones, went in the stream before.
+                    let mut acked = batch_replayed;
+                    acked.extend(batch_accepted.iter().map(|op| op.id.clone()));
+                    if !acked.is_empty() || !batch_current.is_empty() {
                         to_pusher = Some((acked, batch_current));
                     }
                     accepted_ops = batch_accepted;
@@ -1616,15 +1634,10 @@ impl SyncManager {
             drop(db);
         }
 
-        // Acknowledge accepted ops to the pushing client. Phase 3, the
-        // after-hooks, is the caller's to run once this answer is on its way
-        // (run_after_sync). An op a hook changed was acknowledged above,
-        // just before its record, when the record could be read.
+        // The accepted ops were acknowledged above, in the stream. Phase 3,
+        // the after-hooks, is the caller's to run once this answer is on its
+        // way (run_after_sync), so what a hook writes comes after it.
         if !accepted_ops.is_empty() {
-            let ack_ids: Vec<String> = accepted_ops.iter().filter(|op| !acked_in_stream.contains(&op.id)).map(|op| op.id.clone()).collect();
-            if !ack_ids.is_empty() {
-                responses.push(ServerMessage::SyncAck { op_ids: ack_ids });
-            }
             *stored = accepted_ops;
         }
 
