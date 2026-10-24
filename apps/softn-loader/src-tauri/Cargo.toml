@@ -34,6 +34,14 @@ xdb = { package = "softn-xdb", path = "../../../crates/softn-xdb" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# The free space on a database's disk, before a snapshot (disk.rs). Both are
+# in the tree already, through Tauri and its dependencies.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Android has no platform verifier without JNI set-up; net.rs trusts the
 # Mozilla roots there instead.
 [target.'cfg(target_os = "android")'.dependencies]

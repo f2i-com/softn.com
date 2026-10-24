@@ -24,6 +24,12 @@ describe('what the desktop webview may reach', () => {
     }
   });
 
+  it('gives the desktop page what it calls of Tauri, and nothing else', () => {
+    // Events (the drop listener, XDB's native events) and the window's title.
+    // `core:default` granted image, menu, path, tray and resources besides.
+    expect([...readJson('capabilities/default.json').permissions].sort()).toEqual(['core:event:default', 'core:window:allow-set-title']);
+  });
+
   it('keeps connect-src narrow, since a bundle\'s requests are made natively', () => {
     const csp: string = readJson('tauri.conf.json').app.security.csp;
     const connect = directive(csp, 'connect-src');

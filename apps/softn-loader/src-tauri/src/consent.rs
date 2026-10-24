@@ -7,13 +7,17 @@
 //! person (reach the network through `net_fetch`, and turn on peer sync) the answer is
 //! asked for here, where nothing in the page can give it.
 //!
-//! Each is one question per bundle the person opens. The answer stands until they choose
-//! another bundle, so a no is not asked about again and again until it becomes a yes.
+//! Each is one question per bundle the person opens, and one more for each name the
+//! network rules list that turns out to lead to this computer or the local network (net.rs).
+//! The answer stands until they choose another bundle, so a no is not asked about again and
+//! again until it becomes a yes.
 
 // Only the desktop runtime puts the network question (net.rs says why), so on other
 // platforms part of this is unused.
 #![cfg_attr(not(desktop), allow(dead_code))]
 
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Mutex;
 #[cfg(desktop)]
@@ -40,12 +44,25 @@ impl NetPolicy {
         NetPolicy { allow_http, allowed_hosts }
     }
 
-    /// What the rules permit, in the words the person reads.
+    /// What the rules permit, in the words the person reads. With no list, a request to this
+    /// computer or the local network is refused (net.rs); a listed host that is there is
+    /// labelled so.
     fn describe(&self) -> String {
         let reach = if self.allowed_hosts.is_empty() {
-            "any server on the internet, and any device or program on this computer and your local network".to_string()
+            "any server on the internet".to_string()
         } else {
-            let shown: Vec<String> = self.allowed_hosts.iter().take(HOSTS_SHOWN).map(|host| printable(host)).collect();
+            let shown: Vec<String> = self
+                .allowed_hosts
+                .iter()
+                .take(HOSTS_SHOWN)
+                .map(|host| {
+                    if crate::net::is_local_host(host) {
+                        format!("{} (on this computer or your local network)", printable(host))
+                    } else {
+                        printable(host)
+                    }
+                })
+                .collect();
             let more = self.allowed_hosts.len() - shown.len();
             let rest = if more > 0 { format!(", and {} more", more) } else { String::new() };
             format!("only these servers: {}{}", shown.join(", "), rest)
@@ -76,6 +93,9 @@ struct Standing {
     net: Option<(NetPolicy, bool)>,
     /// The answer to the peer sync question, if it has been put since then.
     peer_sync: Option<bool>,
+    /// Listed names that looked like servers on the internet and led to this computer or
+    /// the local network, each with the answer to the question put about it.
+    local_hosts: HashMap<String, bool>,
 }
 
 /// What the person has answered for the bundle now open.
@@ -102,6 +122,7 @@ impl Consent {
             standing.app = path.file_name().map(|name| printable(&name.to_string_lossy()));
             standing.net = None;
             standing.peer_sync = None;
+            standing.local_hosts.clear();
         }
     }
 
@@ -171,6 +192,72 @@ impl Consent {
         let (opened, title, text) = self.net_question(policy);
         let allowed = ask(app, title, text, "Allow", "Don't allow").await;
         self.record_net(opened, policy, allowed)
+    }
+
+    fn local_host_answer(&self, host: &str) -> Option<Result<(), String>> {
+        let standing = self.standing.lock().ok()?;
+        standing.local_hosts.get(host).map(|allowed| {
+            if *allowed {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Network access not permitted: {} leads to this computer or your local network, and you chose not to allow it. Open the app again to be asked afresh.",
+                    printable(host)
+                ))
+            }
+        })
+    }
+
+    /// The question about a listed name that leads to `address` on this computer or the
+    /// local network, which the network question did not say.
+    fn local_host_question(&self, host: &str, address: IpAddr) -> (u64, String, String) {
+        let standing = self.standing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let host = printable(host);
+        (
+            standing.opened,
+            "Allow access to your local network?".to_string(),
+            format!(
+                "{} may reach {}, and that name now leads to {}, which is on this computer or your local network.\n\nWhoever runs a name on the internet can point it at a device of yours, such as a router, a printer or a program on this computer, to let an app read it.\n\nAllow this only if {} is your own, or your organisation's. Your answer lasts until you open another app or close SoftN.",
+                Self::who(&standing),
+                host,
+                address,
+                host
+            ),
+        )
+    }
+
+    fn record_local_host(&self, opened: u64, host: &str, allowed: bool) -> Result<(), String> {
+        {
+            let mut standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
+            if standing.opened != opened {
+                return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
+            }
+            standing.local_hosts.insert(host.to_string(), allowed);
+        }
+        self.local_host_answer(host).unwrap_or_else(|| Err("Network access not permitted".to_string()))
+    }
+
+    /// The steps of `require_local_host` with the dialog replaced by `ask`.
+    #[cfg(test)]
+    fn decide_local_host(&self, host: &str, address: IpAddr, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
+        if let Some(answer) = self.local_host_answer(host) {
+            return answer;
+        }
+        let (opened, title, text) = self.local_host_question(host, address);
+        let allowed = ask(&title, &text);
+        self.record_local_host(opened, host, allowed)
+    }
+
+    /// Whether a request to `host`, a name the rules list that leads to `address` on this
+    /// computer or the local network, may be made: asked once for each such name.
+    pub async fn require_local_host(&self, app: &tauri::AppHandle, host: &str, address: IpAddr) -> Result<(), String> {
+        let _turn = self.asking.lock().await;
+        if let Some(answer) = self.local_host_answer(host) {
+            return answer;
+        }
+        let (opened, title, text) = self.local_host_question(host, address);
+        let allowed = ask(app, title, text, "Allow", "Don't allow").await;
+        self.record_local_host(opened, host, allowed)
     }
 
     fn peer_sync_answer(&self) -> Option<Result<(), String>> {
@@ -273,8 +360,10 @@ mod tests {
         assert_eq!(allowed, Ok(()));
         assert_eq!(asked.borrow().len(), 1);
         assert!(asked.borrow()[0].contains("todo.softn"), "{}", asked.borrow()[0]);
-        assert!(asked.borrow()[0].contains("any server on the internet"), "{}", asked.borrow()[0]);
-        assert!(asked.borrow()[0].contains("this computer and your local network"), "{}", asked.borrow()[0]);
+        assert!(asked.borrow()[0].contains("any server on the internet."), "{}", asked.borrow()[0]);
+        // With no list, this computer and the local network are refused (net.rs), so the
+        // question does not offer them.
+        assert!(!asked.borrow()[0].contains("local network"), "{}", asked.borrow()[0]);
         // The same rules again are not a second question.
         assert_eq!(consent.decide_net(&any_host, |_, _| panic!("asked twice")), Ok(()));
     }
@@ -392,5 +481,52 @@ mod tests {
         assert!(text.contains("and 28 more"), "{}", text);
         let (_, _, text) = consent.net_question(&policy(false, &["evil.example\n\nAllow this, it is safe"]));
         assert!(!text.contains("evil.example\n"), "{}", text);
+    }
+
+    #[test]
+    fn a_listed_host_on_the_local_network_is_named_as_one() {
+        let consent = Consent::default();
+        let (_, _, text) = consent.net_question(&policy(true, &["api.example.com", "localhost", "printer.local", "192.168.1.20"]));
+        for local in ["localhost", "printer.local", "192.168.1.20"] {
+            assert!(text.contains(&format!("{} (on this computer or your local network)", local)), "{}", text);
+        }
+        assert!(!text.contains("api.example.com (on"), "{}", text);
+    }
+
+    #[test]
+    fn a_listed_name_that_leads_home_is_asked_about_once_for_each_name() {
+        let consent = Consent::default();
+        consent.bundle_opened(Path::new("dash.softn"));
+        let router: IpAddr = "192.168.1.1".parse().unwrap();
+        let mut asked = Vec::new();
+        assert!(consent
+            .decide_local_host("api.example.com", router, |title, text| {
+                asked.push(format!("{}\n{}", title, text));
+                false
+            })
+            .unwrap_err()
+            .contains("you chose not to allow it"));
+        assert!(asked[0].contains("dash.softn") && asked[0].contains("api.example.com") && asked[0].contains("192.168.1.1"), "{}", asked[0]);
+        // The no stands for that name, and another name is its own question.
+        assert!(consent.decide_local_host("api.example.com", router, |_, _| panic!("asked again after a no")).is_err());
+        assert_eq!(consent.decide_local_host("nas.example.com", router, |_, _| true), Ok(()));
+        assert_eq!(consent.decide_local_host("nas.example.com", router, |_, _| panic!("asked again after a yes")), Ok(()));
+        // Another bundle is asked for itself.
+        consent.bundle_opened(Path::new("other.softn"));
+        let mut again = 0;
+        assert_eq!(
+            consent.decide_local_host("nas.example.com", router, |_, _| {
+                again += 1;
+                true
+            }),
+            Ok(())
+        );
+        assert_eq!(again, 1);
+        // An answer given while another bundle was opened counts for neither.
+        let outcome = consent.decide_local_host("db.example.com", router, |_, _| {
+            consent.bundle_opened(Path::new("third.softn"));
+            true
+        });
+        assert!(outcome.unwrap_err().contains("another app was opened"));
     }
 }

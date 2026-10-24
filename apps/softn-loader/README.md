@@ -46,14 +46,18 @@ the version that has it, before any bundle had been read.
 | `import_installations(registry)` | Takes the page's registry once, at the first start with a native record, before any bundle was read; refused ever after. |
 | `bind_data_identity(bundleId, dataId)` | `bundleId` must be the digest of the bundle open now. Its own data, or data the person let it use, is bound; another installed app's data is asked about in a native dialog. |
 | `choose_data_identity(bundleId, candidates)` | The upgrade question, in a native dialog: use the data of the most recently updated installed app of the same name, open as a new app, or cancel. |
-| `backup_database(appId)` | The app open now only. Writes a `pre-upgrade-*.sqlite` snapshot beside the database and returns its path; the page never chooses a location. |
+| `backup_database(appId)` | The app open now only. Writes a `pre-upgrade-*.sqlite` snapshot beside the database and returns its path; the page never chooses a location. Refused when the snapshot would leave less than 512 MiB free on that disk (`src-tauri/src/disk.rs`): snapshots are kept for rollbacks, and the disk is every app's. |
 | `restore_database(appId, backup)` | The app open now only. Restores only such a snapshot from the database's own directory, local scope. |
+| `net_fetch(request)` | Desktop: the person is asked once per bundle about the `net` rules the request names. Every host name is looked up natively and the request goes to those addresses only; an unlisted name that leads to this computer or the local network is refused, and a listed one that looks public but leads there is a second question (`src-tauri/src/net.rs`). |
 | XDB record commands | The data bound for the app open now, and only when the page names that app's id; see `src-tauri/src/scoped_xdb.rs`. A `delete_record` that names its collection deletes from that collection only. |
 
 The raw `get_db_path`, `export_database` and `import_database` commands are
 not registered, on the desktop or on Android.
 
 The page is granted no file system or dialog plugin (`src-tauri/capabilities`).
+On the desktop it is granted only what it calls of Tauri's own: events and the
+window's title. `core:default` gave it the image, menu, path, tray and
+resources APIs besides.
 On Android it had `fs:default`, which reads the app's own folders where every
 app's database lives, and `fs:allow-read-file`, which reads a `file://` or
 `content://` URL with no scope check; the picker and the read are the native

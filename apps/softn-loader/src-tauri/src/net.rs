@@ -20,10 +20,23 @@
 //! network: an address there (loopback, private, link-local, `localhost`, a
 //! `.local` name) is reached only when `allowed_hosts` names it. A request
 //! made here, with no CORS between it and the answer, would otherwise read a
-//! router's admin page or a development server. A name is resolved first and
-//! the request is sent to the addresses that were checked, so a name that
-//! resolves to the local network — or that changes what it resolves to
-//! between the check and the request — is refused the same way.
+//! router's admin page or a development server.
+//!
+//! Every name is looked up here, for every request, and the request is sent to
+//! the addresses that were checked and no others, so a name cannot change what
+//! it leads to between the check and the request. A name the list does not
+//! hold that leads to the local network is refused. One the list holds is
+//! reached: as it is, when it says itself that it is local (`localhost`, a
+//! `.local` name, an address), since the person read it so in the question;
+//! after a second question, when it looks like a server on the internet and
+//! leads to the local network, which the first question did not say
+//! (consent.rs). Its owner can point it anywhere, and a router or a printer
+//! answers to anyone who reaches it.
+//!
+//! A proxy the system or the environment sets (`HTTPS_PROXY`, the system's
+//! proxy settings) is used as the client finds it, and then the proxy looks the
+//! name up, not this: the checks above hold for the name as written, but what
+//! it leads to is the proxy's to decide.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -135,12 +148,12 @@ pub fn is_local_ip(ip: IpAddr) -> bool {
 
 /// A host the URL itself says is local: an address above, `localhost`, or a name kept for
 /// local networks.
-fn names_local_host(host: &Host<&str>) -> bool {
+fn names_local_host<S: AsRef<str>>(host: &Host<S>) -> bool {
     match host {
         Host::Ipv4(ip) => is_local_ip(IpAddr::V4(*ip)),
         Host::Ipv6(ip) => is_local_ip(IpAddr::V6(*ip)),
         Host::Domain(name) => {
-            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            let name = name.as_ref().trim_end_matches('.').to_ascii_lowercase();
             name == "localhost"
                 || [".localhost", ".local", ".internal", ".home.arpa"]
                     .iter()
@@ -149,29 +162,62 @@ fn names_local_host(host: &Host<&str>) -> bool {
     }
 }
 
-/// For a name the grant does not list: the addresses it resolves to, each checked, which the
-/// request is then sent to and no others. None for an address, or a listed host.
-async fn checked_addresses(url: &Url, allowed_hosts: &[String]) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
-    let Some(Host::Domain(name)) = url.host() else { return Ok(None) };
-    if allowed_hosts.iter().any(|allowed| allowed == name) {
-        return Ok(None);
-    }
-    let name = name.to_string();
-    let port = url.port_or_known_default().unwrap_or(443);
-    let lookup = name.clone();
-    let addresses: Vec<SocketAddr> = tauri::async_runtime::spawn_blocking(move || {
-        (lookup.as_str(), port).to_socket_addrs().map(|found| found.collect::<Vec<_>>())
-    })
-    .await
-    .map_err(|e| format!("Network request failed: {}", e))?
-    .map_err(|e| format!("Network request failed: {} could not be found ({})", name, e))?;
+/// Whether a host as `allowed_hosts` writes it says itself that it is on this computer or
+/// the local network (the network question labels it so).
+pub fn is_local_host(host: &str) -> bool {
+    Host::parse(host).is_ok_and(|parsed| names_local_host(&parsed))
+}
+
+/// Where a request goes, once its name is looked up.
+#[derive(Debug, PartialEq)]
+pub enum Destination {
+    /// The URL names an address: there is nothing to look up.
+    Address,
+    /// A name and the addresses checked for it, which the request is sent to and no others.
+    Name {
+        name: String,
+        addresses: Vec<SocketAddr>,
+        /// For a listed name that looks like a server on the internet and leads to this
+        /// computer or the local network: the first such address. The person is asked
+        /// about it before the request is made.
+        local: Option<IpAddr>,
+    },
+}
+
+/// How a name is looked up: the system's resolver, or a stand-in in the tests.
+pub type Lookup = fn(&str, u16) -> std::io::Result<Vec<SocketAddr>>;
+
+pub fn system_lookup(name: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    (name, port).to_socket_addrs().map(|found| found.collect())
+}
+
+/// What a lookup of `name` found, judged by the grant.
+fn judge(name: &str, listed: bool, addresses: Vec<SocketAddr>) -> Result<Destination, String> {
     if addresses.is_empty() {
         return Err(format!("Network request failed: {} could not be found", name));
     }
-    if addresses.iter().any(|address| is_local_ip(address.ip())) {
-        return Err(local_refusal(&name));
+    let local = addresses.iter().map(|address| address.ip()).find(|ip| is_local_ip(*ip));
+    if local.is_some() && !listed {
+        return Err(local_refusal(name));
     }
-    Ok(Some((name, addresses)))
+    // A listed name that says it is local was read as local in the question.
+    let says_local = names_local_host(&Host::Domain(name));
+    Ok(Destination::Name { name: name.to_string(), addresses, local: local.filter(|_| !says_local) })
+}
+
+/// The request's destination: the grant's rules, then the name looked up and judged.
+pub async fn destination(request: &NetRequest, lookup: Lookup) -> Result<Destination, String> {
+    let url = check_destination(&request.url, request.allow_http, &request.allowed_hosts)?;
+    let Some(Host::Domain(name)) = url.host() else { return Ok(Destination::Address) };
+    let name = name.to_string();
+    let listed = request.allowed_hosts.iter().any(|allowed| *allowed == name);
+    let port = url.port_or_known_default().unwrap_or(443);
+    let looked_up = name.clone();
+    let addresses = tauri::async_runtime::spawn_blocking(move || lookup(&looked_up, port))
+        .await
+        .map_err(|e| format!("Network request failed: {}", e))?
+        .map_err(|e| format!("Network request failed: {} could not be found ({})", name, e))?;
+    judge(&name, listed, addresses)
 }
 
 /// The script's `timeout`, clamped as the runtime clamps it.
@@ -183,13 +229,13 @@ pub fn timeout_for(requested: Option<f64>) -> Duration {
     Duration::from_millis(ms)
 }
 
-fn client(timeout: Duration, pinned: Option<(String, Vec<SocketAddr>)>) -> Result<reqwest::Client, String> {
+fn client(timeout: Duration, destination: &Destination) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(timeout);
     // The addresses that were checked, and only those.
-    if let Some((name, addresses)) = pinned {
-        builder = builder.resolve_to_addrs(&name, &addresses);
+    if let Destination::Name { name, addresses, .. } = destination {
+        builder = builder.resolve_to_addrs(name, addresses);
     }
     #[cfg(target_os = "android")]
     let builder = builder.tls_certs_only(
@@ -264,17 +310,26 @@ pub async fn net_fetch(
     consent
         .require_net(&app, &crate::consent::NetPolicy::new(request.allow_http, &request.allowed_hosts))
         .await?;
+    let destination = destination(&request, system_lookup).await?;
+    if let Destination::Name { name, local: Some(address), .. } = &destination {
+        // Asked of the person on the desktop; nothing asks it elsewhere, so it is refused.
+        #[cfg(desktop)]
+        consent.require_local_host(&app, name, *address).await?;
+        #[cfg(not(desktop))]
+        return Err(format!(
+            "Host not allowed: {} leads to {}, which is on this device or its local network. Name that address in net.allowed_hosts to reach it.",
+            name, address
+        ));
+    }
     #[cfg(not(desktop))]
     let _ = (&app, &consent);
-    send(request).await
+    send(request, &destination).await
 }
 
-/// Send one request and read its response under the size cap.
-async fn send(request: NetRequest) -> Result<NetResponse, String> {
+/// Send one request to `destination` and read its response under the size cap.
+async fn send(request: NetRequest, destination: &Destination) -> Result<NetResponse, String> {
     let timeout = timeout_for(request.timeout_ms);
-    let url = check_destination(&request.url, request.allow_http, &request.allowed_hosts)?;
-    let pinned = checked_addresses(&url, &request.allowed_hosts).await?;
-    let mut response = outgoing(&client(timeout, pinned)?, request)?
+    let mut response = outgoing(&client(timeout, destination)?, request)?
         .send()
         .await
         .map_err(|e| format!("Network request failed: {}", e))?;
@@ -438,7 +493,7 @@ mod tests {
     fn a_script_cannot_ask_an_allowed_host_for_another_site() {
         // `Host` as the script wrote it would reach a second site served from the allowed
         // host's address, which is the destination `allowed_hosts` exists to rule out.
-        let client = client(timeout_for(None), None).unwrap();
+        let client = client(timeout_for(None), &Destination::Address).unwrap();
         let built = outgoing(
             &client,
             request(
@@ -459,7 +514,7 @@ mod tests {
 
     #[test]
     fn a_script_does_not_frame_the_request_itself() {
-        let client = client(timeout_for(None), None).unwrap();
+        let client = client(timeout_for(None), &Destination::Address).unwrap();
         let built = outgoing(
             &client,
             request(
@@ -508,7 +563,68 @@ mod tests {
             allow_http: false,
             allowed_hosts: hosts(&["api.example.com"]),
         };
-        let refused = tauri::async_runtime::block_on(send(request)).unwrap_err();
+        let refused = tauri::async_runtime::block_on(destination(&request, |_, _| panic!("looked up"))).unwrap_err();
         assert_eq!(refused, "Host not allowed: evil.example.net");
+    }
+
+    fn to(url: &str, allowed: &[&str]) -> NetRequest {
+        NetRequest { url: url.to_string(), method: None, headers: None, body: None, timeout_ms: None, allow_http: true, allowed_hosts: hosts(allowed) }
+    }
+
+    fn lookup(request: &NetRequest, found: Lookup) -> Result<Destination, String> {
+        tauri::async_runtime::block_on(destination(request, found))
+    }
+
+    fn public(_: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        Ok(vec![SocketAddr::new("93.184.216.34".parse().unwrap(), port)])
+    }
+
+    fn router(_: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        Ok(vec![SocketAddr::new("93.184.216.34".parse().unwrap(), port), SocketAddr::new("192.168.1.1".parse().unwrap(), port)])
+    }
+
+    fn nowhere(_: &str, _: u16) -> std::io::Result<Vec<SocketAddr>> {
+        Ok(Vec::new())
+    }
+
+    #[test]
+    fn every_name_is_sent_to_the_addresses_it_was_checked_at() {
+        // Listed or not: what the request reaches is what was looked up here, not what the
+        // client would look up again later.
+        for allowed in [&[][..], &["api.example.com"][..]] {
+            assert_eq!(
+                lookup(&to("https://api.example.com:8443/v1", allowed), public),
+                Ok(Destination::Name { name: "api.example.com".to_string(), addresses: vec!["93.184.216.34:8443".parse().unwrap()], local: None }),
+                "{:?}",
+                allowed
+            );
+        }
+        assert_eq!(lookup(&to("https://93.184.216.34/", &[]), |_, _| panic!("an address was looked up")), Ok(Destination::Address));
+        assert!(lookup(&to("https://api.example.com/", &[]), nowhere).unwrap_err().contains("could not be found"));
+    }
+
+    #[test]
+    fn an_unlisted_name_that_leads_to_the_local_network_is_refused() {
+        let refused = lookup(&to("https://rebind.example.net/", &[]), router).unwrap_err();
+        assert!(refused.contains("rebind.example.net is on this computer or its local network"), "{}", refused);
+    }
+
+    #[test]
+    fn a_listed_name_that_looks_public_and_leads_home_is_asked_about() {
+        let found = lookup(&to("https://api.example.com/", &["api.example.com"]), router).unwrap();
+        assert!(matches!(found, Destination::Name { local: Some(ip), ref addresses, .. } if ip == "192.168.1.1".parse::<IpAddr>().unwrap() && addresses.len() == 2), "{:?}", found);
+    }
+
+    #[test]
+    fn a_listed_name_that_says_it_is_local_is_reached_without_a_second_question() {
+        fn home(_: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+            Ok(vec![SocketAddr::new("127.0.0.1".parse().unwrap(), port)])
+        }
+        for (url, listed) in [("http://localhost:3000/", "localhost"), ("https://printer.local/", "printer.local"), ("https://nas.home.arpa/", "nas.home.arpa")] {
+            let found = lookup(&to(url, &[listed]), home).unwrap();
+            assert!(matches!(found, Destination::Name { local: None, .. }), "{}: {:?}", url, found);
+        }
+        assert!(is_local_host("localhost") && is_local_host("printer.local") && is_local_host("192.168.1.20") && is_local_host("[::1]"));
+        assert!(!is_local_host("api.example.com") && !is_local_host("93.184.216.34"));
     }
 }

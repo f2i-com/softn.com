@@ -5245,6 +5245,7 @@ name = "softn-loader"
 version = "0.0.26"
 dependencies = [
  "image",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
@@ -5260,6 +5261,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "webpki-root-certs",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

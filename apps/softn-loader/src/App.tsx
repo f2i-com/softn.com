@@ -391,17 +391,19 @@ function App(): React.ReactElement {
         setError(null);
         setFailedWhileUpgrading(false);
 
-        let rawData: number[] | Uint8Array;
+        // The runtime hands the bytes over as an ArrayBuffer (an array of
+        // numbers before; see read_softn_bundle in src-tauri).
+        let rawData: ArrayBuffer | number[] | Uint8Array;
 
         if (isMobile && bundlePath!.startsWith('__intent__:')) {
           // Intent-opened file: read from app cache via Rust command
           const filename = bundlePath!.replace('__intent__:', '');
-          rawData = (await nativeInvoke()?.('read_cached_bundle', { filename })) as number[] | Uint8Array;
+          rawData = (await nativeInvoke()?.('read_cached_bundle', { filename })) as ArrayBuffer;
         } else {
           // A path, or on Android the content URI the picker returned: read via Rust command
           rawData = (await nativeInvoke()?.('read_softn_bundle', {
             path: bundlePath,
-          })) as number[] | Uint8Array;
+          })) as ArrayBuffer;
         }
 
         if (!active) return;

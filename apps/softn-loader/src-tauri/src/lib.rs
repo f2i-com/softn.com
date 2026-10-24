@@ -21,6 +21,7 @@ use tracing::info;
 
 mod consent;
 pub mod data_identity;
+mod disk;
 mod net;
 pub mod scoped_xdb;
 
@@ -147,8 +148,22 @@ fn is_content_uri(path: &str) -> bool {
 /// Read a .softn bundle file from disk (binary ZIP format). Only a file the
 /// user opened through this process (see `OpenableFiles`) can be read. The bytes
 /// of the file the person chose last are the bundle open now (data_identity.rs).
+///
+/// Handed to the page as bytes (an `ArrayBuffer`), not as JSON. A `Vec<u8>` went
+/// as an array of numbers, three or four characters to a byte, and the page made
+/// a number of each: a 180 MB bundle, within the 200 MB the reader takes, held
+/// the page for over a minute and then crashed it. As bytes it opens in seconds.
 #[tauri::command]
 fn read_softn_bundle(
+    app: tauri::AppHandle,
+    files: State<'_, OpenableFiles>,
+    identity: State<'_, DataIdentity>,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    read_bundle_bytes(app, files, identity, path).map(tauri::ipc::Response::new)
+}
+
+fn read_bundle_bytes(
     #[allow(unused_variables)] app: tauri::AppHandle,
     files: State<'_, OpenableFiles>,
     identity: State<'_, DataIdentity>,
@@ -371,13 +386,14 @@ fn cached_bundle_path(cache_dir: &Path, filename: &str) -> Result<PathBuf, Strin
 /// The page names the file, so reading one is not the person choosing it: these bytes do not
 /// become the bundle open now, and give no app's data.
 #[tauri::command]
-fn read_cached_bundle(app: tauri::AppHandle, identity: State<'_, DataIdentity>, filename: String) -> Result<Vec<u8>, String> {
+fn read_cached_bundle(app: tauri::AppHandle, identity: State<'_, DataIdentity>, filename: String) -> Result<tauri::ipc::Response, String> {
     let cache_dir = app.path().app_cache_dir()
         .map_err(|e| format!("Failed to get cache dir: {}", e))?;
     let path = cached_bundle_path(&cache_dir, &filename)?;
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read cached file: {}", e))?;
     identity.bundle_handed_over();
-    Ok(bytes)
+    // As bytes, as read_softn_bundle hands them over.
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Set the window icon from raw image bytes (PNG format)
@@ -714,22 +730,21 @@ mod tests {
     /// Whatever the desktop page may call, a bundle drawn in that page may call too. The page
     /// asks this side for its file picker (`pick_softn_bundle`), so it needs no dialog, file
     /// or shell plugin of its own, and a bundle is not handed native dialogs to word as it likes.
+    /// Of Tauri's own it is granted what it calls and no more: events (the drop listener, XDB's
+    /// native events) and the window's title. `core:default` gave it image, menu, path, tray
+    /// and resources besides, `image` reading any path, a UNC share's among them.
     #[test]
-    fn the_desktop_page_is_granted_no_dialog_file_or_shell_plugin() {
+    fn the_desktop_page_is_granted_what_it_calls_and_nothing_else() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
-        let granted: Vec<&str> = capability["permissions"]
+        let mut granted: Vec<&str> = capability["permissions"]
             .as_array()
             .unwrap()
             .iter()
             .map(|permission| permission.as_str().or_else(|| permission["identifier"].as_str()).unwrap())
             .collect();
-        assert!(granted.contains(&"core:default"));
-        for permission in &granted {
-            for plugin in ["dialog:", "fs:", "shell:", "opener:"] {
-                assert!(!permission.starts_with(plugin), "the desktop page is granted {}", permission);
-            }
-        }
+        granted.sort();
+        assert_eq!(granted, vec!["core:event:default", "core:window:allow-set-title"]);
     }
 
     /// The same on Android, where the page picked and read the bundle itself: `fs:default`

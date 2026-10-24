@@ -1,17 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for SoftN Loader (desktop)",
+  "description": "Default capabilities for SoftN Loader (desktop): only what the page calls. Its own commands are the app's (lib.rs); of Tauri's it listens for and emits events (the drop listener, XDB's native events) and sets the window's title. `core:default` granted it the image, menu, path, tray, resources and window APIs besides, among them reading an image from any path, a UNC share's included.",
   "platforms": ["linux", "macOS", "windows"],
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "core:window:default",
-    "core:window:allow-set-title",
-    "core:window:allow-set-focus",
     "core:event:default",
-    "core:event:allow-listen",
-    "core:event:allow-emit",
-    "cli:default"
+    "core:window:allow-set-title"
   ]
 }

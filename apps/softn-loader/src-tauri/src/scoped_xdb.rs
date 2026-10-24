@@ -165,7 +165,8 @@ pub fn get_db_stats(
 /// Snapshot an app's database beside itself before an upgrade and return the
 /// snapshot's path. Wraps XDB's export so the webview never learns or chooses
 /// a file system path: the location is always the database's own directory.
-/// Only the data of the app open now (data_identity.rs) can be snapshotted.
+/// Only the data of the app open now (data_identity.rs) can be snapshotted, and only
+/// while the snapshot leaves room on the disk (disk.rs).
 #[tauri::command]
 pub async fn backup_database(
     db_manager: State<'_, SharedDbManager>,
@@ -177,6 +178,11 @@ pub async fn backup_database(
     let directory = db_path
         .parent()
         .ok_or("The database has no parent directory")?;
+    let size = crate::disk::database_size(&db_path).map_err(|e| format!("the database's size could not be read: {}", e))?;
+    let free = crate::disk::free_bytes(directory).map_err(|e| format!("the free space on the database's disk could not be read: {}", e))?;
+    if let Some(refusal) = crate::disk::snapshot_refusal(free, size) {
+        return Err(refusal);
+    }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
