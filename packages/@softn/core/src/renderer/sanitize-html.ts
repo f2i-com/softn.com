@@ -439,18 +439,19 @@ export const OPENING_TAGS = new Set(['a', 'area', 'form']);
 
 /**
  * The `rel` a link or form is given: what was written, less `opener`, and
- * with `noopener` when it opens a window other than the page's own. A page
- * opened from a window it was named into, or with `rel="opener"`, holds that
- * window as `window.opener` and can send it anywhere: SoftN Web's tab, under
- * the app, swapped for a look-alike while the person reads the new one.
- * Browsers leave out the opener for `_blank` alone. Null for no `rel` at all.
+ * with `noopener` always. A page opened from a window it was named into, or
+ * with `rel="opener"`, holds that window as `window.opener` and can send it
+ * anywhere: SoftN Web's tab, under the app, swapped for a look-alike while the
+ * person reads the new one. Browsers leave out the opener for `_blank` alone.
+ * Which window a `target` names was judged here, and browsers do not read it
+ * as this did (`" _self"` is a new window named so), nor is it the only way
+ * to name one (`formtarget` on a form's button); `noopener` does nothing to
+ * a navigation that stays in this window, so it is given whatever they say.
  */
-export function relWithoutOpener(rel: unknown, target: unknown): string | null {
+export function relWithoutOpener(rel: unknown): string {
   const kept = (typeof rel === 'string' ? rel.split(/\s+/) : []).filter((token) => token !== '' && token.toLowerCase() !== 'opener');
-  const name = typeof target === 'string' ? target.trim().toLowerCase() : '';
-  const elsewhere = name !== '' && name !== '_self' && name !== '_top' && name !== '_parent';
-  if (elsewhere && !kept.some((token) => /^no(?:opener|referrer)$/i.test(token))) kept.push('noopener');
-  return kept.length > 0 ? kept.join(' ') : null;
+  if (!kept.some((token) => /^no(?:opener|referrer)$/i.test(token))) kept.push('noopener');
+  return kept.join(' ');
 }
 
 /**
@@ -698,11 +699,7 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       }
     }
 
-    if (OPENING_TAGS.has(tag)) {
-      const rel = relWithoutOpener(node.getAttribute('rel'), node.getAttribute('target'));
-      if (rel === null) node.removeAttribute('rel');
-      else node.setAttribute('rel', rel);
-    }
+    if (OPENING_TAGS.has(tag)) node.setAttribute('rel', relWithoutOpener(node.getAttribute('rel')));
 
     // A URL withheld earlier — by this pass, or by an earlier sanitization
     // whose output is now the value — goes back on its attribute once the

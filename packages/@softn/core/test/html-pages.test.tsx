@@ -347,10 +347,15 @@ describe('a link or form that opens another window', () => {
     expect(rel('<a href="https://elsewhere.test/" REL="OPENER" target="w">Read</a>')).toBe('noopener');
   });
 
-  it('leaves a link that stays in this window, and the rest of what rel says', () => {
-    expect(rel('<a href="https://elsewhere.test/">Read</a>')).toBeNull();
-    expect(rel('<a href="https://elsewhere.test/" rel="opener">Read</a>')).toBeNull();
-    expect(rel('<a href="https://elsewhere.test/" target="_top" rel="author">Read</a>')).toBe('author');
+  // Browsers do not trim a target (" _self" is a new window named so), and a
+  // form's button names one of its own (formtarget): whatever names a window,
+  // noopener is given, which does nothing to a link that stays in this one.
+  it('gives noopener whatever names the window, and keeps the rest of what rel says', () => {
+    expect(rel('<a href="https://elsewhere.test/" target=" _self">Read</a>')).toBe('noopener');
+    expect(rel('<a href="https://elsewhere.test/">Read</a>')).toBe('noopener');
+    expect(rel('<a href="https://elsewhere.test/" rel="opener">Read</a>')).toBe('noopener');
+    expect(rel('<a href="https://elsewhere.test/" target="_top" rel="author">Read</a>')).toBe('author noopener');
+    expect(rel('<form action="https://elsewhere.test/"><button formtarget="w">Send</button></form>')).toBe('noopener');
   });
 
   it('holds sanitized rich text to the same', async () => {

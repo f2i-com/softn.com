@@ -140,22 +140,22 @@ describe('a URL attribute given a list', () => {
   });
 
   it('an array literal in the markup is the same list', () => {
-    expect(html(`<a href={["${SCRIPT}"]}>x</a>`)).toBe('<a>x</a>');
+    expect(html(`<a href={["${SCRIPT}"]}>x</a>`)).toBe('<a rel="noopener">x</a>');
   });
 
   it('an object is not a URL either', () => {
-    expect(html('<a href={u}>x</a>', { u: { a: SCRIPT } })).toBe('<a>x</a>');
+    expect(html('<a href={u}>x</a>', { u: { a: SCRIPT } })).toBe('<a rel="noopener">x</a>');
   });
 });
 
 describe('what a URL attribute may still be', () => {
   it('text, as before', () => {
-    expect(html('<a href={u}>x</a>', { u: '/docs' })).toBe('<a href="/docs">x</a>');
+    expect(html('<a href={u}>x</a>', { u: '/docs' })).toBe('<a href="/docs" rel="noopener">x</a>');
     expect(html('<img src={u} />', { u: 'https://cdn.example/x.png' }, netScoped)).toContain('src="https://cdn.example/x.png"');
   });
 
   it('a number, which is its digits', () => {
-    expect(html('<a href={u}>x</a>', { u: 7 })).toBe('<a href="7">x</a>');
+    expect(html('<a href={u}>x</a>', { u: 7 })).toBe('<a href="7" rel="noopener">x</a>');
     expect(html('<Pic src={u} />', { u: 7 })).toContain('src="7"');
   });
 
@@ -165,7 +165,7 @@ describe('what a URL attribute may still be', () => {
       for (const u of [null, undefined, false]) {
         const doc = parse('<a href={u}>x</a>');
         const context = { state: { u }, setState: () => {}, data: {}, functions: {}, computed: {} } as unknown as SoftNRenderContext;
-        expect(renderToStaticMarkup(React.createElement(React.Fragment, null, renderDocument(doc, context, new ComponentRegistry())))).toBe('<a>x</a>');
+        expect(renderToStaticMarkup(React.createElement(React.Fragment, null, renderDocument(doc, context, new ComponentRegistry())))).toBe('<a rel="noopener">x</a>');
       }
       expect(warned).not.toHaveBeenCalled();
     } finally {
@@ -320,6 +320,6 @@ describe('a URL spelled with entities in a quoted attribute', () => {
   });
 
   it('an ordinary address with &amp; in it is the address', () => {
-    expect(html('<a href="/search?q=tea&amp;page=2">x</a>')).toBe('<a href="/search?q=tea&amp;page=2">x</a>');
+    expect(html('<a href="/search?q=tea&amp;page=2">x</a>')).toBe('<a href="/search?q=tea&amp;page=2" rel="noopener">x</a>');
   });
 });

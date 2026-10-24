@@ -236,28 +236,20 @@ export function dropRawMarkupProp(props: SoftNProps): void {
 }
 
 /**
- * A link or form that opens another window does it without `window.opener`
- * (see {@link relWithoutOpener}): `<a href="https://…" target="w">` or
- * `rel="opener"` handed the page it opened a hold on SoftN Web's own tab. A
- * `target` that is not text goes, as React would write a list's entries as
- * one name; any spelling of `rel` is replaced by the one judged.
+ * A link or form opens what it opens without `window.opener` (see
+ * {@link relWithoutOpener}): `<a href="https://…" target="w">` or
+ * `rel="opener"` handed the page it opened a hold on SoftN Web's own tab.
+ * Any spelling of `rel` is replaced by the one judged.
  */
 export function keepOpenerFromLinks(props: SoftNProps, tag: string): void {
   if (!OPENING_TAGS.has(tag)) return;
   let rel: unknown;
-  let target: unknown;
   for (const name of Object.keys(props)) {
-    const lower = name.toLowerCase();
-    if (lower === 'rel') {
-      rel = props[name];
-      delete props[name];
-    } else if (lower === 'target') {
-      if (typeof props[name] === 'string') target = props[name];
-      else delete props[name];
-    }
+    if (name.toLowerCase() !== 'rel') continue;
+    rel = props[name];
+    delete props[name];
   }
-  const judged = relWithoutOpener(rel, target);
-  if (judged !== null) props.rel = judged;
+  props.rel = relWithoutOpener(rel);
 }
 
 /**
