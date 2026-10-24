@@ -188,6 +188,78 @@ describe("one tab's edit of a record the other tab's create was sent for, unansw
   });
 });
 
+describe("one tab's edit of a record the other tab made, both online, the edit reaching the host first", () => {
+  type Op = { id: string; operation: string; recordId: string; collection: string; timestamp: string; data?: { title?: string } };
+  const opsOf = (socket: FakeSocket) => pushed(socket) as unknown as Op[];
+
+  // The host refused the edit (no such record yet), and the create, landing after it, wrote the
+  // record as first made over the edit, here and on every device.
+  it('is kept until the host has the record, then sent, and the record keeps it', async () => {
+    const backing = storage();
+    const a = tab(backing);
+    const b = tab(backing);
+    const sa = online(a);
+    const sb = online(b);
+    const r1 = a.create('notes', { title: 'made in A' });
+    await tick();
+    const [create] = opsOf(sa.socket);
+    vi.advanceTimersByTime(1000);
+    b.update(r1.id, { title: 'edited in B' });
+    await tick();
+    const [edit] = opsOf(sb.socket);
+    expect(edit.operation).toBe('update');
+
+    // The host reads B's push first.
+    sb.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${r1.id}` });
+    await tick();
+    // Then A's: it stores the create, and tells B.
+    sa.socket.receive({ type: 'sync_ack', opIds: [create.id] });
+    sb.socket.receive({ type: 'sync_delta', ops: [{ ...create, clientId: 'ca' }] });
+    await tick();
+
+    expect(b.get('notes', r1.id)?.data.title).toBe('edited in B');
+    const again = opsOf(sb.socket).filter((op) => op.recordId === r1.id);
+    expect(again.map((op) => [op.operation, op.data?.title])).toEqual([['update', 'edited in B'], ['update', 'edited in B']]);
+  });
+
+  it('waits at most a while: sent again then, and refused as before if the host still has no record', async () => {
+    const backing = storage();
+    const a = tab(backing);
+    const b = tab(backing);
+    online(a);
+    const sb = online(b);
+    const r1 = a.create('notes', { title: 'made in A' });
+    await tick();
+    b.update(r1.id, { title: 'edited in B' });
+    await tick();
+    const [edit] = opsOf(sb.socket);
+    const refused: string[] = [];
+    sb.sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
+    sb.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${r1.id}` });
+    expect(opsOf(sb.socket)).toHaveLength(1);
+    vi.advanceTimersByTime(30_000);
+    expect(opsOf(sb.socket).map((op) => op.id)).toEqual([edit.id, edit.id]);
+    sb.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${r1.id}` });
+    expect(refused).toEqual([edit.id]);
+  });
+
+  it('is refused as before when no other tab holds a create of the record', async () => {
+    const backing = storage();
+    const b = tab(backing);
+    const sb = online(b);
+    const r1 = b.create('notes', { title: 'mine' });
+    await tick();
+    sb.socket.receive({ type: 'sync_ack', opIds: opsOf(sb.socket).map((op) => op.id) });
+    b.update(r1.id, { title: 'edited' });
+    await tick();
+    const refused: string[] = [];
+    sb.sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
+    const edit = opsOf(sb.socket).find((op) => op.operation === 'update')!;
+    sb.socket.receive({ type: 'sync_reject', opId: edit.id, reason: `Record not found: ${r1.id}` });
+    expect(refused).toEqual([edit.id]);
+  });
+});
+
 describe('a change a tab made before its client listened', () => {
   it('is sent when the client starts, though another tab moved the mark on meanwhile', async () => {
     const backing = storage();

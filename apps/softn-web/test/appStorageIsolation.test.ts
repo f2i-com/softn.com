@@ -113,6 +113,20 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("a build's store notes", () => {
+  // The note of changes made while no server sync client listened was not among them: removing
+  // the app left it behind, and bringing its data forward to an update left its changes unsent.
+  it('are its own, each that XDB keeps beside its records', async () => {
+    const cache = await freshCache();
+    const origin = 'a'.repeat(64);
+    const [xdb] = cache.appDataStores(origin);
+    for (const name of ['collections', 'p2p-room', 'sync-queue', 'sync-pulled', 'sync-watched', 'sync-unheard', 'removals:notes', 'seeded:notes']) {
+      expect(xdb.owns(`:${name}`), name).toBe(true);
+    }
+    expect(xdb.owns(':sync-unheard:other')).toBe(false);
+  });
+});
+
 describe('two bundles with the same name and different bytes', () => {
   const notesA = bytes('PK notes, the first');
   const notesB = bytes('PK notes, another app entirely');

@@ -172,9 +172,25 @@ const PULLED_META = 'sync-pulled';
  * change made after it, while no client listened (before consent was given,
  * before an async import finished, between a disconnect and a connect), was
  * never queued, and is found by its record's time when the next client
- * connects (`queueUnsyncedChanges`).
+ * connects (`queueUnsyncedChanges`). Kept with the host it is for
+ * (`{"at":…,"url":…}`); a number alone, as clients before kept it, is the
+ * mark of the host the app syncs with.
  */
 const WATCHED_META = 'sync-watched';
+
+/** WATCHED_META as kept, or null for none or one that cannot be read. */
+function watchedMark(raw: string | null): { at: number; url?: string } | null {
+  if (raw === null) return null;
+  const at = Number(raw);
+  if (raw.trim() !== '' && Number.isFinite(at)) return { at };
+  try {
+    const mark = JSON.parse(raw) as { at?: unknown; url?: unknown } | null;
+    if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return { at: mark.at, ...(typeof mark.url === 'string' ? { url: mark.url } : {}) };
+  } catch {
+    // Unreadable: no mark.
+  }
+  return null;
+}
 
 /**
  * The limits this client holds to, which the host's own are checked against
@@ -468,6 +484,19 @@ export class XDBServerSync {
    */
   private markHeld = false;
   /**
+   * Updates the host refused as not found while another client of this app (another tab) held
+   * a create of their record still to be answered, by op id: kept with the ops in flight and not
+   * sent again until the host has the record (a change of it heard from the host), the next
+   * connection, or WAIT_FOR_CREATE_MS. Two tabs back online sent one's edit of a record the
+   * other made offline before the other's create of it: the host refused the edit, and the
+   * create, landing after, wrote the record as first made over the edit, here and on every
+   * device. Each op waits once (`waitedForCreate`).
+   */
+  private awaitingCreate = new Set<string>();
+  private waitedForCreate = new Set<string>();
+  private createTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly WAIT_FOR_CREATE_MS = 30_000;
+  /**
    * Deletes for records removed for good here while nothing listened (`queueUnsyncedChanges`).
    * The host may never have had the record (made and removed here before it was sent), and
    * refuses the delete as not found: that is the removal done, not a change refused.
@@ -538,6 +567,17 @@ export class XDBServerSync {
    * and every record in it is one the server has yet to be sent.
    */
   private watched: number | null = null;
+  /**
+   * The store was synced with another host than this client's (its mark names another, or an
+   * older client's pulls were from another): this host may have none of its records. Kept as
+   * the mark of this one, the app moved to a new host never sent it the records it already
+   * had. Its next scan sends every record, and what the queue and the note hold as well (a host
+   * the records were moved to has them, and those changes are newer), each of those taken as
+   * done when this host has no such record (`removals`).
+   */
+  private movedHost = false;
+  /** Ops restored from a queue kept for another host, by id, with that host (kept with them when saved). */
+  private otherHost = new Map<string, string>();
   /** Collections this client has written to: with a `collections` list, these are its own as well. */
   private written = new Set<string>();
   /** Collections pulled on this connection; a first write to another pulls it (`pullOnFirstUse`). */
@@ -948,6 +988,8 @@ export class XDBServerSync {
             this.finished.add(id);
             this.removals.delete(id);
             this.sentAt.delete(id);
+            this.waitedForCreate.delete(id);
+            this.awaitingCreate.delete(id);
             this.queueChanged();
           }
         }
@@ -999,8 +1041,9 @@ export class XDBServerSync {
     // A push the host could not take at all names no ops. Anything sent and
     // unanswered is tried again later; one that did land is acknowledged
     // and not applied again (the host knows it by its id).
-    if (this.inflightOps.size > 0) {
-      this.requeueInflight();
+    // An edit kept for another client's create is not among them: the host answered it.
+    if (this.inflightOps.size > this.awaitingCreate.size) {
+      this.requeueInflight(true);
       this.scheduleRetry();
     }
   }
@@ -1025,11 +1068,84 @@ export class XDBServerSync {
     this.pullRetry.clear();
   }
 
-  /** Put unanswered ops back at the front of the queue, in the order sent. */
-  private requeueInflight(): void {
+  /**
+   * Put unanswered ops back at the front of the queue, in the order sent. What waited for
+   * another client's create goes again with the rest, unless `keepWaiting` (on this connection).
+   */
+  private requeueInflight(keepWaiting = false): void {
+    if (!keepWaiting) this.stopWaitingForCreates();
     if (this.inflightOps.size === 0) return;
-    this.pendingOps = new Map([...this.inflightOps, ...this.pendingOps]);
-    this.inflightOps.clear();
+    const again = [...this.inflightOps].filter(([id]) => !this.awaitingCreate.has(id));
+    this.pendingOps = new Map([...again, ...this.pendingOps]);
+    for (const [id] of again) this.inflightOps.delete(id);
+  }
+
+  private stopWaitingForCreates(): void {
+    this.awaitingCreate.clear();
+    if (this.createTimer) {
+      clearTimeout(this.createTimer);
+      this.createTimer = null;
+    }
+  }
+
+  /**
+   * Keep an update the host refused as not found while another client holds a create of its
+   * record (`awaitingCreate`). True when it is kept.
+   */
+  private awaitCreate(opId: string, reason: string): boolean {
+    const op = this.inflightOps.get(opId);
+    if (!op || op.operation !== 'update' || this.waitedForCreate.has(opId) || !/\bRecord not found\b/.test(String(reason))) return false;
+    // Not for a record gone here, nor one no other client is still to create.
+    if (!this.xdb.get(op.collection, op.recordId) || !this.createHeldElsewhere(op)) return false;
+    this.waitedForCreate.add(opId);
+    this.awaitingCreate.add(opId);
+    if (!this.createTimer && !this.destroyed) {
+      this.createTimer = setTimeout(() => {
+        this.createTimer = null;
+        this.releaseAwaiting();
+      }, XDBServerSync.WAIT_FOR_CREATE_MS);
+    }
+    return true;
+  }
+
+  /** Whether the saved queue holds another client's create of `op`'s record, not yet answered. */
+  private createHeldElsewhere(op: SyncOp): boolean {
+    const meta = this.meta();
+    if (!meta) return false;
+    try {
+      const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { ops?: unknown } | null;
+      return (Array.isArray(saved?.ops) ? saved.ops : []).some((entry) => {
+        const other = savedOp(entry);
+        return other !== null && other.operation === 'create' && other.collection === op.collection && other.recordId === op.recordId
+          && !this.inflightOps.has(other.id) && !this.pendingOps.has(other.id) && !this.finished.has(other.id);
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Send again the updates kept for a create (`awaitingCreate`): those of `records` (by
+   * `recordKey`), or all. Ahead of their records' later ops, which waited behind them.
+   */
+  private releaseAwaiting(records?: ReadonlySet<string>): void {
+    const released = new Map<string, SyncOp>();
+    for (const id of [...this.awaitingCreate]) {
+      const op = this.inflightOps.get(id);
+      if (op && records && !records.has(recordKey(op))) continue;
+      this.awaitingCreate.delete(id);
+      if (!op) continue;
+      this.inflightOps.delete(id);
+      released.set(id, op);
+    }
+    if (this.awaitingCreate.size === 0 && this.createTimer) {
+      clearTimeout(this.createTimer);
+      this.createTimer = null;
+    }
+    if (released.size === 0) return;
+    this.pendingOps = new Map([...released, ...this.pendingOps]);
+    this.queueChanged();
+    this.flushPendingOps();
   }
 
   /**
@@ -1395,6 +1511,10 @@ export class XDBServerSync {
     this.initialPullDone = true;
     // The device has what the server sent: a record it wrote is not one made here.
     this.saveSoon();
+    // The host has these records: an edit kept for another client's create of one goes now.
+    if (this.awaitingCreate.size > 0) {
+      this.releaseAwaiting(new Set(list.filter((record) => record && typeof record.id === 'string').map((record) => `${collection}\u0000${record.id}`)));
+    }
     this.flushPendingOps();
   }
 
@@ -1469,6 +1589,8 @@ export class XDBServerSync {
         console.warn(`[XDBServerSync] A change to "${op.collection}" from the server could not be saved here:`, err);
       }
     }
+    // The host has these records: an edit kept for another client's create of one goes now.
+    if (this.awaitingCreate.size > 0) this.releaseAwaiting(new Set(list.map(recordKey)));
   }
 
   /** How many records of one collection `heardLive` keeps; past that, a pull's copy is written as before. */
@@ -1527,6 +1649,9 @@ export class XDBServerSync {
 
   /** Handle a rejected sync operation — remove from pending and notify. */
   private handleSyncReject(opId: string, reason: string): void {
+    // An edit of a record another tab's create is still to bring to the host.
+    if (this.awaitCreate(opId, reason)) return;
+    this.waitedForCreate.delete(opId);
     // A removal of a record the host never had (xdb's NotFound): done, as the host keeps no copy.
     const removed = this.removals.delete(opId) && /\bRecord not found\b/.test(String(reason));
     if (!removed) this.noteRefused(this.pendingOps.get(opId) ?? this.inflightOps.get(opId), reason);
@@ -1770,8 +1895,10 @@ export class XDBServerSync {
       }
       if (!record || !sameTime(record.updated_at, edit.stamp) || (record.deleted === true) !== (edit.kind === 'delete')) continue;
       const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
-      found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, how });
-      noted.add(`${edit.collection}\u0000${edit.id}`);
+      // On a host the store has not synced with, the look below sends the record as well, and
+      // this is done when the host has no such record (`movedHost`).
+      found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, how, ...(this.movedHost ? { removal: true } : {}) });
+      if (!this.movedHost) noted.add(`${edit.collection}\u0000${edit.id}`);
     }
     for (const collection of this.syncedCollections()) {
       // One the store could not load is looked at by a later client (`markHeld`).
@@ -1797,7 +1924,9 @@ export class XDBServerSync {
           : queuedMade !== undefined
             ? Math.max(queuedMade, this.stampOf.get(queued.id)?.floor ?? -Infinity)
             : this.sentAt.get(queued.id) ?? Date.parse(queued.timestamp) - this.clockOffset;
-        if (queuedAt !== undefined && queuedAt >= made) continue;
+        // On a host the store has not synced with, the record goes too, after what the queue holds
+        // of it: an update the host refuses for want of the record leaves this create to bring it.
+        if (!this.movedHost && queuedAt !== undefined && queuedAt >= made) continue;
         const created = Date.parse(String(record.created_at));
         const createdSince = since === null || !(created < since);
         const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {};
@@ -1813,6 +1942,8 @@ export class XDBServerSync {
       }
     }
     found.sort((a, b) => a.made - b.made);
+    // The next scan is of this host's (its mark is saved with the queue).
+    this.movedHost = false;
     for (const { made, change, how, removal } of found) this.queueChange(change, made, how, removal === true);
     // At the time each was removed, by this device's clock, and after the copy it removed.
     for (const { made, change, floor } of gone) this.queueChange(change, made, floor === undefined ? undefined : { floor }, true);
@@ -1837,22 +1968,45 @@ export class XDBServerSync {
   private restore(): void {
     const meta = this.meta();
     if (!meta) return;
+    const url = this.config.wsUrl;
     // Where listening stopped. A store an older client synced has a queue
     // or a place and no such mark: what it missed it missed, and nothing is
-    // looked for (rather than every record it holds sent again).
-    const watched = Number(meta.readSyncMeta(WATCHED_META) ?? NaN);
-    if (Number.isFinite(watched)) this.watched = watched;
-    else if (meta.readSyncMeta(QUEUE_META) !== null || meta.readSyncMeta(PULLED_META) !== null) this.watched = Infinity;
+    // looked for (rather than every record it holds sent again). A mark or a
+    // place of another host's is none for this one (`movedHost`).
+    const mark = watchedMark(meta.readSyncMeta(WATCHED_META));
+    if (mark) {
+      if (mark.url === undefined || mark.url === url) this.watched = mark.at;
+      else this.movedHost = true;
+    } else if (meta.readSyncMeta(QUEUE_META) !== null || meta.readSyncMeta(PULLED_META) !== null) {
+      let pulledFrom: unknown;
+      try {
+        pulledFrom = (JSON.parse(meta.readSyncMeta(PULLED_META) ?? 'null') as { url?: unknown } | null)?.url;
+      } catch {
+        // Unreadable: of no host.
+      }
+      if (typeof pulledFrom === 'string' && pulledFrom !== url) this.movedHost = true;
+      else this.watched = Infinity;
+    }
     try {
-      const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { ops?: unknown } | null;
+      const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { url?: unknown; ops?: unknown } | null;
       const ops = saved?.ops;
+      // The host each op was queued for: the queue's, or its own where another tab's queue for
+      // another host was kept with it (`save`); a queue kept with none is this host's.
+      const queuedFor = typeof saved?.url === 'string' ? saved.url : url;
       for (const entry of Array.isArray(ops) ? ops : []) {
         const op = savedOp(entry);
         if (!op || this.pendingOps.has(op.id)) continue;
         this.pendingOps.set(op.id, op);
         // Not sent yet: stamped in the host's time when it is (flushPendingOps).
-        const { made, floor, asIs, removal, madeHere } = entry as { made?: unknown; floor?: unknown; asIs?: unknown; removal?: unknown; madeHere?: unknown };
+        const { made, floor, asIs, removal, madeHere, url: opUrl } = entry as { made?: unknown; floor?: unknown; asIs?: unknown; removal?: unknown; madeHere?: unknown; url?: unknown };
         if (removal === true) this.removals.add(op.id);
+        // Queued for another host: sent to this one all the same, and done if it has no such
+        // record (`movedHost`).
+        const forHost = typeof opUrl === 'string' ? opUrl : queuedFor;
+        if (forHost !== url) {
+          this.otherHost.set(op.id, forHost);
+          this.removals.add(op.id);
+        }
         // Sent before, and stamped: when it was made here, for the scan to weigh it by.
         if (typeof madeHere === 'number' && Number.isFinite(madeHere)) this.sentAt.set(op.id, madeHere);
         if (typeof made === 'number' && Number.isFinite(made)) {
@@ -1918,12 +2072,16 @@ export class XDBServerSync {
       // An op sent keeps that time beside it (`madeHere`), for another tab to order it by: its
       // stamp is in the host's time, and a create sent before an edit another tab made of its
       // record after it went after that edit when the host's clock ran ahead.
+      const url = this.config.wsUrl;
       const mine = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
         const made = this.madeAt.get(op.id);
         const removal = this.removals.has(op.id) ? { removal: true } : {};
-        if (made !== undefined) return { entry: { ...op, made, ...this.stampOf.get(op.id), ...removal } as unknown, at: made };
+        // One queued for another host keeps it (`otherHost`).
+        const host = this.otherHost.get(op.id);
+        const marks = { ...removal, ...(host === undefined ? {} : { url: host }) };
+        if (made !== undefined) return { entry: { ...op, made, ...this.stampOf.get(op.id), ...marks } as unknown, at: made };
         const madeHere = this.sentAt.get(op.id) ?? Date.parse(op.timestamp) - this.clockOffset;
-        return { entry: { ...op, ...removal, ...(Number.isFinite(madeHere) ? { madeHere } : {}) } as unknown, at: madeHere };
+        return { entry: { ...op, ...marks, ...(Number.isFinite(madeHere) ? { madeHere } : {}) } as unknown, at: madeHere };
       });
       // The queue is saved under the app's name, and another tab of the app saves its own
       // there: each wrote its queue over the other's, so a change one tab made offline was gone
@@ -1935,13 +2093,16 @@ export class XDBServerSync {
       const own = new Set([...this.inflightOps.keys(), ...this.pendingOps.keys()]);
       let others: Array<{ entry: unknown; at: number }> = [];
       try {
-        const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { ops?: unknown } | null;
+        const saved = JSON.parse(meta.readSyncMeta(QUEUE_META) ?? 'null') as { url?: unknown; ops?: unknown } | null;
+        // Another tab's queue for another host (an update of the app moved it while that tab
+        // was open): its ops are kept with that host, as this queue is saved for this one.
+        const theirs = typeof saved?.url === 'string' && saved.url !== url ? saved.url : undefined;
         others = (Array.isArray(saved?.ops) ? saved.ops : []).flatMap((entry) => {
           const op = savedOp(entry);
           if (op === null || own.has(op.id) || this.finished.has(op.id)) return [];
-          const { made, madeHere } = entry as { made?: unknown; madeHere?: unknown };
+          const { made, madeHere, url: opUrl } = entry as { made?: unknown; madeHere?: unknown; url?: unknown };
           const at = typeof made === 'number' ? made : typeof madeHere === 'number' ? madeHere : Date.parse(op.timestamp);
-          return [{ entry, at }];
+          return [{ entry: theirs !== undefined && typeof opUrl !== 'string' ? { ...(entry as object), url: theirs } : entry, at }];
         });
       } catch {
         // Unreadable: there is nothing it can be trusted to say.
@@ -1958,7 +2119,7 @@ export class XDBServerSync {
         else ops.push(mine[j++].entry);
       }
       try {
-        meta.writeSyncMeta(QUEUE_META, ops.length > 0 ? JSON.stringify({ v: 1, ops }) : null);
+        meta.writeSyncMeta(QUEUE_META, ops.length > 0 ? JSON.stringify({ v: 1, url, ops }) : null);
         this.queueDirty = false;
         // Not in what is saved now; one found there later is another client's, still to go.
         this.finished.clear();
@@ -1994,7 +2155,7 @@ export class XDBServerSync {
     // with the page is then found again by the next scan.
     if (this.xdbUnsubscribe && !this.queueDirty && !this.markHeld) {
       try {
-        meta.writeSyncMeta(WATCHED_META, String(now));
+        meta.writeSyncMeta(WATCHED_META, JSON.stringify({ at: now, url: this.config.wsUrl }));
         this.watched = now;
       } catch {
         // The next scan starts earlier, and sends again what was answered.

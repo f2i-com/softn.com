@@ -26,7 +26,7 @@ export type AppDataStore = 'xdb' | 'local';
  * marks and queues (xdb-service.ts, xdb-server-sync.ts) and a bundle's seeds
  * (bundle.ts). A new one is added here, or a move leaves it behind.
  */
-const XDB_NOTE = /^:(?:collections|p2p-room|sync-queue|sync-pulled|sync-watched|(?:removals|seeded):[^:]+)$/;
+const XDB_NOTE = /^:(?:collections|p2p-room|sync-queue|sync-pulled|sync-watched|sync-unheard|(?:removals|seeded):[^:]+)$/;
 
 /** One store of a build: the prefix its keys are under, and which keys under it are its own. */
 export interface AppDataStoreKeys {

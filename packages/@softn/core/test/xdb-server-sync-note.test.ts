@@ -59,8 +59,8 @@ const page = (backing: Pick<ReturnType<typeof storage>, 'getItem' | 'setItem' | 
 /** The host's clock, a minute ahead of this device's. */
 const hostTime = () => new Date(Date.now() + 60_000).toISOString();
 
-function connect(store: XDBService) {
-  const sync = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+function connect(store: XDBService, wsUrl = WS_URL) {
+  const sync = new XDBServerSync(store, { wsUrl, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
   sync.connect();
   const socket = FakeSocket.made[FakeSocket.made.length - 1];
   socket.open();
@@ -177,6 +177,68 @@ describe('a change made while no client listened goes as it would have with one 
     const { heard, unheard } = await bothWays('2026-02-01T00:00:00.000Z', (store) => store.import({ version: 1, exportedAt: older, collections: { notes: [restored] } }, { merge: false }));
     expect(heard.map((op) => op[0])).toEqual(['update']);
     expect(unheard).toEqual(heard);
+  });
+});
+
+describe('an app moved to another sync host', () => {
+  const MOVED = 'wss://elsewhere.example.test/sync';
+  type Op = { id: string; operation: string; recordId: string; data?: { title?: string } };
+
+  // The mark of where listening stopped was the old host's, and the scan looked only past it:
+  // the new host was never sent a record the store already had.
+  it('sends the new host every record the store has', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const before = connect(store);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.create('notes', { title: 'made here' });
+    await tick();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Op[]).map((op) => op.id) });
+    await tick();
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = connect(page(backing), MOVED);
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    const ops = (pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.data?.title]).sort();
+    expect(ops).toEqual([['create', 'made here'], ['create', 'v1']]);
+  });
+
+  it('sends what was queued for the old host too, before the record, and takes "not found" for it as done', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const queued = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    queued.connect();
+    store.updateInCollection('notes', 'n1', { title: 'edited offline' });
+    await tick();
+    queued.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = connect(page(backing), MOVED);
+    const refused: string[] = [];
+    moved.sync.on('reject', (...args: unknown[]) => refused.push(String(args[0])));
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    const first = (pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    expect(first.map((op) => [op.operation, op.data?.title])).toEqual([['update', 'edited offline']]);
+    // An empty host has no n1: the update is done, and the record goes as a create.
+    moved.socket.receive({ type: 'sync_reject', opId: first[0].id, reason: 'Record not found: n1' });
+    await tick();
+    expect(refused).toEqual([]);
+    const then = (pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    expect(then.map((op) => [op.operation, op.data?.title])).toEqual([['update', 'edited offline'], ['create', 'edited offline']]);
+  });
+
+  it("is not taken for one by a store whose mark an earlier client kept as a number", async () => {
+    const backing = storage();
+    await synced(backing);
+    backing.setItem('xdb:app::sync-watched', String(Date.now()));
+    vi.advanceTimersByTime(1000);
+    const { socket } = await nextVisit(backing);
+    expect(pushed(socket)).toEqual([]);
   });
 });
 
