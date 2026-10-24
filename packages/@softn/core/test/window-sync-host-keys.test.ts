@@ -246,6 +246,36 @@ describe('two apps open on one page', () => {
     expect('__shared' in realWin).toBe(false);
   });
 
+  // A component's key that one app's script wrote first was that app's: every
+  // other app read nothing of what the component set after it.
+  it("hear what a component sets on a key another app's script wrote first", async () => {
+    const a = await app('app-a', `
+      let seen = "nothing"
+      function init() { window.__component = "" }
+      function tick() { seen = String(window.__component) }
+    `);
+    const b = await app('app-b', `
+      function init() { window.__component = "" }
+      function tick() { window.__component = "b" }
+    `);
+    await a.result.functions.init();
+    await b.result.functions.init();
+    realWin.__component = 'idle';
+    await b.result.functions.tick();
+    await b.result.functions.tick();
+    expect(realWin.__component).toBe('b');
+
+    // What Scene3D does: set it on the real window.
+    realWin.__component = 'locked';
+    await a.result.functions.tick();
+    expect(a.runtime.state.seen).toBe('locked');
+    // B's claim lapsed with it, so B's going leaves the component's value.
+    b.runtime.cleanup();
+    expect(realWin.__component).toBe('locked');
+    a.runtime.cleanup();
+    delete realWin.__component;
+  });
+
   it('both hear a key only a component sets', async () => {
     const code = `
       let seen = "nothing"
