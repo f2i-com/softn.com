@@ -23,11 +23,19 @@ export function parseZoned(date, time, zone) {
   if (!Number.isFinite(approximate) || new Date(approximate).toISOString().slice(0,16) !== intended) throw new Error('Invalid calendar date or time');
   const fmt = formatter(zone), matches = [];
   // Match wall-clock fields and reject DST folds/gaps; minute-resolution offsets.
-  for (let minutes = -14 * 60; minutes <= 14 * 60; minutes++) {
-    const candidate = approximate + minutes * 60000;
-    const p = Object.fromEntries(fmt.formatToParts(candidate).map(v => [v.type, v.value]));
-    if (`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}` === intended) matches.push(candidate);
-  }
+  const search = (from, to) => {
+    for (let minutes = from; minutes <= to; minutes++) {
+      const candidate = approximate + minutes * 60000;
+      const p = Object.fromEntries(fmt.formatToParts(candidate).map(v => [v.type, v.value]));
+      if (`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}` === intended) matches.push(candidate);
+    }
+  };
+  // Every zone's offset today is within 14 hours. A fixed offset may be up to
+  // 23:59 (the Rust host reads "+15:00" too), and a zone's old local mean
+  // time was past 14 hours in places, so with nothing nearer the rest of
+  // the day either side is searched as well.
+  search(-14 * 60, 14 * 60);
+  if (!matches.length) { search(-24 * 60, -14 * 60 - 1); search(14 * 60 + 1, 24 * 60); }
   if (matches.length !== 1) throw new Error(matches.length ? 'That local time occurs twice during daylight saving. Choose another time.' : 'That local time does not exist during daylight saving. Choose another time.');
   return Math.floor(matches[0] / 1000);
 }
