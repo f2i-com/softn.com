@@ -1523,6 +1523,10 @@ fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
         "{ ops: ops.map(function (o) { return { id: o.recordId, data: { title: 'clean' } }; }) }",
         "{ ops: ops.map(function (o) { return { id: o.id }; }) }",
         "{ ops: 'all' }",
+        // Values that cannot cross, which crossed as the null of `undefined`: none rejected.
+        "{ rejected: new Set(ops.map(function (o) { return o.id; })) }",
+        "new Set(ops.map(function (o) { return o.id; }))",
+        "{ ops: ops.map(function (o) { return { id: o.id, data: new Map() }; }) }",
         "{ rejected: ops }",
         "{ rejected: 'c1' }",
         "false",
@@ -1579,7 +1583,7 @@ fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
 /// of `return a && b` let through an op the hook was there to keep out.
 #[test]
 fn a_per_op_hook_answer_it_does_not_read_rejects_the_op() {
-    for answer in ["0", "''", "'yes'", "[]", "1", "{ allowed: false }", "{ reject: true }"] {
+    for answer in ["0", "''", "'yes'", "[]", "1", "{ allowed: false }", "{ reject: true }", "onBeforeSync", "new Date()", "{ data: new Map() }"] {
         let script = format!("function onBeforeSync(op) {{ return {answer}; }}");
         let (sync, db) = manager(Some(script.as_str()));
         let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");

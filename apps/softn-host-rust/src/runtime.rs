@@ -939,13 +939,20 @@ impl ServerRuntime {
         // one, which returns a Promise — would otherwise marshal to `null` and
         // be served as `200 OK` with an empty body, losing both the response and
         // any error it threw. Say so instead.
-        if matches!(value, HostValue::Opaque) {
+        if matches!(value, HostValue::Opaque) && !DECISIONS.contains(&name) {
             return Err(format!(
                 "Handler '{name}' returned a value that cannot cross to the host                  (a Promise, function, Map, Set or Date). Server handlers must be                  synchronous and return plain data, e.g. {{ status, body }}."
             ));
         }
 
-        host_to_json(&value, 0)
+        let json = host_to_json(&value, 0)?;
+        // A decision's answer holding such a value, anywhere, is not read as the
+        // null it would cross as: `{ rejected: new Set(ids) }` read as rejecting
+        // none, and every op went through the hook there to keep some out.
+        if DECISIONS.contains(&name) && holds_opaque(&value) {
+            return Err(format!("{UNREAD_ANSWER} '{name}' answered with a value that cannot cross to the host (a Promise, function, Map, Set or Date)"));
+        }
+        Ok(json)
     }
 
     /// Give the call a VM no handler has run in.
@@ -1269,6 +1276,26 @@ fn json_to_host(val: serde_json::Value, depth: usize) -> Result<HostValue, Strin
             HostValue::Object(pairs)
         }
     })
+}
+
+/// Functions whose answers the host reads as decisions (the before-sync hooks):
+/// a value in them that cannot cross as data is an answer the host does not
+/// read, refused with `UNREAD_ANSWER` at the head of the error, where a
+/// handler's crosses as null (a `Date` in a body) or is an error to retry.
+pub const DECISIONS: [&str; 2] = ["onBeforeSync", "onBeforeSyncBatch"];
+
+/// How the error for a decision the host does not read begins.
+pub const UNREAD_ANSWER: &str = "An answer the host does not read:";
+
+/// Whether a value holds, anywhere, one that cannot cross as data. Called on a
+/// value `host_to_json` has taken, which bounds how deep it goes.
+fn holds_opaque(value: &HostValue) -> bool {
+    match value {
+        HostValue::Opaque => true,
+        HostValue::Array(items) => items.iter().any(holds_opaque),
+        HostValue::Object(pairs) => pairs.iter().any(|(_, item)| holds_opaque(item)),
+        _ => false,
+    }
 }
 
 fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, String> {

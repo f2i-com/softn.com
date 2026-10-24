@@ -689,13 +689,18 @@ not `op.recordId`): a list of them, where `null`, `true` and `false` name no
 op (`ops.map(o => bad(o) ? o.id : null)`), or `{ rejected: [...] }`.
 `ops: [{ id, data }]`, alone or beside `rejected`, changes those ops' data
 and rejects none: an op it leaves out is taken as it came. `null`,
-`undefined`, `true`, `{}` and `{ rejected: undefined }` reject none, and
-`false` rejects them all, as `onBeforeSync`'s `false` rejects its op. Any
-other answer refuses the whole push: a list, or an `ops` entry, naming
-anything but this push's op ids (the ops themselves, `[{ id }]`, the
-records' ids, an id that is also another op's record id), an `ops` entry
-with no `data`, `false` and a number used to reject nothing, or change
-nothing, and let every op through as the client sent it.
+`undefined`, `true`, `{}`, `{ rejected: undefined }` and `{ ops: undefined }`
+reject none, and `false` rejects them all, as `onBeforeSync`'s `false`
+rejects its op. Any other answer refuses the whole push: a list, or an `ops`
+entry, naming anything but this push's op ids (the ops themselves,
+`[{ id }]`, the records' ids, an id that is also another op's record id), an
+`ops` entry with no `data`, `false` and a number used to reject nothing, or
+change nothing, and let every op through as the client sent it.
+
+Either hook's answer holding, anywhere, a value that cannot cross as data (a
+`Set`, a `Map`, a `Date`, a function, a Promise) is one the host does not
+read: the op, or the push, is refused. Such a value crossed as the `null` of
+`undefined`, so `{ rejected: new Set(ids) }` rejected none.
 
 ### Sync protocol
 

@@ -1374,6 +1374,15 @@ impl SyncManager {
                         accepted.push(op);
                     }
                     Ok(BeforeSync::Take(None)) => accepted.push(op),
+                    // A value that cannot cross in its answer: one the host does not read.
+                    Err(e) if e.starts_with(crate::runtime::UNREAD_ANSWER) => {
+                        tracing::warn!(op = %op.id, "{e} — rejecting the op");
+                        responses.push(ServerMessage::SyncReject {
+                            op_id: op.id.clone(),
+                            reason: "onBeforeSync returned an answer it does not read (expected false, null, true, {} or { data })".into(),
+                        });
+                        refused.extend(Refused::of(&op));
+                    }
                     Err(e) => {
                         // Hook execution error — use SyncRetry so the client
                         // retains the op. A server redeploy may fix the script
@@ -1761,6 +1770,12 @@ impl SyncManager {
         let ops_json: Vec<serde_json::Value> = ops.iter().map(Self::op_to_json).collect();
         let result = match rt.call("onBeforeSyncBatch", vec![serde_json::Value::Array(ops_json)]) {
             Ok(r) => r,
+            // An answer holding a value that cannot cross (`new Set(ids)`): one this
+            // does not read, refused below as any other is.
+            Err(e) if e.starts_with(crate::runtime::UNREAD_ANSWER) => {
+                tracing::warn!("{e}");
+                serde_json::Value::String(e)
+            }
             Err(e) => {
                 // Hook execution error — use SyncRetry so the client retains ops
                 // in its queue. Script bugs (TypeError, etc.) may be fixed by a
