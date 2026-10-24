@@ -185,12 +185,27 @@ pub fn manifest_auth_token(manifest: &ServerManifest) -> Option<String> {
         .map(String::from)
 }
 
+/// The sync-only token: `from_env` when the operator set one, else the
+/// manifest's `config.server.token`, the field an app's browsers send. It opens
+/// `/sync` and `/sync/ticket` and nothing else (`SyncAuth`), and is refused
+/// when it is the operator's token, which a browser must never hold.
+pub fn sync_auth(
+    manifest: &ServerManifest,
+    operator: Option<String>,
+    from_env: Option<String>,
+) -> Result<crate::sync::SyncAuth, String> {
+    let sync = from_env.filter(|s| !s.is_empty()).or_else(|| {
+        manifest.config.as_ref()?.get("server")?.get("token")?.as_str().map(String::from)
+    });
+    crate::sync::SyncAuth::new(operator, sync)
+}
+
 /// Check the `config.server` keys the host reads, so a wrong type is a clear
 /// startup error rather than a silent default: `"auth_token": 123` used to
 /// start with no authentication, `"maxBodySize": 0` refused every body, and
 /// `"allowedOrigins": ["*"]` panicked while the router was built (in
 /// multi-tenant mode taking every tenant down with it). Keys the host does not
-/// read (`url`, and whatever the client uses) are left alone.
+/// read (`url`, `collections`) are left alone.
 fn validate_server_config(manifest: &ServerManifest) -> Result<(), String> {
     let Some(server) = manifest.config.as_ref().and_then(|c| c.get("server")) else {
         return Ok(());
@@ -207,6 +222,10 @@ fn validate_server_config(manifest: &ServerManifest) -> Result<(), String> {
     }
     if tokens.len() == 2 && tokens[0] != tokens[1] {
         return Err("config.server.auth_token and authToken disagree; set one".into());
+    }
+    // The sync token, which the host now reads too (`sync_auth`).
+    if server.get("token").is_some_and(|value| value.as_str().is_none_or(str::is_empty)) {
+        return Err("config.server.token must be a non-empty string".into());
     }
     if let Some(origins) = server.get("allowedOrigins") {
         let origins = origins.as_array().ok_or("config.server.allowedOrigins must be an array of origins")?;
@@ -842,5 +861,32 @@ mod tests {
         let manifest = load(serde_json::json!({"auth_token": "snake"})).unwrap();
         assert_eq!(manifest_auth_token(&manifest).as_deref(), Some("snake"));
         assert!(load(serde_json::json!({"allowedOrigins": ["null"]})).is_ok(), "listed on purpose, as the PHP host allows");
+        for bad in [serde_json::json!({"token": ""}), serde_json::json!({"token": 7})] {
+            assert!(load(bad.clone()).is_err(), "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn the_sync_token_is_its_own_and_the_environment_wins() {
+        let root = crate::test_dirs::temp_path("softn-sync-config", "");
+        std::fs::create_dir_all(&root).unwrap();
+        let load = |server: serde_json::Value| {
+            let manifest = serde_json::json!({"id":"com.example.config","name":"Config","version":"1","config":{"server":server}});
+            std::fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+            load_manifest(&root).unwrap()
+        };
+        let manifest = load(serde_json::json!({"auth_token": "operator", "token": "browsers"}));
+        let auth = sync_auth(&manifest, manifest_auth_token(&manifest), None).unwrap();
+        assert_eq!((auth.operator.as_deref(), auth.sync.as_deref()), (Some("operator"), Some("browsers")));
+        let auth = sync_auth(&manifest, Some("operator".into()), Some("from-env".into())).unwrap();
+        assert_eq!(auth.sync.as_deref(), Some("from-env"));
+        // An empty variable is not set.
+        assert_eq!(sync_auth(&manifest, None, Some(String::new())).unwrap().sync.as_deref(), Some("browsers"));
+        // The operator's own, by whichever route either came, is refused.
+        assert!(sync_auth(&manifest, Some("browsers".into()), None).is_err());
+        assert!(sync_auth(&manifest, Some("operator".into()), Some("operator".into())).is_err());
+        // No sync token: the operator's guards sync alone, as before.
+        let manifest = load(serde_json::json!({"auth_token": "operator"}));
+        assert_eq!(sync_auth(&manifest, manifest_auth_token(&manifest), None).unwrap().sync, None);
     }
 }

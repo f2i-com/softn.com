@@ -122,7 +122,7 @@ export async function cancelBody(response: Response): Promise<void> {
 export interface BundleServerConfig {
   url?: unknown;
   token?: unknown;
-  /** The spelling older desktop bundles used. */
+  /** The host's operator token, which is never sent (resolveServerConfig). */
   auth_token?: unknown;
   collections?: unknown;
 }
@@ -147,15 +147,22 @@ const SERVER_SCHEMES: Record<string, string> = { 'http:': 'ws:', 'https:': 'wss:
  * runs unsynced, and `warn` says why. Opening still needs the bundle to
  * declare `sync` and the person to allow it (core's xdb-bindings).
  *
- * The token is `token`, else the older `auth_token`.
+ * The token is `token`, the sync token, which opens the host's sync and
+ * nothing else. `auth_token` is not sent: it is the Rust host's operator
+ * token, which opens every route of the app that is not public, and a page
+ * that sent it for sync gave it to everyone who had the bundle.
  */
 export function resolveServerConfig(
   config?: BundleServerConfig | null,
   warn: (message: string) => void = (message) => console.warn(message)
 ): ServerSyncSettings {
   if (!config || typeof config !== 'object') return {};
-  const token =
-    typeof config.token === 'string' ? config.token : typeof config.auth_token === 'string' ? config.auth_token : undefined;
+  const token = typeof config.token === 'string' ? config.token : undefined;
+  if (token === undefined && config.auth_token !== undefined) {
+    warn(
+      '[SoftN] config.server.auth_token is the host\'s operator token and is not sent for sync: anyone with this bundle can read it. Give sync a token of its own in config.server.token, and keep the operator token out of the bundle (SOFTN_AUTH_TOKEN on the host).'
+    );
+  }
   const collections = Array.isArray(config.collections)
     ? config.collections.filter((name): name is string => typeof name === 'string')
     : undefined;

@@ -1141,3 +1141,44 @@ async fn a_pull_nobody_reads_is_not_read_ahead_of_the_socket() {
     assert!(held <= 8, "{held} of the pull's 64 messages were read for a client that takes nothing");
     drop(stream);
 }
+
+/// The sync token opens `/sync` and `/sync/ticket` and nothing else. A
+/// browser holds it (it is `config.server.token`), so it must not open what
+/// the operator's token opens. The browser used to be handed the operator's
+/// token for sync, and could call every route the operator could.
+#[tokio::test]
+async fn the_sync_token_opens_sync_and_no_operator_route() {
+    let addr = serve(legacy_app_serving(
+        serde_json::json!({"auth_token":"operator-secret","token":"sync-only","allowedOrigins":["https://app.example"]}),
+        serde_json::json!([{"method":"POST","path":"/api/admin","handler":"admin"}]),
+        "function admin(req) { return { status: 200, body: { admin: true } }; }",
+    )).await;
+    let host = addr.to_string();
+    let with = |path: &str, token: &str| format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    // The operator's route: the operator's token, and not the sync token.
+    assert_eq!(send(addr, with("/api/admin", "operator-secret")).await.0, 200);
+    assert_eq!(send(addr, with("/api/admin", "sync-only")).await.0, 401);
+    // Sync: either opens it, as scripts the operator runs still use its token.
+    for token in ["sync-only", "operator-secret"] {
+        let (status, _, body) = send(addr, with("/sync/ticket", token)).await;
+        assert_eq!(status, 200, "{token}: {body}");
+        assert!(body.contains("ticket"), "{body}");
+    }
+    assert_eq!(send(addr, with("/sync/ticket", "neither")).await.0, 401);
+}
+
+/// A sync token that is the operator's token is refused at startup: every
+/// browser of the app would hold the operator's secret.
+#[test]
+fn a_sync_token_that_is_the_operator_token_is_refused() {
+    let root = crate::test_dirs::temp_path("softn-sync-token", "");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = serde_json::json!({"id":"com.example.same","name":"Same","version":"1",
+        "config":{"server":{"auth_token":"one-secret","token":"one-secret"}}});
+    std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let refused = AppContext::load(bundle, Some(root.join("data")), Some(1), false).err().unwrap_or_default();
+    assert!(refused.contains("is the operator token"), "{refused}");
+}

@@ -122,6 +122,7 @@ impl AppContext {
                 routes.iter().any(|r| r.authorization == Some(bundle::AuthorizationMode::HostToken)))) {
             return Err("A host-token route requires an operator authentication token".into());
         }
+        let sync_auth = bundle::sync_auth(&manifest, auth_token.clone(), std::env::var("SOFTN_SYNC_TOKEN").ok())?;
 
         // The sync stream, made first: the script's `db` bridge announces the
         // server's own writes in it, and the sync manager, made after the
@@ -236,7 +237,7 @@ impl AppContext {
         // Sync limits — tunable via manifest config.server for small VPS
         // deployments where the auto-detected CPU-based defaults may not fit.
         let sync_manager = SyncManager::with_stream(
-            db.clone(), runtime.clone(), auth_token.clone(),
+            db.clone(), runtime.clone(), sync_auth,
             db_path.clone(), crate::sync::SyncSettings::from_manifest(&manifest, false),
             stream,
         );

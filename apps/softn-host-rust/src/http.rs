@@ -1126,7 +1126,12 @@ impl RequestPolicy {
         );
         if !sync.has_auth() {
             tracing::warn!(
-                "Sync{} is enabled with no auth token: any page that passes the Origin check, and any non-browser client with a ticket from /sync/ticket, can read and write this app's database. Set SOFTN_AUTH_TOKEN, or turn sync off with server.sync.enabled: false in the manifest.",
+                "Sync{} is enabled with no token: any page that passes the Origin check, and any non-browser client with a ticket from /sync/ticket, can read and write this app's database. Set a sync token (config.server.token, or SOFTN_SYNC_TOKEN), or turn sync off with server.sync.enabled: false in the manifest.",
+                label
+            );
+        } else if !sync.has_sync_token() {
+            tracing::warn!(
+                "Sync{} is guarded by the operator token alone, which no browser is given: the app's pages cannot sync. Set a sync token of its own for them (config.server.token, or SOFTN_SYNC_TOKEN); browsers no longer send config.server.auth_token.",
                 label
             );
         }

@@ -141,6 +141,9 @@ impl TenantManager {
         // Two bundles that claim one id: decided before either is loaded.
         let losers = contested_losers(&candidates, data_dir);
         let fair_workers = fair_workers(candidates.len());
+        if std::env::var("SOFTN_SYNC_TOKEN").is_ok_and(|s| !s.is_empty()) {
+            tracing::warn!("SOFTN_SYNC_TOKEN is not read when serving many apps: every browser of each app holds its sync token, so one token would open every tenant's /sync. Set SOFTN_SYNC_TOKEN_<TENANT_ID>, or config.server.token in each manifest.");
+        }
 
         for (name, path) in candidates {
             if tenants.len() >= MAX_TENANTS {
@@ -455,6 +458,14 @@ fn load_tenant(
             routes.iter().any(|r| r.authorization == Some(bundle::AuthorizationMode::HostToken)))) {
         return Err("A host-token route requires an operator authentication token".into());
     }
+    // The sync token: SOFTN_SYNC_TOKEN_<TENANT_ID> → manifest. There is no
+    // process-wide fallback, unlike the operator's token: one sync token, which
+    // every browser of an app holds, would open every tenant's /sync.
+    let sync_auth = bundle::sync_auth(
+        &manifest,
+        auth_token.clone(),
+        std::env::var(format!("SOFTN_SYNC_TOKEN_{}", tenant_id.to_uppercase().replace(['.', '-'], "_"))).ok(),
+    )?;
 
     // The sync stream, before the runtime whose `db` bridge writes into it
     // (as in app.rs).
@@ -547,7 +558,7 @@ fn load_tenant(
 
     let api_limiter = bundle::requests_per_minute(&manifest).map(|n| Arc::new(crate::limiter::AddressLimiter::per_minute(n)));
     let sync_manager = SyncManager::with_stream(
-        db.clone(), runtime.clone(), auth_token.clone(),
+        db.clone(), runtime.clone(), sync_auth,
         db_path, crate::sync::SyncSettings::from_manifest(&manifest, true),
         stream,
     );

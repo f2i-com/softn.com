@@ -208,13 +208,20 @@ describe('resolveServerConfig', () => {
     }
   });
 
-  it('takes the token, else the older auth_token, and the collections', () => {
-    expect(resolveServerConfig({ url: 'https://h.example', token: 'current', auth_token: 'old', collections: ['tasks', 7] }, quiet)).toEqual({
+  it('takes the sync token and the collections', () => {
+    expect(resolveServerConfig({ url: 'https://h.example', token: 'current', auth_token: 'operator', collections: ['tasks', 7] }, quiet)).toEqual({
       serverUrl: 'wss://h.example/sync',
       serverToken: 'current',
       serverCollections: ['tasks'],
     });
-    expect(resolveServerConfig({ url: 'https://h.example', auth_token: 'legacy' }, quiet).serverToken).toBe('legacy');
+  });
+
+  it('never sends the operator token, and says so', () => {
+    // auth_token is the Rust host's operator token: sent for sync, it opened
+    // every route of the app that is not public to anyone with the bundle.
+    const warn = vi.fn();
+    expect(resolveServerConfig({ url: 'https://h.example', auth_token: 'operator' }, warn).serverToken).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/operator token and is not sent/));
   });
 
   it('names nothing when there is no server', () => {

@@ -595,7 +595,7 @@ pub struct SyncManager {
     has_before_sync: bool,
     has_after_sync_batch: bool,
     has_after_sync: bool,
-    auth_token: Option<String>,
+    auth: SyncAuth,
     /// Bounds concurrent blocking sync operations to prevent Tokio's
     /// spawn_blocking pool (512 threads) from exhaustion by slow/malicious
     /// clients. When full, callers should return backpressure immediately.
@@ -621,9 +621,31 @@ pub struct SyncManager {
     pub pull_messages: std::sync::atomic::AtomicUsize,
 }
 
+/// Who may open `/sync` and `/sync/ticket`. The operator's token opens them,
+/// as it opens every route that is not public, and it is a secret of the
+/// host's. The sync token opens these two and nothing else: it is the one an
+/// app's browsers hold, read from `config.server.token`. A browser used to be
+/// handed the operator's token for sync, and with it every host-token route.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SyncAuth {
+    pub operator: Option<String>,
+    pub sync: Option<String>,
+}
+
+impl SyncAuth {
+    /// The two credentials, refused when they are one: the sync token is
+    /// given to every browser, so it must never be the operator's.
+    pub fn new(operator: Option<String>, sync: Option<String>) -> Result<Self, String> {
+        if sync.is_some() && sync == operator {
+            return Err("The sync token (config.server.token, or SOFTN_SYNC_TOKEN) is the operator token: every browser of the app is given the sync token, so it must be a token of its own".into());
+        }
+        Ok(Self { operator, sync })
+    }
+}
+
 impl SyncManager {
     /// A manager with a stream of its own: for a host whose script cannot
-    /// write records (none, or tests).
+    /// write records (none, or tests). `auth_token` is the operator's.
     #[cfg(test)]
     pub fn new(
         db: ServerDb,
@@ -632,7 +654,7 @@ impl SyncManager {
         db_path: PathBuf,
         settings: SyncSettings,
     ) -> Arc<Self> {
-        Self::with_stream(db, runtime, auth_token, db_path, settings, sync_stream())
+        Self::with_stream(db, runtime, SyncAuth { operator: auth_token, sync: None }, db_path, settings, sync_stream())
     }
 
     /// A manager whose connections read `stream`, which the script's `db`
@@ -640,7 +662,7 @@ impl SyncManager {
     pub fn with_stream(
         db: ServerDb,
         runtime: Option<Arc<ServerRuntime>>,
-        auth_token: Option<String>,
+        auth: SyncAuth,
         db_path: PathBuf,
         settings: SyncSettings,
         broadcast_tx: SyncStream,
@@ -675,7 +697,7 @@ impl SyncManager {
             tracing::info!("onAfterSync hook detected (per-op mode)");
         }
 
-        if auth_token.is_some() {
+        if auth.operator.is_some() || auth.sync.is_some() {
             tracing::warn!(
                 "Auth token is configured but the server does not enforce TLS. \
                  Tokens will be transmitted in plaintext unless a TLS-terminating \
@@ -706,7 +728,7 @@ impl SyncManager {
             has_before_sync,
             has_after_sync_batch,
             has_after_sync,
-            auth_token,
+            auth,
             sync_permits,
             tickets: std::sync::Mutex::new(std::collections::HashMap::new()),
             force_server_timestamps,
@@ -750,24 +772,24 @@ impl SyncManager {
         self.broadcast_tx.subscribe()
     }
 
-    /// Check `token` against the host's own, if it has one, and name the new client.
+    /// Check `token` against the host's tokens, if it has any (the operator's
+    /// or the sync token, either opens sync), and name the new client.
     pub fn handle_auth(&self, token: Option<&str>) -> Result<String, String> {
-        // Check auth token if configured.
-        // Hash both tokens to SHA-256 before comparing so ct_eq always operates
+        // Hash the tokens to SHA-256 before comparing so ct_eq always operates
         // on 32-byte inputs. Raw ct_eq on variable-length slices leaks the
         // expected token's length via timing (instant fail if lengths differ).
-        if let Some(expected) = &self.auth_token {
-            match token {
-                Some(t) => {
-                    let hash_t = Sha256::digest(t.as_bytes());
-                    let hash_e = Sha256::digest(expected.as_bytes());
-                    if !bool::from(hash_t.ct_eq(&hash_e)) {
-                        // Generic error prevents token enumeration (attacker can't
-                        // distinguish "no token" from "wrong token").
-                        return Err("Authentication failed".into());
-                    }
-                }
-                None => return Err("Authentication failed".into()),
+        // Both are compared every time, so which one matched does not show.
+        if self.has_auth() {
+            let Some(t) = token else { return Err("Authentication failed".into()) };
+            let hash_t = Sha256::digest(t.as_bytes());
+            let matches = |expected: &Option<String>| match expected {
+                Some(e) => hash_t.ct_eq(&Sha256::digest(e.as_bytes())),
+                None => subtle::Choice::from(0),
+            };
+            if !bool::from(matches(&self.auth.operator) | matches(&self.auth.sync)) {
+                // Generic error prevents token enumeration (attacker can't
+                // distinguish "no token" from "wrong token").
+                return Err("Authentication failed".into());
             }
         }
 
@@ -821,9 +843,16 @@ impl SyncManager {
         }
     }
 
-    /// Returns true if auth token is configured (clients should use ticket flow).
+    /// Returns true if a token is configured (clients should use ticket flow).
     pub fn has_auth(&self) -> bool {
-        self.auth_token.is_some()
+        self.auth.operator.is_some() || self.auth.sync.is_some()
+    }
+
+    /// Whether browsers have a token they may hold: sync guarded by the
+    /// operator's token alone is open to scripts the operator runs, and to no
+    /// browser (they no longer send `config.server.auth_token`).
+    pub fn has_sync_token(&self) -> bool {
+        self.auth.sync.is_some()
     }
 
     /// Spawn a background task that periodically prunes expired tickets.

@@ -59,6 +59,9 @@ mod tests {
     fn reserves_per_tenant_tokens() {
         assert!(!is_allowed_env_name("SOFTN_AUTH_TOKEN_ACME"));
         assert!(!is_allowed_env_name("SOFTN_ALLOW_ALL_CAPABILITIES"));
+        // Sync tokens: another tenant's opens that tenant's /sync.
+        assert!(!is_allowed_env_name("SOFTN_SYNC_TOKEN"));
+        assert!(!is_allowed_env_name("SOFTN_SYNC_TOKEN_ACME"));
     }
 
     #[test]

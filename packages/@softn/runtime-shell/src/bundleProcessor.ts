@@ -62,8 +62,9 @@ export interface BundleManifest {
     /** The sync server; see resolveServerConfig in ./net, which reads it. */
     server?: {
       url?: string;
+      /** The sync token: it opens the host's sync and nothing else. */
       token?: string;
-      /** The spelling older desktop bundles used for `token`. */
+      /** The Rust host's operator token, never sent (see resolveServerConfig). */
       auth_token?: string;
       collections?: string[];
     };

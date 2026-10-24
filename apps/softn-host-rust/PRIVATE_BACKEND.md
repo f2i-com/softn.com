@@ -133,15 +133,26 @@ Sync is on unless the manifest turns it off, so who may open `/sync` matters:
   the public origin too (or pass `--trusted-proxy` so `X-Forwarded-Host`
   counts).**
 - A handshake with no `Origin` is not a browser's, and must present a ticket
-  from `POST /sync/ticket`, or the configured token as `?token=` (kept for
+  from `POST /sync/ticket`, or a configured token as `?token=` (kept for
   existing scripts). With no token configured, `?token=` proves nothing and a
   ticket is required.
-- With a token configured (`SOFTN_AUTH_TOKEN`), every handshake needs a
-  ticket or the token, as before. The SoftN client now asks `/sync/ticket` for
-  a short-lived single-use ticket with `Authorization: Bearer <token>` and
-  opens `/sync?ticket=…`; the long-lived token never appears in a URL. (The
-  client used to send the token in a first message, which this host never
-  read, so sync with a token did not work at all.)
+- Sync has a token of its own, the **sync token**: `config.server.token` in
+  the manifest, or `SOFTN_SYNC_TOKEN` (serving many apps,
+  `SOFTN_SYNC_TOKEN_<TENANT_ID>` only; there is no process-wide one). It is
+  the token the app's browsers send, so it is given to everyone who has the
+  bundle, and it opens `/sync` and `/sync/ticket` and nothing else. The
+  operator token opens them too, for scripts the operator runs, and every
+  route that is not public besides. The host refuses to start (serving many
+  apps, refuses that app) when the two are the same token.
+  **Upgrading: browsers no longer send `config.server.auth_token` for sync.
+  It is the operator token, and a page that sent it gave every host-token
+  route to anyone with the bundle. A host guarded by the operator token alone
+  now warns at startup that no browser can sync: set a sync token, and keep
+  the operator token out of the bundle (`SOFTN_AUTH_TOKEN`).**
+- With a token configured, every handshake needs a ticket or a token, as
+  before. The SoftN client asks `/sync/ticket` for a short-lived single-use
+  ticket with `Authorization: Bearer <sync token>` and opens
+  `/sync?ticket=…`; the long-lived token never appears in a URL.
 - The host logs a warning at startup when sync runs with no token. A token is
   not required, so existing deployments keep working; set one, or turn sync
   off, for anything reachable from a network.
@@ -467,13 +478,16 @@ Commands: `softn-server run <bundle>` (one app), `softn-server serve-multi
 
 Environment: `SOFTN_AUTH_TOKEN` (the operator token; in multi-tenant mode
 `SOFTN_AUTH_TOKEN_<TENANT_ID>` first, with `.` and `-` as `_`),
+`SOFTN_SYNC_TOKEN` (the sync token; in multi-tenant mode
+`SOFTN_SYNC_TOKEN_<TENANT_ID>` and nothing else),
 `SOFTN_ALLOW_ALL_CAPABILITIES=1`, and `RUST_LOG`, which replaces the default
 log filter (`softn_server=info,softn_script=info,tower_http=debug`). Logs never
 carry a query string, and scripts cannot read the environment.
 
 `config.server` keys the host reads, checked at startup (a wrong type is an
 error, not a silent default): `auth_token` or `authToken` (non-empty string;
-the environment wins), `allowedOrigins` (origins such as
+the environment wins), `token` (the sync token, a non-empty string other
+than the operator token; the environment wins), `allowedOrigins` (origins such as
 `"https://app.example"`, no wildcard; a literal `"null"` is accepted with a
 warning), `maxBodySize` (1-16777216), `workers`, `readPoolSize`,
 `syncPermits`, `maxStorageMB`, `maxSyncConnections`,
