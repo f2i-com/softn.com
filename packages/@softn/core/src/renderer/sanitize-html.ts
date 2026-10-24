@@ -439,19 +439,23 @@ export const OPENING_TAGS = new Set(['a', 'area', 'form']);
 
 /**
  * The `rel` a link or form is given: what was written, less `opener`, and
- * with `noopener` always. A page opened from a window it was named into, or
- * with `rel="opener"`, holds that window as `window.opener` and can send it
- * anywhere: SoftN Web's tab, under the app, swapped for a look-alike while the
- * person reads the new one. Browsers leave out the opener for `_blank` alone.
- * Which window a `target` names was judged here, and browsers do not read it
- * as this did (`" _self"` is a new window named so), nor is it the only way
- * to name one (`formtarget` on a form's button); `noopener` does nothing to
- * a navigation that stays in this window, so it is given whatever they say.
+ * with `noopener` where it may open another window. A page opened from a
+ * window it was named into, or with `rel="opener"`, holds that window as
+ * `window.opener` and can send it anywhere: SoftN Web's tab, under the app,
+ * swapped for a look-alike while the person reads the new one. Browsers leave
+ * out the opener for `_blank` alone. Which window a `target` names is not
+ * judged: browsers do not read it as a check would (`" _self"` is a new
+ * window named so), so any target at all gets `noopener`, which does nothing
+ * to a navigation that stays in this window; and a form always does, as a
+ * button of its own may name a window (`formtarget`). A link with no target
+ * keeps the `rel` it was written with, so markup the rich-text editor reads
+ * back is unchanged by this. Null for no `rel`.
  */
-export function relWithoutOpener(rel: unknown): string {
+export function relWithoutOpener(rel: unknown, target: unknown, tag: string): string | null {
   const kept = (typeof rel === 'string' ? rel.split(/\s+/) : []).filter((token) => token !== '' && token.toLowerCase() !== 'opener');
-  if (!kept.some((token) => /^no(?:opener|referrer)$/i.test(token))) kept.push('noopener');
-  return kept.join(' ');
+  const opensElsewhere = tag === 'form' || (target !== undefined && target !== null && target !== '');
+  if (opensElsewhere && !kept.some((token) => /^no(?:opener|referrer)$/i.test(token))) kept.push('noopener');
+  return kept.length > 0 ? kept.join(' ') : null;
 }
 
 /**
@@ -699,7 +703,17 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       }
     }
 
-    if (OPENING_TAGS.has(tag)) node.setAttribute('rel', relWithoutOpener(node.getAttribute('rel')));
+    if (OPENING_TAGS.has(tag)) {
+      const written = node.getAttribute('rel');
+      const rel = relWithoutOpener(written, node.getAttribute('target'), tag);
+      // Only where it changes: the editor rewrites its content, and loses
+      // the caret, whenever what it reads back differs from what it holds.
+      if (rel === null) {
+        if (written !== null) node.removeAttribute('rel');
+      } else if (rel !== written) {
+        node.setAttribute('rel', rel);
+      }
+    }
 
     // A URL withheld earlier — by this pass, or by an earlier sanitization
     // whose output is now the value — goes back on its attribute once the

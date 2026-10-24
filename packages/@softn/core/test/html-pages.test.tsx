@@ -348,19 +348,27 @@ describe('a link or form that opens another window', () => {
   });
 
   // Browsers do not trim a target (" _self" is a new window named so), and a
-  // form's button names one of its own (formtarget): whatever names a window,
-  // noopener is given, which does nothing to a link that stays in this one.
-  it('gives noopener whatever names the window, and keeps the rest of what rel says', () => {
+  // form's button names one of its own (formtarget): any target, and every
+  // form, gets noopener, which does nothing to what stays in this window.
+  it('gives noopener to any target and every form, whatever they say', () => {
     expect(rel('<a href="https://elsewhere.test/" target=" _self">Read</a>')).toBe('noopener');
-    expect(rel('<a href="https://elsewhere.test/">Read</a>')).toBe('noopener');
-    expect(rel('<a href="https://elsewhere.test/" rel="opener">Read</a>')).toBe('noopener');
     expect(rel('<a href="https://elsewhere.test/" target="_top" rel="author">Read</a>')).toBe('author noopener');
     expect(rel('<form action="https://elsewhere.test/"><button formtarget="w">Send</button></form>')).toBe('noopener');
+  });
+
+  it('leaves a link with no target as it was written, less opener', () => {
+    expect(rel('<a href="https://elsewhere.test/">Read</a>')).toBeNull();
+    expect(rel('<a href="https://elsewhere.test/" rel="author">Read</a>')).toBe('author');
+    expect(rel('<a href="https://elsewhere.test/" rel="opener">Read</a>')).toBeNull();
   });
 
   it('holds sanitized rich text to the same', async () => {
     const { sanitizeRichText } = await import('../src/renderer/sanitize-html');
     expect(sanitizeRichText('<a href="https://elsewhere.test/" target="w" rel="opener">Read</a>')).toBe('<a href="https://elsewhere.test/" target="w" rel="noopener">Read</a>');
+    expect(sanitizeRichText('<a href="https://elsewhere.test/" target=" _self">Read</a>')).toBe('<a href="https://elsewhere.test/" target=" _self" rel="noopener">Read</a>');
+    // A link with no target reads back as it was, so the editor that sanitises
+    // what is typed keeps its caret (it rewrites itself when the two differ).
+    expect(sanitizeRichText('<p>See <a href="https://example.com">it</a></p>')).toBe('<p>See <a href="https://example.com">it</a></p>');
   });
 });
 

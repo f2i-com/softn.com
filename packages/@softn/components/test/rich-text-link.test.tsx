@@ -150,6 +150,10 @@ describe('the Link button', () => {
     const anchor = editor.querySelector('a');
     expect(anchor?.getAttribute('href')).toBe('https://example.com');
     expect(anchor?.textContent).toBe('https://example.com');
+    // The caret stays by the link: a sanitiser that changed the link's
+    // markup made the editor rewrite itself, and the caret went to its start.
+    const caret = document.getSelection()!;
+    expect(editor.querySelector('p')!.contains(caret.anchorNode)).toBe(true);
   });
 
   it('does not hold up the form the editor is in over an address it would take', () => {
