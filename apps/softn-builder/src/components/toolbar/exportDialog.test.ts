@@ -163,6 +163,32 @@ describe('the export dialog', () => {
     expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Export .softn')?.disabled).toBe(false);
   });
 
+  it('names the files of an opened bundle the Builder does not show, server logic first', async () => {
+    // Kept as they came and written back by the export, with nothing in the
+    // editor to say they were there: a template edited and exported shipped
+    // server code nobody had seen, which a host runs.
+    vi.useFakeTimers();
+    useFilesStore.getState().reset();
+    const store = useProjectStore.getState();
+    store.setSource({
+      ...store.source,
+      manifest: { name: 'Template', version: '1.0.0', main: 'ui/main.ui', files: { server: ['api/handlers.logic'] } },
+      extraEntries: new Map([
+        ['api/handlers.logic', new Uint8Array([1])],
+        ['server/admin.logic', new Uint8Array([1])],
+        ['hidden/payload.js', new Uint8Array([1])],
+      ]),
+    });
+    render(true, () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const lines = [...container.querySelectorAll('[data-report="unseen"] > span')].map((line) => line.textContent ?? '');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('Server logic the Builder does not show');
+    expect(lines[0]).toContain('api/handlers.logic, server/admin.logic');
+    expect(lines[1]).toContain('Files the Builder does not show');
+    expect(lines[1]).toContain('hidden/payload.js');
+  });
+
   it('says nothing of references in a project that has none dangling', async () => {
     vi.useFakeTimers();
     useFilesStore.getState().reset();
@@ -171,6 +197,7 @@ describe('the export dialog', () => {
     expect(container.textContent).toContain('Ready:');
     expect(container.querySelector('[data-report="references"]')).toBeNull();
     expect(container.querySelector('[data-report="pages"]')).toBeNull();
+    expect(container.querySelector('[data-report="unseen"]')).toBeNull();
   });
 
   it('names a page that does not parse, and what the parser warns of in one that does', async () => {

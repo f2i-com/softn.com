@@ -33,6 +33,7 @@ import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils
 import { exportMessage, saveProject, type SaveOutcome } from '../../utils/saveProject';
 import { danglingReferences, describeDangling, type DanglingReference } from '../../utils/projectReferences';
 import { pageDiagnostics, type PageDiagnostic } from '../../utils/pageDiagnostics';
+import { namePaths, unseenEntries } from '../../utils/unseenEntries';
 import {
   discardQuarantinedSession,
   exportQuarantinedSession,
@@ -244,6 +245,9 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
   // The Python settings are offered to an app with Python logic, and to one
   // that already declares a package, so a declaration is never out of reach.
   const hasPython = useFilesStore((state) => [...state.logicFiles.values()].some((file) => isPythonLogicPath(file.path)));
+  // What an opened bundle carried that the Builder does not show, and the export writes back.
+  const retained = useProjectStore((state) => state.source);
+  const unseen = useMemo(() => unseenEntries(retained), [retained]);
   const usesTorch = pythonPackages.includes('torch');
 
   const [busy, setBusy] = useState<null | 'export' | 'run' | 'publish'>(null);
@@ -745,6 +749,20 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                               △ {describeDangling(reference)}
                             </span>
                           ))}
+                        </span>
+                      )}
+                      {(unseen.server.length > 0 || unseen.other.length > 0) && (
+                        <span data-report="unseen" style={{ display: 'contents' }}>
+                          {unseen.server.length > 0 && (
+                            <span style={styles.reportWarn}>
+                              △ Server logic the Builder does not show goes into the bundle as it came, and runs on the app’s server: {namePaths(unseen.server)}. Look at it before you publish.
+                            </span>
+                          )}
+                          {unseen.other.length > 0 && (
+                            <span style={styles.reportWarn}>
+                              △ Files the Builder does not show go into the bundle as they came: {namePaths(unseen.other)}.
+                            </span>
+                          )}
                         </span>
                       )}
                       {warns.map((l, i) => (
