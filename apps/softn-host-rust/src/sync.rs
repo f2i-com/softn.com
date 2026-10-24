@@ -1803,17 +1803,25 @@ impl SyncManager {
         // rejected nothing and let every op through: for a hook that is there
         // to keep some out, the wrong way to fail.
         let op_ids: std::collections::HashSet<&str> = ops.iter().map(|op| op.id.as_str()).collect();
-        // An op of this push, named by its id: not a string that is also another
-        // op's record id, which a client choosing its op ids could make of one,
-        // so that a hook answering with record ids named the wrong op.
-        let names_op = |id: &str| op_ids.contains(id) && !ops.iter().any(|op| op.record_id == id && op.id != id);
+        // A string that is an op's id and also another op's record id may name
+        // either: a client choosing its op ids can make one so, and a hook that
+        // answered with record ids then named the wrong op.
+        let ambiguous = |id: &str| ops.iter().any(|op| op.record_id == id && op.id != id);
+        // An op of this push, named by its id alone.
+        let names_op = |id: &str| op_ids.contains(id) && !ambiguous(id);
+        // A rejection naming such a string rejects every op it may name, the op
+        // with that id and the ops of that record: refusing the whole push for it
+        // refused a correct hook's answer to a client whose op id was a record's.
         let ids_of = |arr: &Vec<serde_json::Value>| -> Option<std::collections::HashSet<String>> {
             let mut ids = std::collections::HashSet::new();
             for entry in arr {
                 match entry {
                     serde_json::Value::Null | serde_json::Value::Bool(_) => {}
-                    serde_json::Value::String(id) if names_op(id) => {
+                    serde_json::Value::String(id) if op_ids.contains(id.as_str()) => {
                         ids.insert(id.clone());
+                        if ambiguous(id) {
+                            ids.extend(ops.iter().filter(|op| op.record_id == *id).map(|op| op.id.clone()));
+                        }
                     }
                     _ => return None,
                 }
@@ -1824,6 +1832,8 @@ impl SyncManager {
         // an op of this push (its record's id), or with no `data`, changed no
         // data, and the op was stored as the client sent it, past the hook that
         // was there to clean it. `data: undefined` (null) keeps the op's own.
+        // One whose id may name two ops is not read either: the data meant for
+        // one would be stored for the other.
         let changes_readable = |obj: &serde_json::Map<String, serde_json::Value>| match obj.get("ops") {
             None | Some(serde_json::Value::Null) => true,
             Some(serde_json::Value::Array(list)) => list.iter().all(|entry| {

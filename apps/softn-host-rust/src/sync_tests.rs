@@ -1567,16 +1567,29 @@ fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
         assert!(db.write().get_record("n1").is_ok() && db.write().get_record("n2").is_err(), "{answer}");
     }
     // An op given the id of another op's record: a hook answering with record ids named the
-    // wrong op, and the one it meant went through. Such an answer is not read.
+    // wrong op, and the one it meant went through. Such a name rejects every op it may name.
     let (sync, db) = manager(Some("function onBeforeSyncBatch(ops) { return ops.filter(function (o) { return o.data.bad; }).map(function (o) { return o.recordId; }); }"));
     let responses = sync.handle_sync_push(vec![
         op("rB", "notes", "create", "n1", serde_json::json!({"title": "decoy"})),
         op("c2", "notes", "create", "rB", serde_json::json!({"title": "out", "bad": true})),
+        op("c3", "notes", "create", "n3", serde_json::json!({"title": "fine"})),
     ], "a");
     let mut refused = rejected(&responses);
     refused.sort();
     assert_eq!(refused, vec!["c2", "rB"], "{responses:?}");
     assert!(db.write().get_record("rB").is_err());
+    // The op no name could mean goes through: the push is not refused whole.
+    assert_eq!(acked(&responses), vec!["c3"], "{responses:?}");
+    // A correct hook naming the op whose id is also its own record's, beside another op of
+    // that record: what it named is rejected, and the rest of the push goes on.
+    let (sync, _db) = manager(Some("function onBeforeSyncBatch(ops) { return ops.filter(function (o) { return o.data.bad; }).map(function (o) { return o.id; }); }"));
+    let responses = sync.handle_sync_push(vec![
+        op("r9", "notes", "create", "r9", serde_json::json!({"title": "made", "bad": true})),
+        op("u9", "notes", "update", "r9", serde_json::json!({"title": "edited"})),
+        op("c4", "notes", "create", "n4", serde_json::json!({"title": "fine"})),
+    ], "a");
+    assert!(rejected(&responses).contains(&"r9".to_string()), "{responses:?}");
+    assert!(acked(&responses).contains(&"c4".to_string()), "{responses:?}");
 }
 
 /// The per-op hook took any answer but `false` as accepting: the `0` or `''`

@@ -693,9 +693,12 @@ and rejects none: an op it leaves out is taken as it came. `null`,
 reject none, and `false` rejects them all, as `onBeforeSync`'s `false`
 rejects its op. Any other answer refuses the whole push: a list, or an `ops`
 entry, naming anything but this push's op ids (the ops themselves,
-`[{ id }]`, the records' ids, an id that is also another op's record id), an
-`ops` entry with no `data`, `false` and a number used to reject nothing, or
-change nothing, and let every op through as the client sent it.
+`[{ id }]`, the records' ids), an `ops` entry with no `data`, `false` and a
+number used to reject nothing, or change nothing, and let every op through
+as the client sent it. A rejected name that is an op's id and also another
+op's record id (a client may choose its op ids so) rejects every op it may
+name; an `ops` entry with such a name refuses the push, as its data could be
+stored for the wrong op.
 
 Either hook's answer holding, anywhere, a value that cannot cross as data (a
 `Set`, a `Map`, a `Date`, a function, a Promise) is one the host does not
