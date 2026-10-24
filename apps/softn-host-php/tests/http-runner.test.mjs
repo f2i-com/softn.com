@@ -125,6 +125,18 @@ test('a body of numbers reaches the handler as the text the client sent',t=>{
   assert.equal(d.ask('POST','/api/count',{body:body.slice(0,-2)+' '.repeat(40)+']}'}).status,413);
 });
 
+test('a body that is not JSON is refused 415, a multipart one too, which PHP reads before http.php sees it',t=>{
+  const d=deployment(t);
+  // PHP parses a multipart POST into $_POST and $_FILES and leaves
+  // php://input empty: the handler was run with {} and answered 200.
+  const form='--XB\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--XB--\r\n';
+  const multipart=d.ask('POST','/api/signs',{body:form,server:{CONTENT_TYPE:'multipart/form-data; boundary=XB'}});
+  assert.equal(multipart.status,415,multipart.text+multipart.log);
+  assert.equal(JSON.parse(multipart.text).code,'unsupported_media_type');
+  assert.equal(d.ask('POST','/api/signs',{body:'a=1',server:{CONTENT_TYPE:'application/x-www-form-urlencoded'}}).status,415);
+  assert.equal(d.ask('POST','/api/signs',{body:'{"z":1}'}).status,200);
+});
+
 test('a server that passes no DOCUMENT_ROOT is served, and a backend beside api.php is still refused',t=>{
   const d=deployment(t);
   // The fallback for a missing DOCUMENT_ROOT was http.php's own directory,

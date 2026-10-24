@@ -183,6 +183,21 @@ function softn_backend_is_public(string $backend, array $server): bool {
 const SOFTN_SLOT_WAIT_MS=1500;
 
 /**
+ * How many requests may run at once, each a Node process: the manifest's
+ * config.server.workers (four when unset), no more than private/config.json
+ * `workers` when the operator set one (a whole number, 1 or more), and one to
+ * sixteen on this host. The manifest is the app owner's: it was the only say,
+ * and the README's advice to lower it meant editing the bundle again after
+ * every update of the app.
+ */
+function softn_workers(mixed $manifest, mixed $operator): int {
+    $workers=(int)(is_array($manifest)?($manifest['config']['server']['workers']??4):4);
+    $cap=is_array($operator)?($operator['workers']??null):null;
+    if(is_int($cap)&&$cap>=1)$workers=min($workers,$cap);
+    return max(1,min(16,$workers));
+}
+
+/**
  * How many requests may stand waiting for a slot at once: private/config.json
  * `slotWaiters` when the operator set it (0 for none: every request past the
  * slots is refused at once, as all were), else half as many as there are

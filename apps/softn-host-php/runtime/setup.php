@@ -64,8 +64,14 @@ try {
             'cryptoDomains'=>$defaults['cryptoDomains']??['hmac'=>$id.':hmac:v1','seal'=>$id.':seal:v1'],
             // Proxies whose X-Forwarded-For names the client (see client-ip.php); none by default.
             'trustedProxies'=>$defaults['trustedProxies']??[]]);
+        // Encoded before the file is made: a manifest json_encode cannot
+        // write back (a number past the doubles, read as INF) left a
+        // config.json of one newline, with "Setup complete", and every later
+        // run kept it.
+        try{$json=json_encode($config,JSON_PRETTY_PRINT|JSON_THROW_ON_ERROR)."\n";}
+        catch(JsonException $e){softn_setup_stop('app/manifest.json holds a value private/config.json cannot be written from ('.$e->getMessage().'). Correct the manifest and install the bundle at app/ again.');}
         $handle=@fopen($file,'x');
-        if(!$handle||fwrite($handle,json_encode($config,JSON_PRETTY_PRINT)."\n")===false)softn_setup_stop('Cannot write private/config.json: '.$root.'/private'.$unwritable);
+        if(!$handle||fwrite($handle,$json)===false)softn_setup_stop('Cannot write private/config.json: '.$root.'/private'.$unwritable);
         fclose($handle);
     }
     if(is_link($file))softn_setup_stop('private/config.json is a symbolic link. It must be a real file.');
@@ -95,7 +101,7 @@ try {
     $installed=json_decode((string)@file_get_contents($root.'/app/manifest.json'),true);
     $settings=json_decode((string)@file_get_contents($file),true);
     if(is_array($installed)) {
-        $workers=max(1,min(16,(int)($installed['config']['server']['workers']??4)));
+        $workers=softn_workers($installed,$settings);
         $written=is_array($settings)?($settings['slotWaiters']??null):null;
         $waiters=softn_slot_waiters($written,$workers);
         $pools="php-fpm's pm.max_children, Apache's MaxRequestWorkers, a shared host's process limit";

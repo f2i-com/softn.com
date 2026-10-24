@@ -371,6 +371,52 @@ test('setup.php says there is no app to set up, and prepares one that is there',
   assert.match(again.stdout,/Up to 4 requests run at once, each holding one of the web server's PHP workers; none waits for a slot \("slotWaiters": 0 in private\/config\.json\), so a request past them is told at once that the server is busy\./);
   writeFileSync(join(root,'private/config.json'),JSON.stringify({...config,slotWaiters:8}));
   assert.match(setup().stdout,/Up to 4 requests run at once and 8 more may wait for one of them \("slotWaiters" in private\/config\.json\), each holding one of the web server's PHP workers\. That number is taken at its word, under php-fpm too: the pool \(php-fpm's pm\.max_children, Apache's MaxRequestWorkers, a shared host's process limit\) must be larger than 12\./);
+  // The operator's `workers` holds the manifest's number to it, and only lowers it.
+  writeFileSync(join(root,'private/config.json'),JSON.stringify({...config,slotWaiters:0,workers:2}));
+  assert.match(setup().stdout,/Up to 2 requests run at once, each holding/);
+  writeFileSync(join(root,'private/config.json'),JSON.stringify({...config,slotWaiters:0,workers:12}));
+  assert.match(setup().stdout,/Up to 4 requests run at once, each holding/);
+});
+
+test('the number of runners at once is the manifest\'s, held to the operator\'s workers, one to sixteen',()=>{
+  const php=`require ${JSON.stringify(runtime+'request.php')};`
+    +`foreach([[null,null],[['config'=>['server'=>['workers'=>16]]],null],[['config'=>['server'=>['workers'=>16]]],['workers'=>3]],`
+    +`[['config'=>['server'=>['workers'=>2]]],['workers'=>8]],[['config'=>['server'=>['workers'=>99]]],['workers'=>'1']],[null,['workers'=>0]]] as [$m,$o])echo softn_workers($m,$o),',';`;
+  const r=spawnSync('php',['-r',php],{encoding:'utf8'});
+  assert.equal(r.status,0,r.stderr);
+  // The default; the manifest's 16; held to 3; the manifest's lower 2; a
+  // text "1" is no operator number; 0 is none either.
+  assert.equal(r.stdout,'4,16,3,2,16,4,');
+});
+
+test('a photo the bundled GD could not decode within memory_limit is refused, not a fatal error',t=>{
+  // A 16 megapixel PNG of one colour is about 70 KB and takes some 126 MB to
+  // decode in the GD PHP bundles, which counts it against memory_limit: at
+  // 128M (where http.php may not raise it) PHP died, the request uncounted.
+  const php=`if(!extension_loaded('gd')){echo 'no gd';exit;}`
+    +`if(!str_contains(strtolower(gd_info()['GD Version']),'bundled')){echo 'system gd';exit;}`
+    +`require ${JSON.stringify(runtime+'photos.php')};`
+    +`$i=imagecreatetruecolor(4000,4000);imagealphablending($i,false);imagesavealpha($i,true);imagefill($i,0,0,imagecolorallocatealpha($i,10,20,30,60));`
+    +`ob_start();imagepng($i,null,9);$png=ob_get_clean();imagedestroy($i);unset($i);`
+    +`ini_set('memory_limit','128M');`
+    +`try{sanitize_photo('data:image/png;base64,'.base64_encode($png));echo 'decoded';}catch(RuntimeException $e){echo 'refused:'.$e->getMessage();}`;
+  const r=spawnSync('php',['-d','memory_limit=512M','-r',php],{encoding:'utf8',timeout:60000});
+  assert.equal(r.status,0,r.stdout+r.stderr);
+  if(r.stdout==='no gd'||r.stdout==='system gd'){t.skip(`${r.stdout}: the check is for PHP's bundled GD`);return;}
+  assert.equal(r.stdout,'refused:memory');
+});
+
+test('setup.php writes no config.json it cannot encode, and says why',t=>{
+  const root=mkdtempSync(join(tmpdir(),'softn-setup-inf-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  for(const name of ['setup.php','request.php'])copyFileSync(runtime+name,join(root,name));
+  mkdirSync(join(root,'app'),{recursive:true});
+  // A number past the doubles: PHP reads it as INF, which JSON cannot hold.
+  writeFileSync(join(root,'app/manifest.json'),'{"id":"com.example.inf","server":{"requires":{"capabilities":1e999}}}');
+  const r=spawnSync('php',[join(root,'setup.php')],{encoding:'utf8',timeout:60000});
+  assert.equal(r.status,1,r.stdout+r.stderr);
+  assert.match(r.stderr,/app\/manifest\.json holds a value private\/config\.json cannot be written from/);
+  assert.ok(!existsSync(join(root,'private/config.json')),'a config.json was written anyway');
 });
 
 test('http.php passes the runner\'s body through and never re-encodes it',()=>{

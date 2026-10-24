@@ -88,6 +88,14 @@ function webp_is_animated(string $data): bool {
     return strlen($data)>=21&&substr($data,12,4)==='VP8X'&&(ord($data[20])&0x02)!==0;
 }
 
+/** PHP's memory_limit in bytes, or null where there is none (-1). */
+function photo_memory_limit(): ?int {
+    $limit=trim((string)ini_get('memory_limit'));
+    if($limit===''||$limit==='-1')return null;
+    $unit=strtolower(substr($limit,-1));
+    return (int)$limit*match($unit){'g'=>1<<30,'m'=>1<<20,'k'=>1<<10,default=>1};
+}
+
 function sanitize_photo(mixed $url): array {
     if(!is_string($url)||strlen($url)>5600000||!preg_match('~^data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$~D',$url,$match))throw new RuntimeException('format');
     $data=base64_decode($match[2],true);
@@ -97,6 +105,15 @@ function sanitize_photo(mixed $url): array {
     // $size[2] is what the bytes are, whatever the label called them: a PNG a
     // browser labelled image/jpeg (it goes by the file's extension) is a PNG.
     if(($size[2]===IMAGETYPE_PNG&&png_is_animated($data))||($size[2]===IMAGETYPE_WEBP&&webp_is_animated($data)))throw new RuntimeException('animation');
+    // The GD PHP bundles counts what it decodes against memory_limit, about
+    // eight bytes a pixel (126 MB for 16 megapixels). Past the limit PHP
+    // dies with a fatal error nothing catches, holding a slot, and the
+    // request is never counted: a 70 KB PNG of one colour did it at 128M,
+    // where http.php may not raise the limit. A photo the limit cannot hold
+    // is refused as any other this host will not take. A system libgd
+    // (Debian's, Ubuntu's) counts nothing there.
+    $limit=photo_memory_limit();
+    if($limit!==null&&str_contains(strtolower((string)(gd_info()['GD Version']??'')),'bundled')&&memory_get_usage()+$size[0]*$size[1]*8+16*1024*1024>$limit)throw new RuntimeException('memory');
     $image=@imagecreatefromstring($data);if(!$image)throw new RuntimeException('decode');
     $orientation=$size[2]===IMAGETYPE_JPEG?photo_orientation($data):1;
     try {

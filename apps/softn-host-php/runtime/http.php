@@ -81,7 +81,11 @@ if($limit===null)reply(503,['error'=>'Invalid body limit configuration.']);
 if ((int)($_SERVER['CONTENT_LENGTH']??0)>$limit) reply(413,['error'=>'Request too large.','code'=>'payload_too_large']);
 $raw=file_get_contents('php://input',false,null,0,$limit+1);
 if ($raw===false || strlen($raw)>$limit) reply(413,['error'=>'Request too large.','code'=>'payload_too_large']);
-if ($raw!=='' && strtolower(trim(explode(';',$_SERVER['CONTENT_TYPE']??'')[0]))!=='application/json') reply(415,['error'=>'Use application/json','code'=>'unsupported_media_type']);
+// A body of any other type is refused, as on the Rust host. PHP reads a
+// multipart POST into $_POST and $_FILES before this script runs and leaves
+// php://input empty, so such a body reached the handler as {} with a 200.
+$sent=$raw!==''||(int)($_SERVER['CONTENT_LENGTH']??0)>0||$_POST!==[]||$_FILES!==[];
+if ($sent && strtolower(trim(explode(';',$_SERVER['CONTENT_TYPE']??'')[0]))!=='application/json') reply(415,['error'=>'Use application/json','code'=>'unsupported_media_type']);
 $body=softn_request_body($raw);
 if ($body===null) reply(400,['error'=>'Request body must be a JSON object','code'=>'invalid_request']);
 // proc_close as well: with it alone disabled the request ran, and then died
@@ -97,10 +101,10 @@ if ($backend && softn_backend_is_public($backend,$_SERVER)) reply(503,['error'=>
 // run as root, say). "Run setup first" was the answer, to an operator who had.
 if ($backend && is_dir($backend.'/private') && !is_readable($backend.'/private')) reply(503,['error'=>'The private backend folder belongs to another account than the one this web server runs PHP as. Run setup as that account.','code'=>'backend_unavailable','diagnostic'=>'private_permissions']);
 if (!$backend || !is_file($backend.'/private/config.json') || !is_executable($backend.'/bin/node')) reply(503,['error'=>'Run the private backend setup first.','code'=>'backend_unavailable','diagnostic'=>'setup_required']);
-// How many requests may run at once, each a Node process: config.server.workers
-// in the manifest, four when unset, at most sixteen on this host. A slot file
-// setup did not make is made here.
-$workers=(int)($manifest['config']['server']['workers']??4);$workers=max(1,min(16,$workers));
+// How many requests may run at once, each a Node process (request.php
+// softn_workers: the manifest's, under the operator's `workers` when set). A
+// slot file setup did not make is made here.
+$workers=softn_workers($manifest,$operator);
 // With every slot held the request waits for one, briefly, and only then is
 // told the server is busy; unless enough are waiting already, and then it
 // is told at once, as every request was (request.php: SOFTN_SLOT_WAIT_MS

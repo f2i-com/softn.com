@@ -164,7 +164,8 @@ as described below):
 ```nginx
 root /srv/site/webroot;            # private/ lives beside it, e.g. /srv/site/private
 index index.php;
-location ~ /\. { deny all; }
+# Dot files refused; /.well-known/ (a certbot --webroot challenge) served.
+location ~ /\.(?!well-known(?:/|$)) { deny all; }
 # A second guard, as private/.htaccess is on Apache: nothing of these is
 # served even if someone uploads them into the document root.
 location ~ ^/(private|backend)(/|$) { return 404; }
