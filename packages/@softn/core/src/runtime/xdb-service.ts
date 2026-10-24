@@ -1632,10 +1632,17 @@ export class XDBService {
           break;
         }
       }
-      // Not held here (the store still loading, or a collection that failed to): not updated,
-      // as in browser storage and by `updateInCollection`. SQLite took it, and server sync was
-      // never told.
-      if (touched === undefined) return null;
+      // Not held here. While the store loads, made once it has, as any edit is (SQLite took it
+      // alone, and server sync was never told); loaded without it, or its collection failed to
+      // load: not made, as in browser storage and by `updateInCollection`.
+      if (touched === undefined) {
+        if (this.storageState === 'loading') {
+          void this.hydrationPromise.then(() => {
+            if (this.cachedLive(resolvedId)) this.update(resolvedId, data);
+          });
+        }
+        return null;
+      }
       // While the record's own create is in flight SQLite has no row to
       // address: the change is kept in the cache and the create callback
       // sends it, merged, once the row exists. Sending it now could only fail.
@@ -1831,10 +1838,18 @@ export class XDBService {
           break;
         }
       }
-      // Not held here (the store still loading, or a collection that failed to): not deleted,
-      // as in browser storage and by `deleteFromCollection`. SQLite deleted it, and nothing told
-      // server sync, whose host kept the record and whose next pull brought it back.
-      if (touched === undefined) return false;
+      // Not held here. While the store loads, deleted once it has, as any deletion is (the
+      // loader starts an app before its records are in: a script's deletion of a record it knows
+      // went to SQLite alone, nothing told server sync, and the host's copy came back with the next
+      // pull). Loaded without it, or its collection failed to load: not deleted, as in browser
+      // storage and by `deleteFromCollection`.
+      if (touched === undefined) {
+        if (this.storageState !== 'loading') return false;
+        void this.hydrationPromise.then(() => {
+          if (this.cachedLive(resolvedId)) this.delete(resolvedId);
+        });
+        return true;
+      }
       // A record whose create is still in flight has no row to delete yet;
       // the tombstone below stays in the cache and the create callback
       // deletes the row once SQLite has written it.

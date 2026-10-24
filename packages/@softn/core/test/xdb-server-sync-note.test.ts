@@ -397,6 +397,34 @@ describe('an app moved to another sync host', () => {
     sync.disconnect();
   });
 
+  // The page closed before the move's creates were answered, and saved the new host a mark of 0:
+  // the next page took the host for one it had synced with, and wrote its older copies over the
+  // newer records here.
+  it('picks the move up again on the next page when one closed partway, and keeps what is newer here', async () => {
+    const backing = storage();
+    await synced(backing);
+    await editedOnTheOldHost(backing);
+    const closing = connect(page(backing), MOVED);
+    expect(pushed(closing.socket)).toEqual([]);
+    closing.sync.disconnect();
+    expect(JSON.parse(backing.getItem('xdb:app::sync-watched')!).pending).toEqual([MOVED]);
+    vi.advanceTimersByTime(1000);
+
+    const moved = connect(page(backing), MOVED);
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n0', 'v0', '2026-02-01T00:00:00.000Z'), row('n1', 'seeded', '2026-01-01T00:00:00.000Z')] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('newer here');
+    const n1 = (pushed(moved.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1');
+    expect(n1.map((op) => [op.operation, op.data?.title])).toEqual([['update', 'newer here']]);
+    // Every create answered (none was left to send), the move is done.
+    moved.socket.receive({ type: 'sync_ack', opIds: (pushed(moved.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    moved.sync.disconnect();
+    const mark = JSON.parse(backing.getItem('xdb:app::sync-watched')!);
+    expect(mark.pending).toBeUndefined();
+    expect(mark.marks[MOVED]).toBeGreaterThan(0);
+  });
+
   // One mark, the last host's: a page on the first host after a tab on another (an update of the
   // app moved it) took the store for one moved there, sent a create of every record, and the
   // host's answers undid what the other host had been sent.

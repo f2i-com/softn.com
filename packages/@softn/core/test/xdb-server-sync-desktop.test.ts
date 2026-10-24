@@ -286,21 +286,39 @@ describe('a collection that fails to load on a store syncing for the first time'
 });
 
 describe('a deletion or an edit on the desktop of a record the store has not loaded', () => {
-  // SQLite deleted it, and nothing told server sync: the host kept the record, and the next
-  // pull brought it back.
-  it('is refused, as in browser storage, and the native store keeps the record', async () => {
+  // SQLite took it alone, and nothing told server sync: a deletion came undone with the next
+  // pull. The loader starts an app before its records are in, so a script's change of a record
+  // it knows is made once the store has loaded, as any change is.
+  for (const kind of ['update', 'delete'] as const) {
+    it(`made while it loads, goes once it has, and server sync hears of it (${kind})`, async () => {
+      const backing = storage();
+      synced(backing);
+      let release!: () => void;
+      loading = new Promise((resolve) => { release = resolve; });
+      const store = page(backing);
+      const sync = client(store);
+      sync.connect();
+      if (kind === 'update') expect(store.update('n1', { title: 'early' })).toBeNull();
+      else expect(store.delete('n1')).toBe(true);
+      release();
+      await store.isReady;
+      await settle();
+      await settle();
+      if (kind === 'update') expect(rows.get('n1')?.data.title).toBe('early');
+      else expect(rows.get('n1')?.deleted).toBe(true);
+      const socket = await answer();
+      expect(pushed(socket).filter((op) => op.recordId === 'n1').map((op) => op.operation)).toEqual([kind]);
+      sync.disconnect();
+    });
+  }
+
+  it('loaded without it, is refused, as in browser storage', async () => {
     const backing = storage();
     synced(backing);
-    let release!: () => void;
-    loading = new Promise((resolve) => { release = resolve; });
     const store = page(backing);
-    expect(store.delete('n1')).toBe(false);
-    expect(store.update('n1', { title: 'blind' })).toBeNull();
-    release();
     await store.isReady;
-    await settle();
-    expect(rows.get('n1')?.deleted).toBe(false);
-    expect(rows.get('n1')?.data.title).toBe('v1');
+    expect(store.delete('missing')).toBe(false);
+    expect(store.update('missing', { title: 'blind' })).toBeNull();
     expect(invoke.mock.calls.map(([cmd]) => cmd)).not.toContain('delete_record');
   });
 });

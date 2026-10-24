@@ -180,21 +180,26 @@ const PULLED_META = 'sync-pulled';
  */
 const WATCHED_META = 'sync-watched';
 
-/** WATCHED_META as kept, by host ('' for a number alone, the current host's), or null for none or one that cannot be read. */
-function watchedMarks(raw: string | null): Map<string, number> | null {
+/**
+ * WATCHED_META as kept: the marks by host ('' for a number alone, the current host's), and the
+ * hosts a first sync with is still unfinished (`pending`, see `firstSync`); null for none or one
+ * that cannot be read.
+ */
+function watchedMarks(raw: string | null): { marks: Map<string, number>; pending: Set<string> } | null {
   if (raw === null) return null;
   const at = Number(raw);
-  if (raw.trim() !== '' && Number.isFinite(at)) return new Map([['', at]]);
+  if (raw.trim() !== '' && Number.isFinite(at)) return { marks: new Map([['', at]]), pending: new Set() };
   try {
-    const mark = JSON.parse(raw) as { at?: unknown; url?: unknown; marks?: unknown } | null;
+    const mark = JSON.parse(raw) as { at?: unknown; url?: unknown; marks?: unknown; pending?: unknown } | null;
     if (mark?.marks && typeof mark.marks === 'object') {
       const marks = new Map<string, number>();
       for (const [url, value] of Object.entries(mark.marks as Record<string, unknown>)) {
         if (typeof value === 'number' && Number.isFinite(value)) marks.set(url, value);
       }
-      return marks;
+      const pending = new Set((Array.isArray(mark.pending) ? mark.pending : []).filter((url): url is string => typeof url === 'string'));
+      return { marks, pending };
     }
-    if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return new Map([[typeof mark.url === 'string' ? mark.url : '', mark.at]]);
+    if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return { marks: new Map([[typeof mark.url === 'string' ? mark.url : '', mark.at]]), pending: new Set() };
   } catch {
     // Unreadable: no mark.
   }
@@ -634,6 +639,14 @@ export class XDBServerSync {
    * done when this host has no such record (`removals`).
    */
   private movedHost = false;
+  /**
+   * This page is syncing with the host for the first time (never synced with it, or moved to
+   * it): until every create the scan sent is answered, the host is kept, beside the marks, as one
+   * the next page syncs with first (`pending` in WATCHED_META), so that what it sends is weighed
+   * there too. Saved as a mark of 0 instead, a page that closed partway left the next one to
+   * write the host's older copies over newer records.
+   */
+  private firstSync = false;
   /** Ops restored from a queue kept for another host, by id, with that host (kept with them when saved). */
   private otherHost = new Map<string, string>();
   /** Collections this client has written to: with a `collections` list, these are its own as well. */
@@ -1600,8 +1613,11 @@ export class XDBServerSync {
     const key = `${collection}\u0000${theirs.id}`;
     if (mine.create !== undefined && this.pendingOps.has(mine.create)) this.dropMovedCreate(mine.create, key);
     if (theirs.deleted === true) return false;
-    const queued = this.lastOpFor.get(key) ?? '';
-    if (queued !== mine.create && (this.pendingOps.has(queued) || this.inflightOps.has(queued))) return false;
+    // A queued update or deletion holds the host's copy back and goes at its own time; a create
+    // (this one, or one a page before queued and left) holds nothing back, and the copy is weighed.
+    const queuedId = this.lastOpFor.get(key) ?? '';
+    const queued = this.pendingOps.get(queuedId) ?? this.inflightOps.get(queuedId);
+    if (queued && queued.operation !== 'create') return false;
     const record = held().get(theirs.id);
     if (!record) return false;
     const { made, how } = this.stampOfHeld(collection, record);
@@ -1636,15 +1652,22 @@ export class XDBServerSync {
   private queueMaybeHeld(collection: string, id: string, data: Record<string, unknown>, made: number, how: { asIs?: boolean } | undefined): void {
     const key = `${collection}\u0000${id}`;
     const newest = this.lastOpFor.get(key);
-    this.queueChange({ type: 'create', collection, recordId: id, data }, made, how);
-    const create = this.lastOpFor.get(key);
-    if (create === undefined || create === newest) return;
-    // The newest op of the record is still the one queued before it; the create goes first.
-    if (newest !== undefined && (this.pendingOps.has(newest) || this.inflightOps.has(newest))) this.lastOpFor.set(key, newest);
-    const op = this.pendingOps.get(create);
-    if (op) {
-      this.pendingOps.delete(create);
-      this.pendingOps = new Map([[create, op], ...this.pendingOps]);
+    const queued = newest === undefined ? undefined : this.pendingOps.get(newest) ?? this.inflightOps.get(newest);
+    let create: string | undefined;
+    if (queued?.operation === 'create') {
+      // A create of it still to be answered (a page before queued it and closed): that one.
+      create = queued.id;
+    } else {
+      this.queueChange({ type: 'create', collection, recordId: id, data }, made, how);
+      create = this.lastOpFor.get(key);
+      if (create === undefined || create === newest) return;
+      // The newest op of the record is still the one queued before it; the create goes first.
+      if (queued) this.lastOpFor.set(key, queued.id);
+      const op = this.pendingOps.get(create);
+      if (op) {
+        this.pendingOps.delete(create);
+        this.pendingOps = new Map([[create, op], ...this.pendingOps]);
+      }
     }
     this.movedCreates.add(create);
     let pending = this.movedPending.get(collection);
@@ -2026,6 +2049,12 @@ export class XDBServerSync {
     }
     if (typeof store.getAllRaw !== 'function') return;
     const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
+    // A first sync with this host: one the store was never synced with, or moved to. Either may
+    // hold the records already (a host seeded from a copy, a backup opened on a new device), and
+    // what it sends of them is weighed (`movedPending`) until each record's create is answered;
+    // until then this host stays one the next page syncs with first (`save`).
+    const moved = this.movedHost || this.watched === null;
+    if (moved) this.firstSync = true;
     // Each with how it is stamped: in this device's time with the offset (no `how`), no earlier
     // than just after a copy it followed (`floor`), or at the record's own stamp (`asIs`).
     const found: Array<{ made: number; change: LocalChange; how?: { floor?: number; asIs?: boolean }; removal?: boolean }> = [];
@@ -2093,7 +2122,7 @@ export class XDBServerSync {
       }
       if (record && record.deleted !== true && edit.kind === 'create' && !sameTime(record.updated_at, edit.stamp)) {
         // On a host the store has not synced with, the look below sends every record so.
-        if (!this.movedHost) {
+        if (!moved) {
           maybeHeld.push({ collection: edit.collection, id: edit.id });
           noted.add(key);
         }
@@ -2103,8 +2132,8 @@ export class XDBServerSync {
       const data = objectData(record.data);
       // On a host the store has not synced with, the look below sends the record as well, and
       // this is done when the host has no such record (`movedHost`).
-      found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, how, ...(this.movedHost ? { removal: true } : {}) });
-      (this.movedHost ? covered : noted).add(key);
+      found.push({ made, change: { type: edit.kind, collection: edit.collection, recordId: edit.id, ...(edit.kind === 'delete' ? {} : { data }) }, how, ...(moved ? { removal: true } : {}) });
+      (moved ? covered : noted).add(key);
     }
     // What an import made and changed past what the note could keep a record at a time
     // (UnheardImport): each record still here, as made then, a create or an update as the import
@@ -2123,8 +2152,8 @@ export class XDBServerSync {
           const queuedId = this.lastOpFor.get(key) ?? '';
           const queued = this.pendingOps.get(queuedId) ?? this.inflightOps.get(queuedId);
           if (queued && this.madeTime(queued) >= made) continue;
-          found.push({ made, change: { type: queued ? 'update' : type, collection, recordId: id, data: objectData(record.data) }, ...(this.movedHost ? { removal: true } : {}) });
-          (this.movedHost ? covered : noted).add(key);
+          found.push({ made, change: { type: queued ? 'update' : type, collection, recordId: id, data: objectData(record.data) }, ...(moved ? { removal: true } : {}) });
+          (moved ? covered : noted).add(key);
         }
       }
     }
@@ -2147,7 +2176,7 @@ export class XDBServerSync {
         // as any edit made here does; any other may be the host's or a room's, and goes as it is.
         const own = typeof store.isOwnStamp === 'function' && store.isOwnStamp(collection, record.id, record.updated_at);
         const how = own ? undefined : { asIs: true };
-        if (this.movedHost) {
+        if (moved) {
           // On a host the store has not synced with, each record may or may not be there: a live
           // one goes as a create, ahead of any change of it queued, whose answer or any copy the
           // host sends is weighed against it; a deleted one is weighed against any live copy the
@@ -2247,9 +2276,12 @@ export class XDBServerSync {
     // or a place and no such mark: what it missed it missed, and nothing is
     // looked for (rather than every record it holds sent again). A mark or a
     // place of another host's is none for this one (`movedHost`).
-    const marks = watchedMarks(meta.readSyncMeta(WATCHED_META));
-    if (marks && marks.size > 0) {
-      const at = marks.get(url) ?? marks.get('');
+    const kept = watchedMarks(meta.readSyncMeta(WATCHED_META));
+    if (kept?.pending.has(url)) {
+      // A first sync with this host that a page left unfinished: synced with first again.
+      this.movedHost = true;
+    } else if (kept && kept.marks.size > 0) {
+      const at = kept.marks.get(url) ?? kept.marks.get('');
       if (at !== undefined) this.watched = at;
       else this.movedHost = true;
     } else if (meta.readSyncMeta(QUEUE_META) !== null || meta.readSyncMeta(PULLED_META) !== null) {
@@ -2428,26 +2460,35 @@ export class XDBServerSync {
     }
     // Not moved on while the queue is unsaved: a change in it that is lost
     // with the page is then found again by the next scan. Nor while what
-    // the scan could not look at (`markHeld`), or the creates a host the
-    // store has not synced with is sent (`movedCreates`), are unanswered:
-    // this host's mark stays as it was, or, where it had none, is one that
-    // has the next scan look at every record (0). With none at all, the
-    // pull positions saved beside it read as an older client's, and the
-    // next scan looked for nothing.
+    // the scan could not look at (`markHeld`), or the creates of a first
+    // sync with this host (`movedCreates`), are unanswered: this host's mark
+    // stays as it was, and a first sync stays one for the next page
+    // (`pending`). With no mark at all, the pull positions saved beside it
+    // read as an older client's, and the next scan looked for nothing.
     if (this.xdbUnsubscribe && !this.queueDirty) {
+      const url = this.config.wsUrl;
       const held = this.markHeld || this.movedCreates.size > 0;
-      const at = held ? this.watched ?? 0 : now;
-      if (Number.isFinite(at)) {
-        try {
-          const marks = watchedMarks(meta.readSyncMeta(WATCHED_META)) ?? new Map<string, number>();
-          // A number alone was this host's.
-          marks.delete('');
-          marks.set(this.config.wsUrl, at);
-          meta.writeSyncMeta(WATCHED_META, JSON.stringify({ v: 2, marks: Object.fromEntries(marks) }));
-          if (!held) this.watched = now;
-        } catch {
-          // The next scan starts earlier, and sends again what was answered.
+      try {
+        const kept = watchedMarks(meta.readSyncMeta(WATCHED_META)) ?? { marks: new Map<string, number>(), pending: new Set<string>() };
+        // A number alone was this host's.
+        const legacy = kept.marks.get('');
+        kept.marks.delete('');
+        if (legacy !== undefined && !kept.marks.has(url)) kept.marks.set(url, legacy);
+        if (!held) {
+          kept.marks.set(url, now);
+          kept.pending.delete(url);
+        } else if (this.firstSync) {
+          kept.pending.add(url);
+        } else if (this.watched !== null && Number.isFinite(this.watched)) {
+          kept.marks.set(url, this.watched);
         }
+        meta.writeSyncMeta(WATCHED_META, JSON.stringify({ v: 2, marks: Object.fromEntries(kept.marks), ...(kept.pending.size > 0 ? { pending: [...kept.pending] } : {}) }));
+        if (!held) {
+          this.watched = now;
+          this.firstSync = false;
+        }
+      } catch {
+        // The next scan starts earlier, and sends again what was answered.
       }
     }
   }
