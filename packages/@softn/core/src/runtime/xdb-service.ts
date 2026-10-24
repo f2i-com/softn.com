@@ -1785,7 +1785,10 @@ export class XDBService {
       // it in the room.
       this.noteRemovedForGood(collection, id);
       this.emit({ type: 'delete', collection, record, removed: true });
-      if (!stillBeingCreated) this.notifyMutation('delete', collection, id);
+      if (!stillBeingCreated) {
+        this.noteUnheardRemovals(collection, [id]);
+        this.notifyMutation('delete', collection, id);
+      }
       return true;
     }
 
@@ -1830,6 +1833,7 @@ export class XDBService {
     } finally {
       if (together) this.resumeNotifications();
     }
+    this.noteUnheardRemovals(collection, gone.map((record) => record.id));
     for (const record of gone) this.notifyMutation('delete', collection, record.id);
     return gone.length;
   }
@@ -2154,6 +2158,36 @@ export class XDBService {
   private firstUnheard: number | null = null;
 
   /**
+   * Records removed for good while no server sync client listened (hardDelete, a prune,
+   * clearCollection), with when, by this device's clock; taken by the client that starts
+   * listening, which tells the host (takeUnheardRemovals). A removal leaves no tombstone for the
+   * client's scan to find: the host kept the record, and the next pull wrote it back here.
+   * At most this many, oldest going first.
+   */
+  private static readonly UNHEARD_REMOVALS_KEPT = 50_000;
+  private unheardRemovals = new Map<string, { collection: string; id: string; at: number }>();
+
+  takeUnheardRemovals(): Array<{ collection: string; id: string; at: number }> {
+    const taken = [...this.unheardRemovals.values()];
+    this.unheardRemovals.clear();
+    return taken;
+  }
+
+  private noteUnheardRemovals(collection: string, ids: Iterable<string>): void {
+    if (this.mutationListeners.size > 0 || this._mutationSource === 'server') return;
+    const at = Date.now();
+    for (const id of ids) {
+      const key = `${collection}\u0000${id}`;
+      this.unheardRemovals.delete(key);
+      this.unheardRemovals.set(key, { collection, id, at });
+    }
+    for (const key of this.unheardRemovals.keys()) {
+      if (this.unheardRemovals.size <= XDBService.UNHEARD_REMOVALS_KEPT) break;
+      this.unheardRemovals.delete(key);
+    }
+  }
+
+  /**
    * The stamp of the first change this page made while no server sync client listened, or
    * null; taken by the client that starts listening, whose scan looks back to it as well as to
    * the store's mark of where listening last stopped. Another tab of the app moves that mark on
@@ -2378,6 +2412,7 @@ export class XDBService {
       this.indexCollection(collection, false);
       this.emit({ type: 'refresh', collection, records: [] });
     }
+    this.noteUnheardRemovals(collection, gone);
     for (const id of gone) this.notifyMutation('delete', collection, id);
   }
 

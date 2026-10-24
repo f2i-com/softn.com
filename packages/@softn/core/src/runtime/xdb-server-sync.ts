@@ -431,6 +431,12 @@ export class XDBServerSync {
    */
   private finished = new Set<string>();
   /**
+   * Deletes for records removed for good here while nothing listened (`queueUnsyncedChanges`).
+   * The host may never have had the record (made and removed here before it was sent), and
+   * refuses the delete as not found: that is the removal done, not a change refused.
+   */
+  private removals = new Set<string>();
+  /**
    * The newest op queued for each record, by `recordKey`: an update not yet
    * sent is replaced by the next update or delete of its record, rather than
    * waiting its turn behind it (one op per record at a time).
@@ -879,6 +885,7 @@ export class XDBServerSync {
           if (this.inflightOps.delete(id) || this.pendingOps.delete(id)) {
             this.forgetMade(id);
             this.finished.add(id);
+            this.removals.delete(id);
             this.queueChanged();
           }
         }
@@ -1416,12 +1423,18 @@ export class XDBServerSync {
 
   /** Handle a rejected sync operation — remove from pending and notify. */
   private handleSyncReject(opId: string, reason: string): void {
-    this.noteRefused(this.pendingOps.get(opId) ?? this.inflightOps.get(opId), reason);
+    // A removal of a record the host never had (xdb's NotFound): done, as the host keeps no copy.
+    const removed = this.removals.delete(opId) && /\bRecord not found\b/.test(String(reason));
+    if (!removed) this.noteRefused(this.pendingOps.get(opId) ?? this.inflightOps.get(opId), reason);
     this.pendingOps.delete(opId);
     this.inflightOps.delete(opId);
     this.forgetMade(opId);
     this.finished.add(opId);
     this.queueChanged();
+    if (removed) {
+      this.flushPendingOps();
+      return;
+    }
     this.listeners.reject.forEach((fn) => fn(opId, reason));
     // The change stays here as it was made; this client keeps no copy of
     // the record from before it. The host puts it right: for an update or a
@@ -1447,6 +1460,7 @@ export class XDBServerSync {
     this.pendingOps.delete(op.id);
     this.forgetMade(op.id);
     this.finished.add(op.id);
+    this.removals.delete(op.id);
     this.queueChanged();
     console.warn(`[XDBServerSync] ${reason}`);
     this.noteRefused(op, reason);
@@ -1494,9 +1508,10 @@ export class XDBServerSync {
 
   /**
    * Queue one change made here at `made` (this device's time, unless `how`
-   * says it is a record's own stamp), and push what can go.
+   * says it is a record's own stamp), and push what can go. `removal`: a
+   * delete for a record removed for good while nothing listened (`removals`).
    */
-  private queueChange(change: LocalChange, made: number, how?: { floor?: number; asIs?: boolean }): void {
+  private queueChange(change: LocalChange, made: number, how?: { floor?: number; asIs?: boolean }, removal = false): void {
     // The counter starts again with each page, and ops restored from the
     // last one are in the queue: an id one of them has is not given again.
     let opId: string;
@@ -1531,6 +1546,7 @@ export class XDBServerSync {
     this.pendingOps.set(opId, op);
     this.madeAt.set(opId, made);
     if (how) this.stampOf.set(opId, how);
+    if (removal) this.removals.add(opId);
     this.lastOpFor.set(key, opId);
     this.written.add(change.collection);
     this.queueChanged();
@@ -1554,19 +1570,34 @@ export class XDBServerSync {
    * device), is a create the host acknowledges and does not apply.
    */
   private queueUnsyncedChanges(): void {
-    const store = this.xdb as { getAllRaw?: (collection: string) => unknown; takeFirstUnheardChange?: () => number | null };
+    const store = this.xdb as {
+      getAllRaw?: (collection: string) => unknown;
+      takeFirstUnheardChange?: () => number | null;
+      takeUnheardRemovals?: () => Array<{ collection: string; id: string; at: number }>;
+    };
     // And no later than the first change this page made while nothing listened: another tab
     // of the app moves the mark on with its own saves, past such a change.
     const unheard = typeof store.takeFirstUnheardChange === 'function' ? store.takeFirstUnheardChange() : null;
+    // And what this page removed for good meanwhile, which leaves nothing to look for.
+    const removedBy = new Map<string, Array<{ id: string; at: number }>>();
+    for (const { collection, id, at } of typeof store.takeUnheardRemovals === 'function' ? store.takeUnheardRemovals() : []) {
+      removedBy.set(collection, [...(removedBy.get(collection) ?? []), { id, at }]);
+    }
     if (typeof store.getAllRaw !== 'function') return;
     const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
     const found: Array<{ made: number; change: LocalChange }> = [];
+    const gone: Array<{ made: number; change: LocalChange }> = [];
     for (const collection of this.syncedCollections()) {
       let records: unknown;
       try {
         records = store.getAllRaw(collection);
       } catch {
         continue;
+      }
+      // A record made again since it was removed goes as itself.
+      const held = new Set((Array.isArray(records) ? (records as Array<Partial<StoredRecord> | null>) : []).map((record) => record?.id));
+      for (const { id, at } of removedBy.get(collection) ?? []) {
+        if (!held.has(id)) gone.push({ made: at, change: { type: 'delete', collection, recordId: id } });
       }
       for (const record of Array.isArray(records) ? (records as Array<Partial<StoredRecord> | null>) : []) {
         if (!record || typeof record.id !== 'string') continue;
@@ -1590,6 +1621,8 @@ export class XDBServerSync {
     // Stamped with the record's own time as it is: not this device's, so no
     // offset is added to it.
     for (const { made, change } of found) this.queueChange(change, made, { asIs: true });
+    // At the time each was removed, by this device's clock.
+    for (const { made, change } of gone) this.queueChange(change, made, undefined, true);
   }
 
   // ── Kept between page loads ────────────────────────────
@@ -1625,7 +1658,8 @@ export class XDBServerSync {
         if (!op || this.pendingOps.has(op.id)) continue;
         this.pendingOps.set(op.id, op);
         // Not sent yet: stamped in the host's time when it is (flushPendingOps).
-        const { made, floor, asIs } = entry as { made?: unknown; floor?: unknown; asIs?: unknown };
+        const { made, floor, asIs, removal } = entry as { made?: unknown; floor?: unknown; asIs?: unknown; removal?: unknown };
+        if (removal === true) this.removals.add(op.id);
         if (typeof made === 'number' && Number.isFinite(made)) {
           this.madeAt.set(op.id, made);
           if (asIs === true) this.stampOf.set(op.id, { asIs: true });
@@ -1686,7 +1720,8 @@ export class XDBServerSync {
       // Every op not yet answered, in the order it would go: those sent first.
       const ops: unknown[] = [...this.inflightOps.values(), ...this.pendingOps.values()].map((op) => {
         const made = this.madeAt.get(op.id);
-        return made === undefined ? op : { ...op, made, ...this.stampOf.get(op.id) };
+        const removal = this.removals.has(op.id) ? { removal: true } : {};
+        return made === undefined ? { ...op, ...removal } : { ...op, made, ...this.stampOf.get(op.id), ...removal };
       });
       // The queue is saved under the app's name, and another tab of the app saves its own
       // there: each wrote its queue over the other's, so a change one tab made offline was gone
