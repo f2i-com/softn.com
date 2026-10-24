@@ -1463,7 +1463,7 @@ export class XDBService {
       // Return optimistic result
       if (applied && touched !== undefined) {
         this.emit({ type: 'update', collection: touched, record: applied });
-        this.notifyMutation('update', touched, applied.id, applied.data);
+        this.notifyMutationLanded('update', touched, applied.id, applied.data);
         return applied;
       }
       return null;
@@ -1557,8 +1557,11 @@ export class XDBService {
       };
       coll.set(record.id, updatedRecord);
       this.emit({ type: 'update', collection, record: updatedRecord });
-      this.notifyMutation('update', collection, record.id, updatedRecord.data);
+      this.notifyMutationLanded('update', collection, record.id, updatedRecord.data);
 
+      // A row still being created has none to update: the create callback
+      // sends the change, merged, once it exists, as for update().
+      if (this.pendingCreateIds.has(record.id)) return updatedRecord;
       // A scoped edit is still a local mutation: persist it just like update(),
       // while keeping the optimistic cache change in the requested collection.
       this.native<XDBRecord>('update_record', {
@@ -1647,7 +1650,7 @@ export class XDBService {
       // Optimistically update in-memory cache — try both original and resolved IDs
       if (tombstone && touched !== undefined) {
         this.emit({ type: 'delete', collection: touched, record: tombstone.record });
-        this.notifyMutation('delete', touched, tombstone.id);
+        this.notifyMutationLanded('delete', touched, tombstone.id);
       }
 
       return true; // Optimistic
@@ -1726,7 +1729,7 @@ export class XDBService {
       const deleted = { ...record, deleted: true, updated_at: this.stampAfter(record) };
       coll!.set(record.id, deleted);
       this.emit({ type: 'delete', collection, record: deleted });
-      this.notifyMutation('delete', collection, record.id);
+      this.notifyMutationLanded('delete', collection, record.id);
       // A row still being created is deleted by the create callback instead.
       if (!this.pendingCreateIds.has(record.id)) {
         this.native<boolean>('delete_record', { id: record.id, collection, updatedAt: deleted.updated_at })
@@ -2214,6 +2217,18 @@ export class XDBService {
       // Unreadable: the time now.
     }
     this.firstUnheard = at;
+  }
+
+  /**
+   * notifyMutation, for an edit or a deletion in the native store's cache: not while the
+   * record's own create is still with SQLite. Its id there is the optimistic one, which the
+   * sync host never hears of (it refused the change as not found, and the person was told a
+   * change was not taken); the create callback tells the record as it then is, under the id
+   * SQLite gave it, edits and all, and nothing of one deleted first.
+   */
+  private notifyMutationLanded(type: 'update' | 'delete', collection: string, recordId: string, data?: Record<string, unknown>): void {
+    if (this.pendingCreateIds.has(recordId)) return;
+    this.notifyMutation(type, collection, recordId, data);
   }
 
   /** Notify mutation listeners (called internally after create/update/delete). */

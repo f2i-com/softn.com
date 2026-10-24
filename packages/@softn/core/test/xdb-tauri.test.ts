@@ -873,9 +873,10 @@ describe('XDB Service (Tauri mode)', () => {
         expect(xdb.get('tasks', pending.id)).toBeNull();
         expect(xdb.get('tasks', stored[0].id)).toBeNull();
         expect(xdb.getStorageStatus().issues).toEqual([]);
-        // The store never announced a create for it.
+        // The store never announced a create for it, and server sync hears nothing: the host
+        // never had it (told a delete of the optimistic id, it refused it as not found).
         expect(events.filter((e) => e.startsWith('create:'))).toEqual([]);
-        expect(onMutation.mock.calls.map((c) => c[0].type)).toEqual(['delete']);
+        expect(onMutation).not.toHaveBeenCalled();
       } finally {
         unsubscribe();
       }
@@ -941,6 +942,33 @@ describe('XDB Service (Tauri mode)', () => {
       // An id already in use is not reused.
       const again = xdb.create('tasks', { title: 'other' }, { id: stored.id });
       expect(again.id).not.toBe(stored.id);
+    });
+  });
+
+  // An edit or a deletion of a record whose create was still with SQLite was told to server
+  // sync under the optimistic id, which the host never hears of: it refused the change as not
+  // found, and the person was told a change was not taken. The create's own answer tells the
+  // record as it is by then, edits and all, under its stored id; one deleted first, not at all.
+  describe('a record whose create is still with SQLite', () => {
+    it('is told to server sync once, as it is when the create lands', async () => {
+      const xdb = new XDBService(undefined, 'pending-sync', 'pending-sync-app');
+      await xdb.isReady;
+      const heard: Array<{ type: string; recordId: string; data?: Record<string, unknown> }> = [];
+      xdb.onMutation((event) => heard.push({ type: event.type, recordId: event.recordId, data: event.data }));
+      const kept = xdb.create('tasks', { title: 'draft' });
+      xdb.update(kept.id, { title: 'edited' });
+      xdb.updateInCollection('tasks', kept.id, { done: true });
+      xdb.delete(xdb.create('tasks', { title: 'gone' }).id);
+      xdb.deleteFromCollection('tasks', xdb.create('tasks', { title: 'gone too' }).id);
+      expect(heard).toEqual([]);
+      await flushPromises();
+      await flushPromises();
+      const stored = backend.get('tasks')!.find((r) => !r.deleted)!;
+      expect(stored.data).toEqual({ title: 'edited', done: true });
+      expect(heard).toEqual([{ type: 'create', recordId: stored.id, data: { title: 'edited', done: true } }]);
+      // Edited once it has landed, it is told as any edit is.
+      xdb.update(kept.id, { title: 'later' });
+      expect(heard.at(-1)).toEqual({ type: 'update', recordId: stored.id, data: { title: 'later', done: true } });
     });
   });
 });
