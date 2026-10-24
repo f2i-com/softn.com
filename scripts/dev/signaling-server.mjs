@@ -7,13 +7,34 @@
  * every interface, where anyone on the network could join a topic. To try
  * it from another device, name an interface: HOST=0.0.0.0 (or one address).
  * PORT is 4444 unless set.
+ *
+ * A browser page is let in from this machine's own origins (localhost,
+ * 127.0.0.1, [::1], any port) and from those listed in ORIGINS
+ * (comma-separated); a client that sends no Origin is not a page. Any page
+ * in the developer's browser could join a topic before.
  */
 import { WebSocketServer } from 'ws';
 import http from 'http';
 
 const port = process.env.PORT || 4444;
 const host = process.env.HOST || '127.0.0.1';
-const wss = new WebSocketServer({ noServer: true });
+const listed = new Set((process.env.ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean));
+/** The most one message may hold: a y-webrtc signal is a few kilobytes. ws's own default is 100 MiB, and each is sent on to every peer of the topic. */
+const MAX_MESSAGE_BYTES = 256 * 1024;
+/** Topics one connection may be on at once (one a room). */
+const MAX_TOPICS = 64;
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+
+function originAllowed(origin) {
+  if (origin === undefined) return true;
+  if (listed.has(origin)) return true;
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return (protocol === 'http:' || protocol === 'https:') && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]');
+  } catch {
+    return false;
+  }
+}
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('ok');
@@ -46,6 +67,7 @@ wss.on('connection', (conn) => {
   conn.on('pong', () => { pongReceived = true; });
 
   conn.on('close', () => {
+    clearInterval(pingInterval);
     subscribedTopics.forEach((topicName) => {
       const subs = topics.get(topicName);
       if (subs) {
@@ -75,6 +97,7 @@ wss.on('connection', (conn) => {
     switch (msg.type) {
       case 'subscribe':
         topicNames.forEach((t) => {
+          if (!subscribedTopics.has(t) && subscribedTopics.size >= MAX_TOPICS) return;
           if (!topics.has(t)) topics.set(t, new Set());
           topics.get(t).add(conn);
           subscribedTopics.add(t);
@@ -83,7 +106,11 @@ wss.on('connection', (conn) => {
       case 'unsubscribe':
         topicNames.forEach((t) => {
           const subs = topics.get(t);
-          if (subs) subs.delete(conn);
+          if (subs) {
+            subs.delete(conn);
+            if (subs.size === 0) topics.delete(t);
+          }
+          subscribedTopics.delete(t);
         });
         break;
       case 'publish':
@@ -103,6 +130,10 @@ wss.on('connection', (conn) => {
 });
 
 server.on('upgrade', (req, socket, head) => {
+  if (!originAllowed(req.headers.origin)) {
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
   wss.handleUpgrade(req, socket, head, (ws) => {
     wss.emit('connection', ws, req);
   });

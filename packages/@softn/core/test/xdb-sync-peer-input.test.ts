@@ -165,3 +165,33 @@ describe('a peer\'s values', () => {
       expect(text(xdb, 'n1')).toBe('hello');
     }));
 });
+
+// Each record a peer brought was written on its own, the whole collection
+// read and serialised again each time: 4,000 records took 4.4 s to bring in.
+describe('a room\'s records', () => {
+  it('are written to browser storage at once, not once a record', () =>
+    quiet(() => {
+      const backing = new Map<string, string>();
+      let writes = 0;
+      const counted = {
+        getItem: (k: string) => backing.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          writes++;
+          backing.set(k, v);
+        },
+        removeItem: (k: string) => void backing.delete(k),
+      };
+      const xdb = new XDBService(counted, 'batched', undefined, { backend: 'storage' });
+      const adapter = new XDBSyncAdapter(xdb, { room: 'r', signaling: [], persist: false });
+      const room = new Y.Doc();
+      const now = new Date().toISOString();
+      room.transact(() => {
+        for (let i = 0; i < 500; i++) room.getMap('notes').set(`n${i}`, { id: `n${i}`, collection: 'notes', data: { i }, created_at: now, updated_at: now, deleted: false });
+      });
+      Y.applyUpdate(adapter.doc, Y.encodeStateAsUpdate(room), 'peer');
+      writes = 0;
+      adapter.attachLocal();
+      expect(xdb.getAll('notes')).toHaveLength(500);
+      expect(writes).toBeLessThan(10);
+    }));
+});

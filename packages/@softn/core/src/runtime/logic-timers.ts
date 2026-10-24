@@ -191,6 +191,7 @@ function delayOf(raw: string | undefined): number {
 export class LogicTimers {
   private readonly waiting = new Map<string, { handle: ReturnType<typeof setTimeout>; callId: number }>();
   private stopped = false;
+  private warnedFull = false;
 
   constructor(private readonly answer: (callId: number) => void) {}
 
@@ -229,6 +230,15 @@ export class LogicTimers {
   private wait(call: PendingHostCall): void {
     if (this.stopped) return;
     const id = String(call.args[0]);
+    // The guest keeps to MAX_LIVE_TIMERS, but a script can call
+    // `host.call("timer.wait", …)` itself: the host held 44,096 browser
+    // timers for one. Past the cap a new wait is not kept, and not answered
+    // either, which would run its callback now.
+    if (!this.waiting.has(id) && this.waiting.size >= MAX_LIVE_TIMERS) {
+      if (!this.warnedFull) console.warn(`[SoftN] A script asked for more than ${MAX_LIVE_TIMERS} timers at once; the rest are not kept.`);
+      this.warnedFull = true;
+      return;
+    }
     // A script asks again for a timer only once the last wait was answered;
     // the guest's own bookkeeping guarantees it, and this keeps one per id.
     this.stop(id);

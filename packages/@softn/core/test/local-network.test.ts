@@ -37,13 +37,32 @@ describe('the person’s own computer and network', () => {
     }
   });
 
+  it('include names only a local resolver answers, and IPv4 written in IPv6', () => {
+    for (const url of [
+      'https://router/',
+      'http://intranet/',
+      'https://nas.lan/',
+      'https://media.home/',
+      'https://wiki.corp/',
+      'https://hr.intranet/',
+      'https://box.private/',
+      'https://pi.localdomain/',
+      'http://[fec0::1]/',
+      'http://[64:ff9b::7f00:1]/',
+      'http://[64:ff9b:1::1]/',
+      'http://[::7f00:1]/',
+    ]) {
+      expect(describeNetDestination(url, anyHost).allowed, url).toBe(false);
+    }
+  });
+
   it('are reached when the app names them', () => {
     expect(describeNetDestination('http://127.0.0.1:18765/', { ...anyHost, allowed_hosts: ['127.0.0.1'] }).allowed).toBe(true);
     expect(describeNetDestination('http://localhost/x', { ...anyHost, allowed_hosts: ['localhost'] }).allowed).toBe(true);
   });
 
   it('leave the internet as it was', () => {
-    for (const url of ['https://example.com/', 'https://172.32.0.1/', 'https://8.8.8.8/', 'https://[2001:db8::1]/', 'https://[::ffff:808:808]/']) {
+    for (const url of ['https://example.com/', 'https://172.32.0.1/', 'https://8.8.8.8/', 'https://[2001:db8::1]/', 'https://[::ffff:808:808]/', 'https://[64:ff9b::808:808]/', 'https://homepage.example/', 'https://lan.example.com/']) {
       expect(describeNetDestination(url, anyHost).allowed, url).toBe(true);
     }
     expect(isLocalHostname('local.example.com')).toBe(false);

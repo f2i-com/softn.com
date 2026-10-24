@@ -4,6 +4,7 @@ import net from 'node:net';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { WebSocket } from 'ws';
 
 /** A port nothing listens on now. */
 async function freePort() {
@@ -65,4 +66,37 @@ test('the signaling server listens on this machine alone unless told otherwise',
   if (outside.length === 0) t.diagnostic('this machine has no address but loopback to try from');
   for (const address of outside) assert.equal(await reaches(address, port), false, `it is reached on ${address}`);
   assert.match(said, new RegExp(`on ws://127\\.0\\.0\\.1:${port}\\b`));
+});
+
+/** How a WebSocket to the server with `origin` ends: 'open', or the status or code it was refused with. */
+function attempt(port, origin) {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, origin ? { headers: { Origin: origin } } : {});
+    ws.once('open', () => {
+      ws.close();
+      resolve('open');
+    });
+    ws.once('unexpected-response', (_req, res) => resolve(res.statusCode));
+    ws.once('error', () => resolve('error'));
+  });
+}
+
+/**
+ * Any page in the developer's browser could join a topic and read what was
+ * relayed there, and one message could be 100 MiB, sent on to every peer.
+ */
+test('the signaling server lets in this machine\'s pages, and no message too large to be a signal', async (t) => {
+  const port = await freePort();
+  await start(t, { PORT: String(port), ORIGINS: 'https://listed.example' });
+  assert.equal(await attempt(port, 'https://evil.example'), 403);
+  assert.equal(await attempt(port, 'null'), 403);
+  for (const origin of ['http://localhost:5173', 'http://127.0.0.1:4173', 'http://[::1]:3000', 'https://listed.example', undefined]) {
+    assert.equal(await attempt(port, origin), 'open', String(origin));
+  }
+  const closed = await new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    ws.once('open', () => ws.send(JSON.stringify({ type: 'publish', topic: 't', data: 'x'.repeat(300 * 1024) })));
+    ws.once('close', (code) => resolve(code));
+  });
+  assert.equal(closed, 1009);
 });

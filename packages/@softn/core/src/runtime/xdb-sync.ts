@@ -544,6 +544,8 @@ export class XDBSyncAdapter {
     const newer: XDBRecord[] = [];
     // Records the room holds that were removed here for good, unheard.
     const removed: string[] = [];
+    // What is written here, at once (writeAll).
+    const toWrite: XDBRecord[] = [];
     try {
       // Build a map of local records once (avoids O(n*m) re-reads from storage)
       const local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
@@ -570,7 +572,8 @@ export class XDBSyncAdapter {
           if (mine && isNewer(mine, record)) {
             newer.push(mine);
           } else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), recordToJSON(record))) {
-            this.xdb.writeRecord(collName, record);
+            toWrite.push(record);
+            return;
           }
           this.listed(collName).add(recordId);
           this.markStored(collName, recordId);
@@ -579,6 +582,7 @@ export class XDBSyncAdapter {
           if (!local.has(recordId)) this.markUnstored(collName, recordId);
         }
       });
+      this.writeAll(collName, toWrite, local);
     } finally {
       this.isSyncing = false;
     }
@@ -587,6 +591,34 @@ export class XDBSyncAdapter {
         for (const record of newer) ymap.set(record.id, recordToJSON(record));
         this.tellRemovals(collName, ymap, removed);
       });
+    }
+  }
+
+  /**
+   * Write what the room brought for one collection at once (writeRecords).
+   * When the store refuses the lot (its budget full), each is tried on its
+   * own, so one that does not fit is passed over and kept off the room's
+   * removals (`unstored`), and the rest are written.
+   */
+  private writeAll(collName: string, records: XDBRecord[], local: Map<string, XDBRecord>): void {
+    if (records.length === 0) return;
+    try {
+      this.xdb.writeRecords(collName, records);
+      for (const record of records) {
+        this.listed(collName).add(record.id);
+        this.markStored(collName, record.id);
+      }
+    } catch {
+      for (const record of records) {
+        try {
+          this.xdb.writeRecord(collName, record);
+          this.listed(collName).add(record.id);
+          this.markStored(collName, record.id);
+        } catch (err) {
+          this.warnMalformed(collName, record.id, err);
+          if (!local.has(record.id)) this.markUnstored(collName, record.id);
+        }
+      }
     }
   }
 
@@ -748,6 +780,8 @@ export class XDBSyncAdapter {
       const newer: XDBRecord[] = [];
       // Records a peer brought that were removed here for good, unheard (removalToTell).
       const removed: string[] = [];
+      // What is written here, at once (writeAll).
+      const toWrite: XDBRecord[] = [];
       try {
         let local: Map<string, XDBRecord> | null = null;
         for (const [recordId, change] of event.changes.keys) {
@@ -777,7 +811,10 @@ export class XDBSyncAdapter {
               // stays, and goes back into the document for the room.
               const mine = local.get(recordId);
               if (mine && isNewer(mine, record)) newer.push(mine);
-              else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), recordToJSON(record))) this.xdb.writeRecord(collName, record);
+              else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), recordToJSON(record))) {
+                toWrite.push(record);
+                continue;
+              }
               this.listed(collName).add(recordId);
               this.markStored(collName, recordId);
             } else if (change.action === 'delete') {
@@ -790,6 +827,7 @@ export class XDBSyncAdapter {
             if (change.action !== 'delete' && !local?.has(recordId)) this.markUnstored(collName, recordId);
           }
         }
+        this.writeAll(collName, toWrite, local ?? new Map());
       } finally {
         this.isSyncing = false;
       }

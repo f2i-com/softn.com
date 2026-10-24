@@ -10,9 +10,14 @@ import type { PendingHostCall } from '../script-runtime-types';
 import { readZipText as readZipEntries } from '../zip-text';
 import type { HostGate } from './permissions';
 
-/** Kinds of file a double-click runs rather than opens. */
+/**
+ * Kinds of file a double-click runs rather than opens: programs, scripts,
+ * installers and packages, shortcuts, and the shell's own formats that run
+ * something (a help file, a management console, a troubleshooter, a saved
+ * search or library, a disk image that mounts and shows its programs).
+ */
 const RUNS_WHEN_OPENED =
-  /\.(?:exe|com|bat|cmd|msi|msix|msp|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ps1|psm1|reg|cpl|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|scf|inf|gadget|application|appref-ms)$/i;
+  /\.(?:exe|com|bat|cmd|msi|msix|msixbundle|appx|appxbundle|appinstaller|msp|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ws|wsc|ps1|psm1|reg|cpl|msc|chm|diagcab|library-ms|search-ms|settingcontent-ms|xll|xbap|jnlp|iso|img|vhd|vhdx|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|scf|inf|gadget|application|appref-ms)$/i;
 
 /**
  * The name a file an app saves is offered under. A leaf, never a path, so an
@@ -46,6 +51,12 @@ export async function pickFile(gate: HostGate, call: PendingHostCall): Promise<u
     if (options.accept) input.accept = options.accept;
     if (options.multiple) input.multiple = true;
     input.onchange = () => {
+      // Chosen after the app closed: registered then, the file was owned by
+      // a gate nothing would release again, and kept for the page's life.
+      if (gate.disposed()) {
+        resolve([]);
+        return;
+      }
       const files = Array.from(input.files || []);
       const result = files.map((f) => ({
         name: f.name,

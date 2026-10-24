@@ -1802,6 +1802,39 @@ export class XDBService {
     this.emit({ type: isUpdate ? 'update' : 'create', collection, record });
   }
 
+  /**
+   * `writeRecord` for many records of one collection: in browser storage the
+   * collection is read and written once, not once a record. Peer sync wrote
+   * a room's records one at a time, each re-reading and re-serialising the
+   * whole collection: 1,000 records took 0.3 s to bring in and 4,000 took
+   * 4.4 s, so one update from a peer could hold a joining tab. All or none:
+   * a write the store refuses throws before anything is announced.
+   */
+  writeRecords(collection: string, list: readonly XDBRecord[]): void {
+    if (list.length === 0) return;
+    if (this.useTauri || list.length === 1) {
+      for (const record of list) this.writeRecord(collection, record);
+      return;
+    }
+    this.knownCollections.add(collection);
+    const records = this.getAllCollectionData(collection);
+    const at = new Map(records.map((r, i) => [r.id, i]));
+    const events: XDBEvent[] = [];
+    for (const record of list) {
+      const index = at.get(record.id);
+      if (index !== undefined) {
+        records[index] = record;
+        events.push({ type: 'update', collection, record });
+      } else {
+        at.set(record.id, records.length);
+        records.push(record);
+        events.push({ type: 'create', collection, record });
+      }
+    }
+    this.setCollectionData(collection, records);
+    for (const event of events) this.emit(event);
+  }
+
   removeRecord(collection: string, id: string): void {
     this.assertWritable(collection, true);
     if (this.useTauri) {

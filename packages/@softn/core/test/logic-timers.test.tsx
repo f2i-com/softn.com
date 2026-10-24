@@ -485,3 +485,24 @@ describe('a timer in logic run by the worker', () => {
     });
   });
 });
+
+// The guest keeps to 10,000 timers, but the host held whatever a script asked
+// for by calling `host.call("timer.wait", ...)` itself: 44,096 browser timers.
+describe('the host side of the timers', () => {
+  it('keeps no more than 10,000 waits, however they are asked for', async () => {
+    const { LogicTimers, TIMER_WAIT } = await import('../src/runtime/logic-timers');
+    const answered: number[] = [];
+    const timers = new LogicTimers((id) => answered.push(id));
+    const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = Array.from({ length: 10_050 }, (_, i) => ({ id: i + 1, kind: TIMER_WAIT, args: [String(i + 1), '60000'] }));
+    timers.take(calls as never);
+    quiet.mockRestore();
+    expect(timers.size).toBe(10_000);
+    // None was answered early for it.
+    expect(answered).toEqual([]);
+    // A timer already waiting may still be renewed.
+    timers.take([{ id: 20_000, kind: TIMER_WAIT, args: ['1', '60000'] }] as never);
+    expect(timers.size).toBe(10_000);
+    timers.dispose();
+  });
+});

@@ -36,4 +36,41 @@ describe('the name a saved file is offered under', () => {
       expect(downloadName(name)).toBe(`${name}.txt`);
     }
   });
+
+  it('is none of the shell formats that run something when opened', () => {
+    for (const name of ['pkg.appx', 'pkg.appxbundle', 'pkg.msixbundle', 'get.appinstaller', 'help.chm', 'console.msc', 'fix.diagcab', 'docs.library-ms', 'find.search-ms', 'open.settingcontent-ms', 'calc.xll', 'app.jnlp', 'disk.iso', 'disk.img', 'disk.vhd', 'disk.vhdx']) {
+      expect(downloadName(name)).toBe(`${name}.txt`);
+    }
+  });
+});
+
+describe('a file the person chooses', () => {
+  it('is not kept for an app that closed while the picker was open', async () => {
+    const { pickFile } = await import('../src/runtime/host-calls/files');
+    const { getFileByRef } = await import('../src/runtime/file-registry');
+    let closed = false;
+    const gate = { checkPermission() {}, checkNetHost() {}, permissionConfig: () => null, disposed: () => closed };
+    let input!: HTMLInputElement;
+    const realCreate = document.createElement.bind(document);
+    const create = (tag: string) => {
+      const el = realCreate(tag);
+      if (tag === 'input') {
+        input = el as HTMLInputElement;
+        (el as HTMLInputElement).click = () => {};
+      }
+      return el;
+    };
+    document.createElement = create as typeof document.createElement;
+    try {
+      const picked = pickFile(gate, { id: 1, kind: 'files.pick', args: [] } as never);
+      closed = true;
+      Object.defineProperty(input, 'files', { value: [new File(['secret'], 'notes.txt')] });
+      input.onchange?.(new Event('change'));
+      const result = (await picked) as Array<{ ref: string }>;
+      expect(result).toEqual([]);
+      expect(getFileByRef('anything')).toBeUndefined();
+    } finally {
+      document.createElement = realCreate as typeof document.createElement;
+    }
+  });
 });

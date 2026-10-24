@@ -98,7 +98,10 @@ export function describeNetDestination(
  */
 export function isLocalHostname(hostname: string): boolean {
   const name = hostname.toLowerCase().replace(/\.$/, '');
-  if (name === 'localhost' || /\.(?:localhost|local|internal|home\.arpa)$/.test(name)) return true;
+  if (name === 'localhost' || /\.(?:localhost|local|internal|home\.arpa|lan|home|corp|intranet|private|localdomain)$/.test(name)) return true;
+  // A name of one label (`router`, `intranet`) is found by the local
+  // network's own resolver, never on the internet's.
+  if (!name.includes('.') && !name.startsWith('[') && name !== '') return true;
   const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(name);
   if (v4) {
     const a = Number(v4[1]);
@@ -111,12 +114,16 @@ export function isLocalHostname(hostname: string): boolean {
   }
   if (!name.startsWith('[')) return false;
   const v6 = name.slice(1, -1);
-  if (v6 === '::1' || v6 === '::' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6)) return true;
-  // An IPv4 address written as IPv6, which the parser gives in hex.
-  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(v6);
-  if (mapped) {
-    const high = parseInt(mapped[1], 16);
-    const low = parseInt(mapped[2], 16);
+  // Loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
+  // the old site-local (fec0::/10), and the local-use NAT64 prefix (64:ff9b:1::/48).
+  if (v6 === '::1' || v6 === '::' || /^f[cd]/.test(v6) || /^fe[89a-f]/.test(v6) || /^64:ff9b:1:/.test(v6)) return true;
+  // An IPv4 address written as IPv6, which the parser gives in hex: mapped
+  // (::ffff:a.b.c.d), the old compatible form (::a.b.c.d), and the NAT64
+  // well-known prefix (64:ff9b::a.b.c.d). Local when the IPv4 address is.
+  const embedded = /^(?:::ffff:|::|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(v6);
+  if (embedded) {
+    const high = parseInt(embedded[1], 16);
+    const low = parseInt(embedded[2], 16);
     return isLocalHostname(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
   }
   return false;
