@@ -49,8 +49,28 @@ export interface EphemeralXDBScope {
   /** Pass to the renderer so scripts, data blocks and components share this store. */
   appId: string;
   xdb: XDBService;
-  /** Call after unmounting the preview. Idempotent; discards its data and registry entry. */
+  /** Call after unmounting the preview. Idempotent; discards its data, registry entry and script storage. */
   dispose: () => void;
+}
+
+/**
+ * Remove what a preview's script kept in localStorage under its scope's id
+ * (`softn:<id>:…`, the prefix the engines' storage bridges use). The id is never
+ * used again, so nothing reads those keys once the scope is gone: left, they
+ * counted against the storage every app shares, one set for every preview.
+ */
+function forgetScriptStorage(appId: string): void {
+  const prefix = `softn:${appId.replace(/[^a-zA-Z0-9_-]/g, '_')}:`;
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    for (let i = storage.length - 1; i >= 0; i--) {
+      const key = storage.key(i);
+      if (key?.startsWith(prefix)) storage.removeItem(key);
+    }
+  } catch {
+    // Storage refused: what is there stays.
+  }
 }
 
 /**
@@ -83,6 +103,7 @@ export function createEphemeralXDBScope(): EphemeralXDBScope {
       if (xdbInstances.get(appId) === xdb) xdbInstances.delete(appId);
       xdb.destroy();
       values.clear();
+      forgetScriptStorage(appId);
     },
   };
 }

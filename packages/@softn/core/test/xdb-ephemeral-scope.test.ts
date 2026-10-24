@@ -83,4 +83,22 @@ describe('ephemeral preview database scopes', () => {
     expect(globalListener).not.toHaveBeenCalled();
     expect(mutationListener).not.toHaveBeenCalled();
   });
+
+  // A preview's script keeps its localStorage under the scope's id, which is never used again:
+  // the Builder's preview left a set of keys behind for every preview it ran.
+  it("takes the preview script's storage with it on disposal, and no one else's", () => {
+    const scope = createScope();
+    const other = createScope();
+    localStorage.setItem(`softn:${scope.appId}:best`, '12');
+    localStorage.setItem(`softn:${scope.appId}:level`, '3');
+    localStorage.setItem(`softn:${other.appId}:best`, '7');
+    localStorage.setItem('softn:some-app:best', '5');
+    scope.dispose();
+    expect(Object.keys(localStorage).filter((key) => key.includes(scope.appId))).toEqual([]);
+    expect(localStorage.getItem(`softn:${other.appId}:best`)).toBe('7');
+    expect(localStorage.getItem('softn:some-app:best')).toBe('5');
+    other.dispose();
+    expect(Object.keys(localStorage)).toEqual(['softn:some-app:best']);
+    localStorage.removeItem('softn:some-app:best');
+  });
 });

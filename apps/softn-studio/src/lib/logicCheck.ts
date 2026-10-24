@@ -96,29 +96,15 @@ export function quietContext(files: Map<string, VFSFile>, logs: string[]) {
 
 /**
  * Where a check's logic keeps what it stores, and how it is let go: a database of its own in
- * memory (as the preview's), and its script storage (`softn:<appId>:…`) taken away again. The
+ * memory (as the preview's), taken away after with its script storage (`softn:<appId>:…`). The
  * logic's top level runs as it loads. Under a plain id its database was the browser's own,
  * kept for good: the save check's fixed id was one database every project's check wrote into
- * and read back (one project's records turned up in another's problems), and every agent check
- * left a database and a store of its own behind, with a budget each in Studio's storage.
+ * and read back (one project's records were there when another's logic ran), and every agent
+ * check left a database and a store of its own behind, with a budget each in Studio's storage.
  */
 export function checkStorageScope(): { appId: string; release: () => void } {
   const scope = createEphemeralXDBScope();
-  return {
-    appId: scope.appId,
-    release: () => {
-      scope.dispose();
-      const prefix = `softn:${scope.appId.replace(/[^a-zA-Z0-9_-]/g, '_')}:`;
-      try {
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const key = localStorage.key(i);
-          if (key?.startsWith(prefix)) localStorage.removeItem(key);
-        }
-      } catch {
-        // Storage may be unavailable; then nothing was kept in it.
-      }
-    },
-  };
+  return { appId: scope.appId, release: scope.dispose };
 }
 
 /**

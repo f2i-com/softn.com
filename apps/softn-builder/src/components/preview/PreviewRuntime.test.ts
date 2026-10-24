@@ -57,6 +57,22 @@ it('seeds before rendering, keeps a live session, and isolates the next project'
   expect(localStorage.getItem('xdb:unrelated:tasks')).toBe('keep this runtime data');
 });
 
+it("leaves nothing of a preview script's storage once the preview is gone", () => {
+  const records = previewRecordsFor([{ name: 'tasks', alias: 'tasks', fields: [], seedData: [], fullRecords: [{ ...record }] }]);
+  const render = (projectId: string) => act(() => root.render(React.createElement(PreviewRuntime, {
+    projectId, records, source: '<App />',
+  })));
+  render('project-one');
+  // What the script's localStorage.setItem keeps, under the preview's id.
+  localStorage.setItem(`softn:${rendered!.appId}:best`, '12');
+  render('project-two');
+  expect(localStorage.length).toBe(0);
+  localStorage.setItem(`softn:${rendered!.appId}:best`, '3');
+  act(() => root.unmount());
+  expect(localStorage.length).toBe(0);
+  root = createRoot(host);
+});
+
 it('replaces changed Data seeds and survives StrictMode cleanup', () => {
   const first = previewRecordsFor([{ name: 'tasks', alias: 'tasks', fields: [], seedData: [], fullRecords: [{ ...record }] }]);
   const render = (records: Record<string, XDBRecord[]>) => act(() => root.render(React.createElement(React.StrictMode, null,
