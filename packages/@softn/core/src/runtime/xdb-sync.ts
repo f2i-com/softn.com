@@ -439,7 +439,12 @@ export class XDBSyncAdapter {
           // One record that cannot be compared is passed over, not the rest.
           try {
             const existing = ymap.get(record.id);
-            const theirs = peerRecord(collName, record.id, existing);
+            const theirs = peerRecordShape(collName, record.id, existing);
+            // One the room holds that is a record but stamped further ahead
+            // than this clock allows is left as it is: this device's clock
+            // may be the one that is out, and writing over it would lose
+            // the room's newer copy everywhere.
+            if (theirs !== null && isAhead(theirs, Date.now())) continue;
             if (theirs === null || isNewer(record, theirs)) {
               const json = recordToJSON(record);
               if (theirs === null || !deepEqual(existing, json)) ymap.set(record.id, json);
@@ -887,19 +892,25 @@ function recordToJSON(record: XDBRecord): Record<string, unknown> {
 }
 
 /**
- * How far ahead of this device's clock a peer's stamp may be: the Rust sync
- * host's `MAX_FUTURE_DRIFT_SECS`, past which it clamps a client's stamp.
+ * How far ahead of this device's clock a peer's stamp may be. A room has no
+ * clock of authority, as a sync host has, so this is judged by the
+ * receiver's, which may itself be slow (a machine an hour out after a time
+ * zone change): it is wide enough for any honest clock, and still refuses a
+ * stamp of 9999, which won over every edit after it.
  */
-const MAX_FUTURE_DRIFT_MS = 5 * 60 * 1000;
+const MAX_FUTURE_DRIFT_MS = 24 * 60 * 60 * 1000;
 
 /** An ISO time, as XDB stamps every write (`toISOString`), with or without an offset. */
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
-function isStamp(value: unknown, now: number): value is string {
+function isStamp(value: unknown): value is string {
   if (value === '') return true;
-  if (typeof value !== 'string' || !ISO_TIME.test(value)) return false;
-  const at = Date.parse(value);
-  return Number.isFinite(at) && at <= now + MAX_FUTURE_DRIFT_MS;
+  return typeof value === 'string' && ISO_TIME.test(value) && Number.isFinite(Date.parse(value));
+}
+
+/** Whether a record's stamp is further ahead of this clock than any honest one is. */
+function isAhead(record: XDBRecord, now: number): boolean {
+  return record.updated_at !== '' && Date.parse(record.updated_at) > now + MAX_FUTURE_DRIFT_MS;
 }
 
 /**
@@ -913,14 +924,20 @@ function isStamp(value: unknown, now: number): value is string {
  *   - The collection is the map's. The value's own `collection` was written,
  *     so a value in `notes` naming `_prefs` replaced the desktop's `_prefs`
  *     row, a collection peer sync never shares.
- *   - The stamps are times, and `updated_at` no more than five minutes ahead
- *     of this clock: the newer stamp wins, so one stamped 9999 from a peer
- *     that left pinned the record against every later edit, and a stamp that
- *     was not a time (`{}`) sorted above every one that was.
+ *   - The stamps are times, and `updated_at` no more than a day ahead of this
+ *     clock (MAX_FUTURE_DRIFT_MS): the newer stamp wins, so one stamped 9999
+ *     from a peer that left pinned the record against every later edit, and
+ *     a stamp that was not a time (`{}`) sorted above every one that was.
  * `null`, a string, or a record whose `data` is not an object would each have
  * thrown in the write that followed.
  */
 function peerRecord(collName: string, key: string, val: unknown, now = Date.now()): XDBRecord | null {
+  const record = peerRecordShape(collName, key, val);
+  return record && !isAhead(record, now) ? record : null;
+}
+
+/** `peerRecord` without the time limit: null only for a value that is no record at all. */
+function peerRecordShape(collName: string, key: string, val: unknown): XDBRecord | null {
   if (typeof val !== 'object' || val === null || Array.isArray(val)) return null;
   const json = val as Record<string, unknown>;
   if (typeof json.id !== 'string' || json.id === '' || json.id !== key) return null;
@@ -928,7 +945,7 @@ function peerRecord(collName: string, key: string, val: unknown, now = Date.now(
   if (json.deleted !== undefined && typeof json.deleted !== 'boolean') return null;
   const created = json.created_at ?? '';
   const updated = json.updated_at ?? '';
-  if (typeof created !== 'string' || (created !== '' && !ISO_TIME.test(created)) || !isStamp(updated, now)) return null;
+  if (typeof created !== 'string' || (created !== '' && !ISO_TIME.test(created)) || !isStamp(updated)) return null;
   return {
     id: json.id,
     collection: collName,

@@ -195,3 +195,39 @@ describe('a room\'s records', () => {
       expect(writes).toBeLessThan(10);
     }));
 });
+
+// A room has no clock of authority: the receiver's own is the reference, and
+// it may be the slow one. Five minutes' tolerance made a device an hour slow
+// refuse every honest edit, and at the opening write its older copy over the
+// room's newer one.
+describe('a peer\'s stamp ahead of this clock', () => {
+  const hourAhead = () => new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+  it('an hour ahead (this clock slow) is a peer\'s edit like any other', () =>
+    quiet(() => {
+      const net = new Net();
+      const { xdb, adapter } = peer('slow-clock');
+      net.join(adapter.doc);
+      adapter.attachLocal();
+      const other = new Y.Doc();
+      net.join(other);
+      const stamp = hourAhead();
+      other.getMap('notes').set('n1', { id: 'n1', collection: 'notes', data: { text: 'from a right clock' }, created_at: stamp, updated_at: stamp, deleted: false });
+      net.flush();
+      expect(text(xdb, 'n1')).toBe('from a right clock');
+    }));
+
+  it('is not written over at the opening, whether taken or not', () =>
+    quiet(() => {
+      for (const [stamp, taken] of [[hourAhead(), true], ['2999-01-01T00:00:00.000Z', false]] as const) {
+        const { xdb, adapter } = peer(`opening-${taken}`);
+        const mine = xdb.create('notes', { text: 'older here' });
+        const room = new Y.Doc();
+        room.getMap('notes').set(mine.id, { ...mine, data: { text: 'newer in the room' }, updated_at: stamp });
+        Y.applyUpdate(adapter.doc, Y.encodeStateAsUpdate(room), 'peer');
+        adapter.attachLocal();
+        expect((adapter.doc.getMap('notes').get(mine.id) as { data: { text: string } }).data.text, stamp).toBe('newer in the room');
+        expect(text(xdb, mine.id), stamp).toBe(taken ? 'newer in the room' : 'older here');
+      }
+    }));
+});
