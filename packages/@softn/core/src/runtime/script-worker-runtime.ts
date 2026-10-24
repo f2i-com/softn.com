@@ -1101,12 +1101,6 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }
   }
 
-  private takeLocalStorageSnapshotIfDirty(): Record<string, string> | undefined {
-    if (!this.lsDirty) return undefined;
-    this.lsDirty = false;
-    return this.getLocalStorageSnapshot();
-  }
-
   /**
    * A DOM listener for every event type the script has registered through
    * the engine's `window.addEventListener`, forwarding what a handler can use

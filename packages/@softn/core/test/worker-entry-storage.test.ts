@@ -35,9 +35,10 @@ function stubWorker(answer: (type: string) => Record<string, unknown>) {
     onerror = null;
     onmessageerror = null;
     postMessage(msg: { id?: number; type?: string; payload?: Record<string, unknown> }) {
-      if (!msg?.type || msg.type === 'engine') return;
-      posted.push({ type: msg.type, keys: Object.keys(msg.payload ?? {}) });
-      setTimeout(() => this.onmessage?.({ data: { id: msg.id, ok: true, result: { ...empty, ...answer(msg.type) } } } as MessageEvent), 0);
+      const type = msg?.type;
+      if (!type || type === 'engine') return;
+      posted.push({ type, keys: Object.keys(msg.payload ?? {}) });
+      setTimeout(() => this.onmessage?.({ data: { id: msg.id, ok: true, result: { ...empty, ...answer(type) } } } as MessageEvent), 0);
     }
     terminate() {}
   }
