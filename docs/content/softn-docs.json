@@ -3925,7 +3925,7 @@
                 },
                 {
                   "term": "Storage",
-                  "description": "An app may keep 1 MB in `localStorage` and 3 MB of records in the browser’s storage, so one app cannot fill the store the host and every other app share. A write past that is refused, as the browser refuses a full store."
+                  "description": "An app may keep 1 MB in `localStorage` and 3 MB of records in the browser’s storage, so one app cannot fill the store the host and every other app share. A write past that is refused, as the browser refuses a full store. Records from a peer-to-peer room may take 2.5 MB of the 3, so the app’s own writes always have room; a record that does not fit stays in the room and on the peers that keep it."
                 },
                 {
                   "term": "Downloads",

@@ -12,7 +12,7 @@
 import type { XDBRecord } from '../types';
 import { isTauri, tauriInvoke, tauriListen } from './xdb-native-transport';
 import { XDBStorageError } from './xdb-types';
-import { RECORD_STORAGE_BUDGET, StorageBudget } from './storage-budget';
+import { megabytes, PEER_RECORD_HEADROOM, RECORD_STORAGE_BUDGET, StorageBudget } from './storage-budget';
 import { deepEqual } from './vm-state';
 import type {
   XDBEvent,
@@ -781,7 +781,8 @@ export class XDBService {
     return parsed as XDBRecord[];
   }
 
-  private setCollectionData(collection: string, records: XDBRecord[]): Promise<void> | undefined {
+  /** `reserve`: what of the record budget to keep back (PEER_RECORD_HEADROOM, for what peers send). */
+  private setCollectionData(collection: string, records: XDBRecord[], reserve = 0): Promise<void> | undefined {
     this.assertWritable(collection, false);
     if (this.useTauri) {
       const coll = new Map<string, XDBRecord>();
@@ -804,7 +805,7 @@ export class XDBService {
     try {
       if (this.storagePersistence?.protocol === 1) persisted = this.hostedWrite(this.storagePersistence.setItem(key, value), [collection]);
       else {
-        this.budget?.admit(key, value);
+        this.budget?.admit(key, value, reserve);
         this.storage.setItem(key, value);
         this.budget?.wrote(key, value);
         if (this.storagePersistence) persisted = this.unsupportedPersistence(collection);
@@ -1852,6 +1853,75 @@ export class XDBService {
     }
     this.setCollectionData(collection, records);
     for (const event of events) this.emit(event);
+  }
+
+  /**
+   * Peer sync's write of what a room brought for one collection: as
+   * `writeRecords`, but held to the record budget less PEER_RECORD_HEADROOM,
+   * so the app's own writes always have room, and taking what fits. Records
+   * are taken in order while they fit; the rest, and any JSON cannot hold,
+   * are passed over and returned, and what was taken is written at once.
+   * Peers could fill the whole budget, after which the person's own edits
+   * were refused; and a batch the budget refused was tried again a record at
+   * a time, each re-reading and re-serialising the collection, which held a
+   * joining tab for as long as the room had records past the budget.
+   * Throws as `writeRecords` does when the store itself refuses the write.
+   */
+  writePeerRecords(collection: string, list: readonly XDBRecord[]): XDBRecord[] {
+    if (list.length === 0) return [];
+    if (this.useTauri) {
+      this.writeRecords(collection, list);
+      return [];
+    }
+    const records = this.getAllCollectionData(collection);
+    const at = new Map(records.map((r, i) => [r.id, i]));
+    const budget = this.budget;
+    const room = budget ? budget.room(this.collectionKey(collection), PEER_RECORD_HEADROOM) : Infinity;
+    // The length of the collection as it will be stored, followed record by
+    // record: '[' + each record's JSON joined by ',' + ']'.
+    let size = JSON.stringify(records).length;
+    const passed: XDBRecord[] = [];
+    let overBudget = false;
+    const events: XDBEvent[] = [];
+    for (const record of list) {
+      let length: number;
+      try {
+        length = JSON.stringify(record).length;
+      } catch {
+        passed.push(record);
+        continue;
+      }
+      const index = at.get(record.id);
+      const next = index === undefined
+        ? size + length + (records.length > 0 ? 1 : 0)
+        : size - JSON.stringify(records[index]).length + length;
+      if (next > room) {
+        passed.push(record);
+        overBudget = true;
+        continue;
+      }
+      size = next;
+      if (index !== undefined) {
+        records[index] = record;
+        events.push({ type: 'update', collection, record });
+      } else {
+        at.set(record.id, records.length);
+        records.push(record);
+        events.push({ type: 'create', collection, record });
+      }
+    }
+    if (overBudget && budget) {
+      this.noteIssue({
+        kind: 'quota',
+        collection,
+        message: `Some of the room's records for "${collection}" are not kept on this device: what peers send may take ${megabytes(budget.limit - PEER_RECORD_HEADROOM)} MB of the app's ${megabytes(budget.limit)} MB of browser storage, so that its own writes have room. They stay in the room.`,
+      });
+    }
+    if (events.length === 0) return passed;
+    this.knownCollections.add(collection);
+    this.setCollectionData(collection, records, PEER_RECORD_HEADROOM);
+    for (const event of events) this.emit(event);
+    return passed;
   }
 
   removeRecord(collection: string, id: string): void {

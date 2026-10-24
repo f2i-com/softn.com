@@ -43,16 +43,28 @@ export class StorageBudget {
     return sizes;
   }
 
-  /** Refuse, before it is made, a write of `value` under the full key `key` that would pass the budget. */
-  admit(key: string, value: string): void {
+  /**
+   * The longest value `key` may be given, with `reserve` of the budget kept
+   * back. Within the budget; or, for an app that holds more than it from
+   * before there was one, a value that holds no more than now: a smaller
+   * rewrite, the one way out, is never refused.
+   */
+  room(key: string, reserve = 0): number {
     const before = this.counted().get(key) ?? 0;
-    const after = this.total - before + key.length + value.length;
-    // Within the budget; or, for an app that holds more than it from before
-    // there was one, a write that holds no more than now: a smaller rewrite,
-    // the one way out, is never refused.
-    if (after <= this.limit || after <= this.total) return;
+    return Math.max(this.limit - reserve, this.total) - (this.total - before) - key.length;
+  }
+
+  /**
+   * Refuse, before it is made, a write of `value` under the full key `key`
+   * that would pass the budget, or the budget less `reserve` (what peers send
+   * may not take the room an app's own writes need).
+   */
+  admit(key: string, value: string, reserve = 0): void {
+    if (value.length <= this.room(key, reserve)) return;
     throw new DOMException(
-      `This app may keep ${Math.round(this.limit / (1024 * 1024))} MB in the browser's storage, and this write would take it past that.`,
+      reserve > 0
+        ? `This app may keep ${megabytes(this.limit)} MB in the browser's storage, of which what peers send may take ${megabytes(this.limit - reserve)} MB, and this write would take it past that.`
+        : `This app may keep ${megabytes(this.limit)} MB in the browser's storage, and this write would take it past that.`,
       'QuotaExceededError'
     );
   }
@@ -72,8 +84,20 @@ export class StorageBudget {
   }
 }
 
+/** A budget in megabytes, to a tenth, as the messages give it. */
+export function megabytes(characters: number): number {
+  return Math.round((characters / (1024 * 1024)) * 10) / 10;
+}
+
 /** What an app's `localStorage` may hold. */
 export const LOCAL_STORAGE_BUDGET = 1024 * 1024;
 
 /** What an app's records may take of the browser's storage, where it keeps them there. */
 export const RECORD_STORAGE_BUDGET = 3 * 1024 * 1024;
+
+/**
+ * What of the record budget peer sync leaves for the app's own writes. A
+ * room's records filled the whole budget, and the person's next edit here
+ * was refused, by records any peer of the room could send.
+ */
+export const PEER_RECORD_HEADROOM = 512 * 1024;

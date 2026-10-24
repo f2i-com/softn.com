@@ -600,28 +600,36 @@ export class XDBSyncAdapter {
   }
 
   /**
-   * Write what the room brought for one collection at once (writeRecords).
-   * When the store refuses the lot (its budget full), each is tried on its
-   * own, so one that does not fit is passed over and kept off the room's
-   * removals (`unstored`), and the rest are written.
+   * Write what the room brought for one collection at once
+   * (XDBService.writePeerRecords, which keeps part of the app's storage
+   * budget for its own writes). What the store passes over, past the share
+   * peers may take, is kept off the room's removals (`unstored`). When the
+   * store refuses the lot (the browser's own quota), each is tried on its
+   * own, so the rest are written.
    */
   private writeAll(collName: string, records: XDBRecord[], local: Map<string, XDBRecord>): void {
     if (records.length === 0) return;
+    const kept = (record: XDBRecord) => {
+      this.listed(collName).add(record.id);
+      this.markStored(collName, record.id);
+    };
+    const passedOver = (record: XDBRecord, err?: unknown) => {
+      this.warnMalformed(collName, record.id, err);
+      if (!local.has(record.id)) this.markUnstored(collName, record.id);
+    };
     try {
-      this.xdb.writeRecords(collName, records);
+      const passed = new Set(this.xdb.writePeerRecords(collName, records));
       for (const record of records) {
-        this.listed(collName).add(record.id);
-        this.markStored(collName, record.id);
+        if (passed.has(record)) passedOver(record);
+        else kept(record);
       }
     } catch {
       for (const record of records) {
         try {
-          this.xdb.writeRecord(collName, record);
-          this.listed(collName).add(record.id);
-          this.markStored(collName, record.id);
+          if (this.xdb.writePeerRecords(collName, [record]).length > 0) passedOver(record);
+          else kept(record);
         } catch (err) {
-          this.warnMalformed(collName, record.id, err);
-          if (!local.has(record.id)) this.markUnstored(collName, record.id);
+          passedOver(record, err);
         }
       }
     }

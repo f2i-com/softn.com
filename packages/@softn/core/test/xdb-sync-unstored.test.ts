@@ -102,3 +102,63 @@ describe('a peer whose store refused records of the room', () => {
       localStorage.clear();
     }));
 });
+
+describe('what peers send', () => {
+  it('leaves room in the browser budget for the app\'s own writes', () =>
+    quiet(() => {
+      localStorage.clear();
+      const xa = new XDBService(storage(), 'xdb:a', 'a', { backend: 'storage' });
+      const xb = new XDBService(undefined, 'xdb:b', 'b', { backend: 'storage' });
+      const a = new XDBSyncAdapter(xa, { room: 'r', signaling: [], persist: false });
+      const b = new XDBSyncAdapter(xb, { room: 'r', signaling: [], persist: false });
+      link(a, b);
+      a.attachLocal();
+      b.attachLocal();
+
+      const ids: string[] = [];
+      for (let i = 0; i < 40; i++) ids.push(xa.create('notes', { n: i, body: 'x'.repeat(100_000) }).id);
+      const kept = xb.getAllRaw('notes').length;
+      // Some 2.5 MB of the 3: the notes past it are not kept here.
+      expect(kept).toBeGreaterThan(20);
+      expect(kept).toBeLessThan(27);
+      expect(xb.getStorageStatus().issues.some((i) => i.kind === 'quota' && i.collection === 'notes')).toBe(true);
+
+      // The person's own note fits in what peers could not take, where the
+      // room's had filled the budget and refused it.
+      let own: { id: string } | undefined;
+      expect(() => {
+        own = xb.create('notes', { mine: true, body: 'y'.repeat(100_000) });
+      }).not.toThrow();
+      expect(xa.get('notes', own!.id)).not.toBeNull();
+
+      // And what B could not keep stays in the room, and on the peer that wrote it.
+      expect(a.doc.getMap('notes').size).toBe(41);
+      expect(xa.getAllRaw('notes').length).toBe(41);
+      localStorage.clear();
+    }));
+
+  it('is written once at the opening, however much of it does not fit', () =>
+    quiet(() => {
+      localStorage.clear();
+      const xa = new XDBService(storage(), 'xdb:a', 'a', { backend: 'storage' });
+      for (let i = 0; i < 40; i++) xa.create('notes', { n: i, body: 'x'.repeat(100_000) });
+      const a = new XDBSyncAdapter(xa, { room: 'r', signaling: [], persist: false });
+      a.attachLocal();
+
+      const xb = new XDBService(undefined, 'xdb:b', 'b', { backend: 'storage' });
+      const b = new XDBSyncAdapter(xb, { room: 'r', signaling: [], persist: false });
+      const setItem = vi.spyOn(Storage.prototype, 'setItem');
+      try {
+        Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc), 'peer');
+        b.attachLocal();
+        const notesWrites = setItem.mock.calls.filter(([key]) => String(key).endsWith('notes')).length;
+        // One write of the collection, not one for each record that fitted.
+        expect(notesWrites).toBe(1);
+      } finally {
+        setItem.mockRestore();
+      }
+      expect(xb.getAllRaw('notes').length).toBeGreaterThan(20);
+      expect(xb.getAllRaw('notes').length).toBeLessThan(27);
+      localStorage.clear();
+    }));
+});
