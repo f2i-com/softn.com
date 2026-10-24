@@ -85,6 +85,27 @@ describe('names a bundle cannot hold', () => {
     expect(store().nodes.get('main_ui')?.path).toBe('ui/main.ui');
     expect(store().uiFiles.get('main_ui')?.path).toBe('ui/main.ui');
   });
+
+  it('lets such a file at the top level be renamed out of it, and keeps a slashed name where it was', () => {
+    useFilesStore.setState((state) => {
+      const nodes = new Map(state.nodes);
+      nodes.set('main_ui', { ...nodes.get('main_ui')!, name: '../main.ui', path: '../main.ui', parentId: null });
+      const uiFiles = new Map(state.uiFiles);
+      uiFiles.set('main_ui', { ...uiFiles.get('main_ui')!, path: '../main.ui' });
+      return { nodes, uiFiles };
+    });
+    store().renameFile('main_ui', 'main.ui');
+    expect(store().nodes.get('main_ui')?.path).toBe('main.ui');
+    // A name with a slash but nothing unsafe stays in the folder its path names.
+    const page = store().createFile('ui/pages', 'x.ui', 'ui');
+    useFilesStore.setState((state) => {
+      const nodes = new Map(state.nodes);
+      nodes.set(page, { ...nodes.get(page)!, name: 'pages/x.ui' });
+      return { nodes };
+    });
+    store().renameFile(page, 'y.ui');
+    expect(store().nodes.get(page)?.path).toBe('ui/pages/y.ui');
+  });
 });
 
 describe('two files at one path', () => {

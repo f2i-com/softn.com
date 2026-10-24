@@ -114,14 +114,17 @@ function parsePath(fullPath: string): { parent: string; name: string } {
 }
 
 /**
- * The folder a node is in, by the tree: what a rename keeps it in. Read from
- * its path, a name an earlier Builder let through with a slash in it
- * (`../main.ui`, at `ui/../main.ui`) gave `ui/..`, so the node could never be
- * renamed out of a path no bundle can hold: its project could not be saved.
+ * The folder a rename keeps a node in: its path's, unless that is one no
+ * bundle can hold, which a name an earlier Builder let through with a slash in
+ * it made (`../main.ui`, at `ui/../main.ui` or `../main.ui`). Then it is what
+ * comes before the name: kept in `ui/..` or `..`, the node could never be
+ * renamed out of it, and its project, the entry file in it, never saved.
  */
-function folderOf(nodes: Map<string, ProjectFileNode>, node: ProjectFileNode): string {
-  const folder = node.parentId ? nodes.get(node.parentId) : undefined;
-  return folder?.type === 'folder' ? folder.path : parsePath(node.path).parent;
+function folderOf(node: ProjectFileNode): string {
+  const { parent } = parsePath(node.path);
+  if (!parent || !isUnsafeEntryName(parent)) return parent;
+  if (node.path === node.name) return '';
+  return node.path.endsWith(`/${node.name}`) ? node.path.slice(0, -(node.name.length + 1)) : parent;
 }
 
 // Normalize path (remove leading/trailing slashes, handle ..)
@@ -737,7 +740,7 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     const folder = current.nodes.get(id);
     if (!folder || folder.type !== 'folder') return;
     const oldPath = folder.path;
-    const parent = folderOf(current.nodes, folder);
+    const parent = folderOf(folder);
     const newPath = parent ? `${parent}/${newName}` : newName;
     if (newPath === oldPath) return;
     const taken = nameReason(newName, newPath) ?? pathTakenReason(current.nodes, newPath, id);
@@ -910,10 +913,9 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   },
 
   renameFile: (id, newName) => {
-    const nodes = get().nodes;
-    const node = nodes.get(id);
+    const node = get().nodes.get(id);
     if (!node || node.type !== 'file') return;
-    get().moveFile(id, folderOf(nodes, node), newName);
+    get().moveFile(id, folderOf(node), newName);
   },
 
   moveFile: (id, newParentPath, newName) => {
