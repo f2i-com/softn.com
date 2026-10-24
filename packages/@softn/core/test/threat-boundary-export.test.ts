@@ -171,7 +171,10 @@ describe("Studio's HTML preview iframe sandbox", () => {
       expect(tokens).toEqual(['allow-scripts']);
       expect(tokens).not.toContain('allow-same-origin');
       expect(attrs).not.toMatch(/\ballow=/);
-      expect(attrs).not.toMatch(/\bsrcDoc=/i);
+      // The HTML is the frame's text, never an address: a blob: URL has
+      // Studio's origin, and opened as a page of its own it ran as Studio.
+      expect(attrs).toMatch(/\bsrcDoc=/);
+      expect(attrs).not.toMatch(/\bsrc=/);
     }
   });
 });
