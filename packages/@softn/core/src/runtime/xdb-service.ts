@@ -2388,12 +2388,15 @@ export class XDBService {
     this.assertWritable(collection, true);
     // Server sync is told of each record this removes, as of any delete. It
     // heard nothing: the server kept the records, and the next pull brought
-    // every one of them back.
+    // every one of them back. And every record it takes, deleted ones too, is
+    // kept for a sync room that is not open, as hardDeleteMany keeps them: none
+    // was, and the room's copies came back at its next opening.
     let gone: string[];
+    let removed: string[];
     if (this.useTauri) {
-      gone = [...(this.memoryStore.get(collection)?.values() ?? [])]
-        .filter((r) => !r.deleted && !this.pendingCreateIds.has(r.id))
-        .map((r) => r.id);
+      const held = [...(this.memoryStore.get(collection)?.values() ?? [])].filter((r) => !this.pendingCreateIds.has(r.id));
+      removed = held.map((r) => r.id);
+      gone = held.filter((r) => !r.deleted).map((r) => r.id);
       this.memoryStore.delete(collection);
       this.knownCollections.delete(collection);
       this.emit({ type: 'refresh', collection, records: [] });
@@ -2402,7 +2405,9 @@ export class XDBService {
         .then(() => this.nativeWriteLanded(collection))
         .catch((err) => this.nativeWriteFailed('clear a collection', collection, err));
     } else {
-      gone = this.getAllCollectionData(collection).filter((r) => !r.deleted).map((r) => r.id);
+      const held = this.getAllCollectionData(collection);
+      removed = held.map((r) => r.id);
+      gone = held.filter((r) => !r.deleted).map((r) => r.id);
       if (this.storagePersistence?.protocol === 1) this.hostedWrite(this.storagePersistence.removeItem(this.collectionKey(collection)), [collection]);
       else {
         this.storage.removeItem(this.collectionKey(collection));
@@ -2412,7 +2417,8 @@ export class XDBService {
       this.indexCollection(collection, false);
       this.emit({ type: 'refresh', collection, records: [] });
     }
-    this.noteUnheardRemovals(collection, gone);
+    for (const id of removed) this.noteRemovedForGood(collection, id);
+    this.noteUnheardRemovals(collection, removed);
     for (const id of gone) this.notifyMutation('delete', collection, id);
   }
 

@@ -323,7 +323,7 @@ describe('a record removed for good while the room was not open', () => {
   // Peer sync told the room of a removal as it was made, while it was open.
   // One made while it was not reached nobody, and at the next opening the
   // room's copy was written back into the store as a record it lacked.
-  const roomWith = async (name: string) => {
+  const roomWith = async (name: string, remove: (db: ReturnType<typeof createDBNamespace>, id: string, xdb: XDBService) => void = (db, id) => db.hardDelete('notes', id)) => {
     const storage = memory();
     const xdb = new XDBService(storage, `xdb:${name}`, name, { backend: 'storage' });
     const first = new XDBSyncAdapter(xdb, { room: 'r', appId: name, signaling: [] });
@@ -336,10 +336,26 @@ describe('a record removed for good while the room was not open', () => {
     setDefaultXDB(xdb, name);
     const db = createDBNamespace(undefined, name);
     await db.ready();
-    db.hardDelete('notes', note.id);
+    remove(db, note.id, xdb);
     await new Promise((r) => setTimeout(r, 0));
     return { xdb, note, kept, room };
   };
+
+  // The store's clear kept no note of what it took, as hardDelete and a prune do (and so
+  // clearCollection, which removes through them): every record came back from the room at its
+  // next opening.
+  it("is taken out of the room for each record the store's clear took", async () => {
+    const { xdb, note, kept, room } = await roomWith('removed-cleared', (_db, _id, store) => store.clear('notes'));
+    const next = new XDBSyncAdapter(xdb, { room: 'r', appId: 'removed-cleared', signaling: [] });
+    Y.applyUpdate(next.doc, room, 'cache');
+    next.connect();
+    await new Promise((r) => setTimeout(r, 5));
+    const notes = next.doc.getMap('notes');
+    next.close();
+    expect(notes.has(note.id)).toBe(false);
+    expect(notes.has(kept.id)).toBe(false);
+    expect(xdb.getAll('notes')).toEqual([]);
+  });
 
   it('is taken out of the room at the next opening, where the room holds it', async () => {
     const { xdb, note, kept, room } = await roomWith('removed-open');
