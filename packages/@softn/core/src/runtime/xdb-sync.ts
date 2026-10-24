@@ -163,12 +163,24 @@ export class XDBSyncAdapter {
     if (this.persistence && !this.persistenceLoaded && (this.persistence as { synced?: boolean }).synced !== true) {
       this.persistenceListener = () => {
         this.persistenceLoaded = true;
-        this.performInitialSync();
-        this.setupXDBListener();
+        this.syncThenListen();
       };
       this.persistence.on('synced', this.persistenceListener);
     } else {
+      this.syncThenListen();
+    }
+  }
+
+  /**
+   * The opening sync, then this device's writes heard: in that order, and
+   * the second whatever became of the first. A throw in the first used to
+   * leave the second undone, and nothing written here reached the room
+   * while the room's changes still came in.
+   */
+  private syncThenListen(): void {
+    try {
       this.performInitialSync();
+    } finally {
       this.setupXDBListener();
     }
   }
@@ -231,8 +243,7 @@ export class XDBSyncAdapter {
   attachLocal(): void {
     if (this.closed) throw new Error('[XDB Sync] This adapter has been closed');
     this.setupYjsObservers();
-    this.performInitialSync();
-    this.setupXDBListener();
+    this.syncThenListen();
   }
 
   /**
@@ -421,10 +432,19 @@ export class XDBSyncAdapter {
         }
 
         for (const record of records) {
-          const existing = ymap.get(record.id) as Record<string, unknown> | undefined;
-          if (existing === undefined || isNewer(record, existing as { updated_at?: string })) {
-            const json = recordToJSON(record);
-            if (existing === undefined || !deepEqual(existing, json)) ymap.set(record.id, json);
+          // A value the room holds that is no record (peerRecord) is taken
+          // for none: `null` there threw here, before the listener below was
+          // installed, and nothing written on this device reached the room.
+          // One record that cannot be compared is passed over, not the rest.
+          try {
+            const existing = ymap.get(record.id);
+            const theirs = peerRecord(collName, record.id, existing);
+            if (theirs === null || isNewer(record, theirs)) {
+              const json = recordToJSON(record);
+              if (theirs === null || !deepEqual(existing, json)) ymap.set(record.id, json);
+            }
+          } catch (err) {
+            this.warnMalformed(collName, record.id, err);
           }
         }
 
@@ -515,20 +535,22 @@ export class XDBSyncAdapter {
         }
         // One bad value from a peer used to throw out of here, inside Yjs's
         // update dispatch, and the collections after this one in the
-        // document were never discovered. It is skipped instead.
-        if (!isRecordJSON(val)) {
+        // document were never discovered. It is skipped instead, and is not
+        // written back over: a device whose clock runs fast would put its
+        // copy back, and the two would pass the record to and fro.
+        const record = peerRecord(collName, recordId, val);
+        if (!record) {
           this.warnMalformed(collName, recordId);
           if (!local.has(recordId)) this.markUnstored(collName, recordId);
           return;
         }
         try {
-          const record = jsonToRecord(val);
           const mine = local.get(recordId);
           // The document wins a tie: two copies stamped alike but different are
           // one record the room has already agreed on and one it has not.
           if (mine && isNewer(mine, record)) {
             newer.push(mine);
-          } else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), val)) {
+          } else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), recordToJSON(record))) {
             this.xdb.writeRecord(collName, record);
           }
           this.markStored(collName, recordId);
@@ -710,10 +732,11 @@ export class XDBSyncAdapter {
               const val = ymap.get(recordId);
               // Same rule as projectCollection: a value that is not a record
               // is skipped, not thrown at the rest of the batch.
-              if (!isRecordJSON(val)) {
+              const record = peerRecord(collName, recordId, val);
+              if (!record) {
                 if (val !== undefined) {
                   this.warnMalformed(collName, recordId);
-                  if (!this.xdb.getAllRaw(collName).some((r) => r.id === recordId)) this.markUnstored(collName, recordId);
+                  if (!local.has(recordId)) this.markUnstored(collName, recordId);
                 }
                 continue;
               }
@@ -723,11 +746,9 @@ export class XDBSyncAdapter {
               // in, and where that copy won, a stale edit overwrote every
               // newer one and a deleted record came back. A newer local copy
               // stays, and goes back into the document for the room.
-              if (!local) local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
-              const record = jsonToRecord(val);
               const mine = local.get(recordId);
               if (mine && isNewer(mine, record)) newer.push(mine);
-              else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), val)) this.xdb.writeRecord(collName, record);
+              else if (!mine || isNewer(record, mine) || !deepEqual(recordToJSON(mine), recordToJSON(record))) this.xdb.writeRecord(collName, record);
               this.markStored(collName, recordId);
             } else if (change.action === 'delete') {
               // Remote hard-delete
@@ -798,29 +819,55 @@ function recordToJSON(record: XDBRecord): Record<string, unknown> {
 }
 
 /**
- * Whether a value from the document has the shape of a record. Peers are not
- * trusted to have written one: `null`, a string, or a record whose `data` is
- * an array or a number would each have thrown inside `jsonToRecord` or the
- * write that followed.
+ * How far ahead of this device's clock a peer's stamp may be: the Rust sync
+ * host's `MAX_FUTURE_DRIFT_SECS`, past which it clamps a client's stamp.
  */
-function isRecordJSON(val: unknown): val is Record<string, unknown> {
-  if (typeof val !== 'object' || val === null || Array.isArray(val)) return false;
-  const json = val as Record<string, unknown>;
-  if (typeof json.id !== 'string') return false;
-  return (
-    json.data === undefined ||
-    (typeof json.data === 'object' && json.data !== null && !Array.isArray(json.data))
-  );
+const MAX_FUTURE_DRIFT_MS = 5 * 60 * 1000;
+
+/** An ISO time, as XDB stamps every write (`toISOString`), with or without an offset. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+
+function isStamp(value: unknown, now: number): value is string {
+  if (value === '') return true;
+  if (typeof value !== 'string' || !ISO_TIME.test(value)) return false;
+  const at = Date.parse(value);
+  return Number.isFinite(at) && at <= now + MAX_FUTURE_DRIFT_MS;
 }
 
-function jsonToRecord(json: Record<string, unknown>): XDBRecord {
+/**
+ * The record a peer's value under `key` of map `collName` stands for, or null
+ * when it is not one this device writes. Peers are not trusted to have
+ * written one, and what is written is decided here, not by the value:
+ *   - The id is the key. A value `{id: B}` under another key overwrote B, with
+ *     no time weighed (the key's local copy was the one compared), a deleted
+ *     or removed record included. An empty id made the whole collection
+ *     unreadable on every browser peer.
+ *   - The collection is the map's. The value's own `collection` was written,
+ *     so a value in `notes` naming `_prefs` replaced the desktop's `_prefs`
+ *     row, a collection peer sync never shares.
+ *   - The stamps are times, and `updated_at` no more than five minutes ahead
+ *     of this clock: the newer stamp wins, so one stamped 9999 from a peer
+ *     that left pinned the record against every later edit, and a stamp that
+ *     was not a time (`{}`) sorted above every one that was.
+ * `null`, a string, or a record whose `data` is not an object would each have
+ * thrown in the write that followed.
+ */
+function peerRecord(collName: string, key: string, val: unknown, now = Date.now()): XDBRecord | null {
+  if (typeof val !== 'object' || val === null || Array.isArray(val)) return null;
+  const json = val as Record<string, unknown>;
+  if (typeof json.id !== 'string' || json.id === '' || json.id !== key) return null;
+  if (json.data !== undefined && (typeof json.data !== 'object' || json.data === null || Array.isArray(json.data))) return null;
+  if (json.deleted !== undefined && typeof json.deleted !== 'boolean') return null;
+  const created = json.created_at ?? '';
+  const updated = json.updated_at ?? '';
+  if (typeof created !== 'string' || (created !== '' && !ISO_TIME.test(created)) || !isStamp(updated, now)) return null;
   return {
-    id: json.id as string,
-    collection: json.collection as string,
-    data: (json.data as Record<string, unknown>) ?? {},
-    created_at: (json.created_at as string) ?? '',
-    updated_at: (json.updated_at as string) ?? '',
-    deleted: (json.deleted as boolean) ?? false,
+    id: json.id,
+    collection: collName,
+    data: (json.data as Record<string, unknown> | undefined) ?? {},
+    created_at: created,
+    updated_at: updated,
+    deleted: (json.deleted as boolean | undefined) ?? false,
   };
 }
 

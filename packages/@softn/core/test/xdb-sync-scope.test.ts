@@ -239,10 +239,12 @@ describe('reconciliation between two real documents', () => {
     b.attachLocal();
 
     const mine = xdbA.create('tasks', { title: 'mine' });
+    // Newer by a minute: a stamp years ahead is one no peer takes (it would
+    // win over every edit after it).
     xdbA.writeRecord('tasks', {
       ...shared,
       data: { title: 'newer' },
-      updated_at: '2999-01-01T00:00:00.000Z',
+      updated_at: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const a = new XDBSyncAdapter(xdbA, { room: 'r', appId: 'A', persist: false });
