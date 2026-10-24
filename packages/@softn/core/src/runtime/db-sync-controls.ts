@@ -152,7 +152,13 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
         });
     },
 
-    stopSync: (room) => {
+    stopSync: (given) => {
+      // No room named is every room, as xdb-sync's stopSync reads it: `''`
+      // or `null` (a template's `xdb_stopSync('')`, the worker's bridge)
+      // stopped every room there, and here cancelled a start, and forgot the
+      // marks, of a room of that name, so a private start still working out
+      // its name opened after the stop.
+      const room = typeof given === 'string' && given !== '' ? given : undefined;
       cancelStarts(appId, room);
       // A stopped room may be reopened private, or carrying other collections:
       // the shared mark and the list go with it.

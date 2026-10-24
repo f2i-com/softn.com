@@ -33,7 +33,7 @@
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { XDBService, getDefaultSignaling, _setSyncModuleRef, type XDBEvent } from './xdb';
+import { XDBService, getDefaultSignaling, _setSyncModuleRef, STAMP_AHEAD_LIMIT_MS, stampTime, type XDBEvent } from './xdb';
 import type { XDBRecord } from '../types';
 import { deepEqual } from './vm-state';
 import { debug } from './debug';
@@ -108,13 +108,13 @@ export interface XDBSyncStatus {
 export { persistenceNameFor };
 
 /**
- * Last-writer-wins by `updated_at`. XDB stamps every write with an ISO time,
- * and ISO times order as strings. A record with no stamp loses to one with.
+ * Last-writer-wins by `updated_at`, as times. ISO times order as strings only
+ * while they are written alike, and a peer's may carry any offset: `+23:59`
+ * on a stamp of now sorted a day above every `Z` one, past the limit on how
+ * far ahead a stamp may be. A record with no stamp loses to one with.
  */
 function isNewer(candidate: { updated_at?: string }, incumbent: { updated_at?: string }): boolean {
-  const a = candidate.updated_at ?? '';
-  const b = incumbent.updated_at ?? '';
-  return a > b;
+  return stampTime(candidate.updated_at) > stampTime(incumbent.updated_at);
 }
 
 // ── Adapter Class ─────────────────────────────────────────
@@ -126,6 +126,8 @@ export class XDBSyncAdapter {
   private xdb: XDBService;
   private options: XDBSyncOptions;
   private unsubscribeXDB: (() => void) | null = null;
+  /** Stops the store asking this room for its copies' stamps (roomStamp). */
+  private removeStampSource: (() => void) | null = null;
   private isSyncing = false;
   private observedCollections = new Set<string>();
   private collectionObservers = new Map<string, (event: Y.YMapEvent<unknown>) => void>();
@@ -318,6 +320,8 @@ export class XDBSyncAdapter {
         this.unsubscribeXDB();
         this.unsubscribeXDB = null;
       }
+      this.removeStampSource?.();
+      this.removeStampSource = null;
       // Remove the update handler for collection discovery
       if (this.updateHandler) {
         this.ydoc.off('update', this.updateHandler);
@@ -704,7 +708,22 @@ export class XDBSyncAdapter {
 
   // ── Internal: XDB → Yjs (outbound) ─────────────────────
 
+  /**
+   * The stamp of the room's copy of a record, for an edit made here to be
+   * stamped after (XDBService.addStampSource): a copy the room carries, that
+   * is a record and not further ahead than a peer's may be, as the refresh
+   * below weighs it. A collection the document has never held is not made
+   * by asking.
+   */
+  private roomStamp(collName: string, id: string): string | undefined {
+    if (this.closed || !this.carries(collName) || !this.ydoc.share.has(collName)) return undefined;
+    const theirs = peerRecord(collName, id, this.ydoc.getMap(collName).get(id));
+    return theirs?.updated_at || undefined;
+  }
+
   private setupXDBListener(): void {
+    this.removeStampSource?.();
+    this.removeStampSource = this.xdb.addStampSource?.((collName, id) => this.roomStamp(collName, id)) ?? null;
     this.unsubscribeXDB = this.xdb.subscribeAll((event: XDBEvent) => {
       // Skip events caused by incoming sync (prevent echo loop)
       if (this.isSyncing) return;
@@ -726,6 +745,7 @@ export class XDBSyncAdapter {
             if (event.record) {
               ymap.set(event.record.id, recordToJSON(event.record));
               this.listed(event.collection).add(event.record.id);
+              this.olderHere.get(event.collection)?.delete(event.record.id);
               // Made here again after a removal: that removal is not the room's to hear.
               this.xdb.forgetPendingRemoval?.(event.collection, event.record.id);
             }
@@ -786,7 +806,8 @@ export class XDBSyncAdapter {
                 // not keep (writeAll, its budget share full) left the older
                 // copy here, and every refresh wrote that back over the
                 // room's, off every peer. An edit made here is stamped after
-                // the copy it edits (editStamp), so it still goes.
+                // the room's copy as well as this device's (roomStamp), so it
+                // still goes.
                 const theirs = existing === undefined ? null : peerRecordShape(event.collection, record.id, existing);
                 if (theirs !== null && !isAhead(theirs, now) && isNewer(theirs, record)) {
                   if (!this.olderHere.get(event.collection)?.has(record.id)) behind.push(theirs);
@@ -795,6 +816,8 @@ export class XDBSyncAdapter {
                 }
                 if (existing === undefined || !deepEqual(existing, json)) {
                   ymap.set(record.id, json);
+                  // This device's copy is the room's now, not one older than it.
+                  this.olderHere.get(event.collection)?.delete(record.id);
                 }
                 this.xdb.forgetPendingRemoval?.(event.collection, record.id);
               }
@@ -973,13 +996,10 @@ function recordToJSON(record: XDBRecord): Record<string, unknown> {
 }
 
 /**
- * How far ahead of this device's clock a peer's stamp may be. A room has no
- * clock of authority, as a sync host has, so this is judged by the
- * receiver's, which may itself be slow (a machine an hour out after a time
- * zone change): it is wide enough for any honest clock, and still refuses a
- * stamp of 9999, which won over every edit after it.
+ * How far ahead of this device's clock a peer's stamp may be: the limit an
+ * edit made here follows a stamp to (xdb-service.ts, STAMP_AHEAD_LIMIT_MS).
  */
-const MAX_FUTURE_DRIFT_MS = 24 * 60 * 60 * 1000;
+const MAX_FUTURE_DRIFT_MS = STAMP_AHEAD_LIMIT_MS;
 
 /** An ISO time, as XDB stamps every write (`toISOString`), with or without an offset. */
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
@@ -1031,10 +1051,21 @@ function peerRecordShape(collName: string, key: string, val: unknown): XDBRecord
     id: json.id,
     collection: collName,
     data: (json.data as Record<string, unknown> | undefined) ?? {},
-    created_at: created,
-    updated_at: updated,
+    created_at: asWritten(created),
+    updated_at: asWritten(updated),
     deleted: (json.deleted as boolean | undefined) ?? false,
   };
+}
+
+/**
+ * A peer's stamp written as XDB writes its own (`toISOString`), so that what
+ * is kept here orders as text too, wherever something still compares it so.
+ * One that is no time is left as it is (isStamp has refused it for
+ * `updated_at`).
+ */
+function asWritten(stamp: string): string {
+  const at = Date.parse(stamp);
+  return stamp === '' || !Number.isFinite(at) ? stamp : new Date(at).toISOString();
 }
 
 // ── Sync Manager (multiple adapters) ──────────────────────

@@ -241,17 +241,65 @@ describe('a private room with no key', () => {
     expect(started[0].wireRoom).toBeUndefined();
   });
 
+  /**
+   * Hold every secret being worked out until `release()`. How long PBKDF2
+   * takes is the machine's: on a quick one it was done within the tick the
+   * tests below waited, before the stop they make while it is under way.
+   */
+  function holdSecrets(): { release: () => void } {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const real = globalThis.crypto.subtle;
+    vi.stubGlobal('crypto', {
+      subtle: {
+        importKey: real.importKey.bind(real),
+        deriveBits: async (...args: Parameters<SubtleCrypto['deriveBits']>) => {
+          await held;
+          return real.deriveBits(...args);
+        },
+      },
+    });
+    return { release };
+  }
+
   it('is not opened when it is stopped while its secret is worked out', async () => {
-    const ns = keyless();
-    ns.startSync('lobby');
-    ns.stopSync('lobby');
-    await settled();
-    ns.startSync('other');
-    await flush();
-    // Every room of the app, while the secret of `other` is still being worked out.
-    ns.stopSync();
-    await settled();
-    expect(started).toEqual([]);
+    const secrets = holdSecrets();
+    try {
+      const ns = keyless();
+      ns.startSync('lobby');
+      ns.stopSync('lobby');
+      await flush();
+      ns.startSync('other');
+      await flush();
+      // Every room of the app, while the secret of `other` is still being worked out.
+      ns.stopSync();
+      secrets.release();
+      await settled();
+      expect(started).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // xdb-sync's stopSync reads a room that is no name as every room; the
+  // controls read '' and null as a room of that name, and a start of
+  // `lobby` still working out its name opened after the stop.
+  it('is not opened when every room is stopped by an empty name', async () => {
+    const secrets = holdSecrets();
+    try {
+      const ns = keyless();
+      ns.startSync('lobby');
+      await flush();
+      ns.stopSync('');
+      ns.startSync('other');
+      await flush();
+      (ns.stopSync as (room?: unknown) => void)(null);
+      secrets.release();
+      await settled();
+      expect(started).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('is opened when it is started again after a stop', async () => {

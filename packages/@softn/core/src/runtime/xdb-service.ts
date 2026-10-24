@@ -95,24 +95,50 @@ function storableText(data: unknown): string | undefined {
   }
 }
 
-/** How far ahead of this clock a record's stamp may be for an edit to follow it (editStamp). */
-const FOLLOW_AHEAD_MS = 60 * 60 * 1000;
+/**
+ * How far ahead of this clock a record's stamp may be: what peer sync takes
+ * from a room (xdb-sync.ts), and what an edit follows (editStamp). One limit
+ * for both, because the newer stamp wins: an edit that could not follow a
+ * stamp a peer accepts lost to it, and a script's edit of a record stamped
+ * between an hour (the limit edits had) and a day ahead was put back on the
+ * device that made it. A room has no clock of authority, as a sync host has,
+ * so this is wide enough for any honest clock (one an hour out after a time
+ * zone change) and still refuses a stamp of 9999, which won over every edit.
+ */
+export const STAMP_AHEAD_LIMIT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A stamp as a time to order by: milliseconds, or -Infinity for none or one
+ * that is no time. As text, stamps order only while they are written alike:
+ * the native store and the sync host write `+00:00` and nanoseconds, and a
+ * peer can write any offset, which as text sorted up to two days ahead.
+ */
+export function stampTime(stamp: string | undefined): number {
+  const at = stamp ? Date.parse(stamp) : NaN;
+  return Number.isFinite(at) ? at : -Infinity;
+}
 
 /**
  * The stamp of an edit made here to a record stamped `previous`: later than
  * it. The newer stamp wins wherever records meet (peer sync, the sync host),
  * and an edit was stamped with this clock alone, so on a device whose clock
  * ran behind the one that last wrote the record, the person's own edit was
- * older than what it edited and lost to it on every peer. A stamp up to an
- * hour ahead is followed by a millisecond; one further ahead is not copied
- * onto the edit (a peer refuses a stamp a day ahead of its clock), and the
- * edit takes this clock's time.
+ * older than what it edited and lost to it on every peer. A stamp up to
+ * STAMP_AHEAD_LIMIT_MS ahead is followed by a millisecond; one further ahead
+ * is one no peer takes, and the edit takes this clock's time.
  */
 export function editStamp(previous: string | undefined, now = Date.now()): string {
-  const at = previous ? Date.parse(previous) : NaN;
-  if (Number.isFinite(at) && at >= now && at - now <= FOLLOW_AHEAD_MS) return new Date(at + 1).toISOString();
+  const at = stampTime(previous);
+  if (at >= now && at - now <= STAMP_AHEAD_LIMIT_MS) return new Date(at + 1).toISOString();
   return new Date(now).toISOString();
 }
+
+/**
+ * Where else a record is kept that an edit made here must be stamped after:
+ * a sync room's copy of it (xdb-sync.ts), which this device may not hold.
+ * Answers that copy's stamp, or nothing.
+ */
+export type StampSource = (collection: string, id: string) => string | undefined;
 
 /** A record's data when it is an object, else nothing: an imported row's `data` may be anything. */
 function objectData(record: XDBRecord): Record<string, unknown> {
@@ -188,6 +214,8 @@ export class XDBService {
   private abandonedCreates: Set<string> = new Set();
   /** App ID for per-app database isolation in Tauri */
   private appId: string | undefined;
+  /** The sync rooms' copies an edit is stamped after (StampSource). */
+  private stampSources = new Set<StampSource>();
 
   // Storage state (audit SN-02)
   private storageState: XDBStorageState = 'ready';
@@ -387,7 +415,7 @@ export class XDBService {
           // Never revive locally deleted records
           if (existing?.deleted) continue;
           // Server record wins if local doesn't exist or is older
-          if (!existing || existing.updated_at <= r.updated_at) {
+          if (!existing || stampTime(existing.updated_at) <= stampTime(r.updated_at)) {
             coll.set(r.id, r);
           }
         }
@@ -595,6 +623,36 @@ export class XDBService {
     this.issues = this.issues.filter(i => !(i.kind === 'write-failed' && i.collection === collection));
     if (this.storageState === 'degraded' && this.corrupt.size === 0 && this.issues.length === 0) this.storageState = 'ready';
     this.notifyStatus();
+  }
+
+  /**
+   * Have edits stamped after what `source` holds of a record as well as what
+   * this store does; the returned function stops it. A sync room may hold a
+   * newer copy than this device kept (its share of the store full, or a
+   * backup restored): an edit stamped after the older copy here was still
+   * older than the room's, lost to it on every peer, and was never sent.
+   */
+  addStampSource(source: StampSource): () => void {
+    this.stampSources.add(source);
+    return () => {
+      this.stampSources.delete(source);
+    };
+  }
+
+  /** The stamp of an edit made now to `record`: after its own and after every room's copy of it. */
+  private stampAfter(record: XDBRecord): string {
+    let latest = record.updated_at;
+    for (const source of this.stampSources) {
+      let theirs: string | undefined;
+      try {
+        theirs = source(record.collection, record.id);
+      } catch {
+        // A room closing as the edit is made: its copy no longer counts.
+        continue;
+      }
+      if (theirs !== undefined && stampTime(theirs) > stampTime(latest)) latest = theirs;
+    }
+    return editStamp(latest);
   }
 
   /** Whether the collection's stored bytes are readable (false = quarantined). */
@@ -1204,7 +1262,7 @@ export class XDBService {
           const existing = coll.get(r.id);
           // Never revive a record that was locally deleted (delete was async, backend is stale)
           if (existing?.deleted) continue;
-          if (!existing || (existing.updated_at <= r.updated_at && !deepEqual(existing, r))) {
+          if (!existing || (stampTime(existing.updated_at) <= stampTime(r.updated_at) && !deepEqual(existing, r))) {
             coll.set(r.id, r);
             changed = true;
           }
@@ -1322,7 +1380,7 @@ export class XDBService {
           const updatedRecord: XDBRecord = {
             ...record,
             data: storedData({ ...objectData(record), ...data }),
-            updated_at: editStamp(record.updated_at),
+            updated_at: this.stampAfter(record),
           };
           coll.set(record.id, updatedRecord);
           applied = updatedRecord;
@@ -1353,7 +1411,7 @@ export class XDBService {
         const updatedRecord: XDBRecord = {
           ...record,
           data: storedData({ ...objectData(record), ...data }),
-          updated_at: editStamp(record.updated_at),
+          updated_at: this.stampAfter(record),
         };
 
         records[index] = updatedRecord;
@@ -1416,7 +1474,7 @@ export class XDBService {
       const updatedRecord: XDBRecord = {
         ...record,
         data: storedData({ ...objectData(record), ...data }),
-        updated_at: editStamp(record.updated_at),
+        updated_at: this.stampAfter(record),
       };
       coll.set(record.id, updatedRecord);
       this.emit({ type: 'update', collection, record: updatedRecord });
@@ -1448,7 +1506,7 @@ export class XDBService {
     const updatedRecord: XDBRecord = {
       ...record,
       data: storedData({ ...objectData(record), ...data }),
-      updated_at: editStamp(record.updated_at),
+      updated_at: this.stampAfter(record),
     };
 
     records[index] = updatedRecord;
@@ -1503,7 +1561,7 @@ export class XDBService {
           const deletedRecord = {
             ...record,
             deleted: true,
-            updated_at: editStamp(record.updated_at),
+            updated_at: this.stampAfter(record),
           };
           coll.set(lookupId, deletedRecord);
           this.emit({ type: 'delete', collection, record: deletedRecord });
@@ -1531,7 +1589,7 @@ export class XDBService {
       if (index !== -1) {
         const record = records[index];
         record.deleted = true;
-        record.updated_at = editStamp(record.updated_at);
+        record.updated_at = this.stampAfter(record);
 
         const persisted = this.setCollectionData(collection, records);
 
@@ -1555,7 +1613,7 @@ export class XDBService {
         for (const [collection, coll] of this.memoryStore) {
           const record = coll.get(id);
           if (record) {
-            const deleted = { ...record, deleted: true, updated_at: editStamp(record.updated_at) };
+            const deleted = { ...record, deleted: true, updated_at: this.stampAfter(record) };
             coll.set(id, deleted);
             this.emit({ type: 'delete', collection, record: deleted });
             this.notifyMutation('delete', collection, id);
@@ -1583,7 +1641,7 @@ export class XDBService {
       const resolvedId = this.optimisticIdMap.get(id) || id;
       const record = coll?.get(id) ?? coll?.get(resolvedId);
       if (!record || record.deleted) return false;
-      const deleted = { ...record, deleted: true, updated_at: editStamp(record.updated_at) };
+      const deleted = { ...record, deleted: true, updated_at: this.stampAfter(record) };
       coll!.set(record.id, deleted);
       this.emit({ type: 'delete', collection, record: deleted });
       this.notifyMutation('delete', collection, record.id);
@@ -1603,7 +1661,7 @@ export class XDBService {
 
     const record = records[index];
     record.deleted = true;
-    record.updated_at = editStamp(record.updated_at);
+    record.updated_at = this.stampAfter(record);
 
     this.setCollectionData(collection, records);
 
