@@ -514,6 +514,35 @@ describe('an app moved to another sync host', () => {
     expect(page(backing).get('notes', 'n1')?.data.title).toBe('edited elsewhere');
   });
 
+  // A fixed five minutes' margin kept the host's copy of a record deleted within five minutes of
+  // its last edit, the clocks agreeing: a move to a host seeded with that edit brought it back.
+  it('keeps a deletion made minutes after the copy a seeded host holds, the clocks agreeing', async () => {
+    const backing = storage();
+    const store = page(backing);
+    const before = connectWithLead(store, 0);
+    const edited = new Date(Date.now() - 180_000).toISOString();
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', edited)] });
+    await tick();
+    store.deleteFromCollection('notes', 'n1');
+    await tick();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    vi.advanceTimersByTime(5000);
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = new XDBServerSync(page(backing), { wsUrl: MOVED, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    moved.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c-moved', serverTime: new Date().toISOString() });
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', edited)] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')).toBeNull();
+    expect((pushed(socket) as unknown as Op[]).map((op) => [op.operation, op.recordId])).toEqual([['delete', 'n1']]);
+    moved.disconnect();
+  });
+
   // The margin was taken off every stamp this page did not give, heard ones too: on a device
   // whose clock was off, a newer edit heard from the old host lost to a seeded copy older than it.
   it('keeps a newer edit heard from the old host against a seeded copy, on a device whose clock is off', async () => {

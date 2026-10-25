@@ -185,21 +185,24 @@ const WATCHED_META = 'sync-watched';
  * hosts a first sync with is still unfinished (`pending`, see `firstSync`); null for none or one
  * that cannot be read.
  */
-function watchedMarks(raw: string | null): { marks: Map<string, number>; pending: Set<string> } | null {
+function watchedMarks(raw: string | null): { marks: Map<string, number>; pending: Set<string>; offsets: Map<string, number> } | null {
   if (raw === null) return null;
   const at = Number(raw);
-  if (raw.trim() !== '' && Number.isFinite(at)) return { marks: new Map([['', at]]), pending: new Set() };
+  if (raw.trim() !== '' && Number.isFinite(at)) return { marks: new Map([['', at]]), pending: new Set(), offsets: new Map() };
   try {
-    const mark = JSON.parse(raw) as { at?: unknown; url?: unknown; marks?: unknown; pending?: unknown } | null;
+    const mark = JSON.parse(raw) as { at?: unknown; url?: unknown; marks?: unknown; pending?: unknown; offsets?: unknown } | null;
     if (mark?.marks && typeof mark.marks === 'object') {
-      const marks = new Map<string, number>();
-      for (const [url, value] of Object.entries(mark.marks as Record<string, unknown>)) {
-        if (typeof value === 'number' && Number.isFinite(value)) marks.set(url, value);
-      }
+      const numbers = (value: unknown) => {
+        const map = new Map<string, number>();
+        for (const [url, n] of Object.entries(value && typeof value === 'object' ? (value as Record<string, unknown>) : {})) {
+          if (typeof n === 'number' && Number.isFinite(n)) map.set(url, n);
+        }
+        return map;
+      };
       const pending = new Set((Array.isArray(mark.pending) ? mark.pending : []).filter((url): url is string => typeof url === 'string'));
-      return { marks, pending };
+      return { marks: numbers(mark.marks), pending, offsets: numbers(mark.offsets) };
     }
-    if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return { marks: new Map([[typeof mark.url === 'string' ? mark.url : '', mark.at]]), pending: new Set() };
+    if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return { marks: new Map([[typeof mark.url === 'string' ? mark.url : '', mark.at]]), pending: new Set(), offsets: new Map() };
   } catch {
     // Unreadable: no mark.
   }
@@ -649,6 +652,14 @@ export class XDBServerSync {
    * write the host's older copies over newer records.
    */
   private firstSync = false;
+  /**
+   * The host's clock offset as the last page that heard its time kept it (beside the marks): a
+   * tombstone made on an earlier page is weighed with the larger of it and this page's
+   * (`newerHere`), as the device's clock may have been set right in between. `offsetKnown`: this
+   * page has heard the host's time, and saves its offset.
+   */
+  private savedOffset = 0;
+  private offsetKnown = false;
   /** Ops restored from a queue kept for another host, by id, with that host (kept with them when saved). */
   private otherHost = new Map<string, string>();
   /** Collections this client has written to: with a `collections` list, these are its own as well. */
@@ -1033,6 +1044,7 @@ export class XDBServerSync {
         this.clientId = msg.clientId;
         this.serverTime = msg.serverTime;
         this.clockOffset = clockOffset(msg.serverTime, Date.now());
+        this.offsetKnown = true;
         this.connected = true;
         this.reconnectAttempts = 0;
         this.listeners.connect.forEach((fn) => fn());
@@ -1704,12 +1716,11 @@ export class XDBServerSync {
   private newerHere(made: number, how: { asIs?: boolean } | undefined, theirs: unknown, deleted = false): boolean {
     const at = stampAt(theirs);
     if (!how?.asIs) return made + this.clockOffset > at;
-    // And no less than TOMBSTONE_MARGIN_MS: the clock may have been set right since the deletion.
-    return (deleted ? made - Math.max(Math.abs(this.clockOffset), XDBServerSync.TOMBSTONE_MARGIN_MS) : made) > at;
+    // And no less than the offset a page before knew (`savedOffset`): the clock may have been set
+    // right since the deletion. A fixed floor in its place kept the host's copy of every record
+    // deleted within it of its last edit, with the clocks agreeing.
+    return (deleted ? made - Math.max(Math.abs(this.clockOffset), Math.abs(this.savedOffset)) : made) > at;
   }
-
-  /** The least margin a tombstone from an earlier page is weighed with (`newerHere`). */
-  private static readonly TOMBSTONE_MARGIN_MS = 5 * 60 * 1000;
 
   /** How a change of a record as the store holds it is stamped: at its stamp, with the offset where this page gave it. */
   private stampOfHeld(collection: string, record: HeldRecord): { made: number; how?: { asIs: true } } {
@@ -2315,6 +2326,7 @@ export class XDBServerSync {
     // looked for (rather than every record it holds sent again). A mark or a
     // place of another host's is none for this one (`movedHost`).
     const kept = watchedMarks(meta.readSyncMeta(WATCHED_META));
+    this.savedOffset = kept?.offsets.get(url) ?? 0;
     if (kept?.pending.has(url)) {
       // A first sync with this host that a page left unfinished: synced with first again.
       this.movedHost = true;
@@ -2507,7 +2519,9 @@ export class XDBServerSync {
       const url = this.config.wsUrl;
       const held = this.markHeld || this.movedCreates.size > 0;
       try {
-        const kept = watchedMarks(meta.readSyncMeta(WATCHED_META)) ?? { marks: new Map<string, number>(), pending: new Set<string>() };
+        const kept = watchedMarks(meta.readSyncMeta(WATCHED_META)) ?? { marks: new Map<string, number>(), pending: new Set<string>(), offsets: new Map<string, number>() };
+        // This host's offset once this page has heard its time, for the next page (`savedOffset`).
+        if (this.offsetKnown) kept.offsets.set(url, this.clockOffset);
         // A number alone was this host's.
         const legacy = kept.marks.get('');
         kept.marks.delete('');
@@ -2520,7 +2534,12 @@ export class XDBServerSync {
         } else if (this.watched !== null && Number.isFinite(this.watched)) {
           kept.marks.set(url, this.watched);
         }
-        meta.writeSyncMeta(WATCHED_META, JSON.stringify({ v: 2, marks: Object.fromEntries(kept.marks), ...(kept.pending.size > 0 ? { pending: [...kept.pending] } : {}) }));
+        meta.writeSyncMeta(WATCHED_META, JSON.stringify({
+          v: 2,
+          marks: Object.fromEntries(kept.marks),
+          ...(kept.pending.size > 0 ? { pending: [...kept.pending] } : {}),
+          ...(kept.offsets.size > 0 ? { offsets: Object.fromEntries(kept.offsets) } : {}),
+        }));
         if (!held) {
           this.watched = now;
           this.firstSync = false;
