@@ -47,6 +47,25 @@ it('starts the app once the desktop store has loaded', async () => {
   await act(async () => root.unmount());
 });
 
+it('says it is loading meanwhile, and starts the app all the same if the load never ends', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<SoftNWithXDB source="<div>started</div>" appId={`desktop-stuck-${Math.random().toString(36).slice(2)}`} />);
+    });
+    expect(container.querySelector('[role="status"]')?.textContent).toMatch(/loading/i);
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+    });
+    expect(container.textContent).toContain('started');
+    await act(async () => root.unmount());
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('starts the app at once on a store loaded from the start (the browser)', async () => {
   delete (globalThis as unknown as { __TAURI__?: unknown }).__TAURI__;
   const container = document.createElement('div');

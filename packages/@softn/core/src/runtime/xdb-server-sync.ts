@@ -543,6 +543,8 @@ export class XDBServerSync {
    * that tab's queue saved without it, so nothing here says the host has the record now.
    */
   private retriedUpdates = new Set<string>();
+  /** Deletes the host refused, by `recordKey`: not sent again by `deletionUnsent`. */
+  private refusedDeletes = new Set<string>();
   /**
    * Records that may or may not be on the host, by collection and id, with the create sent
    * for each live one (`create`): every record on a host the store has not synced with
@@ -1481,11 +1483,6 @@ export class XDBServerSync {
         deleted.push(record);
         continue;
       }
-      // Deleted here after the host's copy, with no deletion of it waiting: the deletion never
-      // reached this host (the store was moved to it, or first synced with it, and the page went
-      // before the pull brought the copy). Sent, and the copy not written, which brought the
-      // record back.
-      if (this.deletionUnsent(collection, record, changed.get(`${collection}\u0000${record.id}`), held)) continue;
       try {
         const before = batch.length;
         if (!this.applyPulled(record, changed.get(`${collection}\u0000${record.id}`), batch)) outcome.set(record, { held: true });
@@ -1515,19 +1512,33 @@ export class XDBServerSync {
       }
     }
     if (batch.length > 0) {
+      // Deleted here after the host's copy, with no change of it waiting: a deletion that never
+      // reached this host (the store was moved to it, or first synced with it, and the page went
+      // before the pull brought the copy). Kept and sent, where the copy was written over it.
+      // Weighed by the store as it writes, which reads the collection then.
+      const unsent = new Map<string, { made: number; how?: { asIs: true } }>();
+      const keepDeletion = (here: HeldRecord, theirs: { id: string; updatedAt: string }) => {
+        if (this.refusedDeletes.has(`${collection}\u0000${theirs.id}`)) return false;
+        const stamp = this.stampOfHeld(collection, here);
+        if (!this.newerHere(stamp.made, stamp.how, theirs.updatedAt)) return false;
+        unsent.set(theirs.id, stamp);
+        return true;
+      };
       try {
-        if (typeof this.xdb.upsertManyFromServer === 'function') this.xdb.upsertManyFromServer(collection, batch);
-        else for (const { record, keepLocalDelete } of batch) this.xdb.upsertFromServer(collection, record, keepLocalDelete);
+        if (typeof this.xdb.upsertManyFromServer === 'function') this.xdb.upsertManyFromServer(collection, batch, keepDeletion);
+        else for (const { record, keepLocalDelete } of batch) this.xdb.upsertFromServer(collection, record, keepLocalDelete, keepDeletion);
       } catch {
         // Refused whole (the browser's own quota): each on its own, so the rest are written.
+        unsent.clear();
         batch.forEach(({ record, keepLocalDelete }, index) => {
           try {
-            this.xdb.upsertFromServer(collection, record, keepLocalDelete);
+            this.xdb.upsertFromServer(collection, record, keepLocalDelete, keepDeletion);
           } catch (err) {
             outcome.set(batched[index], { failed: err });
           }
         });
       }
+      for (const [id, { made, how }] of unsent) this.queueChange({ type: 'delete', collection, recordId: id }, made, how);
     }
     for (const record of list) {
       if (!record || typeof record.id !== 'string') continue;
@@ -1626,7 +1637,7 @@ export class XDBServerSync {
     const record = held().get(theirs.id);
     if (!record) return false;
     const { made, how } = this.stampOfHeld(collection, record);
-    if (!(this.hostTimeOf(made, how) > stampAt(theirs.updatedAt))) return false;
+    if (!this.newerHere(made, how, theirs.updatedAt)) return false;
     this.queueChange(
       record.deleted ? { type: 'delete', collection, recordId: theirs.id } : { type: 'update', collection, recordId: theirs.id, data: objectData(record.data) },
       made,
@@ -1681,22 +1692,17 @@ export class XDBServerSync {
   }
 
   /**
-   * A live copy of a pull whose record is deleted here, later than the copy, with no change of
-   * it waiting (`here`): the deletion is queued, and true says the copy is not to be written.
+   * Whether the record here (stamped `made`, as `stampOfHeld` reads it) is newer than the host's
+   * copy stamped `theirs`. A stamp this page gave is in this device's time, and the offset puts it
+   * in the host's. Any other may be the host's, or this device's from an earlier page: by this
+   * device's clock it can be out by as much as the offset either way, so it is newer only by more
+   * than that, and within it the host's copy is taken. On a device whose clock ran ahead, a
+   * deletion made on an earlier page outweighed another device's later edit, and undid it.
    */
-  private deletionUnsent(collection: string, theirs: ServerRecord, here: 'update' | 'delete' | undefined, held: () => Map<string, HeldRecord>): boolean {
-    if (here !== undefined) return false;
-    const record = held().get(theirs.id);
-    if (!record?.deleted) return false;
-    const { made, how } = this.stampOfHeld(collection, record);
-    if (!(this.hostTimeOf(made, how) > stampAt(theirs.updatedAt))) return false;
-    this.queueChange({ type: 'delete', collection, recordId: theirs.id }, made, how);
-    return true;
-  }
-
-  /** A record's stamp (`stampOfHeld`) in the host's time, as a copy the host sends is weighed against it. */
-  private hostTimeOf(made: number, how: { asIs?: boolean } | undefined): number {
-    return how?.asIs ? made : made + this.clockOffset;
+  private newerHere(made: number, how: { asIs?: boolean } | undefined, theirs: unknown): boolean {
+    const at = stampAt(theirs);
+    if (!how?.asIs) return made + this.clockOffset > at;
+    return made - Math.abs(this.clockOffset) > at;
   }
 
   /** How a change of a record as the store holds it is stamped: at its stamp, with the offset where this page gave it. */
@@ -1887,7 +1893,9 @@ export class XDBServerSync {
     if (this.retryNotFound(opId, reason)) return;
     // A removal of a record the host never had (xdb's NotFound): done, as the host keeps no copy.
     const removed = this.removals.delete(opId) && /\bRecord not found\b/.test(String(reason));
-    if (!removed) this.noteRefused(this.pendingOps.get(opId) ?? this.inflightOps.get(opId), reason);
+    const refused = this.pendingOps.get(opId) ?? this.inflightOps.get(opId);
+    if (!removed) this.noteRefused(refused, reason);
+    if (!removed && refused?.operation === 'delete') this.refusedDeletes.add(recordKey(refused));
     this.pendingOps.delete(opId);
     this.inflightOps.delete(opId);
     this.forgetMade(opId);

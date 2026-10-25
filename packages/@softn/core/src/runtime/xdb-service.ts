@@ -170,6 +170,13 @@ function takeFromImports(note: UnheardNote, collection: string, id: string): 'cr
   return null;
 }
 
+/**
+ * Whether a record deleted here is to stay so against the server's live copy of it
+ * (`upsertFromServer`, `upsertManyFromServer`): server sync's weighing of the two, for a deletion
+ * that never reached the host.
+ */
+export type KeepDeletion = (here: XDBRecord, theirs: { id: string; updatedAt: string }) => boolean;
+
 /** What a server sync client reads of the note (`XDBService.readUnheardNote`). */
 export interface UnheardNoteRead {
   edits: UnheardEdit[];
@@ -2841,16 +2848,19 @@ export class XDBService {
       createdAt: string;
       updatedAt: string;
     },
-    keepLocalDelete = false
-  ): void {
+    keepLocalDelete = false,
+    keepDeletion?: KeepDeletion
+  ): boolean {
     // An update delta carries no creation time, so it comes from the row
     // already here. Without this, `created_at` was restamped to now — a
     // record edited on another device jumped position in any list sorted by
     // it. Deliberately not `get()`, which hides soft-deleted rows — the
     // deleted ones are a case this has to see.
     const existing = this.getAllCollectionData(collection).find((r) => r.id === record.id);
+    // A deletion here that the caller weighs as newer than the server's copy: kept (true).
+    if (!keepLocalDelete && existing?.deleted && keepDeletion?.(existing, record)) return true;
     const xdbRecord = this.fromServer(collection, record, keepLocalDelete, existing);
-    if (!xdbRecord) return;
+    if (!xdbRecord) return false;
     // Restored however the write ends: a write that threw (a full disk) left
     // it set, and every local edit after it was taken for the server's and
     // never pushed.
@@ -2861,6 +2871,7 @@ export class XDBService {
     } finally {
       this._mutationSource = undefined;
     }
+    return false;
   }
 
   /**
@@ -2873,18 +2884,26 @@ export class XDBService {
    */
   upsertManyFromServer(
     collection: string,
-    entries: ReadonlyArray<{ record: Parameters<XDBService['upsertFromServer']>[1]; keepLocalDelete: boolean }>
-  ): void {
-    if (entries.length === 0) return;
+    entries: ReadonlyArray<{ record: Parameters<XDBService['upsertFromServer']>[1]; keepLocalDelete: boolean }>,
+    keepDeletion?: KeepDeletion
+  ): string[] {
+    const kept: string[] = [];
+    if (entries.length === 0) return kept;
     const held = new Map(this.getAllCollectionData(collection).map((r) => [r.id, r]));
     const list: XDBRecord[] = [];
     for (const { record, keepLocalDelete } of entries) {
-      const xdbRecord = this.fromServer(collection, record, keepLocalDelete, held.get(record.id));
+      const existing = held.get(record.id);
+      // A deletion here that the caller weighs as newer than the server's copy: kept, and named.
+      if (!keepLocalDelete && existing?.deleted && keepDeletion?.(existing, record)) {
+        kept.push(record.id);
+        continue;
+      }
+      const xdbRecord = this.fromServer(collection, record, keepLocalDelete, existing);
       if (!xdbRecord) continue;
       held.set(record.id, xdbRecord);
       list.push(xdbRecord);
     }
-    if (list.length === 0) return;
+    if (list.length === 0) return kept;
     this._mutationSource = 'server';
     try {
       this.writeRecords(collection, list);
@@ -2892,6 +2911,7 @@ export class XDBService {
     } finally {
       this._mutationSource = undefined;
     }
+    return kept;
   }
 
   /** A record from the sync host as written here, or null when it is not to be written. */

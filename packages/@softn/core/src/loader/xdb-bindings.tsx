@@ -441,6 +441,9 @@ export interface SoftNWithXDBProps extends SoftNRendererProps {
   syncEncryptionKeyHex?: string;
 }
 
+/** How long an app waits for its store to load before it starts all the same (`SoftNWithXDB`). */
+const STORE_LOAD_WAIT_MS = 15_000;
+
 export function SoftNWithXDB({
   source,
   onDataChange,
@@ -469,6 +472,9 @@ export function SoftNWithXDB({
   // The app starts once its store has loaded what it holds: the desktop's loads its records from
   // the native database after it starts, and a script's first change of a record it knew (a
   // settings record by its id) found none there yet. Browser storage is loaded from the start.
+  // A load that does not end (a native call that never answers) starts it after STORE_LOAD_WAIT_MS
+  // all the same, rather than leave the window blank: a change of a record not loaded yet then
+  // waits for its collection (XDBService `untilLoaded`).
   const [storeLoaded, setStoreLoaded] = useState(() => xdb.getStorageStatus().state !== 'loading');
   useEffect(() => {
     if (xdb.getStorageStatus().state !== 'loading') {
@@ -477,11 +483,14 @@ export function SoftNWithXDB({
     }
     let live = true;
     setStoreLoaded(false);
-    void xdb.isReady.then(() => {
+    const start = () => {
       if (live) setStoreLoaded(true);
-    });
+    };
+    void xdb.isReady.then(start);
+    const fallback = setTimeout(start, STORE_LOAD_WAIT_MS);
     return () => {
       live = false;
+      clearTimeout(fallback);
     };
   }, [xdb]);
 
@@ -669,7 +678,13 @@ export function SoftNWithXDB({
     [xdbHelpers, props.functions]
   );
 
-  if (!storeLoaded) return null;
+  if (!storeLoaded) {
+    return (
+      <div className="softn-store-loading" role="status" aria-live="polite" style={{ padding: '1rem', opacity: 0.7 }}>
+        Loading this app&apos;s data…
+      </div>
+    );
+  }
   return (
     <SoftNRenderer
       {...props}

@@ -452,6 +452,62 @@ describe('an app moved to another sync host', () => {
     expect((pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.recordId])).toEqual([['delete', 'n1']]);
   });
 
+  /** A client of `store` on WS_URL whose host's clock is `lead` ms ahead of this device's (behind, below 0). */
+  function connectWithLead(store: XDBService, lead: number) {
+    const sync = new XDBServerSync(store, { wsUrl: WS_URL, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    sync.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: `c${FakeSocket.made.length}`, serverTime: new Date(Date.now() + lead).toISOString() });
+    return { sync, socket };
+  }
+
+  // On a device whose clock runs ahead of the host's, a deletion made on an earlier page, in
+  // this device's time, outweighed another device's edit the host had taken after it (the copy
+  // that answered the deletion lost with the page), and the deletion undid that edit.
+  it("does not take a deletion made here for newer than a host's copy within the clocks' difference", async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const before = connectWithLead(store, -60_000);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.deleteFromCollection('notes', 'n1');
+    await tick();
+    const deletedAt = Date.now();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    // The page goes on a while, and its mark with it, past the deletion.
+    vi.advanceTimersByTime(5000);
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    // Another device's edit, 30 seconds after the deletion in the host's time.
+    const next = connectWithLead(page(backing), -60_000);
+    next.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'edited elsewhere', new Date(deletedAt - 60_000 + 30_000).toISOString())] });
+    await tick();
+    expect(pushed(next.socket)).toEqual([]);
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('edited elsewhere');
+  });
+
+  // A host from before sends no record back for a deletion it refuses, so the tombstone stayed,
+  // and every whole pull sent the deletion again, refused again, the person told each time.
+  it('does not send again a deletion the host refused', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const live = connect(store);
+    live.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.deleteFromCollection('notes', 'n1');
+    await tick();
+    const [deletion] = pushed(live.socket) as unknown as Array<{ id: string }>;
+    live.socket.receive({ type: 'sync_reject', opId: deletion.id, reason: 'Rejected by onBeforeSync' });
+    await tick();
+    live.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    await tick();
+    expect(pushed(live.socket)).toHaveLength(1);
+    live.sync.disconnect();
+  });
+
   // One mark, the last host's: a page on the first host after a tab on another (an update of the
   // app moved it) took the store for one moved there, sent a create of every record, and the
   // host's answers undid what the other host had been sent.
