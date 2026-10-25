@@ -61,6 +61,8 @@ let rows: Map<string, Row>;
 let loading: Promise<void> | null;
 /** Collections the native store fails to read. */
 let unreadable: Set<string>;
+/** Held back until released, a collection at a time. */
+let loadingOf: Map<string, Promise<void>>;
 
 function storage() {
   const kept = new Map<string, string>();
@@ -78,6 +80,7 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
       return [...new Set([...rows.values()].map((row) => row.collection))];
     case 'get_collection': {
       if (loading) await loading;
+      await loadingOf.get(String(args.collection));
       if (unreadable.has(String(args.collection))) throw new Error('database disk image is malformed');
       return [...rows.values()].filter((row) => row.collection === args.collection && !row.deleted);
     }
@@ -147,6 +150,7 @@ beforeEach(() => {
   rows = new Map();
   loading = null;
   unreadable = new Set();
+  loadingOf = new Map();
   nativeLag = 0;
   FakeSocket.made = [];
   invoke.mockClear();
@@ -311,6 +315,47 @@ describe('a deletion or an edit on the desktop of a record the store has not loa
       sync.disconnect();
     });
   }
+
+  it('made with deleteAsync while it loads, goes once it has, and server sync hears of it', async () => {
+    const backing = storage();
+    synced(backing);
+    let release!: () => void;
+    loading = new Promise((resolve) => { release = resolve; });
+    const store = page(backing);
+    const sync = client(store);
+    sync.connect();
+    const done = store.deleteAsync('n1');
+    release();
+    expect(await done).toBe(true);
+    await settle();
+    expect(rows.get('n1')?.deleted).toBe(true);
+    const socket = await answer();
+    expect(pushed(socket).filter((op) => op.recordId === 'n1').map((op) => op.operation)).toEqual(['delete']);
+    sync.disconnect();
+  });
+
+  // Made once the whole store had loaded, it undid an edit made since in a collection that
+  // loaded first.
+  it('made while its collection loads, goes as soon as that collection has, before a later edit there', async () => {
+    const at = nativeStamp(Date.now() - 120_000);
+    rows.set('t1', { id: 't1', collection: 'tasks', data: { title: 'v1' }, created_at: at, updated_at: at, deleted: false });
+    rows.set('n1', { id: 'n1', collection: 'notes', data: { title: 'v1' }, created_at: at, updated_at: at, deleted: false });
+    let releaseTasks!: () => void;
+    let releaseNotes!: () => void;
+    loadingOf.set('tasks', new Promise((resolve) => { releaseTasks = resolve; }));
+    loadingOf.set('notes', new Promise((resolve) => { releaseNotes = resolve; }));
+    const store = page(storage());
+    store.update('t1', { title: 'from the script, early' });
+    releaseTasks();
+    await settle();
+    expect(store.get('tasks', 't1')?.data.title).toBe('from the script, early');
+    store.update('t1', { title: 'the person, later' });
+    releaseNotes();
+    await store.isReady;
+    await settle();
+    expect(store.get('tasks', 't1')?.data.title).toBe('the person, later');
+    expect(rows.get('t1')?.data.title).toBe('the person, later');
+  });
 
   it('loaded without it, is refused, as in browser storage', async () => {
     const backing = storage();

@@ -466,6 +466,25 @@ export function SoftNWithXDB({
     [xdb, syncEncryptionKeyHex, props.appId, stablePermissionConfig]
   );
 
+  // The app starts once its store has loaded what it holds: the desktop's loads its records from
+  // the native database after it starts, and a script's first change of a record it knew (a
+  // settings record by its id) found none there yet. Browser storage is loaded from the start.
+  const [storeLoaded, setStoreLoaded] = useState(() => xdb.getStorageStatus().state !== 'loading');
+  useEffect(() => {
+    if (xdb.getStorageStatus().state !== 'loading') {
+      setStoreLoaded(true);
+      return;
+    }
+    let live = true;
+    setStoreLoaded(false);
+    void xdb.isReady.then(() => {
+      if (live) setStoreLoaded(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, [xdb]);
+
   // Log per-app database path on mount
   useEffect(() => {
     xdb.getDbPath().then((path) => {
@@ -650,6 +669,7 @@ export function SoftNWithXDB({
     [xdbHelpers, props.functions]
   );
 
+  if (!storeLoaded) return null;
   return (
     <SoftNRenderer
       {...props}

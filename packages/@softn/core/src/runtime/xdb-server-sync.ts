@@ -1481,6 +1481,11 @@ export class XDBServerSync {
         deleted.push(record);
         continue;
       }
+      // Deleted here after the host's copy, with no deletion of it waiting: the deletion never
+      // reached this host (the store was moved to it, or first synced with it, and the page went
+      // before the pull brought the copy). Sent, and the copy not written, which brought the
+      // record back.
+      if (this.deletionUnsent(collection, record, changed.get(`${collection}\u0000${record.id}`), held)) continue;
       try {
         const before = batch.length;
         if (!this.applyPulled(record, changed.get(`${collection}\u0000${record.id}`), batch)) outcome.set(record, { held: true });
@@ -1621,7 +1626,7 @@ export class XDBServerSync {
     const record = held().get(theirs.id);
     if (!record) return false;
     const { made, how } = this.stampOfHeld(collection, record);
-    if (!(made > stampAt(theirs.updatedAt))) return false;
+    if (!(this.hostTimeOf(made, how) > stampAt(theirs.updatedAt))) return false;
     this.queueChange(
       record.deleted ? { type: 'delete', collection, recordId: theirs.id } : { type: 'update', collection, recordId: theirs.id, data: objectData(record.data) },
       made,
@@ -1673,6 +1678,25 @@ export class XDBServerSync {
     let pending = this.movedPending.get(collection);
     if (!pending) this.movedPending.set(collection, (pending = new Map()));
     pending.set(id, { create });
+  }
+
+  /**
+   * A live copy of a pull whose record is deleted here, later than the copy, with no change of
+   * it waiting (`here`): the deletion is queued, and true says the copy is not to be written.
+   */
+  private deletionUnsent(collection: string, theirs: ServerRecord, here: 'update' | 'delete' | undefined, held: () => Map<string, HeldRecord>): boolean {
+    if (here !== undefined) return false;
+    const record = held().get(theirs.id);
+    if (!record?.deleted) return false;
+    const { made, how } = this.stampOfHeld(collection, record);
+    if (!(this.hostTimeOf(made, how) > stampAt(theirs.updatedAt))) return false;
+    this.queueChange({ type: 'delete', collection, recordId: theirs.id }, made, how);
+    return true;
+  }
+
+  /** A record's stamp (`stampOfHeld`) in the host's time, as a copy the host sends is weighed against it. */
+  private hostTimeOf(made: number, how: { asIs?: boolean } | undefined): number {
+    return how?.asIs ? made : made + this.clockOffset;
   }
 
   /** How a change of a record as the store holds it is stamped: at its stamp, with the offset where this page gave it. */

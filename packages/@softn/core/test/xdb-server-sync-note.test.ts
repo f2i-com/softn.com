@@ -425,6 +425,33 @@ describe('an app moved to another sync host', () => {
     expect(mark.marks[MOVED]).toBeGreaterThan(0);
   });
 
+  // A tombstone gets no create, so the move was done once the creates were answered; the page
+  // went before the pull brought the host's live copy, and the next page, no longer moving,
+  // wrote that copy over the deletion made here.
+  it('does not bring back a record deleted here when the pull brings the host its older copy later', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const before = connect(store);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.deleteFromCollection('notes', 'n1');
+    await tick();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    before.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+    // On the new host the page sends nothing (a tombstone has no create), and goes.
+    const closing = connect(page(backing), MOVED);
+    closing.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = connect(page(backing), MOVED);
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', '2026-02-01T00:00:00.000Z')] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')).toBeNull();
+    expect((pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.recordId])).toEqual([['delete', 'n1']]);
+  });
+
   // One mark, the last host's: a page on the first host after a tab on another (an update of the
   // app moved it) took the store for one moved there, sent a create of every record, and the
   // host's answers undid what the other host had been sent.

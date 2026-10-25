@@ -568,6 +568,7 @@ export class XDBService {
       this.noteIssue({ kind: 'hydration-failed', message: `The native database could not be read: ${err instanceof Error ? err.message : String(err)}. Nothing was loaded; retry before making changes.` });
       // Resolve anyway to prevent the app from hanging permanently
       this._resolveReady();
+      this.applyLoaded(true);
       return;
     }
     this.hydrationFailed.delete('*');
@@ -598,6 +599,7 @@ export class XDBService {
         this.knownCollections.add(collection);
         this.hydrationFailed.delete(collection);
         this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
+        this.applyLoaded(false);
       } catch (err) {
         console.error('[XDB] Failed to hydrate collection:', collection, err);
         this.hydrationFailed.add(collection);
@@ -609,6 +611,23 @@ export class XDBService {
     if (this.hydrated) this.issues = this.issues.filter(i => i.kind !== 'hydration-failed');
     this.notifyStatus();
     this._resolveReady();
+    this.applyLoaded(true);
+  }
+
+  /**
+   * Changes asked for while the store loaded, of records it had not loaded yet (`update`,
+   * `delete`, `deleteAsync`), each made as soon as its record's collection has loaded, before
+   * anyone can change it there: made once the whole store had, one could undo a change made
+   * since in a collection that loaded first. Each answers whether it is done; `final`: the load
+   * is over, and a record still not held is not there.
+   */
+  private untilLoaded: Array<(final: boolean) => boolean> = [];
+
+  private applyLoaded(final: boolean): void {
+    if (this.untilLoaded.length === 0) return;
+    const waiting = this.untilLoaded;
+    this.untilLoaded = [];
+    for (const apply of waiting) if (!apply(final) && !final) this.untilLoaded.push(apply);
   }
 
   /** Re-run native hydration after a failure; resolves when the attempt finished. */
@@ -1637,8 +1656,10 @@ export class XDBService {
       // load: not made, as in browser storage and by `updateInCollection`.
       if (touched === undefined) {
         if (this.storageState === 'loading') {
-          void this.hydrationPromise.then(() => {
-            if (this.cachedLive(resolvedId)) this.update(resolvedId, data);
+          this.untilLoaded.push(() => {
+            if (!this.cachedLive(resolvedId)) return false;
+            this.update(resolvedId, data);
+            return true;
           });
         }
         return null;
@@ -1845,8 +1866,10 @@ export class XDBService {
       // storage and by `deleteFromCollection`.
       if (touched === undefined) {
         if (this.storageState !== 'loading') return false;
-        void this.hydrationPromise.then(() => {
-          if (this.cachedLive(resolvedId)) this.delete(resolvedId);
+        this.untilLoaded.push(() => {
+          if (!this.cachedLive(resolvedId)) return false;
+          this.delete(resolvedId);
+          return true;
         });
         return true;
       }
@@ -1915,6 +1938,21 @@ export class XDBService {
    */
   async deleteAsync(id: string): Promise<boolean> {
     if (this.useTauri) {
+      // Not held here: while the store loads, once it has (SQLite deleted it alone, and server
+      // sync never heard of it); loaded without it, not deleted, as `delete` has it.
+      if (!this.cachedLive(id)) {
+        if (this.storageState === 'loading') {
+          // As soon as its collection has loaded (`untilLoaded`).
+          await new Promise<void>((resolve) => {
+            this.untilLoaded.push((final) => {
+              if (!final && !this.cachedLive(id)) return false;
+              resolve();
+              return true;
+            });
+          });
+        }
+        if (!this.cachedLive(id)) return false;
+      }
       try {
         const held = this.cachedLive(id);
         const stamp = held ? this.stampAfter(held) : undefined;
