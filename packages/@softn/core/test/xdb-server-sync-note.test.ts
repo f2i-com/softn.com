@@ -543,6 +543,66 @@ describe('an app moved to another sync host', () => {
     moved.disconnect();
   });
 
+  // The page after the clock was set back saved a mark from the corrected clock, earlier than the
+  // stamps edits had while it ran ahead: every page after sent those again, at those stamps, and
+  // the host took them over other devices' edits made since.
+  it('does not send again, after the clock was set back, what was edited and answered while it ran ahead', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const ahead = connectWithLead(store, -60_000);
+    ahead.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.updateInCollection('notes', 'n1', { title: 'mine' });
+    await tick();
+    ahead.socket.receive({ type: 'sync_ack', opIds: (pushed(ahead.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    vi.advanceTimersByTime(5000);
+    ahead.sync.disconnect();
+    vi.setSystemTime(Date.now() - 60_000);
+
+    const between = connectWithLead(page(backing), 0);
+    between.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    between.sync.disconnect();
+    vi.advanceTimersByTime(2000);
+
+    const third = connectWithLead(page(backing), 0);
+    expect((pushed(third.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1')).toEqual([]);
+    third.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'edited elsewhere', new Date().toISOString())] });
+    await tick();
+    expect((pushed(third.socket) as unknown as Op[]).filter((op) => op.recordId === 'n1')).toEqual([]);
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('edited elsewhere');
+    third.sync.disconnect();
+  });
+
+  // The offset was kept under one host's address, and a new host had none: a deletion made while
+  // the clock ran ten minutes ahead, weighed on the move after it was set right, outweighed
+  // another device's later edit, and the deletion undid it on the new host.
+  it('weighs a deletion made under a clock set right since with that clock\'s offset on a move as well', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const ahead = connectWithLead(store, -600_000);
+    ahead.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.deleteFromCollection('notes', 'n1');
+    await tick();
+    ahead.socket.receive({ type: 'sync_ack', opIds: (pushed(ahead.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    vi.advanceTimersByTime(5000);
+    ahead.sync.disconnect();
+    vi.setSystemTime(Date.now() - 600_000);
+
+    const moved = new XDBServerSync(page(backing), { wsUrl: MOVED, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    moved.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c-moved', serverTime: new Date().toISOString() });
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'edited elsewhere', new Date(Date.now() + 60_000).toISOString())] });
+    await tick();
+    expect((pushed(socket) as unknown as Op[]).filter((op) => op.recordId === 'n1').map((op) => op.operation)).not.toContain('delete');
+    moved.disconnect();
+  });
+
   // The margin was taken off every stamp this page did not give, heard ones too: on a device
   // whose clock was off, a newer edit heard from the old host lost to a seeded copy older than it.
   it('keeps a newer edit heard from the old host against a seeded copy, on a device whose clock is off', async () => {

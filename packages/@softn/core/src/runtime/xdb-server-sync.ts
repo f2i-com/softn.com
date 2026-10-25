@@ -185,7 +185,10 @@ const WATCHED_META = 'sync-watched';
  * hosts a first sync with is still unfinished (`pending`, see `firstSync`); null for none or one
  * that cannot be read.
  */
-function watchedMarks(raw: string | null): { marks: Map<string, number>; pending: Set<string>; offsets: Map<string, number> } | null {
+/** How long the largest clock offset seen is kept for weighing tombstones (`offsetPeak`). */
+const OFFSET_PEAK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function watchedMarks(raw: string | null): { marks: Map<string, number>; pending: Set<string>; offsets: Map<string, number>; peak?: { offset: number; at: number } } | null {
   if (raw === null) return null;
   const at = Number(raw);
   if (raw.trim() !== '' && Number.isFinite(at)) return { marks: new Map([['', at]]), pending: new Set(), offsets: new Map() };
@@ -200,7 +203,13 @@ function watchedMarks(raw: string | null): { marks: Map<string, number>; pending
         return map;
       };
       const pending = new Set((Array.isArray(mark.pending) ? mark.pending : []).filter((url): url is string => typeof url === 'string'));
-      return { marks: numbers(mark.marks), pending, offsets: numbers(mark.offsets) };
+      const peak = (mark as { peak?: { offset?: unknown; at?: unknown } }).peak;
+      return {
+        marks: numbers(mark.marks),
+        pending,
+        offsets: numbers(mark.offsets),
+        ...(typeof peak?.offset === 'number' && Number.isFinite(peak.offset) && typeof peak.at === 'number' && Number.isFinite(peak.at) ? { peak: { offset: peak.offset, at: peak.at } } : {}),
+      };
     }
     if (typeof mark?.at === 'number' && Number.isFinite(mark.at)) return { marks: new Map([[typeof mark.url === 'string' ? mark.url : '', mark.at]]), pending: new Set(), offsets: new Map() };
   } catch {
@@ -660,6 +669,12 @@ export class XDBServerSync {
    */
   private savedOffset = 0;
   private offsetKnown = false;
+  /**
+   * The largest offset any host's page saw in the last OFFSET_PEAK_MS (`peak` beside the marks):
+   * a clock's error is the device's, not a host's, and the latest page's offset, or a new host's
+   * none, left out the error a deletion was made in.
+   */
+  private offsetPeak = 0;
   /** Ops restored from a queue kept for another host, by id, with that host (kept with them when saved). */
   private otherHost = new Map<string, string>();
   /** Collections this client has written to: with a `collections` list, these are its own as well. */
@@ -1719,7 +1734,7 @@ export class XDBServerSync {
     // And no less than the offset a page before knew (`savedOffset`): the clock may have been set
     // right since the deletion. A fixed floor in its place kept the host's copy of every record
     // deleted within it of its last edit, with the clocks agreeing.
-    return (deleted ? made - Math.max(Math.abs(this.clockOffset), Math.abs(this.savedOffset)) : made) > at;
+    return (deleted ? made - Math.max(Math.abs(this.clockOffset), Math.abs(this.savedOffset), Math.abs(this.offsetPeak)) : made) > at;
   }
 
   /** How a change of a record as the store holds it is stamped: at its stamp, with the offset where this page gave it. */
@@ -2327,6 +2342,7 @@ export class XDBServerSync {
     // place of another host's is none for this one (`movedHost`).
     const kept = watchedMarks(meta.readSyncMeta(WATCHED_META));
     this.savedOffset = kept?.offsets.get(url) ?? 0;
+    if (kept?.peak && Date.now() - kept.peak.at <= OFFSET_PEAK_MS) this.offsetPeak = kept.peak.offset;
     if (kept?.pending.has(url)) {
       // A first sync with this host that a page left unfinished: synced with first again.
       this.movedHost = true;
@@ -2520,14 +2536,26 @@ export class XDBServerSync {
       const held = this.markHeld || this.movedCreates.size > 0;
       try {
         const kept = watchedMarks(meta.readSyncMeta(WATCHED_META)) ?? { marks: new Map<string, number>(), pending: new Set<string>(), offsets: new Map<string, number>() };
-        // This host's offset once this page has heard its time, for the next page (`savedOffset`).
-        if (this.offsetKnown) kept.offsets.set(url, this.clockOffset);
+        // This host's offset once this page has heard its time, for the next page (`savedOffset`),
+        // and the largest of the week, whichever host (`offsetPeak`).
+        if (this.offsetKnown) {
+          kept.offsets.set(url, this.clockOffset);
+          if (!kept.peak || Math.abs(this.clockOffset) >= Math.abs(kept.peak.offset) || now - kept.peak.at > OFFSET_PEAK_MS) {
+            kept.peak = { offset: this.clockOffset, at: now };
+          }
+        }
         // A number alone was this host's.
         const legacy = kept.marks.get('');
         kept.marks.delete('');
         if (legacy !== undefined && !kept.marks.has(url)) kept.marks.set(url, legacy);
+        // Forward only: a clock set back since the last page made its mark earlier than the stamps
+        // its edits gave while it ran ahead, and every page after sent those again, at those
+        // stamps, ahead of other devices' edits made since, which they undid. What is changed here
+        // meanwhile while no client listens is in the note.
+        const previous = kept.marks.get(url);
+        const at = previous !== undefined && previous > now ? previous : now;
         if (!held) {
-          kept.marks.set(url, now);
+          kept.marks.set(url, at);
           kept.pending.delete(url);
         } else if (this.firstSync) {
           kept.pending.add(url);
@@ -2539,9 +2567,10 @@ export class XDBServerSync {
           marks: Object.fromEntries(kept.marks),
           ...(kept.pending.size > 0 ? { pending: [...kept.pending] } : {}),
           ...(kept.offsets.size > 0 ? { offsets: Object.fromEntries(kept.offsets) } : {}),
+          ...(kept.peak ? { peak: kept.peak } : {}),
         }));
         if (!held) {
-          this.watched = now;
+          this.watched = at;
           this.firstSync = false;
         }
       } catch {
