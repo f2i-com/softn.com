@@ -575,6 +575,62 @@ describe('an app moved to another sync host', () => {
     third.sync.disconnect();
   });
 
+  // The mark only moves forward, and the note lets go first of the edits the scan of stamps is to
+  // find: after the clock was set back, one let go for want of room was earlier than the mark,
+  // and never went.
+  it('sends, after the clock was set back, an edit the note let go of for want of room', async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const ahead = connectWithLead(store, -60_000);
+    ahead.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.updateInCollection('notes', 'n1', { title: 'mine' });
+    await tick();
+    ahead.socket.receive({ type: 'sync_ack', opIds: (pushed(ahead.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    vi.advanceTimersByTime(5000);
+    ahead.sync.disconnect();
+    vi.setSystemTime(Date.now() - 60_000);
+    const between = connectWithLead(page(backing), 0);
+    between.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    between.sync.disconnect();
+    vi.advanceTimersByTime(2000);
+
+    // Room for no entry a record, only for what the note keeps of the edits it lets go.
+    const full = { ...backing, setItem: (key: string, value: string) => { if (key.endsWith('::sync-unheard') && value.length > 60) throw new DOMException('full', 'QuotaExceededError'); backing.setItem(key, value); } };
+    page(full).create('notes', { title: 'made while the note was full' }, { id: 'n2' });
+    await tick();
+    vi.advanceTimersByTime(1000);
+
+    const next = connectWithLead(page(backing), 0);
+    next.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    expect((pushed(next.socket) as unknown as Op[]).filter((op) => op.recordId === 'n2').map((op) => op.data?.title)).toEqual(['made while the note was full']);
+    next.sync.disconnect();
+  });
+
+  // Written by a clock a year ahead, the mark held every scan back for a year, and the week's
+  // largest offset stayed fresh for a year.
+  it('trusts no mark or offset a clock far ahead wrote, once it is set right', async () => {
+    const backing = storage();
+    await synced(backing);
+    const year = 365 * 24 * 3600e3;
+    vi.setSystemTime(Date.now() + year);
+    const ahead = connectWithLead(page(backing), -year);
+    ahead.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    ahead.sync.disconnect();
+    vi.setSystemTime(Date.now() - year);
+    const after = connectWithLead(page(backing), 0);
+    after.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    after.sync.disconnect();
+    const kept = JSON.parse(backing.getItem('xdb:app::sync-watched')!);
+    expect(kept.marks[WS_URL]).toBeLessThanOrEqual(Date.now());
+    expect(Math.abs(kept.peak.at - Date.now())).toBeLessThan(24 * 3600e3);
+  });
+
   // The offset was kept under one host's address, and a new host had none: a deletion made while
   // the clock ran ten minutes ahead, weighed on the move after it was set right, outweighed
   // another device's later edit, and the deletion undid it on the new host.

@@ -156,6 +156,12 @@ interface UnheardNote {
   removals: Map<string, UnheardRemoval>;
   /** By collection and time (`importKey`). */
   imports: Map<string, ImportGroup>;
+  /**
+   * The earliest of the edits the note let go for want of room (`writeUnheardNoteMaps`), which
+   * the client's scan of stamps looks back to: it starts at the mark of where listening stopped,
+   * which a clock set back since can have left later than them.
+   */
+  scanFrom?: number;
 }
 
 const importKey = (collection: string, made: number) => `${collection}\u0000${made}`;
@@ -182,6 +188,8 @@ export interface UnheardNoteRead {
   edits: UnheardEdit[];
   removals: UnheardRemoval[];
   imports: UnheardImport[];
+  /** The earliest edit the note let go of, which the scan of stamps looks back to. */
+  scanFrom?: number;
 }
 
 /**
@@ -2613,7 +2621,8 @@ export class XDBService {
   private readUnheardNoteMaps(): UnheardNote {
     const note: UnheardNote = { edits: new Map(), removals: new Map(), imports: new Map() };
     try {
-      const saved = JSON.parse(this.readSyncMeta(XDBService.UNHEARD_NOTE) ?? 'null') as { e?: unknown; r?: unknown; i?: unknown } | null;
+      const saved = JSON.parse(this.readSyncMeta(XDBService.UNHEARD_NOTE) ?? 'null') as { e?: unknown; r?: unknown; i?: unknown; f?: unknown } | null;
+      if (typeof saved?.f === 'number' && Number.isFinite(saved.f)) note.scanFrom = saved.f;
       for (const entry of Array.isArray(saved?.e) ? saved.e : []) {
         const [collection, id, stamp, kind, own, made, after] = Array.isArray(entry) ? entry : [];
         if (typeof collection !== 'string' || typeof id !== 'string' || typeof stamp !== 'string') continue;
@@ -2669,15 +2678,21 @@ export class XDBService {
     let edits = [...note.edits.values()];
     let removals = [...note.removals.values()];
     let imports = new Map([...note.imports].map(([key, group]) => [key, { ...group, creates: new Set(group.creates), updates: new Set(group.updates) }]));
+    let scanFrom = note.scanFrom;
     const lasting = (e: UnheardEdit) => e.kind === 'delete';
     const imported = (e: UnheardEdit) => !lasting(e) && e.made !== undefined && e.after === undefined;
+    // Edits let go for the scan of stamps to find: it looks back to the earliest (`scanFrom`).
+    const letGo = (keep: (e: UnheardEdit) => boolean) => {
+      for (const e of edits) {
+        if (keep(e)) continue;
+        const at = Math.min(e.made ?? Infinity, stampTime(e.stamp));
+        if (Number.isFinite(at)) scanFrom = Math.min(scanFrom ?? Infinity, at);
+      }
+      edits = edits.filter(keep);
+    };
     const steps: Array<() => void> = [
-      () => {
-        edits = edits.filter((e) => lasting(e) || e.made !== undefined || e.after !== undefined);
-      },
-      () => {
-        edits = edits.filter((e) => lasting(e) || imported(e));
-      },
+      () => letGo((e) => lasting(e) || e.made !== undefined || e.after !== undefined),
+      () => letGo((e) => lasting(e) || imported(e)),
       () => {
         for (const e of edits.filter(imported)) {
           const key = importKey(e.collection, e.made!);
@@ -2689,7 +2704,7 @@ export class XDBService {
       },
     ];
     for (;;) {
-      if (this.tryWriteUnheardNote(edits, removals, imports)) return;
+      if (this.tryWriteUnheardNote(edits, removals, imports, scanFrom)) return;
       const step = steps.shift();
       if (step) {
         step();
@@ -2722,7 +2737,7 @@ export class XDBService {
   }
 
   /** One try at writing the note (`writeUnheardNoteMaps`): false when it is too long or the store refuses it. */
-  private tryWriteUnheardNote(edits: UnheardEdit[], removals: UnheardRemoval[], imports: Map<string, ImportGroup>): boolean {
+  private tryWriteUnheardNote(edits: UnheardEdit[], removals: UnheardRemoval[], imports: Map<string, ImportGroup>, scanFrom?: number): boolean {
     const e = edits.map((edit) => JSON.stringify([
       edit.collection, edit.id, edit.stamp, edit.kind, edit.own ? 1 : 0,
       ...(edit.after !== undefined ? [edit.made ?? null, edit.after] : edit.made !== undefined ? [edit.made] : []),
@@ -2739,7 +2754,8 @@ export class XDBService {
     const i = [...imports.values()]
       .filter((group) => group.creates.size + group.updates.size > 0)
       .map((group) => JSON.stringify([group.collection, group.made, [...group.creates], [...group.updates]]));
-    const value = e.length + r.length + i.length > 0 ? `{"v":1,"e":[${e.join(',')}],"r":[${r.join(',')}],"i":[${i.join(',')}]}` : null;
+    const from = scanFrom === undefined ? '' : `,"f":${scanFrom}`;
+    const value = e.length + r.length + i.length > 0 || from !== '' ? `{"v":1,"e":[${e.join(',')}],"r":[${r.join(',')}],"i":[${i.join(',')}]${from}}` : null;
     if (value !== null) {
       if (value.length > XDBService.UNHEARD_NOTE_CHARS) return false;
       // An app's records and notes share its budget of the browser's storage: the note takes no
@@ -2764,6 +2780,7 @@ export class XDBService {
       imports: [...note.imports.values()]
         .filter((group) => group.creates.size + group.updates.size > 0)
         .map((group) => ({ collection: group.collection, made: group.made, creates: [...group.creates], updates: [...group.updates] })),
+      ...(note.scanFrom === undefined ? {} : { scanFrom: note.scanFrom }),
     };
   }
 
@@ -2788,6 +2805,11 @@ export class XDBService {
       if (!group) continue;
       for (const id of list.creates) changed = group.creates.delete(id) || changed;
       for (const id of list.updates) changed = group.updates.delete(id) || changed;
+    }
+    // Looked back to by the scan that read it.
+    if (read.scanFrom !== undefined && note.scanFrom === read.scanFrom) {
+      note.scanFrom = undefined;
+      changed = true;
     }
     if (changed) this.writeUnheardNoteMaps(note);
   }

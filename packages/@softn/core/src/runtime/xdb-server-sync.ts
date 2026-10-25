@@ -187,6 +187,14 @@ const WATCHED_META = 'sync-watched';
  */
 /** How long the largest clock offset seen is kept for weighing tombstones (`offsetPeak`). */
 const OFFSET_PEAK_MS = 7 * 24 * 60 * 60 * 1000;
+/** How far ahead of now a kept time may be and still be trusted: one further was written by a clock far ahead. */
+const OFFSET_PEAK_AHEAD_MS = 24 * 60 * 60 * 1000;
+
+/** Whether the peak offset kept at `at` (host time) is still the week's, at `hostNow`. */
+function peakFresh(at: number, hostNow: number): boolean {
+  const age = hostNow - at;
+  return age <= OFFSET_PEAK_MS && age >= -OFFSET_PEAK_AHEAD_MS;
+}
 
 function watchedMarks(raw: string | null): { marks: Map<string, number>; pending: Set<string>; offsets: Map<string, number>; peak?: { offset: number; at: number } } | null {
   if (raw === null) return null;
@@ -2101,8 +2109,9 @@ export class XDBServerSync {
       edits: (whole.edits ?? []).filter((edit) => this.storeLoaded(edit.collection)),
       removals: (whole.removals ?? []).filter((removal) => this.storeLoaded(removal.collection)),
       imports: (whole.imports ?? []).filter((mark) => this.storeLoaded(mark.collection)),
+      ...(whole.scanFrom === undefined ? {} : { scanFrom: whole.scanFrom }),
     };
-    if (note.edits.length + note.removals.length + note.imports.length > 0) this.noteRead = note;
+    if (note.edits.length + note.removals.length + note.imports.length > 0 || note.scanFrom !== undefined) this.noteRead = note;
     // And what was removed for good meanwhile, which leaves nothing to look for: by this page,
     // and by any that wrote it in the note. One record, one removal.
     const removedBy = new Map<string, Map<string, { at: number; after?: string }>>();
@@ -2112,7 +2121,10 @@ export class XDBServerSync {
       removedBy.set(collection, list);
     }
     if (typeof store.getAllRaw !== 'function') return;
-    const since = this.watched === null || unheard === null ? this.watched : Math.min(this.watched, unheard);
+    // And no later than the earliest edit the note let go for want of room (`scanFrom`): the mark
+    // only moves forward, and after a clock was set back it stood later than such an edit.
+    const earliest = Math.min(unheard ?? Infinity, note.scanFrom ?? Infinity);
+    const since = this.watched === null || !Number.isFinite(earliest) ? this.watched : Math.min(this.watched, earliest);
     // A first sync with this host: one the store was never synced with, or moved to. Either may
     // hold the records already (a host seeded from a copy, a backup opened on a new device), and
     // what it sends of them is weighed (`movedPending`) until each record's create is answered;
@@ -2342,7 +2354,7 @@ export class XDBServerSync {
     // place of another host's is none for this one (`movedHost`).
     const kept = watchedMarks(meta.readSyncMeta(WATCHED_META));
     this.savedOffset = kept?.offsets.get(url) ?? 0;
-    if (kept?.peak && Date.now() - kept.peak.at <= OFFSET_PEAK_MS) this.offsetPeak = kept.peak.offset;
+    if (kept?.peak && peakFresh(kept.peak.at, Date.now() + this.savedOffset)) this.offsetPeak = kept.peak.offset;
     if (kept?.pending.has(url)) {
       // A first sync with this host that a page left unfinished: synced with first again.
       this.movedHost = true;
@@ -2540,8 +2552,11 @@ export class XDBServerSync {
         // and the largest of the week, whichever host (`offsetPeak`).
         if (this.offsetKnown) {
           kept.offsets.set(url, this.clockOffset);
-          if (!kept.peak || Math.abs(this.clockOffset) >= Math.abs(kept.peak.offset) || now - kept.peak.at > OFFSET_PEAK_MS) {
-            kept.peak = { offset: this.clockOffset, at: now };
+          // Kept in the host's time: in this device's, a clock far ahead wrote one that stayed
+          // fresh for as long as it had run ahead.
+          const hostNow = now + this.clockOffset;
+          if (!kept.peak || Math.abs(this.clockOffset) >= Math.abs(kept.peak.offset) || !peakFresh(kept.peak.at, hostNow)) {
+            kept.peak = { offset: this.clockOffset, at: hostNow };
           }
         }
         // A number alone was this host's.
@@ -2552,8 +2567,10 @@ export class XDBServerSync {
         // its edits gave while it ran ahead, and every page after sent those again, at those
         // stamps, ahead of other devices' edits made since, which they undid. What is changed here
         // meanwhile while no client listens is in the note.
+        // No more than a day ahead of now, though: one a clock far ahead wrote would hold every
+        // scan back for as long as it ran ahead.
         const previous = kept.marks.get(url);
-        const at = previous !== undefined && previous > now ? previous : now;
+        const at = previous !== undefined && previous > now && previous - now <= OFFSET_PEAK_AHEAD_MS ? previous : now;
         if (!held) {
           kept.marks.set(url, at);
           kept.pending.delete(url);
