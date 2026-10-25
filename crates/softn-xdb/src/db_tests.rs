@@ -1238,6 +1238,23 @@ fn an_edit_is_stamped_after_what_it_edits_and_as_the_page_says() {
     assert!(time(&edited.updated_at) < now + chrono::Duration::minutes(1), "{}", edited.updated_at);
 }
 
+/// What the page loads into its cache: the collection's tombstones with its live records, as
+/// browser storage keeps them, so a deletion made before the page opened can be weighed against a
+/// sync host's copy. The live read is unchanged.
+#[test]
+fn a_collection_read_with_its_deletions_has_its_tombstones() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "with-deleted.sqlite");
+    db.upsert_record(note("a", "kept")).unwrap();
+    db.upsert_record(note("b", "gone")).unwrap();
+    db.delete_record("b").unwrap();
+    let live: Vec<_> = db.get_collection("notes").unwrap().into_iter().map(|r| r.id).collect();
+    assert_eq!(live, vec!["a".to_string()]);
+    let mut all: Vec<_> = db.get_collection_with_deleted("notes").unwrap().into_iter().map(|r| (r.id, r.deleted)).collect();
+    all.sort();
+    assert_eq!(all, vec![("a".to_string(), false), ("b".to_string(), true)]);
+}
+
 /// The page and this store read one clock, and the page stamps an edit as it is made, a moment
 /// before the call arrives here: that stamp was replaced by this clock's later time, and the
 /// page's answer held a stamp it never gave, so it took its own edit for one heard elsewhere.

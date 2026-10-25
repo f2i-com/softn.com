@@ -57,7 +57,7 @@ it('says it is loading meanwhile, and starts the app all the same if the load ne
     });
     expect(container.querySelector('[role="status"]')?.textContent).toMatch(/loading/i);
     await act(async () => {
-      vi.advanceTimersByTime(15_000);
+      vi.advanceTimersByTime(60_000);
     });
     expect(container.textContent).toContain('started');
     await act(async () => root.unmount());

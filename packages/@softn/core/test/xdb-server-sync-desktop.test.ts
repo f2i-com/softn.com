@@ -82,7 +82,8 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
       if (loading) await loading;
       await loadingOf.get(String(args.collection));
       if (unreadable.has(String(args.collection))) throw new Error('database disk image is malformed');
-      return [...rows.values()].filter((row) => row.collection === args.collection && !row.deleted);
+      // As XDB's command: live records, or with `includeDeleted` the tombstones too.
+      return [...rows.values()].filter((row) => row.collection === args.collection && (args.includeDeleted === true || !row.deleted));
     }
     case 'create_record': {
       const payload = args.payload as { collection: string; data: Record<string, unknown> };
@@ -365,6 +366,57 @@ describe('a deletion or an edit on the desktop of a record the store has not loa
     expect(store.delete('missing')).toBe(false);
     expect(store.update('missing', { title: 'blind' })).toBeNull();
     expect(invoke.mock.calls.map(([cmd]) => cmd)).not.toContain('delete_record');
+  });
+});
+
+describe('a record deleted on the desktop before the app moved to another host', () => {
+  // The native store loaded live records alone: after a reload the page knew of no deletion,
+  // and a host seeded before it wrote the record back, here and in SQLite.
+  it('is not brought back by the new host, and its deletion is sent there', async () => {
+    const backing = storage();
+    synced(backing);
+    const at = nativeStamp(Date.now() - 120_000);
+    rows.set('n2', { id: 'n2', collection: 'notes', data: { title: 'v2' }, created_at: at, updated_at: at, deleted: false });
+    const first = page(backing);
+    await first.isReady;
+    const sync = client(first);
+    sync.connect();
+    await settle();
+    const socket = await answer();
+    first.deleteFromCollection('notes', 'n1');
+    await settle();
+    socket.receive({ type: 'sync_ack', opIds: pushed(socket).map((op) => (op as unknown as { id: string }).id) });
+    await settle();
+    sync.disconnect();
+
+    const next = page(backing);
+    await next.isReady;
+    const moved = new XDBServerSync(next, { wsUrl: 'wss://elsewhere.example.test/sync', appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    moved.connect();
+    await settle();
+    const there = FakeSocket.made[FakeSocket.made.length - 1];
+    there.open();
+    there.receive({ type: 'auth_ok', clientId: 'c2', serverTime: new Date().toISOString() });
+    const seeded = new Date(Date.now() - 600_000).toISOString();
+    there.receive({ type: 'sync_state', collection: 'notes', records: ['n1', 'n2'].map((id) => ({ id, collection: 'notes', data: { title: 'seeded' }, createdAt: seeded, updatedAt: seeded, serverReceivedAt: seeded })) });
+    await settle();
+    expect(next.get('notes', 'n1')).toBeNull();
+    expect(rows.get('n1')?.deleted).toBe(true);
+    expect(pushed(there).filter((op) => op.recordId === 'n1').map((op) => op.operation)).toEqual(['delete']);
+    moved.disconnect();
+  });
+
+  // The cache holds every tombstone now: kept whatever SQLite said, a record a peer brought
+  // back there stayed hidden for good.
+  it('comes back here when a peer brings it back natively after it', async () => {
+    const at = nativeStamp(Date.now() - 120_000);
+    rows.set('n1', { id: 'n1', collection: 'notes', data: { title: 'v1' }, created_at: at, updated_at: at, deleted: true });
+    const store = page(storage());
+    await store.isReady;
+    expect(store.get('notes', 'n1')).toBeNull();
+    rows.set('n1', { ...rows.get('n1')!, deleted: false, data: { title: 'back from a peer' }, updated_at: nativeStamp(Date.now()) });
+    await store.getAllAsync('notes');
+    expect(store.get('notes', 'n1')?.data.title).toBe('back from a peer');
   });
 });
 

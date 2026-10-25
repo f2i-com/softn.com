@@ -586,7 +586,10 @@ export class XDBService {
     for (const failed of [...this.hydrationFailed]) if (!listed.has(failed)) this.hydrationFailed.delete(failed);
     for (const collection of collections) {
       try {
-        const records = await tauriInvoke<XDBRecord[]>('get_collection', this.tauriArgs({ collection }));
+        // Tombstones too, as browser storage keeps them: server sync weighs a host's copy of a
+        // record against its deletion here, and with live records alone the page knew of no
+        // deletion made before it opened, so a host that never heard of one wrote it back.
+        const records = await tauriInvoke<XDBRecord[]>('get_collection', this.tauriArgs({ collection, includeDeleted: true }));
         // Merge instead of overwrite — preserve any optimistic records
         // created between constructor and hydration completion
         let coll = this.memoryStore.get(collection);
@@ -596,8 +599,8 @@ export class XDBService {
         }
         for (const r of records) {
           const existing = coll.get(r.id);
-          // Never revive locally deleted records
-          if (existing?.deleted) continue;
+          // A deletion made here, newer than SQLite's copy (its native write still on the way), stays.
+          if (existing?.deleted && stampTime(existing.updated_at) >= stampTime(r.updated_at)) continue;
           // Server record wins if local doesn't exist or is older
           if (!existing || stampTime(existing.updated_at) <= stampTime(r.updated_at)) {
             coll.set(r.id, r);
@@ -1558,8 +1561,10 @@ export class XDBService {
         // (those with IDs not known to the server yet) and don't revive locally deleted records
         for (const r of records) {
           const existing = coll.get(r.id);
-          // Never revive a record that was locally deleted (delete was async, backend is stale)
-          if (existing?.deleted) continue;
+          // Not a record deleted here after SQLite's copy (the delete is async, the backend
+          // stale); one SQLite holds newer (a peer brought it back) is the cache's again: the
+          // cache holds every tombstone since it loads them, and kept so, it stayed hidden.
+          if (existing?.deleted && stampTime(existing.updated_at) >= stampTime(r.updated_at)) continue;
           if (!existing || (stampTime(existing.updated_at) <= stampTime(r.updated_at) && !deepEqual(existing, r))) {
             coll.set(r.id, r);
             changed = true;

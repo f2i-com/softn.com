@@ -1113,15 +1113,20 @@ pub fn get_record(
     db_lock.get_record(&id).map_err(|e| e.to_string())
 }
 
-/// Get all records in a collection
+/// Get all records in a collection: live ones, or with `include_deleted` the tombstones too
+/// (the page's load of its cache).
 #[tauri::command]
 pub fn get_collection(
     db_manager: State<'_, SharedDbManager>,
     app_id: Option<String>,
     collection: String,
+    include_deleted: Option<bool>,
 ) -> Result<Vec<Record>, String> {
     let db = db_manager.get_db(&app_id.unwrap_or_default())?;
     let db_lock = db.lock().map_err(|e| e.to_string())?;
+    if include_deleted.unwrap_or(false) {
+        return db_lock.get_collection_with_deleted(&collection).map_err(|e| e.to_string());
+    }
     db_lock
         .get_collection(&collection)
         .map_err(|e| e.to_string())

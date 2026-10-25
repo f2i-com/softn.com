@@ -139,9 +139,10 @@ pub fn get_collection(
     identity: State<'_, DataIdentity>,
     app_id: Option<String>,
     collection: String,
+    include_deleted: Option<bool>,
 ) -> Result<Vec<Record>, String> {
     let app_id = identity.require(app_id.as_deref())?;
-    xdb::tauri::get_collection(db_manager, Some(app_id), collection)
+    xdb::tauri::get_collection(db_manager, Some(app_id), collection, include_deleted)
 }
 
 #[tauri::command]

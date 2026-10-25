@@ -489,6 +489,55 @@ describe('an app moved to another sync host', () => {
     expect(page(backing).get('notes', 'n1')?.data.title).toBe('edited elsewhere');
   });
 
+  // The clock was set right between the pages: weighed with the offset of the second, which is
+  // none, the deletion outweighed the edit the host took after it.
+  it("does not take a deletion for newer than a host's copy when the clock was set right since", async () => {
+    const backing = storage();
+    await synced(backing);
+    const store = page(backing);
+    const before = connectWithLead(store, -60_000);
+    before.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    store.deleteFromCollection('notes', 'n1');
+    await tick();
+    const deletedAt = Date.now();
+    before.socket.receive({ type: 'sync_ack', opIds: (pushed(before.socket) as unknown as Array<{ id: string }>).map((op) => op.id) });
+    await tick();
+    vi.advanceTimersByTime(5000);
+    before.sync.disconnect();
+    // Set right: 60 seconds back, the host's time.
+    vi.setSystemTime(Date.now() - 60_000);
+
+    const next = connectWithLead(page(backing), 0);
+    next.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'edited elsewhere', new Date(deletedAt - 60_000 + 30_000).toISOString())] });
+    await tick();
+    expect(pushed(next.socket)).toEqual([]);
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('edited elsewhere');
+  });
+
+  // The margin was taken off every stamp this page did not give, heard ones too: on a device
+  // whose clock was off, a newer edit heard from the old host lost to a seeded copy older than it.
+  it('keeps a newer edit heard from the old host against a seeded copy, on a device whose clock is off', async () => {
+    const backing = storage();
+    const store = page(backing);
+    const old = connectWithLead(store, 600_000);
+    const seed = new Date(Date.now() + 600_000 - 3_600_000).toISOString();
+    const heard = new Date(Date.parse(seed) + 300_000).toISOString();
+    old.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v2', heard)] });
+    await tick();
+    old.sync.disconnect();
+    vi.advanceTimersByTime(1000);
+
+    const moved = new XDBServerSync(page(backing), { wsUrl: MOVED, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    moved.connect();
+    const socket = FakeSocket.made[FakeSocket.made.length - 1];
+    socket.open();
+    socket.receive({ type: 'auth_ok', clientId: 'c-moved', serverTime: new Date(Date.now() + 600_000).toISOString() });
+    socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n1', 'v1', seed)] });
+    await tick();
+    expect(page(backing).get('notes', 'n1')?.data.title).toBe('v2');
+    moved.disconnect();
+  });
+
   // A host from before sends no record back for a deletion it refuses, so the tombstone stayed,
   // and every whole pull sent the deletion again, refused again, the person told each time.
   it('does not send again a deletion the host refused', async () => {

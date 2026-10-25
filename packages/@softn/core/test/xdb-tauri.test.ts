@@ -62,8 +62,8 @@ describe('XDB Service (Tauri mode)', () => {
           return Array.from(backend.keys());
         case 'get_collection': {
           const collection = String(args?.collection ?? '');
-          // As XDB's command: live records alone (`deleted = 0`).
-          return (backend.get(collection) ?? []).filter((r) => !r.deleted);
+          // As XDB's command: live records alone (`deleted = 0`), or with `includeDeleted` the tombstones too.
+          return (backend.get(collection) ?? []).filter((r) => args?.includeDeleted === true || !r.deleted);
         }
         case 'create_record': {
           const payload = args?.payload as { collection: string; data: Record<string, unknown> };

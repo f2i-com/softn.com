@@ -1520,7 +1520,7 @@ export class XDBServerSync {
       const keepDeletion = (here: HeldRecord, theirs: { id: string; updatedAt: string }) => {
         if (this.refusedDeletes.has(`${collection}\u0000${theirs.id}`)) return false;
         const stamp = this.stampOfHeld(collection, here);
-        if (!this.newerHere(stamp.made, stamp.how, theirs.updatedAt)) return false;
+        if (!this.newerHere(stamp.made, stamp.how, theirs.updatedAt, true)) return false;
         unsent.set(theirs.id, stamp);
         return true;
       };
@@ -1637,7 +1637,7 @@ export class XDBServerSync {
     const record = held().get(theirs.id);
     if (!record) return false;
     const { made, how } = this.stampOfHeld(collection, record);
-    if (!this.newerHere(made, how, theirs.updatedAt)) return false;
+    if (!this.newerHere(made, how, theirs.updatedAt, record.deleted === true)) return false;
     this.queueChange(
       record.deleted ? { type: 'delete', collection, recordId: theirs.id } : { type: 'update', collection, recordId: theirs.id, data: objectData(record.data) },
       made,
@@ -1694,16 +1694,22 @@ export class XDBServerSync {
   /**
    * Whether the record here (stamped `made`, as `stampOfHeld` reads it) is newer than the host's
    * copy stamped `theirs`. A stamp this page gave is in this device's time, and the offset puts it
-   * in the host's. Any other may be the host's, or this device's from an earlier page: by this
-   * device's clock it can be out by as much as the offset either way, so it is newer only by more
-   * than that, and within it the host's copy is taken. On a device whose clock ran ahead, a
-   * deletion made on an earlier page outweighed another device's later edit, and undid it.
+   * in the host's. A tombstone's is this device's too (the host's deletions leave none here), from
+   * an earlier page, in its time: out by up to the offset either way, so it is newer only by more
+   * than that, and within it the host's copy is taken (a deletion made on a device whose clock ran
+   * ahead outweighed another device's later edit, and undid it). Any other stamp may be one heard
+   * from a host, in a host's time, and is weighed as it is: with the margin, a newer edit heard
+   * from the old host lost to a seeded copy, on a device whose clock was off.
    */
-  private newerHere(made: number, how: { asIs?: boolean } | undefined, theirs: unknown): boolean {
+  private newerHere(made: number, how: { asIs?: boolean } | undefined, theirs: unknown, deleted = false): boolean {
     const at = stampAt(theirs);
     if (!how?.asIs) return made + this.clockOffset > at;
-    return made - Math.abs(this.clockOffset) > at;
+    // And no less than TOMBSTONE_MARGIN_MS: the clock may have been set right since the deletion.
+    return (deleted ? made - Math.max(Math.abs(this.clockOffset), XDBServerSync.TOMBSTONE_MARGIN_MS) : made) > at;
   }
+
+  /** The least margin a tombstone from an earlier page is weighed with (`newerHere`). */
+  private static readonly TOMBSTONE_MARGIN_MS = 5 * 60 * 1000;
 
   /** How a change of a record as the store holds it is stamped: at its stamp, with the offset where this page gave it. */
   private stampOfHeld(collection: string, record: HeldRecord): { made: number; how?: { asIs: true } } {

@@ -1153,6 +1153,22 @@ impl XdbDatabase {
         Ok(records)
     }
 
+    /// Every record of a collection, deleted ones (tombstones) too: what the page loads into its
+    /// cache, as browser storage keeps them. Server sync weighs a host's copy of a record against
+    /// its deletion here; loading live records alone, the page knew of no deletion made before it
+    /// opened, and a host that had never heard of one wrote the record back.
+    pub fn get_collection_with_deleted(&self, collection: &str) -> DbResult<Vec<Record>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, collection, data, created_at, updated_at, deleted FROM records WHERE collection = ?1 ORDER BY created_at DESC",
+        )?;
+
+        let records = stmt
+            .query_map(params![collection], record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
     /// Get all collections
     pub fn get_collections(&self) -> DbResult<Vec<String>> {
         let mut stmt = self

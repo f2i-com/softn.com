@@ -441,8 +441,11 @@ export interface SoftNWithXDBProps extends SoftNRendererProps {
   syncEncryptionKeyHex?: string;
 }
 
-/** How long an app waits for its store to load before it starts all the same (`SoftNWithXDB`). */
-const STORE_LOAD_WAIT_MS = 15_000;
+/**
+ * How long an app waits for its store to load before it starts all the same (`SoftNWithXDB`):
+ * long enough for a large store, as it reads a collection that has not loaded as empty.
+ */
+const STORE_LOAD_WAIT_MS = 60_000;
 
 export function SoftNWithXDB({
   source,
