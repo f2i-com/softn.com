@@ -962,6 +962,12 @@ impl ServerRuntime {
         if DECISIONS.contains(&name) && holds_opaque(&value) {
             return Err(format!("{UNREAD_ANSWER} '{name}' answered with a value that cannot cross to the host (a Promise, function, Map, Set or Date)"));
         }
+        // Nor is NaN or an infinity, which cross as null: `return a && b`
+        // answers NaN when `a` is, and null is "accept", where every other
+        // number rejects as an answer the host does not read.
+        if DECISIONS.contains(&name) && holds_non_finite(&value) {
+            return Err(format!("{UNREAD_ANSWER} '{name}' answered with NaN or an infinity"));
+        }
         Ok(json)
     }
 
@@ -1304,6 +1310,18 @@ fn holds_opaque(value: &HostValue) -> bool {
         HostValue::Opaque => true,
         HostValue::Array(items) => items.iter().any(holds_opaque),
         HostValue::Object(pairs) => pairs.iter().any(|(_, item)| holds_opaque(item)),
+        _ => false,
+    }
+}
+
+/// Whether a value holds, anywhere, a number with no JSON spelling (NaN, an
+/// infinity), which crosses as null. Called on a value `host_to_json` has
+/// taken, which bounds how deep it goes.
+fn holds_non_finite(value: &HostValue) -> bool {
+    match value {
+        HostValue::Number(n) => !n.is_finite(),
+        HostValue::Array(items) => items.iter().any(holds_non_finite),
+        HostValue::Object(pairs) => pairs.iter().any(|(_, item)| holds_non_finite(item)),
         _ => false,
     }
 }

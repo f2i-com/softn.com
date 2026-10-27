@@ -1559,6 +1559,20 @@ fn the_sync_limits_are_the_shared_ones() {
     }
 }
 
+/// A per-op hook's NaN crossed as null, which is "accept", where every other
+/// number rejects: `return op.data.count && check(op)` with a count of NaN
+/// let the op through.
+#[test]
+fn a_per_op_hook_that_answers_nan_lets_nothing_through() {
+    for answer in ["NaN", "-Infinity", "{ data: { title: NaN } }"] {
+        let script = format!("function onBeforeSync(op) {{ return {answer}; }}");
+        let (sync, db) = manager(Some(script.as_str()));
+        let responses = sync.handle_sync_push(vec![op("c1", "notes", "create", "n1", serde_json::json!({"title": "in"}))], "a");
+        assert_eq!(rejected(&responses), vec!["c1"], "{answer}: {responses:?}");
+        assert!(db.write().get_record("n1").is_err(), "{answer}");
+    }
+}
+
 /// A batch hook's answer that is not a list of op ids (the ops themselves, ids
 /// in objects), or `false`, rejected nothing and let every op through: a hook
 /// there to keep some out failed open. It is refused, as an object the host
@@ -1583,6 +1597,10 @@ fn a_batch_hook_answer_that_names_no_op_ids_lets_nothing_through() {
         "{ rejected: 'c1' }",
         "false",
         "1",
+        // NaN and the infinities, which cross as null: `return a && b` with `a` NaN.
+        "NaN",
+        "[NaN]",
+        "{ rejected: [Infinity] }",
     ] {
         let script = format!("function onBeforeSyncBatch(ops) {{ return {answer}; }}");
         let (sync, db) = manager(Some(script.as_str()));
