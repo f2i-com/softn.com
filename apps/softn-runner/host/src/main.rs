@@ -13,6 +13,7 @@ mod guest;
 mod host_calls;
 mod js;
 mod limits;
+mod lockdown;
 mod migrations;
 mod record_events;
 mod sql;
@@ -152,6 +153,29 @@ fn main() {
     // log's own form, without the source paths a panic message carries; the
     // request it happened in is answered as failed (below, and host_calls.rs).
     std::panic::set_hook(Box::new(|info| js::log_failure("host fault", &info.to_string())));
+
+    // The backend root, which the operator selects, never a request or a
+    // bundle: the Node runner's worker resolves it as it loads, and one that
+    // cannot be resolved ends the runner with no answer and its error's code
+    // in the log (runner.mjs's 'error' handler).
+    let root = match worker::backend_root() {
+        Ok(root) => root,
+        Err(code) => {
+            let _ = writeln!(std::io::stderr(), "softn: runner worker died: {code}");
+            std::process::exit(1);
+        }
+    };
+    // Then the process's own lockdown (lockdown.rs), before any thread is
+    // started, so that every one inherits it. `--check-lockdown` reports what
+    // this system enforced and proves each refusal, for setup.php.
+    let locked = lockdown::apply(&root);
+    if std::env::args().nth(1).as_deref() == Some("--check-lockdown") {
+        let mut report = locked.to_json();
+        report["probes"] = lockdown::probes(&root);
+        let _ = writeln!(std::io::stdout(), "{report}");
+        return;
+    }
+
     let migration: Arc<Mutex<Option<Migration>>> = Arc::new(Mutex::new(None));
     let watched = Arc::clone(&migration);
     std::thread::spawn(move || {
@@ -170,17 +194,6 @@ fn main() {
         std::process::exit(1);
     }
     let input = String::from_utf8_lossy(&input).into_owned();
-
-    // The Node runner's worker resolves the backend root as it loads, before
-    // the request: one that cannot be resolved ends the runner with no answer
-    // and its error's code in the log (runner.mjs's 'error' handler).
-    let root = match worker::backend_root() {
-        Ok(root) => root,
-        Err(code) => {
-            let _ = writeln!(std::io::stderr(), "softn: runner worker died: {code}");
-            std::process::exit(1);
-        }
-    };
 
     // On a thread of its own with a large stack: SQLite's expression code,
     // wasmtime's frames for the guest and the runner's own all share it, and a

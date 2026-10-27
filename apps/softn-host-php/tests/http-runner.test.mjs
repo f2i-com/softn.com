@@ -278,6 +278,29 @@ test('setup.php starts the runner as a request does and says why an app does not
   } else assert.doesNotMatch(ready.stdout,/softn-runner/);
 });
 
+nodeTest('softn-runner locks itself down before a request, and proves what this kernel refuses it',{skip:skip||(softnRunner?false:'needs SOFTN_TEST_RUNNER (a Linux build of softn-runner)')},t=>{
+  const d=deployment(t);
+  const check=spawnSync(join(d.backend,RUNNER_FILE),['--check-lockdown'],{env:{PATH:'/usr/bin:/bin',SOFTN_BACKEND_ROOT:d.backend},encoding:'utf8'});
+  assert.equal(check.status,0,check.stderr);
+  const report=JSON.parse(check.stdout);
+  console.log(`lockdown here: Landlock ABI ${report.landlock.abi}, ${report.landlock.enforced}; seccomp ${report.seccomp}; probes ${JSON.stringify(report.probes)}`);
+  // seccomp is in every kernel this runs on: other programs, processes,
+  // sockets and signals to other processes are refused, each tried.
+  assert.equal(report.seccomp,true,check.stdout);
+  assert.equal(report.noNewPrivs,true);
+  for(const probe of ['socket','fork','exec','signal'])assert.equal(report.probes[probe],'denied',probe);
+  // A file outside the backend is refused where the kernel enforces Landlock.
+  const landlock=['full','partial'].includes(report.landlock.enforced);
+  assert.equal(report.probes.outside,landlock?'denied':'allowed');
+  // And setup says so. Every other test here, and route-declarations, runs
+  // its requests under the same lockdown: migrations, SQL, the database's
+  // log files, the rate-limit notes and a stopped migration's note.
+  const setup=spawnSync('php',[join(d.backend,'setup.php')],{encoding:'utf8',timeout:60000});
+  assert.equal(setup.status,0,setup.stdout+setup.stderr);
+  assert.match(setup.stdout,/softn-runner locks itself down before every request: (Landlock \(ABI \d+(, in part)?\) keeps its files to the backend folder; )?seccomp refuses it other programs, new processes, network sockets and signals to other processes\./);
+  assert.match(setup.stdout,/Tried on this system and refused: .*a socket, a new process, running a program, a signal to another process\./);
+});
+
 nodeTest('the operator\'s requestMemoryMb is the memory a request on softn-runner may take, and setup says when it is not a number it takes',{skip:skip||(softnRunner?false:'needs SOFTN_TEST_RUNNER (a Linux build of softn-runner)')},t=>{
   const d=deployment(t);
   // 100 MB in one allocation: past the script heap of 128 MiB (64 MiB), the

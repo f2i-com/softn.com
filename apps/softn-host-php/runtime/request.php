@@ -154,6 +154,33 @@ function softn_runner_environment(string $backend, mixed $config=null): array {
 }
 
 /**
+ * What softn-runner's `--check-lockdown` said, in words: the lockdown it puts
+ * on itself before every request (Landlock keeps its files to the backend
+ * folder; seccomp refuses it other programs, processes, sockets and signals),
+ * what this kernel enforced of it, and what was tried and refused. A kernel
+ * without a part is a NOTE, not a problem: the runner runs as before without it.
+ * @param mixed $report the decoded JSON, or null when there was none
+ * @return list<string>
+ */
+function softn_lockdown_report(mixed $report): array {
+    if(!is_array($report))return ['NOTE: softn-runner did not say what it locks itself down to (bin/'.SOFTN_RUNNER_BINARY.' --check-lockdown); requests are not affected.'];
+    $landlock=is_array($report['landlock']??null)?$report['landlock']:[];
+    $enforced=$landlock['enforced']??'none';$abi=(int)($landlock['abi']??0);
+    $parts=[];
+    if($enforced==='full'||$enforced==='partial')$parts[]='Landlock (ABI '.$abi.($enforced==='partial'?', in part':'').') keeps its files to the backend folder';
+    if(($report['seccomp']??false)===true)$parts[]='seccomp refuses it other programs, new processes, network sockets and signals to other processes';
+    $lines=[];
+    if($parts)$lines[]='softn-runner locks itself down before every request: '.implode('; ',$parts).'.';
+    $probes=is_array($report['probes']??null)?$report['probes']:[];
+    $names=['outside'=>'a file outside the backend','socket'=>'a socket','fork'=>'a new process','exec'=>'running a program','signal'=>'a signal to another process'];
+    $denied=[];foreach($names as $key=>$name)if(($probes[$key]??null)==='denied')$denied[]=$name;
+    if($denied)$lines[]='Tried on this system and refused: '.implode(', ',$denied).'.';
+    if($enforced!=='full'&&$enforced!=='partial')$lines[]='NOTE: this kernel enforces no Landlock, so it is not the kernel that keeps softn-runner to the backend folder (Linux 5.13 or newer with Landlock enabled does).';
+    if(($report['seccomp']??false)!==true)$lines[]='NOTE: softn-runner could not apply its seccomp filter here'.(is_array($report['errors']??null)&&$report['errors']?' ('.implode('; ',array_map('strval',$report['errors'])).')':'').'.';
+    return $lines;
+}
+
+/**
  * The command that starts Node's runner (softn_runner_choice says when):
  * one definition, so that a Node which will not take a flag fails setup and
  * not every request after it. No request data becomes an argument.

@@ -62,6 +62,36 @@ so a request deserialises it rather than compiling it.
   disk; a query result past its 2 MiB is refused before the runner copies the
   values that put it there.
 
+## The process's own lockdown (Linux)
+
+Behind the engine's sandbox and wasmtime's, the runner locks its own process
+down before it reads the request or starts a thread (`host/src/lockdown.rs`),
+with the kernel's own means: an unprivileged process may always restrict
+itself, so it needs no root, no container and nothing installed, and every
+thread it starts afterwards inherits it.
+
+- **no_new_privs**: nothing it does can gain privileges.
+- **Landlock** (Linux 5.13 and later): it may read the backend folder, write
+  only its database folder (`private/data`) and rate-limit notes
+  (`private/limited`), and read `/dev/urandom`; any other file is refused.
+  Where the kernel has them, TCP binds and connects (6.7) and signals to
+  processes outside the lockdown (6.12) are refused too.
+- **seccomp**: running a program, making a process (a thread is allowed),
+  sockets of any kind, signals to any other process, other processes' memory,
+  io_uring, and the calls that only widen the kernel's surface (mounts,
+  namespaces, BPF, perf, userfaultfd, keys, modules, kexec) fail with EPERM.
+- No core file is written.
+
+A kernel without Landlock still gets the seccomp filter, and the other way
+round; one with neither runs the runner as before. `softn-runner
+--check-lockdown` (with `SOFTN_BACKEND_ROOT`) prints what this system
+enforced and tries a file outside the backend, a socket, a new process, a
+program and a signal to its parent, each reported denied or allowed; the PHP
+host's `setup.php` says so in words. The tests in
+`apps/softn-host-php/tests/http-runner.test.mjs` hold the probes to it, and
+every request in that suite and in `route-declarations.test.mjs` runs locked
+down. Windows has no counterpart yet.
+
 ## Memory
 
 The host says how much memory one request may take, in

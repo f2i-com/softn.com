@@ -876,6 +876,32 @@ test('a request and setup start the runner by one rule, with no request data in 
   assert.doesNotMatch(http+setup,/--max-old-space-size|NODE_NO_WARNINGS|'\/usr\/bin:\/bin'/,'the flags and the environment are written once, in request.php');
 });
 
+test('setup says what softn-runner locks itself down to on this kernel, and what it does not',()=>{
+  const report=(...reports)=>{
+    const script=`require ${JSON.stringify(runtime+'request.php')};echo json_encode(array_map(fn($r)=>softn_lockdown_report($r),json_decode(stream_get_contents(STDIN),true)));`;
+    const r=spawnSync('php',['-d','display_errors=stderr','-r',script],{input:JSON.stringify(reports),encoding:'utf8'});
+    assert.equal(r.status,0,r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  const denied={outside:'denied',socket:'denied',fork:'denied',exec:'denied',signal:'denied'};
+  const [full,noLandlock,nothing,silent]=report(
+    {landlock:{abi:6,enforced:'full'},seccomp:true,noNewPrivs:true,errors:[],probes:denied},
+    {landlock:{abi:0,enforced:'none'},seccomp:true,noNewPrivs:true,errors:[],probes:{...denied,outside:'allowed'}},
+    {landlock:{abi:0,enforced:'none'},seccomp:false,noNewPrivs:true,errors:['seccomp: invalid argument'],probes:{outside:'allowed',socket:'allowed',fork:'allowed',exec:'allowed',signal:'allowed'}},
+    null,
+  );
+  assert.deepEqual(full,[
+    'softn-runner locks itself down before every request: Landlock (ABI 6) keeps its files to the backend folder; seccomp refuses it other programs, new processes, network sockets and signals to other processes.',
+    'Tried on this system and refused: a file outside the backend, a socket, a new process, running a program, a signal to another process.',
+  ]);
+  // A kernel without Landlock: seccomp alone, and a note; with neither, two notes and nothing claimed.
+  assert.match(noLandlock[0],/^softn-runner locks itself down before every request: seccomp refuses/);
+  assert.equal(noLandlock[1],'Tried on this system and refused: a socket, a new process, running a program, a signal to another process.');
+  assert.match(noLandlock[2],/^NOTE: this kernel enforces no Landlock/);
+  assert.deepEqual(nothing,['NOTE: this kernel enforces no Landlock, so it is not the kernel that keeps softn-runner to the backend folder (Linux 5.13 or newer with Landlock enabled does).','NOTE: softn-runner could not apply its seccomp filter here (seccomp: invalid argument).']);
+  assert.match(silent[0],/^NOTE: softn-runner did not say what it locks itself down to/);
+});
+
 test('softn-runner answers where the backend carries it for this server, and Node where the operator wants Node',t=>{
   const backend=realpathSync(mkdtempSync(join(tmpdir(),'softn-choice-'))).replace(/\\/g,'/');
   t.after(()=>rmSync(backend,{recursive:true,force:true}));

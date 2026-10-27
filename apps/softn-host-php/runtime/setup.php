@@ -112,6 +112,8 @@ try {
     if($problems)exit(1);
 } finally {flock($lock,LOCK_UN);fclose($lock);}
 
+
+
 /**
  * What the first request would find out the hard way, found now: PHP's
  * version and process functions, and whether the runner a request starts
@@ -202,6 +204,9 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
         $mb=softn_request_memory_mb($settings);
         echo "Requests run on softn-runner (bin/".SOFTN_RUNNER_BINARY."), without Node. To run them on Node instead, set \"runner\": \"node\" in private/config.json.\n";
         echo "Each request may take up to $mb MiB for the app's engine (a script's heap ".min($mb-64,512)." MiB of it) and $mb MiB for SQLite: \"requestMemoryMb\" in private/config.json, 128 to 1024.\n";
+        // What the kernel lets it lock itself down to here, proved by trying (main.rs --check-lockdown).
+        $check=$run([$runner['binary'],'--check-lockdown']);
+        foreach(softn_lockdown_report($check===null?null:json_decode($check['out'],true)) as $line)echo $line."\n";
     }
     elseif(is_file($root.'/bin/'.SOFTN_RUNNER_BINARY))echo 'Requests run on Node (bin/node and runner.mjs), not on softn-runner: '.($hooks?'a request hook is enabled in private/config.json, and only Node runs one.':(is_array($settings)&&($settings['runner']??null)==='node'?'"runner" is "node" in private/config.json.':'this server is not Linux x86-64, which softn-runner is built for.'))."\n";
     return $problems;

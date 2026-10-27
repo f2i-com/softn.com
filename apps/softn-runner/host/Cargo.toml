@@ -48,6 +48,13 @@ softn-runner-shared = { path = "../shared" }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The process's own lockdown (src/lockdown.rs): Landlock keeps its files to the
+# backend folder, a seccomp filter refuses new programs, sockets and other
+# processes. Both are the kernel's, applied by the runner to itself.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+seccompiler = "0.5.0"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
