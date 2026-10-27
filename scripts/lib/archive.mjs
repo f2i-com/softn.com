@@ -180,7 +180,11 @@ export function readArchive(zip) {
  * @returns {{path: string, name: string, sha256: string, size: number, entries: {name: string, method: number, size: number, compressedSize: number}[], rawBytes: number, storedBytes: number, deflatedBytes: number}}
  */
 export function writeArchive(entries, out, options = {}) {
-  const { stamp = new Date(), level = 9, stored = STORED_EXTENSIONS, sidecar = true } = options;
+  // Without one, SOURCE_DATE_EPOCH's (the release sets it to the tagged
+  // commit's time), so two runs of one tag write the same bytes: the clock's
+  // made each run's archive differ, and a retry replaced what was published.
+  const epoch = Number(process.env.SOURCE_DATE_EPOCH);
+  const { stamp = Number.isInteger(epoch) && epoch > 0 ? new Date(epoch * 1000) : new Date(), level = 9, stored = STORED_EXTENSIONS, sidecar = true } = options;
   const list = (entries instanceof Map || Symbol.iterator in Object(entries) ? [...entries] : Object.entries(entries))
     .map(([name, value]) => {
       const data = Buffer.isBuffer(value) ? value : Buffer.from(value.data ?? value);

@@ -69,8 +69,9 @@
  * way, must be the one the install records, and each place it is known to be
  * must have one.
  *
- * Deterministic apart from the two `builtAt` stamps over one build of the
- * packages: packaging it again (--no-build-packages) gives the same file
+ * Deterministic over one build of the packages, where SOURCE_DATE_EPOCH is
+ * set (the release sets it; without it the two `builtAt` stamps are the
+ * clock's): packaging it again (--no-build-packages) gives the same file
  * digests. A fresh build of @softn/core now and then orders its cross-chunk
  * imports differently and so names its chunks differently, which changes
  * digests under hosted-runtime/ and app-editors/ (never zipp/,
@@ -312,7 +313,10 @@ try {
     addFormLogicEngineCopy(`app-editors/${kind}`);
     add(`app-editors/${kind}/runtime-manifest.json`, Buffer.from(runtimeManifest(`app-editors/${kind}`)));
   }
-  const builtAt = new Date().toISOString();
+  // The tagged commit's time where the release gives it (SOURCE_DATE_EPOCH), so a retry
+  // of one tag writes the same archive.
+  const epoch = Number(process.env.SOURCE_DATE_EPOCH);
+  const builtAt = (Number.isInteger(epoch) && epoch > 0 ? new Date(epoch * 1000) : new Date()).toISOString();
   add('app-editors/manifest.json', Buffer.from(JSON.stringify({ protocol: protocols.editorBridge, editors: ['builder', 'studio'], builtAt }) + '\n'));
   add('app-editors/LICENSE', fs.readFileSync(path.join(root, 'LICENSE')));
   add('app-editors/NOTICE', fs.readFileSync(path.join(root, 'NOTICE')));

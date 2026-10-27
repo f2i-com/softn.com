@@ -19,6 +19,26 @@ function scratch(name) {
   };
 }
 
+// The release sets SOURCE_DATE_EPOCH to the tagged commit's time; an archive written with
+// no stamp took the clock's, so a retry of one tag replaced each archive with other bytes.
+test('with no stamp, SOURCE_DATE_EPOCH stamps it, so two writes are the same bytes', async () => {
+  const s = scratch('epoch');
+  const before = process.env.SOURCE_DATE_EPOCH;
+  try {
+    process.env.SOURCE_DATE_EPOCH = '1767323046';
+    const write = (name) => writeArchive({ 'a.txt': Buffer.from('hello') }, path.join(s.dir, name), { sidecar: false });
+    const first = write('one.zip');
+    await new Promise((resolve) => setTimeout(resolve, 2100));
+    const second = write('two.zip');
+    assert.equal(first.sha256, second.sha256);
+    assert.ok(fs.readFileSync(first.path).equals(fs.readFileSync(second.path)));
+  } finally {
+    if (before === undefined) delete process.env.SOURCE_DATE_EPOCH;
+    else process.env.SOURCE_DATE_EPOCH = before;
+    s.done();
+  }
+});
+
 test('stores what is already compressed, deflates the rest, keeps modes and restores exact bytes', () => {
   const s = scratch('write');
   try {

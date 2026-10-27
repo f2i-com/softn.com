@@ -384,10 +384,14 @@ jobs:
 
       # The build stamps BUILD-INFO.json with SOURCE_DATE_EPOCH when set, so
       # `builtAt` is the tagged commit's own time rather than the runner's
-      # clock, and two runs of one tag produce the same record.
+      # clock, and two runs of one tag produce the same record. It is kept
+      # for every step after (GITHUB_ENV): the packagers stamp their archives
+      # with it too, so a retry writes the same archives, where --clobber
+      # below replaced them with ones of other digests.
       - name: Build the website
         run: |
           export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)"
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           npm run build:site
           test -f dist/index.html && test -f dist/.htaccess && test -f dist/BUILD-INFO.json
           if [[ "$(node -p "require('./dist/BUILD-INFO.json').softn.dirty")" != "false" ]]; then
@@ -410,9 +414,9 @@ jobs:
             echo "archive lists $listed entries, dist/ has $onDisk files" >&2
             exit 1
           fi
-          unzip -Z1 "$zip" | grep -qx '.htaccess'
-          unzip -Z1 "$zip" | grep -qx 'README.md'
-          unzip -Z1 "$zip" | grep -qx 'DEPLOY.md'
+          unzip -Z1 "$zip" | grep -x '.htaccess' >/dev/null
+          unzip -Z1 "$zip" | grep -x 'README.md' >/dev/null
+          unzip -Z1 "$zip" | grep -x 'DEPLOY.md' >/dev/null
           (cd release && sha256sum -c ./*.sha256 --strict)
           echo "$zip: $listed entries, $(du -h "$zip" | cut -f1)"
 
@@ -447,11 +451,11 @@ jobs:
           npm run package:single -- --with-backend --runner-dir release-runner
           zip="release/softn-app-static-$RELEASE_TAG.zip"
           unzip -tq "$zip"
-          unzip -Z1 "$zip" | grep -qx 'index.html'
-          unzip -Z1 "$zip" | grep -qx 'runtime.config.json'
-          unzip -Z1 "$zip" | grep -qx '.htaccess'
-          unzip -Z1 "$zip" | grep -qx 'README.md'
-          unzip -Z1 "$zip" | grep -qx 'DEPLOYMENT.md'
+          unzip -Z1 "$zip" | grep -x 'index.html' >/dev/null
+          unzip -Z1 "$zip" | grep -x 'runtime.config.json' >/dev/null
+          unzip -Z1 "$zip" | grep -x '.htaccess' >/dev/null
+          unzip -Z1 "$zip" | grep -x 'README.md' >/dev/null
+          unzip -Z1 "$zip" | grep -x 'DEPLOYMENT.md' >/dev/null
           listed="$(unzip -Z1 "$zip" | wc -l)"
           onDisk="$(find apps/softn-single/dist -type f ! -name '*.map' | wc -l)"
           test "$listed" -eq "$onDisk"
@@ -466,16 +470,16 @@ jobs:
           # Both backends answer on softn-runner, with Node beside it for
           # request hooks and the WebSocket bridge.
           for zip in "release/softn-app-static-with-backend-linux-x64-$RELEASE_TAG.zip" "release/softn-app-private-with-backend-linux-x64-$RELEASE_TAG.zip"; do
-            unzip -Z1 "$zip" | grep -qx 'backend/bin/softn-runner-linux-x86_64'
-            unzip -Z1 "$zip" | grep -qx 'backend/licenses/SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt'
-            unzip -Z1 "$zip" | grep -qx 'backend/bin/node'
+            unzip -Z1 "$zip" | grep -x 'backend/bin/softn-runner-linux-x86_64' >/dev/null
+            unzip -Z1 "$zip" | grep -x 'backend/licenses/SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt' >/dev/null
+            unzip -Z1 "$zip" | grep -x 'backend/bin/node' >/dev/null
           done
           for zip in "release/softn-app-private-$RELEASE_TAG.zip" "release/softn-app-private-with-backend-linux-x64-$RELEASE_TAG.zip"; do
             unzip -tq "$zip"
-            unzip -Z1 "$zip" | grep -qx 'webroot/index.php'
-            unzip -Z1 "$zip" | grep -qx 'private/serve.config.php'
-            unzip -Z1 "$zip" | grep -qx 'README.md'
-            unzip -Z1 "$zip" | grep -qx 'DEPLOYMENT.md'
+            unzip -Z1 "$zip" | grep -x 'webroot/index.php' >/dev/null
+            unzip -Z1 "$zip" | grep -x 'private/serve.config.php' >/dev/null
+            unzip -Z1 "$zip" | grep -x 'README.md' >/dev/null
+            unzip -Z1 "$zip" | grep -x 'DEPLOYMENT.md' >/dev/null
             # The only archive in the archive is the sample, under private/.
             test "$(unzip -Z1 "$zip" | grep '\.softn$')" = 'private/app.softn'
           done
@@ -499,7 +503,7 @@ jobs:
           zip="release/softn-formlogic-runtime-$RELEASE_TAG.zip"
           unzip -tq "$zip"
           for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/host.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm native-runtime/bin/softn-runner-linux-x86_64 native-runtime/bin/softn-runner-windows-x86_64.exe native-runtime/SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt zipp/SOURCE.json zipp/zipp_wasm.d.ts zipp/RELEASE-SHA256SUMS zipp-web/SOURCE.json zipp-web/zipp_wasm_bg.wasm adapter/formlogic.ts; do
-            unzip -Z1 "$zip" | grep -qx "$entry"
+            unzip -Z1 "$zip" | grep -x "$entry" >/dev/null
           done
           test "$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tag))')" = "$RELEASE_TAG"
           recorded="$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const z=JSON.parse(s).zipp;console.log(z.release+" "+z.sumsSha256)})')"
