@@ -119,6 +119,7 @@ describe('limits shared with the host', () => {
     expect(SYNC_LIMITS.maxMessageBytes).toBe(protocol.maxMessageBytes);
     expect(SYNC_LIMITS.maxMessageDepth).toBe(protocol.maxMessageDepth);
     expect(SYNC_LIMITS.maxPullCollections).toBe(protocol.maxPullCollections);
+    expect(SYNC_LIMITS.maxIdBytes).toBe(protocol.maxIdBytes);
     expect(SYNC_LIMITS.pageRows).toBe(protocol.pageRows);
     expect(SYNC_LIMITS.collectionName).toBe(protocol.collectionName);
     // A push the host takes: no more ops than it reads, and well inside a message.

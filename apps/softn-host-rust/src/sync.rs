@@ -152,6 +152,11 @@ const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 /// CRDT document and every pull would carry it.
 pub(crate) const MAX_OP_DATA_BYTES: usize = 512 * 1024;
 
+/// The longest op id and record id a push may carry, in bytes
+/// (`sync-protocol.json` `maxIdBytes`): room for the 128 characters the
+/// client's store takes as an id, in any script.
+pub(crate) const MAX_ID_BYTES: usize = 512;
+
 /// Maximum total bytes of all op data payloads in a single sync_push batch,
 /// both as the ops carry it and as the push writes and sends it on (an
 /// update with no data is stored and broadcast with its record's whole
@@ -1218,6 +1223,17 @@ impl SyncManager {
         let mut seen_ids = std::collections::HashSet::new();
         let mut batch_data_bytes: usize = 0;
         for mut op in ops {
+            // An op id or record id had no length limit: RecentOps holds both
+            // for 15 minutes, outside the storage quota, and a record whose
+            // id is near 4 MiB makes a pull piece no client takes, so every
+            // client's pull of its collection stopped at it.
+            if op.id.len() > MAX_ID_BYTES || op.record_id.len() > MAX_ID_BYTES {
+                responses.push(ServerMessage::SyncReject {
+                    op_id: op.id.clone(),
+                    reason: format!("Op id or record id too long (max {MAX_ID_BYTES} bytes)"),
+                });
+                continue;
+            }
             // Reject duplicate op IDs within the same batch
             if !seen_ids.insert(op.id.clone()) {
                 responses.push(ServerMessage::SyncReject {

@@ -148,6 +148,12 @@ const MAX_OP_DEPTH = MAX_MESSAGE_DEPTH - 2;
 /** Distinct collections the host reads in one `sync_pull`; more and it refuses the pull. */
 const MAX_PULL_COLLECTIONS = 100;
 /**
+ * The longest record id (and op id) the host takes, in UTF-8 bytes: every id
+ * the store makes (128 characters at most) fits; a longer one an import
+ * brought is refused here rather than sent to be refused.
+ */
+const MAX_ID_BYTES = 512;
+/**
  * The most records the host sends for one collection of a pull that names a
  * point to start from. Such an answer carries no `more`: one that comes this
  * full may have stopped short, and is asked again from where it ended.
@@ -236,6 +242,7 @@ export const SYNC_LIMITS = {
   maxPushBytes: MAX_PUSH_BYTES,
   maxMessageDepth: MAX_MESSAGE_DEPTH,
   maxPullCollections: MAX_PULL_COLLECTIONS,
+  maxIdBytes: MAX_ID_BYTES,
   pageRows: INCREMENTAL_PULL_ROWS,
   collectionName: SYNCABLE_COLLECTION.source,
 } as const;
@@ -1438,6 +1445,10 @@ export class XDBServerSync {
       // every change behind it reaching the host.
       if (nestedDeeperThan(op, MAX_OP_DEPTH)) {
         this.refuseOp(op, `This change to "${op.collection}" is nested more than ${MAX_OP_DEPTH - 1} levels deep, deeper than the sync host reads; it was not sent.`);
+        continue;
+      }
+      if (utf8Length(op.recordId) > MAX_ID_BYTES) {
+        this.refuseOp(op, `This record's id is longer than the sync host takes (${MAX_ID_BYTES} bytes); it was not sent.`);
         continue;
       }
       if (op.data !== undefined) op.data = wellFormed(op.data) as SyncOp['data'];

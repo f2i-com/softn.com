@@ -218,6 +218,26 @@ fn updates_with_no_data_are_held_to_what_a_push_may_write() {
     assert!(rejected(&answer).is_empty(), "{answer:?}");
 }
 
+/// An op id or record id past the protocol's length is refused: the host
+/// kept both outside the storage quota, and a record id near 4 MiB made a
+/// pull piece no client takes.
+#[test]
+fn an_op_or_record_id_past_its_length_is_refused() {
+    let (sync, db) = manager(None);
+    let long = "x".repeat(MAX_ID_BYTES + 1);
+    // 128 characters of CJK, the longest id the client's store makes: 384 bytes.
+    let fits = "日".repeat(128);
+    let answer = sync.handle_sync_push(vec![
+        op(&long, "notes", "create", "n1", serde_json::json!({})),
+        op("c2", "notes", "create", &long, serde_json::json!({})),
+        op("c3", "notes", "create", &fits, serde_json::json!({})),
+    ], "a");
+    assert_eq!(rejected(&answer), vec![long.clone(), "c2".to_string()], "{answer:?}");
+    assert_eq!(acked(&answer), vec!["c3"]);
+    assert!(db.write().get_record("n1").is_err());
+    assert!(db.write().get_record(&fits).is_ok());
+}
+
 /// An op as a client stamps it, `minutes` before now.
 fn stamped(mut op: SyncOp, minutes: i64) -> SyncOp {
     op.timestamp = (chrono::Utc::now() - chrono::Duration::minutes(minutes))
@@ -1526,6 +1546,7 @@ fn the_sync_limits_are_the_shared_ones() {
     assert_eq!(number("maxOpsPerPush"), crate::ws::MAX_OPS_PER_PUSH);
     assert_eq!(number("maxOpDataBytes"), MAX_OP_DATA_BYTES);
     assert_eq!(number("maxPushDataBytes"), MAX_BATCH_DATA_BYTES);
+    assert_eq!(number("maxIdBytes"), MAX_ID_BYTES);
     assert_eq!(number("maxPullCollections"), MAX_PULL_COLLECTIONS);
     assert_eq!(number("pageRows") as i64, pool::MAX_COLLECTION_ROWS);
     // The rule is_valid_collection_name implements, and the names it is held to.

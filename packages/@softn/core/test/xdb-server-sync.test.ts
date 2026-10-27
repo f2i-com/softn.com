@@ -1187,6 +1187,31 @@ describe('a change larger than the host takes in one message', () => {
     }
   });
 
+  it('refuses a record whose id is longer than the host takes, and pushes the rest', async () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1' });
+    const refused: string[] = [];
+    sync.on('reject', (opId) => refused.push(String(opId)));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      // The host takes 512 bytes (sync-protocol.json). The store makes ids of 128 characters at
+      // most, 384 bytes of CJK; an import brings what it holds: 171 characters, 513 bytes.
+      const at = '2026-01-01T00:00:00.000Z';
+      const record = (id: string) => ({ id, collection: 'notes', data: { title: id.length }, created_at: at, updated_at: at, deleted: false });
+      xdb.create('notes', { title: 'fits' }, { id: '日'.repeat(128) });
+      xdb.import({ version: 1, exportedAt: at, collections: { notes: [record('日'.repeat(171)), record('y'.repeat(512))] } }, { merge: true });
+      await Promise.resolve();
+      expect(pushedOps(socket).map((op) => op.recordId).sort()).toEqual(['y'.repeat(512), '日'.repeat(128)]);
+      expect(refused).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      sync.disconnect();
+    }
+  });
+
   it('packs a queue of such text into pushes by its UTF-8 size', () => {
     const sync = new XDBServerSync(xdb, { wsUrl: WS_URL, appVersion: '1' });
     sync.connect();
