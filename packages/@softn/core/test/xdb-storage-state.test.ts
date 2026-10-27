@@ -49,6 +49,28 @@ describe('XDB storage state (browser backend)', () => {
     errors.mockRestore();
   });
 
+  // An unreadable collection reads as empty, and was exported so: restored, the backup
+  // replaced the real collection with nothing.
+  it('leaves a collection it cannot read out of an export, and names it', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const storage = storageWith({ 'xdb:notes': '{"not": "an array"', 'xdb:tasks': JSON.stringify([record('t1', 'kept')]) });
+    const xdb = new XDBService(storage, 'xdb');
+    xdb.getAll('notes');
+    const exported = xdb.export(['notes', 'tasks']);
+    expect(Object.keys(exported.collections)).toEqual(['tasks']);
+    expect(exported.unreadable).toEqual(['notes']);
+  });
+
+  // `data['__proto__'] = …` set the export's prototype: the collection was missing from
+  // backups and from a worker's snapshot.
+  it('exports a collection named __proto__', () => {
+    const xdb = new XDBService(storageWith(), 'xdb');
+    xdb.create('__proto__', { title: 'odd name' });
+    const exported = xdb.export();
+    expect(Object.prototype.hasOwnProperty.call(exported.collections, '__proto__')).toBe(true);
+    expect(JSON.parse(xdb.exportToJSON()).collections.__proto__).toHaveLength(1);
+  });
+
   it('treats valid JSON with the wrong shape as corruption too', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     for (const bad of ['{"id":"x"}', '[{"id":"ok","data":{}},{"no":"id"}]', '["just", "strings"]']) {
@@ -142,7 +164,9 @@ describe('XDB storage state (browser backend)', () => {
       xdb.update('t1', { title: `edit ${i}` });
     }
     expect([...store.keys()].filter((k) => k.includes('.corrupt.'))).toHaveLength(1);
-    expect(Object.keys(xdb.export().collections).sort()).toEqual(['notes', 'tasks']);
+    // The damaged one is named, not exported as the empty list it reads as.
+    expect(Object.keys(xdb.export().collections).sort()).toEqual(['tasks']);
+    expect(xdb.export().unreadable).toEqual(['notes']);
     expect(xdb.get('tasks', 't1')?.data.title).toBe('edit 2');
   });
 

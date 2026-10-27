@@ -224,6 +224,13 @@ export interface XDBExportData {
   version: number;
   exportedAt: string;
   collections: Record<string, XDBRecord[]>;
+  /**
+   * Collections left out because their records could not be read (damaged in
+   * storage, or not loaded from the desktop's native store): exported as the
+   * empty lists they read as, a restore replaced each real collection with
+   * nothing.
+   */
+  unreadable?: string[];
 }
 
 /**

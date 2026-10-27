@@ -1520,8 +1520,15 @@ export class XDBService {
     if (this.useTauri) {
       try {
         const record = await tauriInvoke<XDBRecord>('get_record', this.tauriArgs({ id }));
-        this.getOrCreateCollection(record.collection).set(record.id, record);
-        return record;
+        // SQLite's copy only where the cache holds nothing as new (an edit or
+        // a deletion whose native write has not landed stands, as getAllAsync
+        // weighs it), and a deleted record is none, as in browser storage: the
+        // native store answers tombstones too.
+        const coll = this.getOrCreateCollection(record.collection);
+        const cached = coll.get(record.id);
+        if (!cached || stampTime(cached.updated_at) < stampTime(record.updated_at)) coll.set(record.id, record);
+        const held = coll.get(record.id)!;
+        return held.deleted ? null : held;
       } catch {
         return null;
       }
@@ -1607,7 +1614,11 @@ export class XDBService {
         // mounted <data> block re-read SQLite every 120 ms for as long as it
         // was shown, and each read went to peer sync as a fresh `refresh`.
         if (changed) this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
-        return records;
+        // The page's view, merged, not SQLite's list: a record deleted here
+        // whose native delete had not landed was still in SQLite's, and a
+        // <data> block that read it then kept showing it, since the delete's
+        // landing announces nothing.
+        return this.getCollectionData(collection);
       } catch {
         // Expected after webview reload when stale callbacks exist. Local cache is still valid.
         return this.getCollectionData(collection);
@@ -1783,9 +1794,17 @@ export class XDBService {
         const record = await this.native<XDBRecord>('update_record', {
           payload: { id, data, updated_at: held ? this.stampAfter(held) : undefined, remove: removedFields(data) },
         });
-        this.getOrCreateCollection(record.collection).set(record.id, record);
-        this.emit({ type: 'update', collection: record.collection, record });
-        this.notifyMutation('update', record.collection, record.id, record.data);
+        // Taken only while the cache holds what this update started from, as
+        // update() weighs its answer: a delete() or an edit made meanwhile
+        // wins. Set regardless, a record deleted meanwhile was live here again,
+        // and server sync heard the update after the deletion.
+        const coll = this.getOrCreateCollection(record.collection);
+        const now = coll.get(record.id);
+        if (held === undefined ? now === undefined || !now.deleted : now === held) {
+          coll.set(record.id, record);
+          this.emit({ type: 'update', collection: record.collection, record });
+          this.notifyMutation('update', record.collection, record.id, record.data);
+        }
         return record;
       } catch (err) {
         console.error('[XDB] Failed to update record:', err);
@@ -3279,15 +3298,26 @@ export class XDBService {
   export(collections?: string[]): XDBExportData {
     const collectionNames = collections || this.getAllCollectionKeys();
     const data: Record<string, XDBRecord[]> = {};
+    const unreadable: string[] = [];
 
     for (const collection of collectionNames) {
-      data[collection] = this.getAllCollectionData(collection);
+      // One whose records cannot be read is left out and named, not exported
+      // as the empty list it reads as, which a restore put in its place.
+      if (!this.isCollectionReadable(collection) || !this.isHydrated(collection)) {
+        unreadable.push(collection);
+        continue;
+      }
+      // Defined, not assigned: `data['__proto__'] = …` set the object's
+      // prototype, and a collection of that name was missing from backups
+      // and from a worker's snapshot.
+      Object.defineProperty(data, collection, { value: this.getAllCollectionData(collection), enumerable: true, writable: true, configurable: true });
     }
 
     return {
       version: 1,
       exportedAt: new Date().toISOString(),
       collections: data,
+      ...(unreadable.length > 0 ? { unreadable } : {}),
     };
   }
 
@@ -3574,12 +3604,27 @@ export class XDBService {
     const untouched = new Map<string, Map<string, XDBRecord>>();
     for (const plan of plans) {
       const before = this.getAllCollectionData(plan.collection);
+      // A record still being created that a replacing import takes goes as
+      // clear() takes one: its create callback removes the row SQLite writes,
+      // and neither puts it back in the cache nor announces it. It came back
+      // live here, and server sync heard a deletion of an id it never had,
+      // then the create: the host kept what the restore had removed.
+      const taken = new Set<string>();
+      if (plan.replace) {
+        const kept = new Set(plan.records.map((record) => record.id));
+        for (const record of before) {
+          if (this.pendingCreateIds.has(record.id) && !kept.has(record.id)) {
+            this.abandonedCreates.add(record.id);
+            taken.add(record.id);
+          }
+        }
+      }
       const after = XDBService.mergePlan(before, plan);
       untouched.set(plan.collection, new Map(this.memoryStore.get(plan.collection) ?? []));
       this.setCollectionData(plan.collection, after);
       importedCollections.push(plan.collection);
       this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
-      this.announceImport(plan.collection, before, after);
+      this.announceImport(plan.collection, taken.size === 0 ? before : before.filter((record) => !taken.has(record.id)), after);
     }
     const batches = plans.map(plan => ({ collection: plan.collection, replace: plan.replace, records: plan.records }));
     const persisted: Promise<XDBPersistResult> = batches.length === 0

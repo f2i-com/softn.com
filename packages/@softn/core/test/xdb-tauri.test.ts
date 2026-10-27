@@ -43,13 +43,28 @@ describe('XDB Service (Tauri mode)', () => {
   let failNextImport = false;
   /** Commands the backend refuses, for the write-failure cases. */
   let refuse: Set<string>;
+  /** Commands held until their promise settles, for a native write that lands late. */
+  let gate: Map<string, Promise<void>>;
+
+  /** Hold `command` until the function answered is called. */
+  const hold = (command: string): (() => void) => {
+    let release!: () => void;
+    gate.set(command, new Promise<void>((resolve) => { release = resolve; }));
+    return () => {
+      gate.delete(command);
+      release();
+    };
+  };
 
   beforeEach(() => {
     backend = new Map();
     listeners = new Map();
     failNextImport = false;
     refuse = new Set();
+    gate = new Map();
     invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+      const held = gate.get(cmd);
+      if (held) await held;
       // As Tauri's IPC serialises a call's arguments (scripts/process-ipc-message-fn.js): an
       // object holding `__TAURI_TO_IPC_KEY__` has that value called, and the whole call fails.
       JSON.stringify(args ?? {}, (_key, value: unknown) =>
@@ -967,6 +982,56 @@ describe('XDB Service (Tauri mode)', () => {
       // An id already in use is not reused.
       const again = xdb.create('tasks', { title: 'other' }, { id: stored.id });
       expect(again.id).not.toBe(stored.id);
+    });
+
+    // Native reads answered SQLite's view: a record deleted here whose native delete had not
+    // landed was listed, and getAsync answered tombstones and wrote them, or stale copies, over
+    // the cache; an updateAsync answered after a delete() made the record live again.
+    it('answers reads with the page view while native writes land late', async () => {
+      const xdb = new XDBService(undefined, 'late-writes', 'late-writes-app');
+      await xdb.isReady;
+      const a = await xdb.createAsync('notes', { n: 1 });
+      const b = await xdb.createAsync('notes', { n: 2 });
+      // A delete still on its way to SQLite.
+      const landDelete = hold('delete_record');
+      xdb.delete(a.id);
+      expect((await xdb.getAllAsync('notes')).map((r) => r.id)).toEqual([b.id]);
+      expect(await xdb.getAsync('notes', a.id)).toBeNull();
+      expect(xdb.get('notes', a.id)).toBeNull();
+      landDelete();
+      await flushPromises();
+      // A tombstone SQLite holds is no record.
+      expect(await xdb.getAsync('notes', a.id)).toBeNull();
+      // An update answered after a deletion made meanwhile.
+      const landUpdate = hold('update_record');
+      const updating = xdb.updateAsync(b.id, { n: 3 });
+      await flushPromises();
+      xdb.delete(b.id);
+      landUpdate();
+      await updating;
+      await flushPromises();
+      expect(xdb.get('notes', b.id)).toBeNull();
+      expect(xdb.getAll('notes')).toEqual([]);
+    });
+
+    // clear() let a record still being created go; a replacing import took it from the cache,
+    // the create landed after, and it was live again here and announced to server sync.
+    it('lets a record still being created go when a replacing import takes its collection', async () => {
+      const xdb = new XDBService(undefined, 'import-pending', 'import-pending-app');
+      await xdb.isReady;
+      const announced: Array<{ type: string; recordId: string }> = [];
+      const stop = xdb.onMutation((m) => announced.push({ type: m.type, recordId: m.recordId }));
+      try {
+        const pending = xdb.create('notes', { title: 'in flight' });
+        await xdb.importAsync({ version: 1, exportedAt: new Date().toISOString(), collections: { notes: [] } }, { merge: false });
+        await flushPromises();
+        expect(xdb.get('notes', pending.id) === null || xdb.get('notes', pending.id)?.deleted === true).toBe(true);
+        expect(xdb.getAll('notes')).toEqual([]);
+        expect(backend.get('notes')!.filter((r) => !r.deleted)).toEqual([]);
+        expect(announced.filter((m) => m.recordId === pending.id)).toEqual([]);
+      } finally {
+        stop();
+      }
     });
 
     // JSON has no undefined, so a patch's removal arrived as nothing, the native merge kept the
