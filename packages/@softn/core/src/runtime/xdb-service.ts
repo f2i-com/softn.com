@@ -83,6 +83,15 @@ function storedData<T>(data: T): T {
 }
 
 /**
+ * The fields a patch removes (set to undefined), which the native update is
+ * told beside the patch: sent as JSON, the patch says nothing of them, and the
+ * native merge kept each (crates/softn-xdb db.rs `update_record_removing`).
+ */
+function removedFields(patch: Partial<Record<string, unknown>>): string[] {
+  return Object.keys(patch).filter((key) => patch[key] === undefined);
+}
+
+/**
  * `data` as JSON, or the refusal. An update's patch is checked with this
  * before anything is sent, and normalised only once merged: a field the
  * patch sets to undefined is a field removed, as JSON drops it.
@@ -1395,8 +1404,11 @@ export class XDBService {
           // (An update replaces the cached object, so identity says whether
           // one happened; timestamps can agree to the millisecond.)
           if (currentOptimistic && currentOptimistic !== optimisticRecord) {
-            // Local data was modified — merge: local data wins over server's original data
-            const mergedData = { ...serverRecord.data, ...currentOptimistic.data };
+            // Local data was modified: it is the record's data, fields an edit
+            // removed included, which a merge over the create's data put back
+            // (and SQLite kept, its own merge being unable to remove one).
+            const mergedData = currentOptimistic.data;
+            const removed = Object.keys(serverRecord.data ?? {}).filter((key) => !Object.hasOwn(mergedData, key));
             // Stamped when the edit was made, or just after the native create: SQLite stamped
             // the update with its own later time, and the record here kept the create's.
             const stamp = stampTime(currentOptimistic.updated_at) > stampTime(serverRecord.updated_at)
@@ -1405,7 +1417,7 @@ export class XDBService {
             mergedRecord = { ...serverRecord, data: mergedData, updated_at: stamp };
             // Push merged data to server so it's persisted
             this.native('update_record', {
-              payload: { id: serverRecord.id, data: mergedData, updated_at: stamp, collection },
+              payload: { id: serverRecord.id, data: mergedData, updated_at: stamp, collection, remove: removed },
             }).catch((err) => this.nativeWriteFailed('update a record', collection, err));
           } else {
             mergedRecord = serverRecord;
@@ -1692,7 +1704,7 @@ export class XDBService {
       if (!this.pendingCreateIds.has(id)) {
         // Async update via Tauri - fire and forget
         this.native<XDBRecord>('update_record', {
-          payload: { id: resolvedId, data, updated_at: applied?.updated_at },
+          payload: { id: resolvedId, data, updated_at: applied?.updated_at, remove: removedFields(data) },
         })
           .then((serverRecord) => {
             this.nativeWriteLanded(serverRecord.collection);
@@ -1769,7 +1781,7 @@ export class XDBService {
         // Stamped after the cache's copy and a room's, as update() stamps it.
         const held = this.cachedLive(id);
         const record = await this.native<XDBRecord>('update_record', {
-          payload: { id, data, updated_at: held ? this.stampAfter(held) : undefined },
+          payload: { id, data, updated_at: held ? this.stampAfter(held) : undefined, remove: removedFields(data) },
         });
         this.getOrCreateCollection(record.collection).set(record.id, record);
         this.emit({ type: 'update', collection: record.collection, record });
@@ -1823,7 +1835,7 @@ export class XDBService {
       // and a peer's record here with the id of one in a private collection had
       // this edit merged into that one.
       this.native<XDBRecord>('update_record', {
-        payload: { id: record.id, data, updated_at: updatedRecord.updated_at, collection },
+        payload: { id: record.id, data, updated_at: updatedRecord.updated_at, collection, remove: removedFields(data) },
       }).then((serverRecord) => {
         if (serverRecord.collection !== collection || serverRecord.id !== record.id) return;
         // A newer edit/deletion wins even if the older request finishes last.

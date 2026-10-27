@@ -32,6 +32,19 @@ fn a_record_is_created_under_the_id_it_is_given() {
     assert_eq!(minted.id.len(), 36);
 }
 
+/// An edit that removes a field says so beside its data, which cannot: the merge kept the
+/// field, and the page's `update(id, { tag: undefined })` left it in SQLite for good.
+#[test]
+fn an_update_removes_the_fields_it_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "remove.sqlite");
+    let (record, _) = db.create_record("notes", json!({"a": 1, "tag": "x", "keep": true})).unwrap();
+    let (edited, _) = db.update_record_removing(&record.id, json!({"a": 2}), None, &["tag".to_string()]).unwrap();
+    assert_eq!(edited.data, json!({"a": 2, "keep": true}));
+    assert_eq!(db.get_record(&record.id).unwrap().data, json!({"a": 2, "keep": true}));
+    assert_eq!(replicated_records(&mut db, "notes")[0].data, json!({"a": 2, "keep": true}));
+}
+
 #[test]
 fn export_includes_uncheckpointed_writes_and_crdt_state() {
     let dir = tempfile::tempdir().unwrap();

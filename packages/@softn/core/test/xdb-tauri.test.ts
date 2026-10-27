@@ -82,13 +82,16 @@ describe('XDB Service (Tauri mode)', () => {
           return record;
         }
         case 'update_record': {
-          const payload = args?.payload as { id: string; data: Record<string, unknown>; updated_at?: string };
+          const payload = args?.payload as { id: string; data: Record<string, unknown>; updated_at?: string; remove?: string[] };
           for (const [collection, records] of backend.entries()) {
             const index = records.findIndex((r) => r.id === payload.id);
             if (index !== -1) {
+              // As XDB's command: a shallow merge of the patch as JSON carries it, then the fields it removes.
+              const merged: Record<string, unknown> = { ...records[index].data, ...JSON.parse(JSON.stringify(payload.data)) };
+              for (const key of payload.remove ?? []) delete merged[key];
               const updated = {
                 ...records[index],
-                data: { ...records[index].data, ...payload.data },
+                data: merged,
                 // As XDB's command: no earlier than the page's stamp for the edit.
                 updated_at: payload.updated_at ?? new Date().toISOString(),
               };
@@ -964,6 +967,24 @@ describe('XDB Service (Tauri mode)', () => {
       // An id already in use is not reused.
       const again = xdb.create('tasks', { title: 'other' }, { id: stored.id });
       expect(again.id).not.toBe(stored.id);
+    });
+
+    // JSON has no undefined, so a patch's removal arrived as nothing, the native merge kept the
+    // field, and its answer put it back in the cache: the browser store removes it.
+    it('removes a field an edit sets to undefined, in the cache and the native store', async () => {
+      const xdb = new XDBService(undefined, 'removed-field', 'removed-field-app');
+      await xdb.isReady;
+      const record = await xdb.createAsync('notes', { a: 1, tag: 'x' });
+      xdb.update(record.id, { tag: undefined });
+      await flushPromises();
+      expect(xdb.get('notes', record.id)?.data).toEqual({ a: 1 });
+      expect(backend.get('notes')![0].data).toEqual({ a: 1 });
+      // And before its create has landed.
+      const early = xdb.create('notes', { a: 2, tag: 'y' });
+      xdb.update(early.id, { tag: undefined });
+      await flushPromises();
+      expect(xdb.get('notes', early.id)?.data).toEqual({ a: 2 });
+      expect(backend.get('notes')!.find((r) => r.id === early.id)?.data).toEqual({ a: 2 });
     });
 
     // The native store minted an id of its own, and the app kept the one create() returned,

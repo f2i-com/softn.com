@@ -926,9 +926,23 @@ impl XdbDatabase {
         data: serde_json::Value,
         stamp: Option<&str>,
     ) -> DbResult<(Record, Vec<u8>)> {
+        self.update_record_removing(id, data, stamp, &[])
+    }
+
+    /// `update_record_at`, with the fields `remove` names taken out of the record after the
+    /// merge. The merge cannot say "remove": the page's `update(id, { tag: undefined })`
+    /// arrived as `{}` (JSON has no undefined), merged as nothing, and the field came back
+    /// in the page's cache from the answer, and in SQLite for good.
+    pub fn update_record_removing(
+        &mut self,
+        id: &str,
+        data: serde_json::Value,
+        stamp: Option<&str>,
+        remove: &[String],
+    ) -> DbResult<(Record, Vec<u8>)> {
         let id = id.to_string();
         let stamp = stamp.map(str::to_string);
-        self.with_transaction(|this| this.update_record_batched(&id, data, true, stamp.as_deref()))
+        self.with_transaction(|this| this.update_record_batched(&id, data, true, stamp.as_deref(), remove))
     }
 
     /// `persist_doc = false` defers the CRDT snapshot write to the caller
@@ -939,6 +953,7 @@ impl XdbDatabase {
         data: serde_json::Value,
         persist_doc: bool,
         stamp: Option<&str>,
+        remove: &[String],
     ) -> DbResult<(Record, Vec<u8>)> {
         // Get existing record (need current data for merge)
         let existing = self.get_record(id)?;
@@ -956,6 +971,9 @@ impl XdbDatabase {
             ) => {
                 for (k, v) in incoming_map {
                     existing_map.insert(k, v);
+                }
+                for k in remove {
+                    existing_map.remove(k);
                 }
                 serde_json::Value::Object(existing_map)
             }
@@ -1001,7 +1019,7 @@ impl XdbDatabase {
             let mut out = Vec::with_capacity(updates.len());
             let mut touched: Vec<String> = Vec::new();
             for (id, data) in updates {
-                let (record, update) = this.update_record_batched(&id, data, false, None)?;
+                let (record, update) = this.update_record_batched(&id, data, false, None, &[])?;
                 if !touched.contains(&record.collection) {
                     touched.push(record.collection.clone());
                 }

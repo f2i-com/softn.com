@@ -71,6 +71,10 @@ pub struct UpdateRecordPayload {
     /// it merged into the private one.
     #[serde(default)]
     pub collection: Option<String>,
+    /// Fields the edit removes (`update(id, { tag: undefined })`), which the merged `data`
+    /// cannot say: JSON has no undefined (db.rs `update_record_removing`).
+    #[serde(default)]
+    pub remove: Vec<String>,
     /// The stamp the page gave the edit (after a sync room's copy of the record as well as
     /// the one here): the edit is stamped no earlier, within a day of this clock (db.rs
     /// `edit_stamp`). A page that sends none is stamped as before.
@@ -888,7 +892,7 @@ pub async fn update_record(
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         refuse_other_collection(&db_lock, &payload)?;
         let (record, update) = db_lock
-            .update_record_at(&payload.id, payload.data, payload.updated_at.as_deref())
+            .update_record_removing(&payload.id, payload.data, payload.updated_at.as_deref(), &payload.remove)
             .map_err(|e| e.to_string())?;
         let epoch = db_lock.get_epoch(&record.collection).unwrap_or(0);
         (record, update, epoch)
@@ -2214,6 +2218,7 @@ mod tests {
             id: private.id.clone(),
             data: serde_json::json!({"pin": "edited"}),
             collection: collection.map(str::to_string),
+            remove: Vec::new(),
             updated_at: None,
         };
         assert!(refuse_other_collection(&db, &payload(Some("shared"))).unwrap_err().starts_with("Refused"));
