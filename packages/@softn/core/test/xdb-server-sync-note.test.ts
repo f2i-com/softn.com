@@ -782,6 +782,30 @@ describe('an app moved to another sync host', () => {
   });
 });
 
+describe('a pull place set while the host clock ran ahead', () => {
+  // A host whose clock once jumped a year ahead stamped its records then; pulled from that
+  // place, every later pull brought nothing written since, deletions included.
+  it('is no place once the host is back on time: the collection is pulled whole', async () => {
+    const backing = storage();
+    await synced(backing);
+    // A visit while the host's clock is a year ahead: its pull from the place moves it there.
+    const ahead = '2027-03-01T00:00:00.000Z';
+    const sync = new XDBServerSync(page(backing), { wsUrl: WS_URL, appVersion: '1', collections: ['notes'], reconnectDelay: 60_000 });
+    sync.connect();
+    const during = FakeSocket.made[FakeSocket.made.length - 1];
+    during.open();
+    during.receive({ type: 'auth_ok', clientId: 'c-ahead', serverTime: ahead });
+    during.receive({ type: 'sync_state', collection: 'notes', records: [row('n2', 'v2', ahead)] });
+    await tick();
+    sync.disconnect();
+    expect(JSON.parse(backing.getItem('xdb:app::sync-pulled')!).collections.notes.at).toBe(ahead);
+    vi.advanceTimersByTime(1000);
+    const { socket } = connect(page(backing));
+    const pulls = socket.sent.filter((m) => m.type === 'sync_pull');
+    expect(pulls).toEqual([{ type: 'sync_pull', collections: ['notes'] }]);
+  });
+});
+
 describe('a large change made while no client listened', () => {
   const many = (n: number, at: string) => Array.from({ length: n }, (_, i) => row(`r${i}`, `t${i}`, at));
   type Op = { operation: string; recordId: string; data?: { title?: string } };

@@ -159,6 +159,8 @@ const MAX_ID_BYTES = 512;
  * full may have stopped short, and is asked again from where it ended.
  */
 const INCREMENTAL_PULL_ROWS = 10_000;
+/** How far past the host's time now a pull place may be and still be one (`pullsFor`). */
+const PLACE_AHEAD_MS = 60_000;
 /** How the host writes its clock, in `auth_ok` and in each record's receipt time. */
 const HOST_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 /** What the host takes as a collection name; a pull naming anything else is answered with an error. */
@@ -1372,7 +1374,16 @@ export class XDBServerSync {
     const since: ClientMessage[] = [];
     const now = typeof this.serverTime === 'string' && HOST_TIME.test(this.serverTime) ? this.serverTime : null;
     for (const collection of new Set(collections)) {
-      const place = this.pulled.get(collection);
+      let place = this.pulled.get(collection);
+      // A place later than the host's own time now was set while its clock
+      // ran ahead, and asked from it a pull brought nothing written since,
+      // deletions included, until the clock caught up: it is no place, and
+      // the collection is pulled whole (a floor ahead is reset below).
+      if (place && now !== null && HOST_TIME.test(place.at) && Date.parse(place.at) > Date.parse(now) + PLACE_AHEAD_MS) {
+        this.pulled.delete(collection);
+        this.pulledDirty = true;
+        place = undefined;
+      }
       if (place) {
         const from = askFrom(place);
         since.push({ type: 'sync_pull', collections: [collection], lastSync: from.at, lastId: from.id });
