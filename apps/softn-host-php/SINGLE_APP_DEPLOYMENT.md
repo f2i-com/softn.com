@@ -52,7 +52,10 @@ service is required.
    folder is not this account's to write in, the manifest is not JSON, part of
    the upload is missing) it says which in one line. It checks the command-line
    PHP, which is often configured apart from the web server's: step 7 checks
-   that one.
+   that one. On softn-runner it also says how much memory a request may take
+   ("requestMemoryMb" in private/config.json, 256 MiB unless you set it) and
+   what this kernel locks the runner down to: it confines itself, with no
+   root, container or service needed (README-RUNTIME.md, softn-runner).
 6. Review private/config.json: appId must match the PRIVATE manifest ID; retain
    the generated keyHex and cryptoDomains. Grant only the capabilities the app
    needs. Configure any trusted operator integrations separately. Do not put

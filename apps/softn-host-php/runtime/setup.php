@@ -137,6 +137,12 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
     $declared=is_array($manifest)?($manifest['server']['requires']['capabilities']??[]):[];
     if(is_array($declared)&&in_array('photos',$declared,true)&&!extension_loaded('gd'))
         $problems[]='The application takes photo uploads and this PHP has no GD extension: its upload routes answer 503 until GD is installed for the web server\'s PHP (Debian/Ubuntu: the php-gd package).';
+    // Never as root: the app's check runs its logic and its migrations, which
+    // as root would run with root's rights (an app's code, whatever runner),
+    // and leave a database the web server's PHP cannot open. It was run, and
+    // the NOTE about root came after.
+    if(function_exists('posix_geteuid')&&posix_geteuid()===0)
+        return array_merge($problems,['Setup is running as root, so the application is not checked: that check runs its logic and its migrations, which would run with root\'s rights and leave a database the web server\'s PHP cannot open. Run setup as the account the web server runs PHP as (for example: sudo -u www-data php '.$root.'/setup.php).']);
     // The operator's settings: which runner, and how much memory a request on softn-runner may take.
     $settings=json_decode((string)@file_get_contents($root.'/private/config.json'),true);
     if(is_array($settings)&&array_key_exists('requestMemoryMb',$settings)&&softn_request_memory_mb($settings)!==$settings['requestMemoryMb'])

@@ -42,15 +42,41 @@ jobs:
       - name: Install the ZIPP release
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
 
+      # softn-runner, built as release.yml's runner job builds it (static
+      # Linux), so that the two backend archives below carry it as a
+      # release's do and the Apache tests run their requests on it, locked
+      # down, before a release rather than during one.
+      - name: The runner's static Linux target
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cd apps/softn-runner/host && rustup target add x86_64-unknown-linux-musl
+      - name: Cache Cargo for the runner
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/softn-runner/guest/target/
+            apps/softn-runner/host/target/
+          key: runner-${{ runner.os }}-${{ hashFiles('apps/softn-runner/guest/Cargo.lock', 'apps/softn-runner/host/Cargo.lock') }}
+          restore-keys: runner-${{ runner.os }}-
+      - name: Build the runner
+        run: node apps/softn-runner/build.mjs --target x86_64-unknown-linux-musl
+
       - name: Build packages
         run: |
           npm run build:packages
           npm run build -w @softn/web
           npm run build -w @softn/single
-          npm run package:single -- --with-backend
+          npm run package:single -- --with-backend --runner-dir apps/softn-runner/dist
           npm run build -w @softn/single-private
           npm run package:single-private
-          npm run package:private-single-php
+          npm run package:private-single-php -- --runner-dir apps/softn-runner/dist
+          for zip in release/softn-app-static-with-backend-linux-x64-v*.zip release/softn-app-private-with-backend-linux-x64-v*.zip; do
+            unzip -Z1 "$zip" | grep -qx 'backend/bin/softn-runner-linux-x86_64'
+          done
           npm run package:formlogic-runtime -- --tag "v$(node -p "require('./package.json').version")" --no-build-packages
 
       - name: Install Apache/PHP test dependencies

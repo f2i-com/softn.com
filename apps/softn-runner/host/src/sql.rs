@@ -35,6 +35,15 @@ const RESULT_LIMIT: usize = 2 * 1024 * 1024;
 
 /// Open the app's database as request-worker.mjs opens it.
 pub fn open(path: &Path) -> Result<Connection, HostError> {
+    // Private (0600), set through a handle (the lockdown refuses a mode
+    // changed by path), and before SQLite opens it: closing a second handle
+    // on the file once SQLite has one would drop SQLite's POSIX locks on it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).mode(0o600).open(path).map_err(HostError::library)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(HostError::library)?;
+    }
     let conn = Connection::open(path).map_err(HostError::sqlite)?;
     // node:sqlite's DatabaseSync: double-quoted string literals are off (they
     // are identifiers only), extensions cannot be loaded.
@@ -43,11 +52,6 @@ pub fn open(path: &Path) -> Result<Connection, HostError> {
     conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0).map_err(HostError::sqlite)?;
     conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 100).map_err(HostError::sqlite)?;
     conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, VDBE_OP_LIMIT).map_err(HostError::sqlite)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(HostError::library)?;
-    }
     // Lock waits first, then the rest (request-worker.mjs). Temporary tables
     // and sorts stay in memory, as on the Rust host, where a statement that
     // spilled to temporary files could fill the disk every app shares before

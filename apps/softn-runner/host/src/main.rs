@@ -113,10 +113,7 @@ fn stopped(m: &Migration, ms: u64) {
     let note = serde_json::json!({ "name": m.name, "sha256": m.sha256, "stops": stops });
     if std::fs::write(&m.marker, note.to_string()).is_ok() {
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&m.marker, std::fs::Permissions::from_mode(0o600));
-        }
+        let _ = private_mode(&m.marker, 0o600);
         let _ = writeln!(
             std::io::stderr(),
             "softn: startup stage database_migrations: migration {} was stopped at the {} s deadline ({stops} of {})",
@@ -125,6 +122,16 @@ fn stopped(m: &Migration, ms: u64) {
             m.attempts
         );
     }
+}
+
+/// Make a file or folder of the runner's own private (`mode`) through a handle
+/// to it (fchmod): the lockdown refuses changing a mode by path, which
+/// Landlock does not govern (lockdown.rs). What the runner makes is private
+/// already (its umask); this holds one made by someone else to it.
+#[cfg(unix)]
+pub fn private_mode(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::File::open(path)?.set_permissions(std::fs::Permissions::from_mode(mode))
 }
 
 /// End the process now, whatever the other thread is doing: inside SQLite,
@@ -168,10 +175,13 @@ fn main() {
     // Then the process's own lockdown (lockdown.rs), before any thread is
     // started, so that every one inherits it. `--check-lockdown` reports what
     // this system enforced and proves each refusal, for setup.php.
+    let checking = std::env::args().nth(1).as_deref() == Some("--check-lockdown");
+    // A folder outside the backend this process can list now, to try again after.
+    let outside = if checking { lockdown::outside(&root) } else { None };
     let locked = lockdown::apply(&root);
-    if std::env::args().nth(1).as_deref() == Some("--check-lockdown") {
+    if checking {
         let mut report = locked.to_json();
-        report["probes"] = lockdown::probes(&root);
+        report["probes"] = lockdown::probes(&root, outside.as_deref());
         let _ = writeln!(std::io::stdout(), "{report}");
         return;
     }

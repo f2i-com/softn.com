@@ -131,7 +131,11 @@ fn run(job: &serde_json::Value) -> serde_json::Value {
     let steps = job.get("steps").and_then(|v| v.as_u64()).unwrap_or(5_000_000).clamp(1, MAX_INSTRUCTION_BUDGET_STEPS);
     // The script heap the runner allows this request (its limits.rs: 64 MiB
     // below the memory the host gave it), never past the engine's own 512 MiB.
-    let heap = job.get("heap").and_then(|v| v.as_u64()).map_or(MAX_APPROX_HEAP_BYTES, |n| (n as usize).clamp(MIN_APPROX_HEAP_BYTES, MAX_APPROX_HEAP_BYTES));
+    // Clamped as a u64 first: usize is 32 bits here, and a cast first would wrap.
+    let heap = job
+        .get("heap")
+        .and_then(|v| v.as_u64())
+        .map_or(MAX_APPROX_HEAP_BYTES, |n| n.clamp(MIN_APPROX_HEAP_BYTES as u64, MAX_APPROX_HEAP_BYTES as u64) as usize);
     let granted = job.get("grant").and_then(|v| v.as_bool()) == Some(true);
     let mut state = match compile(text("source"), text("config"), steps, heap, granted) {
         Ok(state) => state,

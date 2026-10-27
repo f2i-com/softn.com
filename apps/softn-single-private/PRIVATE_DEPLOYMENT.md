@@ -88,7 +88,10 @@ application that uses the backend goes in the document root itself.
    answers `/api/meta`; a
    problem is a `WARNING:` line with its reason and a non-zero exit. It
    checks the command-line PHP, which is often configured apart from the web
-   server's: step 5 checks that one.
+   server's: step 5 checks that one. On softn-runner it also says how much
+   memory a request may take (`"requestMemoryMb"`, 256 MiB unless you set
+   it) and what this kernel locks the runner down to: it confines itself,
+   with no root, container or service needed (README-RUNTIME.md).
 4. Review `backend/private/config.json`: `appId` must match the PRIVATE
    manifest ID; retain the generated `keyHex` and `cryptoDomains`. Grant only
    the capabilities the app needs. Setup says how many of the web server's

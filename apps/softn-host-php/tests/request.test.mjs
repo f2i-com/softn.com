@@ -883,22 +883,30 @@ test('setup says what softn-runner locks itself down to on this kernel, and what
     assert.equal(r.status,0,r.stderr);
     return JSON.parse(r.stdout);
   };
-  const denied={outside:'denied',socket:'denied',fork:'denied',exec:'denied',signal:'denied'};
-  const [full,noLandlock,nothing,silent]=report(
-    {landlock:{abi:6,enforced:'full'},seccomp:true,noNewPrivs:true,errors:[],probes:denied},
+  const denied={outside:'denied',socket:'denied',fork:'denied',exec:'denied',signal:'denied',chmod:'denied',symlink:'denied',x32:'denied'};
+  const allowed=Object.fromEntries(Object.keys(denied).map(k=>[k,'allowed']));
+  const [full,noLandlock,nothing,silent,older]=report(
+    {landlock:{abi:9,enforced:'full'},seccomp:true,noNewPrivs:true,errors:[],probes:denied},
     {landlock:{abi:0,enforced:'none'},seccomp:true,noNewPrivs:true,errors:[],probes:{...denied,outside:'allowed'}},
-    {landlock:{abi:0,enforced:'none'},seccomp:false,noNewPrivs:true,errors:['seccomp: invalid argument'],probes:{outside:'allowed',socket:'allowed',fork:'allowed',exec:'allowed',signal:'allowed'}},
+    {landlock:{abi:0,enforced:'none'},seccomp:false,noNewPrivs:true,errors:['seccomp: invalid argument'],probes:allowed},
     null,
+    {landlock:{abi:7,enforced:'partial'},seccomp:true,noNewPrivs:true,errors:[],probes:denied},
   );
+  // A kernel with fewer of Landlock's rights than the runner asks for: what it is, not "in part".
+  assert.match(older[0],/^softn-runner locks itself down before every request: Landlock \(ABI 7; a newer kernel refuses more\) keeps its files to the backend folder; seccomp/);
   assert.deepEqual(full,[
-    'softn-runner locks itself down before every request: Landlock (ABI 6) keeps its files to the backend folder; seccomp refuses it other programs, new processes, network sockets and signals to other processes.',
-    'Tried on this system and refused: a file outside the backend, a socket, a new process, running a program, a signal to another process.',
+    'softn-runner locks itself down before every request: Landlock (ABI 9) keeps its files to the backend folder; seccomp refuses it other programs, new processes, network sockets, signals to other processes, and links, devices and file modes or owners changed by path.',
+    'Tried on this system and refused: a file outside the backend, a socket, a new process, running a program, a signal to another process, a mode changed by path, a symbolic link, an x32 system call.',
   ]);
-  // A kernel without Landlock: seccomp alone, and a note; with neither, two notes and nothing claimed.
+  // A kernel without Landlock: seccomp alone, what was not refused, and a
+  // note of what stays open; with neither, nothing claimed, and every probe
+  // that got through said.
   assert.match(noLandlock[0],/^softn-runner locks itself down before every request: seccomp refuses/);
-  assert.equal(noLandlock[1],'Tried on this system and refused: a socket, a new process, running a program, a signal to another process.');
-  assert.match(noLandlock[2],/^NOTE: this kernel enforces no Landlock/);
-  assert.deepEqual(nothing,['NOTE: this kernel enforces no Landlock, so it is not the kernel that keeps softn-runner to the backend folder (Linux 5.13 or newer with Landlock enabled does).','NOTE: softn-runner could not apply its seccomp filter here (seccomp: invalid argument).']);
+  assert.equal(noLandlock[1],'Tried on this system and refused: a socket, a new process, running a program, a signal to another process, a mode changed by path, a symbolic link, an x32 system call.');
+  assert.equal(noLandlock[2],'NOTE: tried on this system and not refused: a file outside the backend.');
+  assert.match(noLandlock[3],/^NOTE: this kernel enforces no Landlock, so it is not the kernel that keeps softn-runner to the backend folder, and other processes of this account stay reachable through \/proc/);
+  assert.deepEqual(nothing.slice(1),['NOTE: this kernel enforces no Landlock, so it is not the kernel that keeps softn-runner to the backend folder, and other processes of this account stay reachable through /proc (Linux 5.13 or newer with Landlock enabled closes both).','NOTE: softn-runner could not apply its seccomp filter here (seccomp: invalid argument).']);
+  assert.match(nothing[0],/^NOTE: tried on this system and not refused: a file outside the backend, a socket, .*an x32 system call\.$/);
   assert.match(silent[0],/^NOTE: softn-runner did not say what it locks itself down to/);
 });
 

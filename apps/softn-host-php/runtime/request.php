@@ -156,8 +156,9 @@ function softn_runner_environment(string $backend, mixed $config=null): array {
 /**
  * What softn-runner's `--check-lockdown` said, in words: the lockdown it puts
  * on itself before every request (Landlock keeps its files to the backend
- * folder; seccomp refuses it other programs, processes, sockets and signals),
- * what this kernel enforced of it, and what was tried and refused. A kernel
+ * folder; seccomp refuses it other programs, processes, sockets, signals and
+ * changes to files it may not make), what this kernel enforced of it, and
+ * what was tried and refused (and, if any was not, that too). A kernel
  * without a part is a NOTE, not a problem: the runner runs as before without it.
  * @param mixed $report the decoded JSON, or null when there was none
  * @return list<string>
@@ -167,15 +168,18 @@ function softn_lockdown_report(mixed $report): array {
     $landlock=is_array($report['landlock']??null)?$report['landlock']:[];
     $enforced=$landlock['enforced']??'none';$abi=(int)($landlock['abi']??0);
     $parts=[];
-    if($enforced==='full'||$enforced==='partial')$parts[]='Landlock (ABI '.$abi.($enforced==='partial'?', in part':'').') keeps its files to the backend folder';
-    if(($report['seccomp']??false)===true)$parts[]='seccomp refuses it other programs, new processes, network sockets and signals to other processes';
+    // "partial" is what Landlock says when the kernel has fewer rights to refuse than the runner asks of it (a newer kernel has more).
+    if($enforced==='full'||$enforced==='partial')$parts[]='Landlock (ABI '.$abi.($enforced==='partial'?'; a newer kernel refuses more':'').') keeps its files to the backend folder';
+    if(($report['seccomp']??false)===true)$parts[]='seccomp refuses it other programs, new processes, network sockets, signals to other processes, and links, devices and file modes or owners changed by path';
     $lines=[];
     if($parts)$lines[]='softn-runner locks itself down before every request: '.implode('; ',$parts).'.';
     $probes=is_array($report['probes']??null)?$report['probes']:[];
-    $names=['outside'=>'a file outside the backend','socket'=>'a socket','fork'=>'a new process','exec'=>'running a program','signal'=>'a signal to another process'];
-    $denied=[];foreach($names as $key=>$name)if(($probes[$key]??null)==='denied')$denied[]=$name;
+    $names=['outside'=>'a file outside the backend','socket'=>'a socket','fork'=>'a new process','exec'=>'running a program','signal'=>'a signal to another process','chmod'=>'a mode changed by path','symlink'=>'a symbolic link','x32'=>'an x32 system call'];
+    $denied=[];$allowed=[];
+    foreach($names as $key=>$name){$said=$probes[$key]??null;if($said==='denied')$denied[]=$name;elseif($said==='allowed')$allowed[]=$name;}
     if($denied)$lines[]='Tried on this system and refused: '.implode(', ',$denied).'.';
-    if($enforced!=='full'&&$enforced!=='partial')$lines[]='NOTE: this kernel enforces no Landlock, so it is not the kernel that keeps softn-runner to the backend folder (Linux 5.13 or newer with Landlock enabled does).';
+    if($allowed)$lines[]='NOTE: tried on this system and not refused: '.implode(', ',$allowed).'.';
+    if($enforced!=='full'&&$enforced!=='partial')$lines[]='NOTE: this kernel enforces no Landlock, so it is not the kernel that keeps softn-runner to the backend folder, and other processes of this account stay reachable through /proc (Linux 5.13 or newer with Landlock enabled closes both).';
     if(($report['seccomp']??false)!==true)$lines[]='NOTE: softn-runner could not apply its seccomp filter here'.(is_array($report['errors']??null)&&$report['errors']?' ('.implode('; ',array_map('strval',$report['errors'])).')':'').'.';
     return $lines;
 }

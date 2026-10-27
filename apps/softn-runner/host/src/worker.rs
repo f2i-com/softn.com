@@ -559,17 +559,12 @@ fn mark_limited(root: &Path, minute: i64, bucket: &str) {
     if std::fs::create_dir_all(&now).is_err() {
         return;
     }
+    // Through handles: the lockdown refuses a mode changed by path.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&now, std::fs::Permissions::from_mode(0o700));
-    }
+    let _ = crate::private_mode(&now, 0o700);
     let _ = std::fs::write(now.join(bucket), "");
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(now.join(bucket), std::fs::Permissions::from_mode(0o600));
-    }
+    let _ = crate::private_mode(&now.join(bucket), 0o600);
     if let Ok(entries) = std::fs::read_dir(&all) {
         for entry in entries.flatten() {
             if entry.file_name() != std::ffi::OsString::from(minute.to_string()) {

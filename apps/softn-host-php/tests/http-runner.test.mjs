@@ -285,20 +285,25 @@ nodeTest('softn-runner locks itself down before a request, and proves what this 
   const report=JSON.parse(check.stdout);
   console.log(`lockdown here: Landlock ABI ${report.landlock.abi}, ${report.landlock.enforced}; seccomp ${report.seccomp}; probes ${JSON.stringify(report.probes)}`);
   // seccomp is in every kernel this runs on: other programs, processes,
-  // sockets and signals to other processes are refused, each tried.
+  // sockets, signals to other processes, a mode changed by path, a symbolic
+  // link and an x32 call are refused, each tried.
   assert.equal(report.seccomp,true,check.stdout);
   assert.equal(report.noNewPrivs,true);
-  for(const probe of ['socket','fork','exec','signal'])assert.equal(report.probes[probe],'denied',probe);
-  // A file outside the backend is refused where the kernel enforces Landlock.
+  for(const probe of ['socket','fork','exec','signal','chmod','symlink','x32'])assert.equal(report.probes[probe],'denied',probe);
+  // A folder outside the backend, listed before the lockdown, is refused
+  // after it where the kernel enforces Landlock.
   const landlock=['full','partial'].includes(report.landlock.enforced);
   assert.equal(report.probes.outside,landlock?'denied':'allowed');
+  // The probe's link was refused, so none is left.
+  assert.ok(!existsSync(join(d.backend,'private/data/.softn-runner-probe')));
   // And setup says so. Every other test here, and route-declarations, runs
   // its requests under the same lockdown: migrations, SQL, the database's
   // log files, the rate-limit notes and a stopped migration's note.
   const setup=spawnSync('php',[join(d.backend,'setup.php')],{encoding:'utf8',timeout:60000});
   assert.equal(setup.status,0,setup.stdout+setup.stderr);
-  assert.match(setup.stdout,/softn-runner locks itself down before every request: (Landlock \(ABI \d+(, in part)?\) keeps its files to the backend folder; )?seccomp refuses it other programs, new processes, network sockets and signals to other processes\./);
-  assert.match(setup.stdout,/Tried on this system and refused: .*a socket, a new process, running a program, a signal to another process\./);
+  assert.match(setup.stdout,/softn-runner locks itself down before every request: (Landlock \(ABI \d+(; a newer kernel refuses more)?\) keeps its files to the backend folder; )?seccomp refuses it other programs, new processes, network sockets, signals to other processes, and links, devices and file modes or owners changed by path\./);
+  assert.match(setup.stdout,/Tried on this system and refused: .*a socket, a new process, running a program, a signal to another process, a mode changed by path, a symbolic link, an x32 system call\./);
+  assert.doesNotMatch(setup.stdout,/not refused/);
 });
 
 nodeTest('the operator\'s requestMemoryMb is the memory a request on softn-runner may take, and setup says when it is not a number it takes',{skip:skip||(softnRunner?false:'needs SOFTN_TEST_RUNNER (a Linux build of softn-runner)')},t=>{

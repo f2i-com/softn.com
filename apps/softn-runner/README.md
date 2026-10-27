@@ -70,24 +70,39 @@ with the kernel's own means: an unprivileged process may always restrict
 itself, so it needs no root, no container and nothing installed, and every
 thread it starts afterwards inherits it.
 
-- **no_new_privs**: nothing it does can gain privileges.
-- **Landlock** (Linux 5.13 and later): it may read the backend folder, write
-  only its database folder (`private/data`) and rate-limit notes
-  (`private/limited`), and read `/dev/urandom`; any other file is refused.
-  Where the kernel has them, TCP binds and connects (6.7) and signals to
-  processes outside the lockdown (6.12) are refused too.
-- **seccomp**: running a program, making a process (a thread is allowed),
-  sockets of any kind, signals to any other process, other processes' memory,
-  io_uring, and the calls that only widen the kernel's surface (mounts,
-  namespaces, BPF, perf, userfaultfd, keys, modules, kexec) fail with EPERM.
-- No core file is written.
+- **Its own session, and nothing gained**: no controlling terminal (setup.php
+  starts it from the operator's), no_new_privs, no core file, and a umask of
+  077 for what it makes.
+- **Landlock** (Linux 5.13 and later): it may read the backend folder; in its
+  database folder (`private/data`) and rate-limit notes (`private/limited`)
+  make, write, truncate and remove regular files (and, in the notes,
+  folders); and read `/dev/urandom`. Any other open is refused, and no
+  device, link, socket or pipe can be made anywhere. Where the kernel has
+  them, TCP binds and connects (6.7), signals and abstract sockets outside
+  the lockdown (6.12) and pathname sockets (7.1) are refused too. Landlock
+  does not govern a file's mode, owner, times or attributes, nor, before
+  6.2, truncate by path: seccomp refuses those.
+- **seccomp**, failing with EPERM: any system call of another ABI (i386, and
+  x32's numbers, which a filter keyed on x86-64's would let through); running
+  a program; making a process (a thread is allowed); sockets of any kind;
+  signals, limits, scheduling and memory calls aimed at any other process
+  (`kill`, `tkill`, `tgkill`, `rt_sigqueueinfo`, `prlimit64`, `ptrace`,
+  `process_vm_*`, `fcntl` `F_SETOWN`); io_uring; a file's mode, owner, times
+  or attributes changed by path (the runner sets its own through handles);
+  links and device nodes; typing into a terminal (`TIOCSTI`); and the calls
+  that only widen the kernel's surface (mounts, namespaces, BPF, perf,
+  userfaultfd, keys, modules, kexec).
 
-A kernel without Landlock still gets the seccomp filter, and the other way
-round; one with neither runs the runner as before. `softn-runner
+A kernel without Landlock still gets the seccomp filters, and the other way
+round; one with neither runs the runner as before. Without Landlock, other
+processes of the runner's account stay reachable through `/proc` (a
+dumpable one's memory, say), which only Landlock closes. `softn-runner
 --check-lockdown` (with `SOFTN_BACKEND_ROOT`) prints what this system
-enforced and tries a file outside the backend, a socket, a new process, a
-program and a signal to its parent, each reported denied or allowed; the PHP
-host's `setup.php` says so in words. The tests in
+enforced and then tries a folder outside the backend (one it could list
+before), a socket, a new process, a program, a signal to its parent (`kill`
+and `tkill`), a mode changed by path, a symbolic link and an x32 call, each
+reported denied, allowed or untried; the PHP host's `setup.php` says so in
+words, and names anything that was not refused. The tests in
 `apps/softn-host-php/tests/http-runner.test.mjs` hold the probes to it, and
 every request in that suite and in `route-declarations.test.mjs` runs locked
 down. Windows has no counterpart yet.
@@ -156,6 +171,11 @@ on the static Linux build (`.github/workflows/verify.yml`, job `runner`).
 - The soft deadline and SQLite's memory above: under the Node runner a
   request that ran to the deadline was killed with no answer, and SQLite
   could spill to temporary files.
+- Memory is the host's to set (`SOFTN_RUNNER_MEMORY_MB`, Memory, above); the
+  Node runner's engine has what its archive gives it (256 MiB in the PHP
+  host's, 1 GiB in FormLogic's) and Node's own heap 128 MiB.
+- On Linux the process locks itself down (above); the Node runner's process
+  can do whatever its account can.
 - A request nested more than 1,000 levels deep is refused as invalid, where
   JSON.parse takes any depth. No host sends one: PHP's json_decode passes on
   none past 512 levels (FormLogic), and the PHP host none past 63. The logic
