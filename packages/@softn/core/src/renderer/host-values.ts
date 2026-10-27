@@ -31,10 +31,39 @@ const standIns = new WeakMap<object, object>();
 const elements = new WeakMap<object, Element>();
 
 /**
+ * The language's own prototypes: every object of their kind on the page
+ * inherits from them, so markup holding one could add to them what every
+ * object then has. None is markup's to hold, however it was reached.
+ */
+const INTRINSIC_PROTOTYPES: ReadonlySet<unknown> = new Set<unknown>([
+  Object.prototype,
+  Array.prototype,
+  Function.prototype,
+  String.prototype,
+  Number.prototype,
+  Boolean.prototype,
+  Symbol.prototype,
+  BigInt.prototype,
+  Date.prototype,
+  RegExp.prototype,
+  Map.prototype,
+  Set.prototype,
+  WeakMap.prototype,
+  WeakSet.prototype,
+  Promise.prototype,
+  Error.prototype,
+  ArrayBuffer.prototype,
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Object.getPrototypeOf([][Symbol.iterator]()),
+]);
+
+/**
  * A value as markup may hold it. Constant time for everything a page
  * normally reads: this runs for each name and member of each expression.
  */
 export function markupValue(value: unknown): unknown {
+  // Before the array test: Array.prototype is an array, and Function.prototype a function.
+  if (INTRINSIC_PROTOTYPES.has(value)) return undefined;
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value;
   const proto = Object.getPrototypeOf(value);

@@ -62,6 +62,19 @@ const TEMPLATE_OBJECT = Object.freeze({
 });
 
 /**
+ * A namespace a template may read but not write: a frozen copy of `space`'s
+ * own members (the same functions and constants). The page's own `Math`,
+ * `JSON` and `Intl` are shared by every app on it and by the host, and a
+ * template holding them could write onto them through a generic array
+ * method (`[].push.call(Math, 1)`, or `list.forEach([].push, JSON)`).
+ */
+function readOnlyNamespace(space: object): object {
+  const copy: Record<string, unknown> = Object.create(null);
+  for (const key of Object.getOwnPropertyNames(space)) copy[key] = (space as Record<string, unknown>)[key];
+  return Object.freeze(copy);
+}
+
+/**
  * JavaScript globals available in template expressions.
  * These are commonly used in .ui files (e.g., Number(), String(), Math.round()).
  */
@@ -73,8 +86,8 @@ const JS_GLOBALS: Record<string, unknown> = {
   Date,
   Map,
   Set,
-  Math,
-  JSON,
+  Math: readOnlyNamespace(Math),
+  JSON: readOnlyNamespace(JSON),
   Object: TEMPLATE_OBJECT,
   parseInt,
   parseFloat,
@@ -87,8 +100,8 @@ const JS_GLOBALS: Record<string, unknown> = {
   decodeURIComponent,
   // `new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })`:
   // formatters, which read and write nothing. It was undefined, so such a
-  // price showed nothing.
-  Intl,
+  // price showed nothing. Its constructors are the real ones (CONSTRUCTIBLE).
+  Intl: readOnlyNamespace(Intl),
 };
 
 /**
@@ -108,8 +121,22 @@ const CONSTRUCTIBLE: ReadonlySet<unknown> = new Set([
     .filter((value) => typeof value === 'function' && /^[A-Z]/.test((value as { name: string }).name)),
 ]);
 
-/** The keys no template may read or write: the way from a value to its constructor and prototype. */
-export const BLOCKED_MEMBER_KEYS = new Set(['constructor', '__proto__', 'prototype']);
+/**
+ * The keys no template may read or write: the way from a value to its
+ * constructor and prototype, and the four legacy accessor methods every
+ * object inherits, through which `Math.__defineGetter__("random", f)` rewrote
+ * the page's own `Math` and `__lookupGetter__("__proto__")` handed over
+ * `Object.prototype` to define a property every object then had.
+ */
+export const BLOCKED_MEMBER_KEYS = new Set([
+  'constructor',
+  '__proto__',
+  'prototype',
+  '__defineGetter__',
+  '__defineSetter__',
+  '__lookupGetter__',
+  '__lookupSetter__',
+]);
 
 /**
  * How many `renderNode` calls are on the stack. Above zero the page is being

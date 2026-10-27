@@ -304,6 +304,51 @@ describe('Object in a template', () => {
   });
 });
 
+describe('the page\'s shared objects', () => {
+  // Template expressions run in the host page, so a write here would reach
+  // every app on it and the host's own code.
+  it('cannot be rewritten through the legacy accessor methods', () => {
+    const random = Math.random;
+    for (const source of [
+      'Math.__defineGetter__("random", () => 4)',
+      'Math.__defineSetter__("random", () => 4)',
+      'Math["__defineGetter__"]("random", () => 4)',
+      'tasks.__lookupGetter__("__proto__")',
+      '({}).__lookupSetter__("__proto__")',
+    ]) {
+      expect(evaluate(source, { tasks: [] }), source).toBeUndefined();
+    }
+    expect(Math.random).toBe(random);
+    expect(Math.random()).not.toBe(4);
+  });
+
+  it('hands over no built-in prototype, however it is reached', () => {
+    const getter = Object.getOwnPropertyDescriptor(Object.prototype, '__proto__')!.get!;
+    for (const [name, value] of Object.entries({ objects: getter.call({}), lists: getter.call([]), functions: getter.call(() => 1) })) {
+      expect(evaluate('box.held', { box: { held: value } }), name).toBeUndefined();
+      expect(evaluate('held', { held: value }), name).toBeUndefined();
+    }
+  });
+
+  it('gives Math, JSON and Intl as read-only copies that work as the real ones', () => {
+    expect(evaluate('Math.max(1, Math.round(2.6))')).toBe(3);
+    expect(evaluate('Math.PI')).toBe(Math.PI);
+    expect(evaluate('JSON.stringify(JSON.parse("[1,2]"))')).toBe('[1,2]');
+    expect(evaluate('new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(5)')).toBe('$5.00');
+    // A generic array method aimed at them writes nothing: the copy is frozen.
+    const before = [Object.getOwnPropertyNames(Math).length, Object.getOwnPropertyNames(JSON).length, Object.getOwnPropertyNames(Intl).length];
+    for (const source of ['[].push.call(Math, 1)', '[1].forEach([].push, JSON)', '[].push.apply(Intl, [1])']) {
+      try {
+        evaluate(source);
+      } catch {
+        // A frozen object refuses the write with a TypeError; either way nothing lands.
+      }
+    }
+    expect([Object.getOwnPropertyNames(Math).length, Object.getOwnPropertyNames(JSON).length, Object.getOwnPropertyNames(Intl).length]).toEqual(before);
+    expect((Math as unknown as Record<string, unknown>)[0]).toBeUndefined();
+  });
+});
+
 describe('an object spread and the prototype', () => {
   it('does not carry a __proto__ key across', () => {
     const hostile = JSON.parse('{"__proto__": {"polluted": true}, "safe": 1}');
