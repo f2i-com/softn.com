@@ -206,8 +206,12 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       # The runner image ships PHP, so the directory API's and the PHP host's
-      # suites run here rather than being skipped.
+      # suites run here rather than being skipped. A shard's tests take about
+      # three minutes; a test that hangs (a loop no engine stops, a promise
+      # nothing settles: node --test has no timeout of its own) fails the
+      # shard at fifteen rather than holding it for GitHub's six hours.
       - name: Test
+        timeout-minutes: 15
         run: node scripts/checks/test-shards.mjs --shard ${{ matrix.shard }}/4
 
   # The XDB crate (crates/softn-xdb), which the backend host and the desktop

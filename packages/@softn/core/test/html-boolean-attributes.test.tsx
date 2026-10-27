@@ -75,5 +75,9 @@ describe('a boolean a page’s script sets', () => {
     expect((container.querySelector('#p') as HTMLElement).hidden).toBe(true);
     expect((container.querySelector('#i') as HTMLInputElement).disabled).toBe(true);
     expect((container.querySelector('#d') as HTMLDetailsElement).open).toBe(true);
-  });
+    // The marker is the sandbox's document shell's. On the host-JavaScript
+    // engine (vitest.host-js.config.ts) there is no shell and the wait runs
+    // its full two seconds, three with act's turns: past the default five
+    // whenever the machine is busy.
+  }, 15_000);
 });

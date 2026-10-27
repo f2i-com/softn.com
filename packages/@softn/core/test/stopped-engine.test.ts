@@ -16,6 +16,7 @@ import {
   createScriptRuntime,
   type ScriptContext,
 } from '../src/runtime/script-runtime';
+import { logicEngineIsSandboxed } from '../src/runtime/vm-adapter';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -35,7 +36,10 @@ function context(): ScriptContext {
   };
 }
 
-describe('an engine a runaway listener stopped', () => {
+// The instruction budget is ZIPP's. On the host-JavaScript engine
+// (vitest.host-js.config.ts) the listener is the host's own JavaScript, and
+// nothing stops its loop: the run would hang, not fail.
+describe.skipIf(!logicEngineIsSandboxed())('an engine a runaway listener stopped', () => {
   it('is known to have stopped: later events and calls are ignored, said once, and nothing is thrown out of a listener', async () => {
     const errors: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
