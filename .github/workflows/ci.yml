@@ -25,6 +25,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Read the repository and nothing else, whatever the repository's default is.
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: Verify

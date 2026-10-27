@@ -16,7 +16,9 @@ name: Verify
 # shards by scripts/checks/test-shards.mjs (every workspace suite, every root test
 # pattern and core's suite on the host JavaScript engine, each in exactly one
 # shard, which scripts/checks/test-shards.test.mjs holds); the XDB crate; the Rust
-# backend host; the runner without Node; and the desktop loader's Rust side. One job ran all of it in a
+# backend host; the runner without Node; the desktop loader's and the Builder's
+# Rust sides; and on Windows, the runner as Windows ships it and the loader's
+# shell extension. One job ran all of it in a
 # row, eleven minutes, most of it the suites one after another.
 #
 # `ref` is what to verify. Empty means the ref that triggered the caller,
@@ -45,6 +47,11 @@ on:
         required: false
         type: string
         default: ''
+
+# Every job reads the repository and nothing else; the token is held to that
+# here, not by the repository's default setting alone.
+permissions:
+  contents: read
 
 jobs:
   checks:
@@ -216,7 +223,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - name: Rust toolchain for the XDB crate
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, 2026-10-16
+        with:
+          toolchain: stable
       - name: Cache Cargo for the XDB crate
         uses: actions/cache@v6
         with:
@@ -230,7 +239,7 @@ jobs:
           # as the loader's cache below does; Cargo rebuilds what changed.
           restore-keys: xdb-${{ runner.os }}-
       - name: Test the XDB crate
-        run: cargo test --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
+        run: cargo test --no-default-features --locked --manifest-path crates/softn-xdb/Cargo.toml
 
   # The private backend host is Rust and lives outside the npm workspaces;
   # nothing else runs its tests, and they need no Node. XDB comes from this
@@ -244,7 +253,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - name: Rust toolchain for the private backend host
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, 2026-10-16
+        with:
+          toolchain: stable
       - name: Cache Cargo for the private backend host
         uses: actions/cache@v6
         with:
@@ -256,7 +267,7 @@ jobs:
           key: host-rust-${{ runner.os }}-${{ hashFiles('apps/softn-host-rust/Cargo.lock') }}
           restore-keys: host-rust-${{ runner.os }}-
       - name: Test the private backend host
-        run: cargo test --manifest-path apps/softn-host-rust/Cargo.toml
+        run: cargo test --locked --manifest-path apps/softn-host-rust/Cargo.toml
 
   # softn-runner (apps/softn-runner): an app's private server logic without
   # Node, the ZIPP engine compiled to WebAssembly and run under wasmtime. Built
@@ -344,7 +355,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, 2026-10-16
+        with:
+          toolchain: stable
       - name: Cache Cargo
         uses: actions/cache@v6
         with:
@@ -353,7 +366,8 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             apps/softn-loader/src-tauri/target/
-          key: loader-check-${{ hashFiles('apps/softn-loader/src-tauri/Cargo.lock') }}
+            apps/softn-builder/src-tauri/target/
+          key: loader-check-${{ hashFiles('apps/softn-loader/src-tauri/Cargo.lock', 'apps/softn-builder/src-tauri/Cargo.lock') }}
           restore-keys: loader-check-
       - name: Install Linux dependencies
         run: |
@@ -361,3 +375,56 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Test the loader
         run: cargo test --manifest-path apps/softn-loader/src-tauri/Cargo.toml --locked
+      # The Builder's window draws an untrusted bundle's preview, and its file
+      # commands are driven here as any script in that page could
+      # (tests/project_files.rs). They ran in no workflow.
+      - name: Test the Builder's file commands
+        run: cargo test --manifest-path apps/softn-builder/src-tauri/Cargo.toml --locked
+
+  # What only Windows builds: the runner without Node as a Windows FormLogic
+  # starts it (release.yml ships softn-runner-windows-x86_64.exe, which no
+  # job ran), and the loader's shell extension, whose thumbnails read crafted
+  # bundles (UNC images, decompression bombs, the SVG stack) and which depends
+  # on the `windows` crate.
+  windows:
+    name: Windows runner and shell extension (Rust)
+    runs-on: windows-latest
+    env:
+      ZIPP_RELEASE: ${{ inputs.zipp-release }}
+      ZIPP_SUMS_SHA256: ${{ inputs.zipp-sums-sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/softn-runner/guest/target/
+            apps/softn-runner/host/target/
+            apps/softn-loader/shell-extension/target/
+          key: windows-${{ hashFiles('apps/softn-runner/guest/Cargo.lock', 'apps/softn-runner/host/Cargo.lock', 'apps/softn-loader/shell-extension/Cargo.lock') }}
+          restore-keys: windows-
+      - name: Build the runner
+        run: node apps/softn-runner/build.mjs
+      - name: Test the runner's own parts
+        working-directory: apps/softn-runner/host
+        run: cargo test --release --locked
+      - name: The Node runner's suite, on the runner
+        env:
+          SOFTN_TEST_RUNNER: ${{ github.workspace }}\apps\softn-runner\dist\softn-runner-windows-x86_64.exe
+        run: node --test apps/softn-host-php/tests/route-declarations.test.mjs
+      - name: Test the shell extension
+        run: cargo test --manifest-path apps/softn-loader/shell-extension/Cargo.toml --locked

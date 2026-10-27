@@ -1055,7 +1055,9 @@ cargo test --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
 ### Testing
 
 Every push to `main` and every pull request runs the [CI workflow](.github/workflows/ci.yml):
-install, audit, build, typecheck, lint, every test suite, the XDB crate and the Rust hosts, the steps
+install, audit, build, typecheck, lint, every test suite, the XDB crate, the Rust hosts, the runner without
+Node (on Linux and Windows), the desktop loader's and the Builder's Rust sides and the loader's shell
+extension, the steps
 [verify.yml](.github/workflows/verify.yml) holds, in jobs that run side by side (the suites in four
 shards, which `node scripts/checks/test-shards.mjs --plan 4` lists). A commit whose message carries
 `[skip ci]` is not checked by GitHub, so run the same checks locally before pushing one, or start

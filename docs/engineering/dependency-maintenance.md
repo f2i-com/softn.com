@@ -1,6 +1,7 @@
 # Dependency maintenance
 
-Run checks locally while automatic CI is paused:
+CI runs on pushes to `main` and on pull requests, and by hand
+(`.github/workflows/ci.yml`); to check a dependency change locally first:
 
 ```sh
 npm ci
@@ -10,9 +11,14 @@ npm run licenses:check
 npm audit
 cargo test --locked --no-default-features --manifest-path crates/softn-xdb/Cargo.toml
 cargo test --locked --manifest-path apps/softn-host-rust/Cargo.toml
-cargo check --locked --manifest-path apps/softn-loader/src-tauri/Cargo.toml
-cargo check --locked --manifest-path apps/softn-builder/src-tauri/Cargo.toml
+cargo test --locked --manifest-path apps/softn-loader/src-tauri/Cargo.toml
+cargo test --locked --manifest-path apps/softn-builder/src-tauri/Cargo.toml
+node apps/softn-runner/build.mjs
+(cd apps/softn-runner/host && cargo test --release --locked)
 ```
+
+On Windows, also
+`cargo test --locked --manifest-path apps/softn-loader/shell-extension/Cargo.toml`.
 
 The native runtime and backend build on the XDB crate in `crates/softn-xdb`
 (its notes are in [xdb/](xdb/README.md)). The crate has a lockfile of its own,
@@ -31,7 +37,7 @@ and records every file's digest in `SOURCE.json`; `--check` (and the licence
 inventory) refuse a tree that differs from it.
 
 The two GTK desktop dependency trees use the reviewed GLib 0.18.5 backport in
-[vendor/README.md](../vendor/README.md), and so does the XDB crate's own
+[vendor/README.md](../../vendor/README.md), and so does the XDB crate's own
 lockfile, which carries Tauri for the crate's default feature. The backport's
 release-mode Linux regression test must pass when that source changes.
 Preserve its provenance and license when updating or removing it.

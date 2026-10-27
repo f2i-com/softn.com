@@ -263,7 +263,7 @@ and `private/` with `api.php` and a `.htaccess` that also routes `/api/...`,
 plus the `backend/` folder of the static variant's backend archive (softn-runner,
 bundled Linux x64 Node, SQLite and ZIPP WASM). The application is served privately
 with or without the backend; enabling it follows the included DEPLOYMENT.md,
-which is [apps/softn-single-private/PRIVATE_DEPLOYMENT.md](../apps/softn-single-private/PRIVATE_DEPLOYMENT.md)
+which is [apps/softn-single-private/PRIVATE_DEPLOYMENT.md](https://github.com/f2i-com/softn.com/blob/main/apps/softn-single-private/PRIVATE_DEPLOYMENT.md)
 (README.md beside it is the short explainer every release archive carries).
 CI verifies that archive with the backend checks and an Apache smoke test
 that also loads the served page, the pack and the refusals.

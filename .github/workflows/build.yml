@@ -1,7 +1,9 @@
 name: Build SoftN
 
 # The full build, dispatched by hand: the shared verification (verify.yml),
-# the web runtime and every hosting archive (tested under Apache/PHP), and the
+# the web runtime and the hosting archives a release builds from it (tested
+# under Apache/PHP; the website archive and the FormLogic runtime's runner are
+# a release's alone, release.yml), and the
 # desktop loader and Builder on Linux, Windows and macOS. Pushes to main and
 # pull requests are verified by ci.yml, which calls the same verify.yml; this
 # adds the packaging and the six-runner desktop matrix, which are too slow to
@@ -14,6 +16,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+
+# Read the repository and nothing else, whatever the repository's default is:
+# this workflow publishes nothing (tauri-action is given no tag to release to).
+permissions:
+  contents: read
 
 jobs:
   # The verification steps live in verify.yml, which the release workflow
@@ -147,7 +154,9 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, 2026-10-16
+        with:
+          toolchain: stable
 
       - name: Cache Cargo
         uses: actions/cache@v6
@@ -177,7 +186,7 @@ jobs:
         run: npm run build:packages
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1, 2026-06-29
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

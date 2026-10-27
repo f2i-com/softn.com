@@ -28,11 +28,13 @@ name: Release
 # infrastructure failure without moving a tag that has already been published,
 # and deliberately cannot release an arbitrary branch: both paths check out
 # refs/tags/<tag> and refuse if HEAD is not that tag's commit. The jobs run
-# the tag's own scripts, so a retry works for tags from v0.0.15 on, the first
-# with scripts/release/zipp-release-gate.mjs; the gate refuses an older tag by name.
-# Node comes from the tag's .nvmrc (tags after v0.0.15): to retry v0.0.15, run
-# the workflow from that tag ("Use workflow from"), whose copy of this file
-# still names the Node version itself.
+# the tag's own scripts from the folders they are in now (scripts/release/),
+# so this copy retries tags after v0.0.24 and refuses an older one by name; a
+# tag from v0.0.15 to v0.0.24 is retried by dispatching its own copy of this
+# file (gh workflow run release.yml --ref <tag> -f tag=<tag>), whose scripts
+# are where it looks. Node comes from the tag's .nvmrc (tags after v0.0.15):
+# to retry v0.0.15, run the workflow from that tag ("Use workflow from"),
+# whose copy of this file still names the Node version itself.
 #
 # Nothing is published until the tagged commit has passed the same
 # verification a push gets (verify.yml: install, audit, build, typecheck,
@@ -71,6 +73,11 @@ on:
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+# Read only, whatever the repository's default is; the publish job alone is
+# given write, to make the release.
+permissions:
+  contents: read
 
 jobs:
   # Whether this run ships without the test gates: the `skip-tests` dispatch
