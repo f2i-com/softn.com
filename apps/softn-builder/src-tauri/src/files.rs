@@ -126,10 +126,35 @@ fn write_file(backed_up: &mut HashSet<PathBuf>, path: &Path, bytes: &[u8]) -> Re
         }
         backed_up.insert(before);
     }
-    fs::write(path, bytes).map_err(|e| format!("Could not write {}: {e}", file_name(path)))?;
+    replace_whole(path, bytes).map_err(|e| format!("Could not write {}: {e}", file_name(path)))?;
     // A file the write created is known by its full name from now on.
     backed_up.insert(known(path));
     Ok(())
+}
+
+/// Write `bytes` to `path` whole or not at all: into a file beside it, then
+/// put in its place. `fs::write` emptied the file and wrote it where it lay,
+/// so a disk that filled or a drive that went partway through Save left the
+/// project short or empty, with only the `.bak` from before the session.
+/// A link is written through, to the file it names.
+fn replace_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let partial = target.with_file_name(format!(".{name}.saving"));
+    let written = (|| {
+        let mut file = fs::File::create(&partial)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        if let Ok(meta) = fs::metadata(&target) {
+            fs::set_permissions(&partial, meta.permissions())?;
+        }
+        fs::rename(&partial, &target)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    written
 }
 
 pub struct ProjectFiles {
@@ -487,4 +512,45 @@ pub async fn save_file_as(
 #[tauri::command]
 pub async fn ask_discard_unsaved(files: State<'_, ProjectFiles>) -> Result<bool, String> {
     Ok(files.ask_discard())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("softn-builder-write-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+        let dir = scratch("whole");
+        let project = dir.join("app.softn");
+        fs::write(&project, b"before").unwrap();
+        let mut backed_up = HashSet::new();
+        write_file(&mut backed_up, &project, b"after, longer").unwrap();
+        assert_eq!(fs::read(&project).unwrap(), b"after, longer");
+        assert_eq!(fs::read(backup_of(&project)).unwrap(), b"before");
+        let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A save that fails partway leaves the project as it was: it was emptied
+    /// first and written where it lay.
+    #[test]
+    fn a_save_that_fails_leaves_the_project_as_it_was() {
+        let dir = scratch("fails");
+        let project = dir.join("app.softn");
+        fs::write(&project, b"the work of the session").unwrap();
+        // The file the save is written into first cannot be made.
+        fs::create_dir_all(dir.join(".app.softn.saving")).unwrap();
+        let mut backed_up = HashSet::new();
+        assert!(write_file(&mut backed_up, &project, b"new").is_err());
+        assert_eq!(fs::read(&project).unwrap(), b"the work of the session");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
