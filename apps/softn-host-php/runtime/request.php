@@ -108,6 +108,10 @@ const SOFTN_RUNNER_BINARY='softn-runner-linux-x86_64';
  * private/config.json) or has enabled a request hook, which is a JavaScript
  * module of the operator's that only Node runs (softn-runner refuses such a
  * configuration). `$os` and `$machine` are this server's; a test names them.
+ * A machine PHP cannot name (php_uname disabled, which the web server's PHP
+ * may do where the command line's does not) is taken for the one the
+ * backend was built for, so that setup and a request choose alike: the
+ * archive is for Linux x86-64, and setup's check runs what it chose.
  * @param mixed $config private/config.json, decoded
  * @return array{runner:'softn-runner'|'node',binary:string,command:list<string>}
  */
@@ -116,7 +120,7 @@ function softn_runner_choice(string $backend, mixed $config, string $os=PHP_OS_F
     $machine??=function_exists('php_uname')?php_uname('m'):'';
     $binary=$backend.'/bin/'.SOFTN_RUNNER_BINARY;
     $hooks=($config['enableRequestHook']??null)===true||($config['enableAfterRequestHook']??null)===true;
-    if($os==='Linux'&&in_array(strtolower($machine),['x86_64','amd64'],true)&&($config['runner']??null)!=='node'&&!$hooks&&is_file($binary))
+    if($os==='Linux'&&($machine===''||in_array(strtolower($machine),['x86_64','amd64'],true))&&($config['runner']??null)!=='node'&&!$hooks&&is_file($binary))
         return ['runner'=>'softn-runner','binary'=>$binary,'command'=>[$binary]];
     return ['runner'=>'node','binary'=>$backend.'/bin/node','command'=>softn_runner_command($backend)];
 }

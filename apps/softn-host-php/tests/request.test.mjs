@@ -890,19 +890,23 @@ test('softn-runner answers where the backend carries it for this server, and Nod
   writeFileSync(runner,'');
   const got=php([
     choose({}),choose(null),choose({runner:'auto'}),choose({},'Linux','AMD64'),
+    // php_uname disabled in the web server's PHP and not in the command
+    // line's: a machine not named is the backend's own, or a request would
+    // run on Node where setup had checked softn-runner.
+    choose({},'Linux',''),
     choose({runner:'node'}),choose({enableRequestHook:true}),choose({enableAfterRequestHook:true}),
     choose({enableRequestHook:'yes'}),choose({},'Linux','aarch64'),choose({},'Windows','AMD64'),choose({},'Darwin','x86_64'),
   ]);
   // There, on Linux x86-64: softn-runner alone, no arguments, whatever else the configuration says.
-  for(const chosen of got.slice(0,4))assert.deepEqual(chosen,{runner:'softn-runner',binary:runner,command:[runner]});
+  for(const chosen of got.slice(0,5))assert.deepEqual(chosen,{runner:'softn-runner',binary:runner,command:[runner]});
   // The operator asked for Node, or enabled a request hook (a module of
   // theirs that only Node runs; softn-runner refuses the configuration).
-  for(const chosen of got.slice(4,7))assert.equal(chosen.runner,'node',JSON.stringify(chosen));
+  for(const chosen of got.slice(5,8))assert.equal(chosen.runner,'node',JSON.stringify(chosen));
   // A hook is enabled by true alone, as both runners read it.
-  assert.equal(got[7].runner,'softn-runner');
+  assert.equal(got[8].runner,'softn-runner');
   // Another server than the one it is built for: Node, which there is no more
   // likely to run, and setup says so.
-  for(const chosen of got.slice(8))assert.equal(chosen.runner,'node',JSON.stringify(chosen));
+  for(const chosen of got.slice(9))assert.equal(chosen.runner,'node',JSON.stringify(chosen));
   // Either is started with the backend named: softn-runner is in bin/, not beside runner.mjs.
   assert.deepEqual(php([['softn_runner_environment',backend]])[0],{PATH:'/usr/bin:/bin',TZ:'UTC',NODE_NO_WARNINGS:'1',SOFTN_BACKEND_ROOT:backend});
 });
