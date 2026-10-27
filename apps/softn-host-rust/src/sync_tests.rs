@@ -187,6 +187,37 @@ fn a_create_sent_again_does_not_overwrite_what_changed_since() {
     assert_eq!(told(&again).iter().map(|op| op.data.clone()).collect::<Vec<_>>(), vec![Some(serde_json::json!({"title":"final"}))], "{again:?}");
 }
 
+/// An update with no data is stored and sent on with its record's whole
+/// data, and the push's limit counted only what each op carried: a thousand
+/// of them were a thousand copies of a 512 KB record under the writer lock.
+/// What a push writes is held to the limit too; the rest go again.
+#[test]
+fn updates_with_no_data_are_held_to_what_a_push_may_write() {
+    let (sync, _db) = manager(None);
+    let large = serde_json::json!({ "body": "a".repeat(MAX_OP_DATA_BYTES - 64) });
+    assert_eq!(acked(&sync.handle_sync_push(vec![stamped(op("c1", "notes", "create", "n1", large), 60)], "a")), vec!["c1"]);
+    // Each later than the last, so none is overtaken and answered unwritten.
+    let empty: Vec<SyncOp> = (0..100)
+        .map(|i| {
+            let mut update = op(&format!("u{i}"), "notes", "update", "n1", serde_json::json!({}));
+            update.timestamp = (chrono::Utc::now() - chrono::Duration::seconds(200 - i))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            update.data = None;
+            update
+        })
+        .collect();
+    let answer = sync.handle_sync_push(empty, "a");
+    let retried: Vec<String> = answer.iter().flat_map(|m| match m {
+        ServerMessage::SyncRetry { op_ids, .. } => op_ids.clone(),
+        _ => Vec::new(),
+    }).collect();
+    let taken = acked(&answer).len();
+    // At most a push's worth of the record is written; the rest are asked for again.
+    assert!(taken <= MAX_BATCH_DATA_BYTES / (MAX_OP_DATA_BYTES - 64) + 1, "{taken} updates of a 512 KB record were taken");
+    assert_eq!(taken + retried.len(), 100, "{answer:?}");
+    assert!(rejected(&answer).is_empty(), "{answer:?}");
+}
+
 /// An op as a client stamps it, `minutes` before now.
 fn stamped(mut op: SyncOp, minutes: i64) -> SyncOp {
     op.timestamp = (chrono::Utc::now() - chrono::Duration::minutes(minutes))

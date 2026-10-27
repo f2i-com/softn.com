@@ -152,11 +152,13 @@ const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 /// CRDT document and every pull would carry it.
 pub(crate) const MAX_OP_DATA_BYTES: usize = 512 * 1024;
 
-/// Maximum total bytes of all op data payloads in a single sync_push batch.
-/// Bounds the total memory consumed during the DB write transaction to prevent
-/// excessive SQLite WAL writer lock hold times. Individual ops are capped by
-/// MAX_OP_DATA_BYTES; this caps the aggregate. Defense-in-depth alongside the
-/// 4MB MAX_WS_MESSAGE_SIZE WebSocket frame limit.
+/// Maximum total bytes of all op data payloads in a single sync_push batch,
+/// both as the ops carry it and as the push writes and sends it on (an
+/// update with no data is stored and broadcast with its record's whole
+/// data). Bounds the total memory consumed during the DB write transaction
+/// to prevent excessive SQLite WAL writer lock hold times. Individual ops are
+/// capped by MAX_OP_DATA_BYTES; this caps the aggregate. Defense-in-depth
+/// alongside the 4MB MAX_WS_MESSAGE_SIZE WebSocket frame limit.
 pub(crate) const MAX_BATCH_DATA_BYTES: usize = 4 * 1024 * 1024;
 
 /// Maximum records per SyncState message to prevent oversized WebSocket frames
@@ -1454,6 +1456,16 @@ impl SyncManager {
                 // Ops stored as a before-hook changed them, by record: their
                 // pusher is sent the record as stored.
                 let mut batch_hooked: Vec<(String, String)> = Vec::new();
+                // What the push writes and sends on, held to what its data
+                // may be (MAX_BATCH_DATA_BYTES). That was counted from what
+                // each op carried, and an update that carries no data is
+                // stored, broadcast and hooked with the record's whole data:
+                // a thousand of them, 2 bytes each, were a thousand copies
+                // of a 512 KB record, a gigabyte under the writer lock. Past
+                // it, the rest go again in a later push; the first op always
+                // goes, as one record may be larger than a push.
+                let mut batch_retry: Vec<String> = Vec::new();
+                let mut written_bytes: usize = 0;
 
                 for mut op in validated_ops {
                     // xdb finds a record by id alone. An op names a collection,
@@ -1542,6 +1554,12 @@ impl SyncManager {
                     let result: Result<(), xdb::DbError> = match op.operation.as_str() {
                         "create" => {
                             let data = op.data.clone().unwrap_or(serde_json::json!({}));
+                            let size = data.to_string().len();
+                            if written_bytes > 0 && written_bytes + size > MAX_BATCH_DATA_BYTES {
+                                batch_retry.push(op.id.clone());
+                                continue;
+                            }
+                            written_bytes += size;
                             let now = &op.timestamp;
                             let record = xdb::Record {
                                 id: op.record_id.clone(),
@@ -1582,6 +1600,11 @@ impl SyncManager {
                                     refused.extend(Refused::of(&op));
                                     continue;
                                 }
+                                if written_bytes > 0 && written_bytes + after > MAX_BATCH_DATA_BYTES {
+                                    batch_retry.push(op.id.clone());
+                                    continue;
+                                }
+                                written_bytes += after;
                                 // Other clients take a server update as the
                                 // record's whole data, and the after-sync hooks
                                 // see what was stored: the op carries it, the
@@ -1641,11 +1664,11 @@ impl SyncManager {
                     send(db, &record_id, Some(&collection), op_id, &mut batch_current);
                 }
 
-                Ok((batch_accepted, batch_rejected, batch_replayed, batch_current))
+                Ok((batch_accepted, batch_rejected, batch_replayed, batch_current, batch_retry))
             });
 
             match batch_result {
-                Ok((batch_accepted, batch_rejected, batch_replayed, batch_current)) => {
+                Ok((batch_accepted, batch_rejected, batch_replayed, batch_current, batch_retry)) => {
                     for op in &batch_accepted {
                         recent.remember(op, now);
                     }
@@ -1653,6 +1676,15 @@ impl SyncManager {
                         responses.push(ServerMessage::SyncReject {
                             op_id,
                             reason,
+                        });
+                    }
+                    if !batch_retry.is_empty() {
+                        responses.push(ServerMessage::SyncRetry {
+                            op_ids: batch_retry,
+                            reason: format!(
+                                "Batch data limit exceeded ({}MB max) — send fewer ops per batch",
+                                MAX_BATCH_DATA_BYTES / (1024 * 1024)
+                            ),
                         });
                     }
                     if !batch_replayed.is_empty() {
