@@ -30,6 +30,11 @@ use crate::{js::MAX_SAFE, record_events::RecordEvents, HostError};
 /// and nothing that would make data an app already stored unreadable.
 pub const VDBE_OP_LIMIT: i32 = 100_000;
 
+/// sql.mjs SQL_LIMITS: a LIKE or GLOB pattern of at most 1,000 characters.
+/// Matching one is one opcode, which the progress handler cannot stop, and
+/// costs its length times the text's.
+pub const LIKE_PATTERN_LIMIT: i32 = 1000;
+
 /// sql.mjs: a query's rows, as JSON, may come to 2 MiB.
 const RESULT_LIMIT: usize = 2 * 1024 * 1024;
 
@@ -52,6 +57,7 @@ pub fn open(path: &Path) -> Result<Connection, HostError> {
     conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0).map_err(HostError::sqlite)?;
     conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 100).map_err(HostError::sqlite)?;
     conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, VDBE_OP_LIMIT).map_err(HostError::sqlite)?;
+    conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT).map_err(HostError::sqlite)?;
     // Lock waits first, then the rest (request-worker.mjs). Temporary tables
     // and sorts stay in memory, as on the Rust host, where a statement that
     // spilled to temporary files could fill the disk every app shares before
@@ -525,6 +531,21 @@ mod tests {
         conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 100).unwrap();
         conn.execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE _host(x);").unwrap();
         conn
+    }
+
+    /// A LIKE pattern is held to sql.mjs's 1,000 characters: matching one is one
+    /// opcode, which the progress handler cannot stop, and costs its length
+    /// times the text's.
+    #[test]
+    fn a_like_pattern_is_held_to_the_node_runners_length() {
+        let dir = std::env::temp_dir().join(format!("softn-runner-like-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("app.sqlite")).unwrap();
+        let like = |n: usize| conn.query_row("SELECT 'b' LIKE ?1", ["a".repeat(n)], |row| row.get::<_, i64>(0));
+        assert_eq!(like(LIKE_PATTERN_LIMIT as usize).unwrap(), 0);
+        assert!(like(LIKE_PATTERN_LIMIT as usize + 1).is_err());
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
