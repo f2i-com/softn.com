@@ -151,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cli = Cli::parse();
+    bridges::sql::hold_memory()?;
 
     match cli.command {
         Commands::Run { path, port, host, data_dir, workers, dev, allow_all_capabilities, trusted_proxy, allowed_hosts } => {

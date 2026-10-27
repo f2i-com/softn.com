@@ -52,6 +52,8 @@
     {"kind": "first", "sql": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 3) SELECT count(*) AS c FROM n", "allow": true, "result": {"c": 3}},
     {"kind": "first", "sql": "WITH RECURSIVE s(x) AS (SELECT 'ab' UNION ALL SELECT x || x FROM s WHERE length(x) < 1048576) SELECT max(length(x || x)) AS n FROM s", "allow": true, "result": {"n": 2097152}},
     {"kind": "first", "sql": "WITH RECURSIVE s(x) AS (SELECT 'ab' UNION ALL SELECT x || x FROM s WHERE length(x) < 1048576) SELECT max(length(x || x || 'y')) AS n FROM s", "allow": true, "rust": "refused: the Rust host holds a value, string or row to 2 MiB (SQLITE_LIMIT_LENGTH, bridges/sql.rs open_connection); the PHP host sets no such limit, because it would leave a longer value an app has already stored there unreadable"},
+    {"kind": "first", "sql": "WITH RECURSIVE s(x) AS (SELECT 'a' UNION ALL SELECT x || 'a' FROM s WHERE length(x) < 1000) SELECT 'b' LIKE (SELECT max(x) FROM s) AS hit", "allow": true, "result": {"hit": 0}},
+    {"kind": "first", "sql": "WITH RECURSIVE s(x) AS (SELECT 'a' UNION ALL SELECT x || 'a' FROM s WHERE length(x) < 1001) SELECT 'b' LIKE (SELECT max(x) FROM s) AS hit", "allow": false},
     {"kind": "first", "sql": "VALUES(1)", "allow": true, "result": {"column1": 1}},
     {"kind": "first", "sql": "SELECT 'a;b' AS s, \"name\" AS [x;y] FROM items -- trailing; comment", "allow": true, "result": {"s": "a;b", "x;y": "a"}},
     {"kind": "first", "sql": "SELECT 'it''s; fine' AS s /* ; */ ;", "allow": true, "result": {"s": "it's; fine"}},

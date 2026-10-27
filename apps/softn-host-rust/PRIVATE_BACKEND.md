@@ -300,7 +300,13 @@ and 2 MiB of serialized result data. Unsafe JavaScript integers and blobs are
 rejected. SQLite length, parse, expression and instruction limits apply before
 unbounded results are materialized. Each transaction has a five-million SQLite
 instruction budget and a 25-second deadline; lock acquisition waits at most
-three seconds. Failures answer as on the PHP host: queue saturation and
+three seconds. Both are checked between SQLite's instructions, and one function
+call is one instruction, so a LIKE or GLOB pattern is held to 1,000 characters
+(on both hosts) to keep one match under the deadline; `instr` and `replace` on
+very long text still run to the end of the call. SQLite's memory in the whole
+process is held to `SOFTN_SQLITE_MEMORY_MB` (1,024 MiB without it): past it a
+statement fails and the process stays. A script's heap is held to 512 MiB per
+call, and a handler past it fails as one that throws. Failures answer as on the PHP host: queue saturation and
 database contention are 503 `database_busy`, a handler that runs out of time
 503 `runner_unavailable` (it used to be 504), and a handler that throws or
 answers an invalid response 500 `host_error`; the 503s are retryable. Retry
@@ -480,7 +486,9 @@ Environment: `SOFTN_AUTH_TOKEN` (the operator token; in multi-tenant mode
 `SOFTN_AUTH_TOKEN_<TENANT_ID>` first, with `.` and `-` as `_`),
 `SOFTN_SYNC_TOKEN` (the sync token; in multi-tenant mode
 `SOFTN_SYNC_TOKEN_<TENANT_ID>` and nothing else),
-`SOFTN_ALLOW_ALL_CAPABILITIES=1`, and `RUST_LOG`, which replaces the default
+`SOFTN_ALLOW_ALL_CAPABILITIES=1`, `SOFTN_SQLITE_MEMORY_MB` (how much memory
+SQLite may hold in the process, every app's connections together: 64 to
+65,536 MiB, 1,024 without it; a wrong value stops startup), and `RUST_LOG`, which replaces the default
 log filter (`softn_server=info,softn_script=info,tower_http=debug`). Logs never
 carry a query string, and scripts cannot read the environment.
 

@@ -49,6 +49,14 @@ const LOGIC_SCRIPT_NAME: &str = "logic";
 /// the knob to revisit if a CPU-heavy handler ever needs the tier.
 const MAX_STEPS_PER_CALL: u64 = 100_000_000;
 
+/// The script heap one VM may reach, re-applied with the step budget: a
+/// handler past it is stopped with an error, as on softn-runner (512 MiB at
+/// most there too) and on Node's engine. It had none, so one tenant's
+/// handler could grow until the process, and every tenant in it, was out of
+/// memory. `set_limits` installs a fresh recorder and with it no heap limit,
+/// so this follows each call of it.
+const SCRIPT_HEAP_LIMIT: usize = if cfg!(test) { 64 << 20 } else { 512 << 20 };
+
 /// VM wall-time. Must stay under the HTTP/WS timeout (30s) so the engine
 /// terminates and sends a clean error before the outer timeout fires.
 ///
@@ -788,6 +796,7 @@ impl ServerRuntime {
         // level a fresh 25s on top of the one covering the request, so a rebuild
         // could outlive the HTTP timeout the wall-time limit exists to stay under.
         state.set_limits(MAX_STEPS_PER_CALL, Some(guard.abort.clone()));
+        state.set_heap_limit(SCRIPT_HEAP_LIMIT);
         let init_result = state.run_init();
         drain_output(&mut state);
         init_result?;
@@ -928,6 +937,7 @@ impl ServerRuntime {
         // would span the worker's whole life and every worker would eventually
         // refuse to run anything.
         w.state.set_limits(MAX_STEPS_PER_CALL, Some(guard.abort.clone()));
+        w.state.set_heap_limit(SCRIPT_HEAP_LIMIT);
         // Anything the handler touches has to be assumed dirty from here, even
         // if it throws part-way through.
         w.dirty = true;
@@ -1613,6 +1623,20 @@ mod isolation_tests {
             let second = serde_json::to_string(&call("bob")["body"]).unwrap();
             assert!(!second.contains("alice"), "{handler}: the second request saw the first's: {second}");
         }
+    }
+
+    /// A handler that grows its heap without end is stopped at the VM's
+    /// limit, and the worker serves the next request; it had no limit, so one
+    /// tenant's handler could take the process every tenant runs in.
+    #[test]
+    fn a_handler_that_fills_its_heap_is_stopped() {
+        let runtime = one_worker(r#"
+            function fill(req) { var kept = []; for (;;) { kept.push(new Array(4096).fill(kept.length)); } }
+            function small(req) { return {status: 200, body: {ok: true}}; }
+        "#);
+        let failed = runtime.call("fill", vec![serde_json::json!({})]).unwrap_err();
+        assert!(failed.to_lowercase().contains("memory") || failed.to_lowercase().contains("heap"), "{failed}");
+        assert_eq!(runtime.call("small", vec![serde_json::json!({})]).unwrap()["body"]["ok"], true);
     }
 
     /// A handler, a hook and the script's top level run once and are done:

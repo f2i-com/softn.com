@@ -28,6 +28,45 @@ pub fn reject_symlink(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The longest LIKE or GLOB pattern a statement may use. Matching one is a
+/// single SQLite instruction, which neither the progress handler nor the
+/// deadline can stop, and it costs the pattern's length times the text's:
+/// a 20,000-character pattern took eight seconds against 200 KB, and against
+/// a 1 MB note well past the 25-second deadline, holding the app's writer
+/// lock inside a write. At this length a megabyte takes under a second.
+pub const LIKE_PATTERN_LIMIT: i32 = 1000;
+
+/// How much memory SQLite may hold in this process, every app's connections
+/// together, without `SOFTN_SQLITE_MEMORY_MB`.
+const SQLITE_MEMORY_MB_DEFAULT: i64 = 1024;
+
+/// `SOFTN_SQLITE_MEMORY_MB` as a number of MiB: 64 to 65,536, the default
+/// without it.
+pub fn sqlite_memory_mb(raw: Option<&str>) -> Result<i64, String> {
+    let Some(text) = raw else { return Ok(SQLITE_MEMORY_MB_DEFAULT) };
+    text.trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|mb| (64..=65_536).contains(mb))
+        .ok_or_else(|| format!("SOFTN_SQLITE_MEMORY_MB must be a whole number of MiB from 64 to 65536, not {text:?}"))
+}
+
+/// Hold SQLite to its share of the process's memory, before any connection
+/// opens. Temporary tables and sorts stay in memory (`temp_store=MEMORY`, so
+/// a statement cannot fill the disk every app shares), and nothing else
+/// bounded what one statement could take: a recursive query over large rows
+/// reached half a gigabyte in seconds, and on a host serving many apps one
+/// app's request could take the process, and every app with it. Past the
+/// limit a statement fails ("out of memory") and the process stays, as
+/// softn-runner's does at its own limit.
+pub fn hold_memory() -> Result<i64, String> {
+    let mb = sqlite_memory_mb(std::env::var("SOFTN_SQLITE_MEMORY_MB").ok().as_deref())?;
+    let bytes = mb * 1024 * 1024;
+    // SAFETY: a plain call into the bundled SQLite, process-wide.
+    unsafe { rusqlite::ffi::sqlite3_hard_heap_limit64(bytes) };
+    Ok(bytes)
+}
+
 pub fn open_connection(path: &Path) -> Result<Connection, String> {
     reject_symlink(path)?;
     for suffix in ["-wal", "-shm", "-journal"] {
@@ -46,6 +85,7 @@ pub fn open_connection(path: &Path) -> Result<Connection, String> {
     conn.set_limit(Limit::SQLITE_LIMIT_EXPR_DEPTH, 100);
     conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 100_000);
     conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0);
+    conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -539,6 +579,28 @@ mod tests {
             assert_eq!(bridge.call("sql.execute", "INSERT INTO records VALUES(2,'after')", "[]"), Err("Private SQL transaction was rolled back".into()));
             assert_eq!(bridge.finish(commit).is_err(), commit, "commit {commit}");
             assert_eq!(count(), 0, "commit {commit}");
+        }
+    }
+
+    /// Matching a LIKE pattern is one SQLite instruction, which the deadline
+    /// cannot stop; its cost is the pattern's length times the text's.
+    #[test]
+    fn a_like_pattern_is_held_to_a_length_the_deadline_can_cover() {
+        let (_path, mut bridge) = fixture();
+        bridge.begin(TransactionMode::Read, Arc::new(AtomicBool::new(false))).unwrap();
+        let at = |n: usize| serde_json::to_string(&serde_json::json!(["a".repeat(100), "%".to_string() + &"a".repeat(n)])).unwrap();
+        // The pattern is `%` and n letters: one under the limit runs, one over it is refused.
+        assert!(bridge.call("sql.query", "SELECT ? LIKE ? AS hit", &at(LIKE_PATTERN_LIMIT as usize - 2)).is_ok());
+        assert!(bridge.call("sql.query", "SELECT ? LIKE ? AS hit", &at(LIKE_PATTERN_LIMIT as usize)).is_err());
+        let _ = bridge.finish(false);
+    }
+
+    #[test]
+    fn the_sqlite_memory_setting_is_read_and_checked() {
+        assert_eq!(sqlite_memory_mb(None), Ok(1024));
+        assert_eq!(sqlite_memory_mb(Some(" 2048 ")), Ok(2048));
+        for wrong in ["", "63", "65537", "1.5", "lots"] {
+            assert!(sqlite_memory_mb(Some(wrong)).is_err(), "{wrong:?}");
         }
     }
 

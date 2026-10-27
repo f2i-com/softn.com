@@ -18,8 +18,12 @@ import {constants as C} from 'node:sqlite';
  * None of these bounds memory or time: SQLite here takes PRAGMA
  * hard_heap_limit without enforcing it and node:sqlite has no progress
  * handler, so a long statement is stopped only by the runner's deadline.
+ * A LIKE or GLOB pattern is held to 1,000 characters, as on the Rust host and
+ * softn-runner: matching one is one opcode, costing its length times the
+ * text's, which no deadline inside SQLite stops (20,000 took eight seconds
+ * against 200 KB).
  */
-export const SQL_LIMITS=Object.freeze({attach:0,variableNumber:100,vdbeOp:100_000});
+export const SQL_LIMITS=Object.freeze({attach:0,variableNumber:100,vdbeOp:100_000,likePatternLength:1000});
 
 /** Functions app SQL may call, at request time and in migrations. */
 export const RUNTIME_FUNCTIONS=new Set(['count','min','max','sum','avg','total','coalesce','ifnull','nullif','length','lower','upper',
