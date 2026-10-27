@@ -49,7 +49,7 @@ describe('a file the person chooses', () => {
     const { pickFile } = await import('../src/runtime/host-calls/files');
     const { getFileByRef } = await import('../src/runtime/file-registry');
     let closed = false;
-    const gate = { checkPermission() {}, checkNetHost() {}, permissionConfig: () => null, disposed: () => closed };
+    const gate = { checkPermission() {}, checkNetHost() {}, permissionConfig: () => null, disposed: () => closed, pressedHere: () => true };
     let input!: HTMLInputElement;
     const realCreate = document.createElement.bind(document);
     const create = (tag: string) => {
@@ -72,5 +72,34 @@ describe('a file the person chooses', () => {
     } finally {
       document.createElement = realCreate as typeof document.createElement;
     }
+  });
+});
+
+describe('a press in another app', () => {
+  // The browser opens a picker or a download for a few seconds after a press
+  // anywhere on the page; an app behind the one pressed in must not use it.
+  const gate = { checkPermission() {}, checkNetHost() {}, permissionConfig: () => null, disposed: () => false, pressedHere: () => false };
+
+  it('opens no file picker for this app', async () => {
+    const { pickFile } = await import('../src/runtime/host-calls/files');
+    const realCreate = document.createElement.bind(document);
+    let made = 0;
+    document.createElement = ((tag: string) => {
+      if (tag === 'input') made++;
+      return realCreate(tag);
+    }) as typeof document.createElement;
+    try {
+      const result = (await pickFile(gate, { id: 1, kind: 'files.pick', args: [] } as never)) as { error?: string };
+      expect(result.error).toMatch(/click or a key press in the app/);
+      expect(made).toBe(0);
+    } finally {
+      document.createElement = realCreate as typeof document.createElement;
+    }
+  });
+
+  it('starts no download for this app', async () => {
+    const { saveFile } = await import('../src/runtime/host-calls/files');
+    const result = (await saveFile(gate, { id: 1, kind: 'files.save', args: ['a.txt', 'text'] } as never)) as { error?: string };
+    expect(result.error).toMatch(/click or a key press in the app/);
   });
 });

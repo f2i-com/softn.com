@@ -650,7 +650,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private applyClipboardWrites(writes: string[]): void {
     const text = writes.at(-1);
     if (text === undefined) return;
-    const refused = clipboardWriteRefusal(this.permissionConfig?.consentPending === true);
+    const refused = clipboardWriteRefusal(this.permissionConfig?.consentPending === true, this.hostExecutor.owner);
     if (refused) {
       console.warn(`[SoftN] A copy to the clipboard was not made: ${refused}`);
       return;

@@ -84,6 +84,39 @@ describe('the clipboard', () => {
     }
   });
 
+  it('is written from a press in this app, not from one in another app or the host', async () => {
+    // SoftN Web keeps every open app running, one on screen; the browser's
+    // activation follows a press anywhere on the page.
+    activation = { isActive: true };
+    const behind = document.createElement('div');
+    const onScreen = document.createElement('div');
+    const theirs = document.createElement('button');
+    const own = document.createElement('button');
+    const hostField = document.createElement('input');
+    onScreen.appendChild(theirs);
+    behind.appendChild(own);
+    document.body.append(behind, onScreen, hostField);
+    // A tab SoftN Web is not showing (display: none, which jsdom does not lay out).
+    behind.checkVisibility = () => false;
+    const runtime = createScriptRuntime(makeContext(), undefined, `clip-${Math.random()}`, undefined, undefined, { permissionConfig: { permissions: {} } as never });
+    runtime.setAppRoot?.(behind);
+    await runtime.loadScript({ type: 'ScriptBlock', loc, code: ON_A_TIMER });
+    try {
+      for (const pressed of [theirs, hostField, document.body]) {
+        pressed.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 40));
+        expect(writes, pressed.nodeName).toEqual([]);
+      }
+      own.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', bubbles: true }));
+      await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0), { timeout: 3000 });
+    } finally {
+      runtime.cleanup();
+      behind.remove();
+      onScreen.remove();
+      hostField.remove();
+    }
+  });
+
   it('in a worker, is handed to the page, which holds it to the same rule', async () => {
     // The engine as script-worker.ts wires it: no throw, the copy recorded.
     const adapter = await VmAdapter.create();

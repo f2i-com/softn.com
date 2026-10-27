@@ -10,6 +10,8 @@
  * A copy button the person presses still copies.
  */
 
+import { lastPressWasFor } from './key-capture';
+
 /** What an engine's clipboard bridge is given (LogicEngine.registerClipboardBridge). */
 export interface ClipboardBridgeOptions {
   /** Why a write may not be made now, or null when it may. */
@@ -18,15 +20,19 @@ export interface ClipboardBridgeOptions {
   write?: (text: string) => void;
 }
 
-/** Why the app may not write the clipboard now, or null. */
-export function clipboardWriteRefusal(consentPending: boolean): string | null {
+/**
+ * Why the app `owner` runs may not write the clipboard now, or null. The
+ * press the browser counts is the page's, any app's or the host's, so it
+ * must also have been aimed at this app (key-capture.ts `lastPressWasFor`).
+ */
+export function clipboardWriteRefusal(consentPending: boolean, owner: object): string | null {
   if (consentPending) {
     return 'Copying to the clipboard waits until you answer the permission bar at the top of the app.';
   }
   const activation =
     typeof navigator === 'undefined' ? undefined : (navigator as { userActivation?: { isActive?: boolean } }).userActivation;
-  if (activation && activation.isActive === false) {
-    return 'The clipboard is written when the person asks: copy from a click or a key press.';
+  if ((activation && activation.isActive === false) || !lastPressWasFor(owner)) {
+    return 'The clipboard is written when the person asks: copy from a click or a key press in the app.';
   }
   return null;
 }

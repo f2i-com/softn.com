@@ -20,6 +20,12 @@ export interface HostGate {
   permissionConfig(): PermissionConfig | null;
   /** Whether the app has closed. */
   disposed(): boolean;
+  /**
+   * Whether the person's last press on the page was aimed at this app, so a
+   * download or a file picker the browser allows after it is this app's to
+   * start (key-capture.ts `lastPressWasFor`).
+   */
+  pressedHere(): boolean;
 }
 
 /** Throws, saying why and what would allow it, unless `capability` is granted. */

@@ -44,6 +44,11 @@ export function downloadName(raw: unknown): string {
 
 export async function pickFile(gate: HostGate, call: PendingHostCall): Promise<unknown> {
   gate.checkPermission('files');
+  // The picker the browser opens on the person's press is the app's they
+  // pressed in: one behind it would be handed the file they chose for it.
+  if (!gate.pressedHere()) {
+    return { error: 'A file is picked when the person asks for it: call files.pickFile from a click or a key press in the app.' };
+  }
   const options = call.args[0] ? JSON.parse(call.args[0]) : {};
   return new Promise<unknown>((resolve) => {
     const input = document.createElement('input');
@@ -112,11 +117,12 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
       return { error: 'The save options are not valid JSON.' };
     }
   }
-  // A download the person asked for, with a click or a key: not one an app
-  // starts on a timer, as many as it likes, attributed to the host's site.
+  // A download the person asked for, with a click or a key in this app: not
+  // one an app starts on a timer, as many as it likes, attributed to the
+  // host's site, nor one an app behind another starts on the other's click.
   const activation = typeof navigator === 'undefined' ? undefined : (navigator as { userActivation?: { isActive?: boolean } }).userActivation;
-  if (activation && activation.isActive === false) {
-    return { error: 'A file is saved when the person asks for it: call files.saveFile from a click or a key press.' };
+  if ((activation && activation.isActive === false) || !gate.pressedHere()) {
+    return { error: 'A file is saved when the person asks for it: call files.saveFile from a click or a key press in the app.' };
   }
   const name = downloadName(rawName);
   // A type the content says it is, or bytes.

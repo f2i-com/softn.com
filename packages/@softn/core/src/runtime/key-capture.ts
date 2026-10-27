@@ -41,8 +41,58 @@ const appElements = new Map<object, Element>();
 
 /** Where `owner`'s app is drawn; null when it is not drawn anywhere now. */
 export function setAppElement(owner: object, element: Element | null): void {
-  if (element) appElements.set(owner, element);
-  else appElements.delete(owner);
+  if (element) {
+    appElements.set(owner, element);
+    watchPresses(element.ownerDocument?.defaultView ?? null);
+  } else {
+    appElements.delete(owner);
+  }
+}
+
+/**
+ * What the person last pressed on the page: a click, a tap or a key.
+ *
+ * The browser lets a page write the clipboard, start a download or open a
+ * file picker for a few seconds after any press, and SoftN Web keeps every
+ * open app running, one on screen. So an app behind the one on screen could
+ * write the clipboard on a timer and replace what the person copied in the
+ * other (an address in a wallet app) within those seconds, or put up its own
+ * file picker as they pressed Open in the other. `lastPressWasFor` asks
+ * whose press it was.
+ */
+let lastPress: EventTarget | null = null;
+const watchedWindows = new WeakSet<object>();
+
+function watchPresses(view: Window | null): void {
+  if (!view || watchedWindows.has(view)) return;
+  watchedWindows.add(view);
+  // A press the page's own code makes up grants the browser nothing, and an
+  // app's markup cannot make one, so every press is taken as it comes.
+  const note = (event: Event) => {
+    lastPress = event.target;
+  };
+  // The events the browser counts as the person's activation, seen first.
+  for (const type of ['pointerdown', 'mousedown', 'touchend', 'keydown']) {
+    view.addEventListener(type, note, { capture: true, passive: true });
+  }
+}
+
+/**
+ * Whether the person's last press on the page was aimed at `owner`'s app: at
+ * one of its elements, or at the page itself (a key with nothing focused)
+ * while the app is on screen. An app drawn nowhere (a check without a page,
+ * a script without a renderer) has no other app to tell it from.
+ */
+export function lastPressWasFor(owner: object): boolean {
+  const element = appElements.get(owner);
+  if (!element) return true;
+  const target = lastPress as (Node & { ownerDocument: Document | null }) | null;
+  if (!target || typeof target.nodeType !== 'number') return false;
+  if (element.contains(target)) return true;
+  const shown = typeof element.checkVisibility === 'function' ? element.checkVisibility() : element.isConnected;
+  if (!shown) return false;
+  const doc = target.nodeType === 9 ? (target as unknown as Document) : target.ownerDocument;
+  return !!doc && (target === doc || target === doc.body || target === doc.documentElement);
 }
 
 const POINTER_EVENT = /^(?:mouse|pointer|touch|drag|drop|wheel|click|dblclick|contextmenu|lostpointercapture|gotpointercapture)/;

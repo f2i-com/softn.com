@@ -16,6 +16,7 @@ const gate: HostGate = {
   checkNetHost: () => {},
   permissionConfig: () => ({ permissions: { gpu: { enabled: true } } }),
   disposed: () => false,
+  pressedHere: () => true,
 };
 
 const call = (...args: string[]) => ({ args }) as unknown as PendingHostCall;

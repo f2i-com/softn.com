@@ -44,7 +44,7 @@ import {
   usesDocument,
 } from '../document-shell/names';
 import type { LocalSpeechHost } from './local-speech';
-import { clearCapturedKeys, parseCapturedKeys, setAppElement, setCapturedKeys } from './key-capture';
+import { clearCapturedKeys, lastPressWasFor, parseCapturedKeys, setAppElement, setCapturedKeys } from './key-capture';
 import { deepEqual } from './vm-state';
 import { clipboardWriteRefusal } from './clipboard-gate';
 import {
@@ -394,6 +394,7 @@ export class SoftNScriptRuntime {
       checkNetHost: (url) => this.checkNetHost(url),
       permissionConfig: () => this.permissionConfig,
       disposed: () => this.disposed,
+      pressedHere: () => lastPressWasFor(this),
     };
     this.gate = gate;
     this.network = new AppNetwork(gate, {
@@ -508,7 +509,7 @@ export class SoftNScriptRuntime {
     if (perms.clipboard !== false) {
       // Read at the time of each copy: Allow replaces the config.
       this.vmEngine.registerClipboardBridge({
-        refusal: () => clipboardWriteRefusal(this.permissionConfig?.consentPending === true),
+        refusal: () => clipboardWriteRefusal(this.permissionConfig?.consentPending === true, this),
       });
     }
   }
