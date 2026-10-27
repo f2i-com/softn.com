@@ -146,7 +146,9 @@ test('every package script ships README.md first and the guide the explainer nam
   assert.ok(workflow.indexOf('release-explainers.mjs --tag') < workflow.indexOf('- name: Build the website'), 'the notes are written before anything is built');
   assert.ok(workflow.includes('release/RELEASE-GUIDE.md --clobber'));
   assert.ok(workflow.includes('--notes-file release/RELEASE-NOTES.md'));
-  assert.equal((workflow.match(/grep -qx 'README\.md'/g) ?? []).length, 3, 'each archive kind is checked for its README.md');
+  // Read whole (`grep -x … >/dev/null`, not `grep -qx`): under pipefail, grep -q stopping early killed unzip.
+  assert.equal((workflow.match(/grep -x 'README\.md' >\/dev\/null/g) ?? []).length, 3, 'each archive kind is checked for its README.md');
+  assert.ok(!/grep -q/.test(workflow), 'no listing is read with grep -q');
   assert.ok(!workflow.includes('START-HERE'));
 });
 
