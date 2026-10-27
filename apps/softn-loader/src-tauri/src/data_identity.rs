@@ -337,6 +337,12 @@ impl DataIdentity {
         self.lock().bound.clone()
     }
 
+    /// Whether the bundle chosen last has started on its data (`bind` with `start`): until
+    /// it has, what runs in the page is not it.
+    pub fn open_started(&self) -> bool {
+        self.lock().open.started.is_some()
+    }
+
     /// Take over the page's registry, once, before any bundle has run in the page.
     /// `raw` is the stored text of `softn-loader:installations` (src/installations.ts), or
     /// nothing when the page has none.

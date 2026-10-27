@@ -46,25 +46,28 @@ impl NetPolicy {
 
     /// What the rules permit, in the words the person reads. With no list, a request to this
     /// computer or the local network is refused (net.rs); a listed host that is there is
-    /// labelled so.
+    /// labelled so, and named first, so the cap on names shown never hides one: net.rs asks
+    /// nothing more about a host the person read here. Past the cap, how many of the rest are
+    /// local is said.
     fn describe(&self) -> String {
         let reach = if self.allowed_hosts.is_empty() {
             "any server on the internet".to_string()
         } else {
-            let shown: Vec<String> = self
-                .allowed_hosts
+            let (local, remote): (Vec<&String>, Vec<&String>) =
+                self.allowed_hosts.iter().partition(|host| crate::net::is_local_host(host));
+            let shown: Vec<String> = local
                 .iter()
+                .map(|host| format!("{} (on this computer or your local network)", printable(host)))
+                .chain(remote.iter().map(|host| printable(host)))
                 .take(HOSTS_SHOWN)
-                .map(|host| {
-                    if crate::net::is_local_host(host) {
-                        format!("{} (on this computer or your local network)", printable(host))
-                    } else {
-                        printable(host)
-                    }
-                })
                 .collect();
             let more = self.allowed_hosts.len() - shown.len();
-            let rest = if more > 0 { format!(", and {} more", more) } else { String::new() };
+            let hidden_local = local.len().saturating_sub(HOSTS_SHOWN);
+            let rest = match (more, hidden_local) {
+                (0, _) => String::new(),
+                (more, 0) => format!(", and {} more", more),
+                (more, local) => format!(", and {} more, {} of them on this computer or your local network", more, local),
+            };
             format!("only these servers: {}{}", shown.join(", "), rest)
         };
         let http = if self.allow_http { ", also over plain HTTP, which is not encrypted" } else { "" };
@@ -202,10 +205,34 @@ impl Consent {
         self.record_net(opened, policy, allowed)
     }
 
-    /// Whether a request under `policy` may be made, putting the question to the person in
-    /// a native dialog if it has not been put yet.
-    pub async fn require_net(&self, app: &tauri::AppHandle, policy: &NetPolicy) -> Result<(), String> {
+    /// Which choice of bundle is open now: it moves on each `bundle_opened`.
+    pub fn opened(&self) -> u64 {
+        self.standing.lock().map(|standing| standing.opened).unwrap_or(0)
+    }
+
+    /// Refused when another bundle has been chosen since `opened`, the choice a request was
+    /// made under: the app before stays in the page while the next one loads, and a request
+    /// it made then was put to the person in the next one's name, and answered for it.
+    fn refuse_if_replaced(&self, opened: u64) -> Result<(), String> {
+        if self.opened() == opened {
+            Ok(())
+        } else {
+            Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED))
+        }
+    }
+
+    /// `decide_net` for a request made under the choice `opened`.
+    #[cfg(test)]
+    fn decide_net_under(&self, opened: u64, policy: &NetPolicy, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
+        self.refuse_if_replaced(opened)?;
+        self.decide_net(policy, ask)
+    }
+
+    /// Whether a request under `policy`, made while the choice `opened` was open, may be
+    /// made, putting the question to the person in a native dialog if it has not been put yet.
+    pub async fn require_net(&self, app: &tauri::AppHandle, policy: &NetPolicy, opened: u64) -> Result<(), String> {
         let _turn = self.asking.lock().await;
+        self.refuse_if_replaced(opened)?;
         if let Some(answer) = self.net_answer(policy) {
             return answer;
         }
@@ -270,8 +297,9 @@ impl Consent {
 
     /// Whether a request to `host`, a name the rules list that leads to `address` on this
     /// computer or the local network, may be made: asked once for each such name.
-    pub async fn require_local_host(&self, app: &tauri::AppHandle, host: &str, address: IpAddr) -> Result<(), String> {
+    pub async fn require_local_host(&self, app: &tauri::AppHandle, host: &str, address: IpAddr, opened: u64) -> Result<(), String> {
         let _turn = self.asking.lock().await;
+        self.refuse_if_replaced(opened)?;
         if let Some(answer) = self.local_host_answer(host) {
             return answer;
         }
@@ -388,6 +416,23 @@ mod tests {
         assert_eq!(consent.decide_net(&any_host, |_, _| panic!("asked twice")), Ok(()));
     }
 
+    /// The app open before stays in the page while the next one loads. A request it made
+    /// then was put to the person in the next one's name, and the answer kept for the next.
+    #[test]
+    fn a_request_made_under_the_app_before_is_not_asked_about_in_the_next_ones_name() {
+        let consent = Consent::default();
+        consent.bundle_opened(Path::new(r"C:\apps\a.softn"));
+        let under_a = consent.opened();
+        consent.bundle_opened(Path::new(r"C:\apps\b.softn"));
+        let hosts = policy(false, &["api.example.com"]);
+        let refused = consent.decide_net_under(under_a, &hosts, |_, _| panic!("asked in b's name for a's request"));
+        assert!(refused.unwrap_err().contains(ANOTHER_APP_OPENED));
+        // b is asked about its own, afresh.
+        let asked = RefCell::new(String::new());
+        assert_eq!(consent.decide_net_under(consent.opened(), &hosts, |_, text| { *asked.borrow_mut() = text.to_string(); true }), Ok(()));
+        assert!(asked.borrow().contains("b.softn"), "{}", asked.borrow());
+    }
+
     #[test]
     fn a_no_is_not_asked_about_again() {
         let consent = Consent::default();
@@ -499,6 +544,19 @@ mod tests {
         let many: Vec<String> = (0..40).map(|n| format!("h{}.example.com", n)).collect();
         let (_, _, text) = consent.net_question(&NetPolicy::new(false, &many));
         assert!(text.contains("and 28 more"), "{}", text);
+        // A local host is named whatever sorts before it: it was the thirteenth, behind twelve
+        // that sort first, and "and 1 more" was all the question said of the local network.
+        let mut first: Vec<String> = (1..=12).map(|n| format!("a{}.example.com", n)).collect();
+        first.extend(["router.local".to_string(), "localhost".to_string(), "192.168.1.1".to_string()]);
+        let (_, _, text) = consent.net_question(&NetPolicy::new(false, &first));
+        for local in ["router.local", "localhost", "192.168.1.1"] {
+            assert!(text.contains(&format!("{} (on this computer or your local network)", local)), "{}", text);
+        }
+        assert!(text.contains("and 3 more"), "{}", text);
+        // More local hosts than are shown: how many are left is said.
+        let locals: Vec<String> = (1..=14).map(|n| format!("192.168.1.{}", n)).collect();
+        let (_, _, text) = consent.net_question(&NetPolicy::new(false, &locals));
+        assert!(text.contains("and 2 more, 2 of them on this computer or your local network"), "{}", text);
         let (_, _, text) = consent.net_question(&policy(false, &["evil.example\n\nAllow this, it is safe"]));
         assert!(!text.contains("evil.example\n"), "{}", text);
     }

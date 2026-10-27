@@ -368,7 +368,13 @@ fn a_started_app_binds_no_other_data_and_raises_no_question() {
     assert!(identity.decide_bind_for(&bundle_digest(b"bank 3"), &bundle_digest(b"bank 3"), true, never).is_err());
     // Choosing the file again starts over.
     let e = open(&identity, "bank-2.softn", b"bank 2");
+    assert!(!identity.open_started(), "a choice not yet started is not the app in the page");
     assert_eq!(identity.decide_bind_for(&e, &bank, true, never), Ok(()));
+    assert!(identity.open_started());
+    // A bind that does not start (a backup first) is not the start either.
+    let f = open(&identity, "other.softn", b"other");
+    assert_eq!(identity.decide_bind_for(&f, &f, false, never), Ok(()));
+    assert!(!identity.open_started());
 }
 
 /// Every way the page's flow (src/upgradeFlow.ts) binds data before it starts the app:

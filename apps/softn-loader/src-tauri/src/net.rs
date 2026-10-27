@@ -27,7 +27,8 @@
 //! it leads to between the check and the request. A name the list does not
 //! hold that leads to the local network is refused. One the list holds is
 //! reached: as it is, when it says itself that it is local (`localhost`, a
-//! `.local` name, an address), since the person read it so in the question;
+//! `.local` name, an address), since the person read it so in the question
+//! (such hosts are named first, and any past the names shown are counted);
 //! after a second question, when it looks like a server on the internet and
 //! leads to the local network, which the first question did not say
 //! (consent.rs). Its owner can point it anywhere, and a router or a printer
@@ -300,16 +301,31 @@ fn outgoing(client: &reqwest::Client, request: NetRequest) -> Result<reqwest::Re
 pub async fn net_fetch(
     app: tauri::AppHandle,
     consent: tauri::State<'_, crate::consent::Consent>,
+    identity: tauri::State<'_, crate::data_identity::DataIdentity>,
     request: NetRequest,
 ) -> Result<NetResponse, String> {
     // What the rules themselves refuse is refused before anyone is asked about them.
     check_destination(&request.url, request.allow_http, &request.allowed_hosts)?;
+    // Until the bundle chosen last has started on its data, nothing in the page is that
+    // bundle: the app before it stays mounted while it loads, and a request from it then was
+    // asked about in the new one's name. The choice is read before and after, so a choice
+    // made between the two reads is seen.
+    #[cfg(desktop)]
+    let opened = {
+        let opened = consent.opened();
+        if !identity.open_started() || consent.opened() != opened {
+            return Err("Network access not permitted: the app that asked is no longer the one open".to_string());
+        }
+        opened
+    };
+    #[cfg(not(desktop))]
+    let _ = &identity;
     // The rules arrive with the request, from a page that also runs the bundle, so they may
     // be any caller's invention. Whether the network may be used under them is asked of
     // the person here (consent.rs), once for the bundle that is open.
     #[cfg(desktop)]
     consent
-        .require_net(&app, &crate::consent::NetPolicy::new(request.allow_http, &request.allowed_hosts))
+        .require_net(&app, &crate::consent::NetPolicy::new(request.allow_http, &request.allowed_hosts), opened)
         .await?;
     let destination = destination(&request, system_lookup).await?;
     // Asked of the person on the desktop. Android puts no network question, and reaches a
@@ -317,7 +333,7 @@ pub async fn net_fetch(
     // HTTPS intranet name, which cannot be listed as an address instead.
     #[cfg(desktop)]
     if let Destination::Name { name, local: Some(address), .. } = &destination {
-        consent.require_local_host(&app, name, *address).await?;
+        consent.require_local_host(&app, name, *address, opened).await?;
     }
     #[cfg(not(desktop))]
     let _ = (&app, &consent);
