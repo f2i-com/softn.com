@@ -20,7 +20,8 @@ declare(strict_types=1);
  *
  * The archive is opened for each request and only the entry asked for is
  * inflated. The pack and the entries need the cookie the page sets, refuse
- * browser navigations and fetches from other origins, and skip anything the
+ * browser navigations and fetches from other sites and sibling subdomains,
+ * and skip anything the
  * operator lists under `withhold` and the bundle's `server/`. Everything else
  * in the bundle reaches the browser when asked for: this side does not know
  * which entries the app uses. A browser must receive the UI and logic text to
@@ -634,11 +635,12 @@ function softn_endpoint(): string
 function softn_guard(array $config, string $private): void
 {
     if (($_SERVER['HTTP_SEC_FETCH_MODE'] ?? '') === 'navigate') softn_fail(403, 'This address is used by the application, not for browsing.');
-    // Only the page's own origin, or a browser that does not say: `same-site`
-    // is a sibling subdomain, which SameSite=Strict sends the cookie to, and
-    // on a parent domain shared with others it may be someone else's.
+    // Another site, and a sibling subdomain (`same-site`), which SameSite=Strict
+    // sends the cookie to and which on a parent domain shared with others may
+    // be someone else's. `none` (a request the browser itself starts) passes,
+    // as it did.
     $site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? '';
-    if ($site !== '' && $site !== 'same-origin') softn_fail(403, 'Requests from other sites are not allowed.');
+    if ($site === 'cross-site' || $site === 'same-site') softn_fail(403, 'Requests from other sites are not allowed.');
     if (!$config['viewerToken']) return;
     $token = $_COOKIE[SOFTN_COOKIE] ?? null;
     if (!is_string($token) || !softn_token_valid($token, softn_secret($config, $private))) softn_fail(403, 'Open the application page first.');

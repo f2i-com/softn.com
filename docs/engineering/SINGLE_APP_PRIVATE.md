@@ -45,9 +45,9 @@ does not sit inside the JSON the application boots from.
 
 The pack and the entries require the cookie `index.php` sets (signed,
 HttpOnly, SameSite=Strict, twelve hours by default), refuse browser
-navigations and any fetch a browser says came from another origin (a sibling
-subdomain included, which SameSite=Strict sends the cookie to) by their
-`Sec-Fetch-*` headers, and answer only at the page's own address. Opening
+navigations and any fetch a browser says came from another site or a sibling
+subdomain (which SameSite=Strict sends the cookie to) by their `Sec-Fetch-*`
+headers, and answer only at the page's own address. Opening
 `index.php?entry=…` in a tab, hot linking an entry from another site, or
 fetching the pack with a script that never loaded the page all answer 403.
 

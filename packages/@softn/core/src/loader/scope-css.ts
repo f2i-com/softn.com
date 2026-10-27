@@ -509,7 +509,10 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
       // whatever the text above managed to read: one that kept a name of
       // its own would stand in for the host's.
       if (keep && kind === 'CSSFontFaceRule') {
-        keep = unquote((rule as CSSFontFaceRule).style.getPropertyValue('font-family')).endsWith(` ${app}`);
+        // A browser that reads no family back here keeps the face: the text
+        // above renamed every `font-family` it has.
+        const family = unquote((rule as CSSFontFaceRule).style.getPropertyValue('font-family'));
+        keep = family === '' || family.endsWith(` ${app}`);
       }
       if (keep && kind === 'CSSKeyframesRule') keep = (rule as CSSKeyframesRule).name.endsWith(`-${app}`);
       const style = (rule as Partial<CSSStyleRule>).style;

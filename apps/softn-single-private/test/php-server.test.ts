@@ -540,6 +540,10 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
         expect(status, `${query} ${JSON.stringify(headers)}`).toBe(403);
       }
     }
+    // A request the browser starts itself (`none`, a favicon) and one from the page pass.
+    for (const site of ['none', 'same-origin']) {
+      expect(await rawStatus('/index.php?icon', withCookie({ 'Sec-Fetch-Site': site })), site).toBe(200);
+    }
   });
 
   it('puts nothing of the archive on a URL', async () => {
