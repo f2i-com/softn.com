@@ -347,6 +347,36 @@ describe('the page\'s shared objects', () => {
     expect([Object.getOwnPropertyNames(Math).length, Object.getOwnPropertyNames(JSON).length, Object.getOwnPropertyNames(Intl).length]).toEqual(before);
     expect((Math as unknown as Record<string, unknown>)[0]).toBeUndefined();
   });
+
+  it('cannot aim an array method that writes at anything but a list', () => {
+    const shared = [Date, Number, String, Array, Map, Set, parseInt, Math.round, JSON.parse];
+    const before = shared.map((held) => Object.getOwnPropertyNames(held).join());
+    for (const source of [
+      '[].fill.call(Date, 1)',
+      '[].push.call(Math.round, 1)',
+      '[].splice.apply(Number, [0, 0, 1])',
+      '[].unshift.bind(String)(1)',
+      '[].copyWithin.call(parseInt, 0, 0)',
+      '[1].forEach([].push, Array)',
+      '[[Map]].map(([m]) => [].fill.call(m, 1))',
+      'Set.push(1)',
+    ]) {
+      try {
+        evaluate(source);
+      } catch {
+        // A refused write may throw; what counts is what is left behind.
+      }
+    }
+    expect(shared.map((held) => Object.getOwnPropertyNames(held).join())).toEqual(before);
+    expect(evaluate('[].push')).toBeUndefined();
+    expect(evaluate('(({ fill }) => fill)([])')).toBeUndefined();
+  });
+
+  it('still lets a list use them', () => {
+    expect(evaluate('[3, 1, 2].sort()')).toEqual([1, 2, 3]);
+    expect(evaluate('[1, 2].reverse()')).toEqual([2, 1]);
+    expect(evaluate('items.slice().fill(0)', { items: [1, 2] })).toEqual([0, 0]);
+  });
 });
 
 describe('an object spread and the prototype', () => {

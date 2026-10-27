@@ -58,12 +58,31 @@ const INTRINSIC_PROTOTYPES: ReadonlySet<unknown> = new Set<unknown>([
 ]);
 
 /**
+ * The array methods that write onto whatever they are called on, which need
+ * not be an array: `[].fill.call(Date, 1)` wrote 0 to 6 onto the page's own
+ * `Date`, and `[].push.call(Math.round, 1)` onto a function every app on the
+ * page shares. Markup calls them on a list (`isArrayMutator`) and never
+ * holds one as a value, which is how `.call`, `.apply`, `.bind` and a
+ * `forEach(push, target)` would aim one elsewhere.
+ */
+const ARRAY_MUTATORS: ReadonlySet<unknown> = new Set<unknown>(
+  ['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'].map(
+    (name) => (Array.prototype as unknown as Record<string, unknown>)[name]
+  )
+);
+
+/** Whether `fn` is one of the array methods that write onto what they are called on. */
+export function isArrayMutator(fn: unknown): boolean {
+  return ARRAY_MUTATORS.has(fn);
+}
+
+/**
  * A value as markup may hold it. Constant time for everything a page
  * normally reads: this runs for each name and member of each expression.
  */
 export function markupValue(value: unknown): unknown {
   // Before the array test: Array.prototype is an array, and Function.prototype a function.
-  if (INTRINSIC_PROTOTYPES.has(value)) return undefined;
+  if (INTRINSIC_PROTOTYPES.has(value) || ARRAY_MUTATORS.has(value)) return undefined;
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value;
   const proto = Object.getPrototypeOf(value);

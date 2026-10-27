@@ -13,7 +13,7 @@ import type { ArrowFunctionExpression, BindingPattern, BindingTarget, Expression
 import { isIdentifierName } from '../parser/ast';
 import type { SoftNLocalScope, SoftNRenderContext } from '../types';
 import { parseStatePath } from '../runtime/state-path';
-import { markupValue } from './host-values';
+import { isArrayMutator, markupValue } from './host-values';
 import { isDevelopment } from './development';
 
 /**
@@ -638,6 +638,10 @@ export function evaluate(
 
       if (typeof fn === 'function') {
         if (fn === Function) {
+          return undefined;
+        }
+        // `list.push(x)` on a list; on anything else it writes onto a shared object (host-values.ts).
+        if (isArrayMutator(fn) && !Array.isArray(thisObj)) {
           return undefined;
         }
         // Bind `this` for method calls (arr.filter, str.toUpperCase, etc.)
