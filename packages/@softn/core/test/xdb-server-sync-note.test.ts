@@ -755,6 +755,23 @@ describe('an app moved to another sync host', () => {
     expect(refused).toEqual([]);
   });
 
+  // v0.0.26 kept the mark as a number, for no host: it was taken for any host the app named,
+  // so a record unchanged since was never sent to the new one, and an edit of it was refused.
+  it('is taken for one by a store whose mark v0.0.26 kept as a number, for the host it pulled from', async () => {
+    const backing = storage();
+    await synced(backing);
+    backing.setItem('xdb:app::sync-watched', String(Date.now()));
+    expect(JSON.parse(backing.getItem('xdb:app::sync-pulled')!).url).toBe(WS_URL);
+    vi.advanceTimersByTime(1000);
+    const moved = connect(page(backing), MOVED);
+    moved.socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+    await tick();
+    const ops = (pushed(moved.socket) as unknown as Op[]).map((op) => [op.operation, op.recordId]);
+    expect(ops).toEqual([['create', 'n1']]);
+    moved.sync.disconnect();
+    expect(JSON.parse(backing.getItem('xdb:app::sync-watched')!).marks['']).toBeUndefined();
+  });
+
   it("is not taken for one by a store whose mark an earlier client kept as a number", async () => {
     const backing = storage();
     await synced(backing);

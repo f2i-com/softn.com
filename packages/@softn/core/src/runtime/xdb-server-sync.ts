@@ -415,6 +415,17 @@ function isPullCursor(value: unknown): value is PullCursor {
   return !!cursor && typeof cursor.at === 'string' && typeof cursor.id === 'string';
 }
 
+/** Whether the store's pull places were kept for a host other than `url`; places of no host, or none, are not. */
+function pulledFromAnother(meta: SyncMetaStore, url: string): boolean {
+  let pulledFrom: unknown;
+  try {
+    pulledFrom = (JSON.parse(meta.readSyncMeta(PULLED_META) ?? 'null') as { url?: unknown } | null)?.url;
+  } catch {
+    // Unreadable: of no host.
+  }
+  return typeof pulledFrom === 'string' && pulledFrom !== url;
+}
+
 /** An op read back from storage, if it still has the shape of one. */
 function savedOp(value: unknown): SyncOp | null {
   const op = value as Partial<SyncOp> | null;
@@ -2359,17 +2370,14 @@ export class XDBServerSync {
       // A first sync with this host that a page left unfinished: synced with first again.
       this.movedHost = true;
     } else if (kept && kept.marks.size > 0) {
-      const at = kept.marks.get(url) ?? kept.marks.get('');
+      // A mark kept as a number (v0.0.26) names no host: it is the one its
+      // pulls were from, and of another host it is none for this one.
+      const unnamed = kept.marks.get('');
+      const at = kept.marks.get(url) ?? (unnamed !== undefined && !pulledFromAnother(meta, url) ? unnamed : undefined);
       if (at !== undefined) this.watched = at;
       else this.movedHost = true;
     } else if (meta.readSyncMeta(QUEUE_META) !== null || meta.readSyncMeta(PULLED_META) !== null) {
-      let pulledFrom: unknown;
-      try {
-        pulledFrom = (JSON.parse(meta.readSyncMeta(PULLED_META) ?? 'null') as { url?: unknown } | null)?.url;
-      } catch {
-        // Unreadable: of no host.
-      }
-      if (typeof pulledFrom === 'string' && pulledFrom !== url) this.movedHost = true;
+      if (pulledFromAnother(meta, url)) this.movedHost = true;
       else this.watched = Infinity;
     }
     try {
