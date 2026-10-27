@@ -61,7 +61,9 @@ self.addEventListener('fetch', function (event) {
         }
         return response;
       }).catch(function () {
-        return caches.match(base).then(function (cached) { return cached || offlinePage(); });
+        // This worker's own cache, as below: an app's model downloads share
+        // the origin's Cache Storage under addresses its script names.
+        return caches.open(VERSION).then(function (cache) { return cache.match(base); }).then(function (cached) { return cached || offlinePage(); });
       })
     );
     return;

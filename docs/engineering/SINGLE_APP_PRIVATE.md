@@ -30,8 +30,13 @@ app is as cross-origin isolated here as on softn.com (`SharedArrayBuffer`
 for the CPU language-model provider). Nothing to configure on nginx.
 
 The manifest is never sent raw: `config.server`, with any token in it, and
-every field the runtime does not read are dropped. Entries listed under
-`withhold` in the configuration are neither packed nor served. A bundle's
+every field the runtime does not read are dropped. Every other entry of the
+bundle reaches a visitor's browser: its text in the pack, and the name and
+size of every other file, each served when asked for. The server does not
+know which entries the application uses, so a file left in the bundle
+(`notes/TODO.md`, `data/customers.csv`) is sent unless it is withheld.
+Entries listed under `withhold` in the configuration, matched in any case,
+are neither packed nor served. A bundle's
 `server/` folder is withheld whatever `withhold` says: if the full private
 server bundle is deployed as `app.softn`, its server logic and SQL are never
 packed or served, because they are the backend's and not the page's. Text-form
@@ -40,21 +45,24 @@ does not sit inside the JSON the application boots from.
 
 The pack and the entries require the cookie `index.php` sets (signed,
 HttpOnly, SameSite=Strict, twelve hours by default), refuse browser
-navigations and cross-site fetches by their `Sec-Fetch-*` headers, and answer
-only at the page's own address. Opening `index.php?entry=…` in a tab, hot
-linking an entry from another site, or fetching the pack with a script that
-never loaded the page all answer 403.
+navigations and any fetch a browser says came from another origin (a sibling
+subdomain included, which SameSite=Strict sends the cookie to) by their
+`Sec-Fetch-*` headers, and answer only at the page's own address. Opening
+`index.php?entry=…` in a tab, hot linking an entry from another site, or
+fetching the pack with a script that never loaded the page all answer 403.
 
 ## What this is and is not
 
-This is delivery control: the archive is not on a URL, nothing the
-application does not use leaves the server, and a visitor's browser gets the
-pieces one request at a time under a cookie the page issued. It is **not copy
-protection**. A browser must receive the UI and logic text to execute it, and
-must receive an image to draw it; a visitor with developer tools can read the
-pack and save entries as they arrive. What they cannot do from this site is
-download the `.softn` file, reach entries the application never asked for,
-or see the manifest's server configuration. For access control, put the
+This is delivery control: the archive is not on a URL, what you withhold and
+the bundle's `server/` folder never leave the server, and a visitor's browser
+gets the rest one request at a time under a cookie the page issued. It is
+**not copy protection**. A browser must receive the UI and logic text to
+execute it, and must receive an image to draw it; a visitor with developer
+tools can read the pack, see every other entry's name, and fetch and save
+each one. What they cannot do from this site is download the `.softn` file,
+reach a withheld entry, or see the manifest's server configuration. Keep
+files the application does not need out of the bundle, or list them under
+`withhold`. For access control, put the
 whole deployment behind server-side authentication as well; for secrets and
 proprietary logic, keep them on a server. The
 [static runtime's distribution limits](SINGLE_APP_RUNTIME.md#distribution-limits)
@@ -132,7 +140,8 @@ return [
   site's page. `secret` may be set explicitly when several servers share an
   application or the private directory is read-only.
 - `withhold` lists entries never sent: exact paths, directories with a
-  trailing slash, or globs. The manifest cannot be withheld.
+  trailing slash, or globs, each matched in any case. Every entry not listed
+  is sent to any visitor who asks for it. The manifest cannot be withheld.
 - `description` and `lang` fill the page's `<meta name="description">` and
   `<html lang>`; without a description the manifest's is used.
 - `allowPrivateInWebroot` lifts the refusal to run when the private

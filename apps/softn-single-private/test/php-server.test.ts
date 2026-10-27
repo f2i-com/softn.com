@@ -44,6 +44,8 @@ const bundle = zipSync(
     'logic/main.logic': strToU8('let n = 0'),
     'data/levels.json': strToU8('{"levels":[1]}'),
     'README.md': strToU8('# private notes'),
+    // Withheld by `*.md` in another case: its kind is read from the extension in any case.
+    'docs/NOTES.MD': strToU8('# more private notes'),
     'images/icon.png': icon,
     'images/pixel.png': pixel,
     'media/big.bin': [big, { level: 0 }],
@@ -64,7 +66,7 @@ return [
   'bundle' => __DIR__ . '/app.softn',
   'theme' => 'light',
   'loadingText' => 'One moment…',
-  'withhold' => ['README.md'],
+  'withhold' => ['README.md', '*.md'],
   'cacheSeconds' => 60,
   ${extra}
 ];
@@ -397,6 +399,7 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     });
     expect(JSON.stringify(pack)).not.toContain('SECRET-TOKEN');
     expect(JSON.stringify(pack)).not.toContain('private notes');
+    expect(JSON.stringify(pack)).not.toContain('NOTES.MD');
     expect(JSON.stringify(pack)).not.toContain('server/');
   });
 
@@ -508,6 +511,7 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     ['ui/main.ui', 'a text entry, which travels in the pack'],
     ['manifest.json', 'the raw manifest'],
     ['README.md', 'a withheld entry'],
+    ['docs/NOTES.MD', 'an entry withheld by a pattern in another case'],
     ['server/migrations/001.sql', "a private server bundle's file"],
     ['./server/migrations/001.sql', 'the same, spelled with ./'],
     ['../private/app.softn', 'a traversal'],
@@ -521,12 +525,14 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     expect(response.status).toBe(404);
   });
 
-  it('refuses a browser navigation and a cross-site fetch even with the cookie', async () => {
+  it('refuses a browser navigation and a fetch from another site, a sibling subdomain too, even with the cookie', async () => {
     // Node's fetch rewrites Sec-Fetch-* itself (they are forbidden request
-    // headers), so these go out as raw HTTP requests.
+    // headers), so these go out as raw HTTP requests. `same-site` is a sibling
+    // subdomain, which SameSite=Strict sends the cookie to.
     const cases: Record<string, string>[] = [
       { 'Sec-Fetch-Mode': 'navigate' },
       { 'Sec-Fetch-Site': 'cross-site' },
+      { 'Sec-Fetch-Site': 'same-site' },
     ];
     for (const headers of cases) {
       for (const query of ['source', 'entry=images/pixel.png', 'icon']) {

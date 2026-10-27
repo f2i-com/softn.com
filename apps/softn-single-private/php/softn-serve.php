@@ -20,11 +20,12 @@ declare(strict_types=1);
  *
  * The archive is opened for each request and only the entry asked for is
  * inflated. The pack and the entries need the cookie the page sets, refuse
- * browser navigations and cross-site fetches, and skip anything the operator
- * lists under `withhold`. What reaches the browser is what the app needs to
- * run — its UI and logic text and the media it renders — and nothing else; a
- * browser must still receive that much to execute it, so this is delivery
- * control, not copy protection (see DEPLOYMENT.md).
+ * browser navigations and fetches from other origins, and skip anything the
+ * operator lists under `withhold` and the bundle's `server/`. Everything else
+ * in the bundle reaches the browser when asked for: this side does not know
+ * which entries the app uses. A browser must receive the UI and logic text to
+ * execute it, so this is delivery control, not copy protection (see
+ * DEPLOYMENT.md).
  */
 if (!isset($private) || !is_string($private)) {
     http_response_code(404);
@@ -183,16 +184,20 @@ function softn_entry_ok(string $name): bool
 }
 
 /**
- * `withhold` matches an exact path, a directory (`notes/`) or a glob (`*.md`).
- * `server/` is withheld whatever the configuration says: it is where a
+ * `withhold` matches an exact path, a directory (`notes/`) or a glob (`*.md`),
+ * in any case: an entry's kind is read from its extension in any case
+ * (softn_classify), so `*.md` withheld `notes.md` and sent `NOTES.MD` in the
+ * pack. `server/` is withheld whatever the configuration says: it is where a
  * private server bundle keeps its routes, migrations and settings, and no
  * client ever runs them. An operator who deploys that bundle here in place
  * of its public client serves the app without them, not its server source.
  */
 function softn_withheld(string $name, array $withhold): bool
 {
+    $name = strtolower($name);
     if (str_starts_with($name, 'server/')) return true;
     foreach ($withhold as $pattern) {
+        $pattern = strtolower($pattern);
         if (str_ends_with($pattern, '/')) {
             if (str_starts_with($name, $pattern)) return true;
         } elseif ($pattern === $name || fnmatch($pattern, $name)) {
@@ -629,7 +634,11 @@ function softn_endpoint(): string
 function softn_guard(array $config, string $private): void
 {
     if (($_SERVER['HTTP_SEC_FETCH_MODE'] ?? '') === 'navigate') softn_fail(403, 'This address is used by the application, not for browsing.');
-    if (($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '') === 'cross-site') softn_fail(403, 'Cross-site requests are not allowed.');
+    // Only the page's own origin, or a browser that does not say: `same-site`
+    // is a sibling subdomain, which SameSite=Strict sends the cookie to, and
+    // on a parent domain shared with others it may be someone else's.
+    $site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? '';
+    if ($site !== '' && $site !== 'same-origin') softn_fail(403, 'Requests from other sites are not allowed.');
     if (!$config['viewerToken']) return;
     $token = $_COOKIE[SOFTN_COOKIE] ?? null;
     if (!is_string($token) || !softn_token_valid($token, softn_secret($config, $private))) softn_fail(403, 'Open the application page first.');

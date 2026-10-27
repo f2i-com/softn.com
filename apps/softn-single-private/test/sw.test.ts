@@ -69,6 +69,24 @@ describe('the private host\'s service worker', () => {
     expect(await response.text()).toBe('console.log("runtime")');
   });
 
+  // The page's offline copy was looked up in every cache of the origin, the model cache too,
+  // where an app's script names what is kept and under which address.
+  it("answers the page offline from its own cache, never from the model cache", async () => {
+    const navigate = new Request(SCOPE);
+    Object.defineProperty(navigate, 'mode', { value: 'navigate' });
+    const { version } = install({}, async () => new Response(''));
+    // Kept under the scope's path, which is what the worker asks for.
+    const page = new URL(SCOPE).pathname;
+    const { fetchFor } = install(
+      {
+        'softn-models-v1': { [page]: () => new Response('kept as a model') },
+        [version]: { [page]: () => new Response('<!doctype html>the page') },
+      },
+      async () => { throw new TypeError('offline'); }
+    );
+    expect(await (await fetchFor(navigate)).text()).toBe('<!doctype html>the page');
+  });
+
   it('answers an asset from its own cache when it has it', async () => {
     const asset = `${SCOPE}assets/index-AbCd1234.js`;
     const { version } = install({}, async () => new Response(''));
