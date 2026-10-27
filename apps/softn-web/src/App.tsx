@@ -30,8 +30,10 @@ import {
   importAppData,
   readAppDataSnapshot,
   recoverInterruptedImports,
-  snapshotEntryCount,
+  snapshotCounts,
+  describeSnapshotCounts,
   hasStoredData,
+  holdsNothingOfItsOwn,
   isOfflineReady,
   getCachedAppByName,
   getCachedAppByOrigin,
@@ -691,6 +693,21 @@ function App(): React.ReactElement {
     (from: CachedApp, to: CachedApp) => {
       if (!from.origin || !to.origin) return;
       if (!canChangeAppData(to)) return;
+      // Into a build that holds nothing of its own, as Home offered it; what
+      // it holds may have changed since Home was drawn.
+      if (!holdsNothingOfItsOwn(to.origin)) {
+        setError(new Error(`Nothing was changed: v${to.version} now has data of its own, which bringing v${from.version}'s forward would replace.`));
+        setActiveTabId(null);
+        return;
+      }
+      // An update seeds its sample records as it opens, and those give way to
+      // the person's: the copy keeps what the destination has, so it carried
+      // nothing over a seeded collection. The older build's seed marks come
+      // too, so the next open adds only seeds it never had, and none it had
+      // and the person deleted.
+      const seeded = hasStoredData(to.origin);
+      if (seeded && !window.confirm(`Bring your data forward from v${from.version}? The sample records v${to.version} came with are replaced by it.`)) return;
+      if (seeded) removeAppData(to.origin);
       const result = copyAppData(from.origin, to.origin);
       if (!result.ok) {
         // Whole or not at all: the destination is as it was, and the user
@@ -700,7 +717,9 @@ function App(): React.ReactElement {
         setError(
           new Error(
             `Your data could not be brought forward from v${from.version} to v${to.version}: ${result.error ?? 'unknown error'} ` +
-              `Nothing was changed: v${from.version} still has its data, and v${to.version} is as it was.`
+              (seeded
+                ? `v${from.version} still has its data; v${to.version}'s sample records were cleared, and come back the next time it opens.`
+                : `Nothing was changed: v${from.version} still has its data, and v${to.version} is as it was.`)
           )
         );
         setActiveTabId(null);
@@ -779,8 +798,7 @@ function App(): React.ReactElement {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
-    const n = snapshotEntryCount(snapshot);
-    setNotice({ text: `Exported ${n} stored ${n === 1 ? 'record' : 'records'} of "${app.name}" v${app.version}.` });
+    setNotice({ text: `Exported ${describeSnapshotCounts(snapshotCounts(snapshot))} of "${app.name}" v${app.version}.` });
   }, []);
 
   /**
@@ -807,16 +825,16 @@ function App(): React.ReactElement {
     }
     // Reading a file can take time; the app may have opened in the meantime.
     if (!canChangeAppData(app)) return;
-    const n = snapshotEntryCount(read.snapshot);
+    const held = describeSnapshotCounts(snapshotCounts(read.snapshot));
     let allowDifferentApp = false;
     if (read.snapshot.app.origin !== app.origin) {
       allowDifferentApp = window.confirm(
         `This file was exported from "${read.snapshot.app.name}" v${read.snapshot.app.version}, which is a different build from "${app.name}" v${app.version}. ` +
-          `Import its ${n} ${n === 1 ? 'record' : 'records'} anyway? The data v${app.version} has now will be replaced.`
+          `Import its ${held} anyway? The data v${app.version} has now will be replaced.`
       );
       if (!allowDifferentApp) return;
     } else if (hasStoredData(app.origin)) {
-      const replace = window.confirm(`Replace the data "${app.name}" v${app.version} has now with the ${n} ${n === 1 ? 'record' : 'records'} in ${file.name}?`);
+      const replace = window.confirm(`Replace the data "${app.name}" v${app.version} has now with the ${held} in ${file.name}?`);
       if (!replace) return;
     }
     const result = importAppData(read.snapshot, app, { allowDifferentApp });
@@ -825,7 +843,8 @@ function App(): React.ReactElement {
       setActiveTabId(null);
       return;
     }
-    setNotice({ text: `Imported ${result.copied} stored ${result.copied === 1 ? 'record' : 'records'} into "${app.name}" v${app.version} from ${file.name}.` });
+    // The import is whole, so what came in is what the file holds.
+    setNotice({ text: `Imported ${held} into "${app.name}" v${app.version} from ${file.name}.` });
     setApps(await getCachedApps());
   }, [canChangeAppData]);
 

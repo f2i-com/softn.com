@@ -36,6 +36,15 @@ interface Rule {
 
 const RULES: Rule[] = [
   {
+    // First: an import or a data copy that changed nothing says why in words
+    // of its own, which can match a rule below. "Nothing was imported … the
+    // file is corrupt." was taken for a damaged .softn file, told to download
+    // it again and offered the .softn picker, and so was any import into an
+    // app whose name holds "corrupt".
+    test: /^Nothing was imported|could not be brought forward|^Nothing was changed/,
+    title: 'Nothing was changed',
+  },
+  {
     test: /^Invalid manifest\.json:\s*(.*)$/s,
     title: 'This app’s manifest is broken',
     hint: 'The file opened, but its manifest.json can’t be used. If you made this app, fix it in Studio or Builder and export it again; otherwise ask whoever shared it for a new copy.',
@@ -118,10 +127,6 @@ const RULES: Rule[] = [
   {
     test: /^Stop “/,
     title: 'Stop the app first',
-  },
-  {
-    test: /^Nothing was imported|could not be brought forward|^Nothing was changed/,
-    title: 'Nothing was changed',
   },
   {
     test: /bundle is no longer available/,

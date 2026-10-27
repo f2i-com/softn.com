@@ -183,6 +183,24 @@ describe("an app's data in both of its stores", () => {
       'pocket:state:zelda:1': 'BBBB',
     });
     expect(cache.snapshotEntryCount(snapshot!)).toBe(3);
+    // A person counts records, not keys: XDB keeps a whole collection under one key.
+    expect(cache.snapshotCounts(snapshot!)).toEqual({ records: 1, values: 2 });
+    expect(
+      cache.describeSnapshotCounts(
+        cache.snapshotCounts({
+          stores: {
+            xdb: {
+              notes: JSON.stringify([{ id: 'a' }, { id: 'b' }, { id: 'c', deleted: true }]),
+              tasks: JSON.stringify([{ id: 't' }]),
+              ':collections': '["notes","tasks"]',
+              ':seeded:notes': '1',
+            },
+            local: {},
+          },
+        })
+      )
+    ).toBe('3 records');
+    expect(cache.describeSnapshotCounts({ records: 1, values: 1 })).toBe('1 record and 1 saved value');
 
     // Both stores come across; a key the destination already has is kept.
     const copied = cache.copyAppData(ORIGIN, OTHER);

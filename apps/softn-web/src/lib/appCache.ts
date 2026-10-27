@@ -31,7 +31,7 @@ export {
 } from './appCacheIdentity';
 
 export type { AppDataStore, DataTransferResult } from './appCacheStorage';
-export { appDataStores, copyAppData, hasStoredData, removeAppData, transferStorageKeys } from './appCacheStorage';
+export { appDataStores, copyAppData, hasStoredData, holdsNothingOfItsOwn, removeAppData, transferStorageKeys } from './appCacheStorage';
 
 export type { AppDataSnapshot, SnapshotRead } from './appCacheSnapshot';
 export {
@@ -41,6 +41,8 @@ export {
   recoverInterruptedImports,
   replaceStorageKeys,
   snapshotEntryCount,
+  snapshotCounts,
+  describeSnapshotCounts,
 } from './appCacheSnapshot';
 
 export type { AppVersions } from './appCacheRecords';

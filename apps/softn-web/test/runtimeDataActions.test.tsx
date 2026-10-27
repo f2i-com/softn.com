@@ -273,6 +273,7 @@ describe('runtime app-data actions', () => {
     confirm.mockReturnValue(true);
     await chooseImport(dataFile(current));
     expect(localStorage.getItem(dataKey(current))).toBe('imported note');
-    expect(container.textContent).toContain('Imported 1 stored record');
+    // Records counted as records, and what the app kept for itself as values.
+    expect(container.textContent).toContain('Imported 0 records and 1 saved value');
   });
 });

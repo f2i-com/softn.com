@@ -269,13 +269,22 @@ export function PermissionBar({
   // Against the build opened before this one, when there was one: what an
   // update adds is the part that must not slide past a familiar request.
   const change = previous ? diffCapabilities(capabilities, previous.capabilities) : null;
+  // The same names are "the same" only when the declarations are: one that
+  // dropped its host list asks for "the internet" too, and reaches any host.
+  // Not known, nothing is said either way.
+  const sameNames = !!change && change.added.length === 0 && change.removed.length === 0;
+  const unchangedText = !previous || !sameNames || previous.sameDeclaration === undefined
+    ? ''
+    : previous.sameDeclaration
+      ? `The same as v${previous.version}.`
+      : `What it may reach has changed since v${previous.version}.`;
   const changeText = !change || !previous
     ? ''
     : change.added.length > 0
       ? `New since v${previous.version}: ${describe(change.added, wording)}.`
       : change.removed.length > 0
         ? `No longer asks for ${describe(change.removed, wording)}, as v${previous.version} did.`
-        : `The same as v${previous.version}.`;
+        : unchangedText;
 
   return (
     <>
@@ -319,7 +328,7 @@ export function PermissionBar({
               </>
             )}
             {change && change.added.length === 0 && change.removed.length > 0 && <> No longer asks for {describe(change.removed, wording)}, as v{previous!.version} did.</>}
-            {change && change.added.length === 0 && change.removed.length === 0 && <> The same as v{previous!.version}.</>}
+            {sameNames && unchangedText && <> {unchangedText}</>}
           </span>
           <span className="softn-consent-actions">
             <button

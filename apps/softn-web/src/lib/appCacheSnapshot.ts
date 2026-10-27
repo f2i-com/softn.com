@@ -38,6 +38,34 @@ export function snapshotEntryCount(snapshot: Pick<AppDataSnapshot, 'stores'>): n
   return Object.values(snapshot.stores).reduce((n, entries) => n + Object.keys(entries).length, 0);
 }
 
+/**
+ * What a snapshot holds, as a person counts it: the live records in its
+ * collections and the values the app keeps for itself. Its keys, which the
+ * notices counted, said "3 stored records" of an app with 300 notes: XDB
+ * keeps a whole collection under one key, beside notes of its own.
+ */
+export function snapshotCounts(snapshot: Pick<AppDataSnapshot, 'stores'>): { records: number; values: number } {
+  let records = 0;
+  for (const [key, value] of Object.entries(snapshot.stores.xdb ?? {})) {
+    // The store's own notes (`xdb:<origin>::<name>`), not a collection.
+    if (key.startsWith(':')) continue;
+    try {
+      const list: unknown = JSON.parse(value);
+      if (Array.isArray(list)) records += list.filter((r) => r && typeof r === 'object' && !(r as { deleted?: unknown }).deleted).length;
+    } catch {
+      // Counted as none; an import checks the records it takes.
+    }
+  }
+  return { records, values: Object.keys(snapshot.stores.local ?? {}).length };
+}
+
+/** The counts in words: "300 records and 2 saved values", "1 record". */
+export function describeSnapshotCounts(counts: { records: number; values: number }): string {
+  const records = `${counts.records} ${counts.records === 1 ? 'record' : 'records'}`;
+  if (counts.values === 0) return records;
+  return `${records} and ${counts.values} saved ${counts.values === 1 ? 'value' : 'values'}`;
+}
+
 /** This build's state as a snapshot, or null where the build has no identity or storage is unreadable. */
 export function exportAppData(app: Pick<CachedApp, 'name' | 'version' | 'origin'>, now = Date.now()): AppDataSnapshot | null {
   if (!app.origin) return null;

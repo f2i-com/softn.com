@@ -119,6 +119,33 @@ export function grantRecord(requested: readonly string[]): Record<string, boolea
 export interface PreviousBuild {
   version: string;
   capabilities: string[];
+  /**
+   * Whether this build's permission.json declares exactly what the earlier
+   * one's did (compare declarationKey); absent when that is not known. Two
+   * builds can ask for the same capabilities and differ in what each covers
+   * (a host list dropped, `allow_http` added, a room's collections), and the
+   * bar said "The same as v1." of every such update.
+   */
+  sameDeclaration?: boolean;
+}
+
+/**
+ * A permission declaration as one string, the same for the same declaration
+ * whatever order its keys were written in.
+ */
+export function declarationKey(config: unknown): string {
+  const sorted = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sorted);
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value).sort()) {
+        Object.defineProperty(out, key, { value: sorted((value as Record<string, unknown>)[key]), enumerable: true, writable: true, configurable: true });
+      }
+      return out;
+    }
+    return value;
+  };
+  return JSON.stringify(sorted(config ?? null));
 }
 
 export interface CapabilityChange {

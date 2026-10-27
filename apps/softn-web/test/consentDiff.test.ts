@@ -3,8 +3,18 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { diffCapabilities, previousBuildFor } from '../src/lib/consentDiff';
+import { strToU8, zipSync } from 'fflate';
+import { describePreviousBuild, diffCapabilities, previousBuildFor } from '../src/lib/consentDiff';
 import type { CachedApp } from '../src/lib/appCache';
+
+/** A bundle declaring `permissions` in its permission.json. */
+function bundleDeclaring(permissions: unknown): Uint8Array {
+  return zipSync({
+    'manifest.json': strToU8(JSON.stringify({ name: 'Weather', version: '1.0.0', main: 'ui/main.ui' })),
+    'permission.json': strToU8(JSON.stringify({ permissions })),
+    'ui/main.ui': strToU8('<App/>'),
+  });
+}
 
 function cached(over: Partial<CachedApp>): CachedApp {
   return { id: 'x', name: 'Notes', version: '1.0.0', bundleData: new Uint8Array(), cachedAt: 0, lastOpened: 0, ...over };
@@ -17,6 +27,26 @@ describe('diffCapabilities', () => {
     expect(diffCapabilities(['net'], ['net'])).toEqual({ added: [], removed: [] });
     expect(diffCapabilities([], ['net'])).toEqual({ added: [], removed: ['net'] });
     expect(diffCapabilities(['camera', 'mic'], [])).toEqual({ added: ['camera', 'mic'], removed: [] });
+  });
+});
+
+// The bar said "The same as v1." of any update asking for the same capabilities, whatever
+// each covered: a v2 that dropped v1's host list reaches any host.
+describe('describePreviousBuild', () => {
+  const v1 = cached({ bundleData: bundleDeclaring({ net: { enabled: true, allowed_hosts: ['api.weather.gov'] } }) });
+
+  it('is the same declaration only when it declares the same', () => {
+    expect(describePreviousBuild(v1, { permissions: { net: { enabled: true, allowed_hosts: ['api.weather.gov'] } } })).toEqual({
+      version: '1.0.0',
+      capabilities: ['net'],
+      sameDeclaration: true,
+    });
+    expect(describePreviousBuild(v1, { permissions: { net: { enabled: true } } })).toMatchObject({ capabilities: ['net'], sameDeclaration: false });
+  });
+
+  it('does not say either way of a build it cannot read', () => {
+    expect(describePreviousBuild(cached({ bundleData: strToU8('not a zip'), requestedCapabilities: ['net'] }), { permissions: { net: { enabled: true } } }))
+      .toEqual({ version: '1.0.0', capabilities: ['net'], sameDeclaration: undefined });
   });
 });
 

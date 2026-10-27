@@ -1,6 +1,6 @@
 import React, { useCallback, useRef } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
-import { currentBuildId, groupByApp, hasStoredData, isOfflineReady, type CachedApp } from '../lib/appCache';
+import { currentBuildId, groupByApp, hasStoredData, holdsNothingOfItsOwn, isOfflineReady, type CachedApp } from '../lib/appCache';
 import { DirectoryShelf } from './DirectoryShelf';
 
 /*
@@ -237,8 +237,10 @@ export function Launcher({
                   // Notes.
                   const app = group.current;
                   const olderVersions = group.versions.slice(1);
-                  // The most recently used older build that actually has records.
-                  const dataSource = olderVersions.find((v) => hasStoredData(v.origin));
+                  // The most recently used older build that holds records of its
+                  // own: one opened once and never used holds only its seeds,
+                  // and would be offered ahead of the one with the person's data.
+                  const dataSource = olderVersions.find((v) => !holdsNothingOfItsOwn(v.origin));
                   const offline = offlineStatus(app, installing);
                   const describedBy = `softn-launcher-card-${app.id}`;
                   return (
@@ -346,6 +348,18 @@ export function Launcher({
                                   {older.version === app.version ? ` · ${formatDate(older.lastOpened)}` : ''}
                                   {hasStoredData(older.origin) ? ' · has data' : ''}
                                 </button>
+                                {/* Removing one asks the person to export its data
+                                    first, so its data can be exported from here. */}
+                                {hasStoredData(older.origin) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onExportData(older)}
+                                    aria-label={`Export the data of version ${older.version}`}
+                                    title={`Save the records of v${older.version} as a file you can keep or move to another browser`}
+                                  >
+                                    &#x2913;
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => onRemove(older.id)}
@@ -369,9 +383,11 @@ export function Launcher({
                           {/* Carrying records forward is the one thing rollback
                               cannot do for you, and the runtime will not do it
                               unasked: nothing proves two bundles share an author.
-                              Offered only when this build has no records of its
-                              own, so it can never write over data already here. */}
-                          {!hasStoredData(app.origin) && dataSource && (
+                              Offered only while this build holds nothing of its
+                              own: nothing at all, or only the sample records its
+                              bundle seeded as it opened, which bringing the data
+                              forward replaces (the person is asked first). */}
+                          {holdsNothingOfItsOwn(app.origin) && dataSource && (
                             <button
                               type="button"
                               className="softn-launcher-adopt"

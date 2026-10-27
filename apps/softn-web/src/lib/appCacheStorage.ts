@@ -234,6 +234,58 @@ export function hasStoredData(origin: string | undefined): boolean {
 }
 
 /**
+ * Whether a build holds nothing of its own: only the records its bundle
+ * seeded, or nothing at all. Every record is one the bundle put there (its id
+ * in its collection's `::seeded:` mark), none was deleted, its only notes are
+ * its collections' list and those marks (a sync note means it has been
+ * used), and its script kept nothing through localStorage.
+ *
+ * Opening an update seeds it before the person reaches Home, so by
+ * hasStoredData every build of an app that seeds had data, and "Bring my data
+ * forward" was never offered for one. Anything that cannot be read is taken
+ * as data of its own, which only withholds the offer. Read during render, so
+ * it reads each key once.
+ */
+export function holdsNothingOfItsOwn(origin: string | undefined): boolean {
+  if (!origin) return true;
+  try {
+    for (const store of appDataStores(origin)) {
+      const rests = storeKeys(store).map((key) => key.slice(store.prefix.length));
+      if (store.store === 'local') {
+        if (rests.length > 0) return false;
+        continue;
+      }
+      const seeded = new Map<string, Set<unknown>>();
+      for (const rest of rests) {
+        if (!rest.startsWith(':')) continue;
+        const mark = /^:seeded:(.+)$/.exec(rest);
+        if (mark) {
+          const ids: unknown = JSON.parse(localStorage.getItem(store.prefix + rest) ?? '[]');
+          if (!Array.isArray(ids)) return false;
+          seeded.set(mark[1], new Set(ids));
+        } else if (rest !== ':collections') {
+          return false;
+        }
+      }
+      for (const rest of rests) {
+        if (rest.startsWith(':')) continue;
+        const records: unknown = JSON.parse(localStorage.getItem(store.prefix + rest) ?? '[]');
+        if (!Array.isArray(records)) return false;
+        const ids = seeded.get(rest);
+        for (const record of records) {
+          if (!record || typeof record !== 'object') return false;
+          const { id, deleted } = record as { id?: unknown; deleted?: unknown };
+          if (deleted || !ids?.has(id)) return false;
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Move an app's stored data from one identity to another.
  *
  * Keys are prefixed by appId, and appId used to be the manifest name, then a

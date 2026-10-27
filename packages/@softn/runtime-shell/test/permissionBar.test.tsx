@@ -8,7 +8,7 @@ import { act, useRef, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PermissionBar, DESKTOP_WORDING } from '../src/PermissionBar';
-import { diffCapabilities, grantCovers, grantKey, grantRecord, hasSavedGrant, saveGrant } from '../src/consent';
+import { declarationKey, diffCapabilities, grantCovers, grantKey, grantRecord, hasSavedGrant, saveGrant } from '../src/consent';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -166,9 +166,35 @@ describe('PermissionBar', () => {
     );
     expect(host.textContent).toContain('New since v1.0.0: your files.');
   });
+
+  // The same names were "the same" whatever each covered: a v2 that dropped v1's host list
+  // asks for "the internet" too, and reaches any host.
+  it('says "the same" of an update only when its declaration is', () => {
+    const bar = (previous: { version: string; capabilities: string[]; sameDeclaration?: boolean }) =>
+      act(() =>
+        root.render(
+          <PermissionBar appName="Weather" config={{ permissions: { net: { enabled: true } } }} capabilities={['net']} previous={previous} onAllow={() => {}} />,
+        ),
+      );
+    bar({ version: '1.0.0', capabilities: ['net'], sameDeclaration: false });
+    expect(host.textContent).not.toContain('The same as v1.0.0');
+    expect(host.textContent).toContain('What it may reach has changed since v1.0.0.');
+    bar({ version: '1.0.0', capabilities: ['net'] });
+    expect(host.textContent).not.toContain('The same as v1.0.0');
+    expect(host.textContent).not.toContain('has changed');
+    bar({ version: '1.0.0', capabilities: ['net'], sameDeclaration: true });
+    expect(host.textContent).toContain('The same as v1.0.0.');
+  });
 });
 
 describe('consent', () => {
+  it('reads a declaration the same whatever order its keys were written in', () => {
+    const a = { permissions: { net: { enabled: true, allowed_hosts: ['a.example'] }, files: { enabled: true } } };
+    const b = { permissions: { files: { enabled: true }, net: { allowed_hosts: ['a.example'], enabled: true } } };
+    expect(declarationKey(a)).toBe(declarationKey(b));
+    expect(declarationKey(a)).not.toBe(declarationKey({ permissions: { net: { enabled: true }, files: { enabled: true } } }));
+  });
+
   it('keys a grant by identity and declaration, under the host prefix', () => {
     const a = grantKey('abc', config, 'softn-loader:grant:');
     expect(a).toBe(`softn-loader:grant:abc:${JSON.stringify(config)}`);

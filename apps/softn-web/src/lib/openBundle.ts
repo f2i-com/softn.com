@@ -8,7 +8,7 @@
 
 import type { Dispatch, SetStateAction } from 'react';
 import { flushSync } from 'react-dom';
-import type { BundleArchive, PermissionConfig, PythonProject } from '@softn/core';
+import type { PermissionConfig, PythonProject } from '@softn/core';
 import { ManifestError, preloadRememberedFirstDraw, readManifest } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import {
@@ -45,7 +45,7 @@ import {
   type CachedApp,
 } from './appCache';
 import { findPlaceholder, findRunningTab } from './tabIdentity';
-import { previousBuildFor, type PreviousBuild } from './consentDiff';
+import { describePreviousBuild, previousBuildFor, type PreviousBuild } from './consentDiff';
 
 export interface OpenTab {
   id: string;
@@ -144,27 +144,6 @@ export interface OpenBundleRequest {
   placeholderId?: string;
   /** Whether this open is still the person's latest navigation, and so may take the screen. */
   isForeground?: () => boolean;
-}
-
-/**
- * What a cached bundle's permission.json asked for, read from the bytes: for
- * records cached before the list was kept on the record.
- */
-function requestedCapabilitiesOf(bundleData: Uint8Array): string[] {
-  let archive: BundleArchive | undefined;
-  try {
-    const zip = readZip(bundleData);
-    archive = zip.archive;
-    const manifestText = zip.textFiles.get('manifest.json');
-    const manifest = (manifestText ? JSON.parse(manifestText) : {}) as BundleManifest;
-    const config = extractPermissions(zip.textFiles, manifest);
-    return config ? requestedCapabilities(config) : [];
-  } catch {
-    return [];
-  } finally {
-    // A peek at the manifest, not an open: nothing will read an asset from it.
-    archive?.release();
-  }
 }
 
 /**
@@ -400,7 +379,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     let previousBuild: PreviousBuild | undefined;
     if (!hasGrant) {
       const prev = previousBuildFor(updatedApps, appName, appOrigin);
-      if (prev) previousBuild = { version: prev.version, capabilities: prev.requestedCapabilities ?? requestedCapabilitiesOf(prev.bundleData) };
+      if (prev) previousBuild = describePreviousBuild(prev, permissionConfig);
     }
 
     // The sync server the manifest names, as one WebSocket address (the

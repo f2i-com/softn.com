@@ -6,6 +6,20 @@ import { describe, expect, it } from 'vitest';
 import { describeFailure } from '../src/failure';
 
 describe('describeFailure', () => {
+  // Matched by a later rule, an import's failure was a damaged .softn file to download again,
+  // with the .softn picker offered for a JSON import.
+  it('says an import that changed nothing did not, whatever its reason says', () => {
+    for (const message of [
+      'Nothing was imported and "Notes" v2 is as it was. Collection "tasks" holds a value that is not text: the file is corrupt.',
+      'Nothing was imported: the file could not be read. Unexpected token',
+      'Nothing was imported and "Corrupt Castle" v1 is as it was. The data is for another app.',
+    ]) {
+      const view = describeFailure(new Error(message));
+      expect(view.title).toBe('Nothing was changed');
+      expect(view.offerAnotherFile).toBe(false);
+    }
+  });
+
   it('names a broken manifest and says how to get a working copy', () => {
     const view = describeFailure(new Error('Invalid manifest.json: The manifest.json is not valid JSON.'));
     expect(view.title).toBe('This app’s manifest is broken');
