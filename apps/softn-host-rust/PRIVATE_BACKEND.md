@@ -79,7 +79,12 @@ Local filesystem ownership remains an operator responsibility.
 
 The private manifest declares `server.requires.apiVersion: 1` and required
 capabilities, `server.database: {kind:"private-sqlite", migrations:[...]}`, and
-explicit `/api/` routes. A private SQL route runs in a `"read"` or `"write"`
+explicit `/api/` routes. `server.entry` names the script; this host reads
+`server/main.logic` when it is left out, and appends the files `server.scripts`
+lists after it. The PHP host and softn-runner read `server.entry` alone and
+have no default (without it the app does not start, "Invalid bundle path"), so
+a bundle meant for both names its entry and keeps its server logic in that one
+file. A private SQL route runs in a `"read"` or `"write"`
 transaction; one that declares none (or `"none"`) gets a read for GET and a
 write otherwise, as on the PHP host. Every route declares `authorization:
 "application"`, `"anonymous"` or `"host-token"`. A GET route may set
@@ -111,9 +116,8 @@ Sync is on unless the manifest turns it off, so who may open `/sync` matters:
   (for example `softn-server run … --host 0.0.0.0` browsed as
   `http://myserver.lan:3000`) now needs `--allowed-hosts=myserver.lan`, and a
   host behind a reverse proxy needs `--trusted-proxy` (or `--allowed-hosts`
-  with its public name).** The poker authority guide's systemd unit passes
-  `--trusted-proxy`; its first sample command does not, and run that way
-  behind nginx every request is now refused until one of the two is added.
+  with its public name).** The poker authority guide's sample command and its
+  systemd unit both pass `--trusted-proxy`.
 - Every answer carries `X-Content-Type-Options: nosniff`, the errors and
   refusals included, as the PHP host's `.htaccess` sends it: a file of the
   bundle is only ever what its `Content-Type` says, never a page because a
@@ -138,7 +142,10 @@ Sync is on unless the manifest turns it off, so who may open `/sync` matters:
   ticket is required.
 - Sync has a token of its own, the **sync token**: `config.server.token` in
   the manifest, or `SOFTN_SYNC_TOKEN` (serving many apps,
-  `SOFTN_SYNC_TOKEN_<TENANT_ID>` only; there is no process-wide one). It is
+  `SOFTN_SYNC_TOKEN_<TENANT_ID>` only, the tenant id upper-cased with `.` and
+  `-` as `_`; there is no process-wide one, and a variable spelt otherwise is
+  not read: the app falls back to `config.server.token`, and without that its
+  sync has no sync token, which the host warns of at startup). It is
   the token the app's browsers send, so it is given to everyone who has the
   bundle, and it opens `/sync` and `/sync/ticket` and nothing else. The
   operator token opens them too, for scripts the operator runs, and every
@@ -229,7 +236,10 @@ is replaced, so a bundle cannot turn development mode on for itself. The PHP
 host gives a script the same settings under the same two flags (there
 `photos` also needs PHP's GD). The object is frozen all the way down: a
 handler reads its settings and cannot change them. `config` is part of the manifest every client is served, so
-nothing in it is a secret; keys and tokens belong in `backend.json`.
+nothing in it is a secret: keys belong in `backend.json` and tokens in the
+environment (`SOFTN_AUTH_TOKEN`, `SOFTN_SYNC_TOKEN`). `backend.json` takes only
+the fields above and `cryptoDomains` (below); any other, a token included,
+stops it loading.
 
 `db.query(collection, filter)`, on the document store (which the PHP host
 does not have), answers with the records whose data has every field of
@@ -266,7 +276,8 @@ All of this is the PHP host's, and the two are held to one list of calls
 `Thu, 1 Jan 2026, 11:00 PM AEDT` and to take only a zone spelt exactly as
 the IANA list spells it. `softn.crypto.randomInt(bound)` and
 `randomHex(bytes)` take a whole number or text that spells one, the bound
-up to 2^53-1, on both hosts (`tests/crypto-parity.json` beside it).
+up to 2^53-1 and the bytes from 1 to 64 (anything else throws), on both hosts
+(`tests/crypto-parity.json` beside it).
 
 Crypto subkeys are HMAC-SHA256 of the master key and separate domain strings.
 Defaults are `softn:hmac:v1` for HMAC and `softn:seal:v1` for encryption. Operators
@@ -471,7 +482,8 @@ in this patch.
 
 Commands: `softn-server run <bundle>` (one app), `softn-server serve-multi
 <bundles-dir>` (one app per directory or `.softn`, at `/<id>/…`), and
-`softn-server info <bundle>`.
+`softn-server info <bundle-directory>`, which reads an unpacked bundle's
+folder only: given a `.softn` file it stops with "Expected a directory".
 
 | Flag                                 | Meaning                                                                                                                                                                                                                                     |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -485,9 +497,9 @@ Commands: `softn-server run <bundle>` (one app), `softn-server serve-multi
 | `--allow-all-capabilities`           | Legacy bundles without a permissions block get `http` and `fs`.                                                                                                                                                                             |
 
 Environment: `SOFTN_AUTH_TOKEN` (the operator token; in multi-tenant mode
-`SOFTN_AUTH_TOKEN_<TENANT_ID>` first, with `.` and `-` as `_`),
-`SOFTN_SYNC_TOKEN` (the sync token; in multi-tenant mode
-`SOFTN_SYNC_TOKEN_<TENANT_ID>` and nothing else),
+`SOFTN_AUTH_TOKEN_<TENANT_ID>` first, the tenant id upper-cased with `.` and
+`-` as `_`), `SOFTN_SYNC_TOKEN` (the sync token; in multi-tenant mode
+`SOFTN_SYNC_TOKEN_<TENANT_ID>`, spelt the same way, and nothing else),
 `SOFTN_ALLOW_ALL_CAPABILITIES=1`, `SOFTN_SQLITE_MEMORY_MB` (how much memory
 SQLite may hold in the process, every app's connections together: 64 to
 65,536 MiB, 1,024 without it; a wrong value stops startup), and `RUST_LOG`, which replaces the default

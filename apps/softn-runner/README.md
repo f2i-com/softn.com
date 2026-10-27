@@ -12,6 +12,15 @@ its backend's `bin/` (`runtime/request.php` `softn_runner_choice`, which keeps
 Node where the operator asks for it or enables a request hook), FormLogic
 from its runtime's `native-runtime/bin/`.
 
+It exits 0 after its one line, whatever the request's status, a failed
+request's `500` or `503` included. It exits 1 with nothing on stdout when
+the backend root (`SOFTN_BACKEND_ROOT`, or the program's own folder without
+it) cannot be resolved (stderr says `softn: runner worker died: <code>`, such
+as `ENOENT`), and when stdin cannot be read or holds more than 6,000,000
+bytes; at the deadline it is killed. Those are
+`runner.mjs`'s cases too, and PHP answers each `503 runner_unavailable`, with
+`diagnostic: "runner_failure"` for an exit that is not 0.
+
 ## How it is built
 
 Two halves, each its own Cargo workspace:

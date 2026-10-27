@@ -291,31 +291,35 @@ template only reads state and calls the app's functions):
 
 | Form | Examples |
 | :--- | :------- |
-| Arrow functions with one expression | `t => t.done`, `(a, b) => a - b`, `() => save()` |
+| Arrow functions | `t => t.done`, `(a, b) => a - b`, `() => save()`, and in a handler a block body, `() => { count++; save() }` |
 | Spread | `[...done, item]`, `Math.max(...scores)`, `{ ...base, color: "red" }` |
-| One assignment or update in a handler | `count = 0`, `count += 1`, `count++`, `open = !open` |
-| Operators | `+ - * / % **`, comparisons, `&& \|\| ??`, `!`, `typeof`, `in`, `instanceof`, `?.` |
+| Assignments and updates in a handler | `count = 0`, `count += 1`, `count++`, `open = !open` |
+| Operators | `+ - * / % **`, comparisons, `&& \|\| ??`, `!`, the bitwise operators and shifts `& \| ^ ~ << >> >>>`, `typeof`, `in`, `instanceof`, `?.` |
 | Values | numbers including `0xff`, strings, template literals, `true`, `false`, `null`, `undefined` |
-| Construction | `new Date(…)`, `new Array(…)`, `new Map(…)`, `new Set(…)`, and nothing else |
-| Globals | `Math`, `JSON`, `Number`, `String`, `Boolean`, `Array`, `Date`, `Map`, `Set`, `Object.keys`/`values`/`entries`, `parseInt`, `parseFloat`, and the built-in helpers (`formatDate`, `currency`, `truncate`, …) |
+| Construction | `new Date(…)`, `new Array(…)`, `new Map(…)`, `new Set(…)` and the `Intl` formatters (`new Intl.NumberFormat(…)`, `new Intl.DateTimeFormat(…)` and the rest), and nothing else |
+| Globals | `Math`, `JSON`, `Intl`, `Number`, `String`, `Boolean`, `Array`, `Date`, `Map`, `Set`, `Object.keys`/`values`/`entries`, `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `encodeURIComponent`, `decodeURIComponent`, `NaN`, `Infinity`, and the built-in helpers (`formatDate`, `currency`, `truncate`, …) |
 
 A variable may be called `data`, `style`, `from`, `end` or any other word
-markup also uses. Block-bodied arrows (`() => { … }`), `function` expressions,
-`async`/`await`, regular expression literals and bitwise operators are not
-read; the parser reports them, and the place for them is a logic function the
-expression calls. Every construct either parses to what it says or produces a
+markup also uses. `function` expressions, `async`/`await` and regular
+expression literals are not read; the parser reports them, and the place for
+them is a logic function the expression calls. A handler's block body runs its
+statements one after another, each an expression of the kinds above; an `if`,
+a `let` or a loop in it is reported, and that handler does nothing. Every
+construct either parses to what it says or produces a
 diagnostic: `parse(source).diagnostics`. An assignment or `++` changes state
 when a handler runs it; written in the body of the page (`{count++}`) it would
 run on every drawing, so there it is worth its value and changes nothing.
 
 ### Events
 
-A handler bound in a template is called without the DOM event: `@click={fn}`
-runs `fn()` with the event reduced to `null`, while component callbacks that
-carry data (`DPad`'s `@press`, `Slider`'s `@change`) pass it through. A script
-that needs pointer coordinates listens on the window instead —
-`window.addEventListener("pointerdown", fn)` hands `fn` a plain object with
-`clientX`, `clientY`, `key`, `targetTag` and the like. `Box` and `Button`
+A handler bound by name gets the event as plain data, never the DOM event:
+`@click={fn}` runs `fn(event)` with a record of its `type`, the pointer's
+`clientX`/`clientY` or the key and its modifiers, and `target` and
+`currentTarget` as data (`value`, `checked`, `dataset` and the like), the shape
+the Scripting Engine section below describes. Component callbacks that carry
+data (`DPad`'s `@press`, `Slider`'s `@change`) pass that instead. A script can
+also listen on the window: `window.addEventListener("pointerdown", fn)` hands
+`fn` a record of the same kind. `Box` and `Button`
 forward `@pointerdown`, `@pointerup`, `@pointercancel` and `@pointerleave`,
 which is enough for a hold-to-press control.
 
@@ -430,13 +434,19 @@ MyApp.softn (ZIP archive)
 ```
 
 `permission.json` is not optional in practice. The runtime denies every gated
-capability — network, camera, microphone, filesystem, AI, GPU, peer-to-peer sync,
-server storage and host acceleration — to a bundle that does not declare it, and the consent prompt is built from what it
+capability — network, camera, microphone, filesystem, QR scanning, AI, GPU,
+sync (peer-to-peer and through a sync server), server storage and host
+acceleration — to a bundle that does not declare it, and the consent prompt is built from what it
 declares, so an app that ships without one can run but cannot reach the host:
 
 ```json
 { "permissions": { "net": { "enabled": true, "allowed_hosts": ["api.example.com"] } } }
 ```
+
+`allowed_hosts` names each host exactly as a URL writes it, in lower case, with
+no port and no wildcard. Only `https` is allowed unless the entry also says
+`"allow_http": true`, which a machine on the local network reached at an
+`http://` address needs as well as its name in the list.
 
 Storage identity and permission grants are host-specific. The general bundle loader isolates bundles by digest; configured single-app and FormLogic hosts supply their own deployment identity. A manifest name alone does not grant access to another app's records. See the [single-app identity rules](docs/engineering/SINGLE_APP_RUNTIME.md#permissions-and-local-records).
 
@@ -461,7 +471,8 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
   the pointer within a canvas scaled to fit its box; both say `targetTag` and `targetEditable`
 - `softn.input.captureKeys(["ArrowUp", " ", "F1"])` names the keys a script wants whole: the
   browser's default for them (scrolling, a page search) is cancelled before the handler runs,
-  never in a text field and never for a Ctrl chord or the system modifier
+  never in a text field, never for Ctrl with a character key (Ctrl+F, Ctrl+C) and never with the
+  system modifier; Ctrl with an arrow or another named key is still captured
 
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
@@ -568,16 +579,27 @@ let client = db.create('clients', { name: 'John', email: 'john@example.com' });
 let allClients = db.query('clients');
 db.update(client.id, { phone: '555-1234' });
 db.delete(client.id);
-await db.startSync('my-room-name');
+db.startSync('my-room-name');
 ```
 
 All CRUD operations are **synchronous** (XDB caches everything in memory).
+`db.startSync` returns nothing; there is nothing to await.
 Peer sync runs while the app is on screen: in SoftN Web, an app's rooms wait
 while another tab is shown, exchange what was written meanwhile when it is
 shown again, and close when the app closes. Server sync (`config.server.url`)
 is live while the app is shown; behind another tab it connects only to send
 what the app writes, and lets the socket go 30 seconds after
 (`restAfterMs` on `XDBServerSync`).
+
+Server sync replicates the app's records through a `softn-server` host
+([`PRIVATE_BACKEND.md`](apps/softn-host-rust/PRIVATE_BACKEND.md)) named in the
+manifest's `config.server`: `url` (an `https` or `wss` address; `http` and `ws`
+reach only this computer, `localhost` or `127.0.0.1`), `token` (the host's sync token, which everyone with the
+bundle can read and which opens the host's sync and nothing else; the operator
+token, `auth_token`, is never sent) and `collections` (the collections it
+carries; every one without it). SoftN Web and the desktop runtime connect, and
+only when `permission.json` declares `sync` and the person allows it; when the
+declaration's `net` lists `allowed_hosts`, the server's host must be one of them.
 
 ---
 
@@ -596,10 +618,12 @@ softn.audio.stop(themeHandle);
 softn.audio.stopAll();
 ```
 
-No capability is declared for it: a template can already write
-`<audio src={asset("…")} autoPlay />` with none, so gating the API and not the
-tag would inconvenience the tidier route and secure nothing. Sound reads
-nothing and sends nothing, and everything an app started stops when it closes.
+No capability is declared for the bundle's own sounds: a template can already
+write `<audio src={asset("…")} autoPlay />` with none, so gating the API and not
+the tag would inconvenience the tidier route and secure nothing. Such a sound
+reads nothing and sends nothing, and everything an app started stops when it
+closes. A remote address (`https://…`) is a request to another host, and needs
+`net` and a host `allowed_hosts` permits, as `softn.net.fetch` does.
 
 Browsers refuse to make noise before the user has interacted with the page. A
 one-shot that lands in that window reports `{ played: false, blocked: true }`
@@ -663,9 +687,14 @@ for so the samples really are resampled, but hardware and browser both get a
 say — every callback reports the rate actually in use, and code that cares
 about absolute frequencies must read that rather than assume.
 
-Like `<Camera>`, the component opens the device itself and the browser's own
-permission prompt is what stands in front of the hardware; the `mic` capability
-gates the scripting API and is what the consent dialog shows the user.
+Like `<Camera>`, the component opens the device itself, and only for an app
+that declares `mic` and that the person has allowed: without the declaration
+it shows a refusal and never asks the browser, and while the consent bar is
+unanswered it waits. The browser's own permission prompt then stands in front
+of the hardware. The `mic` capability gates the scripting API as well, and is
+what the consent dialog shows the user. `<Camera>` is held to `camera` the
+same way (video with sound needs `mic` too), and `<QRReader>` to `qr` or
+`camera`.
 
 ---
 
@@ -783,9 +812,11 @@ dist/play/        the single-app shell; /play/<slug> is an app's play page, rend
 dist/builder/     visual builder
 dist/studio/      AI studio
 dist/shared/      the ZIPP engine and the QR decoder, kept once for every app above
+dist/docs/        the documentation, generated from docs/content/softn-docs.json
 dist/api/         the directory API (PHP)
 dist/data/        the directory's state; never served
 dist/.htaccess    Apache rules, with nginx.conf.example and DEPLOY.md alongside
+dist/BUILD-INFO.json  what was built, from which revision
 ```
 
 Configure the host to serve each app's `index.html` for deep links. The build
@@ -845,8 +876,9 @@ setting `"trusted": true` in the `app` object of its `data/apps/<slug>/app.json`
 on the server, and its play page then grants the declaration from the start
 with no bar.
 
-To run the directory locally against a built site (PHP 8.1+ with
-`pdo_sqlite` and `zip`):
+To run the directory locally against a built site (PHP 8.1+ with `zip`, `zlib`
+and `mbstring`, without which `/api/health` answers 503, and `pdo_sqlite` for
+apps that use server storage):
 
 ```bash
 npm run build:site
@@ -941,7 +973,7 @@ own engine and runs it over views of the script's typed arrays, so the compiled
 code reads and writes the same bytes the script does:
 
 ```js
-// Inside a .logic script that declared "accel": { "enabled": true }.
+// Inside a .logic script that runs in a worker and declared "accel": { "enabled": true }.
 let outer = accel.compile(['RAM', 'ST'], 'return function(ST,h){ST[0]=RAM[h]*2;return 1;};');
 let fn = accel.make(outer, 'RAM=g:MY_RAM,ST=g:MY_STATE'); // views of two typed-array globals
 accel.state('MY_STATE'); // the array run() passes first
@@ -957,6 +989,12 @@ the function it returned; `state(GLOBAL)` names the array `run(id, h)` passes as
 the first argument; `install(slot, id)` fills the trace table a compiled
 function may call through. Every call is synchronous and answers a number; all
 of them throw unless the capability was granted.
+
+The declaration is not enough on its own: only the script worker installs the
+accelerator, so the app's logic must run there (`"execution": "worker"` in the
+manifest's `config`). On the page's thread `accel.*` throws as if it were
+denied. The grant is read when the engine compiles the script; an Allow given
+after the app has opened restarts its logic, which has the grant from then.
 
 What keeps it safe: the source must fit a closed arithmetic language
 (parameters, `let` locals, labels, keywords and pure `Math` functions; no other
@@ -1006,7 +1044,7 @@ the flag before the script sees it.
 What each folder is: [`apps/README.md`](apps/README.md) explains every app and
 what it ships as; [`packages/README.md`](packages/README.md) the packages they
 are built from; [`scripts/release/release-packages.mjs`](scripts/release/release-packages.mjs)
-the five release archives, in the words of the `README.md` each carries.
+the six release archives, in the words of the `README.md` each carries.
 
 ### Running Apps
 

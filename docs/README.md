@@ -62,9 +62,11 @@ When adding a page, add it to exactly one navigation group; the validator
 rejects missing references, duplicate routes, duplicate titles and unknown
 fields.
 
-`engineering/VALIDATION_REPORT.md` records how the current edition (25 September 2026)
+`engineering/VALIDATION_REPORT.md` records how the edition of 25 September 2026
 was checked against the repository source, what passed and what was not
-checked. The content's `review` block names the commit it was compared with;
+checked. The content's `review` block names the commit the guides were last
+checked against and what was checked then (on 27 October 2026, corrections
+against the `dev` branch, not a second full comparison);
 when you revise a guide against newer source, update that block, the page's
 `updatedAt` and its `sources` entries together.
 

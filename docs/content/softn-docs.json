@@ -60,23 +60,24 @@
     ]
   },
   "review": {
-    "reviewedAt": "2026-09-25",
+    "reviewedAt": "2026-10-27",
     "status": "checked-against-repository-source",
     "repositories": [
       {
         "url": "https://github.com/f2i-com/softn.com",
-        "ref": "main",
-        "commit": "9ac48624ef62db7cc38fbb314865e1b64eaaee7c"
+        "ref": "dev",
+        "commit": "e1c68273311a2e7644bf5d08e3f508688d9fb49b"
       },
       {
         "url": "https://github.com/f2i-com/zipp.org",
-        "ref": "v0.0.21",
-        "commit": "9df6e2fdeb27d9b931bffba84e5714c4fd3d5f50"
+        "ref": "v0.0.30",
+        "commit": "fd6b48a57f561b3291127a246ebf10dc59a0f3d2"
       }
     ],
     "limitations": [
-      "Checked against the softn.com working tree at commit 9ac48624ef62db7cc38fbb314865e1b64eaaee7c with uncommitted changes. Builder and Studio were still changing while this edition was written; their labels describe that working tree.",
-      "The ZIPP commit is the source revision recorded in the installed engine’s SOURCE.json for release v0.0.21. ZIPP’s own source was not inspected.",
+      "The edition of 25 September 2026 was compared in full with the softn.com working tree at commit 9ac48624ef62db7cc38fbb314865e1b64eaaee7c, with uncommitted changes (engineering/VALIDATION_REPORT.md). Builder and Studio were still changing then; their labels describe that working tree.",
+      "Pages revised since then, as their updatedAt dates show, were checked against the source of that date. On 27 October 2026 the statements a review against the code had found untrue or missing were corrected against the dev branch at the softn.com commit named above, with uncommitted changes. The guides were not compared in full again.",
+      "The ZIPP commit is the source revision recorded in the installed engine’s SOURCE.json for release v0.0.30. ZIPP’s own source was not inspected.",
       "Code samples follow the syntax the current parser and composer accept but were not each executed. Fieldnotes and examples/torch-trainer are the runnable references.",
       "ZIPP’s website pages (Python, WebAssembly, architecture) were last read on 15 September 2026 and were not re-read for this edition.",
       "No production deployment, private backend or FormLogic host was exercised. The hosting guides describe the repository’s packaging scripts and deployment guides.",
@@ -1646,7 +1647,7 @@
         "title": "The .softn app format | SoftN Docs",
         "description": "The .softn format: a ZIP bundle with manifest.json, permission.json, UI, JavaScript or Python logic, XDB seeds and assets; config.execution and config.python.packages."
       },
-      "updatedAt": "2026-10-21",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-readme",
         "softn-bundle-format",
@@ -1738,6 +1739,18 @@
                   "description": "The Python packages the app imports. `torch` is the only one offered; any other name is refused. An `import torch` the manifest does not declare is refused too, with the line to add."
                 },
                 {
+                  "term": "config.server.url",
+                  "description": "The sync server the app’s records are replicated through: a softn-server host (`apps/softn-host-rust/PRIVATE_BACKEND.md`). An `https` or `wss` address, with `/sync` added to its path unless it ends there; an `http` or `ws` address works only for this computer (`localhost`, `127.0.0.1`). SoftN Web and the desktop runtime connect to it; a single-app page does not. It connects only when `permission.json` declares `sync` and the person allows it, and when `net` lists allowed_hosts, the server’s host must be one of them."
+                },
+                {
+                  "term": "config.server.token",
+                  "description": "The sync token the host gives the app’s browsers. Everyone with the bundle can read it, and on the host it opens sync and nothing else. The host’s operator token is never sent for sync, `auth_token` included: keep it out of the bundle and give it to the host as `SOFTN_AUTH_TOKEN`."
+                },
+                {
+                  "term": "config.server.collections",
+                  "description": "The collections server sync carries, as a list of names. Without it, every collection the app has or starts to use."
+                },
+                {
                   "term": "files.logic",
                   "description": "Lists the logic files: JavaScript (`.js` or `.logic`) or Python (`.py`), never both. The file name alone decides the language."
                 }
@@ -1827,7 +1840,7 @@
         "title": "The SoftN UI language | SoftN Docs",
         "description": "SoftN .ui syntax: components, expression props, what an expression may contain, event handlers and modifiers, two-way binding, class: and style: directives, conditionals, loops, and one page placed inside another."
       },
-      "updatedAt": "2026-10-21",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -1853,7 +1866,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "A page can be written the way an HTML page is written, and mix in SoftN’s components and syntax wherever it likes. Lower-case tags are HTML elements, `<div>`, `<span>`, `<a>`, `<table>`, `<form>` and the rest; capitalised tags are SoftN components, `<Button>`, `<Stack>`, `<DataTable>`. The file can be called `index.html` and its code `main.js`: a page and its logic are found by what names them, `manifest.json`’s `main`, an `<import from>` or a `<script src>`, not by their file names, so `.ui` and `.logic` keep working beside them. Studio makes a new project this way (`index.html`, `pages/*.html`, `main.js`); the Builder’s own new projects are still `.ui` and `.logic`, and it opens and saves either. An app written this way runs in the browser runtime, in a standalone deployment and as a page of your own site."
+              "text": "A page can be written the way an HTML page is written, and mix in SoftN’s components and syntax wherever it likes. Lower-case tags are HTML elements, `<div>`, `<span>`, `<a>`, `<table>`, `<form>` and the rest; capitalised tags are SoftN components, `<Button>`, `<Stack>`, `<DataGrid>`. The file can be called `index.html` and its code `main.js`: a page and its logic are found by what names them, `manifest.json`’s `main`, an `<import from>` or a `<script src>`, not by their file names, so `.ui` and `.logic` keep working beside them. Studio makes a new project this way (`index.html`, `pages/*.html`, `main.js`); the Builder’s own new projects are still `.ui` and `.logic`, and it opens and saves either. An app written this way runs in the browser runtime, in a standalone deployment and as a page of your own site."
             },
             {
               "type": "code",
@@ -1884,7 +1897,7 @@
               "type": "callout",
               "tone": "note",
               "title": "Where a page is not HTML",
-              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. A capitalised tag is a component’s, never HTML’s: `<Button>`, `<Input>` and `<Link>` are SoftN’s, so `<Input>` is not void, while `<button>` and `<BUTTON>` are HTML’s. A tag that ends `/>` ends there, `<div/>` too, where HTML would pass over the slash. A form inside a form is kept, a form written straight in a table holds its rows (so its fields are in it), and `</form>` closes what is still open inside the form; HTML would drop the inner form, leave the table’s form empty and leave the rest open. A `<b>` left open in a paragraph is opened again around the words of the next, but not around the space between tags: HTML would wrap every later paragraph in it. SoftN’s own syntax is read in any case, as HTML is: `#IF`, `#Else If`, `#EACH (item IN items)`, `#End`, `<IMPORT>`, `<LOGIC>`, `@CLICK`, `.PREVENT` and `:BIND`; and a component may be named in any case where no HTML element has its name, `<datatable>` for `DataTable`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic: its top-level variables are the page’s state and its functions what the page calls, so `export` before a declaration is read as the declaration, and `import { total } from \"./cart.js\"` places that file’s code, whose names every file sees. An import that renames, a default or namespace import and a package import are not read. The page shows the state, and a handler changes the state; code that names `document` is also given one, the page’s own HTML to query and change, as the next section describes."
+              "text": "Braces in text are expressions: write `\\{` or `{\"{\"}` for a brace to show. A line that begins `#if`, `#each`, `#else` or `#end` is SoftN’s. A capitalised tag is a component’s, never HTML’s: `<Button>`, `<Input>` and `<Table>` are SoftN’s, so `<Input>` is not void, while `<button>` and `<BUTTON>` are HTML’s. A tag that ends `/>` ends there, `<div/>` too, where HTML would pass over the slash. A form inside a form is kept, a form written straight in a table holds its rows (so its fields are in it), and `</form>` closes what is still open inside the form; HTML would drop the inner form, leave the table’s form empty and leave the rest open. A `<b>` left open in a paragraph is opened again around the words of the next, but not around the space between tags: HTML would wrap every later paragraph in it. SoftN’s own syntax is read in any case, as HTML is: `#IF`, `#Else If`, `#EACH (item IN items)`, `#End`, `<IMPORT>`, `<LOGIC>`, `@CLICK`, `.PREVENT` and `:BIND`; and a component may be named in any case where no HTML element has its name, `<datagrid>` for `DataGrid`. And code and stylesheets from other sites are not loaded: an app’s code runs in its own sandbox, so the page’s code comes from the app’s own files. A `.js` file is SoftN logic: its top-level variables are the page’s state and its functions what the page calls, so `export` before a declaration is read as the declaration, and `import { total } from \"./cart.js\"` places that file’s code, whose names every file sees. An import that renames, a default or namespace import and a package import are not read. The page shows the state, and a handler changes the state; code that names `document` is also given one, the page’s own HTML to query and change, as the next section describes."
             }
           ]
         },
@@ -1994,11 +2007,11 @@
                 ],
                 [
                   "Construction",
-                  "`new Date(…)`, `new Array(…)`, `new Map(…)`, `new Set(…)` and nothing else"
+                  "`new Date(…)`, `new Array(…)`, `new Map(…)`, `new Set(…)` and the `Intl` formatters (`new Intl.NumberFormat(…)`, `new Intl.DateTimeFormat(…)` and the rest), and nothing else"
                 ],
                 [
                   "Globals",
-                  "`Math`, `JSON`, `Number`, `String`, `Boolean`, `Array`, `Date`, `Map`, `Set`, `Object.keys`, `Object.values`, `Object.entries`, `parseInt`, `parseFloat`"
+                  "`Math`, `JSON`, `Intl`, `Number`, `String`, `Boolean`, `Array`, `Date`, `Map`, `Set`, `Object.keys`, `Object.values`, `Object.entries`, `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `encodeURIComponent`, `decodeURIComponent`, `NaN`, `Infinity`"
                 ]
               ],
               "caption": "The expression forms a template reads."
@@ -2279,7 +2292,7 @@
                 [
                   "Local records",
                   "The `db` global",
-                  "Not available; `softn.storage` for server storage"
+                  "Not available. `softn.storage` keeps records on the server, only in an app opened from the directory that publishes it"
                 ],
                 [
                   "Keyboard and pointer",
@@ -2433,7 +2446,7 @@
         "title": "State, events and app lifecycle | SoftN Docs",
         "description": "SoftN state and events: handlers and the plain-data event they receive, two-way binding, keyboard and pointer input in JavaScript and Python, and state versus saved records."
       },
-      "updatedAt": "2026-10-19",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-core-source",
         "softn-languages"
@@ -2489,7 +2502,7 @@
               "type": "code",
               "language": "javascript",
               "code": "softn.input.captureKeys([\"ArrowUp\", \" \", \"F1\"])",
-              "caption": "Keys the app captures from the page. The host still protects text fields, Ctrl combinations and the system modifier."
+              "caption": "Keys the app captures from the page. The host still protects text fields, Ctrl with a character key (Ctrl+F, Ctrl+C) and the system modifier; Ctrl with an arrow or another named key is captured."
             },
             {
               "type": "paragraph",
@@ -2938,7 +2951,7 @@
         "title": "Local app data with XDB | SoftN Docs",
         "description": "XDB in SoftN: local collections, the synchronous db bridge, bundle seeds, app-scoped storage, host-dependent sync, and what Python apps use instead of db."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -2961,7 +2974,7 @@
               "type": "callout",
               "tone": "note",
               "title": "Python apps",
-              "text": "`db` is a JavaScript global. Python logic has no `db`; it can use `softn.storage.*` for the app’s server storage, which needs the storage capability."
+              "text": "`db` is a JavaScript global. Python logic has no `db`, so it cannot read or write the app’s local records. It can use `softn.storage.*` (Server storage, below), which keeps records on the server and answers only in an app opened from the directory that publishes it."
             }
           ]
         },
@@ -3004,19 +3017,11 @@
                 },
                 {
                   "term": "db.hardDelete(collection, id)",
-                  "description": "Removes the record outright, without a tombstone."
+                  "description": "Removes the record outright, without a tombstone. There is no call that empties a collection or keeps only its newest records: query the records and remove each one."
                 },
                 {
-                  "term": "db.prune(collection, maxRecords)",
-                  "description": "Keeps the newest maxRecords records and returns how many were removed."
-                },
-                {
-                  "term": "db.clearCollection(collection)",
-                  "description": "Removes every record of the collection."
-                },
-                {
-                  "term": "db.startSync(room, options?) / db.stopSync(room?) / db.getSyncStatus(room?)",
-                  "description": "Optional peer synchronisation; see below. `options` reach the room from a `.ui` page's script; from `.logic`, `db.startSync` takes the room alone."
+                  "term": "db.startSync(room, options?) / db.stopSync(room?) / db.getSyncStatus(room?) / db.getSavedSyncRoom()",
+                  "description": "Optional peer synchronisation; see below. `options` reach the room from a `.ui` page's script; from `.logic`, `db.startSync` takes the room alone and returns nothing. `db.getSavedSyncRoom()` names the room the app last started and has not stopped, or is null."
                 }
               ]
             },
@@ -3063,7 +3068,7 @@
             {
               "type": "code",
               "language": "javascript",
-              "code": "await db.startSync('my-room-name')",
+              "code": "db.startSync('my-room-name')",
               "caption": "Start peer synchronisation. The host must support it and the app needs the sync capability."
             },
             {
@@ -3076,11 +3081,45 @@
             },
             {
               "type": "paragraph",
-              "text": "Peer sync runs while the app is on screen. Where a host keeps several apps open, as SoftN Web’s tabs do, an app’s rooms wait while another app is shown: nothing arrives from its peers and nothing is sent, and what the app writes meanwhile is exchanged when it is shown again. Closing the app leaves its rooms, and `db.getSavedSyncRoom()` still names the last one, so the app can start it again when it next opens. Sync through the server the manifest names (`config.server.url`) is live while the app is shown; behind another app it keeps its connection only while there is something of its own to send, and for half a minute after, so what it writes meanwhile still reaches the server and what others changed arrives when it is shown again."
+              "text": "Peer sync runs while the app is on screen. Where a host keeps several apps open, as SoftN Web’s tabs do, an app’s rooms wait while another app is shown: nothing arrives from its peers and nothing is sent, and what the app writes meanwhile is exchanged when it is shown again. Closing the app leaves its rooms, and `db.getSavedSyncRoom()` still names the last one, so the app can start it again when it next opens. Sync through the server the manifest names (`config.server.url`) is live while the app is shown; behind another app it keeps its connection only while there is something of its own to send, and for half a minute after, so what it writes meanwhile still reaches the server and what others changed arrives when it is shown again. The server, its token and the collections it carries are set in the manifest’s `config.server` (see the app format guide), and server sync, like peer sync, needs the `sync` declaration and the person’s Allow."
             },
             {
               "type": "paragraph",
               "text": "Local persistence, peer-to-peer sync and a private server database are not interchangeable. Choose the one that matches the app’s ownership, sharing and recovery needs."
+            }
+          ]
+        },
+        {
+          "id": "server-storage",
+          "title": "Server storage: softn.storage",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "`softn.storage` keeps an app’s records in a database of its own on the app directory that published it, shared by everyone who runs the app. It answers only in an app opened from that directory: from its listing in SoftN Web, or on its `/play/<slug>` page. Anywhere else (a Builder or Studio preview, a `.softn` file opened in SoftN Web, the desktop runtime, a single-app site) every call answers `{ error: \"This app has no server storage: it was not opened from a directory that publishes it.\" }`. The app also needs the `storage` capability."
+            },
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "softn.storage.insert('scores', { name: 'Avery', score: 120 }, function (r) {\n  if (r.error) message = r.error\n})\n\nsoftn.storage.query('scores', { orderBy: ['score', 'desc'], limit: 10 }, function (r) {\n  if (!r.error) top = r.records.map(function (rec) { return rec.data })\n})",
+              "caption": "Add a score, then read the ten highest. A query answers { records, total, limit, offset }, and each record is { id, data, createdAt, updatedAt, mine }."
+            },
+            {
+              "type": "paragraph",
+              "text": "Every call ends with a callback, which receives the result or `{ error }`: `insert(collection, data)`, `get(collection, id)`, `update(collection, id, data)`, `set(collection, id, data)`, `remove(collection, id)`, `query(collection, { where, orderBy, limit, offset })`, `count(collection, where)`, `collections()` and `clear(collection)`, and `kvGet(key)`, `kvSet(key, value)` and `kvRemove(key)` for plain keys. Python calls the same functions after `import softn`, the last three also as `kv_get`, `kv_set` and `kv_remove`."
+            },
+            {
+              "type": "paragraph",
+              "text": "Who may do what to a collection is its policy, declared in `permission.json` and fixed when the app is published: `\"storage\": { \"enabled\": true, \"collections\": { \"scores\": \"append-only\", \"*\": \"public\" } }`. `public` is the default: anyone running the app can read, change and remove every record. `append-only` lets anyone add and read, and only the publisher change or remove. `owner-write` lets anyone read, and a record is changed or removed only by whoever added it, or the publisher. `private` shows each visitor only the records they added. `publisher` needs the app’s edit key, which the app cannot reach from a visitor. `*` sets the policy for every collection not named, and the plain keys have no policy: they are always public."
+            },
+            {
+              "type": "links",
+              "items": [
+                {
+                  "label": "Per-app storage, in the directory guide",
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/apps/softn-api/README.md#per-app-storage",
+                  "description": "The route each call becomes, the policies and the visitor token that says who added a record."
+                }
+              ]
             }
           ]
         }
@@ -3786,7 +3825,7 @@
         "title": "Permissions and sandboxing | SoftN Docs",
         "description": "Understand SoftN permissions and sandboxing: permission.json, host grants, network allowlists, browser consent and private client-server boundaries."
       },
-      "updatedAt": "2026-10-12",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -3810,7 +3849,7 @@
               "items": [
                 {
                   "term": "net",
-                  "description": "Network: may call the internet, limited to allowed_hosts; the runtime asks first. This computer and its local network (localhost, 192.168.…, a .local name) are reached only when allowed_hosts names them."
+                  "description": "Network: may call the internet, limited to allowed_hosts; the runtime asks first. This computer and its local network (localhost, 192.168.…, a .local name) are reached only when allowed_hosts names them. A host is named exactly as a URL writes it, in lower case, with no port and no wildcard: `example.com` does not cover `api.example.com`. Only `https` addresses are allowed unless the entry also says `\"allow_http\": true`, which a machine on the local network reached at an `http://` address needs as well as its name in allowed_hosts."
                 },
                 {
                   "term": "camera",
@@ -3838,7 +3877,7 @@
                 },
                 {
                   "term": "sync",
-                  "description": "Replicates the app’s database to the visitor’s other devices, by peer sync (`db.startSync`) or through the sync server the manifest names (`config.server.url`). Neither starts without this declaration and the person’s Allow. `\"roomCollections\": [\"scores\"]` limits what every peer-to-peer room of the app carries, both ways, to the collections named, and the consent bar says so; without it a room carries every collection whose name does not start with `_`. A script’s `collections` option may narrow the list, never widen it."
+                  "description": "Replicates the app’s database to the visitor’s other devices, by peer sync (`db.startSync`) or through the sync server the manifest names (`config.server.url`). Neither starts without this declaration and the person’s Allow, and when `net` lists allowed_hosts, the sync server’s host must be one of them. `\"roomCollections\": [\"scores\"]` limits what every peer-to-peer room of the app carries, both ways, to the collections named, and the consent bar says so; without it a room carries every collection whose name does not start with `_`. A script’s `collections` option may narrow the list, never widen it."
                 },
                 {
                   "term": "storage",
@@ -3846,7 +3885,7 @@
                 },
                 {
                   "term": "accel",
-                  "description": "Host acceleration: runs the numeric code it generates on the browser’s own engine, bound to its own data."
+                  "description": "Host acceleration: runs the numeric code it generates on the browser’s own engine, bound to its own data. Only logic that runs in a worker (`config.execution: \"worker\"`) gets it: on the page’s thread `accel.*` throws as if it were denied. The grant is read as the logic starts; an Allow given after the app opened restarts its logic, which has the grant from then."
                 }
               ]
             }
@@ -4143,7 +4182,7 @@
         "title": "Python logic | SoftN Docs",
         "description": "Write SoftN app logic in Python: .py files, state and global, handlers, modules, import softn, what Python lacks, reserved names and the refusals that explain them."
       },
-      "updatedAt": "2026-10-18",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-languages",
         "softn-core-source",
@@ -4247,7 +4286,7 @@
               "type": "list",
               "ordered": false,
               "items": [
-                "`db.*`, `localStorage` and `navigator.clipboard`: they are JavaScript globals. Use `softn.storage.*` for the app’s server storage.",
+                "`db.*`, `localStorage` and `navigator.clipboard`: they are JavaScript globals, so Python logic cannot read or write the app’s local records. `softn.storage.*` keeps records on the server, only in an app opened from the directory that publishes it (XDB data, Server storage).",
                 "`$:` computed declarations, and any template expression that must be evaluated inside the app’s scope. Call a function instead.",
                 "Worker execution. A Python app runs on the page’s main thread.",
                 "Server logic. The PHP and Rust hosts run server `.logic` as JavaScript.",
@@ -4734,7 +4773,7 @@
               "ordered": false,
               "items": [
                 "Static: `softn-app-static-v<version>.zip`. HTML, the engine and your bundle, on any HTTPS host.",
-                "Static with a private backend: `softn-app-static-with-backend-linux-x64-v<version>.zip` adds a `backend/` folder with softn-runner, which answers each request without Node, a bundled Linux x64 Node for operator request hooks and the WebSocket bridge, SQLite and the ZIPP engine, behind Apache and PHP and enabled by the operator.",
+                "Static with a private backend: `softn-app-static-with-backend-linux-x64-v<version>.zip` adds a `backend/` folder with softn-runner, which answers each request without Node, a bundled Linux x64 Node for operator request hooks and the WebSocket bridge, SQLite and the ZIPP engine, behind Apache and PHP and enabled by the operator. The release archive carries softn-runner; one you build with `npm run package:single -- --with-backend` carries it only when given `--runner-dir apps/softn-runner/dist` (where `node apps/softn-runner/build.mjs --target x86_64-unknown-linux-musl` writes the runner and its licences), and without it every request runs on the bundled Node.",
                 "Served privately: `softn-app-private-v<version>.zip` keeps the `.softn` in a private directory and serves the page and each entry from PHP, so the archive is never on a URL. `softn-app-private-with-backend-linux-x64-v<version>.zip` is that variant with the backend."
               ]
             },
@@ -4800,7 +4839,7 @@
         "title": "Private backends and server-side logic | SoftN Docs",
         "description": "SoftN private backends: server-side JavaScript .logic and SQLite on the Rust and PHP hosts, kept apart from client bundles, private scripts, credentials and databases."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-readme",
         "softn-languages",
@@ -4883,7 +4922,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Client logic calls such an operation with `softn.backend.call(action, input, callback)`, in JavaScript or Python. The operation names are yours, and what answers the call depends on the host: its server logic, a single-app host module or FormLogic."
+              "text": "On the Rust and PHP hosts, client logic reaches such an operation through one of the manifest’s `/api/` routes, with `softn.net.fetch` and the site’s own absolute URL (`https://your.site/api/tasks`), so its `permission.json` needs `net` and, when it lists allowed_hosts, the site’s host. `softn.backend.call(action, input, callback)`, in JavaScript or Python, reaches a backend that the page supplies to the app itself: a single-app host module or FormLogic, where the action names are yours. Anywhere else, the Rust and PHP hosts included, it answers `{ error: \"This app has no connected backend.\" }`."
             }
           ]
         },
@@ -5374,7 +5413,7 @@
         "title": "Troubleshooting SoftN apps | SoftN Docs",
         "description": "Troubleshoot SoftN apps: loading, state updates, Python refusals and handlers, records, permissions, audio, offline use, responsive layouts and backend connections."
       },
-      "updatedAt": "2026-10-19",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -5463,7 +5502,7 @@
                 ],
                 [
                   "NameError for db or localStorage",
-                  "Those are JavaScript globals; use `softn.storage.*` from Python."
+                  "Those are JavaScript globals. From Python, `softn.storage.*` keeps records on the server, and only in an app opened from the directory that publishes it."
                 ]
               ],
               "caption": "The composer’s messages name the file they are about."
