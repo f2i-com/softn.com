@@ -8,6 +8,14 @@ Options -Indexes
   # without CORP headers. An app must behave the same here as on the site.
   Header always set Cross-Origin-Opener-Policy "same-origin"
   Header always set Cross-Origin-Embedder-Policy "credentialless"
+  # Only this site may frame the app: the page shows the permission bar and
+  # its Allow button, and another site that framed it could cover the bar
+  # with a look-alike and take the visitor's click as a grant. To embed the
+  # app on another site, list that origin after 'self' (and remove
+  # X-Frame-Options).
+  Header always set Content-Security-Policy "frame-ancestors 'self'"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
   <FilesMatch "\.(softn|json)$">
     Header set Cache-Control "no-store"
   </FilesMatch>

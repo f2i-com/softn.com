@@ -28,4 +28,18 @@ describe('hosting headers', () => {
     expect(htaccess).toMatch(/Header always set X-Content-Type-Options "nosniff"/);
     expect(htaccess).toMatch(/<FilesMatch "\\\.\(softn\|json\)\$">\n\s*Header set Cache-Control "no-store"/);
   });
+
+  // The page shows the permission bar and its Allow button: another site that framed it could
+  // cover the bar with a look-alike and take the visitor's click as a grant.
+  it('lets no other site frame the app', () => {
+    const htaccess = read('../public/.htaccess');
+    expect(htaccess).toMatch(/Header always set Content-Security-Policy "frame-ancestors 'self'"/);
+    expect(htaccess).toMatch(/Header always set X-Frame-Options "SAMEORIGIN"/);
+    expect(htaccess).toMatch(/Header always set Referrer-Policy "strict-origin-when-cross-origin"/);
+  });
+
+  // The archive with a backend ships apps/softn-host-php/htaccess in this file's place.
+  it('sends the same isolation headers with a backend', () => {
+    expect(isolationHeaders(read('../../softn-host-php/htaccess'))).toEqual(isolationHeaders(read('../public/.htaccess')));
+  });
 });

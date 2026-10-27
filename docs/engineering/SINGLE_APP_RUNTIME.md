@@ -42,6 +42,14 @@ that provider runs slower self-hosted than on the site. Cross-origin
 `<iframe>` embeds inside an app need the framed page to send a COEP of its
 own, exactly as on the site.
 
+It also lets no other site frame the app (`Content-Security-Policy:
+frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`) and sends
+`Referrer-Policy: strict-origin-when-cross-origin`. The page shows the
+permission bar and its Allow button, and a site that framed it could cover
+the bar with a look-alike and take a visitor's click as a grant. To embed
+the app on another site of your own, list that origin after `'self'` and
+remove `X-Frame-Options`. On nginx, add these three headers too.
+
 ### Inside softn.com
 
 The site build places this same shell under `/play/`, and the directory API serves `/play/<slug>` for every published app: the shell's `index.html` with the app's configuration written into the document as `<script type="application/json" id="softn-runtime-config">`. When the entry finds that element it reads the configuration from it instead of fetching `runtime.config.json`, resolves locations against the page's own address, and lets the browser cache answer for the bundle — the directory names a version-addressed URL whose bytes never change, with the digest pinned — where a standalone deployment's bundle is always fetched `no-store`, since an operator replaces `app.softn` in place. Those pages also wear the slim bar the web runtime draws over every app — the way back to the directory and to the app's page, the menu, fullscreen, and a fold-away that is remembered per browser — which the shell shows only when the configuration carries `directory` and an `id`; a standalone deployment stays unbranded. Everything else is the same: the config keys, the limits, the permission bar, the grant scoped to the page and the bundle digest, the local records keyed by the page path and `id`. An app the site owner has marked trusted in its `app.json` is served with `"permissionMode": "preapproved"`, exactly as below; see `apps/softn-api/README.md`.

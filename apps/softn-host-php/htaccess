@@ -17,6 +17,13 @@ AddType text/javascript .mjs
 </IfModule>
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
+    # The cross-origin isolation the static package and softn.com send
+    # (apps/softn-single/public/.htaccess): this file takes that one's place
+    # in an archive with a backend, and without it the page has no
+    # SharedArrayBuffer, so an app on the CPU language-model provider ran on
+    # one core here.
+    Header always set Cross-Origin-Opener-Policy "same-origin"
+    Header always set Cross-Origin-Embedder-Policy "credentialless"
     # Only this site may frame the app, so another page cannot overlay it and
     # steer a signed-in visitor's clicks. To embed the app on another site,
     # list that origin after 'self' (and remove X-Frame-Options).
