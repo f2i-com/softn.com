@@ -2198,6 +2198,23 @@ export function SoftNRenderer({
       // and the device.
       <AppScopeProvider value={appScope}>
       <CapabilityProvider value={capabilityState}>
+      {/* The host's notices sit above the app, outside what its CSS reaches:
+          inside it, `[data-softn-notice] { display: none }` hid the warning
+          that the app's data could not be saved. The app's page fills what
+          they leave. */}
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {persistenceNotice && (
+        <PersistenceNotice
+          message={persistenceNotice}
+          onDismiss={() => setPersistenceNotice(null)}
+        />
+      )}
+      {appAlert !== null && (
+        <PersistenceNotice kind="alert" message={appAlert} onDismiss={() => setAppAlert(null)} />
+      )}
+      {scriptNotice !== null && (
+        <PersistenceNotice message={scriptNotice} onDismiss={() => setScriptNotice(null)} />
+      )}
       {/* What the app's CSS is kept inside (scope-css.ts). It draws no box of
           its own, and holds nothing but the page: the page's element is the
           app's `html` and `body`, and has nothing beside it to reach. */}
@@ -2212,23 +2229,11 @@ export function SoftNRenderer({
         // page without the block, rather than not at all.)
         style={
           styleContent && !scopedStyle && styleScoper === 'loading'
-            ? { height: '100%', minHeight: 0, ...rootStyle, visibility: 'hidden' }
-            : { height: '100%', minHeight: 0, ...rootStyle }
+            ? { flex: '1 1 0%', minHeight: 0, ...rootStyle, visibility: 'hidden' }
+            : { flex: '1 1 0%', minHeight: 0, ...rootStyle }
         }
       >
         {scopedStyle && <style dangerouslySetInnerHTML={{ __html: scopedStyle.css }} />}
-        {persistenceNotice && (
-          <PersistenceNotice
-            message={persistenceNotice}
-            onDismiss={() => setPersistenceNotice(null)}
-          />
-        )}
-        {appAlert !== null && (
-          <PersistenceNotice kind="alert" message={appAlert} onDismiss={() => setAppAlert(null)} />
-        )}
-        {scriptNotice !== null && (
-          <PersistenceNotice message={scriptNotice} onDismiss={() => setScriptNotice(null)} />
-        )}
         <SoftNErrorBoundary
           fallback={(error, reset) =>
             errorComponent ? (
@@ -2245,6 +2250,7 @@ export function SoftNRenderer({
         >
           {renderDocument(state.document, context, registry)}
         </SoftNErrorBoundary>
+      </div>
       </div>
       </div>
       </CapabilityProvider>

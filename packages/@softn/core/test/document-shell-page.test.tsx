@@ -541,6 +541,23 @@ describe('a page whose code is written for a browser', () => {
     expect(container.querySelector('[data-softn-notice]')!.textContent).toMatch(/This page's script stopped: .*SomethingNoBrowserHas/);
   });
 
+  // The host's notice was drawn inside the app's element, where the app's own CSS reached it:
+  // `[data-softn-notice] { display: none }` hid the warning that its data could not be saved.
+  it("draws the host's notice outside what the app's CSS reaches", async () => {
+    await mount(
+      `<style>[data-softn-notice] { display: none }</style><h1 id="title">Still here</h1>
+<script>
+  document.getElementById('title').textContent = 'Still here';
+  new SomethingNoBrowserHas();
+</script>`,
+      () => container.querySelector('[data-softn-notice]') !== null
+    );
+    const notice = container.querySelector('[data-softn-notice]')!;
+    expect(notice.closest('[data-softn-app]')).toBeNull();
+    // The page still fills what the notice leaves.
+    expect(container.querySelector('[data-softn-page]')!.closest('[data-softn-app]')).not.toBeNull();
+  });
+
   it('fetches its own files from where its markup finds them, with no network', async () => {
     const real = globalThis.fetch;
     const asked: string[] = [];
