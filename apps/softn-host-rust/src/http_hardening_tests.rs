@@ -1005,6 +1005,43 @@ async fn an_open_sync_socket_keeps_its_place() {
     assert_eq!(&answer, b"HTTP/1.1 200");
 }
 
+/// Open sync sockets keep their connections' places, and the per-app limit
+/// was more than the process's places: sockets alone could take every one,
+/// and no HTTP request was answered. They hold at most `sync_sockets`.
+#[tokio::test]
+async fn sync_sockets_leave_places_for_requests() {
+    let limits = ServeLimits { connections: 3, sync_sockets: 1, ..ServeLimits::with_header_timeout(std::time::Duration::from_secs(30)) };
+    let (_stop, stopped) = tokio::sync::oneshot::channel();
+    let (addr, _server) = serve_with(legacy_app(serde_json::json!({})), limits, stopped).await;
+    let host = addr.to_string();
+    let origin = format!("http://{host}");
+    let mut first = tokio::net::TcpStream::connect(addr).await.unwrap();
+    first.write_all(upgrade(&host, "", &origin).as_bytes()).await.unwrap();
+    let mut buf = [0u8; 12];
+    first.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf[9..12], b"101");
+    // A second socket is refused, while a request is still answered.
+    let (status, head, _) = send(addr, upgrade(&host, "", &origin)).await;
+    assert_eq!(status, 503);
+    assert!(head.contains("retry-after:"), "{head}");
+    let get = format!("GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    assert_eq!(send(addr, get).await.0, 200);
+    // The place comes back when the socket goes.
+    drop(first);
+    let mut freed = false;
+    for _ in 0..100 {
+        let mut again = tokio::net::TcpStream::connect(addr).await.unwrap();
+        again.write_all(upgrade(&host, "", &origin).as_bytes()).await.unwrap();
+        let mut buf = [0u8; 12];
+        if again.read_exact(&mut buf).await.is_ok() && &buf[9..12] == b"101" {
+            freed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(freed);
+}
+
 /// Shutdown gives the requests in flight their time and then returns.
 #[tokio::test]
 async fn shutdown_does_not_wait_for_ever_on_a_connection_that_will_not_finish() {

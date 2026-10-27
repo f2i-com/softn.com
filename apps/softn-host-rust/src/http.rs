@@ -220,6 +220,12 @@ pub struct ServeLimits {
     pub write_stall: Duration,
     /// Connections served at once. The rest wait in the listen queue.
     pub connections: usize,
+    /// How many of those places open sync sockets may hold, every app's
+    /// together. A socket keeps its connection's place for as long as it is
+    /// open, and the per-app limit (1,024 by default) was more than the
+    /// process's 768 places: 48 addresses of 16 sockets each, or 768 open
+    /// tabs, left no place for an HTTP request. Past it an upgrade is 503.
+    pub sync_sockets: usize,
     /// How long shutdown waits for the requests in flight.
     pub drain: Duration,
 }
@@ -232,6 +238,7 @@ impl ServeLimits {
             // Under the 1024 descriptors a process is given by default, with
             // room for the databases and files the host itself holds open.
             connections: 768,
+            sync_sockets: 384,
             // A handler in flight may take MAX_CALL_WAIT plus its margin.
             drain: Duration::from_secs(40),
         }
@@ -360,6 +367,7 @@ where
     let (signal_tx, signal_rx) = tokio::sync::watch::channel(());
     let (close_tx, close_rx) = tokio::sync::watch::channel(());
     let places = Arc::new(tokio::sync::Semaphore::new(limits.connections.max(1)));
+    let sockets = Arc::new(tokio::sync::Semaphore::new(limits.sync_sockets.min(limits.connections).max(1)));
     tokio::pin!(shutdown);
     loop {
         // A place before the connection is taken: at the limit the rest wait
@@ -389,6 +397,7 @@ where
         let router = router.clone();
         let mut signal_rx = signal_rx.clone();
         let close_rx = close_rx.clone();
+        let sockets = sockets.clone();
         tokio::spawn(async move {
             // Held by the connection, and by a sync socket it is upgraded to
             // (`upgrade_response`): hyper's connection ends at the upgrade,
@@ -397,7 +406,7 @@ where
             let place = Arc::new(place);
             let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
                 request.extensions_mut().insert(ConnectInfo(peer));
-                request.extensions_mut().insert(ConnectionPlace(place.clone()));
+                request.extensions_mut().insert(ConnectionPlace { _place: place.clone(), sockets: sockets.clone() });
                 tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))
             });
             // HTTP/1 itself, not hyper-util's auto builder: that one first
@@ -1310,9 +1319,13 @@ async fn issue_ticket(
 }
 
 /// A connection's place under the server's connections limit
-/// (`serve_router_with`), handed to each of its requests.
+/// (`serve_router_with`), handed to each of its requests, with the places
+/// sync sockets may hold (`ServeLimits::sync_sockets`).
 #[derive(Clone)]
-pub(crate) struct ConnectionPlace(#[allow(dead_code)] Arc<tokio::sync::OwnedSemaphorePermit>);
+pub(crate) struct ConnectionPlace {
+    _place: Arc<tokio::sync::OwnedSemaphorePermit>,
+    sockets: Arc<tokio::sync::Semaphore>,
+}
 
 /// `GET /sync`: authorize the handshake, claim a connection slot, upgrade.
 /// The upgraded socket keeps the connection's place until it closes.
@@ -1336,6 +1349,18 @@ fn upgrade_response(
     // Counted against the visitor the rate limits name: the socket peer, or
     // the client a trusted proxy forwards for, an IPv6 /64 counting as one.
     let client_ip = extract_client_ip(headers, peer.ip(), proxy);
+    // A place among those sync sockets may hold, every app's together, kept
+    // with the connection's own for as long as the socket is open.
+    let socket_place = match place.as_ref().map(|p| p.sockets.clone().try_acquire_owned()) {
+        Some(Err(_)) => {
+            tracing::warn!("Sync connection refused: the server's sync sockets are at their limit");
+            let mut response = json_error(StatusCode::SERVICE_UNAVAILABLE, "Too many sync connections; retry shortly.", "server_busy");
+            response.headers_mut().insert(axum::http::header::RETRY_AFTER, 5u64.into());
+            return response;
+        }
+        Some(Ok(permit)) => Some(permit),
+        None => None,
+    };
     let slot = match sync.try_open_connection(client_ip) {
         Ok(slot) => slot,
         Err(crate::sync::ConnectionRefused::Full) => {
@@ -1361,6 +1386,7 @@ fn upgrade_response(
         .max_frame_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| async move {
             let _place = place;
+            let _socket_place = socket_place;
             ws::handle_ws(socket, sync, shutdown_rx, cid, conn_tx, slot).await
         })
         .into_response()

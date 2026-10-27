@@ -164,7 +164,9 @@ Sync is on unless the manifest turns it off, so who may open `/sync` matters:
   and never retries sooner than `Retry-After`. A foreign `Origin` is refused
   here too.
 - Open sockets are capped per app at `config.server.maxSyncConnections`
-  (default 1024); past it the upgrade is 503. A socket's messages and frames
+  (default 1024), and every app's together at 384, half the 768 connections
+  the process serves at once, so open sockets always leave room for HTTP
+  requests; past either the upgrade is 503. A socket's messages and frames
   are capped at 4 MiB.
 - An API route is refused (403 `origin_not_allowed`) when the request carries
   an `Origin` that is neither the page's own nor listed, before the handler
@@ -529,7 +531,9 @@ without the host reading, or waiting for, a byte of the body. `/sync/ticket`
 never reads one.
 
 Sync sockets: at most `maxSyncConnections` per app (1024 by default; 503
-`server_busy` past it), and at most `maxSyncConnectionsPerVisitor` of those
+`server_busy` past it), at most 384 for every app in the process together
+(503 `server_busy` past it; each open socket keeps one of the process's 768
+connection places), and at most `maxSyncConnectionsPerVisitor` of those
 from one visitor (16 by default, never more than `maxSyncConnections`; 429
 `too_many_connections` past it). A visitor is what the rate limits count: the
 socket's peer, or the client a `--trusted-proxy` forwards for, with an IPv6
