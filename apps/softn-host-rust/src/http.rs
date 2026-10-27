@@ -400,10 +400,16 @@ where
                 request.extensions_mut().insert(ConnectionPlace(place.clone()));
                 tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))
             });
-            let mut builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
-            builder.http1().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(limits.header_timeout);
+            // HTTP/1 itself, not hyper-util's auto builder: that one first
+            // reads which version the client speaks, with no timer, so a
+            // connection that sent nothing (or only `P`, the start of
+            // HTTP/2's preface) held its place for ever, and 768 of them
+            // took the host. HTTP/1's header timer starts before the first
+            // byte. The host is built without HTTP/2.
+            let mut builder = hyper::server::conn::http1::Builder::new();
+            builder.timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(limits.header_timeout);
             let stream = StallGuard::new(stream, limits.write_stall);
-            let connection = builder.serve_connection_with_upgrades(hyper_util::rt::TokioIo::new(stream), service);
+            let connection = builder.serve_connection(hyper_util::rt::TokioIo::new(stream), service).with_upgrades();
             tokio::pin!(connection);
             tokio::select! {
                 _ = connection.as_mut() => {}

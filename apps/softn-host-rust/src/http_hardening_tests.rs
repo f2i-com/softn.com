@@ -304,6 +304,33 @@ async fn a_client_that_never_finishes_its_headers_is_disconnected() {
     assert!(closed.is_ok(), "the connection was still open five seconds later");
 }
 
+/// A client that connects and sends nothing, or only `P` (which could begin
+/// HTTP/2's preface), used to keep its connection, and its place among the
+/// host's connections, for ever: hyper-util's auto builder read the version
+/// with no timer, before HTTP/1's header timeout began.
+#[tokio::test]
+async fn a_client_that_sends_nothing_is_disconnected() {
+    let ctx = legacy_app(serde_json::json!({}));
+    let (conn_tx, conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    std::mem::forget(conn_rx);
+    let router = build_single_tenant_router(ctx, &test_options(false), conn_tx);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let limits = ServeLimits { connections: 2, ..ServeLimits::with_header_timeout(std::time::Duration::from_millis(300)) };
+    tokio::spawn(serve_router_with(listener, router, limits, std::future::pending()));
+    let mut silent = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut preface = tokio::net::TcpStream::connect(addr).await.unwrap();
+    preface.write_all(b"P").await.unwrap();
+    for stream in [&mut silent, &mut preface] {
+        let mut buf = Vec::new();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_to_end(&mut buf)).await;
+        assert!(closed.is_ok(), "the connection was still open five seconds later");
+    }
+    // Both places are free again.
+    let get = "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_string();
+    assert_eq!(send(addr, get).await.0, 200);
+}
+
 /// A trusted proxy answers for the names it forwards; `--allowed-hosts` and
 /// the hosts of `allowedOrigins` name the host directly.
 #[tokio::test]
