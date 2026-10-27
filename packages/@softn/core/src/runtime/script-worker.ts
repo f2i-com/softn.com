@@ -78,6 +78,11 @@ function failureOf(error: unknown): string {
  * nothing can be read is it sent as the entry's error.
  */
 function afterFailedEntry(failure: string | undefined): Record<string, unknown> {
+  // An engine the failure stopped (its budget, most often) has nothing to
+  // read back and will answer nothing again: the page is told, and stops the
+  // worker as it stops one whose script hung. It went on sending every call,
+  // each failing, and the app sat frozen with no word of why.
+  if (failure !== undefined && wasmAdapter?.terminated) return { failure, stopped: true };
   try {
     const entry = afterEntry();
     return failure === undefined ? entry : { ...entry, failure };

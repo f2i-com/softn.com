@@ -708,7 +708,12 @@ export class ZippWasmAdapter {
 
   /** Read many globals in one WASM boundary crossing. */
   getGlobalsBatch(indices: number[]): unknown[] {
-    return this.wasm.getGlobalsBatch(indices) as unknown[];
+    try {
+      return this.wasm.getGlobalsBatch(indices) as unknown[];
+    } catch (e) {
+      this.noteFailure(e);
+      throw e;
+    }
   }
 
   /**
@@ -726,7 +731,12 @@ export class ZippWasmAdapter {
       keptValues.push(values[i]);
     }
     if (keptIndices.length === 0) return;
-    this.wasm.setGlobalsBatch(keptIndices, keptValues);
+    try {
+      this.wasm.setGlobalsBatch(keptIndices, keptValues);
+    } catch (e) {
+      this.noteFailure(e);
+      throw e;
+    }
   }
 
   /**
@@ -812,15 +822,32 @@ export class ZippWasmAdapter {
     try {
       return this.wasm.callFunction(name, sanitized ? args : sanitizeArgs(args));
     } catch (e) {
-      // A call that blew its budget takes the engine with it, and every call
-      // after that answers "engine is disposed". Remember it so the runtime
-      // stops driving a corpse instead of logging the same line thirty times
-      // a second.
-      if (e instanceof Error && /engine is disposed/i.test(e.message)) this._terminated = true;
+      this.noteFailure(e);
       throw e;
     } finally {
       this.flushOutput();
     }
+  }
+
+  /**
+   * Remember a failure that took the engine with it, so the runtime stops
+   * driving a corpse instead of logging the same line thirty times a second.
+   * A call that blows its budget fails as `resource`, and every call after it
+   * answers "engine is disposed". The engine throws strings, not Errors: the
+   * check was `e instanceof Error`, which never matched, so `terminated` stayed
+   * false after a runaway loop and every guard on it did nothing. Read only
+   * while handling a failure, as `lastErrorKind` is only meaningful then
+   * (PythonLogicAdapter.translate does the same).
+   */
+  private noteFailure(e: unknown): void {
+    let kind = '';
+    try {
+      kind = String(this.wasm.lastErrorKind() ?? '');
+    } catch {
+      // An engine that cannot say has already gone.
+    }
+    const raw = e instanceof Error ? e.message : String(e);
+    if (kind === 'resource' || /engine is disposed/i.test(raw)) this._terminated = true;
   }
 
   /**
@@ -833,6 +860,9 @@ export class ZippWasmAdapter {
     try {
       this.renewBudget();
       return this.wasm.evalInContext(expression);
+    } catch (e) {
+      this.noteFailure(e);
+      throw e;
     } finally {
       this.flushOutput();
     }
@@ -867,6 +897,9 @@ export class ZippWasmAdapter {
     this.renewBudget();
     try {
       return this.wasm.dispatchEvent(eventType, eventObj);
+    } catch (e) {
+      this.noteFailure(e);
+      throw e;
     } finally {
       this.flushOutput();
     }
@@ -908,13 +941,18 @@ export class ZippWasmAdapter {
    * re-entry, as `{ id, kind, args }`.
    */
   drainPendingHostCalls(): Array<{ id: number; kind: string; args: string[] }> {
-    return (
-      (this.wasm.drainPendingHostCalls() as Array<{
-        id: number;
-        kind: string;
-        args: string[];
-      }>) || []
-    );
+    try {
+      return (
+        (this.wasm.drainPendingHostCalls() as Array<{
+          id: number;
+          kind: string;
+          args: string[];
+        }>) || []
+      );
+    } catch (e) {
+      this.noteFailure(e);
+      throw e;
+    }
   }
 
   /** Invoke the callback the script passed to `host.call` for `callId`. */
@@ -922,6 +960,9 @@ export class ZippWasmAdapter {
     try {
       this.renewBudget();
       this.wasm.resolveHostCallback(callId, result);
+    } catch (e) {
+      this.noteFailure(e);
+      throw e;
     } finally {
       this.flushOutput();
     }

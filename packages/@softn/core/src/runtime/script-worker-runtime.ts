@@ -751,6 +751,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.pending.delete(msg.id);
     if (msg.ok) pending.resolve(msg.result);
     else pending.reject(new Error(msg.error || 'worker_rpc_failed'));
+    // The entry stopped the worker's engine (script-worker.ts afterFailedEntry):
+    // said by the caller as any failure is, then the worker goes as one whose
+    // script hung does, and the host shows the app as failed.
+    const result = msg.ok ? (msg.result as { stopped?: unknown } | null) : null;
+    if (result && typeof result === 'object' && result.stopped === true) {
+      queueMicrotask(() => this.teardown('worker_engine_stopped', true));
+    }
   }
 
   /**

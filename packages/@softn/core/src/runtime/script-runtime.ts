@@ -469,6 +469,13 @@ export class SoftNScriptRuntime {
   /** Logged once: the engine is dead and calls are being dropped. */
   private terminationLogged = false;
 
+  /** Say, once, that the engine has stopped and `what` and what follows are ignored. */
+  private reportStopped(what: string): void {
+    if (this.terminationLogged) return;
+    this.terminationLogged = true;
+    console.error(`[SoftN] The script engine has stopped (a call exceeded its budget or failed to compile); ignoring ${what} and later calls until the app is reloaded.`);
+  }
+
   /** Stop and clean up if this runtime was disposed during an await. */
   private abandonIfDisposed(): boolean {
     if (!this.disposed) return false;
@@ -1016,10 +1023,7 @@ export class SoftNScriptRuntime {
     // notices.
     if (this.disposed) return undefined;
     if (this.vmEngine?.terminated) {
-      if (!this.terminationLogged) {
-        this.terminationLogged = true;
-        console.error(`[SoftN] The script engine has stopped (a call exceeded its budget or failed to compile); ignoring ${name} and later calls until the app is reloaded.`);
-      }
+      this.reportStopped(name);
       return undefined;
     }
     // Guard against unbounded queue growth from rapid async events.
@@ -1791,7 +1795,9 @@ export class SoftNScriptRuntime {
    * listeners, then what they changed back out to the page.
    */
   private dispatchWindowEvent(eventType: string, eventObj: Record<string, unknown>, isThrottled: boolean): void {
-    if (!this.vmEngine) return;
+    // An engine a runaway listener stopped takes no more: each event was two
+    // more errors, one of them uncaught out of the browser's own listener.
+    if (!this.vmEngine || this.vmEngine.terminated) return;
 
     // Sync React state → VM before dispatch
     this.syncReactStateToVM();
@@ -1819,24 +1825,39 @@ export class SoftNScriptRuntime {
     // again straight after a key was answered from before the key.
     this.syncCallCache.clear();
 
-    // Sync VM state → React after dispatch
-    this.syncVMStateToReact();
-    if (!isThrottled) {
-      this.windowBridge.fromVM();
-      // Discover new __ window properties set by the handler.
-      // Deferred for throttled events since they rarely add new sync keys.
-      this.windowBridge.discoverSyncKeys();
+    // A listener that stopped the engine leaves nothing to read back.
+    if (this.vmEngine.terminated) {
+      this.reportStopped(`a ${eventType} listener`);
+      return;
     }
+    try {
+      // Sync VM state → React after dispatch
+      this.syncVMStateToReact();
+      if (!isThrottled) {
+        this.windowBridge.fromVM();
+        // Discover new __ window properties set by the handler.
+        // Deferred for throttled events since they rarely add new sync keys.
+        this.windowBridge.discoverSyncKeys();
+      }
 
-    // A handler that called `softn.*` queued a host call the engine is
-    // holding until someone drains it. `callFunction` drains after every
-    // call and the worker runtime drains after every dispatch, but this
-    // path drained nothing, so a `softn.audio.play` from a keydown
-    // handler sat in the queue until the next function call happened to
-    // release it. Not awaited: the handler has returned and the browser
-    // event is over; the calls resolve into the VM as they complete.
-    const pending = this.vmEngine.drainPendingHostCalls();
-    if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
+      // A handler that called `softn.*` queued a host call the engine is
+      // holding until someone drains it. `callFunction` drains after every
+      // call and the worker runtime drains after every dispatch, but this
+      // path drained nothing, so a `softn.audio.play` from a keydown
+      // handler sat in the queue until the next function call happened to
+      // release it. Not awaited: the handler has returned and the browser
+      // event is over; the calls resolve into the VM as they complete.
+      const pending = this.vmEngine.drainPendingHostCalls();
+      if (pending.length > 0) {
+        this.processPendingHostCallsUnlocked(pending).catch((error) =>
+          console.error(`[SoftN] Error answering what a ${eventType} listener asked of the host:`, error)
+        );
+      }
+    } catch (error) {
+      // Out of the browser's own listener, this was an uncaught error that
+      // named no part of the app.
+      console.error(`[SoftN] Error after a ${eventType} listener the logic put on the window:`, error);
+    }
   }
 
   /**
@@ -2000,13 +2021,18 @@ export class SoftNScriptRuntime {
       // Check for newly queued host calls (callback may have queued more)
       // Need the lock briefly to drain
       await this.vmCallLock;
-      if (!this.vmEngine) return;
+      // A callback that stopped the engine leaves nothing queued to take.
+      if (!this.vmEngine || this.vmEngine.terminated) return;
       let release2: (() => void) | undefined;
       this.vmCallLock = new Promise<void>((r) => {
         release2 = r;
       });
       try {
         pending = this.timers.take(this.vmEngine.drainPendingHostCalls());
+      } catch (err) {
+        // Thrown out of here it was an unhandled rejection that named nothing.
+        console.error('[SoftN] Error taking the host calls the script queued:', err);
+        pending = [];
       } finally {
         release2!();
       }
