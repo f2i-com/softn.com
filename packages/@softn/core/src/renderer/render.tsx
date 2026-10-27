@@ -50,6 +50,7 @@ import {
   dropDocumentName,
   dropRawMarkupProp,
   dropTopLayerProps,
+  dropTopLayerStyle,
   egressPolicyFor,
   isPlainObject,
   keepOpenerFromLinks,
@@ -1356,6 +1357,7 @@ function renderElement(
   // Applies to both: a registered component that spreads `style` onto its root
   // element reaches the network by exactly the same route a raw <div> does.
   withholdRemoteStyleUrls(props, egressPolicy);
+  dropTopLayerStyle(props);
   if (context.appStyleNames && isPlainObject(props.style)) props.style = context.appStyleNames(props.style);
 
   // A tag with nothing inside it has no children, as in JSX. It was given

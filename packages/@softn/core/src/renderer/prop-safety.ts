@@ -270,6 +270,29 @@ export function dropTopLayerProps(props: SoftNProps): void {
 }
 
 /**
+ * Drop `appearance: base-select` (and any other `base` appearance) from an
+ * inline style object. A select with it opens its picker in the top layer,
+ * which no containment clips, with CSS alone: an app's options sized to the
+ * viewport covered the host's controls and the permission bar from one
+ * click. The app's stylesheet is held to the same (scope-css.ts). Copied,
+ * not mutated, as `withholdRemoteStyleUrls` does: it may be the app's state.
+ */
+export function dropTopLayerStyle(props: SoftNProps): void {
+  for (const prop of Object.keys(props)) {
+    if (prop !== 'style' && !prop.endsWith('Style')) continue;
+    const style = props[prop];
+    if (typeof style !== 'object' || style === null || Array.isArray(style)) continue;
+    let copy: Record<string, unknown> | null = null;
+    for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
+      if (!/^(?:webkit|moz|ms)?appearance$/i.test(name) || !/^\s*base\b/i.test(String(value))) continue;
+      copy ??= { ...(style as Record<string, unknown>) };
+      delete copy[name];
+    }
+    if (copy) props[prop] = copy;
+  }
+}
+
+/**
  * Withhold remote `url(...)` from an inline `style={{…}}`.
  *
  * `sanitizeBundleCSS` already rewrites remote `url()` in a bundle's style

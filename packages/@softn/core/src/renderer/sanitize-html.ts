@@ -469,7 +469,10 @@ export function relWithoutOpener(rel: unknown, target: unknown, tag: string): st
  * `<a interestfor="x">` does on hover, and `<button commandfor="d"
  * command="show-modal">` opens a `<dialog>` modally. A bundle has no use
  * for them that its components do not already serve, so they never reach the
- * DOM, from markup or from sanitized HTML.
+ * DOM, from markup or from sanitized HTML. CSS reaches it too, with no
+ * attribute: a `<select>` styled `appearance: base-select` opens its picker
+ * there. That value is dropped from inline styles (prop-safety.ts
+ * `dropTopLayerStyle`) and from the app's stylesheet (scope-css.ts).
  */
 export const TOP_LAYER_ATTRIBUTES = new Set([
   'popover',

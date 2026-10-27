@@ -121,6 +121,38 @@ describe('an app stylesheet is kept to the app', () => {
     expect(result.css).not.toContain('sans-serif a1');
   });
 
+  // In a block of descriptors the last `font-family` names the face: only the first was renamed,
+  // so a face of the app's own was named like the font the permission bar is set in.
+  it('renames every font-family a face gives itself', () => {
+    const result = scopeAppCss(
+      sanitizeBundleCSS('@font-face { font-family: a; font-family: "IBM Plex Sans"; src: url(fonts/evil.woff2) } .x { font-family: "IBM Plex Sans" }'),
+      'a1'
+    );
+    expect(result.css).toContain('font-family:"a a1"');
+    expect(result.css).toContain('font-family:"IBM Plex Sans a1"');
+    expect(result.css).not.toMatch(/font-family:\s*"IBM Plex Sans"\s*[;}]/);
+    expect(result.css).toContain('.x:where([data-softn-app="a1"] *) { font-family: "IBM Plex Sans a1" }');
+  });
+
+  // A select styled so opens its picker in the top layer, which no containment clips.
+  it('drops an appearance that opens the top layer', () => {
+    const css = scoped('select, ::picker(select) { appearance: base-select; color: red } .y { -webkit-appearance: base; appearance:BASE-SELECT }');
+    expect(css).not.toMatch(/appearance\s*:\s*base/i);
+    expect(css).toContain('color: red');
+  });
+
+  // Each name given was a pattern compiled and tried on every value: 4,000 faces, each used
+  // once, held the page's thread for most of a minute.
+  it('renames thousands of names in time', () => {
+    const faces = Array.from({ length: 4000 }, (_, i) => `@font-face { font-family: "F${i}"; src: url(fonts/f${i}.woff2) } .c${i} { font-family: "F${i}", serif; animation: k${i} 1s } @keyframes k${i} { to { opacity: 0 } }`);
+    const started = performance.now();
+    const result = scopeAppCss(sanitizeBundleCSS(faces.join('\n')), 'a1');
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(result.css).toContain('font-family: "F3999 a1", serif');
+    expect(result.css).toContain('animation: k3999-a1 1s');
+    expect(result.names?.({ fontFamily: 'f17 , serif' })).toEqual({ fontFamily: '"F17 a1" , serif' });
+  });
+
   it('reads blocks the way the browser does', () => {
     // An unquoted url is one token: the `{` in it opens nothing, so the rule after it is a rule of its own.
     expect(preludes(scoped('.a { background: url(x{) } .softn-consent-bar { display: none }'))).toEqual([

@@ -156,14 +156,18 @@ const HOSTILE_PAGE = `<!DOCTYPE html>
 .softn-consent-bar, .softn-consent-msg, .softn-consent-bar * { display: none !important; visibility: hidden !important; color: transparent !important; font-size: 0 !important }
 .softn-runner-app { contain: none !important; isolation: auto !important; overflow: visible !important }
 @font-face { font-family: "IBM Plex Sans"; src: local(Courier New) }
+@font-face { font-family: decoy; font-family: "IBM Plex Mono"; src: local(Courier New) }
 @keyframes softn-consent-fade-in { from { opacity: 0 } to { opacity: 0 } }
 .cover { position: fixed; inset: 0; z-index: 2147483647; background: rgb(255, 0, 0) }
+.pick { position: fixed; top: 40%; left: 40%; z-index: 2147483647 }
+select, ::picker(select) { appearance: base-select }
+::picker(select) { position: fixed; inset: 0; width: 100vw; height: 100vh; max-height: none; position-area: none; background: rgb(255, 0, 0) }
 </style></head>
-<body><div class="cover"></div><h1>Overlay app</h1></body></html>`;
+<body><div class="cover"></div><h1>Overlay app</h1><select class="pick"><option>Allow</option><option>Deny</option></select></body></html>`;
 
 const HARMLESS_PAGE = `<!DOCTYPE html>
 <html><head><title>Overlay</title></head>
-<body><div class="cover"></div><h1>Overlay app</h1></body></html>`;
+<body><div class="cover"></div><h1>Overlay app</h1><select class="pick"><option>Allow</option><option>Deny</option></select></body></html>`;
 
 /** How the permission bar is drawn, and whether it is what is under the pointer at its middle. */
 async function theBar(page: Page) {
@@ -172,20 +176,30 @@ async function theBar(page: Page) {
   await expect(page.getByRole('heading', { name: 'Overlay app' })).toBeAttached({ timeout: 60_000 });
   // After the bar's own fade-in.
   await page.waitForTimeout(600);
-  return bar.evaluate((el) => {
+  // A select styled `appearance: base-select` opened its picker in the top layer, over the bar.
+  await page.locator('select.pick').click();
+  await page.waitForTimeout(200);
+  const seen = await bar.evaluate((el) => {
     const rect = el.getBoundingClientRect();
     const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     const drawn = (node: Element) => {
       const cs = getComputedStyle(node);
       return ['display', 'visibility', 'opacity', 'color', 'font-size', 'font-family', 'contain'].map((p) => cs.getPropertyValue(p)).join(';');
     };
+    // The faces the page draws text in by a family the app did not rename: a face of the app's
+    // own named like the bar's font drew the bar's words, whatever its computed font-family says.
+    const app = document.querySelector('[data-softn-app]')?.getAttribute('data-softn-app') ?? '';
+    const faces = [...document.fonts].map((face) => face.family.replace(/^["']|["']$/g, '')).filter((family) => !family.endsWith(` ${app}`));
     return {
       onTop: !!hit && el.contains(hit),
       bar: drawn(el),
       message: [...el.querySelectorAll('*')].map(drawn).join('|'),
       box: getComputedStyle(document.querySelector('.softn-runner-app')!).contain,
+      faces: faces.sort().join('|'),
     };
   });
+  await page.keyboard.press('Escape');
+  return seen;
 }
 
 test('a hostile app cannot hide, reword or cover the permission bar', async ({ browser }, testInfo) => {

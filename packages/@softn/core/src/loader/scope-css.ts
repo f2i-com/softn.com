@@ -37,9 +37,11 @@
  *
  * Where the browser can read CSS without applying it (a constructed
  * `CSSStyleSheet`), the result is read back by the browser's own parser and
- * any rule that would still reach outside the app is removed. That is the
- * test that counts: this file reads CSS the way the CSS Syntax spec says a
- * browser does, and the browser has the last word on what it read.
+ * any rule that would still reach outside the app is removed: a selector
+ * whose subject is outside it, a face or animation that kept a name of its
+ * own, and an `appearance` that opens the top layer. That is the test that
+ * counts: this file reads CSS the way the CSS Syntax spec says a browser
+ * does, and the browser has the last word on what it read.
  *
  * Loaded only for an app that has a style block (see SoftNRenderer).
  */
@@ -214,18 +216,17 @@ function scopeSelector(selector: string, restriction: string, root: string): str
   return out;
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function unquote(text: string): string {
   const t = text.trim();
   return /^(["']).*\1$/.test(t) ? t.slice(1, -1) : t.replace(/\s+/g, ' ');
 }
 
 class Scoper {
+  /** The app's font families, by `familyKey`, and the names they were given. */
   readonly fonts: Map<string, string>;
   readonly animations: Map<string, string>;
+  /** The longest key in `fonts`: no longer run of a value can be one of them. */
+  readonly longest: { family: number };
   readonly restriction: string;
   readonly root: string;
 
@@ -235,6 +236,7 @@ class Scoper {
     this.root = rootOfTheApp(app);
     this.fonts = outer?.fonts ?? new Map();
     this.animations = outer?.animations ?? new Map();
+    this.longest = outer?.longest ?? { family: 0 };
   }
 
   /** The rules between `start` and `end`, scoped. */
@@ -293,13 +295,19 @@ class Scoper {
         return `@${name} ${renamed} {${body}}\n`;
       }
       if (name === 'font-face') {
+        // Every `font-family` of the face, not only the first: in a block of
+        // descriptors the last one names the face, and
+        // `font-family: a; font-family: "IBM Plex Sans"` kept the second as
+        // written, a face the permission bar's text was then drawn in.
         let family = '';
-        const declarations = body.replace(/(^|[;{\s])font-family\s*:([^;]*)/i, (_m, before: string, value: string) => {
+        const declarations = body.replace(/(^|[;{\s])font-family\s*:([^;]*)/gi, (_m, before: string, value: string) => {
           family = unquote(value);
           return `${before}font-family:"${family.replace(/["\\]/g, '')} ${this.app}"`;
         });
         if (!family) return '';
-        this.fonts.set(family.toLowerCase(), `${family.replace(/["\\]/g, '')} ${this.app}`);
+        const key = familyKey(family);
+        this.fonts.set(key, `${family.replace(/["\\]/g, '')} ${this.app}`);
+        this.longest.family = Math.max(this.longest.family, key.length);
         return `@font-face {${declarations}}\n`;
       }
       return '';
@@ -309,25 +317,101 @@ class Scoper {
     return selectors.length > 0 ? `${selectors.join(', ')} {${body}}\n` : '';
   }
 
-  /** `value` of a font or animation declaration, with the app's names put to the ones given here. */
+  /**
+   * `value` of a font or animation declaration, with the app's names put to
+   * the ones given here. Each name in the value is looked up: each name given
+   * was a pattern of its own, compiled and tried on every value, and 4,000
+   * faces each used once held the page's thread for most of a minute.
+   */
   rename(property: string, value: string): string {
-    if (/^font/i.test(property)) {
-      for (const [family, renamed] of this.fonts) {
-        value = value.replace(
-          new RegExp(`(^|[\\s,/])(?:"${escapeRegExp(family)}"|'${escapeRegExp(family)}'|${escapeRegExp(family).replace(/ /g, '\\s+')})(?=\\s*(?:,|!|$))`, 'gi'),
-          `$1"${renamed}"`
-        );
-      }
-    } else {
-      for (const [keyframes, renamed] of this.animations) {
-        value = value.replace(new RegExp(`(^|[\\s,])${escapeRegExp(keyframes)}(?=[\\s,!]|$)`, 'g'), `$1${renamed}`);
-      }
-    }
-    return value;
+    if (/^font/i.test(property)) return this.fonts.size === 0 ? value : renameFamilies(value, this.fonts, this.longest.family);
+    if (this.animations.size === 0) return value;
+    return value.replace(/(^|[\s,])([^\s,!]+)/g, (match, before: string, name: string) => {
+      const renamed = this.animations.get(name);
+      return renamed === undefined ? match : before + renamed;
+    });
   }
 }
 
+/** How a family is looked up: case and runs of white space set aside, as the browser matches it. */
+function familyKey(family: string): string {
+  return family.replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * `value` with each family the app named, wherever a family may stand (at
+ * the start or after white space, `,` or `/`, and running to a `,`, a `!`
+ * or the end), put to its new name, quoted.
+ */
+function renameFamilies(value: string, fonts: Map<string, string>, longest: number): string {
+  let out = '';
+  let boundary = true;
+  for (let i = 0; i < value.length; ) {
+    if (boundary && !/\s/.test(value[i])) {
+      const found = familyAt(value, i, longest);
+      const renamed = found && fonts.get(found.key);
+      if (found && renamed !== undefined) {
+        out += `"${renamed}"`;
+        i = found.end;
+        boundary = false;
+        continue;
+      }
+    }
+    out += value[i];
+    boundary = /[\s,/]/.test(value[i]);
+    i++;
+  }
+  return out;
+}
+
+/**
+ * The family that starts at `from` and runs to the next `,`, `!` or the
+ * end, as `familyKey` has it, and where it ends; null where none could be
+ * one the app named (none is longer than `longest`), so a long value costs
+ * at most that much at each place a family may start.
+ */
+function familyAt(value: string, from: number, longest: number): { key: string; end: number } | null {
+  let key = '';
+  let end: number;
+  const quote = value[from];
+  if (quote === '"' || quote === "'") {
+    const close = value.indexOf(quote, from + 1);
+    if (close < 0 || close - from - 1 > longest * 4) return null;
+    key = familyKey(value.slice(from + 1, close));
+    end = close + 1;
+  } else {
+    let space = false;
+    end = from;
+    for (let k = from; k < value.length && value[k] !== ',' && value[k] !== '!'; k++) {
+      if (/\s/.test(value[k])) {
+        space = true;
+        continue;
+      }
+      if (space) key += ' ';
+      space = false;
+      key += value[k].toLowerCase();
+      end = k + 1;
+      if (key.length > longest) return null;
+    }
+  }
+  // Nothing but white space between it and its `,`, `!` or the end.
+  let next = end;
+  while (next < value.length && /\s/.test(value[next])) next++;
+  if (next < value.length && value[next] !== ',' && value[next] !== '!') return null;
+  return key.length > 0 && key.length <= longest ? { key, end } : null;
+}
+
 const NAMED = /([{;]\s*)(font-family|font|animation-name|animation)(\s*:)([^;{}]*)/gi;
+
+/**
+ * An `appearance` that opens a select's picker in the top layer, which no
+ * containment clips (`base-select`, and the `base` it was drafted as): with
+ * the picker sized to the viewport, an app covered the host's controls and
+ * the permission bar from one click, with CSS alone. Inline styles are held
+ * to the same (prop-safety.ts `dropTopLayerStyle`).
+ */
+const TOP_LAYER_APPEARANCE = /^\s*base\b/i;
+const TOP_LAYER_APPEARANCE_DECLARATION = /([{;]\s*)(?:-(?:webkit|moz)-)?appearance\s*:\s*base\b[^;{}]*/gi;
 
 const STYLE_KEYS: Record<string, string> = {
   fontFamily: 'font-family',
@@ -421,6 +505,18 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
       const kind = Object.prototype.toString.call(rule).slice(8, -1);
       let keep = KEPT_RULES.has(kind);
       if (keep && kind === 'CSSStyleRule') keep = insideApp((rule as CSSStyleRule).selectorText, app, nested);
+      // A face or an animation is the app's by the name it was given here,
+      // whatever the text above managed to read: one that kept a name of
+      // its own would stand in for the host's.
+      if (keep && kind === 'CSSFontFaceRule') {
+        keep = unquote((rule as CSSFontFaceRule).style.getPropertyValue('font-family')).endsWith(` ${app}`);
+      }
+      if (keep && kind === 'CSSKeyframesRule') keep = (rule as CSSKeyframesRule).name.endsWith(`-${app}`);
+      const style = (rule as Partial<CSSStyleRule>).style;
+      if (keep && style && TOP_LAYER_APPEARANCE.test(style.getPropertyValue('appearance'))) {
+        style.removeProperty('appearance');
+        removed = true;
+      }
       if (keep && 'cssRules' in rule && kind !== 'CSSKeyframesRule') {
         walk(rule as unknown as { cssRules: CSSRuleList; deleteRule(index: number): void }, nested || kind === 'CSSStyleRule');
       }
@@ -442,7 +538,7 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
  */
 export function scopeAppCss(css: string, app: string): ScopedCss {
   const scoper = new Scoper(css, app);
-  let scoped = scoper.rules(0, css.length);
+  let scoped = scoper.rules(0, css.length).replace(TOP_LAYER_APPEARANCE_DECLARATION, '$1');
   if (scoper.fonts.size > 0 || scoper.animations.size > 0) {
     scoped = scoped.replace(NAMED, (_m, before: string, property: string, colon: string, value: string) =>
       // The `font-family` of an `@font-face` is the new name already.

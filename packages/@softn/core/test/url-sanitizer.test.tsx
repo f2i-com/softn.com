@@ -94,6 +94,17 @@ describe('schemes that execute', () => {
     expect(out).toContain('Allow');
   });
 
+  // CSS alone reaches it too: a select styled `appearance: base-select` opens its picker there.
+  it('drops an inline appearance that opens the top layer', () => {
+    const out = html(
+      '<div><select style="appearance: base-select; color: red"><option>a</option></select>' +
+        '<select style={{ WebkitAppearance: "base", appearance: "auto" }}><option>b</option></select></div>'
+    );
+    expect(out).not.toMatch(/appearance:\s*base/i);
+    expect(out).toContain('color:red');
+    expect(out).toContain('appearance:auto');
+  });
+
   it('drops a scheme arriving through an expression, not just a literal', () => {
     const out = html('<a href={link}>x</a>', { link: 'javascript:alert(1)' });
     expect(out).not.toContain('javascript:');
