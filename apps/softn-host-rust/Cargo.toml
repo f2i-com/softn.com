@@ -21,7 +21,7 @@ license = "Apache-2.0"
 # RangeError the handler can catch. Without it a regex that backtracks for
 # ever held its worker until the watchdog gave the thread up. The JIT is left
 # out (default-features = false); `instrument` turned it off on every VM anyway.
-zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.29", default-features = false, features = ["safe-sandbox"] }
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.30", default-features = false, features = ["safe-sandbox"] }
 # The database, from this repository (crates/softn-xdb), without its Tauri
 # commands; its library is still called `xdb`.
 xdb = { package = "softn-xdb", path = "../../crates/softn-xdb", default-features = false }

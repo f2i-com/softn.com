@@ -8,10 +8,10 @@ ships that notice itself. The same release's torch package (installed beside
 the engine in `wasm-zipp-torch/`) is built from the same commit and likewise
 comes with no notices of its own.
 
-`THIRD_PARTY_LICENSES.txt` is the file zipp.org's `scripts/build-zipp-wasm.mjs` writes
+`THIRD_PARTY_LICENSES.txt` is the file core's `scripts/build-zipp-wasm.mjs` writes
 (its `THIRD_PARTY_LICENSES.txt` step), generated from zipp.org's
-`LICENSE-UNICODE`. It is present at tag `v0.0.29` (commit
-`58c92a59b991b29f80fc7aa5d0d91e9dc119b17a`), unchanged since `v0.0.21`, and
+`LICENSE-UNICODE`. It is present at tag `v0.0.30` (commit
+`fd6b48a57f561b3291127a246ebf10dc59a0f3d2`), unchanged since `v0.0.21`, and
 regenerating the file from it there gives these bytes exactly.
 
 Up to 0.0.20 the file also carried the RustPython parser's MIT licence. ZIPP

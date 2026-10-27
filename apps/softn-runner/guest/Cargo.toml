@@ -33,7 +33,7 @@ path = "src/main.rs"
 # (crates/zipp-wasm/Cargo.toml at the tag): the safe-sandbox interpreter, no
 # filesystem module loader, no test262 agent threads, the compact regex
 # matchers. build.mjs holds the tag to wasm-zipp/SOURCE.json.
-zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.29", default-features = false, features = ["safe-sandbox", "meter-only", "wasm-no-fs-loader", "wasm-single-agent", "wasm-compact-regex"] }
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.30", default-features = false, features = ["safe-sandbox", "meter-only", "wasm-no-fs-loader", "wasm-single-agent", "wasm-compact-regex"] }
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "unbounded_depth"] }
 ryu = "1"
