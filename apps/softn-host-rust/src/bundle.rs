@@ -322,6 +322,31 @@ pub(crate) fn entry_file_key(name: &Path) -> String {
     parts.join("/")
 }
 
+/// Whether every part of an entry's name is a file name each system takes as
+/// written: none of the characters Windows refuses or reads as something
+/// else, no trailing dot or space (which Windows drops), and no device name.
+/// zip's `enclosed_name` takes `:`, so on NTFS `manifest.json::$DATA` was a
+/// second entry by `entry_file_key` and wrote `manifest.json` itself, past the
+/// duplicate check and the tenant id read from the first: an app's bundle
+/// could open another app's data under the other's id.
+pub(crate) fn portable_entry_name(name: &Path) -> bool {
+    const DEVICES: [&str; 22] = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1",
+        "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    name.components().all(|component| match component {
+        std::path::Component::Normal(part) => {
+            let Some(part) = part.to_str() else { return false };
+            let stem = part.split('.').next().unwrap_or("").trim_end().to_ascii_lowercase();
+            !part.chars().any(|c| c < ' ' || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*' | '\\'))
+                && !part.ends_with('.')
+                && !part.ends_with(' ')
+                && !DEVICES.contains(&stem.as_str())
+        }
+        _ => true,
+    })
+}
+
 pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
     let file = fs::File::open(zip_path)
         .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
@@ -387,6 +412,10 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
                 continue;
             }
         };
+
+        if !portable_entry_name(&safe_name) {
+            return Err(format!("Bundle has an entry no system names alike: {}", safe_name.display()));
+        }
 
         if entry.is_dir() {
             fs::create_dir_all(temp_dir.join(&safe_name))
@@ -730,6 +759,33 @@ mod tests {
             assert!(refused.as_ref().is_err_and(|e| e.contains("two files at")), "{twin}: {refused:?}");
             assert!(!dir.join("app_bundle").exists(), "{twin}");
             std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// An entry named as an NTFS stream (`manifest.json::$DATA`) wrote
+    /// `manifest.json` itself on Windows, past the duplicate check; a device
+    /// name or a trailing dot is a different file on each system. Refused,
+    /// and nothing is unpacked.
+    #[test]
+    fn an_archive_with_a_name_systems_read_differently_is_refused() {
+        use std::io::Write;
+        for odd in ["manifest.json::$DATA", "assets/a:b.png", "CON", "assets/nul.txt", "assets/x.", "assets/y ", "assets/q?.js"] {
+            let dir = crate::test_dirs::temp_path("softn-bundle-odd", "");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("app.softn");
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            zip.start_file("manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(br#"{"id":"app","name":"app","version":"1"}"#).unwrap();
+            zip.start_file(odd, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(br#"{"id":"victim","name":"victim","version":"1"}"#).unwrap();
+            zip.finish().unwrap();
+            let refused = extract_softn_zip(&path);
+            assert!(refused.as_ref().is_err_and(|e| e.contains("no system names alike")), "{odd}: {refused:?}");
+            assert!(!dir.join("app_bundle").exists(), "{odd}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        for fine in ["assets/console.png", "assets/con-tents.txt", "a.b/c.d", "logic/main.logic"] {
+            assert!(portable_entry_name(Path::new(fine)), "{fine}");
         }
     }
 
