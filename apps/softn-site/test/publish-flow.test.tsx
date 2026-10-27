@@ -186,6 +186,33 @@ describe('a batch stopped part way', () => {
   });
 });
 
+describe('a second bundle chosen', () => {
+  // Filled only when empty, the form kept the first bundle's words: Tetris went out as Snake.
+  it('fills the form with its own name and description, but keeps what the visitor wrote', async () => {
+    mount();
+    await settle();
+    const nameField = () => container.querySelector<HTMLInputElement>('input[placeholder="What it is called"]')!;
+    const description = () => container.querySelector<HTMLTextAreaElement>('textarea')!;
+    pick([bundleFile('Snake')]);
+    await settle();
+    expect(nameField().value).toBe('Snake');
+    pick([bundleFile('Tetris')]);
+    await settle();
+    expect(nameField().value).toBe('Tetris');
+    expect(description().value).toBe('Tetris does things');
+
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(nameField(), 'My blocks');
+      nameField().dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    pick([bundleFile('Pong')]);
+    await settle();
+    expect(nameField().value).toBe('My blocks');
+    expect(description().value).toBe('Pong does things');
+  });
+});
+
 describe('Publish another', () => {
   it('starts from an empty form, so one more press does not publish the same bundle again', async () => {
     publish.mockResolvedValue(published('alpha'));

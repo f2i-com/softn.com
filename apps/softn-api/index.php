@@ -443,11 +443,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'category' => $req->field('category'), 'tags' => $req->field('tags'), 'notes' => $req->field('notes'),
                 'primary' => $req->field('primary'),
             ], $parentSlug !== null ? 'remix' : ($req->contentType() === 'multipart/form-data' ? 'upload' : 'api'), $parentSlug, $info);
-            if ($image !== null) {
-                Apps::setThumbnail($result['app']['slug'], $image);
-                $result['app'] = Apps::card(Apps::row($result['app']['slug']));
-            }
-            return Response::json(['ok' => true, 'app' => $result['app'], 'editKey' => $result['editKey'], 'page' => $result['app']['urls']['page']], 201);
+            return Apps::created($result, $image);
         }
 
         case 'appDetail': {
@@ -554,7 +550,11 @@ function handle(string $handler, array $args, Request $req): Response
             $v = requested_version($req);
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
-            return Response::json(['ok' => true, 'version' => (int) $ver['version']] + Bundle::listSource($path), 200, ['Cache-Control' => 'public, max-age=300']);
+            // Without `v` the address is the latest version's, which a new
+            // version changes: held for five minutes, View source showed the
+            // last version's files under the new version's number.
+            $cache = $v !== null ? 'public, max-age=300' : 'no-cache, must-revalidate';
+            return Response::json(['ok' => true, 'version' => (int) $ver['version']] + Bundle::listSource($path), 200, ['Cache-Control' => $cache]);
         }
 
         case 'addVersion': {
@@ -641,11 +641,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'notes' => $req->field('notes') ?: ($copied ? 'Remixed from ' . $parent['name'] : ''),
                 'primary' => $req->field('primary') ?: $parent['primary_color'],
             ], 'remix', $parentSlug, $info);
-            if ($image !== null) {
-                Apps::setThumbnail($result['app']['slug'], $image);
-                $result['app'] = Apps::card(Apps::row($result['app']['slug']));
-            }
-            return Response::json(['ok' => true, 'app' => $result['app'], 'editKey' => $result['editKey'], 'page' => $result['app']['urls']['page']], 201);
+            return Apps::created($result, $image);
         }
 
         case 'comments': {

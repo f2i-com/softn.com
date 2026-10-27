@@ -14,8 +14,9 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { startServer, makeBundle, skip, PNG_1x1, pngDeclaring } from './helpers/harness.mjs';
+import { startServer, runPhp, makeBundle, skip, PNG_1x1, pngDeclaring } from './helpers/harness.mjs';
 
 const servers = [];
 after(() => servers.forEach((s) => s.stop()));
@@ -210,6 +211,39 @@ test('a publish whose picture is refused publishes nothing', skip, async () => {
   assert.deepEqual(await listed(), ['picture-trouble']);
 });
 
+// The picture is stored once the app exists. A disk that would not take it answered 503,
+// and the 201 with the edit key was never sent: the app was listed and nobody could edit
+// it, and the retry published a second one. Here a folder put in the way of the picture's
+// name, once the app is made, fails the store as a full disk does.
+test('a publish whose picture cannot be stored still answers with the edit key', skip, () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-picture-lost-'));
+  try {
+    const bundle = path.join(dataDir, 'app.softn');
+    const picture = path.join(dataDir, 'thumb.bin');
+    fs.writeFileSync(bundle, makeBundle('Picture Lost'));
+    fs.writeFileSync(picture, PNG_1x1);
+    const r = runPhp({
+      dataDir,
+      args: [bundle, picture],
+      // As a server runs: the failed rename's warning is logged, not printed into the answer.
+      ini: { display_errors: '0' },
+      script: `
+$result = Apps::create($argv[2], ['name' => 'Picture Lost'], 'upload', null, Bundle::inspect($argv[2]));
+mkdir(Apps::dir($result['app']['slug']) . '/thumb.png');
+$answer = Apps::created($result, [file_get_contents($argv[3]), 'image/png']);
+echo json_encode(['status' => $answer->status, 'body' => json_decode($answer->body, true)]);`,
+    });
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const answer = JSON.parse(r.stdout);
+    assert.equal(answer.status, 201);
+    assert.ok(typeof answer.body.editKey === 'string' && answer.body.editKey.length > 20);
+    assert.equal(answer.body.app.slug, 'picture-lost');
+    assert.match(answer.body.warning, /picture could not be stored/);
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('a remix whose picture is refused creates nothing', skip, async () => {
   const s = await server();
   const parent = await s.publish('Remix Source');
@@ -261,6 +295,11 @@ test('?v= names a version or is left out; anything else is refused, not read as 
   assert.equal((await s.api('GET', `/api/apps/${slug}/source?v=`)).json.version, 2);
   assert.equal((await s.api('GET', `/api/apps/${slug}/source?v=1`)).json.version, 1);
   assert.equal((await s.api('GET', `/api/apps/${slug}/source?v=latest`)).status, 400);
+  // Without a version the listing is the latest's, which a new version changes: held five
+  // minutes, View source showed the last version's files under the new number.
+  const sourceCache = async (query) => (await fetch(`${s.base}/api/apps/${slug}/source${query}`)).headers.get('cache-control') ?? '';
+  assert.match(await sourceCache(''), /no-cache/);
+  assert.match(await sourceCache('?v=1'), /max-age=300/);
 });
 
 test('the address a bundle is cached under names one content: the digest is in it', skip, async () => {

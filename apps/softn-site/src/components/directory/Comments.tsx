@@ -12,6 +12,8 @@ export function Comments({ slug, onCount }: { slug: string; onCount?: (n: number
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Counts the comments posted here, so the page shown is read again after each. */
+  const [posted, setPosted] = useState(0);
   const [name, setName] = useState(() => {
     try {
       return localStorage.getItem(NAME_KEY) ?? '';
@@ -47,7 +49,7 @@ export function Comments({ slug, onCount }: { slug: string; onCount?: (n: number
       });
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, page]);
+  }, [slug, page, posted]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,6 +67,10 @@ export function Comments({ slug, onCount }: { slug: string; onCount?: (n: number
       if (page === 1) setItems((prev) => [c, ...prev]);
       setTotal((t) => t + 1);
       onCount?.(total + 1);
+      // Then the page as the server now has it, with how many pages there
+      // are. The new comment put on top made page 1 one longer, and every
+      // page after began with the comment the one before had shown last.
+      setPosted((n) => n + 1);
     } catch (err) {
       setSendError(err instanceof ApiError && err.retryAfter ? `${err.message} (about ${Math.ceil(err.retryAfter / 60)} min)` : err instanceof Error ? err.message : String(err));
     } finally {

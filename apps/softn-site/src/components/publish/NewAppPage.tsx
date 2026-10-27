@@ -84,6 +84,8 @@ export function NewAppPage({
   const [stopping, setStopping] = useState(false);
   /** `busy`, for the drop handlers, which outlive a render: a publish in flight is not to have its selection replaced. */
   const busyRef = useRef(false);
+  /** What the last bundle chosen filled the form with (see takeFiles). */
+  const filledRef = useRef({ name: '', description: '' });
   const working = (on: boolean) => {
     busyRef.current = on;
     setBusy(on);
@@ -140,8 +142,14 @@ export function NewAppPage({
       const chosen = singleItem(selector.state());
       if (chosen?.status === 'ready' && chosen.info) {
         const i = chosen.info;
-        setName((n) => n || i.name);
-        setDescription((d) => d || i.description);
+        // A field still holding what the last bundle filled in is the new
+        // one's; one the visitor wrote is theirs. Filled only when empty, a
+        // second bundle chosen (Snake, then Tetris) was published under the
+        // first one's name and description.
+        const filled = filledRef.current;
+        setName((n) => (n === '' || n === filled.name ? i.name : n));
+        setDescription((d) => (d === '' || d === filled.description ? i.description : d));
+        filledRef.current = { name: i.name, description: i.description };
       }
     },
     [selector],
@@ -490,6 +498,7 @@ export function NewAppPage({
           <p className="band-sub">
             It is in the directory under {filedUnder ? filedUnder.name : app.category}, at <a href={app.urls.page}>{window.location.origin + app.urls.page}</a>.
           </p>
+          {result.warning && <p className="form-error">{result.warning}</p>}
           <div className="app-actions">
             <a className="cta cta-primary" href={app.urls.page}>
               Open its page

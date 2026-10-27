@@ -666,6 +666,32 @@ final class Apps
         return array_keys($out);
     }
 
+    /**
+     * A new app's answer, with the picture sent with it stored: 201, its card,
+     * the edit key and its page. The app exists by now, so a picture that
+     * could not be stored (a nearly full disk answers 503; requireRoom counted
+     * the bundle alone) fails nothing: the answer carrying the edit key was
+     * never sent, and the retry published a second app. It is listed without
+     * a picture, and the answer says so.
+     *
+     * @param array{app: array<string, mixed>, editKey: string|null} $result what create() answered
+     * @param array{0: string, 1: string}|null $image
+     */
+    public static function created(array $result, ?array $image): Response
+    {
+        $body = ['ok' => true];
+        if ($image !== null) {
+            try {
+                self::setThumbnail($result['app']['slug'], $image);
+                $result['app'] = self::card(self::row($result['app']['slug']));
+            } catch (Throwable $e) {
+                error_log('[softn-api] the thumbnail of ' . $result['app']['slug'] . ' was not stored: ' . $e->getMessage());
+                $body['warning'] = 'The app is published, but its picture could not be stored. Add one from its page with the edit key.';
+            }
+        }
+        return Response::json($body + ['app' => $result['app'], 'editKey' => $result['editKey'], 'page' => $result['app']['urls']['page']], 201);
+    }
+
     /** @param array{0: string, 1: string} $image */
     public static function setThumbnail(string $slug, array $image): void
     {

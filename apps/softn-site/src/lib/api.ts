@@ -232,6 +232,8 @@ export interface Published {
   app: AppCard;
   editKey: string | null;
   page: string;
+  /** Something that did not go with the app, though it is published (its picture). */
+  warning?: string;
 }
 
 export async function publish(fields: PublishFields): Promise<Published> {
