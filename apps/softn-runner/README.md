@@ -73,12 +73,14 @@ runner's toolchain and musl's C compiler (`musl-tools`).
 ## Testing
 
 ```sh
-cargo test --release --manifest-path apps/softn-runner/host/Cargo.toml
+(cd apps/softn-runner/host && cargo test --release --locked)
 SOFTN_TEST_RUNNER=apps/softn-runner/dist/softn-runner-<platform> \
   node --test apps/softn-host-php/tests/route-declarations.test.mjs
 ```
 
-The second runs the Node runner's own suite against the runner. CI does both
+The first runs in the crate's folder, so that its `rust-toolchain.toml` picks
+Rust 1.99.0; from elsewhere, cargo takes the default toolchain, and one older
+than 1.93 cannot build wasmtime. The second runs the Node runner's own suite against the runner. CI does both
 on the static Linux build (`.github/workflows/verify.yml`, job `runner`).
 
 ## Where it differs from the Node runner

@@ -307,8 +307,12 @@ jobs:
           restore-keys: runner-${{ runner.os }}-
       - name: Build the runner
         run: node apps/softn-runner/build.mjs --target x86_64-unknown-linux-musl
+      # From the crate's folder, so its rust-toolchain.toml chooses the
+      # compiler, as for the build above: from the root it was the image's
+      # stable, which tested on another rustc and compiled everything twice.
       - name: Test the runner's own parts
-        run: cargo test --release --locked --manifest-path apps/softn-runner/host/Cargo.toml
+        working-directory: apps/softn-runner/host
+        run: cargo test --release --locked
       - name: The Node runner's suite, on the runner
         env:
           SOFTN_TEST_RUNNER: ${{ github.workspace }}/apps/softn-runner/dist/softn-runner-linux-x86_64
