@@ -212,6 +212,31 @@ describe('Camera live mode', () => {
     expect(onFrame.mock.calls[0][0]).toMatchObject({ width: 320, height: 240 });
     vi.useRealTimers();
   });
+
+  // A page hands a new handler on every redraw. With it among the interval's
+  // dependencies each redraw started the interval over, so a page drawn more
+  // often than its frame rate (beside a Microphone's level) got no frames.
+  it('delivers frames while the page redraws more often than its frame rate, to the newest handler', async () => {
+    vi.useFakeTimers();
+    const frames: number[] = [];
+    mount(<Camera mode="live" frameRate={10} onFrame={() => frames.push(0)} />);
+    await grant();
+    const el = video() as HTMLVideoElement;
+    Object.defineProperty(el, 'readyState', { configurable: true, value: 4 });
+    Object.defineProperty(el, 'videoWidth', { configurable: true, value: 320 });
+    Object.defineProperty(el, 'videoHeight', { configurable: true, value: 240 });
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+    canvas.getContext = vi.fn(() => ({ drawImage: vi.fn() })) as unknown as HTMLCanvasElement['getContext'];
+    canvas.toDataURL = vi.fn(() => 'data:image/jpeg;base64,xxx');
+    // Redrawn every 50 ms with a new handler, the last of them marking its frames.
+    for (let i = 1; i <= 10; i++) {
+      mount(<Camera mode="live" frameRate={10} onFrame={() => frames.push(i)} />);
+      act(() => { vi.advanceTimersByTime(50); });
+    }
+    expect(frames.length).toBeGreaterThanOrEqual(4);
+    expect(frames.at(-1)).toBe(10);
+    vi.useRealTimers();
+  });
 });
 
 describe('Camera sizing', () => {

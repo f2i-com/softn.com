@@ -779,7 +779,8 @@ export function SmartGrid<T extends Record<string, unknown>>({
                   <input
                     id={fieldId}
                     type={col.type === 'number' ? 'number' : col.type === 'date' ? 'date' : 'text'}
-                    value={formData[col.key] != null ? String(formData[col.key]) : ''}
+                    // A number as itself, so a decimal can be typed (SmartForm says why).
+                    value={typeof formData[col.key] === 'number' ? (formData[col.key] as number) : formData[col.key] != null ? String(formData[col.key]) : ''}
                     onChange={(e) =>
                       setFormData((prev) => ({
                         ...prev,

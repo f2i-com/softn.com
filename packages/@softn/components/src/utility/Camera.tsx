@@ -257,13 +257,21 @@ export function Camera({
   // same ref first, the guard below then saw an interval already running and
   // skipped — so live mode encoded a JPEG ten times a second and never once
   // called `onFrame`. There is one interval now, and it is this one.
+  //
+  // The handler is read when a frame is taken, as Loop reads its tick: the
+  // page hands a new one on every redraw, and with it among the effect's
+  // dependencies each redraw started the interval over, so an app drawn more
+  // often than its frame rate (beside a Microphone's level) had no frames.
+  const onFrameRef = useRef(onFrame);
+  onFrameRef.current = onFrame;
+  const wantsFrames = !!onFrame;
   useEffect(() => {
-    if (mode === 'live' && isStreaming && onFrame && !frameIntervalRef.current) {
+    if (mode === 'live' && isStreaming && wantsFrames && !frameIntervalRef.current) {
       const intervalMs = Math.max(16, Math.round(1000 / frameRate));
       frameIntervalRef.current = setInterval(() => {
         const frame = captureFrame();
         if (frame) {
-          onFrame({ ...frame, timestamp: Date.now() });
+          onFrameRef.current?.({ ...frame, timestamp: Date.now() });
         }
       }, intervalMs);
     }
@@ -274,7 +282,7 @@ export function Camera({
         frameIntervalRef.current = null;
       }
     };
-  }, [mode, isStreaming, onFrame, frameRate, captureFrame]);
+  }, [mode, isStreaming, wantsFrames, frameRate, captureFrame]);
 
   // Take a photo
   const takePhoto = useCallback(() => {

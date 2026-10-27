@@ -684,7 +684,11 @@ export function SmartForm({
           <input
             {...accessibility}
             type={field.type || 'text'}
-            value={String(value ?? '')}
+            // A number as itself: React rewrites a number field only when its
+            // text and the value differ as numbers, so "9." and "9.0" stay as
+            // typed. Given as text, "9.0" was not "9" and was rewritten, and
+            // typing 9.05 left 95.
+            value={typeof value === 'number' ? value : String(value ?? '')}
             onChange={(e) =>
               handleChange(
                 field.name,

@@ -5,7 +5,7 @@
  * Provides a simplified API with onScan callback, facing mode, and sizing.
  */
 
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useMemo, useRef } from 'react';
 import { isCapabilityAllowed, useCapability } from '@softn/core';
 import { prepareZXingModule, Scanner, type IDetectedBarcode } from '@yudiel/react-qr-scanner';
 // The decoder, served by the host's own build rather than a CDN. The scanner
@@ -22,6 +22,14 @@ prepareZXingModule({
     locateFile: (path: string, prefix: string) => (path.endsWith('.wasm') ? zxingReaderWasm : prefix + path),
   },
 });
+
+/** What the scanner is handed that never changes: one object each, for the reason at `handleScan`. */
+const SCAN_FORMATS: ['qr_code'] = ['qr_code'];
+const SCANNER_PARTS = { finder: true, torch: false };
+const SCANNER_STYLES = {
+  container: { width: '100%', height: '100%' },
+  video: { width: '100%', height: '100%', objectFit: 'cover' as const },
+};
 
 /**
  * Fetch the decoder now rather than on the first scan, so a host's service
@@ -74,6 +82,13 @@ export function QRReader({
   const lastScanRef = useRef<string>('');
   const lastScanTimeRef = useRef<number>(0);
 
+  // Everything the scanner is handed stays the same object while what it says
+  // does: the scanner restarts its scan loop when its handler, constraints or
+  // formats change, and a restart forgets the code in view, so the page's new
+  // handler on each redraw (typing a quantity beside it) reported a code still
+  // in front of the camera again, once past the two-second debounce.
+  const onScanRef = useRef(onScan);
+  onScanRef.current = onScan;
   const handleScan = useCallback((detectedCodes: IDetectedBarcode[]) => {
     if (detectedCodes.length === 0) return;
     const value = detectedCodes[0].rawValue;
@@ -84,9 +99,13 @@ export function QRReader({
     if (value !== lastScanRef.current || now - lastScanTimeRef.current > 2000) {
       lastScanRef.current = value;
       lastScanTimeRef.current = now;
-      onScan?.(value);
+      onScanRef.current?.(value);
     }
-  }, [onScan]);
+  }, []);
+  const constraints = useMemo(
+    () => ({ facingMode: facing, width: { ideal: width }, height: { ideal: height } }),
+    [facing, width, height]
+  );
 
   const frameStyle: React.CSSProperties = {
     width,
@@ -127,27 +146,10 @@ export function QRReader({
       <Scanner
         onScan={handleScan}
         paused={!active}
-        formats={['qr_code']}
-        constraints={{
-          facingMode: facing,
-          width: { ideal: width },
-          height: { ideal: height },
-        }}
-        components={{
-          finder: true,
-          torch: false,
-        }}
-        styles={{
-          container: {
-            width: '100%',
-            height: '100%',
-          },
-          video: {
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-          },
-        }}
+        formats={SCAN_FORMATS}
+        constraints={constraints}
+        components={SCANNER_PARTS}
+        styles={SCANNER_STYLES}
         scanDelay={100}
         sound={false}
       />

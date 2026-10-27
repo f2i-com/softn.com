@@ -338,6 +338,23 @@ describe('a Split first drawn where it has no room', () => {
   });
 });
 
+describe('a SmartForm number field', () => {
+  // Given its value as text, React rewrote the field whenever its text and the
+  // value differed as text: "9.50" was not "9.5", so the field became "9.5"
+  // mid-typing, and typing 9.05 in a browser left 95.
+  it('keeps a decimal as typed, and saves the number', () => {
+    const onSubmit = vi.fn();
+    const { container } = mount(<SmartForm fields="price:number" onSubmit={onSubmit} />);
+    const field = container.querySelector<HTMLInputElement>('input[name="price"]')!;
+    type(field, '9.50');
+    expect(field.value).toBe('9.50');
+    act(() => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(onSubmit).toHaveBeenCalledWith({ price: 9.5 });
+  });
+});
+
 describe('SmartForm’s defaults', () => {
   const submit = (container: HTMLElement) =>
     act(() => {
