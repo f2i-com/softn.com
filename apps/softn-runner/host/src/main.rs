@@ -12,6 +12,7 @@
 mod guest;
 mod host_calls;
 mod js;
+mod limits;
 mod migrations;
 mod record_events;
 mod sql;

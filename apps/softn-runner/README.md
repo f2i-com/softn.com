@@ -41,9 +41,11 @@ so a request deserialises it rather than compiling it.
   key. Its only door is `db.query`, and the runner decides every answer: the
   SQL authorizer keeps it to the app's own tables, as on every SoftN host.
 - The instance has the clock and randomness, and nothing else: no directory,
-  no environment, no stdio. Its memory is capped at 1 GiB; ZIPP's own
-  accounting stops a script at 512 MiB, and its instruction budget at
-  5,000,000 steps a request, as in the Node runner.
+  no environment, no stdio. Its memory is capped at what the host gives a
+  request (below); ZIPP's own accounting stops a script 64 MiB short of it
+  (the request fails, and the log says "script exceeded its memory budget"),
+  and its instruction budget at 5,000,000 steps a request, as in the Node
+  runner.
 - The whole process has the Node runner's 20-second deadline, which ends it
   whatever it is doing, SQLite included. A quarter of a second before it, the
   app's logic and any SQL statement of the request still running are stopped
@@ -56,9 +58,36 @@ so a request deserialises it rather than compiling it.
   request answers host_error, or its own answer if it asked for the rollback.
   The Node runner and the Rust host do the same.
 - SQLite keeps its temporary tables and sorts in memory, and its memory is
-  capped at 1 GiB for the process, so a statement cannot fill the disk; a
-  query result past its 2 MiB is refused before the runner copies the values
-  that put it there.
+  capped at what the host gives a request, so a statement cannot fill the
+  disk; a query result past its 2 MiB is refused before the runner copies the
+  values that put it there.
+
+## Memory
+
+The host says how much memory one request may take, in
+`SOFTN_RUNNER_MEMORY_MB` (`host/src/limits.rs`): a whole number of MiB from
+128 to 1024, and 1024 when it says nothing, which is FormLogic's case, as its
+Node runner's engine has 1 GiB. The PHP host says 256, what its Node runner's
+engine is held to, or the operator's `requestMemoryMb`. The app's engine may
+grow to that, a script's heap to 64 MiB less (512 MiB at most), and SQLite to
+that again.
+
+What a request does take is far less. The engine's compiled code, 20 MB, is
+part of the program. On Linux it runs where it lies in the program's pages
+(`InPlace` in `host/src/guest.rs`), which every runner on the server shares,
+and only the parts a request runs are read from disk; where the system will
+not let those pages be made executable, and on Windows, it is copied into
+memory of the process's own, as it always was. Peak memory of one request on
+Linux (musl build, WSL; Node's runner beside it):
+
+| request | softn-runner | copied, as before | Node's runner |
+| --- | ---: | ---: | ---: |
+| a handler that only answers | 14.6 MB | 47 MB | 100 MB |
+| an insert and a count | 15.4 MB | 47 MB | 100 MB |
+| 150,000 small objects made | 64 MB | 96 MB | 139 MB |
+| a 20 MB string made | 69 MB | 100 MB | 122 MB |
+
+The copy also cost 9 ms of a request's 40.
 
 ## Building
 
@@ -76,7 +105,7 @@ runner's toolchain and musl's C compiler (`musl-tools`).
 ## Testing
 
 ```sh
-(cd apps/softn-runner/host && cargo test --release --locked)
+(cd apps/softn-runner/host && cargo test --release --locked)   # both ways of loading the engine, the memory limits
 SOFTN_TEST_RUNNER=apps/softn-runner/dist/softn-runner-<platform> \
   node --test apps/softn-host-php/tests/route-declarations.test.mjs
 ```

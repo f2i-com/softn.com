@@ -272,8 +272,34 @@ test('setup.php starts the runner as a request does and says why an app does not
   assert.match(ready.stdout,/Application http-runner 1\.0\.0 answers \/api\/meta\./);
   assert.doesNotMatch(ready.stderr,/WARNING/);
   // And which runner that was: said where softn-runner is there, nothing where Node is all there is.
-  if(softnRunner)assert.match(ready.stdout,/Requests run on softn-runner \(bin\/softn-runner-linux-x86_64\), without Node\. To run them on Node instead, set "runner": "node" in private\/config\.json\./);
-  else assert.doesNotMatch(ready.stdout,/softn-runner/);
+  if(softnRunner) {
+    assert.match(ready.stdout,/Requests run on softn-runner \(bin\/softn-runner-linux-x86_64\), without Node\. To run them on Node instead, set "runner": "node" in private\/config\.json\./);
+    assert.match(ready.stdout,/Each request may take up to 256 MiB for the app's engine \(a script's heap 192 MiB of it\) and 256 MiB for SQLite: "requestMemoryMb" in private\/config\.json, 128 to 1024\./);
+  } else assert.doesNotMatch(ready.stdout,/softn-runner/);
+});
+
+nodeTest('the operator\'s requestMemoryMb is the memory a request on softn-runner may take, and setup says when it is not a number it takes',{skip:skip||(softnRunner?false:'needs SOFTN_TEST_RUNNER (a Linux build of softn-runner)')},t=>{
+  const d=deployment(t);
+  // 100 MB in one allocation: past the script heap of 128 MiB (64 MiB), the
+  // engine stops the script, which no catch sees, and the log says why;
+  // within 512 MiB's (448 MiB), made.
+  const routes=[...ROUTES,{method:'GET',path:'/api/big',handler:'big'}];
+  writeFileSync(join(d.backend,'app/manifest.json'),JSON.stringify({id:'http-runner',version:'1.0.0',main:'ui/main.ui',server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},routes}}));
+  writeFileSync(join(d.backend,'app/server/main.logic'),SOURCE+'function big(req){try{return {status:200,body:{length:new ArrayBuffer(100*1024*1024).byteLength}};}catch(e){return {status:200,body:{caught:String(e)}};}}\n');
+  const config=JSON.parse(readFileSync(join(d.backend,'private/config.json'),'utf8'));
+  const big=mb=>{writeFileSync(join(d.backend,'private/config.json'),JSON.stringify({...config,requestMemoryMb:mb}));return d.ask('GET','/api/big');};
+  const small=big(128);
+  assert.equal(small.status,500,small.text+small.log);
+  assert.match(small.log,/softn: handler big: RangeError: script exceeded its memory budget/);
+  const large=big(512);
+  assert.equal(large.status,200,large.text+large.log);
+  assert.deepEqual(JSON.parse(large.text),{length:100*1024*1024});
+  // One that is not a whole number from 128 to 1024 is the 256 and a setup warning.
+  writeFileSync(join(d.backend,'private/config.json'),JSON.stringify({...config,requestMemoryMb:'512'}));
+  const setup=spawnSync('php',[join(d.backend,'setup.php')],{encoding:'utf8',timeout:60000});
+  assert.equal(setup.status,1,setup.stdout+setup.stderr);
+  assert.match(setup.stderr,/WARNING: "requestMemoryMb" in private\/config\.json must be a whole number of MiB from 128 to 1024; requests on softn-runner take 256 until it is\./);
+  assert.match(setup.stdout,/Each request may take up to 256 MiB/);
 });
 
 test('a client past its limit is told 429 with Retry-After, and then by PHP before any runner starts',t=>{

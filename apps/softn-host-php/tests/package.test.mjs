@@ -67,12 +67,14 @@ test('a backend packaged with softn-runner carries it executable, licensed and r
   // Without it, as before: Node alone, and nothing recorded.
   assert.equal(without.has('backend/bin/'+RUNNER_BINARY),false);
   assert.equal(JSON.parse(without.get('BUILD-INFO.json').data).softnRunner,null);
-  // With it: executable as Node is, its licences, and its digest and ceilings in BUILD-INFO.
+  // With it: executable as Node is, its licences, and its digest and memory setting in BUILD-INFO.
   assert.equal(withRunner.get('backend/bin/'+RUNNER_BINARY).mode,0o100755);
   assert.equal(withRunner.get('backend/bin/node').mode,0o100755);
   assert.equal(withRunner.get('backend/licenses/'+RUNNER_NOTICES).data.toString(),'runner licences');
   const info=JSON.parse(withRunner.get('BUILD-INFO.json').data);
-  assert.deepEqual(info.softnRunner,{file:'backend/bin/'+RUNNER_BINARY,sha256:createHash('sha256').update(elf(62)).digest('hex'),wasmMemoryMaxBytes:1073741824,scriptHeapMaxBytes:536870912,sqliteHeapMaxBytes:1073741824});
+  assert.deepEqual(info.softnRunner,{file:'backend/bin/'+RUNNER_BINARY,sha256:createHash('sha256').update(elf(62)).digest('hex'),requestMemoryMb:{default:256,min:128,max:1024}});
+  // The default is the one request.php gives a runner.
+  assert.match(readFileSync(new URL('../runtime/request.php',import.meta.url),'utf8'),/const SOFTN_REQUEST_MEMORY_MB=256;/);
   assert.ok(withRunner.get('SHA256SUMS.txt').data.toString().includes('  backend/bin/'+RUNNER_BINARY+'\n'));
   // A build for another machine is refused, as Node's is.
   writeFileSync(join(runner,RUNNER_BINARY),elf(183));

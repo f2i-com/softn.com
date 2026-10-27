@@ -160,7 +160,7 @@ try {
     // Array command bypasses the shell; no request data becomes an argument.
     $process=proc_open($runner['command'],
         [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,$backend,
-        softn_runner_environment($backend));
+        softn_runner_environment($backend,$operator));
     if(!is_resource($process))throw new RuntimeException('spawn');
     foreach($pipes as $pipe)stream_set_blocking($pipe,false);
     // Invalid UTF-8 in a header or the query becomes U+FFFD rather than failing the request.

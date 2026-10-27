@@ -869,10 +869,10 @@ test('a request and setup start the runner by one rule, with no request data in 
   // environment softn_runner_environment gives.
   const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8'),setup=readFileSync(new URL('../runtime/setup.php',import.meta.url),'utf8');
   assert.match(http,/\$runner=\$backend\?softn_runner_choice\(\$backend,\$operator\):null;/);
-  assert.match(http,/proc_open\(\$runner\['command'\],\s*\[0=>\['pipe','r'\],1=>\['pipe','w'\],2=>\['pipe','w'\]\],\$pipes,\$backend,\s*softn_runner_environment\(\$backend\)\);/);
+  assert.match(http,/proc_open\(\$runner\['command'\],\s*\[0=>\['pipe','r'\],1=>\['pipe','w'\],2=>\['pipe','w'\]\],\$pipes,\$backend,\s*softn_runner_environment\(\$backend,\$operator\)\);/);
   assert.match(setup,/\$runner=softn_runner_choice\(\$root,\$settings\);/);
   assert.match(setup,/\$run\(\$runner\['command'\],/);
-  assert.match(setup,/softn_runner_environment\(\$root\)\+\$env/);
+  assert.match(setup,/softn_runner_environment\(\$root,\$settings\)\+\$env/);
   assert.doesNotMatch(http+setup,/--max-old-space-size|NODE_NO_WARNINGS|'\/usr\/bin:\/bin'/,'the flags and the environment are written once, in request.php');
 });
 
@@ -907,8 +907,13 @@ test('softn-runner answers where the backend carries it for this server, and Nod
   // Another server than the one it is built for: Node, which there is no more
   // likely to run, and setup says so.
   for(const chosen of got.slice(9))assert.equal(chosen.runner,'node',JSON.stringify(chosen));
-  // Either is started with the backend named: softn-runner is in bin/, not beside runner.mjs.
-  assert.deepEqual(php([['softn_runner_environment',backend]])[0],{PATH:'/usr/bin:/bin',TZ:'UTC',NODE_NO_WARNINGS:'1',SOFTN_BACKEND_ROOT:backend});
+  // Either is started with the backend named: softn-runner is in bin/, not
+  // beside runner.mjs. And softn-runner is told how much memory a request may
+  // take: 256 MiB, as Node's engine is held to here, or the operator's
+  // `requestMemoryMb`, a whole number from 128 to 1024.
+  assert.deepEqual(php([['softn_runner_environment',backend]])[0],{PATH:'/usr/bin:/bin',TZ:'UTC',NODE_NO_WARNINGS:'1',SOFTN_BACKEND_ROOT:backend,SOFTN_RUNNER_MEMORY_MB:'256'});
+  const told=php([128,512,1024,100,2000,'512',256.5,null,true].map(mb=>['softn_runner_environment',backend,{requestMemoryMb:mb}])).map(env=>env.SOFTN_RUNNER_MEMORY_MB);
+  assert.deepEqual(told,['128','512','1024','256','256','256','256','256','256']);
 });
 
 test('the body goes to the runner as the text the client sent, whatever numbers are in it',()=>{

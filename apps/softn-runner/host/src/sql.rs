@@ -51,22 +51,20 @@ pub fn open(path: &Path) -> Result<Connection, HostError> {
     // Lock waits first, then the rest (request-worker.mjs). Temporary tables
     // and sorts stay in memory, as on the Rust host, where a statement that
     // spilled to temporary files could fill the disk every app shares before
-    // the deadline; SQLite's memory is held to SQLITE_HEAP_LIMIT besides
-    // (the Node runner's node:sqlite has neither).
+    // the deadline; SQLite's memory is held to the request's limit besides
+    // (limits.rs; the Node runner's node:sqlite has neither).
     conn.execute_batch(
         "PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; \
          PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072; PRAGMA temp_store=MEMORY;",
     )
     .map_err(HostError::sqlite)?;
+    // The most memory SQLite may hold in this process: an allocation past it
+    // fails the statement ("out of memory") instead of growing the process.
     // SAFETY: a plain call into the bundled SQLite, process-wide, which this
     // one-request process may set as it likes.
-    unsafe { rusqlite::ffi::sqlite3_hard_heap_limit64(SQLITE_HEAP_LIMIT) };
+    unsafe { rusqlite::ffi::sqlite3_hard_heap_limit64(crate::limits::limits().sqlite) };
     Ok(conn)
 }
-
-/// The most memory SQLite may hold in this process: an allocation past it
-/// fails the statement ("out of memory") instead of growing the process.
-const SQLITE_HEAP_LIMIT: i64 = 1024 * 1024 * 1024;
 
 /// Take the authorizer off the connection.
 pub fn clear(conn: &Connection) -> Result<(), HostError> {

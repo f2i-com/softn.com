@@ -92,10 +92,12 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,op
   entries['backend/wasm/zipp_wasm_bg.wasm']=Buffer.concat(parts);new WebAssembly.Module(entries['backend/wasm/zipp_wasm_bg.wasm']);
   entries['backend/.htaccess']=Buffer.from('Require all denied\n');
   entries['BUILD-INFO.json']=Buffer.from(JSON.stringify({runtime:privateDir?'SoftN PHP-served single app + on-demand ZIPP WASM':'SoftN PHP + on-demand ZIPP WASM',template,backendOptional:templateClient,privateArchive:!!privateDir,builtAt:new Date(process.env.SOURCE_DATE_EPOCH?Number(process.env.SOURCE_DATE_EPOCH)*1000:Date.now()).toISOString(),wasmOriginalSha256:sha(original),wasmPackagedSha256:sha(entries['backend/wasm/zipp_wasm_bg.wasm']),wasmMemoryMaxBytes:268435456,instructionBudget:5000000,phpDeadlineSeconds:25,processSlotsDefault:4,processSlotsMax:16,
-    // softn-runner's own ceilings (apps/softn-runner: guest.rs, sql.rs). The
-    // wasmMemoryMaxBytes above is backend/wasm's, the engine Node runs;
+    // softn-runner's own ceilings, which the operator sets (request.php
+    // softn_request_memory_mb; the runner's limits.rs): its engine's memory
+    // and SQLite's each `requestMemoryMb` MiB, a script's heap 64 MiB less.
+    // The wasmMemoryMaxBytes above is backend/wasm's, the engine Node runs;
     // softn-runner carries its engine inside it.
-    softnRunner:runnerDir?{file:'backend/bin/'+RUNNER_BINARY,sha256:sha(entries['backend/bin/'+RUNNER_BINARY]),wasmMemoryMaxBytes:1073741824,scriptHeapMaxBytes:536870912,sqliteHeapMaxBytes:1073741824}:null},null,2)+'\n');
+    softnRunner:runnerDir?{file:'backend/bin/'+RUNNER_BINARY,sha256:sha(entries['backend/bin/'+RUNNER_BINARY]),requestMemoryMb:{default:256,min:128,max:1024}}:null},null,2)+'\n');
   if(Object.keys(entries).some(n=>n.includes('/private/')||n.endsWith('.sqlite')||n.endsWith('backend.json')||n.endsWith('secret.key')||n.endsWith('digest.cache')))throw new Error('Live state in archive');
   entries['SHA256SUMS.txt']=Buffer.from(Object.entries(entries).map(([n,b])=>sha(b)+'  '+n).join('\n')+'\n');
   // The shared release writer: stores what is already compressed, deflates

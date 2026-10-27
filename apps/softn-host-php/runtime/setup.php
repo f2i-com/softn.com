@@ -135,12 +135,16 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
     $declared=is_array($manifest)?($manifest['server']['requires']['capabilities']??[]):[];
     if(is_array($declared)&&in_array('photos',$declared,true)&&!extension_loaded('gd'))
         $problems[]='The application takes photo uploads and this PHP has no GD extension: its upload routes answer 503 until GD is installed for the web server\'s PHP (Debian/Ubuntu: the php-gd package).';
+    // The operator's settings: which runner, and how much memory a request on softn-runner may take.
+    $settings=json_decode((string)@file_get_contents($root.'/private/config.json'),true);
+    if(is_array($settings)&&array_key_exists('requestMemoryMb',$settings)&&softn_request_memory_mb($settings)!==$settings['requestMemoryMb'])
+        $problems[]='"requestMemoryMb" in private/config.json must be a whole number of MiB from 128 to 1024; requests on softn-runner take '.SOFTN_REQUEST_MEMORY_MB.' until it is.';
     // What the runner says on stderr is kept (in a temporary file, so that it
     // can never fill a pipe nobody is reading): it is the reason, where the
     // answer on stdout is only a label. It used to go to /dev/null.
-    $run=function(array $command,string $input='',array $env=[]) use($root):?array {
+    $run=function(array $command,string $input='',array $env=[]) use($root,$settings):?array {
         $errors=tmpfile();
-        $process=@proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$errors?:['pipe','w']],$pipes,$root,softn_runner_environment($root)+$env);
+        $process=@proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$errors?:['pipe','w']],$pipes,$root,softn_runner_environment($root,$settings)+$env);
         if(!is_resource($process))return null;
         fwrite($pipes[0],$input);fclose($pipes[0]);
         $out=stream_get_contents($pipes[1]);fclose($pipes[1]);
@@ -152,7 +156,6 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
     };
     // The runner every request will start: softn-runner, where the backend
     // carries it, needs no Node, and Node is looked at only when it is the one.
-    $settings=json_decode((string)@file_get_contents($root.'/private/config.json'),true);
     $runner=softn_runner_choice($root,$settings);
     if($runner['runner']==='softn-runner') {
         // It reads a request on stdin and has no --version: whether it runs is the check of /api/meta below.
@@ -195,7 +198,11 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
     else echo 'Application '.($answer['body']['appId']??'?').' '.($answer['body']['version']??'').' answers /api/meta.'.(isset($answer['body']['unservedRoutes'])?' Routes this host does not serve: '.count($answer['body']['unservedRoutes']).'.':'')."\n";
     // Which runner that was, and, where softn-runner is there and Node was chosen all the same, why.
     $hooks=is_array($settings)&&(($settings['enableRequestHook']??null)===true||($settings['enableAfterRequestHook']??null)===true);
-    if($runner['runner']==='softn-runner')echo "Requests run on softn-runner (bin/".SOFTN_RUNNER_BINARY."), without Node. To run them on Node instead, set \"runner\": \"node\" in private/config.json.\n";
+    if($runner['runner']==='softn-runner') {
+        $mb=softn_request_memory_mb($settings);
+        echo "Requests run on softn-runner (bin/".SOFTN_RUNNER_BINARY."), without Node. To run them on Node instead, set \"runner\": \"node\" in private/config.json.\n";
+        echo "Each request may take up to $mb MiB for the app's engine (a script's heap ".min($mb-64,512)." MiB of it) and $mb MiB for SQLite: \"requestMemoryMb\" in private/config.json, 128 to 1024.\n";
+    }
     elseif(is_file($root.'/bin/'.SOFTN_RUNNER_BINARY))echo 'Requests run on Node (bin/node and runner.mjs), not on softn-runner: '.($hooks?'a request hook is enabled in private/config.json, and only Node runs one.':(is_array($settings)&&($settings['runner']??null)==='node'?'"runner" is "node" in private/config.json.':'this server is not Linux x86-64, which softn-runner is built for.'))."\n";
     return $problems;
 }

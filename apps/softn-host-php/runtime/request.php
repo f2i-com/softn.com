@@ -125,15 +125,32 @@ function softn_runner_choice(string $backend, mixed $config, string $os=PHP_OS_F
     return ['runner'=>'node','binary'=>$backend.'/bin/node','command'=>softn_runner_command($backend)];
 }
 
+/** How much memory, in MiB, one request on softn-runner may take, with no word from the operator: what Node's engine is held to here. */
+const SOFTN_REQUEST_MEMORY_MB=256;
+
+/**
+ * The operator's `requestMemoryMb` in private/config.json, a whole number of
+ * MiB from 128 to 1024, or the default: what one request on softn-runner may
+ * take for the app's engine, and as much again for SQLite (the script heap
+ * is 64 MiB less). Node's runner is not told: its engine is held to 256 MiB
+ * by the archive (package.mjs).
+ * @param mixed $config private/config.json, decoded
+ */
+function softn_request_memory_mb(mixed $config): int {
+    $mb=is_array($config)?($config['requestMemoryMb']??null):null;
+    return is_int($mb)&&$mb>=128&&$mb<=1024?$mb:SOFTN_REQUEST_MEMORY_MB;
+}
+
 /**
  * What a runner is started with, and nothing else of PHP's own environment.
  * softn-runner finds the backend by SOFTN_BACKEND_ROOT (it is not beside
  * runner.mjs, but in bin/); runner.mjs reads it too, and it names the folder
- * runner.mjs is in.
+ * runner.mjs is in. SOFTN_RUNNER_MEMORY_MB is softn-runner's alone.
+ * @param mixed $config private/config.json, decoded
  * @return array<string,string>
  */
-function softn_runner_environment(string $backend): array {
-    return ['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1','SOFTN_BACKEND_ROOT'=>$backend];
+function softn_runner_environment(string $backend, mixed $config=null): array {
+    return ['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1','SOFTN_BACKEND_ROOT'=>$backend,'SOFTN_RUNNER_MEMORY_MB'=>(string)softn_request_memory_mb($config)];
 }
 
 /**

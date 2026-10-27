@@ -239,6 +239,7 @@ impl Host {
                 "handler": route.handler,
                 "request": request,
                 "steps": STEPS,
+                "heap": crate::limits::limits().heap,
                 "grant": true,
             });
             let (db, sql, crypto, capabilities, writable) = (Rc::clone(&self.db), Rc::clone(&self.sql), Rc::clone(&self.crypto), self.capabilities.clone(), route.writable);
