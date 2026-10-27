@@ -25,7 +25,10 @@
 // The copy comes from the site's own caches, never the model cache: an app's
 // script names what goes in that one, by address (core's model-host.ts), and
 // a page or a worker script answered from it was whatever file an app had
-// had fetched under that name.
+// had fetched under that name. A query is set aside only in the precache,
+// which holds the site's files by their own addresses: a runtime cache holds
+// what was fetched by whatever address it was asked for, and `/web/` was
+// answered with an entry kept as `/web/?n=1/assets/a.js`.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.mode !== 'navigate' && req.destination !== 'worker' && req.destination !== 'sharedworker') return;
@@ -34,7 +37,8 @@ self.addEventListener('fetch', (event) => {
   const fromSiteCaches = async (request) => {
     for (const name of await caches.keys()) {
       if (name === MODEL_CACHE) continue;
-      const res = await (await caches.open(name)).match(request, { ignoreSearch: true });
+      const ignoreSearch = name.startsWith('workbox-precache');
+      const res = await (await caches.open(name)).match(request, { ignoreSearch });
       if (res) return res;
     }
     return undefined;

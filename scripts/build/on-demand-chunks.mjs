@@ -113,9 +113,9 @@ export const onDemandRuntimeCaching = [
     // anything references it and a new release references new names:
     // CacheFirst. The precache route is registered ahead of this one and keeps
     // answering for the shell's own files; this answers for the rest — the
-    // feature chunks, vendor-three and the Three addons. A RegExp route
-    // matches a cross-origin URL only from its first character, and no
-    // absolute URL starts with /assets/, so this is same-origin by construction.
+    // feature chunks, vendor-three and the Three addons. A pattern written as
+    // a path is tested against the path of a same-origin request with no
+    // query (sw-route-match.js), so it is same-origin by construction.
     urlPattern: /\/assets\/[^/?#]+\.js$/,
     handler: 'CacheFirst',
     options: {

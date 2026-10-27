@@ -63,6 +63,22 @@ test('a worker takes over at once only when the build registers it', () => {
   assert.deepEqual(routes, [{ pattern: '\\/assets\\/[^/?#]+\\.js$', flags: 'i', handler: 'CacheFirst', cacheName: 'c', networkTimeoutSeconds: undefined, expiration: { maxEntries: 2 }, statuses: [0, 200] }]);
 });
 
+// Matched against the whole address, a path pattern found `/assets/a.js` in a query: an app's
+// <img src="/web/?n=1/assets/a.js"> filled the chunks' cache, and kept SoftN Web's page in it.
+test('a path route matches the path of a request to this origin with no query', async () => {
+  const { routeMatcher } = await import('./sw-route-match.js');
+  const origin = 'https://softn.test';
+  const chunk = routeMatcher('\\/assets\\/[^/?#]+\\.js$', '', origin);
+  const at = (href) => chunk({ url: new URL(href) });
+  assert.ok(at('https://softn.test/web/assets/feature-1a2b3c4d.js'));
+  assert.ok(!at('https://softn.test/web/?n=1/assets/a.js'), 'a query that ends like a chunk');
+  assert.ok(!at('https://softn.test/web/assets/a.js?x=1'), 'a chunk asked for with a query');
+  assert.ok(!at('https://cdn.example/assets/a.js'), 'another origin');
+  // An absolute pattern stays the RegExp route it was.
+  const fonts = routeMatcher('^https:\\/\\/fonts\\.googleapis\\.com\\/.*', 'i', origin);
+  assert.ok(fonts instanceof RegExp && fonts.test('https://fonts.googleapis.com/css2?family=x'));
+});
+
 test('the worker carries its list as one JSON line and imports its scripts before any fetch listener', async () => {
   const precache = [{ url: 'index.html', revision: 'abc' }, { url: 'assets/a-12345678.js', revision: null }];
   const code = await buildWorker(precache, workerConfig({ registerType: 'autoUpdate', workbox: { importScripts: ['coi.js'] } }));

@@ -16,7 +16,7 @@ const SCOPE = 'https://softn.test/web/';
 
 type FetchHandler = (event: { request: Request; respondWith(answer: Promise<Response>): void }) => void;
 
-/** Runs coi.js against caches by name, each a map from address (without its query) to a response. */
+/** Runs coi.js against caches by name, each a map from address to a response, matched as the Cache API does. */
 function install(stores: Record<string, Record<string, () => Response>>) {
   let handler: FetchHandler | undefined;
   const self = {
@@ -25,7 +25,11 @@ function install(stores: Record<string, Record<string, () => Response>>) {
   };
   const strip = (url: string) => url.split('?')[0];
   const open = async (name: string) => ({
-    match: async (request: Request | string) => stores[name]?.[strip(typeof request === 'string' ? request : request.url)]?.(),
+    match: async (request: Request | string, options?: { ignoreSearch?: boolean }) => {
+      const url = typeof request === 'string' ? request : request.url;
+      const kept = Object.entries(stores[name] ?? {}).find(([key]) => (options?.ignoreSearch ? strip(key) === strip(url) : key === url));
+      return kept?.[1]();
+    },
   });
   const caches = {
     keys: async () => Object.keys(stores),
@@ -70,5 +74,16 @@ describe('coi.js offline', () => {
   it('still answers a navigation from the cache that holds that page', async () => {
     const answer = install({ 'workbox-precache-v2': { [`${SCOPE}docs/`]: () => new Response('docs') } });
     expect(await (await answer(navigation(`${SCOPE}docs/?q=1`))).text()).toBe('docs');
+  });
+
+  // A runtime cache holds what was fetched by whatever address it was asked for: an app's
+  // <img src="/web/?n=1/assets/a.js"> kept SoftN Web's page there, and with the query set
+  // aside `/web/` was answered with it, a copy that went stale with the next release.
+  it('sets a query aside only in the precache', async () => {
+    const answer = install({
+      'softn-feature-chunks': { [`${SCOPE}?n=1/assets/a.js`]: () => new Response('planted') },
+      'workbox-precache-v2': { [`${SCOPE}index.html`]: () => new Response('<!doctype html>SoftN Web') },
+    });
+    expect(await (await answer(navigation(SCOPE))).text()).toBe('<!doctype html>SoftN Web');
   });
 });

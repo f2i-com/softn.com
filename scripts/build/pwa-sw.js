@@ -14,6 +14,7 @@ import { CacheFirst, NetworkFirst } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { clientsClaim } from 'workbox-core';
+import { routeMatcher } from './sw-route-match.js';
 
 const config = self.__SOFTN_SW__;
 
@@ -44,5 +45,5 @@ for (const route of config.routes) {
   const Strategy = route.handler === 'NetworkFirst' ? NetworkFirst : CacheFirst;
   const options = { cacheName: route.cacheName, plugins };
   if (route.networkTimeoutSeconds !== undefined) options.networkTimeoutSeconds = route.networkTimeoutSeconds;
-  registerRoute(new RegExp(route.pattern, route.flags), new Strategy(options), 'GET');
+  registerRoute(routeMatcher(route.pattern, route.flags, self.location.origin), new Strategy(options), 'GET');
 }
