@@ -29,7 +29,7 @@ data/
       storage.sqlite     optional app-owned saved data, not directory metadata
   sequences.json         monotonic comment identifier allocation
   categories.json        category definitions
-  ratelimits.json        expiring visitor action windows
+  ratelimits/            expiring visitor action windows, in 256 small files
   cache/bundles.json     disposable bundle inspection cache
   catalog.lock           stable process lock; never delete it while serving
   storage.lock           held by requests working in an app's storage; see Concurrency
@@ -174,8 +174,10 @@ bundle is. Checking every file costs a few milliseconds a bundle (about
 Independent PHP workers acquire an OS `flock` on the stable catalogue lock
 before reading the folder snapshot. The lock covers validation, version/slug
 allocation, and metadata updates. Read-modify-write operations are therefore
-serialized, including ratings, comments and plays. The rate limits have a
-lock of their own (`ratelimits.lock`), held for the counter update alone:
+serialized, including ratings, comments and plays. The rate limits have
+locks of their own (one for each of the 256 files in `ratelimits/`, each
+held to 1,024 counters, the one that ends first dropped when it is full),
+held for the counter update alone:
 a limit is checked before an upload is read, and the catalogue must not be
 held while a slow body arrives. The upload routes read their body before
 they open the catalogue for the same reason, and check the bundle in it
@@ -491,7 +493,7 @@ inside an app's store either, checkpoints each app's
 `storage.sqlite` so its WAL is folded into the main file, and writes every
 metadata file, bundle, picture and database into the archive. It leaves out
 what is not data: the lock files, the rate-limit counters
-(`ratelimits.json`, which requests rewrite under a lock of their own while an
+(`ratelimits/`, which requests rewrite under locks of their own while an
 export runs) and the seeding flag, the rebuildable `cache/`, the temp
 siblings a killed writer leaves (`.json-…`, `.upload-…`), retired folders
 and SQLite's `-shm`. Inside the archive,

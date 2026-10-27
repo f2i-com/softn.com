@@ -215,17 +215,42 @@ final class Db
      * then held until it ended — through the upload that follows a publish
      * or a new version. One client trickling a bundle in held every other
      * request, including every read, for the duration of its upload. Nothing
-     * else touches ratelimits.json, so nothing else waits on it now.
+     * else touches the counters, so nothing else waits on them now.
+     *
+     * They are kept in 256 small files (`ratelimits/<xx>.json`, by the first
+     * byte of the counter's id), each held to RATE_ROWS_PER_FILE. One file
+     * for every visitor had no size limit: a run, a rating or a new category
+     * counts before anything is checked, keyed by IPv4 address or IPv6 /64,
+     * and 65,000 counters were 8.6 MB read, pruned, written and fsynced for
+     * every count, a quarter of a second each, and the routes that count
+     * after resolving an app's slug do it holding the catalogue lock, so the
+     * whole directory waited. A full file drops the counter that ends first:
+     * refusing new counters would let one address range lock everyone out,
+     * and an address range wide enough to fill one already counts as many
+     * visitors.
      */
+    private const RATE_ROWS_PER_FILE = 1024;
+
     public static function rateLimit(string $bucket, string $key): void {
         $limit=Config::get("limits.$bucket");if(!is_array($limit)||count($limit)!==2)return;
         [$max,$window]=array_map('intval',$limit);
-        $dir=Config::dataDir();$lock=fopen("$dir/ratelimits.lock",'c');
+        $id=hash('sha256',$bucket.'|'.$key);
+        $dir=Config::dataDir().'/ratelimits';
+        if(!is_dir($dir)&&!@mkdir($dir,0775,true)&&!is_dir($dir))throw new ApiError(503,'The directory is busy.');
+        $file=$dir.'/'.substr($id,0,2);
+        $lock=fopen("$file.lock",'c');
         if(!$lock||!flock($lock,LOCK_EX))throw new ApiError(503,'The directory is busy.');
         try {
-            $path="$dir/ratelimits.json";$rows=Catalog::readJson($path);$now=time();$id=hash('sha256',$bucket.'|'.$key);
+            $path="$file.json";$rows=Catalog::readJson($path);$now=time();
             foreach($rows as $k=>$r)if($now>=$r['expires'])unset($rows[$k]);
-            $r=$rows[$id]??['count'=>0,'expires'=>$now+$window];
+            $r=$rows[$id]??null;
+            if($r===null){
+                while(count($rows)>=self::RATE_ROWS_PER_FILE){
+                    $first=null;foreach($rows as $k=>$row)if($first===null||$row['expires']<$rows[$first]['expires'])$first=$k;
+                    unset($rows[$first]);
+                }
+                $r=['count'=>0,'expires'=>$now+$window];
+            }
             if($r['count']>=$max)throw new ApiError(429,'Too many requests; try again in a little while.',['retryAfter'=>max(1,$r['expires']-$now)]);
             $r['count']++;$rows[$id]=$r;Catalog::writeJson($path,$rows);
         } finally {flock($lock,LOCK_UN);fclose($lock);}

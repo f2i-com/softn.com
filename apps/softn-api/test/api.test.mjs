@@ -933,7 +933,7 @@ test('the play page opens in the side the app declares: a light app does not boo
  * several bundles of its own starts from a clean window rather than from
  * whatever the tests before it left.
  */
-function resetRateLimits() { fs.writeFileSync(path.join(root, 'data/ratelimits.json'), '{}');
+function resetRateLimits() { fs.rmSync(path.join(root, 'data/ratelimits'), { recursive: true, force: true });
 }
 /** Forget today's runs: every request here comes from one address, whose run of an app counts once a day. */
 function resetRunLog() {
@@ -1252,6 +1252,27 @@ test('the admin key is not held to the publish limit; a wrong key is', skip, asy
     });
     assert.equal(owner.status, 201, JSON.stringify(owner.json));
     assert.equal(owner.json.app.slug, `owner-batch-${i}`);
+  }
+  resetRateLimits();
+});
+
+// The counters were one file for every visitor, read, pruned and rewritten for every count,
+// with no size limit: 65,000 visitors were 8.6 MB a count, under the catalogue lock.
+test('the rate-limit counters stay small however many visitors there are', skip, async () => {
+  resetRateLimits();
+  const dir = path.join(root, 'data/ratelimits');
+  fs.mkdirSync(dir, { recursive: true });
+  const later = Math.floor(Date.now() / 1000) + 3600;
+  for (let shard = 0; shard < 256; shard++) {
+    const prefix = shard.toString(16).padStart(2, '0');
+    const rows = {};
+    for (let i = 0; i < 1024; i++) rows[prefix + i.toString(16).padStart(62, '0')] = { count: 1, expires: later + i };
+    fs.writeFileSync(path.join(dir, `${prefix}.json`), JSON.stringify(rows));
+  }
+  // A visitor new to every file is still counted, and every file is still at its limit.
+  assert.equal((await api('POST', '/api/apps/test-snake/runs')).status, 204);
+  for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.json'))) {
+    assert.ok(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))).length <= 1024, name);
   }
   resetRateLimits();
 });

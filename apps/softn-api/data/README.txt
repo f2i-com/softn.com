@@ -4,7 +4,7 @@ This private directory holds the app catalogue and app-owned data:
   catalog.lock              stable cross-process lock; never delete while serving
   sequences.json            monotonic comment identifier allocation
   categories.json           category definitions
-  ratelimits.json           expiring request-limit windows
+  ratelimits/               expiring request-limit windows, in 256 small files
   cache/bundles.json        rebuildable bundle inspection cache
   apps/<slug>/app.json      listing, versions, plays, comments, ratings and edit hash;
                             "trusted": true in its "app" object, set by hand, makes the

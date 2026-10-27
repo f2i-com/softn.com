@@ -233,6 +233,7 @@ final class Backup
         // (Db::rateLimit has its own), so a request arriving during an export
         // could change one between its being listed and its being copied.
         if (in_array($rel, ['ratelimits.json', 'ratelimits.lock', 'seed.lock', 'seeded'], true)) return true;
+        if ($rel === 'ratelimits' && $isDir) return true;
         if ($rel === 'cache' && $isDir) return true;
         if (preg_match('/^\.(json|upload|retired)-/', $name)) return true;
         // On Windows tempnam() keeps three characters of its prefix: `.jsA1B2.tmp`, `.upC3D4.tmp`.
