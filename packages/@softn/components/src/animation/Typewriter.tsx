@@ -107,8 +107,10 @@ export function Typewriter({
         } else {
           // Finished typing this text
           onCompleteRef.current?.();
-          if (texts.length === 1 && !shouldLoop) {
-            // Single text, no loop: done
+          if (currentTextIndex === texts.length - 1 && !shouldLoop) {
+            // The last text, no loop: done, and left showing. Only a single
+            // text stopped here; the last of several was deleted, and the
+            // Typewriter ended blank.
             return;
           }
           // Pause, then start deleting

@@ -11,6 +11,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useId, useRef } from 'react';
 import { nameList } from '../utils/lists';
 import { commaList, recordRows } from '../utils/rows';
+import { sortRows } from '../utils/sort';
 import { recordDate } from './record-dates';
 
 /**
@@ -111,6 +112,26 @@ function humanize(str: string): string {
     .replace(/_/g, ' ')
     .replace(/^./, (s) => s.toUpperCase())
     .trim();
+}
+
+/**
+ * A store record's own fields beside its `data`: drawn as columns of every
+ * grid of records, they took the place of the app's fields. Shown when
+ * `columns` names them.
+ */
+const RECORD_FIELDS = new Set(['collection', 'created_at', 'updated_at', 'deleted']);
+
+/**
+ * A column's type, from its first filled cell. Read from the first row alone,
+ * a column whose first record had no value was typed `unknown`, and its
+ * dates and yes/no values were drawn as raw text.
+ */
+function columnType<T>(rows: readonly T[], key: string): ColumnConfig['type'] {
+  for (const row of rows) {
+    const value = getFieldValue(row, key);
+    if (value !== null && value !== undefined) return detectType(value);
+  }
+  return 'unknown';
 }
 
 // Detect column type from value
@@ -308,14 +329,11 @@ export function SmartGrid<T extends Record<string, unknown>>({
   const columns = useMemo<ColumnConfig[]>(() => {
     const asked = commaList(columnsProp);
     if (asked.length > 0) {
-      return asked.map((key) => {
-        const sampleValue = safeData[0] ? getFieldValue(safeData[0], key) : undefined;
-        return {
-          key,
-          label: columnLabels?.[key] ?? humanize(key),
-          type: detectType(sampleValue),
-        };
-      });
+      return asked.map((key) => ({
+        key,
+        label: columnLabels?.[key] ?? humanize(key),
+        type: columnType(safeData, key),
+      }));
     }
 
     // Auto-detect columns from first row
@@ -323,11 +341,9 @@ export function SmartGrid<T extends Record<string, unknown>>({
     if (!firstRow) return [];
 
     // Get keys from both the object and nested data property (XDB format)
-    const directKeys = Object.keys(firstRow).filter((k) => k !== 'data');
-    const dataKeys =
-      firstRow.data && typeof firstRow.data === 'object'
-        ? Object.keys(firstRow.data as Record<string, unknown>)
-        : [];
+    const isRecord = !!firstRow.data && typeof firstRow.data === 'object';
+    const directKeys = Object.keys(firstRow).filter((k) => k !== 'data' && !(isRecord && RECORD_FIELDS.has(k)));
+    const dataKeys = isRecord ? Object.keys(firstRow.data as Record<string, unknown>) : [];
     const allKeys = [...new Set([...directKeys, ...dataKeys])];
 
     return allKeys
@@ -336,7 +352,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
       .map((key) => ({
         key,
         label: columnLabels?.[key] ?? humanize(key),
-        type: detectType(getFieldValue(firstRow, key)),
+        type: columnType(safeData, key),
       }));
   }, [columnsProp, columnLabels, safeData, hideColumns]);
 
@@ -356,29 +372,11 @@ export function SmartGrid<T extends Record<string, unknown>>({
   // Sort data
   const sortedData = useMemo(() => {
     if (!sortColumn) return filteredData;
-
-    return [...filteredData].sort((a, b) => {
-      const aVal = getFieldValue(a, sortColumn);
-      const bVal = getFieldValue(b, sortColumn);
-
-      const aIsNull = aVal == null;
-      const bIsNull = bVal == null;
-      if (aIsNull && bIsNull) return 0;
-      // Missing values stay together at the end in both directions. Applying
-      // direction after this branch would unexpectedly move them to the front
-      // on the second click.
-      if (aIsNull) return 1;
-      if (bIsNull) return -1;
-
-      let comparison = 0;
-      if (typeof aVal === 'number' && typeof bVal === 'number') {
-        comparison = aVal - bVal;
-      } else {
-        comparison = String(aVal).localeCompare(String(bVal));
-      }
-
-      return sortDirection === 'desc' ? -comparison : comparison;
-    });
+    // In the order a Table or DataGrid sorts its rows (utils/sort.ts): "10"
+    // from a form after "9", dates by their time, empty cells last both ways.
+    // Compared as text, "10" came before "9" and a mixed column flipped
+    // between orders.
+    return sortRows(filteredData, (row) => getFieldValue(row, sortColumn), sortDirection);
   }, [filteredData, sortColumn, sortDirection]);
 
   // Paginate data

@@ -74,7 +74,8 @@ export const ViewportTileMap=React.memo(function ViewportTileMap(props:SizedTile
   schedule();
   return()=>{disposed=true;cancelAnimationFrame(frame);resize?.disconnect();mutation?.disconnect();window.removeEventListener('resize',schedule);window.removeEventListener('scroll',schedule,true);scheduleRef.current=()=>{};};
  },[]);
- React.useLayoutEffect(()=>{dirty.current=true;scheduleRef.current();},[props.layers,mapWidth,mapHeight,tileSize,scale,props.smooth,ready]);
+ // tilesetColumns too: a new count left every tile cut from the old grid until a pan.
+ React.useLayoutEffect(()=>{dirty.current=true;scheduleRef.current();},[props.layers,props.tilesetColumns,mapWidth,mapHeight,tileSize,scale,props.smooth,ready]);
  return <div ref={root} className={className} data-viewport-tilemap="true" style={{position:'relative',width:mapWidth*tileSize*scale,height:mapHeight*tileSize*scale,imageRendering:props.smooth?'auto':'pixelated',...style}}>
   <canvas ref={surface} width={1} height={1} data-tilemap-surface="true" style={{position:'absolute',pointerEvents:'none'}}/>
   <canvas width={1} height={1} data-tilemap-input="true" style={{position:'absolute',inset:0,width:'100%',height:'100%',background:'transparent'}}/>

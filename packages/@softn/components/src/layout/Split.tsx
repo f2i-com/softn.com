@@ -6,7 +6,6 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { cssPaint } from '../utils/egress';
-import { cssLength } from '../utils/css-values';
 
 export interface SplitProps {
   /** First pane content */
@@ -42,6 +41,20 @@ function isOnlySpace(child: React.ReactNode): boolean {
   return false;
 }
 
+/**
+ * What `initialSize` asks for: pixels, or a share of the box. What reads as
+ * neither (`"wide"`, NaN, a bare `"%"`) is the half the default asks for:
+ * taken as it came, the pane was NaN pixels, drawn at no size, and every drag
+ * and arrow key from there was NaN too.
+ */
+function askedSize(initialSize: string | number): { px: number } | { share: number } {
+  if (typeof initialSize === 'number') return Number.isFinite(initialSize) && initialSize >= 0 ? { px: initialSize } : { share: 0.5 };
+  const text = String(initialSize).trim();
+  const value = parseFloat(text);
+  if (!Number.isFinite(value) || value < 0) return { share: 0.5 };
+  return text.endsWith('%') ? { share: value / 100 } : { px: value };
+}
+
 export function Split({
   children,
   direction = 'horizontal',
@@ -70,11 +83,12 @@ export function Split({
   useEffect(() => {
     const element = containerRef.current;
     if (!element || size !== null) return;
-    if (!(typeof initialSize === 'string' && initialSize.endsWith('%'))) {
-      setSize(typeof initialSize === 'number' ? initialSize : parseInt(initialSize, 10));
+    const asked = askedSize(initialSize);
+    if ('px' in asked) {
+      setSize(asked.px);
       return;
     }
-    const share = parseFloat(initialSize) / 100;
+    const share = asked.share;
     const measure = (): boolean => {
       const total = direction === 'horizontal' ? element.offsetWidth : element.offsetHeight;
       if (total > 0) setSize(total * share);
@@ -165,6 +179,8 @@ export function Split({
   };
 
   const isHorizontal = direction === 'horizontal';
+  const asked = askedSize(initialSize);
+  const unmeasured = 'px' in asked ? `${asked.px}px` : `${asked.share * 100}%`;
 
   const containerStyle: React.CSSProperties = {
     display: 'flex',
@@ -176,7 +192,7 @@ export function Split({
   };
 
   const firstPaneStyle: React.CSSProperties = {
-    [isHorizontal ? 'width' : 'height']: size !== null ? `${size}px` : cssLength(initialSize),
+    [isHorizontal ? 'width' : 'height']: size !== null ? `${size}px` : unmeasured,
     [isHorizontal ? 'minWidth' : 'minHeight']: `${minSize}px`,
     overflow: 'auto',
     flexShrink: 0,

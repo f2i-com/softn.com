@@ -293,6 +293,39 @@ describe('Scene3D enhanced features', () => {
     expect(keys.left).toBe(false);
   });
 
+  // Read once with the scene: a game that turned them on after the first render heard no keys.
+  it('hears the game keys once gameControls is turned on after mount', () => {
+    act(() => root.render(<Scene3D />));
+    act(() => root.render(<Scene3D gameControls={true} />));
+    const keys = (window as unknown as { __softnKeys: Record<string, boolean> }).__softnKeys;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
+    expect(keys.s).toBe(true);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 's' }));
+    act(() => root.render(<Scene3D gameControls={false} />));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
+    expect(keys.s).toBe(false);
+  });
+
+  // The key map is shared: one scene going let go of the key the other scene's player held.
+  it('keeps a key held for a scene still listening when another scene goes', () => {
+    const second = document.createElement('div');
+    document.body.appendChild(second);
+    const other = createRoot(second);
+    try {
+      act(() => root.render(<Scene3D gameControls={true} />));
+      act(() => other.render(<Scene3D gameControls={true} />));
+      const keys = (window as unknown as { __softnKeys: Record<string, boolean> }).__softnKeys;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w' }));
+      act(() => other.render(<div />));
+      expect(keys.w).toBe(true);
+      act(() => root.render(<div />));
+      expect(keys.w).toBe(false);
+    } finally {
+      act(() => other.unmount());
+      second.remove();
+    }
+  });
+
   // A host keeps a hidden app's scene mounted (SoftN Web's tabs): a key
   // pressed in the app on screen moved the hidden game.
   it('hears no game key go down while it is not on screen, and still lets one go', () => {

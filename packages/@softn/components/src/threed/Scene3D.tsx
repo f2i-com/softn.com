@@ -42,6 +42,9 @@ export type { ModelFormat } from './model-loaders';
 export type { Scene3DEffects } from './effects';
 export { modelTemplateCacheStats } from './model-cache';
 
+/** Scenes listening for `gameControls`, which share `window.__softnKeys`. */
+let gameControlScenes = 0;
+
 type Scene3DWindow = Window & {
   __scene3dYaw?: number;
   __scene3dPitch?: number;
@@ -1626,6 +1629,89 @@ export function Scene3D({
   const lastCamLookAtRef = useRef<string>('');
   const lastCamFovRef = useRef<number | undefined>(undefined);
 
+  // The built-in game keys, on and off with `gameControls`. They were set up
+  // with the scene and read once: a game that turned them on after the first
+  // render heard no keys.
+  useEffect(() => {
+    if (!gameControls || typeof window === 'undefined') return;
+    const container = containerRef.current;
+    if (!container) return;
+    const keys = (window as unknown as { __softnKeys?: Record<string, boolean> }).__softnKeys || {
+      w: false, a: false, s: false, d: false,
+      up: false, down: false, left: false, right: false,
+      space: false, shift: false,
+    };
+    (window as unknown as { __softnKeys: Record<string, boolean> }).__softnKeys = keys;
+
+    const isUi = (t: EventTarget | null) => {
+      if (!t || !(t instanceof HTMLElement)) return false;
+      const tag = t.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button' || t.isContentEditable;
+    };
+
+    // A scene not on screen hears no key going down. A host that keeps
+    // several apps open (SoftN Web's tabs) keeps a hidden app's scene
+    // mounted, and Space pressed in the app on screen made the hidden
+    // game jump. Keys still come up, so one held as the scene hides lets go.
+    const isShown = () => {
+      if (typeof container.checkVisibility === 'function') return container.checkVisibility();
+      for (let node: Element | null = container; node; node = node.parentElement) {
+        if (getComputedStyle(node).display === 'none') return false;
+      }
+      return container.isConnected;
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isUi(e.target) || !isShown()) return;
+      const k = e.key.toLowerCase();
+      if (k === 'w') keys.w = true;
+      if (k === 's') keys.s = true;
+      if (k === 'a') keys.a = true;
+      if (k === 'd') keys.d = true;
+      if (e.key === 'ArrowUp') keys.up = true;
+      if (e.key === 'ArrowDown') keys.down = true;
+      if (e.key === 'ArrowLeft') keys.left = true;
+      if (e.key === 'ArrowRight') keys.right = true;
+      if (e.key === ' ' || e.code === 'Space') keys.space = true;
+      if (e.key === 'Shift') keys.shift = true;
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (k === 'w') keys.w = false;
+      if (k === 's') keys.s = false;
+      if (k === 'a') keys.a = false;
+      if (k === 'd') keys.d = false;
+      if (e.key === 'ArrowUp') keys.up = false;
+      if (e.key === 'ArrowDown') keys.down = false;
+      if (e.key === 'ArrowLeft') keys.left = false;
+      if (e.key === 'ArrowRight') keys.right = false;
+      if (e.key === ' ' || e.code === 'Space') keys.space = false;
+      if (e.key === 'Shift') keys.shift = false;
+    };
+
+    // A key held as the window loses focus, or as the scene goes, has no
+    // keyup to come: the object is shared with the next scene, which walked
+    // on by itself until the key was pressed and let go again.
+    const releaseAll = () => {
+      for (const key of Object.keys(keys)) keys[key] = false;
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', releaseAll);
+    gameControlScenes++;
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', releaseAll);
+      // Let go only by the last scene listening: another still on screen
+      // shares the map, and one scene's going took the key its player held.
+      gameControlScenes--;
+      if (gameControlScenes === 0) releaseAll();
+    };
+  }, [gameControls]);
+
   // Initialize renderer, scene, camera
   useEffect(() => {
     const container = containerRef.current;
@@ -1707,80 +1793,6 @@ export function Scene3D({
         gridHelper.position.set(grid.position.x, grid.position.y, grid.position.z);
       }
       scene.add(gridHelper);
-    }
-
-    let cleanupGameKeys: (() => void) | null = null;
-    if (gameControls && typeof window !== 'undefined') {
-      const keys = (window as unknown as { __softnKeys?: Record<string, boolean> }).__softnKeys || {
-        w: false, a: false, s: false, d: false,
-        up: false, down: false, left: false, right: false,
-        space: false, shift: false,
-      };
-      (window as unknown as { __softnKeys: Record<string, boolean> }).__softnKeys = keys;
-
-      const isUi = (t: EventTarget | null) => {
-        if (!t || !(t instanceof HTMLElement)) return false;
-        const tag = t.tagName.toLowerCase();
-        return tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button' || t.isContentEditable;
-      };
-
-      // A scene not on screen hears no key going down. A host that keeps
-      // several apps open (SoftN Web's tabs) keeps a hidden app's scene
-      // mounted, and Space pressed in the app on screen made the hidden
-      // game jump. Keys still come up, so one held as the scene hides lets go.
-      const isShown = () => {
-        if (typeof container.checkVisibility === 'function') return container.checkVisibility();
-        for (let node: Element | null = container; node; node = node.parentElement) {
-          if (getComputedStyle(node).display === 'none') return false;
-        }
-        return container.isConnected;
-      };
-
-      const onKeyDown = (e: KeyboardEvent) => {
-        if (isUi(e.target) || !isShown()) return;
-        const k = e.key.toLowerCase();
-        if (k === 'w') keys.w = true;
-        if (k === 's') keys.s = true;
-        if (k === 'a') keys.a = true;
-        if (k === 'd') keys.d = true;
-        if (e.key === 'ArrowUp') keys.up = true;
-        if (e.key === 'ArrowDown') keys.down = true;
-        if (e.key === 'ArrowLeft') keys.left = true;
-        if (e.key === 'ArrowRight') keys.right = true;
-        if (e.key === ' ' || e.code === 'Space') keys.space = true;
-        if (e.key === 'Shift') keys.shift = true;
-      };
-
-      const onKeyUp = (e: KeyboardEvent) => {
-        const k = e.key.toLowerCase();
-        if (k === 'w') keys.w = false;
-        if (k === 's') keys.s = false;
-        if (k === 'a') keys.a = false;
-        if (k === 'd') keys.d = false;
-        if (e.key === 'ArrowUp') keys.up = false;
-        if (e.key === 'ArrowDown') keys.down = false;
-        if (e.key === 'ArrowLeft') keys.left = false;
-        if (e.key === 'ArrowRight') keys.right = false;
-        if (e.key === ' ' || e.code === 'Space') keys.space = false;
-        if (e.key === 'Shift') keys.shift = false;
-      };
-
-      // A key held as the window loses focus, or as the scene goes, has no
-      // keyup to come: the object is shared with the next scene, which walked
-      // on by itself until the key was pressed and let go again.
-      const releaseAll = () => {
-        for (const key of Object.keys(keys)) keys[key] = false;
-      };
-
-      window.addEventListener('keydown', onKeyDown);
-      window.addEventListener('keyup', onKeyUp);
-      window.addEventListener('blur', releaseAll);
-      cleanupGameKeys = () => {
-        window.removeEventListener('keydown', onKeyDown);
-        window.removeEventListener('keyup', onKeyUp);
-        window.removeEventListener('blur', releaseAll);
-        releaseAll();
-      };
     }
 
     const fov = cameraProp?.fov ?? 60;
@@ -2351,7 +2363,6 @@ export function Scene3D({
       if (debugEl) debugEl.remove();
       if (plLockChange) document.removeEventListener('pointerlockchange', plLockChange);
       if (plMouseDown) canvas.removeEventListener('mousedown', plMouseDown);
-      if (cleanupGameKeys) cleanupGameKeys();
       if (enablePointerLock) {
         if (document.pointerLockElement === canvas) {
           try {

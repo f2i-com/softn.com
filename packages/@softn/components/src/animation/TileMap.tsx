@@ -94,7 +94,17 @@ function LegacyTileMap({
   React.useEffect(() => {
     // The tileset is named by the bundle, and this assigns it to a real
     // `HTMLImageElement`, so it needs the same scheme check an `<img src>` gets.
-    if (!src || !isSafeUrl(src) || src === loadedSrcRef.current) {
+    if (!src || !isSafeUrl(src)) {
+      // No tileset, or one refused: the map is drawn with none. The last one
+      // was kept, and the map went on painting from a tileset the page had
+      // taken away.
+      imgRef.current = null;
+      loadedSrcRef.current = '';
+      const canvas = canvasRef.current;
+      canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    if (src === loadedSrcRef.current) {
       render();
       return;
     }
