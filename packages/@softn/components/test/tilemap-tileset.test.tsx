@@ -3,7 +3,6 @@
  * draws with none: the last one was kept, and every repaint after drew the
  * map from a tileset the page no longer named.
  */
-import React from 'react';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount } from './dom';

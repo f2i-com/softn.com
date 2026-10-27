@@ -984,6 +984,17 @@ describe('XDB Service (Tauri mode)', () => {
       expect(again.id).not.toBe(stored.id);
     });
 
+    // An export leaves out a collection not loaded from the native store; one first made after
+    // startup is loaded (it has nothing in SQLite to miss) and is in every backup.
+    it('exports a collection first made after startup', async () => {
+      const xdb = new XDBService(undefined, 'late-collection', 'late-collection-app');
+      await xdb.isReady;
+      await xdb.createAsync('made-later', { n: 1 });
+      const exported = xdb.export();
+      expect(exported.collections['made-later']).toHaveLength(1);
+      expect(exported.unreadable).toBeUndefined();
+    });
+
     // Native reads answered SQLite's view: a record deleted here whose native delete had not
     // landed was listed, and getAsync answered tombstones and wrote them, or stale copies, over
     // the cache; an updateAsync answered after a delete() made the record live again.
