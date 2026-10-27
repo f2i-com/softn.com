@@ -931,9 +931,10 @@ export class XDBSyncAdapter {
               this.listed(collName).add(recordId);
               this.markStored(collName, recordId);
             } else if (change.action === 'delete') {
-              // Remote hard-delete
+              // Remote hard-delete, made whether or not this collection loaded
+              // from the native store (XDBService.removeRecord `fromPeer`).
               this.markStored(collName, recordId);
-              this.xdb.removeRecord(collName, recordId);
+              this.xdb.removeRecord(collName, recordId, { fromPeer: true });
             }
           } catch (err) {
             this.warnMalformed(collName, recordId, err);

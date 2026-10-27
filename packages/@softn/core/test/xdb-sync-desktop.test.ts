@@ -121,6 +121,29 @@ function browser(name: string) {
   return { xdb, adapter };
 }
 
+describe('a peer\'s removal of a record in a collection that did not load', () => {
+  // Refused as a destructive write to an unloaded collection, the removal was lost here, and
+  // once the collection loaded this device sent the record back to the room.
+  it('is made in the native store, where the app\'s own removal still waits for the load', async () => {
+    native.rows.set('n1', { id: 'n1', collection: 'notes', data: { t: 1 }, created_at: 't', updated_at: 't', deleted: false });
+    native.rows.set('n2', { id: 'n2', collection: 'notes', data: { t: 2 }, created_at: 't', updated_at: 't', deleted: false });
+    const answer = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation(async (cmd: string, args: Record<string, any> = {}) => {
+      if (cmd === 'get_collection' && args.collection === 'notes') throw new Error('IPC failure');
+      return answer(cmd, args);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const xdb = new XDBService(undefined, 'unloaded-peer');
+    await xdb.isReady;
+    expect(xdb.isHydrated('notes')).toBe(false);
+    xdb.removeRecord('notes', 'n1', { fromPeer: true });
+    await settle();
+    expect(native.rows.get('n1')?.deleted).toBe(true);
+    expect(() => xdb.removeRecord('notes', 'n2')).toThrow(/has not been loaded/);
+    expect(native.rows.get('n2')?.deleted).toBe(false);
+  });
+});
+
 describe('peer sync on the desktop', () => {
   it('a reload of the native store does not take a deleted record\'s tombstone out of the room', async () => {
     const net = new Net();

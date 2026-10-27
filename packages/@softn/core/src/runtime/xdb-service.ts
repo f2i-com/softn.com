@@ -2424,8 +2424,18 @@ export class XDBService {
     return passed;
   }
 
-  removeRecord(collection: string, id: string): void {
-    this.assertWritable(collection, true);
+  /**
+   * Remove a record for good. `fromPeer`: a peer's removal heard from a room,
+   * which goes through to the native store whether or not this collection
+   * loaded. The guard refuses this app's own destructive writes to a
+   * collection it could not load, which could drop records nobody saw; a
+   * peer's removal of one named record drops only that one, and every other
+   * peer has made it. Refused, it was lost here, and once the collection
+   * loaded the room was sent the record again by this device, undoing the
+   * removal on every peer.
+   */
+  removeRecord(collection: string, id: string, options: { fromPeer?: boolean } = {}): void {
+    this.assertWritable(collection, options.fromPeer !== true);
     if (this.useTauri) {
       const coll = this.memoryStore.get(collection);
       const removed = coll?.get(id);
