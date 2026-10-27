@@ -867,3 +867,18 @@ nodeTest('a body handed on as the client\'s text is the body a handler was hande
   assert.equal(now.body.dup,2);assert.equal(now.body.text,'café ☃ \u{1F600} a/b A \\ " \n');assert.equal(now.body.nul,'a\u0000b');
   assert.equal(now.body.big,9007199254740992);assert.equal(now.body.huge,12345678901234567000);assert.equal(now.body.wide,1e16);
 });
+
+nodeTest('a migration\'s local time is the zone the host gives the runner, read through the C library',{skip:skip||(process.platform==='win32'||!existsSync('/usr/share/zoneinfo/Australia/Sydney')?'needs a POSIX system with the time zone database (/usr/share/zoneinfo)':false)},t=>{
+  // SQLite's `localtime` asks the C library, which reads the zone's file:
+  // softn-runner's lockdown refused /usr/share/zoneinfo and /etc/localtime,
+  // and a host that names a zone (or, as FormLogic does, none, leaving
+  // /etc/localtime) had its migrations' local times in UTC.
+  const b=backend(manifest([{method:'GET',path:'/api/stamp',handler:'stamp'}]));
+  t.after(b.close);
+  writeFileSync(join(b.root,'app/server/migrations/001.sql'),"CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0); CREATE TABLE stamp(v TEXT); INSERT INTO stamp VALUES (datetime(0,'unixepoch','localtime'));");
+  writeFileSync(join(b.root,'app/server/main.logic'),'function stamp(req){return {status:200,body:softn.sql.first("SELECT v FROM stamp",[])};}\n');
+  const r=spawnSync(...runner(b.root),{input:JSON.stringify({path:'/api/stamp',method:'GET',query:{},headers:{},body:null,client_ip:'127.0.0.1',photos:false}),encoding:'utf8',timeout:30000,
+    env:{...process.env,TZ:'Australia/Sydney',SOFTN_BACKEND_ROOT:b.root,NODE_NO_WARNINGS:'1'}});
+  assert.equal(r.status,0,r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout),{status:200,body:{v:'1970-01-01 10:00:00'}},r.stderr);
+});

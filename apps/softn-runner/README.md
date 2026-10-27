@@ -76,7 +76,9 @@ thread it starts afterwards inherits it.
 - **Landlock** (Linux 5.13 and later): it may read the backend folder; in its
   database folder (`private/data`) and rate-limit notes (`private/limited`)
   make, write, truncate and remove regular files (and, in the notes,
-  folders); and read `/dev/urandom`. Any other open is refused, and no
+  folders); and read `/dev/urandom` (SQLite seeds from it) and the system's
+  time zone (`/etc/localtime`, `/usr/share/zoneinfo`: SQLite's `localtime`
+  reads it where the host sets no TZ). Any other open is refused, and no
   device, link, socket or pipe can be made anywhere. Where the kernel has
   them, TCP binds and connects (6.7), signals and abstract sockets outside
   the lockdown (6.12) and pathname sockets (7.1) are refused too. Landlock

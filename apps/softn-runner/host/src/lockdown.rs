@@ -10,8 +10,9 @@
 //! * **Landlock** (Linux 5.13 on): the backend folder may be read; in its
 //!   database folder (`private/data`) and rate-limit notes (`private/limited`)
 //!   regular files and (in the notes) folders may be made, written, truncated
-//!   and removed, and nothing else; `/dev/urandom` may be read (SQLite seeds
-//!   from it). Every other open, and every device, link, socket or pipe made,
+//!   and removed, and nothing else; `/dev/urandom` (SQLite seeds from it) and
+//!   the time zone (`/etc/localtime`, `/usr/share/zoneinfo`, for SQLite's
+//!   `localtime`) may be read. Every other open, and every device, link, socket or pipe made,
 //!   is refused. Where the kernel has them, TCP (6.7), signals and abstract
 //!   sockets outside the lockdown (6.12) and pathname sockets (7.1) too.
 //!   Landlock does not govern a file's mode, owner, times or extended
@@ -124,6 +125,10 @@ fn landlock_rules(root: &Path) -> Result<(i32, &'static str), String> {
         .and_then(|r| r.add_rules(path_beneath_rules([root.join("private/data")], data)))
         .and_then(|r| r.add_rules(path_beneath_rules([limited], notes)))
         .and_then(|r| r.add_rules(path_beneath_rules(["/dev/urandom"], AccessFs::ReadFile)))
+        // The system's time zone, which SQLite's `localtime` reads through the
+        // C library where the host sets no TZ (FormLogic does not): refused,
+        // a migration's local time was UTC on a server that is not.
+        .and_then(|r| r.add_rules(path_beneath_rules(["/etc/localtime", "/usr/share/zoneinfo"], read)))
         .and_then(|r| r.restrict_self())
         .map_err(|e| e.to_string())?;
     let offered = match status.landlock {
