@@ -1,5 +1,6 @@
 import type { AppPermissions } from '../bundle/types';
-import { eventForScript, extractEventProps } from './event-props';
+import { extractEventProps } from './event-props';
+import { sanitizeArgs } from './vm-args';
 import { appHears, setAppElement, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 import { isWorkerPlaceholderId } from './script-worker-bridges';
@@ -144,26 +145,6 @@ function isWorkerResponse(msg: unknown): msg is WorkerResponse {
 
 function isImportRequest(msg: unknown): msg is WorkerImportRequest {
   return !!msg && typeof msg === 'object' && (msg as Record<string, unknown>).type === 'import_request';
-}
-
-/**
- * Sanitize a value for postMessage (structured clone). Strips DOM objects,
- * native Events, React SyntheticEvents, and other non-cloneable values.
- */
-function sanitizeForPostMessage(a: unknown): unknown {
-  if (a == null || typeof a !== 'object') return a;
-  if (typeof a === 'function') return undefined;
-
-  // A native DOM event, React's wrapper around one (not cloneable: it holds
-  // the DOM nodes it happened on), or the markup's stand-in for one: the
-  // plain record the main thread's engine is given too (vm-args.ts).
-  const event = eventForScript(a);
-  if (event) return event;
-
-  // DOM Node
-  if (typeof Node !== 'undefined' && a instanceof Node) return {};
-
-  return a;
 }
 
 export class WorkerScriptRuntime implements ScriptRuntimeHandle {
@@ -832,7 +813,16 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
           reject(e);
         }
       });
-      this.worker.postMessage({ id, type, payload });
+      try {
+        this.worker.postMessage({ id, type, payload });
+      } catch (error) {
+        // Nothing went, so nothing is awaited: the entry and its timer stayed
+        // behind for fifteen seconds after a payload that could not be cloned.
+        this.pending.delete(id);
+        clearTimeout(timeout);
+        reject(error);
+        return;
+      }
       this.unanswered.set(id, { postedAt: performance.now(), type });
       this.armWatchdog();
     });
@@ -881,7 +871,10 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     void this.applyEntry({ ...res, state: {} });
 
     const makeAsyncFn = (name: string) => async (...args: unknown[]) => {
-      const safeArgs = args.map(a => sanitizeForPostMessage(a));
+      // As the main thread's engine is given them (vm-args.ts), at any depth:
+      // reduced at the top alone, `{ value: 1, done: fn }` or `[event]` could
+      // not be cloned, and the function never ran in the worker.
+      const safeArgs = sanitizeArgs(args);
       const payload: Record<string, unknown> = { name, args: safeArgs, ...this.storagePayload() };
 
       const t0 = performance.now();

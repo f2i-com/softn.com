@@ -19,12 +19,12 @@ let softn = {
   },
   net: {
     fetch: function(url, options, callback) {
-      host.call("net.fetch", [url, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("net.fetch", [url, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     }
   },
   qr: {
     encode: function(text, options, callback) {
-      host.call("qr.encode", [text, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("qr.encode", [text, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     decode: function(imageDataUrl, callback) {
       host.call("qr.decode", [imageDataUrl], callback);
@@ -32,13 +32,13 @@ let softn = {
   },
   camera: {
     capturePhoto: function(options, callback) {
-      host.call("camera.capturePhoto", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("camera.capturePhoto", [options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     recordVideo: function(options, callback) {
-      host.call("camera.recordVideo", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("camera.recordVideo", [options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     startLive: function(options, callback) {
-      host.call("camera.startLive", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("camera.startLive", [options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     stopLive: function() {
       host.call("camera.stopLive", [], function(){});
@@ -47,7 +47,7 @@ let softn = {
   mic: {
     record: function(options, callback) {
       if (typeof options === "function") { callback = options; options = {}; }
-      host.call("mic.record", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
+      host.call("mic.record", [options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
     },
     stop: function(callback) {
       host.call("mic.stop", [], callback || function(){});
@@ -82,7 +82,7 @@ let softn = {
     },
     play: function(src, options, callback) {
       if (typeof options === "function") { callback = options; options = {}; }
-      host.call("audio.play", [src, typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
+      host.call("audio.play", [src, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
     },
     stop: function(handle, callback) {
       host.call("audio.stop", [handle == null ? "" : String(handle)], callback || function(){});
@@ -115,7 +115,7 @@ let softn = {
   files: {
     readZipText: function(fileRef, callback) {host.call("files.readZipText", [fileRef], callback);},
     pickFile: function(options, callback) {
-      host.call("files.pickFile", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("files.pickFile", [options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     readText: function(fileRef, callback) {
       host.call("files.readText", [fileRef], callback);
@@ -138,11 +138,11 @@ let softn = {
     onnx: {
       loadModel: function(source, options, callback) {
         if (typeof options === "function") { callback = options; options = {}; }
-        host.call("ai.onnx.loadModel", [typeof source === "object" ? JSON.stringify(source) : source, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+        host.call("ai.onnx.loadModel", [typeof source === "object" ? JSON.stringify(source) : source, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
       },
       run: function(sessionId, feeds, options, callback) {
         if (typeof options === "function") { callback = options; options = {}; }
-        host.call("ai.onnx.run", [sessionId, typeof feeds === "object" ? JSON.stringify(feeds) : feeds, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+        host.call("ai.onnx.run", [sessionId, typeof feeds === "object" ? JSON.stringify(feeds) : feeds, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
       },
       release: function(sessionId, callback) {
         host.call("ai.onnx.release", [sessionId], callback);
@@ -151,11 +151,11 @@ let softn = {
     pipeline: function(task, model, options, callback) {
       if (typeof model === "function") { callback = model; model = ""; options = {}; }
       if (typeof options === "function") { callback = options; options = {}; }
-      host.call("ai.pipeline", [task, model || "", typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("ai.pipeline", [task, model || "", options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     generate: function(pipelineId, prompt, options, callback) {
       if (typeof options === "function") { callback = options; options = {}; }
-      host.call("ai.generate", [pipelineId, prompt, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("ai.generate", [pipelineId, prompt, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     embed: function(pipelineId, texts, callback) {
       host.call("ai.embed", [pipelineId, typeof texts === "object" ? JSON.stringify(texts) : texts], callback);
@@ -165,7 +165,7 @@ let softn = {
     },
     run: function(pipelineId, input, options, callback) {
       if (typeof options === "function") { callback = options; options = {}; }
-      host.call("ai.run", [pipelineId, typeof input === "object" ? JSON.stringify(input) : input, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+      host.call("ai.run", [pipelineId, typeof input === "object" ? JSON.stringify(input) : input, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },
     releaseAll: function(callback) {
       host.call("ai.releaseAll", [], callback);
@@ -177,11 +177,11 @@ let softn = {
     model: {
       load: function(model, options, callback) {
         if (typeof options === "function") { callback = options; options = {}; }
-        host.call("ai.model.load", [typeof model === "object" && model !== null ? JSON.stringify(model) : String(model), typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+        host.call("ai.model.load", [typeof model === "object" && model !== null ? JSON.stringify(model) : String(model), options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
       },
       generate: function(modelHandle, messages, options, callback) {
         if (typeof options === "function") { callback = options; options = {}; }
-        host.call("ai.model.generate", [modelHandle, typeof messages === "object" ? JSON.stringify(messages) : messages, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+        host.call("ai.model.generate", [modelHandle, typeof messages === "object" ? JSON.stringify(messages) : messages, options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
       },
       cancel: function(modelHandle, callback) {
         host.call("ai.model.cancel", [modelHandle], callback || function(){});
@@ -193,7 +193,7 @@ let softn = {
     gpu: {
       requestDevice: function(options, callback) {
         if (typeof options === "function") { callback = options; options = {}; }
-        host.call("ai.gpu.requestDevice", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
+        host.call("ai.gpu.requestDevice", [options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
       },
       createBuffer: function(source, usage, callback) {
         host.call("ai.gpu.createBuffer", [typeof source === "object" ? JSON.stringify(source) : source, usage], callback);
@@ -206,7 +206,7 @@ let softn = {
         host.call("ai.gpu.createShader", [typeof source === "object" ? JSON.stringify(source) : source], callback);
       },
       createPipeline: function(options, callback) {
-        host.call("ai.gpu.createPipeline", [typeof options === "object" ? JSON.stringify(options) : options], callback);
+        host.call("ai.gpu.createPipeline", [options && typeof options === "object" ? JSON.stringify(options) : options == null ? "{}" : options], callback);
       },
       dispatch: function(pipelineId, bindings, workgroups, callback) {
         host.call("ai.gpu.dispatch", [pipelineId, JSON.stringify(bindings), JSON.stringify(workgroups)], callback);
