@@ -238,6 +238,19 @@ describe('XDB Service (Tauri mode)', () => {
     }
   });
 
+  // The native store found the record by id alone: a peer's record in a shared collection,
+  // with the id of one in a private collection, had an edit of it merged into that one.
+  it('names the collection of a scoped edit, so the native store edits that collection alone', async () => {
+    backend.set('notes', [makeRecord('n1', 'notes', { text: 'a' })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await flushPromises();
+    await flushPromises();
+    xdb.updateInCollection('notes', 'n1', { text: 'b' });
+    await flushPromises();
+    const update = invokeMock.mock.calls.find(([cmd]: [string]) => cmd === 'update_record');
+    expect(update[1].payload.collection).toBe('notes');
+  });
+
   it('hydrates from SQLite backend into in-memory cache', async () => {
     backend.set('tasks', [makeRecord('1', 'tasks', { title: 'A' })]);
 

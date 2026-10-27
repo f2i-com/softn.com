@@ -1403,7 +1403,7 @@ export class XDBService {
             mergedRecord = { ...serverRecord, data: mergedData, updated_at: stamp };
             // Push merged data to server so it's persisted
             this.native('update_record', {
-              payload: { id: serverRecord.id, data: mergedData, updated_at: stamp },
+              payload: { id: serverRecord.id, data: mergedData, updated_at: stamp, collection },
             }).catch((err) => this.nativeWriteFailed('update a record', collection, err));
           } else {
             mergedRecord = serverRecord;
@@ -1817,8 +1817,11 @@ export class XDBService {
       if (this.pendingCreateIds.has(record.id)) return updatedRecord;
       // A scoped edit is still a local mutation: persist it just like update(),
       // while keeping the optimistic cache change in the requested collection.
+      // It names the collection: the native store found the record by id alone,
+      // and a peer's record here with the id of one in a private collection had
+      // this edit merged into that one.
       this.native<XDBRecord>('update_record', {
-        payload: { id: record.id, data, updated_at: updatedRecord.updated_at },
+        payload: { id: record.id, data, updated_at: updatedRecord.updated_at, collection },
       }).then((serverRecord) => {
         if (serverRecord.collection !== collection || serverRecord.id !== record.id) return;
         // A newer edit/deletion wins even if the older request finishes last.

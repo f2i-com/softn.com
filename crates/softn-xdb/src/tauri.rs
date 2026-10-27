@@ -61,6 +61,12 @@ pub struct CreateRecordPayload {
 pub struct UpdateRecordPayload {
     pub id: String,
     pub data: serde_json::Value,
+    /// The collection the page edits the record in, when it says. The id alone reached the
+    /// record in whichever collection held it, as `delete_record` did: a peer's record in a
+    /// shared collection, with the id of one in a private collection, had the app's edit of
+    /// it merged into the private one.
+    #[serde(default)]
+    pub collection: Option<String>,
     /// The stamp the page gave the edit (after a sync room's copy of the record as well as
     /// the one here): the edit is stamped no earlier, within a day of this clock (db.rs
     /// `edit_stamp`). A page that sends none is stamped as before.
@@ -876,6 +882,7 @@ pub async fn update_record(
     let db = db_manager.get_db(&app_id)?;
     let (record, update, epoch) = {
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
+        refuse_other_collection(&db_lock, &payload)?;
         let (record, update) = db_lock
             .update_record_at(&payload.id, payload.data, payload.updated_at.as_deref())
             .map_err(|e| e.to_string())?;
@@ -888,6 +895,16 @@ pub async fn update_record(
 
     info!("Updated record {}", record.id);
     Ok(record)
+}
+
+/// Refused when the update names a collection and the record is in another.
+fn refuse_other_collection(db: &crate::db::XdbDatabase, payload: &UpdateRecordPayload) -> Result<(), String> {
+    let Some(named) = payload.collection.as_deref() else { return Ok(()) };
+    let record = db.get_record(&payload.id).map_err(|e| e.to_string())?;
+    if record.collection != named {
+        return Err(format!("Refused: record {} is not in collection {}", payload.id, named));
+    }
+    Ok(())
 }
 
 /// Update several records in ONE transaction (XD-04 follow-up): one CRDT
@@ -905,6 +922,10 @@ pub async fn update_records(
     let db = db_manager.get_db(&app_id)?;
     let (records, deltas) = {
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
+        // All or nothing, as the transaction is.
+        for update in &updates {
+            refuse_other_collection(&db_lock, update)?;
+        }
         let out = db_lock
             .update_records(updates.into_iter().map(|u| (u.id, u.data)).collect())
             .map_err(|e| e.to_string())?;
@@ -2174,6 +2195,27 @@ mod tests {
         for id in &ids {
             assert!(manager.get_app_path(id).parent().unwrap().is_dir(), "{id} is reserved on disk");
         }
+    }
+
+    /// An update that names a collection reaches a record in it alone: the id by itself
+    /// reached the record in whichever collection held it, and a peer's record in a shared
+    /// collection, with the id of one in a private collection, had the app's edit merged
+    /// into the private one.
+    #[test]
+    fn an_update_naming_a_collection_reaches_no_record_of_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::db::XdbDatabase::open(dir.path().join("data.sqlite")).unwrap();
+        let (private, _) = db.create_record("secrets", serde_json::json!({"pin": "1234"})).unwrap();
+        let payload = |collection: Option<&str>| UpdateRecordPayload {
+            id: private.id.clone(),
+            data: serde_json::json!({"pin": "edited"}),
+            collection: collection.map(str::to_string),
+            updated_at: None,
+        };
+        assert!(refuse_other_collection(&db, &payload(Some("shared"))).unwrap_err().starts_with("Refused"));
+        assert_eq!(refuse_other_collection(&db, &payload(Some("secrets"))), Ok(()));
+        // A caller that names none is as it was.
+        assert_eq!(refuse_other_collection(&db, &payload(None)), Ok(()));
     }
 
     #[test]
