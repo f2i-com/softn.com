@@ -55,6 +55,10 @@ use tracing::{error, info, warn};
 pub struct CreateRecordPayload {
     pub collection: String,
     pub data: serde_json::Value,
+    /// The id the page already handed the app for this record (db.rs
+    /// `create_record_with_id`); minted here when absent.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -854,7 +858,7 @@ pub async fn create_record(
     let (record, update, epoch) = {
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         let (record, update) = db_lock
-            .create_record(&payload.collection, payload.data)
+            .create_record_with_id(&payload.collection, payload.id.as_deref(), payload.data)
             .map_err(|e| e.to_string())?;
         let epoch = db_lock.get_epoch(&payload.collection).unwrap_or(0);
         (record, update, epoch)

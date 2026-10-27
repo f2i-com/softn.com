@@ -13,6 +13,25 @@ fn replicated_records(db: &mut XdbDatabase, collection: &str) -> Vec<Record> {
     peer.get_collection(collection).unwrap()
 }
 
+/// A record is stored under the id the page handed the app, and replicated under it; an id
+/// another record has, in any collection, live or deleted, is refused, as is one of white space.
+#[test]
+fn a_record_is_created_under_the_id_it_is_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "given.sqlite");
+    let (record, _) = db.create_record_with_id("lists", Some("list-1"), json!({"name": "Groceries"})).unwrap();
+    assert_eq!(record.id, "list-1");
+    assert_eq!(db.get_record("list-1").unwrap().collection, "lists");
+    assert_eq!(replicated_records(&mut db, "lists")[0].id, "list-1");
+    assert!(db.create_record_with_id("other", Some("list-1"), json!({})).is_err());
+    db.delete_record("list-1").unwrap();
+    assert!(db.create_record_with_id("lists", Some("list-1"), json!({})).is_err(), "a deleted record's id");
+    assert!(db.create_record_with_id("lists", Some("  "), json!({})).is_err());
+    assert!(db.create_record_with_id("lists", Some(&"x".repeat(513)), json!({})).is_err());
+    let (minted, _) = db.create_record_with_id("lists", None, json!({})).unwrap();
+    assert_eq!(minted.id.len(), 36);
+}
+
 #[test]
 fn export_includes_uncheckpointed_writes_and_crdt_state() {
     let dir = tempfile::tempdir().unwrap();

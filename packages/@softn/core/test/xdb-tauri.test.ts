@@ -66,9 +66,13 @@ describe('XDB Service (Tauri mode)', () => {
           return (backend.get(collection) ?? []).filter((r) => args?.includeDeleted === true || !r.deleted);
         }
         case 'create_record': {
-          const payload = args?.payload as { collection: string; data: Record<string, unknown> };
+          const payload = args?.payload as { collection: string; data: Record<string, unknown>; id?: string };
+          // As XDB's command: under the id the page gave, refused where another record has it.
+          if (payload.id !== undefined && [...backend.values()].some((records) => records.some((r) => r.id === payload.id))) {
+            throw new Error(`A record with id ${payload.id} already exists`);
+          }
           const record = makeRecord(
-            `tauri-${Math.random().toString(36).slice(2)}`,
+            payload.id ?? `tauri-${Math.random().toString(36).slice(2)}`,
             payload.collection,
             payload.data
           );
@@ -797,12 +801,12 @@ describe('XDB Service (Tauri mode)', () => {
         await flushPromises();
         expect(xdb.getStorageStatus().state).toBe('ready');
         expect(xdb.getStorageStatus().issues).toEqual([]);
-        // Announced once, under the id SQLite gave it, not the optimistic one.
+        // Announced once SQLite has it, under the id it stored, which is the one create() returned.
         expect(onMutation).toHaveBeenCalledTimes(1);
         const announced = onMutation.mock.calls[0][0];
         expect(announced.type).toBe('create');
         expect(announced.recordId).toBe(backend.get('tasks')![0].id);
-        expect(announced.recordId).not.toBe(record.id);
+        expect(announced.recordId).toBe(record.id);
       } finally {
         unsubscribe();
         errors.mockRestore();
@@ -946,22 +950,36 @@ describe('XDB Service (Tauri mode)', () => {
       expect(xdb.get('tasks', stored[0].id)?.data.title).toBe('edited');
     });
 
-    it('uses a caller-chosen id as the optimistic id and maps it to the stored one', async () => {
+    it('stores a record under a caller-chosen id', async () => {
       const xdb = new XDBService(undefined, 'chosen-id', 'chosen-id-app');
       await xdb.isReady;
       const record = xdb.create('tasks', { title: 'mine' }, { id: 'worker-chosen' });
       expect(record.id).toBe('worker-chosen');
       await flushPromises();
       const stored = backend.get('tasks')![0];
-      expect(stored.id).not.toBe('worker-chosen');
-      // The old id keeps resolving, as any optimistic id does.
-      expect(xdb.get('tasks', 'worker-chosen')?.id).toBe(stored.id);
+      expect(stored.id).toBe('worker-chosen');
       xdb.update('worker-chosen', { title: 'renamed' });
       await flushPromises();
       expect(backend.get('tasks')![0].data.title).toBe('renamed');
       // An id already in use is not reused.
       const again = xdb.create('tasks', { title: 'other' }, { id: stored.id });
       expect(again.id).not.toBe(stored.id);
+    });
+
+    // The native store minted an id of its own, and the app kept the one create() returned,
+    // which named no record once the create landed: a record referring to it found nothing,
+    // and hardDelete of it deleted nothing, for good after a reload.
+    it('stores a record under the id create() returned, so what refers to it finds it', async () => {
+      const xdb = new XDBService(undefined, 'same-id', 'same-id-app');
+      await xdb.isReady;
+      const list = xdb.create('lists', { name: 'Groceries' });
+      xdb.create('todos', { listId: list.id, text: 'milk' });
+      await flushPromises();
+      expect(backend.get('lists')![0].id).toBe(list.id);
+      expect(xdb.query('todos', { filter: { listId: backend.get('lists')![0].id } })).toHaveLength(1);
+      expect(xdb.hardDelete('lists', list.id)).toBe(true);
+      await flushPromises();
+      expect(xdb.get('lists', list.id)).toBeNull();
     });
   });
 

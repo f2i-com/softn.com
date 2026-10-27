@@ -43,6 +43,10 @@ const MAX_EPOCH: u64 = 1 << 53;
 /// epochs differ by the resets one of them missed while away.
 const MAX_EPOCH_STEP: u64 = 1 << 20;
 
+/// The longest id a page may give a record it creates (`create_record_with_id`), in bytes:
+/// what server sync carries (`sync-protocol.json` `maxIdBytes`).
+const MAX_GIVEN_ID_BYTES: usize = 512;
+
 /// An epoch about to be kept, refused past MAX_EPOCH rather than wrapped.
 fn check_epoch(epoch: u64) -> DbResult<()> {
     if epoch > MAX_EPOCH {
@@ -818,17 +822,54 @@ impl XdbDatabase {
         collection: &str,
         data: serde_json::Value,
     ) -> DbResult<(Record, Vec<u8>)> {
+        self.create_record_with_id(collection, None, data)
+    }
+
+    /// `create_record`, under `id` when one is given: the id the page already handed the app
+    /// (`XDBService.create`). With none the store minted its own, and the app kept the page's,
+    /// which no record had once the create landed: a record that referred to it found nothing,
+    /// and `hardDelete` of it deleted nothing. An id another record has, live or deleted, in
+    /// any collection, is refused.
+    pub fn create_record_with_id(
+        &mut self,
+        collection: &str,
+        id: Option<&str>,
+        data: serde_json::Value,
+    ) -> DbResult<(Record, Vec<u8>)> {
         let collection = collection.to_string();
+        let id = match id {
+            Some(id) => {
+                if id.trim().is_empty() || id.len() > MAX_GIVEN_ID_BYTES {
+                    return Err(DbError::InvalidOperation(format!(
+                        "A record id must be text of 1 to {MAX_GIVEN_ID_BYTES} bytes, not only white space"
+                    )));
+                }
+                Some(id.to_string())
+            }
+            None => None,
+        };
         let data = data.clone();
-        self.with_transaction(|this| this.create_record_inner(&collection, data))
+        self.with_transaction(|this| this.create_record_inner(&collection, id, data))
     }
 
     fn create_record_inner(
         &mut self,
         collection: &str,
+        given: Option<String>,
         data: serde_json::Value,
     ) -> DbResult<(Record, Vec<u8>)> {
-        let id = Uuid::new_v4().to_string();
+        let id = match given {
+            Some(id) => {
+                let taken: bool = self
+                    .conn
+                    .query_row("SELECT EXISTS(SELECT 1 FROM records WHERE id = ?1)", params![&id], |row| row.get(0))?;
+                if taken {
+                    return Err(DbError::InvalidOperation(format!("A record with id {id} already exists")));
+                }
+                id
+            }
+            None => Uuid::new_v4().to_string(),
+        };
         let now = chrono::Utc::now().to_rfc3339();
 
         let record = Record {

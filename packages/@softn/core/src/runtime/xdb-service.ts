@@ -1334,9 +1334,11 @@ export class XDBService {
     if (this.useTauri) {
       this.knownCollections.add(collection);
       // Async create via Tauri - fire and forget, return optimistic result.
-      // A caller-chosen id (a worker's snapshot record) is the optimistic id
-      // here; SQLite still assigns the stored id, and the map below joins the
-      // two exactly as it does for a generated one.
+      // The optimistic id, generated or the caller's (a worker's snapshot
+      // record), is the id SQLite stores it under: the native store minted
+      // its own, and the app kept this one, which named no record once the
+      // create landed (a record referring to it found nothing, and
+      // hardDelete of it deleted nothing).
       const optimisticRecord: XDBRecord = {
         id: this.usableId(collection, options.id),
         collection,
@@ -1356,7 +1358,7 @@ export class XDBService {
       // id, a record that the native write then refused was pushed to the
       // server under an id that exists nowhere.
       this.native<XDBRecord>('create_record', {
-        payload: { collection, data },
+        payload: { collection, data, id: optimisticRecord.id },
       })
         .then((serverRecord) => {
           this.pendingCreateIds.delete(optimisticRecord.id);
