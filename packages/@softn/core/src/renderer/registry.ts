@@ -90,7 +90,7 @@ export class ComponentRegistry {
    * element HTML or SVG names and is written as one is (`<button>`,
    * `<BUTTON>`, `<text>` in a drawing), which the page draws as that
    * element; else the registered name it spells in another case, as
-   * `<datatable>` spells DataTable. Every place that turns a tag into a
+   * `<datagrid>` spells DataGrid. Every place that turns a tag into a
    * component asks this, so a name that draws is also one that is fetched,
    * installed and checked. Two names that differ only in case are resolved
    * to the first of them in sorting order, every time.
@@ -236,7 +236,7 @@ export class ComponentRegistry {
    */
   public preload(names: Iterable<string>): Promise<void> {
     const started: Promise<unknown>[] = [];
-    // Tags as a page writes them: `<datatable>` loads DataTable (resolveName).
+    // Tags as a page writes them: `<datagrid>` loads DataGrid (resolveName).
     for (const name of new Set([...names].map((tag) => this.resolveName(tag) ?? tag))) {
       const entry = this.lazyEntries.get(name);
       if (!entry || entry.getState() !== 'idle') continue;

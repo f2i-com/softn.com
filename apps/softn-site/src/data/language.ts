@@ -89,9 +89,9 @@ function addClient(name, email) {
 }
 
 // XDB keeps everything in memory, so reads and writes are
-// synchronous. Sync is the only thing you have to await.
-async function share(room) {
-  await db.startSync(room)
+// synchronous, and so is starting sync: nothing here is awaited.
+function share(room) {
+  db.startSync(room)
 }`,
   },
   {

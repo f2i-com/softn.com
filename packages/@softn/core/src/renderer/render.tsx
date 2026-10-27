@@ -865,8 +865,8 @@ function renderElement(
       // allowed, so an icon drew "Unknown component" for each of its paths.
       Component = svgChildElement(node.tag) as keyof JSX.IntrinsicElements;
     } else if (registry.resolveName(node.tag) !== undefined) {
-      // A component's name written in another case: `<datatable>` is
-      // DataTable, `<STACK>` is Stack (see ComponentRegistry.resolveName).
+      // A component's name written in another case: `<datagrid>` is
+      // DataGrid, `<STACK>` is Stack (see ComponentRegistry.resolveName).
       Component = registry.get(registry.resolveName(node.tag)!) as SoftNComponent;
     } else {
       if (isDevelopment) {

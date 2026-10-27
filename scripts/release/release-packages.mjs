@@ -104,7 +104,7 @@ export const PACKAGES = [
       'Read `DEPLOY.md` for nginx, upload limits, moderation and backups (copy `data/`).',
     ],
     requirements: [
-      'A web host with PHP 8.1 or newer, with the `pdo_sqlite` and `zip` extensions (standard on cPanel-style hosts).',
+      'A web host with PHP 8.1 or newer, with the `zip`, `zlib` and `mbstring` extensions (without them `/api/health` answers 503), and `pdo_sqlite` for apps that keep records on the server (all standard on cPanel-style hosts).',
       'Apache with `.htaccess` honoured, or nginx using the included `nginx.conf.example`.',
       'HTTPS. Upload limits large enough for a bundle (the included `api/.user.ini` asks for 64 MB).',
     ],
