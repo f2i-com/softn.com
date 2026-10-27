@@ -300,8 +300,12 @@ export function getXDB(appId?: string): XDBService {
  * are copied rather than moved because they may hold more than one app's
  * records — there is no way to tell whose is whose after the fact, and deleting
  * them would destroy data belonging to an app that has not been opened yet.
- * Copying preserves exactly the access each app already had while making all
- * subsequent writes private.
+ * Copying makes all subsequent writes private, but it does not keep each
+ * app's records to itself: every app id opened for the first time while the
+ * old keys are there gets a copy of all of them, an app never opened before
+ * the upgrade included (in SoftN Web an id is a bundle's digest), and a store
+ * opened with no app id still writes keys of the old shape. Which ids should
+ * adopt them is an open decision.
  *
  * The old keys are never deleted, the copy is VERIFIED before the namespace is
  * marked migrated, and an interrupted run (quota) leaves no marker so the next

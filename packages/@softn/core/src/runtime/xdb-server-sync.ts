@@ -379,7 +379,12 @@ function wellFormed(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(wellFormed);
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) out[key.replace(LONE_SURROGATE, '�')] = wellFormed(child);
+    // Defined, not assigned: `out['__proto__'] = …` set out's prototype, so a
+    // field of that name was left out of every push, and the next pull wrote
+    // the host's copy, without it, over the record here.
+    for (const [key, child] of Object.entries(value)) {
+      Object.defineProperty(out, key.replace(LONE_SURROGATE, '�'), { value: wellFormed(child), enumerable: true, writable: true, configurable: true });
+    }
     return out;
   }
   return value;
@@ -1155,7 +1160,8 @@ export class XDBServerSync {
   private handleError(msg: Extract<ServerMessage, { type: 'error' }>): void {
     if (msg.for === 'pull') {
       if (typeof msg.retryAfter === 'number' && msg.retryAfter >= 0) {
-        const collections = Array.isArray(msg.collections) ? msg.collections.filter((c) => typeof c === 'string') : [];
+        // Only what this client would have asked for: a host naming others made them pulls.
+        const collections = Array.isArray(msg.collections) ? msg.collections.filter((c) => typeof c === 'string' && this.wants(c)) : [];
         this.retryPull(collections.length > 0 ? collections : this.connectionCollections, msg.retryAfter * 1000);
       }
       return;
@@ -1333,6 +1339,9 @@ export class XDBServerSync {
 
   /** Whether records of `collection` the server sends are written here (`collections`). */
   private wants(collection: string): boolean {
+    // A name the host itself would refuse is no collection of this app's:
+    // with no list, anything a host sent was made a collection here.
+    if (!SYNCABLE_COLLECTION.test(collection)) return false;
     const listed = this.config.collections;
     return !listed || listed.includes(collection) || this.written.has(collection);
   }

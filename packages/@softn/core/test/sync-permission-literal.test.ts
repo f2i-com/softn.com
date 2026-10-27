@@ -36,4 +36,16 @@ describe('peer sync and a permission.json that says something other than true', 
     expect(refusalFor(undefined)).toEqual(['denied']);
     expect(refusalFor(false)).toEqual(['denied']);
   });
+
+  // The hosts empty `permissions` while the bar asks, and the gate held only because each did.
+  it('refuses while the permission bar is unanswered, whatever the config grants', () => {
+    const refused: string[] = [];
+    const controls = createSyncControls({
+      appId: 'sync-permission-pending',
+      getPermissionConfig: () => ({ permissions: { sync: { enabled: true } }, consentPending: true }) as unknown as PermissionConfig,
+      refuse: (reason) => refused.push(reason),
+    });
+    controls.startSync('room');
+    expect(refused).toEqual(['pending']);
+  });
 });

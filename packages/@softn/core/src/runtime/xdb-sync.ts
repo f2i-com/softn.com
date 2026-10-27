@@ -49,7 +49,11 @@ export interface XDBSyncOptions {
   /** Hex-encoded encryption key for P2P sync (used as password for y-webrtc).
    *  When set, all signaling messages are encrypted with AES-256-GCM. */
   encryptionKey?: string;
-  /** Signaling server URLs (defaults to public Yjs signaling) */
+  /**
+   * Signaling server URLs. Without them, the host's defaults
+   * (`getDefaultSignaling`), and with none of those, none at all: never
+   * y-webrtc's public servers (see `openProvider`).
+   */
   signaling?: string[];
   /** Display name for this peer (shown in awareness) */
   displayName?: string;

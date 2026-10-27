@@ -118,8 +118,11 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
       // false when the config was absent, so the one path that starts WebRTC
       // replication of the whole database opened itself for exactly the
       // bundles the rest of the model trusts least. An absent config is a
-      // refusal, as checkPermission('sync') has always answered.
-      if (permissionConfig?.permissions?.sync?.enabled !== true) {
+      // refusal, as checkPermission('sync') has always answered. An unanswered
+      // bar refuses whatever the config grants, as requirePermission does: the
+      // hosts empty `permissions` while asking, and this held only because
+      // each of them did.
+      if (permissionConfig?.consentPending || permissionConfig?.permissions?.sync?.enabled !== true) {
         refuse(permissionConfig?.consentPending ? 'pending' : 'denied');
         return;
       }

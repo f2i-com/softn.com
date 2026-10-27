@@ -174,8 +174,11 @@ export interface ScriptRuntimeOptions {
    * arrangement as `backendCall`, which has never been permission-checked
    * either, because the host names the actions it will answer.
    *
-   * Absent — every host that has one today — `softn.net.fetch` is exactly what
-   * it was: the permission check, the host allowlist, and the browser's fetch.
+   * Absent (SoftN Web, the single-app shells, the editors), `softn.net.fetch`
+   * is the permission check, the host allowlist, and the browser's fetch. The
+   * desktop loader supplies one that repeats the checks and asks the person
+   * (its net.rs); FormLogic's frame supplies one that hands the call to its
+   * backend, by design.
    */
   netFetchHandler?: NetFetchHandler;
   /**

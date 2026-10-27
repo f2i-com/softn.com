@@ -362,6 +362,50 @@ describe('XDBServerSync', () => {
  * delete holds only while the server has not answered it; after that, what
  * the server sends is the record.
  */
+describe('what the host sends and what is pushed to it', () => {
+  // With no `collections` list (SoftN Web's way), any name the host sent was made a collection here.
+  it('makes no collection of a name the host itself would refuse', () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    const row = (collection: string) => ({ id: 'r1', collection, data: { text: 'x' }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' });
+    try {
+      socket.open();
+      authOk(socket);
+      for (const name of ['bad name', '../x', 'a:b', 'x'.repeat(65)]) {
+        socket.receive({ type: 'sync_state', collection: name, records: [row(name)] });
+        socket.receive({ type: 'sync_delta', ops: [{ id: `d-${name}`, collection: name, recordId: 'r2', operation: 'create', data: { text: 'y' }, timestamp: '2026-01-01T00:00:01Z', clientId: 'other' }] });
+        expect(xdb.getAll(name), name).toEqual([]);
+      }
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [row('notes')] });
+      expect(xdb.getAll('notes').map((r) => r.id)).toEqual(['r1']);
+    } finally {
+      sync.disconnect();
+    }
+  });
+
+  // `out['__proto__'] = …` set the pushed object's prototype: the field was not sent, and
+  // the next pull wrote the host's copy, without it, over the record here.
+  it('sends a field named __proto__ as a field', async () => {
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1', collections: ['notes'] });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+      xdb.create('notes', JSON.parse('{"__proto__": {"kept": true}, "title": "t"}'), { id: 'p1' });
+      await Promise.resolve();
+      const sent = socket.ofType('sync_push').flatMap((m) => m.ops as Array<{ recordId: string; data: Record<string, unknown> }>);
+      const pushed = sent.find((op) => op.recordId === 'p1')!;
+      expect(Object.prototype.hasOwnProperty.call(pushed.data, '__proto__')).toBe(true);
+      expect(JSON.stringify(pushed.data)).toContain('"__proto__":{"kept":true}');
+    } finally {
+      sync.disconnect();
+    }
+  });
+});
+
 describe('a record deleted here that the server says still stands', () => {
   const stamp = '2026-01-02T00:00:00Z';
   const row = { id: 'n1', collection: 'notes', data: { title: 'final' }, createdAt: stamp, updatedAt: stamp };
