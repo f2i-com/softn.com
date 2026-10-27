@@ -5,12 +5,13 @@
 // a backend) and package-private-single-php.mjs (the PHP-served runtime with
 // a backend), so the two archives cannot disagree about a version or a hash.
 import {readFileSync,writeFileSync,mkdirSync,existsSync,copyFileSync,rmSync} from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {unzipSync} from 'fflate';
 import {startHere} from './release-explainers.mjs';
 import { repoRoot as root } from '../lib/paths.mjs';
+import {RUNNER_BINARY,RUNNER_NOTICES} from '../../apps/softn-host-php/package.mjs';
 
 export { root };
 const cache=join(root,'.cache/single-backend');
@@ -87,6 +88,22 @@ export function unpackPinned(dir,archive,into) {
   mkdirSync(target,{recursive:true});
   execFileSync('tar',['-xf','../'+archive],{cwd:target});
   return target;
+}
+/**
+ * `--runner-dir <dir>` from `argv`: the folder holding softn-runner's Linux
+ * build and its licences, as apps/softn-runner/build.mjs writes them (the
+ * release's runner jobs hand theirs over as one folder). Without it the
+ * backend carries Node alone, as before softn-runner.
+ * @returns {string|undefined}
+ */
+export function runnerDirOption(argv=process.argv) {
+  const at=argv.indexOf('--runner-dir');
+  if(at<0)return undefined;
+  const dir=argv[at+1];
+  if(!dir||dir.startsWith('--'))throw Error('--runner-dir needs a folder');
+  const resolved=resolve(root,dir);
+  for(const name of [RUNNER_BINARY,RUNNER_NOTICES])if(!existsSync(join(resolved,name)))throw Error('--runner-dir '+resolved+' has no '+name+' (node apps/softn-runner/build.mjs --target x86_64-unknown-linux-musl writes both)');
+  return resolved;
 }
 /** @returns {Promise<{nodeDir:string,wasmDir:string,notices:string,websocketDir:string,version:string}>} */
 export async function prepareBackendInputs() {

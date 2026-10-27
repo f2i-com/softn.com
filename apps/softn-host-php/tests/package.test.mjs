@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {deploymentConfig} from '../package.mjs';
+import {deploymentConfig,packagePhp,RUNNER_BINARY,RUNNER_NOTICES} from '../package.mjs';
+import {readArchive} from '../../../scripts/lib/archive.mjs';
 import {createHash} from 'node:crypto';
-import {readFileSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdtempSync,mkdirSync,rmSync,existsSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 /** Each directive of an .htaccess with the `<IfModule …>` blocks it sits in. */
 function directives(rules) {
@@ -43,6 +47,36 @@ test('reverse-domain bundle IDs produce valid, stable deployment namespaces',()=
   }
   assert.equal(deploymentConfig({id:'valid-app',name:'Example'},bytes).id,'valid-app');
   assert.notEqual(deploymentConfig({id:'org.example.app',name:'Example'},bytes).id,deploymentConfig({id:'org-example-app',name:'Example'},bytes).id);
+});
+const wasmDir=fileURLToPath(new URL('../../../packages/@softn/core/wasm-zipp/',import.meta.url));
+test('a backend packaged with softn-runner carries it executable, licensed and recorded, beside Node',{skip:existsSync(join(wasmDir,'zipp_wasm_bg.wasm'))?false:'packages/@softn/core/wasm-zipp is not installed (npm run fetch:zipp)'},t=>{
+  const dir=mkdtempSync(join(tmpdir(),'softn-package-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  // An ELF header saying x86-64 is all the packager reads of either binary.
+  const elf=machine=>{const b=Buffer.alloc(64);b.write('7f454c46','hex');b.writeUInt16LE(machine,18);return b;};
+  const runtime=join(dir,'runtime'),node=join(dir,'node'),runner=join(dir,'runner'),notices=join(dir,'notices');
+  for(const d of [runtime,join(node,'bin'),runner,notices])mkdirSync(d,{recursive:true});
+  for(const name of ['index.html','app.softn','runtime.config.json','LICENSE','NOTICE','THIRD-PARTY-NOTICES.txt'])writeFileSync(join(runtime,name),name);
+  writeFileSync(join(node,'bin/node'),elf(62));writeFileSync(join(node,'LICENSE'),'node licence');writeFileSync(join(notices,'ZIPP-LICENSE-APACHE'),'zipp licence');
+  writeFileSync(join(runner,RUNNER_BINARY),elf(62));writeFileSync(join(runner,RUNNER_NOTICES),'runner licences');
+  const pack=(name,extra={})=>{
+    const out=join(dir,name);packagePhp({runtime,nodeDir:node,wasmDir,notices,out,template:true,templateClient:true,...extra});
+    const {entries,problems}=readArchive(readFileSync(out));assert.deepEqual(problems,[]);return entries;
+  };
+  const without=pack('without.zip'),withRunner=pack('with.zip',{runnerDir:runner});
+  // Without it, as before: Node alone, and nothing recorded.
+  assert.equal(without.has('backend/bin/'+RUNNER_BINARY),false);
+  assert.equal(JSON.parse(without.get('BUILD-INFO.json').data).softnRunner,null);
+  // With it: executable as Node is, its licences, and its digest and ceilings in BUILD-INFO.
+  assert.equal(withRunner.get('backend/bin/'+RUNNER_BINARY).mode,0o100755);
+  assert.equal(withRunner.get('backend/bin/node').mode,0o100755);
+  assert.equal(withRunner.get('backend/licenses/'+RUNNER_NOTICES).data.toString(),'runner licences');
+  const info=JSON.parse(withRunner.get('BUILD-INFO.json').data);
+  assert.deepEqual(info.softnRunner,{file:'backend/bin/'+RUNNER_BINARY,sha256:createHash('sha256').update(elf(62)).digest('hex'),wasmMemoryMaxBytes:1073741824,scriptHeapMaxBytes:536870912,sqliteHeapMaxBytes:1073741824});
+  assert.ok(withRunner.get('SHA256SUMS.txt').data.toString().includes('  backend/bin/'+RUNNER_BINARY+'\n'));
+  // A build for another machine is refused, as Node's is.
+  writeFileSync(join(runner,RUNNER_BINARY),elf(183));
+  assert.throws(()=>pack('arm.zip',{runnerDir:runner}),/Expected Linux x86-64 softn-runner/);
 });
 test('preapproval is explicit and the bundle remains hash-pinned',()=>{
   const manifest={id:'example',name:'Example'},bytes=Buffer.from('bundle');

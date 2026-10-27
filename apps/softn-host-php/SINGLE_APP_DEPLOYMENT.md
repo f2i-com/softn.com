@@ -13,13 +13,16 @@ softn-app-static-vVERSION.zip, the separate static-only distribution.
 
 ## Enable a private application backend
 
-Requirements: Linux Intel/AMD x86-64, glibc 2.28+, Apache mod_rewrite and PHP 8.1+
+Requirements: Linux Intel/AMD x86-64 (glibc 2.28+ only where requests run on the
+bundled Node rather than softn-runner), Apache mod_rewrite and PHP 8.1+
 with process execution enabled (proc_open, proc_get_status, proc_terminate and
 proc_close not in disable_functions). The backend needs no PHP extension beyond a
 stock PHP. PHP GD is optional, required only for photo routes (Debian/Ubuntu: the
 php-gd package; a stock install does not have it).
-The ZIP includes Node with SQLite and the ZIPP WASM engine; no npm install, PHP FFI,
-separate listening server or systemd service is required.
+The ZIP includes softn-runner, which answers each request with SQLite and the ZIPP
+WASM engine and no Node, and Node beside it for operator request hooks and the
+WebSocket bridge; no npm install, PHP FFI, separate listening server or systemd
+service is required.
 
 1. Put backend/ outside every public document root and Apache Alias. Put webroot/
    contents in your site's document root, including .htaccess: the API is served
@@ -41,7 +44,9 @@ separate listening server or systemd service is required.
    as that account: `sudo -u www-data php /absolute/path/backend/setup.php`.
    Substitute your actual PHP user. Setup creates private/config.json and data;
    it preserves existing settings. Keep these private and back them up securely.
-   It then checks PHP, that the bundled Node runs on this server, and that the
+   It then checks PHP, that the runner requests start runs on this server
+   (softn-runner, which needs no Node, where the backend carries it, as a
+   release's does; else the bundled Node) and says which, and that the
    app answers /api/meta; any problem is a WARNING line and a non-zero exit,
    with the reason an app does not start beside it. If setup cannot go on (the
    folder is not this account's to write in, the manifest is not JSON, part of
@@ -105,4 +110,5 @@ on ARM or Windows. The static browser assets remain portable.
 `npm run build:single` then `npm run package:single -- --with-backend` builds both
 downloads. Without the flag, packaging stays static-only. Backend packaging uses
 checksum-pinned official Node binaries and the repository's vendored WASM with
-verified provenance. Licenses and checksums accompany each archive.
+verified provenance, and softn-runner from --runner-dir <dir> where it is given
+(apps/softn-runner/build.mjs writes it; a release always gives it). Licenses and checksums accompany each archive.

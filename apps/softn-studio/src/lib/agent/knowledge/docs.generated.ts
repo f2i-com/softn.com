@@ -949,7 +949,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "variants",
     "title": "Three ways to ship one app",
-    "text": "- Static: `softn-app-static-v<version>.zip`. HTML, the engine and your bundle, on any HTTPS host.\n- Static with a private backend: `softn-app-static-with-backend-linux-x64-v<version>.zip` adds a `backend/` folder with bundled Linux x64 Node, SQLite and the ZIPP engine behind Apache and PHP, enabled by the operator.\n- Served privately: `softn-app-private-v<version>.zip` keeps the `.softn` in a private directory and serves the page and each entry from PHP, so the archive is never on a URL. `softn-app-private-with-backend-linux-x64-v<version>.zip` is that variant with the backend.\n\n- PHP-served single app guide: What is served from where, the viewer cookie, and the operator settings."
+    "text": "- Static: `softn-app-static-v<version>.zip`. HTML, the engine and your bundle, on any HTTPS host.\n- Static with a private backend: `softn-app-static-with-backend-linux-x64-v<version>.zip` adds a `backend/` folder with softn-runner, which answers each request without Node, a bundled Linux x64 Node for operator request hooks and the WebSocket bridge, SQLite and the ZIPP engine, behind Apache and PHP and enabled by the operator.\n- Served privately: `softn-app-private-v<version>.zip` keeps the `.softn` in a private directory and serves the page and each entry from PHP, so the archive is never on a URL. `softn-app-private-with-backend-linux-x64-v<version>.zip` is that variant with the backend.\n\n- PHP-served single app guide: What is served from where, the viewer cookie, and the operator settings."
    },
    {
     "id": "private-resources",

@@ -92,7 +92,8 @@ The new workspace has regression coverage for configuration, bounded loading, pe
 `npm run package:single -- --with-backend` produces both the static-only ZIP and
 `softn-app-static-with-backend-linux-x64-vVERSION.zip`. CI builds and tests both, and tag releases
 attach both alongside the website archive. The backend variant contains `webroot/`
-and a separate private `backend/` with bundled Linux x64 Node, SQLite and ZIPP WASM.
+and a separate private `backend/` with softn-runner (which answers requests without Node),
+bundled Linux x64 Node, SQLite and ZIPP WASM.
 The example client works without configuring a backend. Enable server support only
 when your app needs it; follow the included README.md (the short explainer
 every release archive carries) and DEPLOYMENT.md, which is the

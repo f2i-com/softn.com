@@ -44,4 +44,6 @@ const result = writeArchive(entries, output);
 console.log(
   output + '\n' + result.size + ' bytes; ' + result.entries.length + ' files; SHA-256 ' + result.sha256
 );
-if(process.argv.includes('--with-backend'))execFileSync(process.execPath,[path.join(root,'scripts/release/package-single-backend.mjs')],{cwd:root,stdio:'inherit'});
+// --runner-dir goes on to it: the backend carries softn-runner from there (single-backend-inputs.mjs runnerDirOption).
+const runnerAt=process.argv.indexOf('--runner-dir');
+if(process.argv.includes('--with-backend'))execFileSync(process.execPath,[path.join(root,'scripts/release/package-single-backend.mjs'),...(runnerAt<0?[]:process.argv.slice(runnerAt,runnerAt+2))],{cwd:root,stdio:'inherit'});

@@ -81,8 +81,8 @@ try {
     if(is_link($root.'/private/data'))softn_setup_stop('private/data is a symbolic link. It must be a real directory.');
     if(!is_dir($root.'/private/data')&&!@mkdir($root.'/private/data',0700))softn_setup_stop('Cannot create private/data: '.$root.'/private'.$unwritable);
     @chmod($root.'/private',0700);@chmod($root.'/private/data',0700);
-    // An upload over FTP leaves it without its executable bit.
-    if(is_file($root.'/bin/node'))@chmod($root.'/bin/node',0700);
+    // An upload over FTP leaves them without their executable bit.
+    foreach(['node',SOFTN_RUNNER_BINARY] as $name)if(is_file($root.'/bin/'.$name))@chmod($root.'/bin/'.$name,0700);
     for($i=0;$i<4;$i++){ $f=@fopen($root.'/private/slot-'.$i.'.lock','c');if($f)fclose($f); }
     echo "Setup complete. Run PHP/Apache as this directory's owner. Review private/config.json for this application's operator settings.\n";
     if($migrationDeadline!==null)echo "Migrations may run for up to $migrationDeadline s in this run's check of the app, a migration stopped three times included. Requests made meanwhile wait for the database and may be told it is busy (503 database_busy).\n";
@@ -114,11 +114,13 @@ try {
 
 /**
  * What the first request would find out the hard way, found now: PHP's
- * version and process functions, and whether the bundled Node starts on this
- * machine (a Linux x86-64 binary does not run on ARM, musl or a noexec mount)
- * and, with an application installed, answers /api/meta. Each problem is one
- * line; the empty list means the backend is ready. `$migrationDeadline`
- * (seconds) is how long the app's check may take to apply its migrations.
+ * version and process functions, and whether the runner a request starts
+ * (request.php softn_runner_choice: softn-runner where the backend carries
+ * it, else the bundled Node) starts on this machine (neither runs on ARM or
+ * from a noexec mount, and Node needs glibc) and, with an application
+ * installed, answers /api/meta. Each problem is one line; the empty list
+ * means the backend is ready. `$migrationDeadline` (seconds) is how long the
+ * app's check may take to apply its migrations.
  * @return list<string>
  */
 function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
@@ -138,7 +140,7 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
     // answer on stdout is only a label. It used to go to /dev/null.
     $run=function(array $command,string $input='',array $env=[]) use($root):?array {
         $errors=tmpfile();
-        $process=@proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$errors?:['pipe','w']],$pipes,$root,['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1']+$env);
+        $process=@proc_open($command,[0=>['pipe','r'],1=>['pipe','w'],2=>$errors?:['pipe','w']],$pipes,$root,softn_runner_environment($root)+$env);
         if(!is_resource($process))return null;
         fwrite($pipes[0],$input);fclose($pipes[0]);
         $out=stream_get_contents($pipes[1]);fclose($pipes[1]);
@@ -148,21 +150,31 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
         else $said=(string)stream_get_contents($pipes[2],65536);
         return ['code'=>proc_close($process),'out'=>(string)$out,'said'=>softn_log_lines($said)];
     };
-    // Not there is another thing to mend than there and not running; it was a chmod() warning and then "does not run".
-    if(!is_file($root.'/bin/node'))return array_merge($problems,['bin/node is missing from the backend folder. Upload the whole backend/ folder again, as binary files (an FTP client in text mode damages it).']);
-    $version=$run([$root.'/bin/node','--version']);
-    if($version===null||$version['code']!==0||!preg_match('/^v(\d+)\.(\d+)\.(\d+)/',$version['out'],$v))
-        return array_merge($problems,['The bundled Node (bin/node) does not run on this machine. It needs Linux x86-64 with glibc 2.28+, and a filesystem that allows executing files.']);
-    $protocol=json_decode((string)@file_get_contents($root.'/host-protocol.json'),true);
-    $minimum=is_array($protocol)&&is_string($protocol['minimumNode']??null)?$protocol['minimumNode']:'0.0.0';
-    if(version_compare($v[1].'.'.$v[2].'.'.$v[3],$minimum,'<'))$problems[]="The bundled Node is $v[0]; this runtime needs $minimum or newer.";
+    // The runner every request will start: softn-runner, where the backend
+    // carries it, needs no Node, and Node is looked at only when it is the one.
+    $settings=json_decode((string)@file_get_contents($root.'/private/config.json'),true);
+    $runner=softn_runner_choice($root,$settings);
+    if($runner['runner']==='softn-runner') {
+        // It reads a request on stdin and has no --version: whether it runs is the check of /api/meta below.
+        if(!is_executable($runner['binary']))return array_merge($problems,['bin/'.SOFTN_RUNNER_BINARY.' cannot be made executable by this account. Upload the whole backend/ folder again, as binary files, to a filesystem that allows executing files.']);
+    } else {
+        // Not there is another thing to mend than there and not running; it was a chmod() warning and then "does not run".
+        if(!is_file($root.'/bin/node'))return array_merge($problems,['bin/node is missing from the backend folder. Upload the whole backend/ folder again, as binary files (an FTP client in text mode damages it).']);
+        $version=$run([$root.'/bin/node','--version']);
+        if($version===null||$version['code']!==0||!preg_match('/^v(\d+)\.(\d+)\.(\d+)/',$version['out'],$v))
+            return array_merge($problems,['The bundled Node (bin/node) does not run on this machine. It needs Linux x86-64 with glibc 2.28+, and a filesystem that allows executing files.']);
+        $protocol=json_decode((string)@file_get_contents($root.'/host-protocol.json'),true);
+        $minimum=is_array($protocol)&&is_string($protocol['minimumNode']??null)?$protocol['minimumNode']:'0.0.0';
+        if(version_compare($v[1].'.'.$v[2].'.'.$v[3],$minimum,'<'))$problems[]="The bundled Node is $v[0]; this runtime needs $minimum or newer.";
+    }
     if(!is_file($root.'/app/manifest.json')) {
         echo "No application is installed at app/ yet: install the private bundle there, then run setup again to check it.\n";
         return $problems;
     }
-    // Started as a request starts it (request.php softn_runner_command): a
-    // Node that refuses one of those flags fails here, not on every request.
-    $meta=$run(softn_runner_command($root),json_encode(['path'=>'/api/meta','method'=>'GET','query'=>new stdClass(),'headers'=>new stdClass(),'body'=>new stdClass(),'client_ip'=>'0.0.0.0','photos'=>extension_loaded('gd')]),
+    // Started as a request starts it (request.php softn_runner_choice): a
+    // Node that refuses one of its flags, or a softn-runner this machine
+    // cannot run, fails here, not on every request.
+    $meta=$run($runner['command'],json_encode(['path'=>'/api/meta','method'=>'GET','query'=>new stdClass(),'headers'=>new stdClass(),'body'=>new stdClass(),'client_ip'=>'0.0.0.0','photos'=>extension_loaded('gd')]),
         // runner.mjs and request-worker.mjs read it (migrations.mjs setupDeadlineMs).
         $migrationDeadline===null?[]:['SOFTN_SETUP_DEADLINE_MS'=>(string)($migrationDeadline*1000)]);
     $answer=$meta===null?null:json_decode($meta['out'],true);
@@ -172,12 +184,18 @@ function softn_setup_checks(string $root, ?int $migrationDeadline=null): array {
     // (runner.mjs); "check bin/node" sent the operator the wrong way.
     if(!is_array($answer))$problems[]=(str_contains($said,' was stopped at the ')
         ?'A database migration did not finish before the runner\'s deadline and was rolled back; after three such stops it is not started again. Run setup with --migration-deadline=SECONDS to give it longer (see README-RUNTIME.md, Startup diagnostics, migration_stopped).'
-        :'The backend runner did not answer. Check that bin/node and runner.mjs are intact.').$said;
+        :($runner['runner']==='softn-runner'
+            ?'The backend runner (bin/'.SOFTN_RUNNER_BINARY.') did not answer. It needs Linux x86-64 and a filesystem that allows executing files; if this is one, upload the backend/ folder again, as binary files.'
+            :'The backend runner did not answer. Check that bin/node and runner.mjs are intact.')).$said;
     elseif(($answer['status']??0)!==200) {
         $diagnostic=$answer['body']['diagnostic']??$answer['body']['code']??'unknown';
         $problems[]='The application does not start: '.$diagnostic.' (see README-RUNTIME.md, Startup diagnostics).'
             .($diagnostic==='migration_stopped'?' Run setup again with --migration-deadline=SECONDS, long enough for the migration, to apply it.':'').$said;
     }
     else echo 'Application '.($answer['body']['appId']??'?').' '.($answer['body']['version']??'').' answers /api/meta.'.(isset($answer['body']['unservedRoutes'])?' Routes this host does not serve: '.count($answer['body']['unservedRoutes']).'.':'')."\n";
+    // Which runner that was, and, where softn-runner is there and Node was chosen all the same, why.
+    $hooks=is_array($settings)&&(($settings['enableRequestHook']??null)===true||($settings['enableAfterRequestHook']??null)===true);
+    if($runner['runner']==='softn-runner')echo "Requests run on softn-runner (bin/".SOFTN_RUNNER_BINARY."), without Node. To run them on Node instead, set \"runner\": \"node\" in private/config.json.\n";
+    elseif(is_file($root.'/bin/'.SOFTN_RUNNER_BINARY))echo 'Requests run on Node (bin/node and runner.mjs), not on softn-runner: '.($hooks?'a request hook is enabled in private/config.json, and only Node runs one.':(is_array($settings)&&($settings['runner']??null)==='node'?'"runner" is "node" in private/config.json.':'this server is not Linux x86-64, which softn-runner is built for.'))."\n";
     return $problems;
 }

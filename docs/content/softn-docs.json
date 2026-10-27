@@ -4539,7 +4539,7 @@
         "title": "Host one app on its own website | SoftN Docs",
         "description": "Host a SoftN app on its own website with the single-app runtime: the build and package commands, every runtime.config.json field, permission modes, identity and the archive variants."
       },
-      "updatedAt": "2026-10-19",
+      "updatedAt": "2026-10-27",
       "sourceIds": [
         "softn-single-guide",
         "softn-package",
@@ -4734,7 +4734,7 @@
               "ordered": false,
               "items": [
                 "Static: `softn-app-static-v<version>.zip`. HTML, the engine and your bundle, on any HTTPS host.",
-                "Static with a private backend: `softn-app-static-with-backend-linux-x64-v<version>.zip` adds a `backend/` folder with bundled Linux x64 Node, SQLite and the ZIPP engine behind Apache and PHP, enabled by the operator.",
+                "Static with a private backend: `softn-app-static-with-backend-linux-x64-v<version>.zip` adds a `backend/` folder with softn-runner, which answers each request without Node, a bundled Linux x64 Node for operator request hooks and the WebSocket bridge, SQLite and the ZIPP engine, behind Apache and PHP and enabled by the operator.",
                 "Served privately: `softn-app-private-v<version>.zip` keeps the `.softn` in a private directory and serves the page and each entry from PHP, so the archive is never on a URL. `softn-app-private-with-backend-linux-x64-v<version>.zip` is that variant with the backend."
               ]
             },

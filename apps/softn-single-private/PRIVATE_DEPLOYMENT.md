@@ -13,8 +13,10 @@ Three folders:
   application should live at.
 - `private/` — `app.softn`, `serve.config.php`, `shell.html` and a deny-all
   `.htaccess`. The archive and the settings the page is rendered from.
-- `backend/` — the PHP/WASM server host with bundled Linux x64 Node, SQLite
-  and the ZIPP WASM engine, used only when you enable it.
+- `backend/` — the PHP/WASM server host, used only when you enable it:
+  softn-runner, which answers each request without Node, a bundled Linux x64
+  Node for operator request hooks and the WebSocket bridge, SQLite and the
+  ZIPP WASM engine.
 
 Put `private/` and `backend/` **beside** the public directory, outside every
 document root and Apache alias. If they cannot be siblings, set `$private`
@@ -55,7 +57,8 @@ default), and for as long as PHP runs on a host that sets
 
 ## Enable the backend
 
-Requirements: Linux Intel/AMD x86-64, glibc 2.28+, Apache `mod_rewrite` and
+Requirements: Linux Intel/AMD x86-64 (glibc 2.28+ only where requests run on
+the bundled Node rather than softn-runner), Apache `mod_rewrite` and
 PHP 8.1+ with process execution enabled (`proc_open`, `proc_get_status`,
 `proc_terminate` and `proc_close` not in `disable_functions`). PHP GD is
 optional, required only for photo routes (Debian/Ubuntu: the `php-gd`
@@ -80,7 +83,9 @@ application that uses the backend goes in the document root itself.
    account: `sudo -u www-data php /absolute/path/backend/setup.php`. Setup
    creates `backend/private/config.json` and the database; it preserves
    existing settings. Keep these private and back them up securely. It then
-   checks PHP, the bundled Node and that the app answers `/api/meta`; a
+   checks PHP, the runner requests start (softn-runner, or the bundled Node
+   where it is not there or `"runner": "node"` asks for it) and that the app
+   answers `/api/meta`; a
    problem is a `WARNING:` line with its reason and a non-zero exit. It
    checks the command-line PHP, which is often configured apart from the web
    server's: step 5 checks that one.

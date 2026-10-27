@@ -7,7 +7,10 @@ request to a native app's backend: the request as JSON on stdin, the backend
 root in `SOFTN_BACKEND_ROOT`, one line on stdout, `{"status":N,"body":...}`.
 That runner has been `runtime/runner.mjs`, which needs Node on the server.
 `softn-runner` takes the same request and answers it the same way, as one
-program of its own.
+program of its own. Both hosts start it where it is there: the PHP host from
+its backend's `bin/` (`runtime/request.php` `softn_runner_choice`, which keeps
+Node where the operator asks for it or enables a request hook), FormLogic
+from its runtime's `native-runtime/bin/`.
 
 ## How it is built
 
@@ -110,7 +113,11 @@ on the static Linux build (`.github/workflows/verify.yml`, job `runner`).
 A release builds it for static Linux x86-64 and Windows x86-64
 (`.github/workflows/release.yml`, job `runner`) and carries both in the
 FormLogic archive as `native-runtime/bin/softn-runner-<platform>`, recorded in
-`native-runtime/provenance.json`. Beside them goes
+`native-runtime/provenance.json`, and the Linux one in the PHP host's two
+archives with a backend as `backend/bin/softn-runner-linux-x86_64`, recorded
+in their `BUILD-INFO.json` (`softnRunner`; `npm run package:single --
+--with-backend --runner-dir <dir>` and `npm run package:private-single-php --
+--runner-dir <dir>` take it from where `build.mjs` wrote it). Beside them goes
 `SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt`, which `build.mjs` writes from Cargo's
 own record of what the two halves compile in: every crate, its licence, and
 the licence files it ships (`build.mjs --notices` writes it alone).

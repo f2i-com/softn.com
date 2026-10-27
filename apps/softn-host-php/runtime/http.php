@@ -71,7 +71,7 @@ if(!in_array($method,['GET','POST','PUT','DELETE'],true)||($route===null&&!($pat
 $clientIp=softn_client_ip($remoteAddr,$_SERVER['HTTP_X_FORWARDED_FOR']??null,$trustedProxies);
 $rateKey=softn_rate_key($clientIp);
 // A bucket the runner has refused this minute is answered here, before the
-// body is read: no worker slot, no photo decode, no Node process. The runner
+// body is read: no worker slot, no photo decode, no runner process. The runner
 // leaves the note and stays the one that counts (request-worker.mjs
 // markLimited); the Rust host checks its limit at this point too.
 if(is_file(softn_rate_marker($backend,$rateKey,time()))){header('Retry-After: '.softn_retry_after(time()));reply(429,['error'=>'Too many requests.','code'=>'rate_limited']);}
@@ -100,8 +100,11 @@ if ($backend && softn_backend_is_public($backend,$_SERVER)) reply(503,['error'=>
 // A private/ this account cannot look into was made by another one (setup
 // run as root, say). "Run setup first" was the answer, to an operator who had.
 if ($backend && is_dir($backend.'/private') && !is_readable($backend.'/private')) reply(503,['error'=>'The private backend folder belongs to another account than the one this web server runs PHP as. Run setup as that account.','code'=>'backend_unavailable','diagnostic'=>'private_permissions']);
-if (!$backend || !is_file($backend.'/private/config.json') || !is_executable($backend.'/bin/node')) reply(503,['error'=>'Run the private backend setup first.','code'=>'backend_unavailable','diagnostic'=>'setup_required']);
-// How many requests may run at once, each a Node process (request.php
+// softn-runner where the backend carries it, else Node (request.php
+// softn_runner_choice); setup makes either one executable.
+$runner=$backend?softn_runner_choice($backend,$operator):null;
+if (!$backend || !is_file($backend.'/private/config.json') || !is_executable($runner['binary'])) reply(503,['error'=>'Run the private backend setup first.','code'=>'backend_unavailable','diagnostic'=>'setup_required']);
+// How many requests may run at once, each a runner process (request.php
 // softn_workers: the manifest's, under the operator's `workers` when set). A
 // slot file setup did not make is made here.
 $workers=softn_workers($manifest,$operator);
@@ -155,9 +158,9 @@ if($upload) {
 $process=null;$pipes=[];$errors='';$exitCode=null;
 try {
     // Array command bypasses the shell; no request data becomes an argument.
-    $process=proc_open(softn_runner_command($backend),
+    $process=proc_open($runner['command'],
         [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,$backend,
-        ['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1']);
+        softn_runner_environment($backend));
     if(!is_resource($process))throw new RuntimeException('spawn');
     foreach($pipes as $pipe)stream_set_blocking($pipe,false);
     // Invalid UTF-8 in a header or the query becomes U+FFFD rather than failing the request.

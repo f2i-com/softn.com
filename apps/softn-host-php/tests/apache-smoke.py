@@ -8,11 +8,14 @@ counter.mkdir()
 manifest={'id':'org.example.counter','name':'Counter','version':'1.0.0','config':{'server':{'allowedOrigins':['https://counter.example']}},'server':{'entry':'main.logic','requires':{'apiVersion':1,'capabilities':['sql','transaction-scope']},'database':{'kind':'private-sqlite','migrations':['schema.sql']},'routes':[{'method':'POST','path':'/api/increment','handler':'increment','authorization':'application','transaction':'write'}]}}
 manifest['server']['routes'].append({'method':'GET','path':'/api/counter','handler':'readCounter','authorization':'application','transaction':'read','poll':True})
 manifest['server']['routes']+=[{'method':m,'path':'/api/echo','handler':'echo','authorization':'anonymous'} for m in ['GET','POST']]+[{'method':'GET','path':'/api/shapes','handler':'shapes','authorization':'anonymous','transaction':'read','poll':True}]
+manifest['server']['routes'].append({'method':'POST','path':'/api/slow','handler':'slow','authorization':'anonymous','transaction':'write'})
 (counter/'manifest.json').write_text(json.dumps(manifest))
 (counter/'schema.sql').write_text('CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0);')
 (counter/'main.logic').write_text('function increment(req){if(req.headers.authorization!=="Bearer fixture")return {status:401,body:{error:"unauthorized"},rollback:true};softn.sql.execute("UPDATE counter SET value=value+1",[]);return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}')
 with (counter/'main.logic').open('a') as f:f.write('function echo(req){return {status:200,body:{body:req.body,query:req.query,headers:req.headers}};}\nfunction shapes(req){return {status:200,body:{empty:{},list:[],s:"x\\ud83d"}};}\n')
 with (counter/'main.logic').open('a') as f:f.write('function readCounter(req){if(req.headers.authorization!=="Bearer fixture")return {status:401,body:{error:"unauthorized"}};return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}')
+# A write, then a statement no request can finish: the runner's deadline ends it, whichever runner it is.
+with (counter/'main.logic').open('a') as f:f.write('\nfunction slow(req){softn.sql.execute("UPDATE counter SET value=99",[]);return {status:200,body:softn.sql.first("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<4000000000) SELECT count(*) AS n FROM c",[])};}\n')
 modules=['mpm_prefork','authz_core','authz_host','dir','mime','headers','rewrite','alias','actions','cgi']
 for name in ['counter']:subprocess.run(['php',str(root/name/'backend/setup.php')],check=True)
 config=f'ServerRoot "{root}"\nServerName localhost\nListen 127.0.0.1:8811\nPidFile "{root}/httpd.pid"\nErrorLog "{root}/error.log"\n'
@@ -81,18 +84,41 @@ with open(root/'apache.log','w') as log:
                 assert req(path,headers={'Cookie':cookie})[0] in [403,404],path
             print('Privately served application: server-rendered page, viewer cookie, source pack and hidden archive passed.',flush=True)
         print('Generic template with independent counter bundle: persistence, bearer forwarding, origins and private-file isolation passed.',flush=True)
+        backend=root/'counter/backend';value=2
+        def increment():
+            global value
+            status,body=req('/api/increment',method='POST',headers={'Authorization':'Bearer fixture'});value+=1
+            assert status==200 and json.loads(body)['value']==value,(status,body,value)
+        # Whichever runner answers (softn-runner where the archive carries it):
+        # a statement past the deadline is ended and its write rolled back.
+        start=time.monotonic();status,body=req('/api/slow',method='POST');elapsed=time.monotonic()-start
+        assert status in (500,503) and 19<=elapsed<24,(status,body,elapsed)
+        increment()
+        print('Runner deadline on a request\'s own SQL, and its rollback, passed.',flush=True)
+        softn_runner=(backend/'bin/softn-runner-linux-x86_64').is_file()
+        if softn_runner:
+            # The backend answers with Node and runner.mjs out of the way: softn-runner, alone.
+            for name in ['bin/node','runner.mjs']:(backend/name).rename(backend/(name+'.away'))
+            assert req('/api/meta')[0]==200;increment()
+            for name in ['bin/node','runner.mjs']:(backend/(name+'.away')).rename(backend/name)
+            print('Requests answered by softn-runner with no Node or runner.mjs in the backend passed.',flush=True)
         locks=[]
         for i in range(4):
             f=open(root/f'counter/backend/private/slot-{i}.lock','r+');fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB);locks.append(f)
         assert req('/api/meta')[0]==503
         for f in locks:f.close()
+        # The supervisor's limits, tested through Node's runner.mjs, which this
+        # test rewrites: where softn-runner is there, the operator's "runner":
+        # "node" makes Node the one, and the rewritten runner.mjs answering
+        # shows that it is.
+        config=backend/'private/config.json';settings=config.read_text()
+        if softn_runner:config.write_text(json.dumps({**json.loads(settings),'runner':'node'}))
         worker=root/'counter/backend/request-worker.mjs';worker_source=worker.read_text()
         worker.write_text('import {DatabaseSync} from "node:sqlite"; import {fileURLToPath} from "node:url"; const d=new DatabaseSync(fileURLToPath(new URL("./private/data/application.sqlite",import.meta.url)));d.exec("BEGIN IMMEDIATE; UPDATE counter SET value=99");while(true){}')
         start=time.monotonic();assert req('/api/meta')[0]==503
         assert 19<=time.monotonic()-start<24
         worker.write_text(worker_source)
-        status,body=req('/api/increment',method='POST',headers={'Authorization':'Bearer fixture'})
-        assert status==200 and json.loads(body)['value']==3,(status,body)
+        increment()
         print('Independent runner deadline and SQLite rollback after forced exit passed.',flush=True)
         runner=root/'counter/backend/runner.mjs';original=runner.read_text()
         runner.write_text('process.stdout.write("x".repeat(4000000));')
@@ -102,7 +128,9 @@ with open(root/'apache.log','w') as log:
         elapsed=time.monotonic()-start;assert 24<=elapsed<30,elapsed
         runner.write_text(original)
         assert req('/api/meta')[0]==200
-        print('PHP supervisor: four-slot admission limit, output limit, 25-second timeout and recovery passed.',flush=True)
+        config.write_text(settings)
+        if softn_runner:assert req('/api/meta')[0]==200;increment()
+        print('PHP supervisor: four-slot admission limit, output limit, 25-second timeout and recovery passed'+(' (on Node, by "runner": "node")' if softn_runner else '')+'.',flush=True)
     finally:
         os.killpg(server.pid,signal.SIGTERM);server.wait(timeout=15)
 print('Apache PHP test extraction: '+str(root))

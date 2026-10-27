@@ -863,12 +863,48 @@ test('a request and setup start the runner by one rule, with no request data in 
   const flags=command.slice(1,-1);
   for(const flag of flags)assert.match(flag,/^--[a-z0-9=-]+$/);
   for(const flag of ['--max-old-space-size=128','--disable-proto=throw','--no-wasm-tier-up','--no-wasm-dynamic-tiering'])assert.ok(flags.includes(flag),flag);
-  // One definition: a Node that will not take a flag fails setup's check,
-  // not every request after a setup that passed.
+  // One rule: a Node that will not take a flag, or a softn-runner this
+  // machine cannot run, fails setup's check, not every request after a setup
+  // that passed. Each starts what softn_runner_choice chose, in the
+  // environment softn_runner_environment gives.
   const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8'),setup=readFileSync(new URL('../runtime/setup.php',import.meta.url),'utf8');
-  assert.match(http,/proc_open\(softn_runner_command\(\$backend\),/);
-  assert.match(setup,/\$run\(softn_runner_command\(\$root\),/);
-  assert.doesNotMatch(http+setup,/--max-old-space-size/,'the flags are written once, in request.php');
+  assert.match(http,/\$runner=\$backend\?softn_runner_choice\(\$backend,\$operator\):null;/);
+  assert.match(http,/proc_open\(\$runner\['command'\],\s*\[0=>\['pipe','r'\],1=>\['pipe','w'\],2=>\['pipe','w'\]\],\$pipes,\$backend,\s*softn_runner_environment\(\$backend\)\);/);
+  assert.match(setup,/\$runner=softn_runner_choice\(\$root,\$settings\);/);
+  assert.match(setup,/\$run\(\$runner\['command'\],/);
+  assert.match(setup,/softn_runner_environment\(\$root\)\+\$env/);
+  assert.doesNotMatch(http+setup,/--max-old-space-size|NODE_NO_WARNINGS|'\/usr\/bin:\/bin'/,'the flags and the environment are written once, in request.php');
+});
+
+test('softn-runner answers where the backend carries it for this server, and Node where the operator wants Node',t=>{
+  const backend=realpathSync(mkdtempSync(join(tmpdir(),'softn-choice-'))).replace(/\\/g,'/');
+  t.after(()=>rmSync(backend,{recursive:true,force:true}));
+  mkdirSync(join(backend,'bin'));
+  const choose=(config,os='Linux',machine='x86_64')=>['softn_runner_choice',backend,config,os,machine];
+  const runner=backend+'/bin/softn-runner-linux-x86_64',node=backend+'/bin/node';
+  // Not there: Node, whatever the server.
+  const [absent]=php([choose({})]);
+  assert.equal(absent.runner,'node');
+  assert.equal(absent.binary,node);
+  assert.deepEqual(absent.command,php([['softn_runner_command',backend]])[0]);
+  writeFileSync(runner,'');
+  const got=php([
+    choose({}),choose(null),choose({runner:'auto'}),choose({},'Linux','AMD64'),
+    choose({runner:'node'}),choose({enableRequestHook:true}),choose({enableAfterRequestHook:true}),
+    choose({enableRequestHook:'yes'}),choose({},'Linux','aarch64'),choose({},'Windows','AMD64'),choose({},'Darwin','x86_64'),
+  ]);
+  // There, on Linux x86-64: softn-runner alone, no arguments, whatever else the configuration says.
+  for(const chosen of got.slice(0,4))assert.deepEqual(chosen,{runner:'softn-runner',binary:runner,command:[runner]});
+  // The operator asked for Node, or enabled a request hook (a module of
+  // theirs that only Node runs; softn-runner refuses the configuration).
+  for(const chosen of got.slice(4,7))assert.equal(chosen.runner,'node',JSON.stringify(chosen));
+  // A hook is enabled by true alone, as both runners read it.
+  assert.equal(got[7].runner,'softn-runner');
+  // Another server than the one it is built for: Node, which there is no more
+  // likely to run, and setup says so.
+  for(const chosen of got.slice(8))assert.equal(chosen.runner,'node',JSON.stringify(chosen));
+  // Either is started with the backend named: softn-runner is in bin/, not beside runner.mjs.
+  assert.deepEqual(php([['softn_runner_environment',backend]])[0],{PATH:'/usr/bin:/bin',TZ:'UTC',NODE_NO_WARNINGS:'1',SOFTN_BACKEND_ROOT:backend});
 });
 
 test('the body goes to the runner as the text the client sent, whatever numbers are in it',()=>{

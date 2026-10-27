@@ -22,10 +22,15 @@
  * to the Node this test runs under. It needs a POSIX system: http.php starts
  * the runner with an environment of its own (PATH, TZ, NODE_NO_WARNINGS),
  * under which a Windows Node does not start. Skipped, visibly, otherwise.
+ *
+ * With SOFTN_TEST_RUNNER naming a Linux build of softn-runner
+ * (apps/softn-runner), the backend carries a copy of it in bin/ and no Node
+ * at all, so every request is answered by softn-runner or not answered: the
+ * same suite, on the runner a release's backend starts.
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,readFileSync,rmSync,existsSync,readdirSync,symlinkSync,realpathSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,readFileSync,rmSync,existsSync,readdirSync,symlinkSync,realpathSync,chmodSync,renameSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -42,6 +47,15 @@ const skip=process.platform==='win32'?'needs a POSIX system (http.php starts Nod
   :major<24||major===24&&minor<19?'Node 24.19 or newer (node:sqlite)':false;
 if(skip)console.warn(`WARNING: tests/http-runner.test.mjs skipped: ${skip}. See apps/softn-host-php/README.md, Validation.`);
 const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
+/** softn-runner's Linux build, when the suite runs on it (SOFTN_TEST_RUNNER). */
+const softnRunner=process.env.SOFTN_TEST_RUNNER?realpathSync(process.env.SOFTN_TEST_RUNNER):null;
+const RUNNER_FILE='bin/softn-runner-linux-x86_64';
+if(!skip)console.log(`tests/http-runner.test.mjs runs on ${softnRunner?'softn-runner, '+softnRunner:'Node'}`);
+/** Waits out the end of a minute, where the rate limiter starts counting again. */
+function freshMinute() {
+  const left=60000-Date.now()%60000;
+  if(left<15000)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,left+200);
+}
 
 const SOURCE=`
 function ping(req){return {status:200,body:{ok:true}};}
@@ -55,7 +69,7 @@ const ROUTES=[
 ];
 
 /** webroot/ beside backend/, as the archive lays them out, set up as setup.php leaves it. */
-function deployment(t,{appId='http-runner',ownNode=false}={}) {
+function deployment(t,{appId='http-runner',ownNode=false,withNode=!softnRunner,config}={}) {
   const root=realpathSync(mkdtempSync(join(tmpdir(),'softn-http-runner-')));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   const backend=join(root,'backend');
@@ -67,9 +81,11 @@ function deployment(t,{appId='http-runner',ownNode=false}={}) {
   // A link, except where setup.php will run: setup makes bin/node 0700, and
   // through a link that would be the mode of the Node this machine runs.
   mkdirSync(join(backend,'bin'));
-  if(ownNode)copyFileSync(process.execPath,join(backend,'bin/node'));else symlinkSync(process.execPath,join(backend,'bin/node'));
+  if(withNode&&ownNode)copyFileSync(process.execPath,join(backend,'bin/node'));else if(withNode)symlinkSync(process.execPath,join(backend,'bin/node'));
+  // softn-runner is a copy for the same reason, and executable, as setup leaves it.
+  if(softnRunner){copyFileSync(softnRunner,join(backend,RUNNER_FILE));chmodSync(join(backend,RUNNER_FILE),0o755);}
   mkdirSync(join(backend,'app/server'),{recursive:true});mkdirSync(join(backend,'private/data'),{recursive:true});
-  writeFileSync(join(backend,'app/manifest.json'),JSON.stringify({id:'http-runner',version:'1.0.0',main:'ui/main.ui',server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},routes:ROUTES}}));
+  writeFileSync(join(backend,'app/manifest.json'),JSON.stringify({id:'http-runner',version:'1.0.0',main:'ui/main.ui',...(config?{config}:{}),server:{entry:'server/main.logic',requires:{apiVersion:1,capabilities:['sql']},routes:ROUTES}}));
   writeFileSync(join(backend,'app/server/main.logic'),SOURCE);
   writeFileSync(join(backend,'private/config.json'),JSON.stringify({appId,development:false,keyHex:'ab'.repeat(32),capabilities:['sql'],cryptoDomains:{hmac:'t:hmac:v1',seal:'t:seal:v1'},trustedProxies:[]}));
   /** What the web server tells PHP; `server` adds to it or, with undefined, leaves a name out. */
@@ -255,4 +271,56 @@ test('setup.php starts the runner as a request does and says why an app does not
   assert.equal(ready.status,0,ready.stdout+ready.stderr);
   assert.match(ready.stdout,/Application http-runner 1\.0\.0 answers \/api\/meta\./);
   assert.doesNotMatch(ready.stderr,/WARNING/);
+  // And which runner that was: said where softn-runner is there, nothing where Node is all there is.
+  if(softnRunner)assert.match(ready.stdout,/Requests run on softn-runner \(bin\/softn-runner-linux-x86_64\), without Node\. To run them on Node instead, set "runner": "node" in private\/config\.json\./);
+  else assert.doesNotMatch(ready.stdout,/softn-runner/);
+});
+
+test('a client past its limit is told 429 with Retry-After, and then by PHP before any runner starts',t=>{
+  // The runner counts and leaves a note for the minute (request-worker.mjs
+  // markLimited, worker.rs mark_limited) at the path http.php looks at
+  // before it starts one (request.php softn_rate_marker): both runners must
+  // write it there, or every request past the limit costs a process.
+  const d=deployment(t,{config:{server:{requestsPerMinute:2}}});
+  freshMinute();
+  assert.equal(d.ask('GET','/api/ping').status,200);
+  assert.equal(d.ask('GET','/api/ping').status,200);
+  const limited=d.ask('GET','/api/ping');
+  assert.equal(limited.status,429,limited.text+limited.log);
+  assert.deepEqual(JSON.parse(limited.text),{error:'Too many requests.',code:'rate_limited'});
+  assert.ok(Number(limited.headers['retry-after'])>=1,JSON.stringify(limited.headers));
+  // With no runner left to start, the next is still answered 429: by PHP, from the note.
+  renameSync(join(d.backend,softnRunner?RUNNER_FILE:'bin/node'),join(d.backend,'bin/gone'));
+  const again=d.ask('GET','/api/ping');
+  assert.equal(again.status,429,again.text+again.log);
+  assert.ok(Number(again.headers['retry-after'])>=1);
+});
+
+nodeTest('with softn-runner and Node both there, softn-runner answers, and Node where the operator asks or a hook needs it',{skip:skip||(softnRunner?false:'needs SOFTN_TEST_RUNNER (a Linux build of softn-runner)')},t=>{
+  const d=deployment(t,{withNode:true,ownNode:true});
+  // Node's runner.mjs answers in a way softn-runner never would, so whichever starts is seen.
+  writeFileSync(join(d.backend,'runner.mjs'),'process.stdout.write(\'{"status":200,"body":{"node":true}}\');');
+  const config=JSON.parse(readFileSync(join(d.backend,'private/config.json'),'utf8'));
+  const answer=settings=>{writeFileSync(join(d.backend,'private/config.json'),JSON.stringify({...config,...settings}));return d.ask('GET','/api/ping').text;};
+  assert.equal(answer({}),'{"ok":true}');
+  assert.equal(answer({runner:'node'}),'{"node":true}');
+  // A request hook is a module of the operator's that only Node runs; softn-runner refuses the configuration.
+  assert.equal(answer({enableRequestHook:true}),'{"node":true}');
+  assert.equal(answer({enableAfterRequestHook:true}),'{"node":true}');
+  assert.equal(answer({runner:'auto'}),'{"ok":true}');
+  // setup.php checks the one a request starts, and says which, and why Node.
+  const setup=()=>spawnSync('php',[join(d.backend,'setup.php')],{encoding:'utf8',timeout:60000});
+  writeFileSync(join(d.backend,'private/config.json'),JSON.stringify({...config,runner:'node'}));
+  const node=setup();
+  assert.equal(node.status,0,node.stdout+node.stderr);
+  assert.match(node.stdout,/Requests run on Node \(bin\/node and runner\.mjs\), not on softn-runner: "runner" is "node" in private\/config\.json\./);
+  writeFileSync(join(d.backend,'private/config.json'),JSON.stringify({...config,enableRequestHook:true}));
+  assert.match(setup().stdout,/not on softn-runner: a request hook is enabled in private\/config\.json, and only Node runs one\./);
+  // softn-runner alone, without Node or runner.mjs at all: setup and requests.
+  writeFileSync(join(d.backend,'private/config.json'),JSON.stringify(config));
+  rmSync(join(d.backend,'bin/node'));rmSync(join(d.backend,'runner.mjs'));
+  const alone=setup();
+  assert.equal(alone.status,0,alone.stdout+alone.stderr);
+  assert.match(alone.stdout,/Requests run on softn-runner/);
+  assert.equal(d.ask('GET','/api/ping').text,'{"ok":true}');
 });

@@ -93,11 +93,49 @@ function softn_request_body(string $raw): ?object {
     } catch(Throwable $e) {return null;}
 }
 
+/** softn-runner as a release puts it in backend/bin: the one server it is built for. */
+const SOFTN_RUNNER_BINARY='softn-runner-linux-x86_64';
+
 /**
- * The command that starts the runner, for a request (http.php) and for
- * setup's check of one (setup.php): one definition, so that a Node which
- * will not take a flag fails setup and not every request after it. No
- * request data becomes an argument.
+ * Which runner answers a request, for a request (http.php) and for setup's
+ * check of one (setup.php): one rule, so that setup checks the runner every
+ * request will start.
+ *
+ * softn-runner (apps/softn-runner) where the backend carries it and this
+ * server is the one it is built for: it takes the request runner.mjs takes
+ * and gives the same answer, without Node. Node and runner.mjs otherwise,
+ * and also where the operator asks for them (`"runner": "node"` in
+ * private/config.json) or has enabled a request hook, which is a JavaScript
+ * module of the operator's that only Node runs (softn-runner refuses such a
+ * configuration). `$os` and `$machine` are this server's; a test names them.
+ * @param mixed $config private/config.json, decoded
+ * @return array{runner:'softn-runner'|'node',binary:string,command:list<string>}
+ */
+function softn_runner_choice(string $backend, mixed $config, string $os=PHP_OS_FAMILY, ?string $machine=null): array {
+    $config=is_array($config)?$config:[];
+    $machine??=function_exists('php_uname')?php_uname('m'):'';
+    $binary=$backend.'/bin/'.SOFTN_RUNNER_BINARY;
+    $hooks=($config['enableRequestHook']??null)===true||($config['enableAfterRequestHook']??null)===true;
+    if($os==='Linux'&&in_array(strtolower($machine),['x86_64','amd64'],true)&&($config['runner']??null)!=='node'&&!$hooks&&is_file($binary))
+        return ['runner'=>'softn-runner','binary'=>$binary,'command'=>[$binary]];
+    return ['runner'=>'node','binary'=>$backend.'/bin/node','command'=>softn_runner_command($backend)];
+}
+
+/**
+ * What a runner is started with, and nothing else of PHP's own environment.
+ * softn-runner finds the backend by SOFTN_BACKEND_ROOT (it is not beside
+ * runner.mjs, but in bin/); runner.mjs reads it too, and it names the folder
+ * runner.mjs is in.
+ * @return array<string,string>
+ */
+function softn_runner_environment(string $backend): array {
+    return ['PATH'=>'/usr/bin:/bin','TZ'=>'UTC','NODE_NO_WARNINGS'=>'1','SOFTN_BACKEND_ROOT'=>$backend];
+}
+
+/**
+ * The command that starts Node's runner (softn_runner_choice says when):
+ * one definition, so that a Node which will not take a flag fails setup and
+ * not every request after it. No request data becomes an argument.
  *
  * The two wasm flags keep V8's optimizing compiler off the engine. A process
  * lives for one request, and the engine's dispatch loop is one function of

@@ -424,11 +424,20 @@ jobs:
           node scripts/release/smoke-site.mjs --root smoke-root
           rm -rf smoke-root
 
+      # The runners the runner jobs built: the PHP backends below carry the
+      # Linux one in backend/bin/, and the FormLogic runtime both.
+      - name: Take the runners the runner jobs built
+        uses: actions/download-artifact@v8
+        with:
+          pattern: softn-runner-*
+          path: release-runner
+          merge-multiple: true
+
       - name: Build and package the single-app runtime
         run: |
           set -euo pipefail
           npm run build -w @softn/single
-          npm run package:single -- --with-backend
+          npm run package:single -- --with-backend --runner-dir release-runner
           zip="release/softn-app-static-$RELEASE_TAG.zip"
           unzip -tq "$zip"
           unzip -Z1 "$zip" | grep -qx 'index.html'
@@ -446,7 +455,14 @@ jobs:
           set -euo pipefail
           npm run build -w @softn/single-private
           npm run package:single-private
-          npm run package:private-single-php
+          npm run package:private-single-php -- --runner-dir release-runner
+          # Both backends answer on softn-runner, with Node beside it for
+          # request hooks and the WebSocket bridge.
+          for zip in "release/softn-app-static-with-backend-linux-x64-$RELEASE_TAG.zip" "release/softn-app-private-with-backend-linux-x64-$RELEASE_TAG.zip"; do
+            unzip -Z1 "$zip" | grep -qx 'backend/bin/softn-runner-linux-x86_64'
+            unzip -Z1 "$zip" | grep -qx 'backend/licenses/SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt'
+            unzip -Z1 "$zip" | grep -qx 'backend/bin/node'
+          done
           for zip in "release/softn-app-private-$RELEASE_TAG.zip" "release/softn-app-private-with-backend-linux-x64-$RELEASE_TAG.zip"; do
             unzip -tq "$zip"
             unzip -Z1 "$zip" | grep -qx 'webroot/index.php'
@@ -469,13 +485,6 @@ jobs:
       # source: the hosted frame, the two hosted editors, the native runtime,
       # the ZIPP release install and the adapter, with a digest of every file
       # in softn-release.json, whose zipp must be the release the gate froze.
-      - name: Take the runners the runner jobs built
-        uses: actions/download-artifact@v8
-        with:
-          pattern: softn-runner-*
-          path: release-runner
-          merge-multiple: true
-
       - name: Build and package the SoftN runtime for FormLogic
         run: |
           set -euo pipefail

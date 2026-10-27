@@ -2,14 +2,15 @@
 // single-app runtime (apps/softn-single-private) together with the optional
 // PHP/WASM backend. Three folders: webroot/ (index.php, api.php, the
 // runtime's assets), private/ (the archive, its configuration and shell
-// template) and backend/ (bundled Linux x64 Node, SQLite and ZIPP WASM). The
+// template) and backend/ (softn-runner with --runner-dir, bundled Linux x64
+// Node, SQLite and ZIPP WASM). The
 // application is served privately with or without the backend; the backend
 // is enabled by the operator, as in the static variant.
 import fs from 'node:fs';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {packagePhp} from '../../apps/softn-host-php/package.mjs';
-import {prepareBackendInputs,explainerFile,root} from './single-backend-inputs.mjs';
+import {prepareBackendInputs,explainerFile,runnerDirOption,root} from './single-backend-inputs.mjs';
 import {releasePrivateFiles} from '../../apps/softn-single-private/scripts/shell.mjs';
 const app=join(root,'apps/softn-single-private');
 const dist=join(app,'dist');
@@ -29,6 +30,6 @@ fs.rmSync(privateStaging,{recursive:true,force:true});
 fs.mkdirSync(privateStaging,{recursive:true});
 for(const [name,bytes] of Object.entries(releasePrivateFiles(fs.readFileSync(join(dist,'private/shell.html')))))fs.writeFileSync(join(privateStaging,name),bytes);
 const {nodeDir,wasmDir,notices,websocketDir,version}=await prepareBackendInputs();
-packagePhp({runtime:staging,nodeDir,wasmDir,notices,template:true,templateClient:true,websocketDir,explainer:explainerFile('private-backend',version),
+packagePhp({runtime:staging,runnerDir:runnerDirOption(),nodeDir,wasmDir,notices,template:true,templateClient:true,websocketDir,explainer:explainerFile('private-backend',version),
   htaccess:join(app,'htaccess-backend'),privateDir:privateStaging,startHere:join(app,'PRIVATE_DEPLOYMENT.md'),serveGuide:join(root,'docs/engineering/SINGLE_APP_PRIVATE.md'),
   out:join(root,'release','softn-app-private-with-backend-linux-x64-v'+version+'.zip')});

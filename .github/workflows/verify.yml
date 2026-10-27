@@ -289,10 +289,12 @@ jobs:
       # 1.92.0 with wasm32-wasip1, the runner's 1.99.0); the runner's static
       # Linux target and musl's C compiler, for SQLite and wasmtime's helpers,
       # are added here.
+      # php-cgi too: the PHP host's own suite puts requests through http.php
+      # to the runner it chooses (below).
       - name: The static Linux target
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-tools php-cli php-cgi
           cd apps/softn-runner/host && rustup target add x86_64-unknown-linux-musl
       - name: Cache Cargo for the runner
         uses: actions/cache@v6
@@ -317,6 +319,16 @@ jobs:
         env:
           SOFTN_TEST_RUNNER: ${{ github.workspace }}/apps/softn-runner/dist/softn-runner-linux-x86_64
         run: node --test apps/softn-host-php/tests/route-declarations.test.mjs
+      # The PHP host from php-cgi to the runner and back: on softn-runner, with
+      # no Node in the backend, and which runner http.php and setup.php choose
+      # where both are there; then the same on Node, where nothing else in CI
+      # has php-cgi to run it.
+      - name: The PHP host's requests, on the runner and on Node
+        env:
+          RUNNER: ${{ github.workspace }}/apps/softn-runner/dist/softn-runner-linux-x86_64
+        run: |
+          SOFTN_TEST_RUNNER="$RUNNER" node --test apps/softn-host-php/tests/http-runner.test.mjs
+          node --test apps/softn-host-php/tests/http-runner.test.mjs apps/softn-host-php/tests/request.test.mjs
 
   # The desktop loader's Rust side, with XDB's Tauri commands compiled in (the
   # XDB job above tests the crate without them), so a change that breaks those

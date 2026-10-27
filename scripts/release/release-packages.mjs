@@ -163,16 +163,16 @@ export const PACKAGES = [
     what: 'The static single-app page above, plus a `backend/` folder that lets the app run its own private server logic and SQLite database on an Apache/PHP host, with no service to keep running.',
     chooseIf: [
       'Your app has a private server part (`server/` logic, SQL migrations, routes) and your host is Apache with PHP on Linux x86-64.',
-      'You want a server without a daemon: PHP starts the bundled Node for each request and it exits when done.',
+      'You want a server without a daemon: PHP starts the bundled runner (softn-runner, no Node needed) for each request and it exits when done.',
     ],
     notIf: [
       'Your app needs no server. Take `softn-app-static-<tag>.zip`; it is much smaller.',
       'You need persistent connections or XDB synchronisation between devices. Those need the Rust host (`softn-server`), built from source.',
-      'Your host is not Linux x86-64 (ARM, Windows): the bundled Node will not run there. The static part still works anywhere.',
+      'Your host is not Linux x86-64 (ARM, Windows): the bundled runners will not run there. The static part still works anywhere.',
     ],
     inside: [
       { path: 'webroot/', what: 'The page, `runtime.config.json`, the example `app.softn`, the runtime `assets/`, and `api.php`, which answers `/api/...` by starting the backend. Its contents go in your public folder.' },
-      { path: 'backend/', what: 'The server host: a bundled Linux x64 Node (`bin/node`), the ZIPP engine (`wasm/`), the runner scripts, `setup.php`, and licences. Goes **outside** every public folder.' },
+      { path: 'backend/', what: 'The server host: softn-runner (`bin/softn-runner-linux-x86_64`), which answers each request without Node, a bundled Linux x64 Node (`bin/node`) for operator request hooks and the WebSocket bridge, the ZIPP engine (`wasm/`), the runner scripts, `setup.php`, and licences. Goes **outside** every public folder.' },
       { path: 'backend/app/ (you create it)', what: 'Where your private server bundle goes. Nothing private is shipped.' },
       { path: 'README.md', what: 'This file.' },
       { path: 'DEPLOYMENT.md', what: 'The detailed guide: static-only use, enabling the backend step by step, updating.' },
@@ -249,12 +249,12 @@ export const PACKAGES = [
     notIf: [
       'The app needs no server. Take `softn-app-private-<tag>.zip`, which is this without `backend/`.',
       'You do not need private serving. Take `softn-app-static-with-backend-linux-x64-<tag>.zip`.',
-      'Your host is not Linux x86-64: the bundled Node will not run there. The served page itself needs only PHP.',
+      'Your host is not Linux x86-64: the bundled runners will not run there. The served page itself needs only PHP.',
     ],
     inside: [
       { path: 'webroot/', what: '`index.php`, `softn-serve.php`, `api.php` (answers `/api/...` by starting the backend), a `.htaccess` that also routes `/api`, and the runtime `assets/`. Its contents go in your public folder.' },
       { path: 'private/', what: 'The app (`app.softn`, a sample), `serve.config.php`, `shell.html` and a deny-all `.htaccess`. Beside the public folder.' },
-      { path: 'backend/', what: 'The server host: bundled Linux x64 Node, the ZIPP engine, the runner scripts, `setup.php` and licences. Beside the public folder, never inside it.' },
+      { path: 'backend/', what: 'The server host: softn-runner, which answers each request without Node, a bundled Linux x64 Node for operator request hooks and the WebSocket bridge, the ZIPP engine, the runner scripts, `setup.php` and licences. Beside the public folder, never inside it.' },
       { path: 'README.md', what: 'This file.' },
       { path: 'DEPLOYMENT.md', what: 'The detailed guide for this archive: placing the three folders, enabling the backend, updating.' },
       { path: 'DEPLOYMENT-SERVE.md', what: 'The private-serving guide: every setting and what is and is not hidden.' },

@@ -20,7 +20,14 @@ export function deploymentConfig(manifest,clientBytes,permissionMode='prompt') {
 // plain-language README.md generated from scripts/release/release-packages.mjs, the
 // front door every release archive has; when it is given, the detailed guide
 // ships as DEPLOYMENT.md beside it, as in the other archives.
-export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,operator,readme,template=false,templateClient=false,permissionMode='prompt',websocketDir,htaccess,privateDir,startHere,serveGuide,explainer}) {
+// `runnerDir` holds softn-runner as apps/softn-runner/build.mjs writes it (the
+// Linux build and its licences file): with it, the backend carries it in bin/
+// and http.php starts it where it started Node (request.php
+// softn_runner_choice). Node stays, for an operator's request hooks and the
+// WebSocket bridge.
+export const RUNNER_BINARY='softn-runner-linux-x86_64';
+export const RUNNER_NOTICES='SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt';
+export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,operator,readme,template=false,templateClient=false,permissionMode='prompt',websocketDir,htaccess,privateDir,startHere,serveGuide,explainer,runnerDir}) {
   if(privateDir&&(!template||!templateClient||!htaccess||!startHere||!serveGuide))throw new Error('The private variant is a template with its own htaccess and guides');
   const entries={};
   const add=(name,file)=>{entries[name]=readFileSync(file);};
@@ -59,6 +66,10 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,op
   if(explainer)add('README.md',explainer);
   add('backend/bin/node',join(nodeDir,'bin/node'));add('backend/licenses/NODE-LICENSE.txt',join(nodeDir,'LICENSE'));
   const elf=entries['backend/bin/node'];if(elf.subarray(0,4).toString('hex')!=='7f454c46'||elf.readUInt16LE(18)!==62)throw new Error('Expected Linux x86-64 Node');
+  if(runnerDir) {
+    add('backend/bin/'+RUNNER_BINARY,join(runnerDir,RUNNER_BINARY));add('backend/licenses/'+RUNNER_NOTICES,join(runnerDir,RUNNER_NOTICES));
+    const runner=entries['backend/bin/'+RUNNER_BINARY];if(runner.subarray(0,4).toString('hex')!=='7f454c46'||runner.readUInt16LE(18)!==62)throw new Error('Expected Linux x86-64 softn-runner');
+  }
   tree(notices,'backend/licenses/native/');
   if(!template) {
     const manifest=JSON.parse(readFileSync(join(bundle,'manifest.json'),'utf8'));
@@ -80,19 +91,24 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,op
   if(!changed)throw new Error('WASM memory cap not applied');
   entries['backend/wasm/zipp_wasm_bg.wasm']=Buffer.concat(parts);new WebAssembly.Module(entries['backend/wasm/zipp_wasm_bg.wasm']);
   entries['backend/.htaccess']=Buffer.from('Require all denied\n');
-  entries['BUILD-INFO.json']=Buffer.from(JSON.stringify({runtime:privateDir?'SoftN PHP-served single app + on-demand ZIPP WASM':'SoftN PHP + on-demand ZIPP WASM',template,backendOptional:templateClient,privateArchive:!!privateDir,builtAt:new Date(process.env.SOURCE_DATE_EPOCH?Number(process.env.SOURCE_DATE_EPOCH)*1000:Date.now()).toISOString(),wasmOriginalSha256:sha(original),wasmPackagedSha256:sha(entries['backend/wasm/zipp_wasm_bg.wasm']),wasmMemoryMaxBytes:268435456,instructionBudget:5000000,phpDeadlineSeconds:25,processSlotsDefault:4,processSlotsMax:16},null,2)+'\n');
+  entries['BUILD-INFO.json']=Buffer.from(JSON.stringify({runtime:privateDir?'SoftN PHP-served single app + on-demand ZIPP WASM':'SoftN PHP + on-demand ZIPP WASM',template,backendOptional:templateClient,privateArchive:!!privateDir,builtAt:new Date(process.env.SOURCE_DATE_EPOCH?Number(process.env.SOURCE_DATE_EPOCH)*1000:Date.now()).toISOString(),wasmOriginalSha256:sha(original),wasmPackagedSha256:sha(entries['backend/wasm/zipp_wasm_bg.wasm']),wasmMemoryMaxBytes:268435456,instructionBudget:5000000,phpDeadlineSeconds:25,processSlotsDefault:4,processSlotsMax:16,
+    // softn-runner's own ceilings (apps/softn-runner: guest.rs, sql.rs). The
+    // wasmMemoryMaxBytes above is backend/wasm's, the engine Node runs;
+    // softn-runner carries its engine inside it.
+    softnRunner:runnerDir?{file:'backend/bin/'+RUNNER_BINARY,sha256:sha(entries['backend/bin/'+RUNNER_BINARY]),wasmMemoryMaxBytes:1073741824,scriptHeapMaxBytes:536870912,sqliteHeapMaxBytes:1073741824}:null},null,2)+'\n');
   if(Object.keys(entries).some(n=>n.includes('/private/')||n.endsWith('.sqlite')||n.endsWith('backend.json')||n.endsWith('secret.key')||n.endsWith('digest.cache')))throw new Error('Live state in archive');
   entries['SHA256SUMS.txt']=Buffer.from(Object.entries(entries).map(([n,b])=>sha(b)+'  '+n).join('\n')+'\n');
   // The shared release writer: stores what is already compressed, deflates
   // the rest, reads the file back and compares every entry, writes .sha256.
-  // The Node binary keeps its executable mode through the unix attributes.
+  // The Node binary and softn-runner keep their executable mode through the unix attributes.
   const stamp=new Date(process.env.SOURCE_DATE_EPOCH?Number(process.env.SOURCE_DATE_EPOCH)*1000:Date.now());
-  const result=writeArchive(Object.fromEntries(Object.entries(entries).map(([n,b])=>[n,{data:b,mode:n==='backend/bin/node'?0o100755:0o100644}])),out,{stamp,level:6});
+  const executable=new Set(['backend/bin/node','backend/bin/'+RUNNER_BINARY]);
+  const result=writeArchive(Object.fromEntries(Object.entries(entries).map(([n,b])=>[n,{data:b,mode:executable.has(n)?0o100755:0o100644}])),out,{stamp,level:6});
   console.log(out+'\n'+result.size+' bytes; '+result.entries.length+' entries verified; SHA256 '+result.sha256);
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const args=process.argv.slice(2),option=name=>{const i=args.indexOf('--'+name);return i<0?undefined:resolve(args[i+1]);};
-  const options=Object.fromEntries(['runtime','bundle','client','node-dir','wasm-dir','notices','out','operator','readme'].map(n=>[n.replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),option(n)]));
+  const options=Object.fromEntries(['runtime','bundle','client','node-dir','wasm-dir','notices','out','operator','readme','runner-dir'].map(n=>[n.replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),option(n)]));
   options.template=args.includes('--template');
   options.permissionMode=args.includes('--preapprove-permissions')?'preapproved':'prompt';
   for(const key of ['runtime','nodeDir','wasmDir','notices','out',...(options.template?[]:['bundle','client'])])if(!options[key])throw new Error('Missing option: '+key);
