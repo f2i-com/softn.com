@@ -388,6 +388,24 @@ export function versionFromSums(sums) {
   return versions[0];
 }
 
+/** Where the SHA256SUMS digest of each release this repository adopted is recorded. */
+export const PINNED_SUMS = path.join(CORE, 'zipp-release-sums.json');
+
+/** The recorded digests by release (`zipp-release-sums.json`); none where the file is absent. */
+export function pinnedSums(file = PINNED_SUMS) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return {};
+  }
+  const pins = {};
+  for (const [release, digest] of Object.entries(JSON.parse(text))) {
+    if (isReleaseTag(release) && HEX64.test(String(digest))) pins[release] = String(digest).toLowerCase();
+  }
+  return pins;
+}
+
 /**
  * The repository's declared ZIPP release: the zipp-vm tag the Rust host builds
  * with (scripts/checks/engine-pin.test.mjs holds the browser engine to it).
@@ -1089,9 +1107,16 @@ export function writeInstall(dir, files) {
   }
 }
 
-async function installReleaseLocked({ dir, tag, latest, releaseDir, cargoToml, cacheDir, expectSumsSha256, fetch: fetchImpl = globalThis.fetch, curatedNotices, log = console.log, assertHeld = () => {} }) {
+async function installReleaseLocked({ dir, tag, latest, releaseDir, cargoToml, cacheDir, expectSumsSha256, pins, fetch: fetchImpl = globalThis.fetch, curatedNotices, log = console.log, assertHeld = () => {} }) {
   const { release, sums } = await resolveRelease({ tag, latest, releaseDir, cargoToml, cacheDir, fetch: fetchImpl });
   if (expectSumsSha256 && sha256(sums) !== expectSumsSha256.toLowerCase()) refuse(`the ${release} SHA256SUMS has sha256 ${sha256(sums)}; ZIPP_SUMS_SHA256 says ${expectSumsSha256}`);
+  // The digest recorded when this repository adopted the release: every file
+  // is checked against SHA256SUMS, and SHA256SUMS was taken as fetched, so a
+  // release whose files were replaced on GitHub (or a mirror, or the cache)
+  // with a SHA256SUMS to match was installed, and its glue run, unchallenged.
+  // The record is the repository's, for its own engine; `pins` names others.
+  const pinned = (pins ?? (path.resolve(dir) === ENGINE_DIR ? pinnedSums() : {}))[release];
+  if (pinned && sha256(sums) !== pinned) refuse(`the ${release} SHA256SUMS has sha256 ${sha256(sums)}; ${rel(PINNED_SUMS)} records ${pinned}`);
   const [engine, web, torchPackage, kitName] = releaseFiles(release.slice(1));
   log(`Taking ${engine}, ${web}, ${torchPackage} and ${kitName} from ZIPP ${release}${releaseDir ? ` in ${releaseDir}` : ''} ...`);
   const load = (name) => loadReleaseFile({ release, sums, name, releaseDir, cacheDir, fetch: fetchImpl });

@@ -1329,6 +1329,22 @@ test('offline, a release downloaded before is named for ZIPP_RELEASE_DIR, never 
   assert.equal(run.status, 0, run.stderr);
 });
 
+// SHA256SUMS was taken as fetched, and every file was checked against it: a release
+// replaced on GitHub with a SHA256SUMS to match was installed. A recorded digest holds it.
+test('a release whose SHA256SUMS is not the digest recorded for it is refused, and one that is installs', async (t) => {
+  const folder = releaseFolder(t);
+  const published = publishedUrls(folder);
+  const fetch = async (url) => (published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 }));
+  const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+  await assert.rejects(
+    installRelease({ dir: out, tag: TAG, cacheDir: tempDir(t, 'zipp-cache-'), fetch, pins: { [TAG]: '0'.repeat(64) }, log: quiet, warn: quiet }),
+    /SHA256SUMS has sha256 .* records 0{64}/
+  );
+  assert.ok(!fs.existsSync(path.join(out, 'SOURCE.json')), 'nothing is installed');
+  await installRelease({ dir: out, tag: TAG, cacheDir: tempDir(t, 'zipp-cache-'), fetch, pins: { [TAG]: sha256(folder.top) }, log: quiet, warn: quiet });
+  assert.equal(checkEngine(out).sumsSha256, sha256(folder.top));
+});
+
 test('downloads are cached per tag, whole files only, and a cached file that no longer matches is fetched again', async (t) => {
   const folder = releaseFolder(t);
   const cacheDir = tempDir(t, 'zipp-cache-');

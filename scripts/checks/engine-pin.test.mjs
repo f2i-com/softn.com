@@ -29,6 +29,24 @@ test('the browser engine is a verified ZIPP release install, not a local build',
   assert.equal(check.status, 0, `fetch-zipp-release.mjs --check:\n${check.stdout}${check.stderr}`);
 });
 
+// SHA256SUMS was taken as fetched, and every file was checked against it: a
+// release replaced on GitHub with a SHA256SUMS to match passed. The digest is
+// recorded with the repository, and the installer holds the release to it.
+test('the declared release\'s SHA256SUMS digest is recorded, and is the one the engine was installed from', async () => {
+  const { pinnedSums } = await import('../../packages/@softn/core/scripts/fetch-zipp-release.mjs');
+  const pinned = pinnedSums()[cargoTag];
+  assert.ok(pinned, `packages/@softn/core/zipp-release-sums.json records ${cargoTag} (fetch-zipp-release.mjs --resolve-only ${cargoTag} prints its digest)`);
+  assert.equal(source.sumsSha256, pinned, 'the installed engine came from the SHA256SUMS recorded');
+});
+
+// The local-model stack is vendored as source from the same release
+// (scripts/vendor-zipp-models.mjs); a ZIPP move that forgot to re-vendor it passed.
+test('the vendored model stack is from the declared release and its commit', () => {
+  const models = JSON.parse(fs.readFileSync(new URL('../../packages/@softn/core/vendor/zipp-models/SOURCE.json', import.meta.url), 'utf8'));
+  assert.equal(models.ref, cargoTag, 'vendor/zipp-models/SOURCE.json ref (node scripts/vendor-zipp-models.mjs in packages/@softn/core)');
+  assert.equal(models.commit, source.revision, 'vendor/zipp-models/SOURCE.json commit');
+});
+
 test('the Rust host takes zipp-vm from the release the browser engine was installed from', () => {
   const dependency = cargo.match(/^zipp-vm\s*=\s*\{([^}]*)\}/m);
   assert.ok(dependency, 'apps/softn-host-rust/Cargo.toml declares zipp-vm');

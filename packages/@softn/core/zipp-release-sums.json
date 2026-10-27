@@ -1,0 +1,4 @@
+{
+  "$comment": "The sha256 of each ZIPP release's SHA256SUMS, recorded when this repository adopted the release. fetch-zipp-release.mjs refuses a SHA256SUMS for a listed release with any other digest, wherever it was fetched from; scripts/checks/engine-pin.test.mjs requires the declared release (the zipp-vm tag in apps/softn-host-rust/Cargo.toml) to be listed, with the digest the installed engine was verified against. Add a release's digest when moving to it: node packages/@softn/core/scripts/fetch-zipp-release.mjs --resolve-only vX.Y.Z prints it.",
+  "v0.0.30": "e41277ccad611ce47f5224d7b5b72559ae243d9d093dd55d4d4a5afc205d03b3"
+}
