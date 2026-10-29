@@ -114,7 +114,9 @@ test('the frame never has more calls outstanding at the parent than the parent a
   const queue = createBackendQueue({ post, maxInFlight: 4, maxQueued: 32, timeoutMs: 15 });
   const slow = [1, 2, 3, 4].map(() => queue.call('slow', {}));
   assert.deepEqual(await Promise.all(slow), Array(4).fill({ error: BACKEND_TIMEOUT }));
-  const after = [1, 2].map(n => queue.call(`after-${n}`, {}));
+  // These two have a deadline of their own: under the queue's 15 ms they timed
+  // out whenever a busy machine took longer over the two turns below.
+  const after = [1, 2].map(n => queue.call(`after-${n}`, {}, { deadlineAt: Date.now() + 10_000 }));
   await tick();
   assert.equal(refused, 0);
   // The parent answers the slow calls; the waiting ones go out and are answered.
