@@ -1451,6 +1451,20 @@ mod host_json_tests {
         assert!(matches!(&pairs[1].1, HostValue::Object(inner) if inner[0].0 == "y" && inner[1].0 == "x"));
     }
 
+    /// zipp-vm is built without its default features (Cargo.toml): ZIPP 0.0.31
+    /// gave native embeddings a `WebAssembly` global by default, whose modules
+    /// would run outside the script's budget, and its command line a Node layer.
+    /// A script has neither.
+    #[test]
+    fn a_script_has_no_webassembly_and_nothing_of_node() {
+        let names = ["WebAssembly", "process", "require", "Buffer", "module", "exports", "__dirname", "Deno", "Bun"];
+        let source = format!("var result = [{}];", names.map(|name| format!("typeof {name}")).join(", "));
+        let mut state = compile_script(&source).unwrap();
+        state.run_init().unwrap();
+        let slot = state.symbols().into_iter().find(|symbol| symbol.name == "result").unwrap().index;
+        assert_eq!(host_to_json(&state.get_slot(slot), 0).unwrap(), serde_json::json!(names.map(|_| "undefined")));
+    }
+
     #[test]
     fn utf16_json_preserves_pairs_nul_and_nested_text() {
         let value = HostValue::Object(vec![("body".into(), HostValue::Array(vec![

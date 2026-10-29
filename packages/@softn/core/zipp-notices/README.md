@@ -10,8 +10,8 @@ comes with no notices of its own.
 
 `THIRD_PARTY_LICENSES.txt` is the file core's `scripts/build-zipp-wasm.mjs` writes
 (its `THIRD_PARTY_LICENSES.txt` step), generated from zipp.org's
-`LICENSE-UNICODE`. It is present at tag `v0.0.30` (commit
-`fd6b48a57f561b3291127a246ebf10dc59a0f3d2`), unchanged since `v0.0.21`, and
+`LICENSE-UNICODE`. It is present at tag `v0.0.32` (commit
+`e312cf40afe5f02e3cdebbadcfd30c9ead889384`), unchanged since `v0.0.21`, and
 regenerating the file from it there gives these bytes exactly.
 
 Up to 0.0.20 the file also carried the RustPython parser's MIT licence. ZIPP

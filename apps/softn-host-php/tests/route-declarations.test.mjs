@@ -69,6 +69,7 @@ function reasons(req){var said={};
 function depth(req){var levels=0,value=req.body;while(value!==null&&typeof value==='object'){value=value.a;levels++;}return {status:200,body:{levels:levels,leaf:value===undefined?'missing':value}};}
 function ordered(req){return {status:200,body:{zebra:Object.keys(req.body),apple:Object.keys(req.query),mango:req.body,kiwi:softn.sql.first("SELECT 1 AS zz, 'b' AS aa, 3 AS mm",[])}};}
 function inspect(req){var b=req.body;return {status:200,body:{body:b,keys:Object.keys(b),request:Object.keys(req),negative:1/b.z<0,negativeFloat:1/b.zf<0,types:[typeof b.one,typeof b.big,typeof b.text,typeof b.n,typeof b.list]}};}
+function globals(req){return {status:200,body:[typeof WebAssembly,typeof process,typeof require,typeof Buffer,typeof module,typeof exports,typeof __dirname,typeof Deno,typeof Bun]};}
 `;
 
 /** softn.time as both hosts answer it; its `script` is one more handler here. */
@@ -124,6 +125,16 @@ test('routes declared against the Rust host\'s defaults are served, with reads a
   assert.equal(b.invoke({method:'GET',path:'/api/legacy'}).status,200);
   // As the Rust host answers it (http.rs not_found).
   assert.deepEqual(b.invoke({method:'GET',path:'/api/nothing'}),{status:404,body:{error:'Endpoint not found.',code:'not_found'}});
+});
+
+// ZIPP 0.0.31 gave its native embeddings a `WebAssembly` global by default,
+// whose modules would run outside the handler's budget, and its command line
+// a Node layer. softn-runner's guest is zipp-vm built without them, and the
+// Node runner's engine is the browser module, which has neither.
+test('a handler has no WebAssembly and nothing of Node, on either runner',t=>{
+  const b=backend(manifest([{method:'GET',path:'/api/globals',handler:'globals'}]));
+  t.after(b.close);
+  assert.deepEqual(b.invoke({method:'GET',path:'/api/globals'}),{status:200,body:Array(9).fill('undefined')});
 });
 
 test('routes this host cannot serve are set aside and named, and the rest of the app runs',t=>{
