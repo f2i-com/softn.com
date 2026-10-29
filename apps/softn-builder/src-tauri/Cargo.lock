@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "softn-builder"
-version = "0.0.26"
+version = "0.0.27"
 dependencies = [
  "serde",
  "serde_json",
