@@ -134,6 +134,15 @@ export interface HostJsLocalStorageBridge {
 }
 
 /**
+ * Define `key` as an own data property, as ZIPP's conversions do. Assigned,
+ * a `__proto__` key ran the prototype setter: the key was lost, and an object
+ * under it became the copy's prototype, after which the copy read as `null`.
+ */
+function own(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/**
  * ZIPP's host projection: plain data crosses, and everything else reads as
  * `null`. Cycles read as `null` rather than recursing, as they do there.
  */
@@ -154,7 +163,7 @@ function project(value: unknown, seen = new WeakSet<object>()): unknown {
     const plain: Record<string, unknown> = {};
     for (const key of Object.keys(object)) {
       const projected = project((object as Record<string, unknown>)[key], seen);
-      if (projected !== undefined) plain[key] = projected;
+      if (projected !== undefined) own(plain, key, projected);
     }
     out = plain;
   }
@@ -201,13 +210,13 @@ function mergeOver(existing: unknown, incoming: unknown, depth = 0): unknown {
     const out: Record<string, unknown> = Object.create(Object.getPrototypeOf(previous));
     for (const key of Object.keys(next)) {
       const value = next[key];
-      if (!Object.hasOwn(previous, key)) out[key] = project(value);
-      else if ((value === null || value === undefined) && isOpaque(previous[key])) out[key] = previous[key];
-      else out[key] = mergeOver(previous[key], value, depth + 1);
+      if (!Object.hasOwn(previous, key)) own(out, key, project(value));
+      else if ((value === null || value === undefined) && isOpaque(previous[key])) own(out, key, previous[key]);
+      else own(out, key, mergeOver(previous[key], value, depth + 1));
     }
     // A key the host never saw because it could not be projected stays.
     for (const key of Object.keys(previous)) {
-      if (!Object.hasOwn(next, key) && isOpaque(previous[key])) out[key] = previous[key];
+      if (!Object.hasOwn(next, key) && isOpaque(previous[key])) own(out, key, previous[key]);
     }
     return out;
   }
