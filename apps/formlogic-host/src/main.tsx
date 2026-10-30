@@ -1,14 +1,16 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SoftNWithXDB, composeBundleSource, configureZippWasmSource, zippLanguages } from '@softn/core';
+import { SoftNWithXDB, composeBundleSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
-import { installAppStorage, STORAGE_PROTOCOL } from './storage';
+import { installAppStorage, STORAGE_LIMITS, STORAGE_PROTOCOL } from './storage';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
-import { NATIVE_FETCH_BRIDGE, createNativeNetFetch, nativeFetchRoute } from './nativeFetch';
+import { createNativeNetFetch } from './nativeFetch';
 import { framePolicy } from './framePolicy';
+import { mediaUrl } from './media';
+import { seedBundledData } from './seed';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -39,13 +41,28 @@ let port: MessagePort | undefined;
 let appStorage: ReturnType<typeof installAppStorage> | undefined;
 let terminated = false;
 // Four calls at a time to the parent, which is the parent's own limit,
-// thirty-two waiting behind them, twenty seconds each for an answer. A slot
-// is the parent's until it answers (see backendQueue.ts). The parent
-// validates every call on its side.
+// thirty-two waiting behind them. A slot is the parent's until it answers (see
+// backendQueue.ts). The parent validates every call on its side.
+//
+// Thirty-five seconds for an answer, longer than FormLogic gives a native
+// app's request on its server (twenty-five): at twenty, a write that committed
+// in its last five seconds reached the app as a failure, and an app that tried
+// again made it twice.
+const CALL_DEADLINE_MS = 35000;
 const calls = createBackendQueue({
   post: message => port!.postMessage(message),
-  maxInFlight: 4, maxQueued: 32, timeoutMs: 20000,
+  maxInFlight: 4, maxQueued: 32, timeoutMs: CALL_DEADLINE_MS,
 });
+/**
+ * The native app's storage saves, in a lane of their own, where the parent
+ * says it takes them apart from its four calls (`init.storageLane`). In the
+ * shared lane a screen whose own calls filled the four slots and the
+ * thirty-two places behind them had its save refused as busy, and that failed
+ * save held the app's imports and restores until it was opened again. Its ids
+ * start far past any call's, so a reply names one call in one lane.
+ */
+let storageCalls: ReturnType<typeof createBackendQueue> | undefined;
+const STORAGE_FIRST_ID = 1_000_000_000;
 function backendCall(action: string, input: Record<string, unknown>): Promise<unknown> {
   if (!port || terminated) return Promise.resolve({ error: 'The app is not connected to its backend yet.' });
   return calls.call(action, input);
@@ -55,6 +72,7 @@ function terminate(): void {
   terminated = true;
   appStorage?.dispose();
   calls.dispose(BACKEND_UNREADABLE);
+  storageCalls?.dispose(BACKEND_UNREADABLE);
   port?.close();
   root.unmount();
 }
@@ -67,14 +85,20 @@ function reasonOf(error: unknown): string {
   const text = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   return text.split('\n')[0].slice(0, 300);
 }
-function reportError(reason: string): void {
-  // `reason` is an addition to the protocol; a parent that reads only `type` is unaffected.
-  port?.postMessage({ type: 'error', reason });
+/**
+ * `phase` says whether the app failed to open (`load`: nothing of it is shown) or failed while
+ * running (`runtime`: it is still drawn, and its own error shows inside it). A parent that showed
+ * "could not load" for every error put that over a working app. `reason` and `phase` are
+ * additions to the protocol; a parent that reads only `type` is unaffected.
+ */
+function reportError(reason: string, phase: 'load' | 'runtime'): void {
+  port?.postMessage({ type: 'error', reason, phase });
 }
 class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean; reason: string }> {
   state = { failed: false, reason: '' };
   static getDerivedStateFromError(error: unknown) { return { failed: true, reason: reasonOf(error) }; }
-  componentDidCatch(error: unknown) { reportError(reasonOf(error)); }
+  // The app is replaced by the message below: it is no longer shown, which is a load failure.
+  componentDidCatch(error: unknown) { reportError(reasonOf(error), 'load'); }
   render() {
     if (!this.state.failed) return this.props.children;
     return <p role="alert">{LOAD_FAILED}{this.state.reason ? ` (${this.state.reason})` : ''}</p>;
@@ -84,16 +108,24 @@ window.addEventListener('message', async event => {
   if (started || terminated || event.source !== parent || event.data?.type !== 'formlogic:init' || !event.ports[0]) return;
   started = true;
   port = event.ports[0];
+  if (event.data.storageLane === true) {
+    storageCalls = createBackendQueue({
+      post: message => port!.postMessage(message),
+      // One save at a time, as the storage sends them, and as many waiting as it may hold.
+      maxInFlight: 1, maxQueued: STORAGE_LIMITS.outstanding, timeoutMs: STORAGE_LIMITS.deadline,
+      firstId: STORAGE_FIRST_ID,
+    });
+  }
   port.onmessage = event => {
     if (event.data?.type === 'formlogic:dispose') { terminate(); return; }
-    calls.settle(event.data?.id, event.data?.result);
+    if (!calls.settle(event.data?.id, event.data?.result)) storageCalls?.settle(event.data?.id, event.data?.result);
   };
   // A result the port could not deserialise names no id: nothing in flight
   // can be told apart, so all of it answers now rather than at its deadline.
   // The app goes on: an acknowledged (protocol 1) storage write sent before it
   // is marked unknown, which holds later ones back, so nothing is claimed
   // saved that may not be.
-  port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); };
+  port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); storageCalls?.failInFlight(BACKEND_UNREADABLE); };
   try {
     // `engine` is an addition: absent means the engine this document has always
     // run, so a FormLogic that predates the choice is unaffected. One it does
@@ -130,28 +162,29 @@ window.addEventListener('message', async event => {
     }
     if (terminated) return;
     const manifest = JSON.parse(files.get('manifest.json') || '{}');
-    // Set for a native app whose logic the `<logic>` bridge below cannot be
-    // written in; undefined otherwise, which is every app that runs today.
+    let drawn = false;
+    // Set for a native app; undefined otherwise, where `softn.net.fetch` is
+    // refused like every other permission.
     let netFetchHandler: ReturnType<typeof createNativeNetFetch> | undefined;
     if (event.data.native === true) {
-      appStorage = installAppStorage(event.data.storage || {}, (input, lifecycle) => calls.call('nativeStorage', input, lifecycle), { acknowledged: event.data.storageProtocol === STORAGE_PROTOCOL });
-      // Keep stored app source untouched. Its declared API origin is routed by
-      // the trusted parent to this app's native backend, without direct egress.
-      if (nativeFetchRoute(languages) === 'host-handler') {
-        netFetchHandler = createNativeNetFetch(backendCall);
-      } else {
-        const entry = String(manifest.main);
-        files.set(entry, NATIVE_FETCH_BRIDGE + (files.get(entry) || ''));
-      }
+      const lane = storageCalls ?? calls;
+      appStorage = installAppStorage(event.data.storage || {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle), { acknowledged: event.data.storageProtocol === STORAGE_PROTOCOL });
+      // The app's source is left as it came. Its declared API origin is routed
+      // by the trusted parent to this app's native backend, without direct
+      // egress, from the first line of logic that runs (nativeFetch.ts).
+      netFetchHandler = createNativeNetFetch(backendCall);
     }
     const media = new Map<string, string>();
-    const types: Record<string,string> = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp', gif:'image/gif', svg:'image/svg+xml', wav:'audio/wav', mp3:'audio/mpeg', ogg:'audio/ogg', woff:'font/woff', woff2:'font/woff2' };
     for (const [path, value] of Object.entries(event.data.assets || {})) {
-      const type = types[path.split('.').pop()?.toLowerCase() || ''];
-      if (type && typeof value === 'string') media.set(path, `data:${type};base64,${value}`);
+      const url = mediaUrl(path, value);
+      if (url) media.set(path, url);
     }
     const resolveAsset = (path: string) => media.get(path.replace(/^\.\//, '')) || '';
     const composed = composeBundleSource(files, manifest.main, manifest.files?.logic || []);
+    // The records the app ships with, added once, before it first draws (seed.ts).
+    const seeding = await seedBundledData(files, manifest, getXDB(event.data.appId), parseXDBFile, seedXDBBundleData, () => !terminated);
+    if (terminated) return;
+    for (const warning of seeding.warnings) console.warn(`[SoftN] ${warning}`);
     // A bundle's permission.json cannot enable arbitrary network, hardware or sync access.
     // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
     root.render(<Boundary><ThemeProvider defaultDarkMode={event.data.dark === true} declaredMode={declaredThemeMode(manifest)}>
@@ -160,13 +193,16 @@ window.addEventListener('message', async event => {
         assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}
         backendCall={backendCall} netFetchHandler={netFetchHandler}
         importResolver={async path => files.get(path.replace(/^\//, '')) ?? null}
-        onError={error => reportError(reasonOf(error))} />
+        // Before its first page is drawn the app has not opened; after it, it is drawn and
+        // what went wrong shows inside it.
+        onLoad={() => { drawn = true; }}
+        onError={error => reportError(reasonOf(error), drawn ? 'runtime' : 'load')} />
     </ThemeProvider></Boundary>);
   } catch (error) {
     if (terminated) return;
     const reason = reasonOf(error);
     root.render(<p role="alert" style={{ padding: 24 }}>{LOAD_FAILED}{reason ? ` (${reason})` : ''}</p>);
-    reportError(reason);
+    reportError(reason, 'load');
   }
 });
 // `zipp` is the primary engine's identity, exactly what it has always been:

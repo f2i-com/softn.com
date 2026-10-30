@@ -69,17 +69,46 @@ bytes does not grant permission to create those workers or enable additional hos
 `softn.backend.call` goes to the parent over the transferred port as
 `{type:'call', id, action, input}`; the parent answers `{id, result}`. The
 shell keeps four calls in flight and up to thirty-two waiting behind them
-(`src/backendQueue.ts`), sending each as a slot frees, with a twenty-second
-deadline from the moment a call is sent. A thirty-third waiting call, a
+(`src/backendQueue.ts`), sending each as a slot frees, with a thirty-five-second
+deadline from the moment a call is sent: longer than the twenty-five seconds
+FormLogic lets a native app's request run, so a write that was made is not
+answered as a failure the app may try again. A thirty-third waiting call, a
 deadline and a reply the port could not deserialise (`messageerror`) each
 resolve to `{error}` with a sentence that says which. A deadline answers the
 app but does not free the slot: the parent holds four calls at a time with no
 deadline of its own and refuses a fifth, so a slot is freed only when the
 parent answers that call, or the port fails. A call still waiting for a slot
-twenty seconds after it was made answers that it timed out. The shell is a public
+thirty-five seconds after it was made answers that it timed out.
+
+A native app's `softn.net.fetch` is answered by the frame itself
+(`src/nativeFetch.ts`): it sends `nativeRequest` with the URL and the options,
+its method upper-cased as a browser's `fetch` sends it, and the parent routes
+it to the app's own backend. Nothing is added to the app's source; until
+v0.0.28 a JavaScript app had a `<logic>` fragment prepended to its entry file,
+which ran after its helper files, so a helper that fetched as it loaded was
+refused.
+
+The shell is a public
 URL: anyone may embed it and drive it with their own `formlogic:init`, and
 gets only their own files running in an opaque frame against a port they
 supplied; no FormLogic state is reachable from it.
+
+## Media and seed data
+
+An app's `assets/` arrive in `init.assets` as base64 and are served to the page as `data:` URLs
+(`src/media.ts`): pictures (PNG, JPEG, GIF, WebP, AVIF, ICO, BMP, SVG, HDR, EXR), sound (MP3,
+WAV, Ogg, Opus, AAC, FLAC, M4A), video (MP4, WebM), fonts (WOFF, WOFF2, TTF, OTF), 3D models
+(glTF and GLB with their `.bin`, OBJ, STL, FBX), and WGSL shaders, text and Markdown to read,
+each under the type core's asset classification gives it. Nothing that runs (HTML, JavaScript)
+or styles the page is served. `connect-src` names `data:` so an app can `fetch` its own assets,
+as a model loader or a compute shader does; that reaches no network.
+
+The `.xdb` files `manifest.files.xdb` names are the app's seed records. Before it first draws,
+the frame adds them to the app's database with core's reader and seeder (`src/seed.ts`), as SoftN
+Web, the standalone runtime and the desktop loader do: once per record, never over a record the
+person has, and a seed the person removed stays removed. A file that is missing, unreadable or
+too large for the app's storage is named in the console and skipped; the app opens with the rest.
+For a native app the seed is saved through the storage below, so it is held to its limits.
 
 ## App storage
 
@@ -87,6 +116,11 @@ A native app's (`init` with `native: true`) `localStorage` is a synchronous copy
 snapshot `init` carries in `storage` (`src/storage.ts`). Each change goes to the parent as a
 `nativeStorage` call, one at a time and in order. How a save counts depends on the parent:
 
+- A parent that sends `storageLane: true` in `init` takes saves apart from its four calls,
+  so the frame sends them in a lane of their own (ids from 1,000,000,000 up, one at a time):
+  a screen whose own calls fill the four slots and the thirty-two places behind them no longer
+  has a save refused as busy. Without it saves go with the calls, as before, since a parent
+  that counts them against its four would refuse more of them.
 - `ready` announces `storageProtocol: 1`. A parent that sends `storageProtocol: 1` in `init`
   gets acknowledged storage: a save counts only when the reply is `{result: {saved: true}}`
   with no `error`, read from the reply's own data fields. Each save has one deadline, twenty
@@ -111,11 +145,16 @@ snapshot `init` carries in `storage` (`src/storage.ts`). Each change goes to the
 does not keep it in the back/forward cache), ends the app: waiting saves and calls are
 cancelled, an acknowledged save already sent is marked unknown, and the app is unmounted.
 
-A load failure is reported to the parent as `{type:'error', reason}` and
-shown in the frame with the same one-line reason. `reason` is an addition;
-a parent that reads only `type` sees what it always did.
+An error is reported to the parent as `{type:'error', reason, phase}`. `phase` is `load` when
+the app did not open (the frame shows the same one-line reason in its place, or the renderer
+shows why) and `runtime` when it failed after its first page was drawn: it is still on screen,
+and the renderer shows what went wrong inside it, so a parent should not put a "could not
+load" message over it. `reason` and `phase` are additions; a parent that reads only `type` sees
+what it always did, and one that reads `phase` should take a missing one as `load`, which is
+what frames before v0.0.28 meant.
 
-Test the queue and the engine handshake with `node --test apps/formlogic-host/test/*.mjs`.
+Test the queue, the engine handshake, the protocol, the policy, media and seeding with
+`node --test apps/formlogic-host/test/*.mjs`.
 
 ## Updating
 

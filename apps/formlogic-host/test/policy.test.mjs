@@ -20,17 +20,24 @@ const app = path.join(here, '..');
 const ASSETS = 'https://runtime.example/hosted-runtime/';
 
 /**
- * The policy `index.html` has carried since the hosted runtime shipped, as one
- * literal. It is written out rather than built, because the point of the test
- * is that nothing about serving a second engine changed it: a diff here is a
- * change to what every hosted app has always been allowed to do.
+ * The policy `index.html` carries, as one literal. It is written out rather
+ * than built, because the point of the test is that nothing about serving a
+ * second engine changed it: a diff here is a change to what every hosted app is
+ * allowed to do. The one change since the hosted runtime shipped is `data:` in
+ * `connect-src` (v0.0.28), which reaches no network: it lets an app fetch its
+ * own bundled assets, which are served as data: URLs, as a model loader does.
  */
 const ZIPP_POLICY =
-  `default-src 'none'; script-src ${ASSETS} 'wasm-unsafe-eval'; connect-src ${ASSETS}; ` +
+  `default-src 'none'; script-src ${ASSETS} 'wasm-unsafe-eval'; connect-src ${ASSETS} data:; ` +
   `style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; ` +
   `worker-src blob:; form-action 'none'; base-uri 'none'; frame-src 'none'`;
 
-test('the ZIPP document keeps the policy it has always had, byte for byte', () => {
+test('connect-src reaches the runtime directory and data: URLs, and no network beyond', () => {
+  const sources = framePolicy(ASSETS, ZIPP_DOCUMENT_ENGINES).split('; ').find((d) => d.startsWith('connect-src ')).split(' ').slice(1);
+  assert.deepEqual(sources, [ASSETS, 'data:']);
+});
+
+test('the ZIPP document keeps its policy, byte for byte', () => {
   assert.equal(framePolicy(ASSETS, ZIPP_DOCUMENT_ENGINES), ZIPP_POLICY);
   // A document whose attribute this build does not understand serves no engine
   // at all, and gets the strict policy rather than a guess.

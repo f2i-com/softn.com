@@ -268,10 +268,10 @@ test('the shell refuses the engine before it configures one, and routes native f
   // the bundle — the manifest is the app talking about itself.
   assert.match(main, /bundleLanguages\(files\.keys\(\)\)/);
   assert.ok(main.indexOf('bundleLanguages(') < main.indexOf('JSON.parse(files.get(\'manifest.json\')'));
-  // The native network route is chosen from the same list, and a JavaScript
-  // app still has the bridge prepended to its entry file, exactly as before.
-  assert.match(main, /nativeFetchRoute\(languages\)/);
-  assert.match(main, /files\.set\(entry, NATIVE_FETCH_BRIDGE \+ \(files\.get\(entry\) \|\| ''\)\)/);
+  // A native app's network calls are answered by the host whatever its
+  // language, and nothing is prepended to its source (nativeFetch.ts).
+  assert.match(main, /netFetchHandler = createNativeNetFetch\(backendCall\)/);
+  assert.ok(!/files\.set\(/.test(main), 'the app\'s files are run as they came');
   // The engines are named by the install's SOURCE.json, once, and the one
   // filtered list is what `init` is checked against and what `ready` announces;
   // `ready.zipp` stays the engine's own identity, so an older parent sees what

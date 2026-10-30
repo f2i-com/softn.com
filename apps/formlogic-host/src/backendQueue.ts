@@ -37,6 +37,11 @@ export interface BackendQueueOptions {
   maxQueued?: number;
   /** Deadline for an answer, counted from the moment the call is sent, and for a slot while it waits. */
   timeoutMs?: number;
+  /**
+   * The id the first call is sent with (1 unless given). Two queues on one port start far
+   * apart, so a reply's id names one call in one of them and no other.
+   */
+  firstId?: number;
 }
 
 export interface BackendQueue {
@@ -83,7 +88,7 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
   const maxInFlight = options.maxInFlight ?? 4;
   const maxQueued = options.maxQueued ?? 32;
   const timeoutMs = options.timeoutMs ?? 20000;
-  let sequence = 0;
+  let sequence = (options.firstId ?? 1) - 1;
   const sent = new Map<number, Sent>();
   const waiting: Waiting[] = [];
   let disposed = false;

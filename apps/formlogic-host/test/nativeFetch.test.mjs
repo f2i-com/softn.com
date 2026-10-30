@@ -1,18 +1,16 @@
 // node --test apps/formlogic-host/test/nativeFetch.test.mjs
 // (Node 24 runs the TypeScript module directly; it uses only erasable syntax.)
 //
-// A native app's `softn.net.fetch` has one behaviour and two routes to it. The
-// route a JavaScript app takes is a `<logic>` fragment prepended to its entry
-// file; the route an app whose logic is not JavaScript takes is the host
-// answering the call itself. These tests run BOTH and compare the answers, so
-// the second route cannot quietly become a different capability from the first.
+// A native app's `softn.net.fetch` is answered by the host itself. Until
+// v0.0.28 a JavaScript app was given a `<logic>` fragment prepended to its entry
+// file instead, which ran too late for an app's helper files. These tests run
+// that fragment (kept below as it was) beside the handler and compare the
+// answers, so the move changed the route and not the capability.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  NATIVE_FETCH_BRIDGE,
   NATIVE_REQUEST_ACTION,
   createNativeNetFetch,
-  nativeFetchRoute,
 } from '../src/nativeFetch.ts';
 
 /**
@@ -21,7 +19,7 @@ import {
  * asked the backend for and what it handed back to the script.
  */
 function throughBridge(url, options, reply) {
-  const code = NATIVE_FETCH_BRIDGE.match(/<logic>([\s\S]*?)<\/logic>/)[1];
+  const code = BRIDGE.match(/<logic>([\s\S]*?)<\/logic>/)[1];
   const asked = [];
   const softn = {
     net: {},
@@ -51,10 +49,8 @@ async function throughHandler(url, options, reply) {
 }
 
 /**
- * The fragment every native app has been given, written out as one literal
- * rather than built — the way `policy.test.mjs` writes out the ZIPP policy.
- * Moving it out of `main.tsx` was meant to change nothing about it, and a diff
- * here is a change to source that is prepended to a real app's entry file.
+ * The fragment every JavaScript native app was given until v0.0.28, as it was:
+ * what the handler is held to.
  */
 const BRIDGE = `<logic>
 softn.net.fetch = function(url, options, done) {
@@ -67,14 +63,15 @@ softn.net.fetch = function(url, options, done) {
 </logic>
 `;
 
-test('a JavaScript app keeps the bridge; only Python takes the handler', () => {
-  assert.equal(nativeFetchRoute(['javascript']), 'logic-bridge');
-  assert.equal(nativeFetchRoute([]), 'logic-bridge');
-  assert.equal(nativeFetchRoute(['javascript', 'python']), 'host-handler');
-  assert.equal(nativeFetchRoute(['python']), 'host-handler');
-  // The bridge is the text it has always been, character for character.
-  assert.equal(NATIVE_FETCH_BRIDGE, BRIDGE);
+test('the action is the one the parent routes to the app backend', () => {
   assert.equal(NATIVE_REQUEST_ACTION, 'nativeRequest');
+});
+
+test('a method is sent upper-cased, as a browser sends it', async () => {
+  const { asked } = await throughHandler('https://api.test/save', { method: 'post', body: { a: 1 } }, { result: { status: 201, body: {} } });
+  assert.deepEqual(asked, [[NATIVE_REQUEST_ACTION, { url: 'https://api.test/save', options: { method: 'POST', body: { a: 1 } } }]]);
+  // Options with no method are sent as they came.
+  assert.deepEqual((await throughHandler('https://api.test/x', { headers: { a: 'b' } }, { result: { status: 200 } })).asked[0][1].options, { headers: { a: 'b' } });
 });
 
 test('both routes ask the backend for the same thing', async () => {

@@ -247,3 +247,28 @@ test('reply observer exceptions cannot strand a caller or the waiting line', asy
   queue.settle(posted[2].id, 'done');
   assert.equal(await third, 'done');
 });
+
+test('two queues on one port name their calls apart, and a reply settles only its own', async () => {
+  const posted = [];
+  const calls = createBackendQueue({ post: m => posted.push(m), maxInFlight: 4, maxQueued: 32, timeoutMs: 1000 });
+  const saves = createBackendQueue({ post: m => posted.push(m), maxInFlight: 1, maxQueued: 32, timeoutMs: 1000, firstId: 1_000_000_000 });
+  const call = calls.call('load', {});
+  const save = saves.call('nativeStorage', { operation: 'set' });
+  assert.deepEqual(posted.map(m => m.id), [1, 1_000_000_000]);
+  // The frame tries the calls first, then the saves, with each reply.
+  const settle = (id, result) => calls.settle(id, result) || saves.settle(id, result);
+  assert.equal(settle(1_000_000_000, { result: 'saved' }), true);
+  assert.equal(calls.inFlight, 1, 'the save\'s reply freed no call');
+  assert.equal(settle(1, { result: 'loaded' }), true);
+  assert.deepEqual(await Promise.all([call, save]), [{ result: 'loaded' }, { result: 'saved' }]);
+});
+
+test('saves in a lane of their own are not refused while the calls are full', async () => {
+  const calls = createBackendQueue({ post: () => {}, maxInFlight: 1, maxQueued: 1, timeoutMs: 1000 });
+  const saves = createBackendQueue({ post: () => {}, maxInFlight: 1, maxQueued: 32, timeoutMs: 1000, firstId: 1_000_000_000 });
+  calls.call('a', {});
+  calls.call('b', {});
+  assert.deepEqual(await calls.call('c', {}), { error: BACKEND_BUSY });
+  saves.call('nativeStorage', {});
+  assert.equal(saves.inFlight, 1, 'the save went out');
+});
