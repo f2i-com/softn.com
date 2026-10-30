@@ -135,7 +135,7 @@ snapshot `init` carries in `storage` (`src/storage.ts`). Each change goes to the
 - A parent that does not (protocol 0) gets the storage it always had: a reply without `error`
   is a save, and one with `error` shows the failed-save alert. A save is an ordinary call there,
   so it waits with the app's other calls under their limits: with four slow calls in flight it
-  can expire at the twenty-second waiting deadline, or be refused as busy when 32 are waiting,
+  can expire at the thirty-five-second waiting deadline, or be refused as busy when 32 are waiting,
   and then it is not sent and the alert shows. XDB cannot report a save there as made: its
   async writes update the records and then reject with `persistence-unsupported`, imports and
   restores are refused, its status is `degraded`, and closing the page asks first where the

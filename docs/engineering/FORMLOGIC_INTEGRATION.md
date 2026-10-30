@@ -86,11 +86,11 @@ copy beside each built runtime and editor.
 
 The built runtime and editors carry the engine once, as their hashed asset:
 a SoftN page posts the engine it compiled to every worker it starts, so their
-`assets/core-runtime/` holds none. The archive alone adds the engine at
-`assets/core-runtime/zipp_wasm_bg.wasm` in `hosted-runtime/` and each editor,
-because FormLogic's `fetch-softn-release.mjs` has required a copy there.
-Nothing reads it; drop it from `scripts/release/package-formlogic-runtime.mjs` once the
-FormLogic installing these archives no longer asks for it.
+`assets/core-runtime/` holds none. Archives through v0.0.27 added the engine
+at `assets/core-runtime/zipp_wasm_bg.wasm` in `hosted-runtime/` and each editor,
+because FormLogic's `fetch-softn-release.mjs` required a copy there. Nothing
+read it, FormLogic from v0.1.12 does not ask for it, and from v0.0.28 the
+archive does not carry it: 21 MB less, three copies of the 7 MB engine.
 
 `hosted-runtime/` has two entry documents. `index.html` serves the ZIPP
 engines; `host.html` is the same document with one attribute and serves only

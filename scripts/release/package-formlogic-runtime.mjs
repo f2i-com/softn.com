@@ -240,19 +240,6 @@ const add = (name, data, mode) => {
   if (entries.has(name)) fail(`${name} listed twice`);
   entries.set(name, mode ? { data, mode } : data);
 };
-/**
- * The engine at `<prefix>/assets/core-runtime/zipp_wasm_bg.wasm`, for FormLogic
- * alone. SoftN's builds no longer carry it — a page posts its own compiled
- * engine to every worker it starts, so no worker fetches one from there — but
- * FormLogic's fetch-softn-release.mjs requires a copy at that path in the
- * hosted runtime and both editors, and its runtime-manifest check reads the
- * hosted runtime's. Added here, in the archive only, until FormLogic stops
- * asking; nothing in the runtime reads it.
- */
-const addFormLogicEngineCopy = (prefix) => {
-  const name = `${prefix}/assets/core-runtime/zipp_wasm_bg.wasm`;
-  if (!entries.has(name)) add(name, wasmBytes);
-};
 const addTree = (dir, prefix, { skip = () => false } = {}) => {
   const walk = (d, rel) => {
     for (const item of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
@@ -298,7 +285,6 @@ try {
   // that engine without the document to run it in would be one FormLogic could
   // only discover was broken at mount time.
   if (!entries.has('hosted-runtime/host.html')) fail('apps/formlogic-host built no host.html');
-  addFormLogicEngineCopy('hosted-runtime');
   add('hosted-runtime/runtime-manifest.json', Buffer.from(runtimeManifest('hosted-runtime', { engines: hostedEngines, features: hostedFeatures })));
 
   // app-editors/: Builder and Studio as hosted editors, per editor and as one folder.
@@ -310,7 +296,6 @@ try {
     });
     if (!fs.existsSync(path.join(outDirKind, 'index.html'))) fail(`${kind} built no index.html`);
     addTree(outDirKind, `app-editors/${kind}`, { skip: (r) => r.endsWith('.map') });
-    addFormLogicEngineCopy(`app-editors/${kind}`);
     add(`app-editors/${kind}/runtime-manifest.json`, Buffer.from(runtimeManifest(`app-editors/${kind}`)));
   }
   // The tagged commit's time where the release gives it (SOURCE_DATE_EPOCH), so a retry

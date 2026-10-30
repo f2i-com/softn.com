@@ -217,14 +217,16 @@ export const KNOWN_TORCH_COPIES = [
   ...['hosted-runtime', 'app-editors/builder', 'app-editors/studio'].map((prefix) => new RegExp(`^${prefix}/assets/core-runtime/zipp_torch\\.wasm$`)),
 ];
 
-/** Where FormLogic takes a copy of the engine from in softn-formlogic-runtime-<tag>.zip; each must hold one. */
+/**
+ * Where FormLogic takes a copy of the engine from in softn-formlogic-runtime-<tag>.zip; each must
+ * hold one. Releases through v0.0.27 also carried one at `<prefix>/assets/core-runtime/` in the
+ * hosted runtime and each editor, which nothing read and FormLogic from v0.1.12 does not ask for;
+ * an engine there, as anywhere else, is still held to the release's digest.
+ */
 export const KNOWN_ENGINE_COPIES = [
   /^zipp\/zipp_wasm_bg\.wasm$/,
   /^native-runtime\/wasm\/zipp_wasm_bg\.wasm$/,
-  ...['hosted-runtime', 'app-editors/builder', 'app-editors/studio'].flatMap((prefix) => [
-    new RegExp(`^${prefix}/assets/zipp_wasm_bg-[^/]+\\.wasm$`),
-    new RegExp(`^${prefix}/assets/core-runtime/zipp_wasm_bg\\.wasm$`),
-  ]),
+  ...['hosted-runtime', 'app-editors/builder', 'app-editors/studio'].map((prefix) => new RegExp(`^${prefix}/assets/zipp_wasm_bg-[^/]+\\.wasm$`)),
 ];
 
 /**

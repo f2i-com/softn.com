@@ -202,25 +202,22 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     for (const field of ['version', 'sha256', 'revision', 'release', 'bundle', 'bundleSha256', 'sumsSha256', 'variant', 'languages', 'build', 'glueSha256', 'notices']) assert.ok(release.zipp[field] !== undefined, `release.zipp.${field}`);
 
     // Every engine copy, found by its exports, is the installed release: the
-    // web variant at zipp-web/, the primary at all eight known places and
-    // nowhere else. The variant asks the host for nothing the primary does not
+    // web variant at zipp-web/, the primary at all five known places and
+    // nowhere else (the copies at assets/core-runtime/ went in v0.0.28). The variant asks the host for nothing the primary does not
     // and exports a subset, which is what lets one glue run both.
     const copies = [...entries.keys()].filter((n) => isZippEngineWasm(bytes(n))).sort();
     const VARIANT_AT = 'zipp-web/zipp_wasm_bg.wasm';
     for (const n of copies) assert.equal(sha256(bytes(n)), n === VARIANT_AT ? web.sha256 : source.sha256, `${n} is the installed ${n === VARIANT_AT ? 'variant' : 'engine'}`);
     assert.equal(copies.filter((n) => sha256(bytes(n)) === web.sha256).length, 1, 'the variant digest appears once');
-    assert.equal(copies.filter((n) => sha256(bytes(n)) === source.sha256).length, 8, 'the primary digest appears eight times');
+    assert.equal(copies.filter((n) => sha256(bytes(n)) === source.sha256).length, 5, 'the primary digest appears five times');
     assert.deepEqual(wasmImportNames(bytes(VARIANT_AT)).filter((i) => !wasmImportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(i)), []);
     assert.deepEqual(wasmExportNames(bytes(VARIANT_AT)).filter((e) => !wasmExportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(e)), []);
     const known = [
       /^zipp\/zipp_wasm_bg\.wasm$/,
       /^native-runtime\/wasm\/zipp_wasm_bg\.wasm$/,
       /^hosted-runtime\/assets\/zipp_wasm_bg-[^/]+\.wasm$/,
-      /^hosted-runtime\/assets\/core-runtime\/zipp_wasm_bg\.wasm$/,
       /^app-editors\/builder\/assets\/zipp_wasm_bg-[^/]+\.wasm$/,
-      /^app-editors\/builder\/assets\/core-runtime\/zipp_wasm_bg\.wasm$/,
       /^app-editors\/studio\/assets\/zipp_wasm_bg-[^/]+\.wasm$/,
-      /^app-editors\/studio\/assets\/core-runtime\/zipp_wasm_bg\.wasm$/,
       /^zipp-web\/zipp_wasm_bg\.wasm$/,
     ];
     for (const pattern of known) assert.equal(copies.filter((n) => pattern.test(n)).length, 1, `one engine at ${pattern}`);

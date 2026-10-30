@@ -62,7 +62,6 @@ function archive() {
   ]);
   for (const prefix of ['hosted-runtime', 'app-editors/builder', 'app-editors/studio']) {
     entries.set(`${prefix}/assets/zipp_wasm_bg-C4f3.wasm`, new Uint8Array(engine));
-    entries.set(`${prefix}/assets/core-runtime/zipp_wasm_bg.wasm`, engine);
   }
   return { engine, source, entries };
 }
@@ -71,8 +70,8 @@ test('an archive whose every engine copy is the installed release, at every know
   const { source, entries } = archive();
   const { copies, problems } = archiveEngineProblems(entries, source);
   assert.deepEqual(problems, []);
-  assert.equal(copies.length, 8);
-  assert.equal(KNOWN_ENGINE_COPIES.length, 8, 'the primary set: the variant is not one of them');
+  assert.equal(copies.length, 5);
+  assert.equal(KNOWN_ENGINE_COPIES.length, 5, 'the primary set: the variant is not one of them');
   assert.deepEqual(VARIANT_ENGINE_COPIES, { web: 'zipp-web/zipp_wasm_bg.wasm' }, 'a top-level tree of its own, never inside zipp/');
   for (const pattern of KNOWN_ENGINE_COPIES) assert.equal(copies.filter((name) => pattern.test(name)).length, 1, `${pattern}`);
 });
@@ -89,14 +88,22 @@ test('an engine of another build anywhere in the archive is a problem, whatever 
 
 test('a known place without an engine is a problem, even when a file of that name is there', () => {
   const { source, entries } = archive();
-  entries.delete('app-editors/builder/assets/core-runtime/zipp_wasm_bg.wasm');
+  entries.delete('app-editors/builder/assets/zipp_wasm_bg-C4f3.wasm');
   entries.set('native-runtime/wasm/zipp_wasm_bg.wasm', Buffer.from('not a module'));
   const { problems } = archiveEngineProblems(entries, source);
   assert.deepEqual(problems, [
     `no ZIPP engine matches ${KNOWN_ENGINE_COPIES[1]}; FormLogic takes a copy from there`,
-    `no ZIPP engine matches ${KNOWN_ENGINE_COPIES[5]}; FormLogic takes a copy from there`,
+    `no ZIPP engine matches ${KNOWN_ENGINE_COPIES[3]}; FormLogic takes a copy from there`,
   ]);
-  assert.match(problems[1], /app-editors\\\/builder\\\/assets\\\/core-runtime/);
+  assert.match(problems[1], /app-editors\\\/builder\\\/assets\\\/zipp_wasm_bg-/);
+});
+
+test('the copy releases through v0.0.27 carried at assets/core-runtime/ is not asked for, and is held to the digest where it is', () => {
+  const { source, entries } = archive();
+  assert.ok(![...entries.keys()].some((name) => name.includes('/core-runtime/zipp_wasm_bg.wasm')));
+  assert.deepEqual(archiveEngineProblems(entries, source).problems, []);
+  entries.set('hosted-runtime/assets/core-runtime/zipp_wasm_bg.wasm', moduleExporting([...ZIPP_ENGINE_EXPORTS, 'older']));
+  assert.deepEqual(archiveEngineProblems(entries, source).problems, [`hosted-runtime/assets/core-runtime/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`]);
 });
 
 test('the native runtime\'s glue has to be zipp/\'s, byte for byte', () => {
@@ -231,7 +238,7 @@ test('a variant of the engine may carry its own digest at its one place, and now
   entries.set('zipp-web/zipp_wasm_bg.wasm', web);
   const ok = archiveEngineProblems(entries, source);
   assert.deepEqual(ok.problems, []);
-  assert.equal(ok.copies.length, 9);
+  assert.equal(ok.copies.length, 6);
   // The primary at the variant's place is as wrong as the variant anywhere else.
   entries.set('zipp-web/zipp_wasm_bg.wasm', engine);
   assert.deepEqual(archiveEngineProblems(entries, source).problems, [`zipp-web/zipp_wasm_bg.wasm is a ZIPP engine, but not the web variant of ZIPP v0.0.18 (${source.variants.web.sha256.slice(0, 12)})`]);
@@ -281,7 +288,7 @@ test('the torch package the install records is at each of its places and nowhere
   const ok = archiveEngineProblems(entries, source);
   assert.deepEqual(ok.problems, []);
   assert.deepEqual(ok.packageCopies.sort(), [...places].sort());
-  assert.equal(ok.copies.length, 8, 'the package is not counted as an engine');
+  assert.equal(ok.copies.length, 5, 'the package is not counted as an engine');
   for (const pattern of KNOWN_TORCH_COPIES) assert.equal(places.filter((name) => pattern.test(name)).length, 1, `${pattern}`);
   // Another build of the package anywhere, whatever it is called.
   const other = moduleExporting([...ZIPP_TORCH_EXPORTS, 'debug']);
