@@ -6,8 +6,9 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.29
 
+- Upgrading from v0.0.28: the engine is still ZIPP v0.0.32, so nothing is rebuilt, and the FormLogic runtime and its protocols are v0.0.28's. Studio's editor bridge reads one optional key more, `aiLabel` on `open`: FormLogic v0.1.17 sends it, and an older FormLogic's Studio says only that FormLogic's AI answers (below).
 - Studio inside FormLogic says which AI it uses. Its AI is FormLogic's (every request goes to the person's default AI in FormLogic's Settings → AI), but its settings listed "FormLogic AI · FormLogic default · localhost:11434 · no key", the address of a local server it never asks, and that row's Test, its model list and its Add, Edit and Remove asked or changed a provider Studio does not use: the test and the model list failed against `localhost:11434`, so FormLogic's AI looked unused, and Remove left Studio with no AI until it was opened again. Now Settings shows one row, FormLogic AI with the AI FormLogic names (the editor bridge's `open` may carry `aiLabel`, one line of text, optional like `saveLabel`), a Test that sends a short prompt through FormLogic, and where to change it; the chat's AI pill names it too, and no longer opens a setup the hosted editor does not have. What runs learn about the AI (tool calls written as text, replies not streamed) is kept for the AI FormLogic named, so choosing another one there does not carry it over. A FormLogic that sends no label gets "Your default AI in FormLogic".
 
 ## v0.0.28

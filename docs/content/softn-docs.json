@@ -218,7 +218,7 @@
       "kind": "repository-source",
       "reviewedAt": "2026-10-21",
       "retrieval": "retrieved",
-      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). The package version, 0.0.28, is not the ZIPP engine version."
+      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). The package version, 0.0.29, is not the ZIPP engine version."
     },
     {
       "id": "zipp-wasm",
