@@ -6,6 +6,10 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- Scene3D loads a model handed over as a `data:` URL, as it already loaded a model's embedded buffers and images: a `data:` URL never leaves the page. Its loader held a model's own URL to the scheme list for links (`http:`, `https:`, `blob:`), so a host with no file server for an app's assets, which gives each one as a `data:` URL, had every model refused with "Unsafe model URL". FormLogic's frame is such a host: from v0.0.28 it serves an app's glTF, GLB, OBJ, STL and FBX files, and Scene3D drew none of them until now. OAIY's preview, built on the same frame, had worked around it by changing the runtime's code as it installed it.
+
 ## v0.0.29
 
 - Upgrading from v0.0.28: the engine is still ZIPP v0.0.32, so nothing is rebuilt, and the FormLogic runtime and its protocols are v0.0.28's. Studio's editor bridge reads one optional key more, `aiLabel` on `open`: FormLogic v0.1.17 sends it, and an older FormLogic's Studio says only that FormLogic's AI answers (below).

@@ -349,6 +349,34 @@ describe('loadModelTemplate', () => {
   });
 });
 
+describe('loadModelTemplate and a model handed over as a data: URL', () => {
+  // FormLogic's frame has no file server for an app's assets: it gives every one as a data: URL,
+  // and the scheme check that held a model to http(s) and blob: refused each ("Unsafe model URL").
+  const triangle = () => {
+    const positions = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer).toString('base64');
+    return JSON.stringify({
+      asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      buffers: [{ byteLength: 36, uri: `data:application/octet-stream;base64,${positions}` }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', max: [1, 1, 0], min: [0, 0, 0] }],
+    });
+  };
+
+  it('loads it, as an embedded buffer is loaded: it never leaves the page', async () => {
+    const url = `data:model/gltf+json;base64,${Buffer.from(triangle()).toString('base64')}`;
+    const template = await loadModelTemplate({ url, format: 'gltf', policy: { judge: () => ({ allowed: true as const }) } });
+    let meshes = 0;
+    template.object.traverse((node) => { if ((node as THREE.Mesh).isMesh) meshes++; });
+    expect(meshes).toBe(1);
+  });
+
+  it('still refuses a scheme the page could be sent to', async () => {
+    await expect(loadModelTemplate({ url: 'javascript:alert(1)', format: 'gltf', policy: { judge: () => ({ allowed: true as const }) } }))
+      .rejects.toThrow('Unsafe model URL');
+  });
+});
+
 describe('modelTemplateAddress', () => {
   it('files a bundle model under its archive path, so a fresh object URL finds it again', () => {
     const first = modelTemplateAddress('app', 'blob:https://h/1', 'gltf', 'models/x.gltf');

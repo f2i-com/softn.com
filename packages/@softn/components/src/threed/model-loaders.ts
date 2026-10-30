@@ -258,7 +258,11 @@ function describeLoadFailure(err: unknown, resources: LoadResources): Error {
  */
 export async function loadModelTemplate(request: ModelLoadRequest): Promise<ModelTemplate> {
   const { url, format, policy } = request;
-  if (!isSafeUrl(url)) throw new Error(`Unsafe model URL: ${url}`);
+  // A model handed over as a data: URL never leaves the page, as an embedded buffer does
+  // (createLoadResources), so it is allowed on the same terms. A host with no file server for
+  // an app's assets, as FormLogic's frame, gives every asset this way, and the DOM's scheme
+  // list alone refused every such model: Scene3D said "Unsafe model URL" and drew nothing.
+  if (!url.startsWith('data:') && !isSafeUrl(url)) throw new Error(`Unsafe model URL: ${url}`);
   const resources = createLoadResources(url, policy);
   let template: ModelTemplate;
   try {
