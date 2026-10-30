@@ -395,7 +395,7 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
         // extracting it would create a symlink inside the bundle directory
         // that, when followed, reads/writes outside the sandbox.
         if entry.is_symlink() {
-            tracing::warn!("Skipping symlink ZIP entry: {}", entry.name());
+            tracing::warn!("Skipping symlink ZIP entry: {}", entry.name().unwrap_or_default());
             continue;
         }
 
@@ -408,7 +408,15 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
         let safe_name = match entry.enclosed_name() {
             Some(name) => name.to_owned(),
             None => {
-                tracing::warn!("Skipping unsafe ZIP entry: {}", entry.name());
+                // zip 9 reads a name Windows takes apart (`a:b`, a stream
+                // such as `manifest.json::$DATA`) as unsafe, where zip 2 read
+                // it as a name the check below refused. Refused as before, not
+                // passed over: what is skipped is a name that leaves the folder.
+                let raw = entry.name().unwrap_or_default().into_owned();
+                if !portable_entry_name(Path::new(&raw)) {
+                    return Err(format!("Bundle has an entry no system names alike: {}", raw));
+                }
+                tracing::warn!("Skipping unsafe ZIP entry: {}", raw);
                 continue;
             }
         };
