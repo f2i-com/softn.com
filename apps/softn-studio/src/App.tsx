@@ -29,7 +29,7 @@ import { buildFromBrief } from './lib/agent/buildFromBrief';
 import { reportAgentStatusToHost, startRunFromBrief } from './lib/agent/hostedAgent';
 import { rememberAppliedMigrations } from './lib/agent/appliedMigrations';
 import { exportAsBundle, buildBundle } from './lib/exportBundle';
-import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { connectHostedEditor, hostedAiLabel, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import {
   askStoreAgain,
   surveyProjectStore,
@@ -341,7 +341,12 @@ const App: React.FC = () => {
         if (!result.ok) throw new Error(result.message);
         // The host installed this project: every migration it came with has run on its database.
         rememberAppliedMigrations(useVFSStore.getState().files);
-        useAIStore.setState({ providers: [{ id: 'formlogic', type: 'custom', name: 'FormLogic AI', apiKey: '', modelId: 'FormLogic default' }], activeProviderId: 'formlogic', modelProfile: { architect: 'FormLogic default', builder: 'FormLogic default', repair: 'FormLogic default', vision: 'FormLogic default' } });
+        // Every AI request goes to the host, which answers with its own AI and model: the
+        // provider here only names that AI. Named by the host's label, what runs learn about it
+        // (tool calls as text, replies not streamed) belongs to that AI, and is not carried to
+        // another one the person chooses in FormLogic later.
+        const hostAi = hostedAiLabel() ?? 'FormLogic default';
+        useAIStore.setState({ providers: [{ id: 'formlogic', type: 'custom', name: 'FormLogic AI', apiKey: '', modelId: hostAi }], activeProviderId: 'formlogic', modelProfile: { architect: hostAi, builder: hostAi, repair: hostAi, vision: hostAi } });
         // The host brought the person here to have the agent carry out a request: start it
         // once the open is answered, so the host is not kept waiting for the whole run.
         if (brief) setTimeout(() => { void startRunFromBrief(brief); }, 0);

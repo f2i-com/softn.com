@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
+import { hostedAiLabel, isHostedEditor, subscribeHostedAiLabel } from '@softn/editor-shared/hostedEditor';
 import { useAIStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { resolveModel } from '../../lib/aiProvider';
@@ -45,6 +46,19 @@ export function openSetupFor(readiness: AIReadiness): void {
  */
 export const AIStatusPill: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
   const readiness = useAIReadiness();
+  const hostAi = useSyncExternalStore(subscribeHostedAiLabel, hostedAiLabel);
+  // In FormLogic the AI is FormLogic's, chosen there: the pill names it and opens nothing (the
+  // setup it opened is not in a hosted editor, so it was a button that did nothing).
+  if (isHostedEditor()) {
+    const title = `AI: FormLogic's${hostAi ? `, ${hostAi}` : ''}. Change it in FormLogic: Settings → AI.`;
+    return (
+      <span className="st-ai-pill" data-state="ready" title={title} aria-label={title}>
+        <Icon name="ai" size={14} />
+        <span className="st-ai-pill-name">FormLogic AI</span>
+        {!compact && hostAi && <span className="st-ai-pill-model">{hostAi}</span>}
+      </span>
+    );
+  }
   const label = readiness.state === 'none'
     ? 'Connect AI'
     : readiness.state === 'unselected'

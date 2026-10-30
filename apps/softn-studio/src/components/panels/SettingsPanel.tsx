@@ -1,4 +1,5 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { hostedAiLabel, isHostedEditor, requestHostedAI, subscribeHostedAiLabel } from '@softn/editor-shared/hostedEditor';
 import { useAIStore } from '../../stores';
 import { MAX_ITERATIONS_BOUNDS, TOKEN_BUDGET_BOUNDS, MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS, MAX_STEPS_BOUNDS, RUN_TOKEN_BUDGET_BOUNDS } from '../../stores/aiStore';
 import { testProvider } from '../../lib/aiProvider';
@@ -166,6 +167,73 @@ const ProviderTest: React.FC<{ provider: ProviderConfig; label: string }> = ({ p
   );
 };
 
+/**
+ * In FormLogic, Studio's AI is FormLogic's: every request goes to the person's default AI there
+ * (FormLogic → Settings → AI), with the model chosen there. What the standalone Studio sets up
+ * here has nothing to reach: the row said "localhost:11434 · no key", an address Studio never
+ * asks, and its test and model list failed against it, so FormLogic's AI looked unused. This says
+ * which AI answers (FormLogic sends its label with `open`), tests it through FormLogic, and keeps
+ * what runs learned about it, which can be forgotten as for any provider.
+ */
+const HostedAi: React.FC = () => {
+  const hostAi = useSyncExternalStore(subscribeHostedAiLabel, hostedAiLabel);
+  const provider = useAIStore((s) => s.providers.find((p) => p.id === 'formlogic') ?? null);
+  const [test, setTest] = useState<TestState | null>(null);
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => controller.current?.abort(), []);
+  const run = async () => {
+    controller.current?.abort();
+    const current = new AbortController();
+    controller.current = current;
+    setTest({ state: 'running' });
+    try {
+      const reply = await requestHostedAI([
+        { role: 'system', content: 'Answer with the one word OK.' },
+        { role: 'user', content: 'Are you there?' },
+      ], current.signal);
+      if (current.signal.aborted) return;
+      setTest(reply.trim()
+        ? { state: 'ok', text: 'Connected: FormLogic’s AI replied.' }
+        : { state: 'error', text: 'FormLogic’s AI answered with nothing.' });
+    } catch (error) {
+      if (current.signal.aborted) return;
+      setTest({ state: 'error', text: error instanceof Error ? error.message : 'FormLogic’s AI could not be reached.' });
+    }
+  };
+  return (
+    <>
+      <section className="st-settings-section" aria-labelledby="studio-providers-heading">
+        <h3 id="studio-providers-heading" className="st-settings-heading">AI</h3>
+        <p className="st-settings-note">
+          Here, Studio uses FormLogic’s AI: your default AI in FormLogic’s Settings → AI answers every request, with the model chosen there.
+        </p>
+        <ul className="st-provider-list">
+          <li className="st-provider-row" data-active>
+            <div className="st-provider-main">
+              <span className="st-provider-text">
+                <span className="st-provider-name">FormLogic AI</span>
+                <span className="st-provider-meta">{hostAi ?? 'Your default AI in FormLogic'}</span>
+              </span>
+            </div>
+            <div className="st-provider-actions">
+              <button type="button" className="st-btn st-btn-ghost st-btn-xs" onClick={() => void run()} disabled={test?.state === 'running'} aria-label="Test FormLogic’s AI">
+                {test?.state === 'running' ? 'Testing…' : 'Test'}
+              </button>
+              {test && test.state !== 'running' && (
+                <p className={`st-provider-test${test.state === 'error' ? ' is-error' : ''}`} role="status">{test.text}</p>
+              )}
+            </div>
+          </li>
+        </ul>
+        <p className="st-settings-note">
+          To use another AI, change it in FormLogic: Settings → AI, then open Studio again. A test sends a short prompt, which your AI provider may charge for.
+        </p>
+        {provider && <LearnedAboutModels provider={provider} />}
+      </section>
+    </>
+  );
+};
+
 type SettingsTab = 'ai' | 'general';
 const SETTINGS_TABS: readonly SettingsTab[] = ['ai', 'general'];
 
@@ -227,6 +295,7 @@ export const SettingsPanel: React.FC = () => {
       <div className="st-settings-body" role="tabpanel" id={panelId} aria-labelledby={tabId(settingsTab)} tabIndex={settingsTab === 'general' ? 0 : undefined}>
         {settingsTab === 'ai' && (
           <>
+            {isHostedEditor() ? <HostedAi /> : <>
             <section className="st-settings-section" aria-labelledby="studio-providers-heading">
               <h3 id="studio-providers-heading" className="st-settings-heading">Providers</h3>
               <p className="st-settings-note">
@@ -300,6 +369,7 @@ export const SettingsPanel: React.FC = () => {
             </section>
 
             {active && <GenerationModel provider={active} />}
+            </>}
 
             <section className="st-settings-section" aria-labelledby="studio-agent-heading">
               <h3 id="studio-agent-heading" className="st-settings-heading">Agent runs</h3>

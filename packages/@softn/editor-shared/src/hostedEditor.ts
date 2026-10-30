@@ -162,6 +162,37 @@ function setHostSaveLabel(label: string | null): void {
   for (const listener of saveLabelListeners) listener();
 }
 
+/** Longest AI label the editor takes from a host. */
+export const HOSTED_AI_LABEL_MAX_CHARS = 120;
+let hostAiLabel: string | null = null;
+const aiLabelListeners = new Set<() => void>();
+
+/**
+ * Which AI the host answers the editor's AI requests with, in the host's words ("Desktop AI —
+ * oaiy-engine · flash"), sent with `open` as `aiLabel`. An editor that sends its AI to the host
+ * says which AI that is, where it said nothing true ("FormLogic default", and the address of a
+ * local server it never asked). Null when the host sent none. Optional, with no capability to
+ * announce, like the save label.
+ */
+export function hostedAiLabel(): string | null { return currentPort ? hostAiLabel : null; }
+/** Called when the host's AI label changes (on `open`, and when the host goes). */
+export function subscribeHostedAiLabel(listener: () => void): () => void {
+  aiLabelListeners.add(listener);
+  return () => { aiLabelListeners.delete(listener); };
+}
+/** An AI label as the host sent it: one line of plain text, cut to the longest taken, or null. */
+export function readHostedAiLabel(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const label = value.replace(/\s+/g, ' ').trim();
+  if (!label) return null;
+  return label.length <= HOSTED_AI_LABEL_MAX_CHARS ? label : `${label.slice(0, HOSTED_AI_LABEL_MAX_CHARS - 1)}…`;
+}
+function setHostAiLabel(label: string | null): void {
+  if (label === hostAiLabel) return;
+  hostAiLabel = label;
+  for (const listener of aiLabelListeners) listener();
+}
+
 let lastAgentStatus = '';
 /**
  * Tell the host where the agent is. Sent only to a host that announced
@@ -330,6 +361,7 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
             document.documentElement.dispatchEvent(new CustomEvent('softn:theme', { detail: data.theme }));
           }
           setHostSaveLabel(readHostedSaveLabel(data.saveLabel));
+          setHostAiLabel(readHostedAiLabel(data.aiLabel));
           // A brief is only read from a host that said it speaks agentRuns.
           await handlers.open(data.bytes, typeof data.name === 'string' ? data.name.slice(0, 150) : 'App', { brief: hostAgentRuns > 0 ? readHostedBrief(data.brief) : null });
           if (!disposed) { loaded = true; reply({ opened: true }); }
@@ -349,7 +381,7 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
   ready();
   return () => {
     disposed = true; window.clearInterval(timer); window.removeEventListener('message', receive);
-    if (currentPort === port) { currentPort = null; hostAITools = 0; hostAgentRuns = 0; lastAgentStatus = ''; setHostSaveLabel(null); }
+    if (currentPort === port) { currentPort = null; hostAITools = 0; hostAgentRuns = 0; lastAgentStatus = ''; setHostSaveLabel(null); setHostAiLabel(null); }
     for (const request of hostRequests.values()) request.reject(new Error('Editor closed.')); hostRequests.clear();
     // A save the parent never confirmed is NOT saved: say so instead of leaving a promise hanging.
     settlePendingSaves({ ok: false, state: 'error', error: 'The editor session ended before FormLogic confirmed the save.' });

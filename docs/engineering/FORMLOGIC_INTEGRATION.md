@@ -217,3 +217,11 @@ use it, so the editor's button and the host's button beside it say the same
 thing. It needs no capability: an editor from before it ignores it, and a
 host that sends none leaves each editor its own label ("Review changes" in
 Studio, "Save" in the Builder).
+
+`open` may also carry `aiLabel`, which AI the host answers the editor's AI
+requests with, in its own words ("Desktop AI — oaiy-engine · flash"; one line,
+cut at 120 characters). Studio's settings and its AI pill name it, its Test
+asks it through the bridge, and what runs learn about the AI is kept under
+it. Like `saveLabel` it needs no capability; a host that sends none is shown
+as "Your default AI in FormLogic". A hosted Studio never offers a provider of
+its own: every AI request goes to the host.
