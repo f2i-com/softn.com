@@ -111,6 +111,21 @@ describe('bundled seed records', () => {
     expect(seedXDBBundleData(second, parseXDBFile('todos.xdb', later))).toBe(1);
     expect(second.getAll('todos').map((r) => r.id)).toEqual(['demo_3']);
   });
+
+  it('saves a collection once for a whole seed, keeping the first of a repeated id', () => {
+    const storage = memory();
+    const saves: string[] = [];
+    const counted = { ...storage, setItem: (k: string, v: string) => { saves.push(k); storage.setItem(k, v); } };
+    const xdb = new XDBService(counted, 'xdb:seedapp3', 'seedapp3', { backend: 'storage' });
+    const records = Array.from({ length: 60 }, (_, i) => ({ id: `n${i}`, title: `Note ${i}` }));
+    const seed = JSON.stringify({ collection: 'notes', records: [...records, { id: 'n0', title: 'Repeated' }] });
+    expect(seedXDBBundleData(xdb, parseXDBFile('notes.xdb', seed))).toBe(60);
+    expect(xdb.getAll('notes')).toHaveLength(60);
+    expect(xdb.get('notes', 'n0')?.data.title).toBe('Note 0');
+    // One save of the collection, where there was one a record, beside the list of collections
+    // and the seed's mark.
+    expect(saves).toEqual(['xdb:seedapp3:notes', 'xdb:seedapp3::collections', 'xdb:seedapp3::seeded:notes']);
+  });
 });
 
 class FakeSocket {

@@ -23,6 +23,7 @@ import { MAX_ZIP_INPUT_BYTES, readBundleEntries } from './zip';
 import { classifyAsset } from './asset-classification';
 import { UI_IMPORT_DECLARATION_PATTERN } from './source-composer';
 import type { XDBService } from '../runtime/xdb';
+import type { XDBRecord } from '../types';
 
 // ============================================================================
 // Bundle Reader
@@ -564,9 +565,15 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
  * removed: it came back at every opening. A seed a later version of the app
  * adds is still added. A store with no mark yet (seeded before marks were
  * kept) is seeded as it was, once, and marked.
+ *
+ * The new rows are written together where the store can (`writeRecords`): in
+ * browser storage the collection is then saved once rather than once a row.
+ * Saved a row at a time, a seed of a few dozen rows made a few dozen saves of
+ * an ever larger collection, and a host whose saves are acknowledged one at a
+ * time (FormLogic's frame takes 32 at most) refused the rest.
  */
 export function seedXDBBundleData(
-  xdb: Pick<XDBService, 'getAllRaw' | 'writeRecord'> & Partial<Pick<XDBService, 'readSyncMeta' | 'writeSyncMeta'>>,
+  xdb: Pick<XDBService, 'getAllRaw' | 'writeRecord'> & Partial<Pick<XDBService, 'readSyncMeta' | 'writeSyncMeta' | 'writeRecords'>>,
   data: XDBBundleData
 ): number {
   const existingIds = new Set(xdb.getAllRaw(data.collection).map((record) => record.id));
@@ -578,19 +585,15 @@ export function seedXDBBundleData(
   } catch {
     // An unreadable mark is no mark.
   }
-  let inserted = 0;
-
+  const fresh: XDBRecord[] = [];
   for (const record of data.records) {
     if (existingIds.has(record.id) || applied?.has(record.id)) continue;
-
-    xdb.writeRecord(data.collection, {
-      ...record,
-      collection: data.collection,
-      deleted: false,
-    });
+    fresh.push({ ...record, collection: data.collection, deleted: false });
     existingIds.add(record.id);
-    inserted += 1;
   }
+  if (xdb.writeRecords) xdb.writeRecords(data.collection, fresh);
+  else for (const record of fresh) xdb.writeRecord(data.collection, record);
+  const inserted = fresh.length;
 
   const seeded = new Set([...(applied ?? []), ...data.records.map((record) => record.id)]);
   if (xdb.writeSyncMeta && (!applied || seeded.size !== applied.size)) {
