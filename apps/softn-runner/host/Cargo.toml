@@ -1,6 +1,6 @@
 [package]
 name = "softn-runner"
-version = "0.0.27"
+version = "0.0.28"
 edition = "2021"
 description = "SoftN's server runner without Node: the PHP host's runner contract, with app logic in a WebAssembly guest under wasmtime"
 publish = false
