@@ -6,8 +6,9 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.30
 
+- Upgrading from v0.0.29: the engine is still ZIPP v0.0.32, so nothing is rebuilt, and the FormLogic runtime and every protocol are v0.0.29's. Scene3D loads a model given as a `data:` URL (below), which is how FormLogic's frame and OAIY's preview give an app's assets: a host that changed the runtime's code to hand models over as `blob:` URLs need not.
 - Scene3D loads a model handed over as a `data:` URL, as it already loaded a model's embedded buffers and images: a `data:` URL never leaves the page. Its loader held a model's own URL to the scheme list for links (`http:`, `https:`, `blob:`), so a host with no file server for an app's assets, which gives each one as a `data:` URL, had every model refused with "Unsafe model URL". FormLogic's frame is such a host: from v0.0.28 it serves an app's glTF, GLB, OBJ, STL and FBX files, and Scene3D drew none of them until now. OAIY's preview, built on the same frame, had worked around it by changing the runtime's code as it installed it.
 
 ## v0.0.29
