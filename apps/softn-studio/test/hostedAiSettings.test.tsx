@@ -5,7 +5,7 @@
  * reaches for a provider of Studio's own: they said "localhost:11434 · no key", and their test
  * and model list asked that address, so FormLogic's AI looked unused. The bridge is a stand-in.
  */
-import React, { act } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
