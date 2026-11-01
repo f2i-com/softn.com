@@ -7,7 +7,26 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseAppPath, buildAppPath, publicPath } from '../src/lib/appUrl';
+import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress } from '../src/lib/appUrl';
+
+describe('the address a tab is at', () => {
+  it('is a directory app’s slug, whatever its bundle calls itself', () => {
+    expect(tabAddress({ name: 'notes', directorySlug: 'my-team-board' })).toBe('my-team-board');
+    expect(savedOnlyName('my-team-board')).toBeNull();
+  });
+
+  it('marks an app with no directory page, so that no name reads as a slug', () => {
+    expect(tabAddress({ name: 'notes' })).toBe('~notes');
+    expect(savedOnlyName('~notes')).toBe('notes');
+    expect(savedOnlyName(tabAddress({ name: '~odd' }))).toBe('~odd');
+  });
+
+  it('survives the address bar, spaces and all', () => {
+    const url = buildAppPath(tabAddress({ name: 'My Notes' }), null, '/web/');
+    expect(url).toBe('/web/app/~My%20Notes');
+    expect(savedOnlyName(parseAppPath(url, '/web/').appName!)).toBe('My Notes');
+  });
+});
 
 describe('at the site root', () => {
   it('round-trips an app', () => {

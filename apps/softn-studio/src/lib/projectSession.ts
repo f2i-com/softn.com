@@ -686,7 +686,13 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
   let firstChangeAt: number | null = null;
   let chain: Promise<SaveResult> = Promise.resolve(NOTHING_TO_SAVE);
   let stopped = false;
-  const channel = options.live && typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(SAVES_CHANNEL) : null;
+  let channel: BroadcastChannel | null = null;
+  try {
+    if (options.live && typeof BroadcastChannel !== 'undefined') channel = new BroadcastChannel(SAVES_CHANNEL);
+  } catch {
+    // Firefox throws here with site data refused, which is no reason to lose the page:
+    // with no storage to save to, there is no other tab's save to hear of.
+  }
   // Not a reason for a process to stay up (Node, in tests); a browser has no unref.
   (channel as { unref?: () => void } | null)?.unref?.();
   if (channel) liveChannel = channel;

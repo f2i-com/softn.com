@@ -382,6 +382,42 @@ describe('getCachedAppByName', () => {
   });
 });
 
+describe('getCachedAppByAddress', () => {
+  const saved = (id: string, name: string, directorySlug?: string, lastOpened = 1) => ({ id, name, directorySlug, origin: id, bundleData: bytes(id), version: '1', cachedAt: 1, lastOpened });
+
+  it('finds a directory app by its slug, whatever its bundle calls itself', async () => {
+    openDB.mockResolvedValue(fakeIdb([saved('board', 'notes', 'my-team-board')]).db);
+    const { getCachedAppByAddress } = await freshCache();
+    expect((await getCachedAppByAddress('my-team-board'))?.id).toBe('board');
+  });
+
+  it('does not take a saved bundle for the app whose slug it names itself after', async () => {
+    openDB.mockResolvedValue(fakeIdb([saved('board', 'notes', 'my-team-board')]).db);
+    const { getCachedAppByAddress } = await freshCache();
+    expect(await getCachedAppByAddress('notes')).toBeNull();
+  });
+
+  it('prefers the slug’s own app to anything saved under that name', async () => {
+    openDB.mockResolvedValue(fakeIdb([saved('board', 'notes', 'my-team-board', 9), saved('real', 'Notes', 'notes', 1)]).db);
+    const { getCachedAppByAddress } = await freshCache();
+    expect((await getCachedAppByAddress('notes'))?.id).toBe('real');
+  });
+
+  it('finds an app with no slug by its name, in the marked address and in the one it used to have', async () => {
+    openDB.mockResolvedValue(fakeIdb([saved('older', 'My Notes', undefined, 1), saved('newer', 'My Notes', undefined, 2)]).db);
+    const { getCachedAppByAddress } = await freshCache();
+    expect((await getCachedAppByAddress('~My Notes'))?.id).toBe('newer');
+    expect((await getCachedAppByAddress('My Notes'))?.id).toBe('newer');
+    expect(await getCachedAppByAddress('~Nope')).toBeNull();
+  });
+
+  it('keeps a name in an old address working for an app with a slug', async () => {
+    openDB.mockResolvedValue(fakeIdb([saved('list', 'My Groceries', 'shopping-list')]).db);
+    const { getCachedAppByAddress } = await freshCache();
+    expect((await getCachedAppByAddress('My Groceries'))?.id).toBe('list');
+  });
+});
+
 describe('the description a cached app keeps', () => {
   it('is the manifest’s text, or none when the manifest’s is not text', async () => {
     // A manifest's description is the bundle author's, read as it came; one

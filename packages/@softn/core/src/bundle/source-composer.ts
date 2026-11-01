@@ -18,6 +18,7 @@
  */
 
 import { PYTHON_PACKAGES, readPythonPackages } from './inspect';
+import { parseCached } from '../parser/parse-cache';
 import { isRemoteReference, scriptLanguage } from '../parser/html';
 import { moduleSyntaxAsScript } from '../runtime/module-syntax';
 import {
@@ -43,6 +44,13 @@ export interface ComposedBundleSource {
    * has ever shipped, which keeps the JavaScript path exactly what it was.
    */
   python?: { files: Record<string, string>; modules: string[]; packages: string[] };
+  /**
+   * Where the page does not parse, at the file's own line, for a host to show.
+   * Absent on a page that parses. The renderer gets only the composed source,
+   * whose imports are inlined and logic taken out, so a line of that is one
+   * the author can find in no file.
+   */
+  parseProblem?: string;
 }
 
 /** A logic file ending in this is Python; everything else is JavaScript. */
@@ -644,6 +652,32 @@ function describeIgnored(attributes: readonly string[], children: boolean): stri
   return written || 'children';
 }
 
+/** The parser's first error about `source`, if it has one and does not throw instead. */
+function firstParseError(source: string) {
+  try {
+    return parseCached(source).diagnostics?.find((diagnostic) => diagnostic.severity === 'error');
+  } catch {
+    // A page the parser gives up on is the renderer's to report, as it stops the page.
+    return undefined;
+  }
+}
+
+/**
+ * The first parse error of a composed page, in the file it is in, read from
+ * the pages the page was made of. Each is read only once the whole has been
+ * found to fail, so a page that parses costs nothing here: the renderer's
+ * parse of the same text is the cached one made now.
+ */
+function parseProblemOf(source: string, textFiles: ReadonlyMap<string, string>, pages: readonly string[]): string | undefined {
+  const composed = firstParseError(source);
+  if (!composed) return undefined;
+  for (const path of pages) {
+    const own = firstParseError(textFiles.get(path) ?? '');
+    if (own) return `${path}, line ${own.loc.line}, column ${own.loc.column}: ${own.message}`;
+  }
+  return composed.message;
+}
+
 /**
  * Inline a bundle's imported pages and combine every discovered logic
  * fragment into the document's single final <logic> block.
@@ -652,6 +686,19 @@ export function composeBundleSource(
   textFiles: ReadonlyMap<string, string>,
   mainFilePath: string,
   manifestLogicPaths: readonly string[] = []
+): ComposedBundleSource {
+  const pages: string[] = [];
+  const composed = composePages(textFiles, mainFilePath, manifestLogicPaths, pages);
+  const parseProblem = parseProblemOf(composed.source, textFiles, pages);
+  return parseProblem === undefined ? composed : { ...composed, parseProblem };
+}
+
+/** `composeBundleSource`, adding to `pages` each page it reads, the main one first. */
+function composePages(
+  textFiles: ReadonlyMap<string, string>,
+  mainFilePath: string,
+  manifestLogicPaths: readonly string[],
+  pages: string[]
 ): ComposedBundleSource {
   const mainPath = normalizeRootPath(mainFilePath);
   const mainUI = textFiles.get(mainPath);
@@ -771,6 +818,7 @@ export function composeBundleSource(
     cache: Map<string, string>,
     main: boolean
   ): string => {
+    pages.push(basePath);
     let nextSource = collectLogic(inlineStylesheets(source, basePath), basePath, main);
 
     if (!main) {

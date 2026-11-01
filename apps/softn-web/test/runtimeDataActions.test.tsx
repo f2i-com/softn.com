@@ -16,6 +16,7 @@ vi.mock('../src/lib/appCache', async (importOriginal) => {
     getCachedApp: vi.fn(async (id: string) => cache.apps.find((app) => app.id === id) ?? null),
     getCachedAppByOrigin: vi.fn(async (origin: string) => cache.apps.find((app) => app.origin === origin) ?? null),
     getCachedAppByName: vi.fn(async (name: string) => cache.apps.find((app) => app.name === name) ?? null),
+    getCachedAppByAddress: vi.fn(async (address: string) => cache.apps.find((app) => app.name === address.replace(/^~/, '')) ?? null),
     cacheApp: vi.fn(async (_bytes: Uint8Array, manifest: { version: string }) => cache.apps.find((app) => app.version === manifest.version) ?? null),
     updateLastOpened: vi.fn(async () => {}),
     setOfflineState: vi.fn(async () => {}),

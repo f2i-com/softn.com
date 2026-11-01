@@ -1,5 +1,5 @@
-import React, { Component, useCallback, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
-import { SoftNWithXDB, type AppAssetResolver, type PythonProject } from '@softn/core';
+import React, { Component, useCallback, useEffect, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
+import { SoftNWithXDB, XDBStorageNotice, type AppAssetResolver, type PythonProject } from '@softn/core';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
@@ -32,6 +32,8 @@ interface AppRunnerProps {
   preIncludedLogicPaths?: string[];
   /** The app's Python project, when its logic is Python; without it a Python app runs no logic. */
   python?: PythonProject;
+  /** Where its page does not parse, from the composer: the bar over it names the file and line. */
+  parseProblem?: string;
   /** The manifest's `config.execution`, forwarded to the renderer. */
   executionPreference?: 'worker' | 'main';
   /**
@@ -140,7 +142,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
   // The name of the box this app is drawn in, for the provider to write a
   // declared side on. Every open app stays mounted in the one document, and
@@ -161,6 +163,24 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   // unmounts, so on Allow the last measurement stuck and the app kept a 46px
   // strip of nothing reserved above it for the rest of the session.
   const consentBarHeight = consent ? barHeight : 0;
+
+  // The storage notice takes room above the app as that bar does, and only
+  // while there is something to say: the box around it is always there, and
+  // holds nothing on an app that is saving.
+  const noticeRef = useRef<HTMLDivElement>(null);
+  const [noticeHeight, setNoticeHeight] = useState(0);
+  const running = Boolean(source);
+  useEffect(() => {
+    const element = noticeRef.current;
+    if (!running || !element) return;
+    const measure = () => setNoticeHeight(element.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [running]);
+  const barsHeight = consentBarHeight + noticeHeight;
 
   // The identity the renderer runs this app under: its database, its grants,
   // and the key its sync room is saved under all belong to it.
@@ -234,7 +254,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
       // Allow unmounts the bar mid-click, so there has to be somewhere for
       // focus to land other than <body>.
       tabIndex={-1}
-      className={consentBarHeight > 0 ? 'softn-runner-host softn-runner-host--consenting' : undefined}
+      className={barsHeight > 0 ? 'softn-runner-host softn-runner-host--barred' : undefined}
       style={{
         position: 'absolute',
         inset: 0,
@@ -242,8 +262,8 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
         display: active ? 'flex' : 'none',
         flexDirection: 'column',
         outline: 'none',
-        ...(consentBarHeight > 0
-          ? ({ '--softn-consent-bar-height': `${consentBarHeight}px` } as React.CSSProperties)
+        ...(barsHeight > 0
+          ? ({ '--softn-runner-bars-height': `${barsHeight}px` } as React.CSSProperties)
           : null),
       }}
     >
@@ -256,6 +276,12 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
         // that added a capability read exactly like the request before it.
         <PermissionBar {...consent} onHeightChange={handleBarHeight} appRootRef={hostRef} />
       )}
+      {/* Nothing in this shell says it is saving, so a record that is not kept
+          is the news: a browser that refuses site data, a full budget. Here,
+          for the reason the bar above is: the app cannot paint or hide it. */}
+      <div ref={noticeRef}>
+        <XDBStorageNotice appId={runtimeAppId} problemsOnly />
+      </div>
       {/* The app's own box, below the bar and never over it. Without
           containment a bundle's `position: fixed` element was positioned
           against the viewport: a full-screen overlay painted over the consent
@@ -284,6 +310,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
               logicBasePath={logicBasePath}
               preIncludedLogicPaths={preIncludedLogicPaths}
               python={python}
+              parseProblem={parseProblem}
               executionPreference={executionPreference}
               permissionConfig={permissionConfig}
               appId={runtimeAppId}
@@ -336,7 +363,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           script engine its taps wait for; later, a page's 3D): a thin line
           over the top of the app, under the permission bar. Drawn after the
           app's box, whose own stacking keeps everything the app draws below. */}
-      <LoadProgress variant="bar" top={consentBarHeight > 0 ? `${consentBarHeight}px` : undefined} />
+      <LoadProgress variant="bar" top={barsHeight > 0 ? `${barsHeight}px` : undefined} />
     </div>
   );
 }

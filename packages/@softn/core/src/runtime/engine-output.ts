@@ -53,11 +53,33 @@ export function printRuntimeLine(line: string): void {
 }
 
 /**
+ * What a runtime line about a failure says, for a host that shows it: what
+ * failed, and what went wrong. An async function's rejection, or a listener a
+ * page's code put on one of its elements, whose throw its document catches as
+ * a browser does (document-shell/shell-source.ts). Null for any other line.
+ */
+export function runtimeLineFailure(line: string): { where: string; message: string } | null {
+  const called = /^\[SoftN\] Error executing function ([^:]+): ([\s\S]*)$/.exec(line);
+  if (called) return { where: called[1], message: called[2] };
+  const heard = /^\[SoftN\] (A \S+ listener) failed: ([\s\S]*)$/.exec(line);
+  return heard ? { where: heard[1].replace(/^A/, 'a'), message: heard[2] } : null;
+}
+
+/** The longest failure a host is handed: a bar carries one line, and a script writes what it likes. */
+const MAX_FAILURE_TEXT = 300;
+
+/** A failure in words for a host to show: the error's message, or what was thrown. */
+export function failureText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.length > MAX_FAILURE_TEXT ? `${text.slice(0, MAX_FAILURE_TEXT)}…` : text;
+}
+
+/**
  * Drain and print whatever the guest wrote. Safe on an engine that has been
  * torn down or trapped: there is nothing left to say, and a failure here must
  * never replace the failure the caller is already reporting.
  */
-export function flushEngineOutput(engine: EngineOutputSource): void {
+export function flushEngineOutput(engine: EngineOutputSource, onRuntimeLine?: ((line: string) => void) | null): void {
   let lines: string[];
   try {
     lines = (engine.takeOutput() as string[]) || [];
@@ -68,6 +90,7 @@ export function flushEngineOutput(engine: EngineOutputSource): void {
     if (typeof line === 'string' && line.startsWith(RUNTIME_LINE)) {
       if (faultSink) faultSink(line);
       else printRuntimeLine(line);
+      onRuntimeLine?.(line);
       continue;
     }
     // eslint-disable-next-line no-console -- the app's own print() output: forwarding it to the console is this function's job

@@ -27,6 +27,7 @@ vi.mock('../src/lib/appCache', async (original) => ({
   ...await original<typeof import('../src/lib/appCache')>(),
   getCachedApps: vi.fn(async () => []),
   getCachedAppByName: vi.fn(async () => null),
+  getCachedAppByAddress: vi.fn(async () => null),
   getCachedAppByOrigin: vi.fn(async () => null),
   cacheApp: vi.fn(async () => null),
   updateLastOpened: vi.fn(async () => {}),

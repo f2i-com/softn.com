@@ -66,6 +66,12 @@ export interface LogicEngine {
   /** Where a refused storage write is reported before it is thrown to the guest. */
   onStorageFailure: ((failure: { operation: string; key: string; error: Error }) => void) | null;
   /**
+   * Where the runtime's own lines from inside the guest go as well as the
+   * console (engine-output.ts): an async function's rejection is seen only
+   * there, after the host's call has returned.
+   */
+  onRuntimeLine?: ((line: string) => void) | null;
+  /**
    * Compile and run a script, answering symbol name → `{ index, scope }`.
    * `origin` names the script and moves the positions its errors report
    * (logic-origin.ts); an engine that reports none may ignore it.

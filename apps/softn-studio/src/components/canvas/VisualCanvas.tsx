@@ -904,6 +904,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                 permissionConfig={previewPermissions}
                 scriptExecutionMode="main"
                 resumeSavedSyncRoom={false}
+                failureNotices={false}
                 onLink={followPreviewLink}
                 error={previewError}
               />
@@ -933,6 +934,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               permissionConfig={previewPermissions}
               scriptExecutionMode="main"
               resumeSavedSyncRoom={false}
+              failureNotices={false}
               onLink={followPreviewLink}
               error={previewError}
             />

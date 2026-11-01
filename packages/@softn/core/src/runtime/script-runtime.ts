@@ -85,6 +85,7 @@ import { releaseFilesOf } from './file-registry';
 import { AppAI } from './host-calls/ai';
 import type { BundleFileProvider } from './ai-manager';
 import { debug } from './debug';
+import { failureText, runtimeLineFailure } from './engine-output';
 import type { RuntimeState } from '../types';
 import type {
   CodeBlock,
@@ -94,6 +95,7 @@ import type {
   PermissionConfig,
   PersistenceFailure,
   ScriptContext,
+  ScriptFailure,
   ScriptLoadResult,
   ScriptRuntimeHandle,
   ScriptRuntimeMode,
@@ -112,6 +114,7 @@ export type {
   PermissionConfig,
   PersistenceFailure,
   ScriptContext,
+  ScriptFailure,
   ScriptLoadResult,
   ScriptRuntimeHandle,
   ScriptRuntimeMode,
@@ -224,6 +227,7 @@ const COMPUTED_SETTLE_PASSES = 8;
 export class SoftNScriptRuntime {
   private vmEngine: LogicEngine | null = null;
   private readonly onPersistenceFailure: ((failure: PersistenceFailure) => void) | null;
+  private readonly onScriptFailure: ((failure: ScriptFailure) => void) | null;
   private readonly onAlert: ((message: string) => void) | null;
   /** How many of the page's alerts have been shown (see `dialog.alert`). */
   private alertsShown = 0;
@@ -373,6 +377,7 @@ export class SoftNScriptRuntime {
     this.netFetchHandler = options?.netFetchHandler;
     this.pythonProject = options?.pythonProject;
     this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
+    this.onScriptFailure = options?.onScriptFailure ?? null;
     this.onAlert = options?.onAlert ?? null;
     this.externalFunctions = externalFunctions ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
@@ -474,6 +479,13 @@ export class SoftNScriptRuntime {
     if (this.terminationLogged) return;
     this.terminationLogged = true;
     console.error(`[SoftN] The script engine has stopped (a call exceeded its budget or failed to compile); ignoring ${what} and later calls until the app is reloaded.`);
+    this.onScriptFailure?.({ where: what, message: 'a call exceeded its budget', stopped: true });
+  }
+
+  /** Tell the host what the console has just been told: the app's code failed in `where`. */
+  private reportFailure(where: string, error: unknown): void {
+    if (this.disposed) return;
+    this.onScriptFailure?.({ where, message: failureText(error), stopped: this.vmEngine?.terminated === true });
   }
 
   /** Stop and clean up if this runtime was disposed during an await. */
@@ -498,6 +510,13 @@ export class SoftNScriptRuntime {
    */
   private installHostBridges(): void {
     if (!this.vmEngine) return;
+
+    // An async function's rejection is seen only inside the guest, which says
+    // it in a line of the runtime's (zipp-wasm-adapter's ASYNC_ENTRY).
+    this.vmEngine.onRuntimeLine = (line) => {
+      const failure = runtimeLineFailure(line);
+      if (failure) this.reportFailure(failure.where, failure.message);
+    };
 
     this.vmEngine.registerDBBridge(this.db);
 
@@ -959,6 +978,7 @@ export class SoftNScriptRuntime {
           // One callback failing does not stop the others, and an interval
           // has already asked for its next wait.
           console.error('[SoftN] A timer callback in the logic failed:', error);
+          this.reportFailure('a timer', error);
         }
       }
     }).finally(() => {
@@ -1086,6 +1106,7 @@ export class SoftNScriptRuntime {
       return result;
     } catch (error) {
       console.error(`[SoftN] Error executing function ${name}:`, error);
+      this.reportFailure(name, error);
       return undefined;
     } finally {
       // Resume XDB notifications — fires one 'refresh' per affected collection.
@@ -1302,6 +1323,9 @@ export class SoftNScriptRuntime {
         return result;
       } catch (error) {
         console.error(`[SoftN] Error executing sync function ${name}:`, error);
+        // Only an engine that went with it: a page reads these as it is drawn,
+        // and one that fails can fail on every draw.
+        if (this.vmEngine?.terminated) this.reportStopped(name);
         return undefined;
       }
     };
@@ -1368,9 +1392,12 @@ export class SoftNScriptRuntime {
       result = this.vmEngine.callFunctionSync(name, args);
     } catch (error) {
       console.error('[SoftN] The page\u2019s code failed while handling the page:', error);
+      this.reportFailure('the page\u2019s code', error);
     }
     this.computedMayHaveMoved();
     this.syncCallCache.clear();
+    // A call that stopped the engine leaves nothing to read back, as in dispatchWindowEvent.
+    if (this.vmEngine.terminated) return result;
     this.syncVMStateToReact();
     this.windowBridge.fromVM();
     this.windowBridge.discoverSyncKeys();
@@ -1817,6 +1844,7 @@ export class SoftNScriptRuntime {
       // browser's own listener as an uncaught error that named no part of
       // the app, and skip the drawing below.
       console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, error);
+      this.reportFailure(`a ${eventType} listener`, error);
     }
     this.computedMayHaveMoved();
     // And what a function answered the page from. An answer is kept for
@@ -2013,6 +2041,7 @@ export class SoftNScriptRuntime {
           this.syncVMStateToReact();
         } catch (err) {
           console.error(`[SoftN] Error resolving host callback:`, err);
+          this.reportFailure('a callback', err);
         } finally {
           release!();
         }

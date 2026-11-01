@@ -15,6 +15,8 @@
  * apart with their version where the name alone would not.
  */
 
+import { tabAddress } from './appUrl';
+
 export interface TabLike {
   id: string;
   name: string;
@@ -23,6 +25,8 @@ export interface TabLike {
   /** Empty on a placeholder that is still loading. */
   source: string;
   version?: string;
+  /** The app's slug in the site's directory, when it was opened from there. */
+  directorySlug?: string;
 }
 
 /** The tab already running these exact bytes, if any. */
@@ -44,16 +48,16 @@ export function findPlaceholder<T extends TabLike>(tabs: readonly T[], placehold
 }
 
 /**
- * The tab a `/app/<name>` address refers to.
+ * The tab an `/app/<address>` address refers to (appUrl's tabAddress).
  *
- * The address carries a name, which can match more than one tab; the one
- * being looked at wins, so going back and forward between two Notes tabs does
- * not flip to the other one. Otherwise the first match, as before.
+ * An address can match more than one tab; the one being looked at wins, so
+ * going back and forward between two Notes tabs does not flip to the other
+ * one. Otherwise the first match, as before.
  */
-export function findTabForUrlName<T extends TabLike>(tabs: readonly T[], name: string, activeId: string | null): T | undefined {
+export function findTabForAddress<T extends TabLike>(tabs: readonly T[], address: string, activeId: string | null): T | undefined {
   const active = activeId ? tabs.find((t) => t.id === activeId) : undefined;
-  if (active && active.name === name) return active;
-  return tabs.find((t) => t.name === name);
+  if (active && tabAddress(active) === address) return active;
+  return tabs.find((t) => tabAddress(t) === address);
 }
 
 /**

@@ -6,10 +6,13 @@ import { strToU8, zipSync } from 'fflate';
 import type { CachedApp } from '../src/lib/appCache';
 
 const cache = vi.hoisted(() => ({ apps: [] as CachedApp[] }));
+const cachedAt = vi.hoisted(() => (address: string) =>
+  cache.apps.find((app) => app.directorySlug === address) ?? cache.apps.find((app) => app.name === address.replace(/^~/, '')) ?? null);
 vi.mock('../src/lib/appCache', async (original) => ({
   ...await original<typeof import('../src/lib/appCache')>(),
   getCachedApps: vi.fn(async () => cache.apps),
   getCachedAppByName: vi.fn(async (name: string) => cache.apps.find((app) => app.name === name) ?? null),
+  getCachedAppByAddress: vi.fn(async (address: string) => cachedAt(address)),
   getCachedAppByOrigin: vi.fn(async (origin: string) => cache.apps.find((app) => app.origin === origin) ?? null),
   // Simulate a browser that can run apps but cannot persist a bundle cache.
   cacheApp: vi.fn(async () => null),
@@ -17,7 +20,7 @@ vi.mock('../src/lib/appCache', async (original) => ({
 }));
 
 import App from '../src/App';
-import { getCachedAppByName } from '../src/lib/appCache';
+import { getCachedAppByAddress, getCachedAppByName } from '../src/lib/appCache';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -52,6 +55,7 @@ beforeEach(() => {
   localStorage.clear();
   cache.apps = [];
   vi.mocked(getCachedAppByName).mockReset().mockImplementation(async (name: string) => cache.apps.find((app) => app.name === name) ?? null);
+  vi.mocked(getCachedAppByAddress).mockReset().mockImplementation(async (address: string) => cachedAt(address));
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -81,7 +85,7 @@ describe('runtime entry and navigation ownership', () => {
   it('keeps the validated return path through canonical URLs and Home navigation', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Example.softn') ? response(bundle('Example')) : emptyDirectory()));
     await mount('/?open=/Example.softn&back=%2Fapp%2Fexample%3Ffrom%3Ddirectory%23details');
-    expect(window.location.pathname).toBe('/app/Example');
+    expect(window.location.pathname).toBe('/app/~Example');
     expect(new URLSearchParams(window.location.search).get('back')).toBe('/app/example?from=directory#details');
     expect(new URLSearchParams(window.location.search).has('open')).toBe(false);
     // Named by its visible label; where it goes is its description.
@@ -117,14 +121,14 @@ describe('runtime entry and navigation ownership', () => {
     await act(async () => deliver(response(bundle('Older download'))));
     await settle();
     expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(2);
-    expect(window.location.pathname).toBe('/app/Newer%20selection');
+    expect(window.location.pathname).toBe('/app/~Newer%20selection');
     expect(document.title).toBe('Newer selection');
   });
 
   it('retains embed mode while rejecting an external return destination', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Example.softn') ? response(bundle('Example')) : emptyDirectory()));
     await mount('/?open=/Example.softn&embed=1&back=%2F%2Fevil.example%2Fapp');
-    expect(window.location.pathname).toBe('/app/Example');
+    expect(window.location.pathname).toBe('/app/~Example');
     expect(window.location.search).toBe('?embed=1');
     expect(container.querySelector('.softn-frame-home')).toBeNull();
   });
@@ -134,7 +138,7 @@ describe('runtime entry and navigation ownership', () => {
     // `//evil.example/app`, which location.assign() took to evil.example.
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Example.softn') ? response(bundle('Example')) : emptyDirectory()));
     await mount('/?open=/Example.softn&embed=1&back=%2F.%2F%2Fevil.example%2Fapp');
-    expect(window.location.pathname).toBe('/app/Example');
+    expect(window.location.pathname).toBe('/app/~Example');
     expect(window.location.search).toBe('?embed=1');
   });
 
@@ -143,7 +147,7 @@ describe('runtime entry and navigation ownership', () => {
     cache.apps = [{ id: 'local', name: 'Local notes', version: '1.0.0', bundleData: bytes, cachedAt: 1, lastOpened: 1 }];
     vi.stubGlobal('fetch', vi.fn(async () => emptyDirectory()));
     await mount('/app/Local%20notes/Archive');
-    expect(window.location.pathname).toBe('/app/Local%20notes/Archive');
+    expect(window.location.pathname).toBe('/app/~Local%20notes/Archive');
   });
 
   it('keeps a newer selection when the initial by-name cache lookup finishes late', async () => {
@@ -151,7 +155,7 @@ describe('runtime entry and navigation ownership', () => {
     const newer: CachedApp = { id: 'newer', name: 'Newer selection', version: '1.0.0', bundleData: bundle('Newer selection'), cachedAt: 1, lastOpened: 1 };
     cache.apps = [older, newer];
     let deliver!: (app: CachedApp) => void;
-    vi.mocked(getCachedAppByName).mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve; }));
+    vi.mocked(getCachedAppByAddress).mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve; }));
     vi.stubGlobal('fetch', vi.fn(async () => emptyDirectory()));
     await mount('/app/Older%20cached%20app');
     await click('[aria-label="Open Newer selection"]');
@@ -159,7 +163,51 @@ describe('runtime entry and navigation ownership', () => {
     await settle();
     expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(2);
     expect(document.title).toBe('Newer selection');
-    expect(window.location.pathname).toBe('/app/Newer%20selection');
+    expect(window.location.pathname).toBe('/app/~Newer%20selection');
+  });
+
+  // The address a person passes on. The manifest's name is the bundle's own: as
+  // the address, it sent the link to another app of the directory, or to none.
+  it.each([
+    ['names itself after another app', 'my-team-board', 'notes'],
+    ['has a name no listing has', 'shopping-list', 'My Groceries'],
+  ])('keeps the address a directory app was opened from when it %s', async (_, slug, name) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      if (!String(input).endsWith(`/api/apps/${slug}/bundle.softn`)) return emptyDirectory();
+      // Not within the turn its placeholder is drawn in, as no network is.
+      await new Promise((done) => setTimeout(done, 0));
+      return response(bundle(name));
+    }));
+    await mount(`/app/${slug}`);
+    await vi.waitFor(() => expect(document.title).toBe(name));
+    expect(window.location.pathname).toBe(`/app/${slug}`);
+  });
+
+  it('gives an app from a file no address the directory could answer', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Spoof.softn') ? response(bundle('notes')) : emptyDirectory()));
+    await mount('/?open=/Spoof.softn');
+    await vi.waitFor(() => expect(document.title).toBe('notes'));
+    expect(window.location.pathname).toBe('/app/~notes');
+  });
+
+  it('opens a saved directory app from its slug when the directory cannot be reached', async () => {
+    cache.apps = [{ id: 'saved', name: 'Twenty48', directorySlug: 'twenty48', version: '1.0.0', bundleData: bundle('Twenty48'), cachedAt: 1, lastOpened: 1 }];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      if (String(input).includes('/api/apps/twenty48/')) throw new TypeError('Failed to fetch');
+      return emptyDirectory();
+    }));
+    await mount('/app/twenty48');
+    await vi.waitFor(() => expect(document.title).toBe('Twenty48'));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(window.location.pathname).toBe('/app/twenty48');
+  });
+
+  it('asks the directory nothing for an address of an app saved in another browser', async () => {
+    const fetcher = vi.fn(async (_input: string | URL) => emptyDirectory());
+    vi.stubGlobal('fetch', fetcher);
+    await mount('/app/~notes');
+    await vi.waitFor(() => expect(container.textContent).toContain('This app isn’t saved in this browser'));
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes('bundle.softn'))).toBe(false);
   });
 
   it.each(['Home', 'newer app'])('keeps %s selected when an initial directory load falls back to its cached bytes', async (destination) => {
@@ -177,7 +225,7 @@ describe('runtime entry and navigation ownership', () => {
     expect(container.querySelector('[aria-label="Stop Older published app"]')).toBeTruthy();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(document.title).toBe(destination === 'Home' ? 'SoftN Web' : 'Newer selection');
-    expect(window.location.pathname).toBe(destination === 'Home' ? '/' : '/app/Newer%20selection');
+    expect(window.location.pathname).toBe(destination === 'Home' ? '/' : '/app/~Newer%20selection');
   });
 
   it('downloads the running bytes even when IndexedDB could not save their cache record', async () => {
@@ -240,7 +288,7 @@ describe('runtime entry and navigation ownership', () => {
     });
     await settle();
     await vi.waitFor(() => expect(document.title).toBe('Alpha'));
-    expect(window.location.pathname).toBe('/app/Alpha');
+    expect(window.location.pathname).toBe('/app/~Alpha');
     await click('.softn-frame-home');
     expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(2);
   });
@@ -253,11 +301,11 @@ describe('runtime entry and navigation ownership', () => {
     vi.stubGlobal('fetch', vi.fn(async () => emptyDirectory()));
     await mount('/');
     await click('[aria-label="Open Alpha"]');
-    expect(window.location.pathname).toBe('/app/Alpha');
+    expect(window.location.pathname).toBe('/app/~Alpha');
     await click('.softn-frame-close');
     expect(window.location.pathname).toBe('/');
     // Back lands on Alpha's entry, and Alpha is closed: Home stays.
-    window.history.replaceState({}, '', '/app/Alpha');
+    window.history.replaceState({}, '', '/app/~Alpha');
     act(() => {
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
@@ -267,6 +315,6 @@ describe('runtime entry and navigation ownership', () => {
     // Opening reads the cached bundle first, which on a loaded machine (CI)
     // takes more turns than settle() gives it.
     await vi.waitFor(() => expect(document.title).toBe('Beta'));
-    expect(window.location.pathname).toBe('/app/Beta');
+    expect(window.location.pathname).toBe('/app/~Beta');
   });
 });

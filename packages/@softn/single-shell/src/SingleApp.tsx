@@ -1,6 +1,7 @@
 import React, { Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   SoftNWithXDB,
+  XDBStorageNotice,
   inspectDeclaration,
   type ComposedBundleSource,
   type PermissionConfig,
@@ -70,6 +71,8 @@ export interface RunnableApplication {
   preIncludedLogicPaths: string[];
   /** The app's Python project, when its logic is Python. */
   python?: PythonProject;
+  /** Where its page does not parse, from the composer. */
+  parseProblem?: string;
   assets: AssetResolver;
   /**
    * Whether a link to another page of the bundle shows that page in the app
@@ -385,6 +388,10 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               onAllow={allow}
             />
           )}
+          {/* Nothing here says it is saving, so a record that is not kept is
+              the news: a browser that refuses site data, a full budget. In
+              this bar, which is measured, and outside the app's reach. */}
+          <XDBStorageNotice appId={app.appId} problemsOnly />
         </div>
         {/* What is still arriving once the app is drawn: on a first visit,
             the script engine its taps wait for; later, a page's 3D. */}
@@ -404,6 +411,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               logicBasePath={shown.logicBasePath}
               preIncludedLogicPaths={shown.preIncludedLogicPaths}
               python={shown.python}
+              parseProblem={shown.parseProblem}
               executionPreference={app.execution}
               permissionConfig={permissions}
               storageEndpoint={app.config.directory?.storage}

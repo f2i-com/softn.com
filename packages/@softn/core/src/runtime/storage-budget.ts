@@ -8,7 +8,9 @@
  * app's records — until someone cleared that app's data. Each app now has a
  * budget, counted by what it has stored under its own prefix: a write that
  * would take it past the budget is refused as the browser refuses a full
- * store, with a `QuotaExceededError` the app's code can catch.
+ * store, with a `QuotaExceededError`. The host reads that name, and the
+ * person is told. The app's code can catch the failure and not the reason:
+ * the engine gives a script its own words for a host call that threw.
  *
  * What is stored is counted once, on the first write, and kept up to date
  * from then on, so a write does not read the whole store back.

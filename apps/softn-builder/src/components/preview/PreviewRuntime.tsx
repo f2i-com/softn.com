@@ -53,8 +53,11 @@ export function PreviewRuntime({ projectId, records, assets = EMPTY_ASSETS, ...p
 
   // Do not let an old script observe the next project's seed records during an effect transition.
   if (!session || session.projectId !== projectId || session.records !== records || assetSession?.assets !== assets) return <>{props.loading}</>;
+  // The problem list and the stop screen say what fails here, and Restart starts it
+  // again: a bar's Reload would reload the Builder.
   return <SoftNWithXDB {...props} key={session.scope.appId} appId={session.scope.appId}
     assetResolver={assetSession.resolver}
     functions={functions}
+    failureNotices={false}
     xdb={session.scope.xdb} resumeSavedSyncRoom={false} />;
 }

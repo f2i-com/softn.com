@@ -72,6 +72,18 @@ const REPO = /^[A-Za-z0-9][\w.-]{0,95}\/[A-Za-z0-9][\w.-]{0,95}$/;
 const REVISION = /^[\w.-]{1,64}$/;
 
 /** A relative path to a .gguf file, a few folders deep at most, with no `.` or `..` in it. */
+/**
+ * What the hub's answer to a listing means. A 404 is the one answer that says
+ * there is no such repository: the hub keeps a private or gated one out of sight
+ * with a 401 or a 403, and a 500 says nothing about the repository at all, so
+ * an outage was reported as a name to go and correct.
+ */
+function listingFailure(repo: string, status: number): string {
+  if (status === 404) return `Hugging Face has no repository ${repo} (404)`;
+  if (status === 401 || status === 403) return `Hugging Face does not share ${repo}: it may be private or gated, or not exist (${status})`;
+  return `Hugging Face could not list ${repo} (${status}); try again later`;
+}
+
 function isGgufPath(path: string): boolean {
   const parts = path.split('/');
   return parts.length <= 5 && /\.gguf$/i.test(path) && parts.every((part) => /^[\w.-]{1,128}$/.test(part) && part !== '.' && part !== '..');
@@ -437,7 +449,7 @@ export class ModelHost {
     let file = parsed.file;
     if (!file) {
       const listing = await fetch(`${HUB}/api/models/${repoPath}/tree/${encodeURIComponent(parsed.revision)}`, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', signal: this.#abort.signal });
-      if (!listing.ok) throw new Error(`Hugging Face has no repository ${parsed.repo} (${listing.status})`);
+      if (!listing.ok) throw new Error(listingFailure(parsed.repo!, listing.status));
       const entries = (await listing.json()) as Array<{ type?: string; path?: string; size?: number; lfs?: { size?: number } }>;
       file = chooseGgufFile(Array.isArray(entries) ? entries.filter((e) => e.type === 'file' && typeof e.path === 'string').map((e) => e.path!) : [], parsed.quant);
       const size = entries.find((e) => e.path === file);

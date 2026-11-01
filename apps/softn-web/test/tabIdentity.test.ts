@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { displayNameFor, findCachedAppTab, findPlaceholder, findRunningTab, findTabForUrlName, type TabLike } from '../src/lib/tabIdentity';
+import { displayNameFor, findCachedAppTab, findPlaceholder, findRunningTab, findTabForAddress, type TabLike } from '../src/lib/tabIdentity';
 
 const running = (id: string, name: string, appId: string, version?: string): TabLike => ({ id, name, appId, source: '<App/>', version });
 const placeholder = (id: string, name: string): TabLike => ({ id, name, source: '' });
@@ -54,14 +54,20 @@ describe('findPlaceholder', () => {
   });
 });
 
-describe('findTabForUrlName', () => {
+describe('findTabForAddress', () => {
   it('prefers the tab being looked at when two share the address', () => {
     const tabs = [running('t1', 'Notes', 'a'), running('t2', 'Notes', 'b')];
-    expect(findTabForUrlName(tabs, 'Notes', 't2')?.id).toBe('t2');
-    expect(findTabForUrlName(tabs, 'Notes', 't1')?.id).toBe('t1');
-    expect(findTabForUrlName(tabs, 'Notes', null)?.id).toBe('t1');
-    expect(findTabForUrlName(tabs, 'Notes', 'elsewhere')?.id).toBe('t1');
-    expect(findTabForUrlName(tabs, 'Other', 't2')).toBeUndefined();
+    expect(findTabForAddress(tabs, '~Notes', 't2')?.id).toBe('t2');
+    expect(findTabForAddress(tabs, '~Notes', 't1')?.id).toBe('t1');
+    expect(findTabForAddress(tabs, '~Notes', null)?.id).toBe('t1');
+    expect(findTabForAddress(tabs, '~Notes', 'elsewhere')?.id).toBe('t1');
+    expect(findTabForAddress(tabs, '~Other', 't2')).toBeUndefined();
+  });
+
+  it('finds a directory app by its slug and not by the name its bundle chose', () => {
+    const tabs = [{ ...running('t1', 'notes', 'a'), directorySlug: 'my-team-board' }];
+    expect(findTabForAddress(tabs, 'my-team-board', null)?.id).toBe('t1');
+    expect(findTabForAddress(tabs, 'notes', null)).toBeUndefined();
   });
 });
 

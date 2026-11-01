@@ -81,6 +81,8 @@ export interface OpenTab {
   preIncludedLogicPaths?: string[];
   /** The app's Python project, when its logic is Python. */
   python?: PythonProject;
+  /** Where its page does not parse, from the composer. */
+  parseProblem?: string;
   /** The manifest's `config.execution`: where the bundle asked its script to run. */
   execution?: 'worker' | 'main';
   /**
@@ -332,7 +334,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     } finally {
       mark('softn:compose:end');
     }
-    const { source, logicBasePath, preIncludedLogicPaths, python } = composed;
+    const { source, logicBasePath, preIncludedLogicPaths, python, parseProblem } = composed;
 
     // The assets the composed source names by literal, then the manifest's
     // asset list, start inflating now, in a worker where there is one,
@@ -492,6 +494,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       logicBasePath,
       preIncludedLogicPaths,
       python,
+      parseProblem,
       execution: manifest.config?.execution,
       themeMode: manifest.config?.theme?.mode,
       ...server,

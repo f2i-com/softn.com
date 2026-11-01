@@ -13,11 +13,14 @@ import './styles/editor.css';
 import './styles/ai-setup.css';
 
 import App from './App';
+import { AppBoundary } from './components/common/AppBoundary';
 import { PWAPrompt } from './components/common/PWAPrompt';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
-    <PWAPrompt />
+    <AppBoundary>
+      <App />
+      <PWAPrompt />
+    </AppBoundary>
   </React.StrictMode>,
 );

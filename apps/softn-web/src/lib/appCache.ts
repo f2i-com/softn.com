@@ -49,6 +49,7 @@ export type { AppVersions } from './appCacheRecords';
 export {
   cacheApp,
   getCachedApp,
+  getCachedAppByAddress,
   getCachedAppByName,
   getCachedAppByOrigin,
   getCachedApps,

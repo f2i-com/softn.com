@@ -117,11 +117,11 @@ const LOCAL_STORAGE_SYNC_OPS = [
 const CLIPBOARD_SYNC_OPS = ['nav.clipboardWrite', 'nav.clipboardRead'] as const;
 
 /**
- * A host storage failure as the script sees it: an exception carrying the
- * browser's own name for what went wrong — `QuotaExceededError`,
- * `SecurityError` — so a script that catches around a save can tell the
- * player what happened, and one that does not fails loudly instead of
- * silently.
+ * A host storage failure, with the browser's own name for what went wrong:
+ * `QuotaExceededError`, `SecurityError`. That reaches the host
+ * (`onStorageFailure`), which tells the person. A script that catches around
+ * a save knows only that it failed: the engine gives it "host bridge call
+ * failed" for any host call that throws, whatever this says.
  */
 function storageFailure(operation: string, key: string, cause: unknown): Error {
   // A DOMException is not an Error in every realm (jsdom's is not), so the
@@ -327,7 +327,7 @@ export class ZippWasmAdapter {
   /** Forward anything the script printed; see `engine-output.ts`. */
   private flushOutput(): void {
     if (this._disposed || this._terminated) return;
-    flushEngineOutput(this.wasm);
+    flushEngineOutput(this.wasm, this.onRuntimeLine);
   }
 
   /**
@@ -496,6 +496,8 @@ export class ZippWasmAdapter {
    */
   onStorageFailure: ((failure: { operation: string; key: string; error: Error }) => void) | null =
     null;
+
+  onRuntimeLine: ((line: string) => void) | null = null;
 
   private refuseStorage(operation: string, key: string, cause: unknown): Error {
     const failure = storageFailure(operation, key, cause);

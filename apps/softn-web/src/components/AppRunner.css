@@ -1,6 +1,6 @@
 /*
  * A running app's box (AppRunner.tsx): its loading and error screens, and the
- * room a permission bar takes above it.
+ * room the permission bar and the storage notice take above it.
  */
 @keyframes softn-runner-fade-in {
   from { opacity: 0; transform: translateY(8px); }
@@ -66,14 +66,14 @@
    fold. Anything the runtime puts above the app has to be added into that
    variable instead, and per tab: a bar in one tab must not resize another.
 
-   Neither fallback in the calc() is a guess at the bar's height.
+   Neither fallback in the calc() is a guess at a bar's height.
    --softn-chrome-base falls back to the 38px .softn-shell sets it to, for an
-   AppRunner mounted outside that shell; --softn-consent-bar-height falls back
-   to 0px, the height of a bar that is not there. The real height arrives
+   AppRunner mounted outside that shell; --softn-runner-bars-height falls back
+   to 0px, the height of bars that are not there. The real height arrives
    inline on the element under the identical condition that adds this class,
    and an inline custom property beats a stylesheet one, so a per-breakpoint
    guess here could never be read anyway — and there is no frame for one to
-   cover, because before the bar is measured the class is not applied. */
-.softn-runner-host--consenting {
-  --softn-tab-bar-height: calc(var(--softn-chrome-base, 38px) + var(--softn-consent-bar-height, 0px));
+   cover, because before the bars are measured the class is not applied. */
+.softn-runner-host--barred {
+  --softn-tab-bar-height: calc(var(--softn-chrome-base, 38px) + var(--softn-runner-bars-height, 0px));
 }

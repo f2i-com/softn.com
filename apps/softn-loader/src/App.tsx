@@ -185,6 +185,7 @@ function App(): React.ReactElement {
   >();
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
+  const [parseProblem, setParseProblem] = useState<string | undefined>(undefined);
   // A Python app's project. Without it the renderer has only the empty logic
   // block the composer leaves in the markup, and the app runs no logic.
   const [python, setPython] = useState<ComposedBundleSource['python']>();
@@ -522,7 +523,7 @@ function App(): React.ReactElement {
         }
         if (!active) return;
 
-        const { source, logicBasePath, preIncludedLogicPaths, python } = processBundle(
+        const { source, logicBasePath, preIncludedLogicPaths, python, parseProblem } = processBundle(
           textFiles,
           parsedManifest
         );
@@ -581,6 +582,7 @@ function App(): React.ReactElement {
         setLogicBasePath(logicBasePath);
         setPreIncludedLogicPaths(preIncludedLogicPaths);
         setPython(python);
+        setParseProblem(parseProblem);
         setMainSource(source);
         setLoading(false);
 
@@ -658,6 +660,7 @@ function App(): React.ReactElement {
           logicBasePath={logicBasePath}
           preIncludedLogicPaths={preIncludedLogicPaths}
           python={python}
+          parseProblem={parseProblem}
           permissionConfig={permissionConfig ?? undefined}
           netFetchHandler={netFetchHandler}
           {...serverConfig}

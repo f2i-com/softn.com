@@ -18,6 +18,7 @@ import type {
   ScriptContext,
   ScriptLoadResult,
   ScriptRuntimeHandle,
+  ScriptRuntimeOptions,
 } from './script-runtime';
 import {
   buildExternalValuesPreamble,
@@ -27,7 +28,7 @@ import {
 } from './script-runtime';
 import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import { LogicTimers } from './logic-timers';
-import { printRuntimeLine } from './engine-output';
+import { failureText, printRuntimeLine, runtimeLineFailure } from './engine-output';
 import { getXDB } from './xdb-registry';
 import { zippEngineForWorker } from './zipp-wasm-loader';
 import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
@@ -108,6 +109,8 @@ export interface WorkerRuntimeOptions {
    * was actually kept, and this is how the host learns the write was lost.
    */
   onPersistenceFailure?: (failure: { operation: string; key: string; error: Error }) => void;
+  /** See ScriptRuntimeOptions.onScriptFailure. An engine that stops here is `onFatal`'s. */
+  onScriptFailure?: ScriptRuntimeOptions['onScriptFailure'];
 }
 
 /** Host calls resolved per chain before it is judged a runaway. */
@@ -196,6 +199,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private terminated = false;
   private readonly onFatal: ((error: Error) => void) | null;
   private readonly onPersistenceFailure: WorkerRuntimeOptions['onPersistenceFailure'] | null;
+  private readonly onScriptFailure: WorkerRuntimeOptions['onScriptFailure'] | null;
   /** The script's `db` namespace on this thread: the same gates the main-thread runtime applies. */
   private readonly dbNamespace: DBNamespace;
   /** Per-frame delivery for the high-frequency events; disposed with the listeners. */
@@ -289,6 +293,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.hardDeadlineMs = options?.hardDeadlineMs ?? WorkerScriptRuntime.HARD_DEADLINE_MS;
     this.onFatal = options?.onFatal ?? null;
     this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
+    this.onScriptFailure = options?.onScriptFailure ?? null;
     // The worker's `db.startSync` used to reach the sync layer directly, with
     // whatever options the script wrote and no app identity: no `sync`
     // permission check, no shared-room key derivation, and an adapter on the
@@ -889,9 +894,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         // an uncaught rejection that named no function.
         if (this.terminated) throw err;
         console.error(`[SoftN] Error executing function ${name}:`, err instanceof Error ? err.message : String(err));
+        this.reportFailure(name, err);
         return undefined;
       }
-      if (out.failure !== undefined) console.error(`[SoftN] Error executing function ${name}:`, out.failure);
+      if (out.failure !== undefined) {
+        console.error(`[SoftN] Error executing function ${name}:`, out.failure);
+        this.reportFailure(name, out.failure);
+      }
       const elapsed = performance.now() - t0;
       this.perfCallCount++;
       this.perfTotalMs += elapsed;
@@ -979,10 +988,22 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     if (this.disposed) return;
     this.call<EntryResult>('resolve_host_call', { callId, result: null, ...this.storagePayload() })
       .then((out) => {
-        if (out.failure !== undefined) console.error('[SoftN] A timer callback in the logic failed:', out.failure);
+        if (out.failure !== undefined) {
+          console.error('[SoftN] A timer callback in the logic failed:', out.failure);
+          this.reportFailure('a timer', out.failure);
+        }
         return this.applyEntry(out);
       })
-      .catch((err) => console.error('[SoftN] A timer callback in the logic failed:', err));
+      .catch((err) => {
+        console.error('[SoftN] A timer callback in the logic failed:', err);
+        this.reportFailure('a timer', err);
+      });
+  }
+
+  /** Tell the host what the console has just been told: the app's code failed in `where`. */
+  private reportFailure(where: string, failure: unknown): void {
+    if (this.disposed) return;
+    this.onScriptFailure?.({ where, message: failureText(failure), stopped: false });
   }
 
   updateContext(newState: Record<string, unknown>): void {
@@ -1053,7 +1074,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    */
   private async applyEntry(out: EntryResult, rounds = { n: 0 }): Promise<void> {
     if (this.disposed) return;
-    for (const line of out.faults ?? []) printRuntimeLine(line);
+    for (const line of out.faults ?? []) {
+      printRuntimeLine(line);
+      const failure = runtimeLineFailure(line);
+      if (failure) this.reportFailure(failure.where, failure.message);
+    }
     void this.applyDBMutations(out.dbMutations || []);
     this.applyLSMutations(out.lsMutations || []);
     this.applyClipboardWrites(out.clipboardWrites || []);
@@ -1094,9 +1119,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         });
       } catch (err) {
         console.error('[SoftN] Error resolving host callback:', err);
+        this.reportFailure('a callback', err);
         return;
       }
-      if (next.failure !== undefined) console.error('[SoftN] Error resolving host callback:', next.failure);
+      if (next.failure !== undefined) {
+        console.error('[SoftN] Error resolving host callback:', next.failure);
+        this.reportFailure('a callback', next.failure);
+      }
       await this.applyEntry(next, rounds);
     }
   }
@@ -1124,12 +1153,14 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
           .then((out) => {
             if (out.failure !== undefined) {
               console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, out.failure);
+              this.reportFailure(`a ${eventType} listener`, out.failure);
             }
             return this.applyEntry(out);
           })
-          .catch((err) =>
-            console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, String(err))
-          );
+          .catch((err) => {
+            console.error(`[SoftN] Error in a ${eventType} listener the logic put on the window:`, String(err));
+            this.reportFailure(`a ${eventType} listener`, err);
+          });
       };
       // The high-frequency events cross once a frame, combined by the policy
       // the type chooses and delivered in the order they happened — the same

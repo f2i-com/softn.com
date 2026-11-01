@@ -1,7 +1,7 @@
 /**
  * The cached apps themselves: listing and grouping them, caching an opened
- * bundle (adopting an older record of it on the way), lookups by id, name
- * and origin, and the writes that land on a record later: last opened,
+ * bundle (adopting an older record of it on the way), lookups by id, name,
+ * address and origin, and the writes that land on a record later: last opened,
  * offline state, a grant. Re-exported by ./appCache.
  */
 
@@ -9,6 +9,7 @@ import { randomUUID } from '@softn/bundle-format/crypto';
 import { getDB, type CachedApp, type OfflineState } from './appCacheDb';
 import { computeAppOrigin, isSecureAppOrigin } from './appCacheIdentity';
 import { applyAdoption, findLegacyAdoption, findLegacyUpgrade, findShortOriginAdoption, type Adoption } from './appCacheAdoption';
+import { savedOnlyName } from './appUrl';
 
 // ── Records ──────────────────────────────────────────────────────────
 
@@ -184,6 +185,28 @@ export async function getCachedAppByName(name: string): Promise<CachedApp | null
   } catch {
     return null;
   }
+}
+
+/** An address that is a slug as the directory writes one (Catalog::validSlug). */
+const DIRECTORY_SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * The saved app an address of the runtime means (appUrl's tabAddress): the
+ * directory's app of that slug, or an app with no directory page by its name,
+ * the most recently opened of any that share either. A name is also what
+ * these addresses were before they were slugs, so a bookmark still finds its
+ * app, and a directory app's slug then answers for it. Except where the
+ * address is a slug: a directory bundle that gives another app's slug as its
+ * name is not that app. Read from the whole list, as Home is on every load: a
+ * version bump for an index would lock out a tab still on the build before.
+ */
+export async function getCachedAppByAddress(address: string): Promise<CachedApp | null> {
+  const apps = await getCachedApps();
+  const fromDirectory = apps.find((app) => app.directorySlug === address);
+  if (fromDirectory) return fromDirectory;
+  const name = savedOnlyName(address) ?? address;
+  const named = apps.filter((app) => app.name === name);
+  return named.find((app) => !app.directorySlug) ?? (DIRECTORY_SLUG.test(address) ? null : (named[0] ?? null));
 }
 
 /**

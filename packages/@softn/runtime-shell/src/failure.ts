@@ -115,6 +115,14 @@ const RULES: Rule[] = [
     hint: 'Check your connection and the address, then try again. Apps you have opened before are under Your apps on the home screen.',
   },
   {
+    // An app that came from a file has an address in the browser that opened
+    // it and nowhere else, so a link to one reaches nobody else's.
+    test: /is not saved in this browser$/,
+    title: 'This app isn’t saved in this browser',
+    hint: 'It was opened from a file, so its address works only where that was done. To run it here, open the .softn file.',
+    anotherFile: true,
+  },
+  {
     test: /^Choose a \.softn/,
     title: 'That isn’t a .softn file',
     anotherFile: true,

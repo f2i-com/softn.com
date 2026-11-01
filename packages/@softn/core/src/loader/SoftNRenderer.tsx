@@ -48,6 +48,7 @@ import {
   type NetFetchHandler,
   type PermissionConfig,
   type PersistenceFailure,
+  type ScriptFailure,
 } from '../runtime/script-runtime';
 // The off-main-thread runtime, loaded behind a handle for an app that asks for
 // a worker; every other path routes calls through the main-thread VM. See the
@@ -303,6 +304,20 @@ export interface SoftNRendererProps {
    * Callback on error
    */
   onError?: (error: Error) => void;
+
+  /**
+   * Where the page does not parse, in its own file and line, from
+   * composeBundleSource. Without it the bar names the line of `source`.
+   */
+  parseProblem?: string;
+
+  /**
+   * Say on the page what fails in it: a mistake the parser found, and the
+   * app's code failing after it started. On by default, because the console
+   * is no one's to read but an author's. An editor that lists these itself,
+   * beside a restart of its own, turns it off.
+   */
+  failureNotices?: boolean;
 
   /**
    * Callback when the app's currentPage state changes (for URL routing)
@@ -561,17 +576,46 @@ function describePersistenceFailure(failure: PersistenceFailure): string {
   return `This app ${what} (${cause}). What it saved before is unchanged; free up storage in the browser, or export the app's data before going on.`;
 }
 
+/** A failure of the app's code, in words. The message is the script's or the engine's. */
+function describeScriptFailure(failure: ScriptFailure): string {
+  const message = failure.message.replace(/\.$/, '');
+  return failure.stopped
+    ? `This app has stopped: ${message}. Reload to start it again.`
+    : `This app's code failed in ${failure.where}: ${message}`;
+}
+
+/**
+ * The least time between two failures on the bar. A game loop that throws on
+ * every tick says something new thirty times a second, and each would draw the
+ * page again for nobody to read.
+ */
+const SCRIPT_FAILURE_GAP_MS = 1000;
+
 /** The bar that carries a refused save to the person, until they dismiss it. */
 function PersistenceNotice({
   message,
   onDismiss,
+  action,
   kind = 'persistence',
 }: {
   message: string;
   onDismiss: () => void;
-  /** `alert`: what the page's `alert()` said, which the person answers. */
-  kind?: 'persistence' | 'alert';
+  /** The one thing to do about it, beside dismissing it. */
+  action?: { label: string; run: () => void };
+  /**
+   * `alert`: what the page's `alert()` said, which the person answers.
+   * `failure`: something in the app failed, which a host can tell from a save.
+   */
+  kind?: 'persistence' | 'alert' | 'failure';
 }): React.ReactElement {
+  const buttonStyle: React.CSSProperties = {
+    border: '1px solid #fcd34d',
+    background: 'transparent',
+    color: 'inherit',
+    borderRadius: '0.25rem',
+    padding: '0.2rem 0.5rem',
+    cursor: 'pointer',
+  };
   return (
     <div
       role={kind === 'alert' ? 'alertdialog' : 'status'}
@@ -589,19 +633,13 @@ function PersistenceNotice({
         lineHeight: 1.4,
       }}
     >
-      <span style={{ flex: 1 }}>{message}</span>
-      <button
-        type="button"
-        onClick={onDismiss}
-        style={{
-          border: '1px solid #fcd34d',
-          background: 'transparent',
-          color: 'inherit',
-          borderRadius: '0.25rem',
-          padding: '0.2rem 0.5rem',
-          cursor: 'pointer',
-        }}
-      >
+      <span style={{ flex: 1, overflowWrap: 'anywhere' }}>{message}</span>
+      {action && (
+        <button type="button" onClick={action.run} style={buttonStyle}>
+          {action.label}
+        </button>
+      )}
+      <button type="button" onClick={onDismiss} style={buttonStyle}>
         {kind === 'alert' ? 'OK' : 'Dismiss'}
       </button>
     </div>
@@ -679,6 +717,8 @@ export function SoftNRenderer({
   error: errorComponent,
   onLoad,
   onError,
+  parseProblem,
+  failureNotices = true,
   onPageChange,
   onLink,
   onTitleChange,
@@ -726,8 +766,21 @@ export function SoftNRenderer({
   // What the page's `alert()` last said, shown in the app as the app's.
   const [appAlert, setAppAlert] = useState<string | null>(null);
   const showAlert = useCallback((message: string) => setAppAlert(message), []);
-  // Why a page written for a browser has no script running, said on the page.
-  const [scriptNotice, setScriptNotice] = useState<string | null>(null);
+  // Why a page has no script running, or what failed in the script it has, said
+  // on the page. One message at a time, the next in place of the last.
+  const [scriptNotice, setScriptNotice] = useState<{ text: string; where?: string; stopped?: boolean } | null>(null);
+  // The document whose parse error the person has dismissed.
+  const [parseNoticeGone, setParseNoticeGone] = useState<SoftNDocument | null>(null);
+  // What keeps a script that fails over and over to one bar: when it last
+  // changed, what the person has dismissed, and whether the app has stopped,
+  // which nothing after it can add to.
+  const failuresSeen = useRef({ at: 0, dismissed: new Set<string>(), stopped: false });
+  const failureNoticesRef = useRef(failureNotices);
+  failureNoticesRef.current = failureNotices;
+  // How many times the person has started a stopped app again (see restartApp).
+  const [restarts, setRestarts] = useState(0);
+  const initialStateRef = useRef(initialState);
+  initialStateRef.current = initialState;
   // The document the page's code is given, once its code is found to use one.
   const [documentShell, setDocumentShell] = useState<DocumentShell | null>(null);
   // Whether the page's code took the document: it is told the page is ready then.
@@ -929,6 +982,33 @@ export function SoftNRenderer({
     };
   }, []);
 
+  const showScriptFailure = useCallback((failure: ScriptFailure) => {
+    const seen = failuresSeen.current;
+    if (!failureNoticesRef.current || seen.stopped) return;
+    if (failure.stopped) {
+      seen.stopped = true;
+    } else {
+      if (seen.dismissed.has(failure.where) || Date.now() - seen.at < SCRIPT_FAILURE_GAP_MS) return;
+      seen.at = Date.now();
+    }
+    // Later, not now: a function the page calls as it is drawn fails during a render.
+    queueMicrotask(() => {
+      if (mountedRef.current) setScriptNotice({ text: describeScriptFailure(failure), where: failure.where, stopped: failure.stopped });
+    });
+  }, []);
+
+  /**
+   * Start a stopped app again, here. Not `location.reload()`: that is the host's
+   * whole page, which in SoftN Web is every other app running beside this one,
+   * and in a frame is a document that waits for its parent to start it, once.
+   * The effect below makes a new engine as it does for a grant; unlike a grant,
+   * this is a fresh start, so what the page held goes as a reload's would.
+   */
+  const restartApp = useCallback(() => {
+    setState((prev) => ({ ...prev, componentState: initialStateRef.current, scriptFunctions: {}, scriptSyncFunctions: {}, scriptComputed: {} }));
+    setRestarts((count) => count + 1);
+  }, []);
+
   // The store the components below write to. Storage is namespaced per app,
   // and `<SmartForm collection="…">` is an ordinary component well below here
   // with no appId of its own; it must land on the same store this app's own
@@ -964,9 +1044,13 @@ export function SoftNRenderer({
     // Per-invocation stale flag — prevents React Strict Mode double-mount from
     // allowing the first mount's async loadScript callback to run after cleanup.
     let stale = false;
-    // A refused save belonged to the runtime being replaced.
+    // A refused save belonged to the runtime being replaced, and so did a failure.
     setPersistenceNotice(null);
     setScriptNotice(null);
+    failuresSeen.current = { at: 0, dismissed: new Set(), stopped: false };
+    const onScriptFailure = (failure: ScriptFailure) => {
+      if (!stale) showScriptFailure(failure);
+    };
 
     if (resolvedSource) {
       // Capture scroll/focus before re-parsing for hot reload
@@ -1309,6 +1393,7 @@ export function SoftNRenderer({
                 backendCall,
                 netFetchHandler,
                 onAlert: showAlert,
+                onScriptFailure,
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
@@ -1357,6 +1442,7 @@ export function SoftNRenderer({
                 backendCall,
                 netFetchHandler,
                 onAlert: showAlert,
+                onScriptFailure,
                 bundleFileProvider,
                 // The app's own files, for the host calls that read them (a
                 // bundled model): a worker-mode app read none before.
@@ -1410,6 +1496,7 @@ export function SoftNRenderer({
                 backendCall,
                 netFetchHandler,
                 onAlert: showAlert,
+                onScriptFailure,
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
@@ -1452,6 +1539,7 @@ export function SoftNRenderer({
                 backendCall,
                 netFetchHandler,
                 onAlert: showAlert,
+                onScriptFailure,
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
@@ -1607,7 +1695,7 @@ export function SoftNRenderer({
                 // Code written for a browser: as in a browser, the page stays,
                 // and only its script stopped. The page is drawn as written,
                 // and what stopped it is said on it.
-                setScriptNotice(`This page's script stopped: ${scriptError.message}`);
+                setScriptNotice({ text: `This page's script stopped: ${scriptError.message}` });
                 setState((prev) => ({ ...prev, loading: false }));
               } else {
                 setState((prev) => ({
@@ -1717,7 +1805,9 @@ export function SoftNRenderer({
     netFetchHandler,
     // Stable: made once with useCallback.
     showAlert,
+    showScriptFailure,
     readAsset,
+    restarts,
     runtimePython,
     runtimePermissions,
     runtimePreIncludedLogicPaths,
@@ -2180,6 +2270,13 @@ export function SoftNRenderer({
     // variable), checked as any element's attributes are.
     const root = documentShell && rootVersion >= 0 ? rootProps(documentShell.rootAttributes(), context, registry) : {};
     const rootStyle = root.style && typeof root.style === 'object' ? (root.style as React.CSSProperties) : null;
+    // Beside what could be drawn of the page, never in place of it: the parser
+    // recovers, and a page that is partly right goes on being partly right. A
+    // warning is the author's alone, and the console's.
+    const parseError =
+      failureNotices && state.document !== parseNoticeGone
+        ? state.document.diagnostics?.find((diagnostic) => diagnostic.severity === 'error')
+        : undefined;
 
     return (
       // Both providers sit outside the keyed container, so a page change does
@@ -2212,8 +2309,23 @@ export function SoftNRenderer({
       {appAlert !== null && (
         <PersistenceNotice kind="alert" message={appAlert} onDismiss={() => setAppAlert(null)} />
       )}
+      {parseError && (
+        <PersistenceNotice
+          kind="failure"
+          message={`This page has a mistake, so it may not be drawn as written: ${parseProblem ?? `line ${parseError.loc.line}, column ${parseError.loc.column}: ${parseError.message}`}`}
+          onDismiss={() => setParseNoticeGone(state.document)}
+        />
+      )}
       {scriptNotice !== null && (
-        <PersistenceNotice message={scriptNotice} onDismiss={() => setScriptNotice(null)} />
+        <PersistenceNotice
+          kind="failure"
+          message={scriptNotice.text}
+          action={scriptNotice.stopped ? { label: 'Reload', run: restartApp } : undefined}
+          onDismiss={() => {
+            if (scriptNotice.where) failuresSeen.current.dismissed.add(scriptNotice.where);
+            setScriptNotice(null);
+          }}
+        />
       )}
       {/* What the app's CSS is kept inside (scope-css.ts). It draws no box of
           its own, and holds nothing but the page: the page's element is the
@@ -2222,7 +2334,7 @@ export function SoftNRenderer({
       <div
         {...root}
         ref={attachContainer}
-        key={`softn-container-${stateKey}`}
+        key={`softn-container-${stateKey}-${restarts}`}
         data-softn-page={stateKey}
         // Not seen without its style block, for the moment it takes to load
         // what keeps that block to the app. (A load that failed shows the

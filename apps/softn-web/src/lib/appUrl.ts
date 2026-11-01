@@ -53,6 +53,31 @@ export function buildAppPath(
   return path;
 }
 
+/**
+ * What marks an address as an app with no directory page: no slug can begin
+ * with it (Catalog::validSlug), and the directory reads any other text as the
+ * slug it spells (Apps::resolveSlug), `My Notes` as `my-notes`.
+ */
+const SAVED_ONLY = '~';
+
+/**
+ * The address a tab's app is at. A directory app's slug, which is what the
+ * directory knows it by and what anyone given the link will be sent. The
+ * manifest's name is the bundle's to choose, so it was no address: a listing
+ * called notes that named itself after another app put that app's address in
+ * the bar, and a name no listing has gave whoever got the link "not found".
+ * An app that came from a file has only its name, marked, so that it names
+ * nothing in the directory and is looked for in this browser alone.
+ */
+export function tabAddress(tab: { name: string; directorySlug?: string }): string {
+  return tab.directorySlug ?? `${SAVED_ONLY}${tab.name}`;
+}
+
+/** The name in an address `tabAddress` marked as saved in this browser only, or null. */
+export function savedOnlyName(address: string): string | null {
+  return address.startsWith(SAVED_ONLY) ? address.slice(SAVED_ONLY.length) : null;
+}
+
 /** Where something shipped in `public/` lives once the base is applied. */
 export function publicPath(relative: string, base: string): string {
   return normalizeBase(base) + relative.replace(/^\/+/, '');

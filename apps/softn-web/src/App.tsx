@@ -35,6 +35,7 @@ import {
   hasStoredData,
   holdsNothingOfItsOwn,
   isOfflineReady,
+  getCachedAppByAddress,
   getCachedAppByName,
   getCachedAppByOrigin,
   removeAppData,
@@ -42,9 +43,9 @@ import {
   setOfflineState,
   type CachedApp,
 } from './lib/appCache';
-import { displayNameFor, findCachedAppTab, findTabForUrlName } from './lib/tabIdentity';
+import { displayNameFor, findCachedAppTab, findTabForAddress } from './lib/tabIdentity';
 import { openBundle, type OpenBundleHost, type OpenBundleRequest, type OpenTab } from './lib/openBundle';
-import { parseAppPath, buildAppPath, publicPath } from './lib/appUrl';
+import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
 
 // ── URL Routing Helpers ──────────────────────────────────────────
@@ -244,7 +245,7 @@ function App(): React.ReactElement {
     if (urlInit.appName && urlTabId) {
       return [{
         id: urlTabId,
-        name: urlInit.appName,
+        name: savedOnlyName(urlInit.appName) ?? urlInit.appName,
         source: '', // empty = still loading
         initialPage: urlInit.page || undefined,
       }];
@@ -578,7 +579,7 @@ function App(): React.ReactElement {
         // processBundleData adopts it once the real name is known.
         const skeletonTabId = randomUUID();
         if (isForeground()) setError(null);
-        setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '' }]);
+        setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '', directorySlug }]);
         if (isForeground()) setActiveTabId(skeletonTabId);
 
         // The placeholder is the download's lease. Closing the tab aborts it —
@@ -1011,7 +1012,7 @@ function App(): React.ReactElement {
     if (activeTabIdRef.current === tabId) {
       const tab = openTabsRef.current.find((t) => t.id === tabId);
       if (tab) {
-        const url = entryUrl(buildAppUrl(tab.name, page));
+        const url = entryUrl(buildAppUrl(tabAddress(tab), page));
         if (currentUrl() !== url) {
           window.history.replaceState({}, '', url);
         }
@@ -1058,11 +1059,17 @@ function App(): React.ReactElement {
       };
       // A saved directory slug is authoritative. Display names can change,
       // contain spaces or collide with a bundled development example.
-      const fromRemote = (cached?: CachedApp | null) => cached?.directorySlug || !import.meta.env.DEV
-        ? fromApi(cached)
-        : fromCatalogue().then((opened) => opened ?? fromApi());
+      const fromRemote = (cached?: CachedApp | null) => {
+        // An app from a file is at no address of the directory: asked, it
+        // would answer with whatever app has the slug that name spells.
+        const savedOnly = savedOnlyName(wanted);
+        if (savedOnly !== null && !cached) return Promise.reject(new Error(`“${savedOnly}” is not saved in this browser`));
+        return cached?.directorySlug || !import.meta.env.DEV
+          ? fromApi(cached)
+          : fromCatalogue().then((opened) => opened ?? fromApi());
+      };
       const attempt = reopenBundle(
-        () => getCachedAppByName(wanted),
+        () => getCachedAppByAddress(wanted),
         (cached) =>
           processBundleData({
             data: cached.bundleData,
@@ -1076,8 +1083,9 @@ function App(): React.ReactElement {
       attempt
         .then(async (appName) => {
           if (!appName) {
-            // If server fetch failed (e.g. offline), fall back to cached version
-            const cachedApp = await getCachedAppByName(urlInit.appName!);
+            // If server fetch failed (e.g. offline), fall back to cached version:
+            // the address's own app, or one a name in an old address still finds.
+            const cachedApp = (await getCachedAppByAddress(wanted)) ?? (await getCachedAppByName(wanted));
             if (cachedApp) {
               await processBundleData({
                 data: cachedApp.bundleData,
@@ -1113,7 +1121,7 @@ function App(): React.ReactElement {
       const tab = openTabs.find((t) => t.id === activeTabId);
       if (tab) {
         const page = tabPagesRef.current[activeTabId] ?? tab.initialPage;
-        url = buildAppUrl(tab.name, page);
+        url = buildAppUrl(tabAddress(tab), page);
       }
     }
 
@@ -1133,9 +1141,9 @@ function App(): React.ReactElement {
       claimNavigation();
       const { appName } = parseAppUrl();
 
-      // The address carries a name; the tab being looked at wins a tie. An
-      // app that is not open as a tab is Home.
-      const tab = appName ? findTabForUrlName(openTabsRef.current, appName, activeTabIdRef.current) : undefined;
+      // The tab being looked at wins a tie. An app that is not open as a tab
+      // is Home.
+      const tab = appName ? findTabForAddress(openTabsRef.current, appName, activeTabIdRef.current) : undefined;
       const next = tab ? tab.id : null;
 
       // The address is already the browser's: the sync above is told not to
@@ -1387,6 +1395,7 @@ function App(): React.ReactElement {
               logicBasePath={tab.logicBasePath}
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
               python={tab.python}
+              parseProblem={tab.parseProblem}
               executionPreference={tab.execution}
               themeMode={tab.themeMode}
               permissionConfig={tab.permissionConfig}

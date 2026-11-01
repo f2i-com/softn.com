@@ -205,6 +205,12 @@ export interface ScriptRuntimeOptions {
    */
   onPersistenceFailure?: (failure: PersistenceFailure) => void;
   /**
+   * Told when the app's code fails after it has started: a handler that
+   * throws, a timer, a listener, an engine that stopped. The console hears of
+   * it either way; this is how the person using the app does.
+   */
+  onScriptFailure?: (failure: ScriptFailure) => void;
+  /**
    * Show what the page's `alert()` says, inside the app. With none, it is
    * written to the console: the browser's own dialog is never used, since
    * it carries the host's name and holds the whole tab.
@@ -236,6 +242,16 @@ export type NetFetchHandler = (
   url: string,
   options: Record<string, unknown>
 ) => Promise<NetFetchResult>;
+
+/** The app's code failing after it started, as reported to the host. */
+export interface ScriptFailure {
+  /** What failed: a function's name, `a timer`, `a keydown listener`. */
+  where: string;
+  /** What went wrong, in the script's or the engine's own words. */
+  message: string;
+  /** The engine went with it, and none of the app's code runs until it is started again. */
+  stopped: boolean;
+}
 
 /** A write to the browser's storage that was not kept, as reported to the host. */
 export interface PersistenceFailure {

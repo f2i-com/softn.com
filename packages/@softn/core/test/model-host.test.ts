@@ -112,6 +112,25 @@ describe('where a model may come from', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  // Every answer but a listing was read as "no such repository": an outage
+  // sent the person off to correct a name that was right.
+  it('says there is no repository only when the hub says so', async () => {
+    const answering = (status: number) => vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status })));
+    answering(404);
+    await expect(host({}).fetchCheckpoint('owner/model-GGUF', {})).rejects.toThrow('Hugging Face has no repository owner/model-GGUF (404)');
+    for (const status of [500, 502, 503, 429]) {
+      answering(status);
+      const failure = await host({}).fetchCheckpoint('owner/model-GGUF', {}).catch((error: Error) => error.message);
+      expect(failure).toBe(`Hugging Face could not list owner/model-GGUF (${status}); try again later`);
+    }
+    for (const status of [401, 403]) {
+      answering(status);
+      const failure = await host({}).fetchCheckpoint('owner/model-GGUF', {}).catch((error: Error) => error.message);
+      expect(failure).toContain('private or gated');
+      expect(failure).not.toContain('has no repository');
+    }
+  });
+
   it('refuses bytes the hub redirected somewhere else, and a size that passes the limit on the way in', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => respond(3, { url: 'https://evil.test/x' })));
     await expect(host({}).fetchCheckpoint('a/b', { file: 'm.gguf' })).rejects.toThrow(/redirected to evil\.test/);

@@ -409,6 +409,8 @@ export class HostJsAdapter implements LogicEngine {
   /** Where a refused storage write is reported before it is thrown to the script. */
   onStorageFailure: ((failure: { operation: string; key: string; error: Error }) => void) | null = null;
 
+  onRuntimeLine: ((line: string) => void) | null = null;
+
   /** There is nothing to load: the engine is the page's. */
   static async create(): Promise<HostJsAdapter> {
     return new HostJsAdapter();
@@ -832,6 +834,7 @@ export class HostJsAdapter implements LogicEngine {
     if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
       (result as Promise<unknown>).then(undefined, (error: unknown) => {
         console.error(`[SoftN] Error executing function ${name}:`, error);
+        this.onRuntimeLine?.(`[SoftN] Error executing function ${name}: ${String(error)}`);
       });
     }
     return project(result);

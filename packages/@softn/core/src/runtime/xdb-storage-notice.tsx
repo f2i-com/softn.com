@@ -10,7 +10,7 @@ import { getXDB, useXDBStorageStatus, type XDBService, type XDBStorageStatus } f
 
 function describe(status: XDBStorageStatus): { title: string; detail: string; tone: 'warning' | 'error' } | null {
   if (status.state === 'memory-only') {
-    return { title: 'Records are not being saved', detail: 'Browser storage is unavailable, so this app keeps its records in memory only. Closing it loses anything unsaved. Export your data to keep it.', tone: 'error' };
+    return { title: 'Records are not being saved', detail: 'Browser storage is unavailable, so this app keeps its records in memory only, and closing it loses them.', tone: 'error' };
   }
   if (status.state === 'failed') {
     return { title: 'Saved records could not be loaded', detail: status.issues[0]?.message ?? 'The native database could not be read. Retry before making changes.', tone: 'error' };

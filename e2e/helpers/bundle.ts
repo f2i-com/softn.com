@@ -30,6 +30,22 @@ export function pageBundle({ id, name, html, permissions = {} }: { id: string; n
   return Buffer.from(zipped);
 }
 
+/** A .softn bundle of one `.ui` page, with `.logic` beside it if given, as a buffer for a file input. */
+export function uiBundle({ name, ui, logic }: { name: string; ui: string; logic?: string }): Buffer {
+  const manifest = { name, version: '1.0.0', description: 'Built by the e2e gate.', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: logic === undefined ? [] : ['logic/main.logic'] } };
+  const files: Record<string, string> = {
+    'manifest.json': JSON.stringify(manifest, null, 2),
+    'permission.json': JSON.stringify({ permissions: {} }),
+    'ui/main.ui': ui,
+    ...(logic === undefined ? {} : { 'logic/main.logic': logic }),
+  };
+  const zipped = zipSync(
+    Object.fromEntries(Object.entries(files).map(([file, text]) => [file, strToU8(text)])),
+    { level: 6, mtime: new Date('2026-09-25T00:00:00.000Z') }
+  );
+  return Buffer.from(zipped);
+}
+
 /** A .softn bundle whose logic is `logic/main.py`, as a buffer for a file input. */
 export function pythonBundle({ id, name, ui, python, packages }: PythonBundle): Buffer {
   const manifest = {
