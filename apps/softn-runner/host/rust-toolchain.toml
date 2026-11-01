@@ -1,5 +1,5 @@
 [toolchain]
 # The guest is built with ZIPP's release toolchain (guest/rust-toolchain.toml);
-# the runner around it is not tied to it. wasmtime 45 needs 1.93 or newer.
+# the runner around it is not tied to it. wasmtime 50 needs 1.97 or newer.
 channel = "1.99.0"
 profile = "minimal"
