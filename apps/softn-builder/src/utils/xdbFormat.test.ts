@@ -212,6 +212,25 @@ describe('parseXdb', () => {
     expect(edited.updated_at).toBe('2030-01-01T00:00:00.000Z');
   });
 
+  it('keeps exactly the rows the runtime keeps, so an edit cannot erase the ones it shows', () => {
+    const text = JSON.stringify({
+      collection: 'notes',
+      records: [
+        { id: 1, title: 'a number' },
+        { id: 0, title: 'zero' },
+        { id: 'b3', title: 'a string' },
+        { id: '   ', title: 'blank' },
+        { title: 'no id' },
+        { id: 2, data: { title: 'nested' } },
+      ],
+    });
+    const parsed = parseXdb(text, 'notes');
+    const runtime = parseXDBFile('notes.xdb', text);
+    expect(parsed.records.map((r) => r.id)).toEqual(runtime.records.map((r) => r.id));
+    expect(parsed.records.map((r) => r.id)).toEqual(['1', '0', 'b3', '2']);
+    expect(parsed.skipped).toBe(2);
+  });
+
   it('rejects text that is not a JSON object', () => {
     expect(() => parseXdb('[]', 'x')).toThrow();
     expect(() => parseXdb('nope', 'x')).toThrow();

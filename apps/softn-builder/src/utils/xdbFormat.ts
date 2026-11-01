@@ -37,6 +37,7 @@
  *    be taken back until the next data edit.
  */
 
+import { seedId } from '@softn/core';
 import type { SchemaField } from '../types/builder';
 import { isObject } from './values';
 
@@ -212,7 +213,10 @@ export function parseXdb(text: string, fallbackCollection: string): ParsedXdb {
   let skipped = 0;
   const raw = Array.isArray(parsed.records) ? parsed.records : [];
   for (const candidate of raw) {
-    if (!isObject(candidate) || typeof candidate.id !== 'string') {
+    // The runtime's own rule. A number here was skipped while the runtime kept it, so an edit to any
+    // other row wrote the file back without the rows the published app shows.
+    const id = isObject(candidate) ? seedId(candidate.id) : null;
+    if (!isObject(candidate) || id === null) {
       skipped += 1;
       continue;
     }
@@ -220,7 +224,7 @@ export function parseXdb(text: string, fallbackCollection: string): ParsedXdb {
     // The envelope's own flag. In a flat record there is no envelope:
     // `deleted` there is a field of the record, as every key is.
     if (nested && candidate.deleted === true) {
-      tombstones.push(candidate as XdbRecordEnvelope);
+      tombstones.push({ ...candidate, id } as XdbRecordEnvelope);
       continue;
     }
     let data: Record<string, unknown>;
@@ -241,13 +245,13 @@ export function parseXdb(text: string, fallbackCollection: string): ParsedXdb {
       // "last updated" column, blank. The record's own times are still read
       // from those keys, as the runtime reads them, and the fields stay.
       data = Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== 'id' && key !== 'collection'));
-      rest = { id: candidate.id, created_at: candidate.created_at ?? candidate.createdAt, updated_at: candidate.updated_at ?? candidate.updatedAt };
+      rest = { id, created_at: candidate.created_at ?? candidate.createdAt, updated_at: candidate.updated_at ?? candidate.updatedAt };
     }
     const rawCreated = rest.created_at ?? rest.createdAt;
     const rawUpdated = rest.updated_at ?? rest.updatedAt;
     const created_at = typeof rawCreated === 'string' ? rawCreated : typeof rawUpdated === 'string' ? rawUpdated : '1970-01-01T00:00:00.000Z';
     const updated_at = typeof rawUpdated === 'string' ? rawUpdated : created_at;
-    const envelope: XdbRecordEnvelope = { ...rest, id: candidate.id, data, created_at, updated_at };
+    const envelope: XdbRecordEnvelope = { ...rest, id, data, created_at, updated_at };
     delete envelope.createdAt;
     delete envelope.updatedAt;
     records.push(envelope);
