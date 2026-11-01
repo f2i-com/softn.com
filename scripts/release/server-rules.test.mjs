@@ -142,6 +142,11 @@ async function checkTwins(port, files, { brotli }) {
   }
 }
 
+test('coi.js is asked for as sw.js is: sw.js loads it, and a stale copy outlives the new worker', () => {
+  assert.match(buildSource, /<FilesMatch "\^\(\?:registerSW\|sw\|service-worker\|coi\)\\\.js/, 'Apache');
+  assert.match(buildSource, /\(\?:registerSW\|sw\|service-worker\|coi\)\\\.js\$\s+"no-cache/, 'nginx');
+});
+
 test('Apache serves each twin under its original type, through the shipped .htaccess', { skip: apache ? false : 'apache2 is not installed' }, async (t) => {
   const { dir, root, files } = fixture(t);
   fs.writeFileSync(path.join(root, '.htaccess'), rawBlock('APACHE_CONFIG'));

@@ -138,7 +138,7 @@ ErrorDocument 404 /index.html
   <FilesMatch "\.(?:html?|json|webmanifest|softn)(?:\.(?:br|gz))?$">
     Header set Cache-Control "no-cache, max-age=0, must-revalidate"
   </FilesMatch>
-  <FilesMatch "^(?:registerSW|sw|service-worker)\.js(?:\.(?:br|gz))?$">
+  <FilesMatch "^(?:registerSW|sw|service-worker|coi)\.js(?:\.(?:br|gz))?$">
     Header set Cache-Control "no-cache, max-age=0, must-revalidate"
   </FilesMatch>
 </IfModule>
@@ -293,7 +293,7 @@ map "$sent_http_content_type|$uri" $softn_cache_control {
     default                                                        "public, max-age=3600";
     ~^text/html                                                    "no-cache, max-age=0, must-revalidate";
     ~^application/(?:json|manifest\+json)                          "no-cache, max-age=0, must-revalidate";
-    ~*\|.*/(?:registerSW|sw|service-worker)\.js$                   "no-cache, max-age=0, must-revalidate";
+    ~*\|.*/(?:registerSW|sw|service-worker|coi)\.js$               "no-cache, max-age=0, must-revalidate";
     ~*\|.*\.softn$                                                "no-cache, max-age=0, must-revalidate";
     "~*\|.*-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$"
                                                                    "public, max-age=31536000, immutable";

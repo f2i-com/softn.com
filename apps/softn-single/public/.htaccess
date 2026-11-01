@@ -19,6 +19,10 @@ Options -Indexes
   <FilesMatch "\.(softn|json)$">
     Header set Cache-Control "no-store"
   </FilesMatch>
+  # A deploy replaces the hashed scripts, so the page that names them is always asked for.
+  <FilesMatch "^index\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
 </IfModule>
 AddType application/wasm .wasm
 AddType application/javascript .mjs

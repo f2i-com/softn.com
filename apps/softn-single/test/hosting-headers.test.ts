@@ -23,6 +23,10 @@ describe('hosting headers', () => {
     expect(isolationHeaders(read('../public/.htaccess'))).toEqual(expected);
   });
 
+  it('asks for the page every time: a deploy replaces the scripts it names', () => {
+    expect(read('../public/.htaccess')).toMatch(/<FilesMatch "\^index\\\.html\$">\n\s*Header set Cache-Control "no-cache"/);
+  });
+
   it('keeps nosniff and no-store for the bundle and its config', () => {
     const htaccess = read('../public/.htaccess');
     expect(htaccess).toMatch(/Header always set X-Content-Type-Options "nosniff"/);

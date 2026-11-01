@@ -34,6 +34,13 @@ async function server(options) {
   return s;
 }
 
+test('PHP\'s own errors are off before the first library is read', () => {
+  const entry = fs.readFileSync(path.join(apiDir, 'index.php'), 'utf8');
+  const off = entry.indexOf("ini_set('display_errors', '0');");
+  assert.ok(off > 0);
+  assert.ok(off < entry.indexOf("require __DIR__"), 'a library missing mid-upload answered 200 with the server\'s paths');
+});
+
 test('a form body is held to its route’s limit, as a JSON one is', skip, async () => {
   const s = await server({ config: { maxJsonBytes: 64 * 1024 }, prefix: 'softn-audit-form-' });
   const { app } = await s.publish('Form Limit');

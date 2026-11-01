@@ -17,7 +17,7 @@ const SCOPE = 'https://softn.test/web/';
 type FetchHandler = (event: { request: Request; respondWith(answer: Promise<Response>): void }) => void;
 
 /** Runs coi.js against caches by name, each a map from address to a response, matched as the Cache API does. */
-function install(stores: Record<string, Record<string, () => Response>>) {
+function install(stores: Record<string, Record<string, () => Response>>, network?: () => Promise<Response>) {
   let handler: FetchHandler | undefined;
   const self = {
     registration: { scope: SCOPE },
@@ -44,7 +44,7 @@ function install(stores: Record<string, Record<string, () => Response>>) {
     },
   };
   const offline = async () => { throw new TypeError('Failed to fetch'); };
-  new Function('self', 'caches', 'fetch', source)(self, caches, offline);
+  new Function('self', 'caches', 'fetch', source)(self, caches, network ?? offline);
   return async (request: Request) => {
     let answer: Promise<Response> | undefined;
     handler!({ request, respondWith: (promise) => { answer = promise; } });
@@ -57,6 +57,35 @@ function navigation(url: string): Request {
   Object.defineProperty(request, 'mode', { value: 'navigate' });
   return request;
 }
+
+describe('coi.js with the site failing', () => {
+  const precached = { 'workbox-precache-v2': { [`${SCOPE}index.html`]: () => new Response('<!doctype html>SoftN Web') } };
+  const answering = (status: number) => async () => new Response('the host says no', { status });
+
+  for (const status of [500, 502, 503, 522]) {
+    it(`opens the kept page on a ${status}`, async () => {
+      const response = await install(precached, answering(status))(navigation(SCOPE));
+      expect(await response.text()).toBe('<!doctype html>SoftN Web');
+      expect(response.status).toBe(200);
+    });
+  }
+
+  it('passes a 404 on: the address is what is wrong, not the site', async () => {
+    const response = await install(precached, answering(404))(navigation(`${SCOPE}nothing-here`));
+    expect(response.status).toBe(404);
+  });
+
+  it('passes the failure on when there is no copy', async () => {
+    const response = await install({}, answering(503))(navigation(SCOPE));
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe('the host says no');
+  });
+
+  it('prefers a working site to a kept page', async () => {
+    const response = await install(precached, async () => new Response('fresh'))(navigation(SCOPE));
+    expect(await response.text()).toBe('fresh');
+  });
+});
 
 describe('coi.js offline', () => {
   it("answers SoftN Web's page from the site's cache, not from what an app put in the model cache", async () => {

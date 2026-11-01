@@ -10,6 +10,10 @@
  */
 declare(strict_types=1);
 
+// Before anything can fail: during an upload a library can be missing or half written, and where
+// display_errors is on that answered 200 with the server's paths.
+ini_set('display_errors', '0');
+
 require __DIR__ . '/lib/http.php';
 require __DIR__ . '/lib/db.php';
 require __DIR__ . '/lib/catalog.php';
@@ -20,7 +24,6 @@ require __DIR__ . '/lib/storage.php';
 require __DIR__ . '/lib/seed.php';
 require __DIR__ . '/lib/pages.php';
 
-ini_set('display_errors', '0');
 error_reporting(E_ALL);
 set_error_handler(static function (int $no, string $str, string $file, int $line): bool {
     if (!(error_reporting() & $no)) return false;

@@ -64,6 +64,10 @@ self.addEventListener('fetch', (event) => {
         if (first === 'slow') {
           res = await cachedCopy();
           if (!res) res = await network;
+        } else if (first.status >= 500) {
+          // The site failing is no reason to lose the app: only a thrown network error reached the
+          // copy, so the page that opens offline showed the host's error page online.
+          res = (await cachedCopy()) ?? first;
         } else {
           res = first;
         }
