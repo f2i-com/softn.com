@@ -19,7 +19,7 @@ DirectoryIndex index.php
 # app's own route, whatever it ends in.
 <IfModule mod_alias.c>
     RedirectMatch 404 "^(?!.*/api/).*/\.(?!well-known(?:/|$))"
-    RedirectMatch 404 "^(?!.*/api/).*(?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
+    RedirectMatch 404 "(?i)^(?!.*/api/).*(?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
 </IfModule>
 AddType application/wasm .wasm
 AddType text/javascript .mjs
@@ -32,6 +32,10 @@ AddType text/javascript .mjs
     RewriteEngine On
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
     RewriteRule ^api(?:/.*)?$ api.php [END]
+    # The two refusals above see the whole address, so they spare any folder called api. Here the
+    # path is this folder's own, and the line above has taken the app's routes.
+    RewriteRule (?:^|/)\.(?!well-known(?:/|$)) - [R=404,L]
+    RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ - [R=404,L,NC]
 </IfModule>
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"

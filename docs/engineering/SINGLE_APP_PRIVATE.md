@@ -182,7 +182,7 @@ location ~ /\.(?!well-known(?:/|$)) { deny all; }
 location ~ ^/(private|backend)(/|$) { return 404; }
 location ~ \.(softn|key|cache)$ { return 404; }
 # What a copied backend or a backup leaves in this folder.
-location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
+location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
 # PHP is run only by the location below: softn-serve.php is a library of
 # index.php's, and any other .php name would be sent as its source, which for
 # a stray serve.config.php is the secret.

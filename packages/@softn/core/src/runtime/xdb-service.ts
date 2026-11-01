@@ -436,6 +436,7 @@ export class XDBService {
   /** Collections whose last save was refused, until one goes through. */
   private refusedSaves = new Set<string>();
   private freeingDeletedData = false;
+  private writingSeed = false;
   private persistent = true;
   private hydrated = true;
   private issues: XDBStorageIssue[] = [];
@@ -1218,8 +1219,9 @@ export class XDBService {
       }
     } catch (err) {
       // Giving back another collection's deleted data is a try on the way to a save of this one.
-      // Nobody asked to save that one, so it is not told that it could not be.
-      if (this.freeingDeletedData) throw err;
+      // Nobody asked to save that one, so it is not told that it could not be. Nor is a seed: see
+      // writeSeedRecords.
+      if (this.freeingDeletedData || this.writingSeed) throw err;
       // localStorage.setItem is atomic: the previous value is intact. Say so
       // instead of pretending the write happened (audit SN-02).
       const message = err instanceof Error ? err.message : String(err);
@@ -2366,6 +2368,20 @@ export class XDBService {
     }
     this.setCollectionData(collection, records);
     this.emit({ type: isUpdate ? 'update' : 'create', collection, record });
+  }
+
+  /**
+   * The records an app ships with. Refused, this throws as any write does and the caller goes on,
+   * but it leaves no notice: nobody tried to save anything, the app opens with what fits, and
+   * "Storage is full" would stand over a working app at every opening.
+   */
+  writeSeedRecords(collection: string, list: readonly XDBRecord[]): void {
+    this.writingSeed = true;
+    try {
+      this.writeRecords(collection, list);
+    } finally {
+      this.writingSeed = false;
+    }
   }
 
   /**

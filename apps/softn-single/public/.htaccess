@@ -5,7 +5,7 @@ Options -Indexes
 # challenge, and runtime.config.json is another name than config.json.
 <IfModule mod_alias.c>
   RedirectMatch 404 "/\.(?!well-known(?:/|$))"
-  RedirectMatch 404 "(?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
+  RedirectMatch 404 "(?i)(?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
 </IfModule>
 <IfModule mod_headers.c>
   Header always set X-Content-Type-Options "nosniff"

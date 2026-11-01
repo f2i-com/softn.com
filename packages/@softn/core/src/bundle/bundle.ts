@@ -593,7 +593,7 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
  * time (FormLogic's frame takes 32 at most) refused the rest.
  */
 export function seedXDBBundleData(
-  xdb: Pick<XDBService, 'getAllRaw' | 'writeRecord'> & Partial<Pick<XDBService, 'readSyncMeta' | 'writeSyncMeta' | 'writeRecords'>>,
+  xdb: Pick<XDBService, 'getAllRaw' | 'writeRecord'> & Partial<Pick<XDBService, 'readSyncMeta' | 'writeSyncMeta' | 'writeRecords' | 'writeSeedRecords'>>,
   data: XDBBundleData
 ): number {
   const existingIds = new Set(xdb.getAllRaw(data.collection).map((record) => record.id));
@@ -611,7 +611,8 @@ export function seedXDBBundleData(
     fresh.push({ ...record, collection: data.collection, deleted: false });
     existingIds.add(record.id);
   }
-  if (xdb.writeRecords) xdb.writeRecords(data.collection, fresh);
+  if (xdb.writeSeedRecords) xdb.writeSeedRecords(data.collection, fresh);
+  else if (xdb.writeRecords) xdb.writeRecords(data.collection, fresh);
   else for (const record of fresh) xdb.writeRecord(data.collection, record);
   const inserted = fresh.length;
 

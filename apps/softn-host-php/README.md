@@ -102,7 +102,7 @@ location ~ \.php$ { return 404; }
 location ~ ^/(backend|private)(/|$) { return 404; }
 # What a copied backend or a backup leaves in this folder. runtime.config.json
 # is another name, and is served.
-location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
+location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
 location ^~ /api/ {
     # The largest body the runtime takes is a photo upload (5.6 MB); nginx's
     # own default of 1m answered most of them with its HTML 413.

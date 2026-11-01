@@ -220,7 +220,7 @@ ErrorDocument 404 /index.html
   # file. Only a real one: /web/app/~Notes.zip is an app's address.
   RewriteRule (?:^|/)\.(?!well-known(?:/|$)) - [R=404,L]
   RewriteCond %{REQUEST_FILENAME} -f
-  RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ - [R=404,L]
+  RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ - [R=404,L,NC]
 
   # An app's page, when a browser asks for it, comes through the API so the
   # <meta> tags carry the app's own name and picture: a link pasted into a
@@ -358,7 +358,7 @@ server {
 
     # What a copy of data/ or a backup leaves in this folder, config.json with
     # the admin key above all. The site ships no such file.
-    location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
+    location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
 
     # An app's page goes through the API so its <meta> tags are its own.
     location ~ ^/app/[^/]+/?$ {

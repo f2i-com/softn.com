@@ -66,7 +66,7 @@ const FILES = [
 /** What every planted file says, which no answer may hold. */
 const NOT_FOR_VISITORS = 'not for visitors';
 /** What a folder uploaded to a host can hold, whichever package it is. */
-const STRAY = ['.git/config', '.git/HEAD', '.env', '.env.local', '.DS_Store', 'config.json', 'backup.zip', 'backup.tar', 'data.tar.gz', 'site.sql', 'database.sqlite', 'database.sqlite-wal', 'index.html.bak'];
+const STRAY = ['.git/config', '.git/HEAD', '.env', '.env.local', '.DS_Store', 'config.json', 'backup.zip', 'BACKUP.ZIP', 'backup.tar', 'data.tar.gz', 'site.sql', 'Site.SQL', 'site.sql.gz', 'database.sqlite', 'database.sqlite-wal', 'index.html.bak'];
 /** The site's state, and that same state where a backup of it was left. */
 const SITE_PRIVATE = [...STRAY, 'data/config.json', 'data/categories.json', 'data/README.txt', 'data/apps/notes/app.json', 'data/apps/notes/v1.softn', 'data/apps/notes/comments.json', 'data/apps/notes/storage.sqlite', 'data-backup/config.json'];
 /** data/config.json as other requests spell it, which reach the same file if a rule reads the text. */
@@ -307,6 +307,12 @@ for (const [file, served] of [
         const answer = await get(port, route);
         assert.equal(answer.status, 200, route);
         assert.equal(answer.body.toString(), 'the app\'s own route', route);
+      }
+      // That spares routes and no more: a copy of the site in a folder of its own has an api folder too.
+      if (routes) {
+        const copies = ['old/api/.env', 'old/api/.git/config', 'old/api/backup.zip', 'old/api/site.sql', 'old/api/config.json'];
+        plant(root, copies);
+        await checkRefused(port, copies.map((name) => `/${name}`));
       }
     });
   });

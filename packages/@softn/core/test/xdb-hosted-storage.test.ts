@@ -163,6 +163,19 @@ describe('XDB acknowledged hosted persistence', () => {
     } finally { f.close(); }
   });
 
+  it('a seed that does not fit leaves no notice: the app opens with what fits, and its own saves still work', async () => {
+    const f = realAdapterFixture();
+    try {
+      const big = Array.from({ length: 40 }, (_, index) => ({ id: `long-${index}`, collection: 'long', data: { body: 'x'.repeat(1100) }, created_at: 't', updated_at: 't', deleted: false }));
+      expect(() => f.xdb.writeSeedRecords('long', big)).toThrow();
+      expect(f.xdb.getStorageStatus().issues).toEqual([]);
+      expect(f.xdb.getStorageStatus().state).toBe('ready');
+      // Only the seed goes unnoted: a write of the app's own that is refused still says so.
+      expect(() => f.xdb.writeRecords('long', big)).toThrow();
+      expect(f.xdb.getStorageStatus().issues.map((issue) => issue.kind)).toEqual(['quota']);
+    } finally { f.close(); }
+  });
+
   it('does not say a collection nobody saved could not be saved', async () => {
     const f = realAdapterFixture();
     try {

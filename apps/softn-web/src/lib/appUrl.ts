@@ -50,8 +50,13 @@ export function buildAppPath(
   if (!appName) return root;
   let path = `${root}app/${encodeURIComponent(appName)}`;
   // A page's slashes stay slashes, which parseAppPath reads as they were: Apache
-  // answers a path with %2F in it itself, before any rule of the site's.
-  if (page) path += `/${encodeURIComponent(page).replace(/%2F/g, '/')}`;
+  // answers a path with %2F in it itself, before any rule of the site's. A page
+  // is the app's to name, and the browser collapses `..`: left in, one named
+  // `../twenty48` showed another app's address over this app's screen, and
+  // `../../../publish` any page of the site. Such a page is no part of an address.
+  if (page && !page.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+    path += `/${encodeURIComponent(page).replace(/%2F/g, '/')}`;
+  }
   return path;
 }
 

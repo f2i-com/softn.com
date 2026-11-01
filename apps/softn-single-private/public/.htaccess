@@ -17,7 +17,7 @@ DirectoryIndex index.php
 # second line is what a backup leaves here.
 <IfModule mod_alias.c>
     RedirectMatch 404 "/\.(?!well-known(?:/|$))"
-    RedirectMatch 404 "(?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
+    RedirectMatch 404 "(?i)(?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
 </IfModule>
 AddType application/wasm .wasm
 AddType text/javascript .mjs

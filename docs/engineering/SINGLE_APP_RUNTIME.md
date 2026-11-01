@@ -55,7 +55,7 @@ A folder this is uploaded into may hold what is not meant for visitors, so the
 `/.well-known/`, which a certificate's challenge needs), `config.json`, and
 the endings backups have. On nginx, the same is
 `location ~ /\.(?!well-known(?:/|$)) { deny all; }` and
-`location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }`.
+`location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }`.
 
 ### Inside softn.com
 

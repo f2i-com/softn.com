@@ -28,6 +28,18 @@ describe('the address a tab is at', () => {
     expect(parseAppPath(url, '/web/')).toEqual({ appName: 'notes', page: 'admin/users' });
   });
 
+  it.each(['../twenty48', '../../../publish', 'a/../../b', '..', '.', './x', 'a//b', '/a', 'a/'])('writes no address for a page called %j, which the browser would collapse into another', (page) => {
+    const url = buildAppPath('notes', page, '/web/');
+    expect(url).toBe('/web/app/notes');
+    expect(new URL(url, 'https://softn.example').pathname).toBe('/web/app/notes');
+  });
+
+  it.each(['...', '..a', 'a..', 'v1.2', '.hidden', '%2e%2e', '..\\..\\x'])('keeps a page called %j, which is no step in a path', (page) => {
+    const url = buildAppPath('notes', page, '/web/');
+    expect(new URL(url, 'https://softn.example').pathname.startsWith('/web/app/notes/')).toBe(true);
+    expect(parseAppPath(url, '/web/')).toEqual({ appName: 'notes', page });
+  });
+
   it('keeps where an app opened by a link came from, and nothing for the directory', () => {
     expect(tabLink({ bundleUrl: 'https://softn.example/demos/Twenty48.softn' })).toBe('/demos/Twenty48.softn');
     expect(tabLink({ bundleUrl: 'https://softn.example/x.softn?v=2' })).toBe('/x.softn?v=2');
