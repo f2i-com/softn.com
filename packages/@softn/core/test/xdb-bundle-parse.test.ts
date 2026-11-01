@@ -32,3 +32,24 @@ describe('parseXDBFile', () => {
     expect(parseXDBFile('empty.xdb', '{ "collection": "empty" }').warning).toBeUndefined();
   });
 });
+
+describe('seed records with ids that are not strings', () => {
+  it('keeps a numeric id as its digits', () => {
+    const data = parseXDBFile('notes.xdb', JSON.stringify({ records: [{ id: 1, title: 'one' }, { id: 2.5, title: 'two' }, { id: 0, title: 'zero' }] }));
+    expect(data.records.map((record) => record.id)).toEqual(['1', '2.5', '0']);
+    expect(data.records[0].data).toEqual({ title: 'one' });
+    expect(data.warning).toBeUndefined();
+  });
+
+  it('says how many records it could not take', () => {
+    const data = parseXDBFile('notes.xdb', JSON.stringify({ records: [{ id: 'a' }, { title: 'no id' }, { id: true }, { id: null }, 'text', { id: 'b', data: 5 }] }));
+    expect(data.records.map((record) => record.id)).toEqual(['a']);
+    expect(data.warning).toBe('notes.xdb: 5 of its 6 records were left out, for having no id or no object of data');
+  });
+
+  it('says one record in the singular, and nothing when all are read', () => {
+    expect(parseXDBFile('n.xdb', JSON.stringify({ records: [{ id: 'a' }, {}] })).warning).toBe('n.xdb: 1 of its 2 records was left out, for having no id or no object of data');
+    expect(parseXDBFile('n.xdb', JSON.stringify({ records: [{ id: 'a' }] })).warning).toBeUndefined();
+    expect(parseXDBFile('n.xdb', JSON.stringify({ records: [] })).warning).toBeUndefined();
+  });
+});

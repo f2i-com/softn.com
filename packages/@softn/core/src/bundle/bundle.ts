@@ -474,6 +474,11 @@ function parseLogicFile(path: string, content: string): LogicFile {
  */
 const XDB_FALLBACK_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
+function seedId(id: unknown): string | null {
+  if (typeof id === 'string') return id;
+  return typeof id === 'number' && Number.isFinite(id) ? String(id) : null;
+}
+
 export function parseXDBFile(path: string, content: string): XDBBundleData {
   const fallbackCollection = path.replace('.xdb', '');
   // A malformed file used to open as an empty collection, silently: the app
@@ -497,11 +502,21 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
         typeof data.collection === 'string' && data.collection ? data.collection : fallbackCollection
       );
     }
+    // A seed with an id a number, as a hand-written file often has, opened as if it had never been
+    // there. An id is a string here, so it becomes the same digits. What cannot be a record is said.
+    let leftOut = 0;
     const records = Array.isArray(data.records)
       ? data.records.flatMap((record): XDBBundleData['records'] => {
-          if (!record || typeof record !== 'object' || Array.isArray(record)) return [];
+          if (!record || typeof record !== 'object' || Array.isArray(record)) {
+            leftOut++;
+            return [];
+          }
           const candidate = record as Record<string, unknown>;
-          if (typeof candidate.id !== 'string') return [];
+          const id = seedId(candidate.id);
+          if (id === null) {
+            leftOut++;
+            return [];
+          }
 
           const hasNestedData = Object.prototype.hasOwnProperty.call(candidate, 'data');
           let recordData: Record<string, unknown>;
@@ -511,6 +526,7 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
               typeof candidate.data !== 'object' ||
               Array.isArray(candidate.data)
             ) {
+              leftOut++;
               return [];
             }
             recordData = candidate.data as Record<string, unknown>;
@@ -535,7 +551,7 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
 
           return [
             {
-              id: candidate.id,
+              id,
               data: recordData,
               created_at: createdAt,
               updated_at: updatedAt,
@@ -549,6 +565,9 @@ export function parseXDBFile(path: string, content: string): XDBBundleData {
           ? data.collection
           : fallbackCollection,
       records,
+      ...(leftOut > 0
+        ? { warning: `${path}: ${leftOut} of its ${(data.records as unknown[]).length} records ${leftOut === 1 ? 'was' : 'were'} left out, for having no id or no object of data` }
+        : {}),
     };
   } catch (err) {
     return unreadable(`not valid JSON (${err instanceof Error ? err.message : String(err)})`);
