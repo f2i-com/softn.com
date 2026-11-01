@@ -217,22 +217,36 @@ test('a save that joined another shares its outcome', async t => {
   assert.deepEqual(f.confirmedSnapshot(), { first: 'sent' });
 });
 
-test('a save goes past saves of other keys, and past nothing else', async t => {
+test('a save takes only the one just before it, so keys land in the order they were written', async t => {
   const f = fixture(t);
   f.api.setItem('first', 'sent');
-  f.api.setItem('a', 'a1');
-  f.api.setItem('b', 'b1');
-  f.api.setItem('a', 'a2');
-  f.storage.removeItem('b');
-  f.api.setItem('a', 'a3');
-  for (let index = 0; index < 5; index++) {
+  f.api.setItem('index', 'lists-nothing');
+  f.api.setItem('record', 'the-record');
+  f.api.setItem('index', 'lists-the-record');
+  f.api.setItem('index', 'lists-it-still');
+  f.storage.removeItem('record');
+  f.api.setItem('index', 'after-the-remove');
+  for (let index = 0; index < 6; index++) {
     assert.ok(index < f.posted.length, `a save ${index} was posted`);
     f.queue.settle(f.posted[index].id, acknowledged); await microtasks();
   }
   assert.deepEqual(f.posted.map(item => [item.input.operation, item.input.key, item.input.value]), [
-    ['set', 'first', 'sent'], ['set', 'a', 'a2'], ['set', 'b', 'b1'], ['remove', 'b', undefined], ['set', 'a', 'a3'],
+    ['set', 'first', 'sent'], ['set', 'index', 'lists-nothing'], ['set', 'record', 'the-record'], ['set', 'index', 'lists-it-still'],
+    ['remove', 'record', undefined], ['set', 'index', 'after-the-remove'],
   ]);
-  assert.deepEqual(f.confirmedSnapshot(), { first: 'sent', a: 'a3' });
+  assert.deepEqual(f.confirmedSnapshot(), { first: 'sent', index: 'after-the-remove' });
+});
+
+test('a save that takes another has its own time, not the time the other had left', async t => {
+  const f = fixture(t, {}, { maxInFlight: 1, deadlineMs: 240 });
+  // Behind an ordinary call, nothing of the storage's has been handed over.
+  void f.queue.call('other', {});
+  f.api.setItem('held', 'behind-the-call');
+  f.api.setItem('key', 'older');
+  await new Promise(resolve => setTimeout(resolve, 160));
+  const newest = f.api.setItem('key', 'newest');
+  await new Promise(resolve => setTimeout(resolve, 140));
+  assert.equal(newest.state, 'pending', 'three hundred milliseconds in, it has had 140 of its 240');
 });
 
 test('a save already handed over is never changed', async t => {

@@ -146,6 +146,52 @@ describe('XDB acknowledged hosted persistence', () => {
     } finally { f.close(); }
   });
 
+  it('stops saying a collection is full once a save goes through', async () => {
+    const f = realAdapterFixture();
+    try {
+      const body = 'x'.repeat(2000);
+      const made: string[] = [];
+      let refused = false;
+      while (!refused) { try { made.push(f.xdb.create('notes', { body }).id); } catch { refused = true; } }
+      expect(f.xdb.getStorageStatus().state).toBe('degraded');
+      f.xdb.delete(made[0]);
+      f.xdb.delete(made[1]);
+      f.xdb.create('notes', { body });
+      expect(f.xdb.getStorageStatus().issues).toEqual([]);
+      expect(f.xdb.getStorageStatus().state).toBe('ready');
+    } finally { f.close(); }
+  });
+
+  it('makes room in one collection by what was deleted from another', async () => {
+    const f = realAdapterFixture();
+    try {
+      // The frame's map holds 256 KB, across collections, and each holds under 30,000.
+      const body = 'x'.repeat(5000);
+      const photos: string[] = [];
+      for (const collection of ['photos', 'albums', 'tags', 'people', 'places', 'trips', 'events', 'notes']) {
+        for (let index = 0; index < 5; index++) {
+          try {
+            const { id } = f.xdb.create(collection, { body });
+            if (collection === 'photos') photos.push(id);
+          } catch { break; }
+        }
+        for (let index = 0; index < f.posted.length; index++) f.queue.settle(f.posted[index].id, { result: { saved: true } });
+        await flush();
+      }
+      let refused = false;
+      for (const collection of ['more', 'evenmore', 'stillmore', 'andmore', 'lastly']) {
+        for (let index = 0; index < 5 && !refused; index++) {
+          try { f.xdb.create(collection, { body }); } catch { refused = true; }
+        }
+      }
+      expect(refused).toBe(true);
+      for (const id of photos) f.xdb.delete(id);
+      expect(f.xdb.getAll('photos')).toHaveLength(0);
+      expect(f.xdb.create('notes2', { body }).id).toBeTruthy();
+      expect(f.xdb.getAllRaw('photos').every((record) => Object.keys(record.data).length === 0)).toBe(true);
+    } finally { f.close(); }
+  });
+
   it('keeps a deleted record whole while there is room', () => {
     const { storage } = hostedStorage();
     const xdb = service(storage);

@@ -47,6 +47,12 @@ describe('seed records with ids that are not strings', () => {
     expect(data.warning).toBe('notes.xdb: 5 of its 6 records were left out, for having no id or no object of data');
   });
 
+  it('takes a blank id for no id: stored, it makes the whole collection read as damaged', () => {
+    const data = parseXDBFile('notes.xdb', JSON.stringify({ records: [{ id: 'a' }, { id: '' }, { id: '  ' }, { id: '\u0085' }] }));
+    expect(data.records.map((record) => record.id)).toEqual(['a']);
+    expect(data.warning).toContain('3 of its 4 records were left out');
+  });
+
   it('says one record in the singular, and nothing when all are read', () => {
     expect(parseXDBFile('n.xdb', JSON.stringify({ records: [{ id: 'a' }, {}] })).warning).toBe('n.xdb: 1 of its 2 records was left out, for having no id or no object of data');
     expect(parseXDBFile('n.xdb', JSON.stringify({ records: [{ id: 'a' }] })).warning).toBeUndefined();

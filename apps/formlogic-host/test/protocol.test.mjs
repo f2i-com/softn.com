@@ -39,8 +39,11 @@ test('no app runs in a frame that is not sandboxed', () => {
   assert.ok(guard > main.indexOf('  try {'));
 });
 
-test('a store that refuses a write says so in the frame', () => {
-  assert.match(main, /<XDBStorageNotice appId=\{event\.data\.appId\} problemsOnly \/>/);
+test('a store that refuses a write says so, where saves are confirmed and nowhere else', () => {
+  // Any other frame keeps its records in memory by design, and the notice says so in red.
+  assert.match(main, /\{savesAcknowledged && <XDBStorageNotice appId=\{event\.data\.appId\} problemsOnly \/>\}/);
+  assert.match(main, /const savesAcknowledged = appStorage\?\.acknowledgedPersistence\.protocol === 1;/);
+  assert.ok(main.indexOf('const savesAcknowledged') > main.indexOf('appStorage = installAppStorage('), 'read once the storage is there');
 });
 
 test('an error says whether the app failed to open or failed while running', () => {

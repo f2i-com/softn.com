@@ -154,19 +154,21 @@ export function installAppStorage(
   }
   const quota = () => new DOMException('App storage limit reached', 'QuotaExceededError');
   /**
-   * A save still waiting that this one makes pointless. A set holds the key's whole value, and XDB
-   * keeps a collection under one key, so a loop adding records wrote the whole collection again each
-   * time: the 33rd was refused as a full store with room to spare. A remove, a clear or a batch
-   * touches keys in an order of its own, so nothing goes past one.
+   * The save just before this one, when this one makes it pointless. A set holds the key's whole
+   * value, and XDB keeps a collection under one key, so a loop adding records wrote the whole
+   * collection again each time: the 33rd was refused as a full store with room to spare. Only the
+   * last in the queue: taking an earlier one would send a key's newer value ahead of a write to
+   * another key that came first, and an index could land before the record it names. One value
+   * goes for all of them, so a refusal of the newest is a refusal of those it replaced.
    */
   const unsentSetOf = (input: Record<string, unknown>) => {
     if (protocol !== 1 || input.operation !== 'set') return undefined;
-    for (let index = waiting.length - 1; index >= 0; index--) {
-      const earlier = waiting[index];
-      if (earlier.input.operation !== 'set') return undefined;
-      if (earlier.input.key === input.key) return earlier;
-    }
-    return undefined;
+    const last = waiting.at(-1);
+    return last?.input.operation === 'set' && last.input.key === input.key ? last : undefined;
+  };
+  const expireAtDeadline = (operation: Operation) => {
+    clearTimeout(operation.timer);
+    operation.timer = setTimeout(() => { operation.controller.abort(); finish(operation, undefined, true); }, Math.max(0, operation.deadlineAt - Date.now()));
   };
   function admit(input: Record<string, unknown>): StorageWriteReceipt {
     if (disposed) throw new DOMException('App storage is disposed', 'InvalidStateError');
@@ -188,18 +190,20 @@ export function installAppStorage(
     // Sync WebStorage callers may ignore receipts; failures stay observable
     // without an unhandled rejection. This does not change the returned promise.
     void completion.catch(() => {});
+    const deadlineAt = Date.now() + (options.deadlineMs ?? STORAGE_LIMITS.deadline);
     if (earlier) {
-      // It keeps its place and its deadline, and takes the newest value. Both receipts say what became of that.
+      // It keeps its place and takes the newest value, with that value's deadline: it had the time
+      // of the oldest, and died with it. Both receipts say what became of it.
       units += serialized.length - earlier.units;
       earlier.units = serialized.length; earlier.input = frozen; earlier.joined.push({ resolve, reject });
+      earlier.deadlineAt = deadlineAt; expireAtDeadline(earlier);
       entries.clear(); for (const [key, value] of candidate) entries.set(key, value);
       notify();
       return Object.freeze({ generation, sequence: ++sequence, completion, get state() { return earlier.state; } });
     }
-    const deadlineAt = Date.now() + (options.deadlineMs ?? STORAGE_LIMITS.deadline);
     const operation = { input: frozen, units: serialized.length, state: 'pending' as StorageWriteState, resolve, reject, controller: new AbortController(), joined: [] as Operation['joined'], deadlineAt, dispatched: false } as Operation;
     operation.receipt = Object.freeze({ generation, sequence: ++sequence, completion, get state() { return operation.state; } });
-    if (protocol === 1) operation.timer = setTimeout(() => { operation.controller.abort(); finish(operation, undefined, true); }, Math.max(0, deadlineAt - Date.now()));
+    if (protocol === 1) expireAtDeadline(operation);
     units += operation.units; waiting.push(operation);
     entries.clear(); for (const [key, value] of candidate) entries.set(key, value);
     notify(); pump(); return operation.receipt;

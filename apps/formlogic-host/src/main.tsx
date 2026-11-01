@@ -177,6 +177,9 @@ window.addEventListener('message', async event => {
       // egress, from the first line of logic that runs (nativeFetch.ts).
       netFetchHandler = createNativeNetFetch(backendCall);
     }
+    // Where a parent confirms saves, a refused one is news. Any other frame keeps its records in
+    // memory by design: told so in red, every app it opens looks broken before it has saved a thing.
+    const savesAcknowledged = appStorage?.acknowledgedPersistence.protocol === 1;
     const media = new Map<string, string>();
     for (const [path, value] of Object.entries(event.data.assets || {})) {
       const url = mediaUrl(path, value);
@@ -191,7 +194,7 @@ window.addEventListener('message', async event => {
     // A bundle's permission.json cannot enable arbitrary network, hardware or sync access.
     // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
     root.render(<Boundary><ThemeProvider defaultDarkMode={event.data.dark === true} declaredMode={declaredThemeMode(manifest)}>
-      <XDBStorageNotice appId={event.data.appId} problemsOnly />
+      {savesAcknowledged && <XDBStorageNotice appId={event.data.appId} problemsOnly />}
       <SoftNWithXDB {...composed} appId={event.data.appId} resumeSavedSyncRoom={false}
         permissionConfig={{ permissions: {} }} scriptExecutionMode="main"
         assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}

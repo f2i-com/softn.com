@@ -474,8 +474,9 @@ function parseLogicFile(path: string, content: string): LogicFile {
  */
 const XDB_FALLBACK_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
+/** Blank is no id: stored, one such row made the whole collection read as damaged. */
 function seedId(id: unknown): string | null {
-  if (typeof id === 'string') return id;
+  if (typeof id === 'string') return /^[\s\u0085]*$/.test(id) ? null : id;
   return typeof id === 'number' && Number.isFinite(id) ? String(id) : null;
 }
 

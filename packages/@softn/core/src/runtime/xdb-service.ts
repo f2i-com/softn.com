@@ -425,6 +425,9 @@ export class XDBService {
 
   // Storage state (audit SN-02)
   private storageState: XDBStorageState = 'ready';
+  /** Collections whose last save was refused, until one goes through. */
+  private refusedSaves = new Set<string>();
+  private freeingDeletedData = false;
   private persistent = true;
   private hydrated = true;
   private issues: XDBStorageIssue[] = [];
@@ -1188,24 +1191,57 @@ export class XDBService {
         save(value);
       } catch (err) {
         // A deleted record keeps its place for sync, which reads its id and stamp, and it kept its
-        // data too. So deleting freed nothing, and in a full store the delete itself was refused:
-        // nothing could ever be removed to make room. Only when the store refuses, its data goes.
+        // data too, so deleting freed nothing and a full store stayed full. Only when the store
+        // refuses, that data goes, here and in the other collections: the limit is shared, so
+        // deleting from one has to make room for the rest.
         const lighter = withoutDeletedData(records);
-        if (lighter === null) throw err;
-        records.splice(0, records.length, ...lighter);
-        save(JSON.stringify(lighter));
+        const freedElsewhere = this.freeDeletedData(collection);
+        if (lighter === null && !freedElsewhere) throw err;
+        if (lighter !== null) records.splice(0, records.length, ...lighter);
+        save(JSON.stringify(records));
       }
       this.acknowledged.delete(collection);
+      // A save went through, so what said it could not is out of date. By collection, and only for
+      // a refused save: a room's note of records not kept is a quota issue too, and stays.
+      if (this.refusedSaves.delete(collection)) {
+        this.issues = this.issues.filter((issue) => !(issue.kind === 'quota' && issue.collection === collection));
+        if (this.storageState === 'degraded' && this.issues.length === 0 && this.corrupt.size === 0) this.storageState = 'ready';
+        this.notifyStatus();
+      }
     } catch (err) {
       // localStorage.setItem is atomic: the previous value is intact. Say so
       // instead of pretending the write happened (audit SN-02).
       const message = err instanceof Error ? err.message : String(err);
+      this.refusedSaves.add(collection);
       this.noteIssue({ kind: 'quota', collection, message: `Could not save "${collection}" (${message}). The previously saved records are unchanged; free storage or export your data.` });
       throw new XDBStorageError('quota', `Could not save "${collection}": ${message}`, collection);
     }
     this.knownCollections.add(collection);
     this.indexCollection(collection, true);
     return persisted;
+  }
+
+  /** The data of deleted records in every collection but `except`. Whether any was given back. */
+  private freeDeletedData(except: string): boolean {
+    if (this.freeingDeletedData) return false;
+    this.freeingDeletedData = true;
+    let freed = false;
+    try {
+      for (const collection of this.getAllCollectionKeys()) {
+        if (collection === except) continue;
+        try {
+          const lighter = withoutDeletedData(this.getAllCollectionData(collection));
+          if (lighter === null) continue;
+          this.setCollectionData(collection, lighter);
+          freed = true;
+        } catch {
+          // A collection that cannot be read or saved keeps what it has; the next may have room.
+        }
+      }
+    } finally {
+      this.freeingDeletedData = false;
+    }
+    return freed;
   }
 
   /** Whether the storage can list its keys, as localStorage can; one that cannot keeps a list of its collections. */
