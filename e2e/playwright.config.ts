@@ -155,7 +155,7 @@ export default defineConfig({
   webServer: externalServer
     ? undefined
     : {
-        command: `node scripts/dev/serve-topology.mjs --port ${port}`,
+        command: `node scripts/dev/serve-topology.mjs --port ${port} --no-publish-limit`,
         cwd: repoRoot,
         url: `${baseURL}/api/health`,
         reuseExistingServer: !isCI,

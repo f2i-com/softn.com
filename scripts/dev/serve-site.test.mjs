@@ -124,6 +124,11 @@ test('serves the site and nothing a host keeps private', async (t) => {
   const route = await get('/web/app/a:b', 'text/html');
   assert.equal(route.status, 200);
   assert.equal(route.body, '<!doctype html><title>runtime</title>');
+  // So may one with a dot in it, an app from a file being at ~<its name>.
+  const dotted = await get('/web/app/~Notes%20v1.2', 'text/html');
+  assert.equal(dotted.status, 200);
+  assert.equal(dotted.body, '<!doctype html><title>runtime</title>');
+  assert.equal((await get('/web/app/~Notes%20v1.2')).status, 404, 'to a browser navigation alone');
 });
 
 test('reaches nothing outside dist/, however the path is spelt', async (t) => {

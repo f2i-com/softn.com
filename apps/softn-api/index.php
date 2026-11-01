@@ -523,6 +523,9 @@ function handle(string $handler, array $args, Request $req): Response
             $headers = [
                 'Cache-Control' => $pinned !== null ? 'public, max-age=86400' : 'no-cache, must-revalidate',
                 'ETag' => '"' . $ver['sha256'] . '"',
+                // The app's own address: this route also answers for a name that
+                // spells the slug, and the runtime must not keep that as its slug.
+                'Content-Location' => "/api/apps/$slug/bundle.softn",
             ] + Response::USER_CONTENT;
             // The validator is the archive's own digest, so a client holding
             // these bytes is told so without them being sent again. Only the

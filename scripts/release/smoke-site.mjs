@@ -161,6 +161,7 @@ await check('directory page route', '/apps', { type: 'text/html', body: (t) => (
 await check('directory page route with a query', '/apps?category=games', { type: 'text/html', body: (t) => (t === landing ? true : 'not the landing shell') });
 await check('runtime nested route', '/web/app/Notes', { type: 'text/html', isolated: true, body: (t) => (t === runtime ? true : 'not the runtime shell') });
 await check('runtime deeper route', '/web/app/Notes/page/settings', { type: 'text/html', isolated: true, body: (t) => (t === runtime ? true : 'not the runtime shell') });
+await check('runtime route with a dot in it', '/web/app/~Notes%20v1.2', { type: 'text/html', isolated: true, body: (t) => (t === runtime ? true : 'not the runtime shell') });
 await check('runtime without trailing slash redirects', '/web', { status: 308 });
 for (const app of ['builder', 'studio']) {
   if (fs.existsSync(path.join(root, app, 'index.html'))) {

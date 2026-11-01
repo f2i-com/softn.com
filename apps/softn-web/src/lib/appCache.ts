@@ -54,6 +54,7 @@ export {
   getCachedAppByOrigin,
   getCachedApps,
   groupByApp,
+  isDirectorySlug,
   recordPermissionGrant,
   removeCachedApp,
   setOfflineState,

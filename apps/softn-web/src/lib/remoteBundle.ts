@@ -19,12 +19,29 @@ const MAX_MB = MAX_REMOTE_BUNDLE_BYTES / (1024 * 1024);
 // editors and the directory.
 export { resolveBundleUrl, bundleNameFromUrl } from '@softn/bundle-format/url';
 
+/** The directory slug a bundle URL names, if it is one of the directory's. */
+export function directorySlugOf(url: URL): string | undefined {
+  const m = url.pathname.match(/^\/api\/apps\/([^/]+)\//);
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A downloaded bundle, and the slug the directory says it is at, if it was the directory's. */
+export interface RemoteBundle {
+  data: Uint8Array;
+  directorySlug?: string;
+}
+
 /**
  * Download a bundle, giving up rather than growing without bound. `name` is
  * what its loading screen calls it while it arrives; without one, the
  * download is not shown (a tab restored in the background).
  */
-export async function fetchRemoteBundle(url: URL, signal?: AbortSignal, name?: string): Promise<Uint8Array> {
+export async function fetchRemoteBundle(url: URL, signal?: AbortSignal, name?: string): Promise<RemoteBundle> {
   // The signal lets a closed tab stop its own download rather than leaving a
   // bundle arriving for a tab that no longer exists.
   const response = await fetch(url.href, { credentials: 'same-origin', signal, cache: 'no-cache' });
@@ -73,5 +90,8 @@ export async function fetchRemoteBundle(url: URL, signal?: AbortSignal, name?: s
     throw new Error(`${url.pathname} is larger than the ${MAX_MB} MB limit for bundles opened by URL.`);
   }
   counted?.finish();
-  return data;
+  // The directory answers an old address, a name, for the app whose slug that
+  // name spells, and only it knows which. Its answer names the app's own address.
+  const canonical = response.headers.get('content-location');
+  return { data, directorySlug: canonical ? directorySlugOf(new URL(canonical, url)) : undefined };
 }

@@ -81,3 +81,18 @@ test('the listing and the play page go on with the built-in categories when cate
   assert.equal(suggested.status, 503);
   assert.equal(fs.readFileSync(file, 'utf8'), '{ half a file');
 });
+
+test('a folder named categories.json is a file that will not read, not one that is not there', skip, async () => {
+  const { s, slug } = await site('softn-page-categories-folder-');
+  const file = path.join(s.dataDir, 'categories.json');
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+
+  const categories = await s.api('GET', '/api/categories');
+  assert.equal(categories.status, 200, categories.text);
+  assert.ok(categories.json.categories.some((row) => row.id === 'games'), 'the built-in categories');
+  assert.equal((await s.api('GET', '/api/apps')).status, 200);
+  assert.equal((await open(s, `/play/${slug}`)).status, 200);
+  assert.equal((await s.api('POST', '/api/categories', { body: { name: 'Puzzles' } })).status, 503);
+  assert.ok(fs.statSync(file).isDirectory(), 'left as it is');
+});

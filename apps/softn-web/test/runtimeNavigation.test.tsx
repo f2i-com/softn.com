@@ -20,7 +20,7 @@ vi.mock('../src/lib/appCache', async (original) => ({
 }));
 
 import App from '../src/App';
-import { getCachedAppByAddress, getCachedAppByName } from '../src/lib/appCache';
+import { cacheApp, getCachedAppByAddress, getCachedAppByName } from '../src/lib/appCache';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -129,7 +129,7 @@ describe('runtime entry and navigation ownership', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Example.softn') ? response(bundle('Example')) : emptyDirectory()));
     await mount('/?open=/Example.softn&embed=1&back=%2F%2Fevil.example%2Fapp');
     expect(window.location.pathname).toBe('/app/~Example');
-    expect(window.location.search).toBe('?embed=1');
+    expect(window.location.search).toBe('?embed=1&from=%2FExample.softn');
     expect(container.querySelector('.softn-frame-home')).toBeNull();
   });
 
@@ -139,7 +139,7 @@ describe('runtime entry and navigation ownership', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Example.softn') ? response(bundle('Example')) : emptyDirectory()));
     await mount('/?open=/Example.softn&embed=1&back=%2F.%2F%2Fevil.example%2Fapp');
     expect(window.location.pathname).toBe('/app/~Example');
-    expect(window.location.search).toBe('?embed=1');
+    expect(window.location.search).toBe('?embed=1&from=%2FExample.softn');
   });
 
   it('keeps a cached local app’s initial page in its canonical URL', async () => {
@@ -187,6 +187,75 @@ describe('runtime entry and navigation ownership', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Spoof.softn') ? response(bundle('notes')) : emptyDirectory()));
     await mount('/?open=/Spoof.softn');
     await vi.waitFor(() => expect(document.title).toBe('notes'));
+    expect(window.location.pathname).toBe('/app/~notes');
+  });
+
+  it('keeps where an app opened by a link came from, so that its address is good in another browser', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/Spoof.softn') ? response(bundle('notes')) : emptyDirectory()));
+    await mount('/?open=/Spoof.softn');
+    await vi.waitFor(() => expect(new URLSearchParams(window.location.search).get('from')).toBe('/Spoof.softn'));
+    expect(window.location.pathname).toBe('/app/~notes');
+  });
+
+  it('opens that address from the link in a browser with no saved copy', async () => {
+    const fetcher = vi.fn(async (input: string | URL) => String(input).endsWith('/Spoof.softn') ? response(bundle('notes')) : emptyDirectory());
+    vi.stubGlobal('fetch', fetcher);
+    await mount('/app/~notes?from=%2FSpoof.softn');
+    await vi.waitFor(() => expect(document.title).toBe('notes'));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/app/~notes?from=%2FSpoof.softn');
+  });
+
+  it('takes no address of another site as where an app came from', async () => {
+    const fetcher = vi.fn(async (_input: string | URL) => emptyDirectory());
+    vi.stubGlobal('fetch', fetcher);
+    await mount('/app/~notes?from=https%3A%2F%2Fevil.example%2Fx.softn');
+    await vi.waitFor(() => expect(container.textContent).toContain('This app isn’t saved in this browser'));
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes('evil.example'))).toBe(false);
+  });
+
+  it('opens the saved copy when the link cannot be reached', async () => {
+    cache.apps = [{ id: 'saved', name: 'notes', version: '1.0.0', bundleData: bundle('notes'), cachedAt: 1, lastOpened: 1 }];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/Spoof.softn')) throw new TypeError('Failed to fetch');
+      return emptyDirectory();
+    }));
+    await mount('/app/~notes?from=%2FSpoof.softn');
+    await vi.waitFor(() => expect(document.title).toBe('notes'));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('takes a directory app\'s slug from the directory, for an old address that only spells it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      if (!String(input).endsWith('/api/apps/Twenty48/bundle.softn')) return emptyDirectory();
+      // Not within the turn its placeholder is drawn in, as no network is.
+      await new Promise((done) => setTimeout(done, 0));
+      return new Response(bundle('The Twenty48 app') as BodyInit, { headers: { 'content-location': '/api/apps/twenty48/bundle.softn' } });
+    }));
+    await mount('/app/Twenty48');
+    await vi.waitFor(() => expect(document.title).toBe('The Twenty48 app'));
+    expect(window.location.pathname).toBe('/app/twenty48');
+    expect(vi.mocked(cacheApp).mock.calls.at(-1)?.[3]).toBe('twenty48');
+  });
+
+  it('gives a slug to the directory\'s app, ahead of a file of that name', async () => {
+    cache.apps = [{ id: 'mine', name: 'notes', version: '1.0.0', bundleData: bundle('My own notes'), cachedAt: 1, lastOpened: 1 }];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      if (!String(input).endsWith('/api/apps/notes/bundle.softn')) return emptyDirectory();
+      await new Promise((done) => setTimeout(done, 0));
+      return new Response(bundle('The directory\'s notes') as BodyInit, { headers: { 'content-location': '/api/apps/notes/bundle.softn' } });
+    }));
+    await mount('/app/notes');
+    await vi.waitFor(() => expect(document.title).toBe('The directory\'s notes'));
+    expect(window.location.pathname).toBe('/app/notes');
+  });
+
+  it('still finds a file from an old bookmark when the directory has no such app', async () => {
+    cache.apps = [{ id: 'mine', name: 'notes', version: '1.0.0', bundleData: bundle('notes'), cachedAt: 1, lastOpened: 1 }];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/api/apps/notes/bundle.softn') ? new Response('{}', { status: 404 }) : emptyDirectory()));
+    await mount('/app/notes');
+    await vi.waitFor(() => expect(document.title).toBe('notes'));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(window.location.pathname).toBe('/app/~notes');
   });
 

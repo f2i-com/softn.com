@@ -168,9 +168,9 @@ the two shipped files say has to be written into the server's own
 configuration, and above all the layout has to be right: a `private/` folder
 under the document root is then protected by nothing but `index.php`'s
 refusal to run. The equivalent for nginx with PHP-FPM, inside the site's
-`server { }`, for an application at the site's root (reasoned from the Apache
-rules and nginx's documented behaviour, not run in the test suite: check it
-as described below):
+`server { }`, for an application at the site's root (what it refuses is run on
+nginx by `scripts/release/server-rules.test.mjs`; PHP-FPM behind it is not, so
+check it as described below):
 
 ```nginx
 root /srv/site/webroot;            # private/ lives beside it, e.g. /srv/site/private
@@ -181,8 +181,12 @@ location ~ /\.(?!well-known(?:/|$)) { deny all; }
 # served even if someone uploads them into the document root.
 location ~ ^/(private|backend)(/|$) { return 404; }
 location ~ \.(softn|key|cache)$ { return 404; }
-# The library is included by index.php; it is not an entry point.
-location = /softn-serve.php { return 404; }
+# What a copied backend or a backup leaves in this folder.
+location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
+# PHP is run only by the location below: softn-serve.php is a library of
+# index.php's, and any other .php name would be sent as its source, which for
+# a stray serve.config.php is the secret.
+location ~ \.php$ { return 404; }
 # The page, the source pack, the entries and the manifest are all index.php.
 # It sends its own headers (nosniff and the two isolation headers): none are
 # added here, since a header sent twice is one a browser may ignore.
@@ -215,8 +219,8 @@ types { application/wasm wasm; text/javascript mjs; }
 For an application in a subdirectory, each path above gains that prefix
 (`location = /app/index.php`, `location = /app/sw.js`, `location /app/` and
 so on). With the optional backend,
-`/api/...` is handed to `api.php` as well and `api.php` itself is not served;
-README-RUNTIME.md in that archive has those two locations.
+`/api/...` is handed to `api.php` as well, and `api.php` itself is not served;
+README-RUNTIME.md in that archive has that location.
 
 ### Check it
 
@@ -224,7 +228,7 @@ From outside, once the site is up. Each of these must answer 403 or 404,
 never 200, whatever the server:
 
 ```
-for path in private/app.softn private/serve.config.php private/secret.key private/digest.cache app.softn softn-serve.php; do
+for path in private/app.softn private/serve.config.php private/secret.key private/digest.cache app.softn softn-serve.php .git/config; do
   curl -s -o /dev/null -w "%{http_code} /$path\n" "https://your.site/$path"
 done
 ```

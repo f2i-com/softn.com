@@ -59,7 +59,7 @@ available without backend files.
 - Check it from outside, once the site is up. Each of these must answer 403 or 404, never 200:
 
   ```
-  for path in backend/private/config.json backend/private/data/application.sqlite backend/app/manifest.json backend/runner.mjs .htaccess; do
+  for path in backend/private/config.json backend/private/data/application.sqlite backend/app/manifest.json backend/runner.mjs .htaccess .git/config; do
     curl -s -o /dev/null -w "%{http_code} /$path\n" "https://your.site/$path"
   done
   curl -s https://your.site/api/meta     # {"development":false,...,"runtime":"zipp-wasm-on-demand",...}
@@ -86,7 +86,7 @@ To upgrade, keep `backend/private/`, `backend/app/` (unless deploying a new app 
 
 ## Nginx
 
-Nginx does not read `.htaccess`, and neither does an Apache with `AllowOverride None`: every rule the archive ships in one has to be written into the server's own configuration, and nothing in `backend/.htaccess` protects a backend that was put under the document root. The equivalent, inside the site's `server { }`, with PHP-FPM (reasoned from the Apache rules and nginx's documented behaviour, not run in the test suite: check it as the security checklist says):
+Nginx does not read `.htaccess`, and neither does an Apache with `AllowOverride None`: every rule the archive ships in one has to be written into the server's own configuration, and nothing in `backend/.htaccess` protects a backend that was put under the document root. The equivalent, inside the site's `server { }`, with PHP-FPM (what it refuses is run on nginx by `scripts/release/server-rules.test.mjs`; PHP-FPM behind it is not, so check it as the security checklist says):
 
 ```nginx
 root /srv/site/webroot;            # backend/ lives outside it, e.g. /srv/site/backend
@@ -94,10 +94,15 @@ index index.html;
 # Dot files, as Apache's FilesMatch "^\." refuses them; /.well-known/ stays
 # served, so a certbot --webroot renewal still finds its challenge.
 location ~ /\.(?!well-known(?:/|$)) { deny all; }
-location = /api.php { return 404; }
+# PHP is run only by the location for /api/ below: anything else with a .php
+# name would be sent as its source.
+location ~ \.php$ { return 404; }
 # A second guard, as backend/.htaccess is on Apache: nothing of these is served
 # even if someone uploads them into the document root.
 location ~ ^/(backend|private)(/|$) { return 404; }
+# What a copied backend or a backup leaves in this folder. runtime.config.json
+# is another name, and is served.
+location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
 location ^~ /api/ {
     # The largest body the runtime takes is a photo upload (5.6 MB); nginx's
     # own default of 1m answered most of them with its HTML 413.
@@ -132,7 +137,7 @@ include mime.types;
 types { application/wasm wasm; text/javascript mjs; }
 ```
 
-The block used to end with the `types { }` line alone, which, pasted into a `server { }`, leaves every other file without its type. It also left out `X-Frame-Options`, `Referrer-Policy` and the `no-cache` rule the `.htaccess` sends, so a visitor could go on running an old app after an update, and the two cross-origin isolation headers (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless`), so an app on the CPU language-model provider ran on one core. Nginx warns of a `duplicate extension` where its own `mime.types` already lists `wasm` or `mjs`; that is harmless. Stock `fastcgi_params` passes `HTTPS`, `REQUEST_SCHEME` and `DOCUMENT_ROOT`; a custom one must pass the first two, or same-site HTTPS pages look like `http://` and are refused as `origin_not_allowed`. Directory listing is off by default in nginx. `php -S` is not a supported server: it neither routes `/api/` nor honours `.htaccess`.
+The block used to end with the `types { }` line alone, which, pasted into a `server { }`, leaves every other file without its type. It also left out `X-Frame-Options`, `Referrer-Policy` and the `no-cache` rule the `.htaccess` sends, so a visitor could go on running an old app after an update, and the two cross-origin isolation headers (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless`), so an app was not isolated there as it is on softn.com. Nginx warns of a `duplicate extension` where its own `mime.types` already lists `wasm` or `mjs`; that is harmless. Stock `fastcgi_params` passes `HTTPS`, `REQUEST_SCHEME` and `DOCUMENT_ROOT`; a custom one must pass the first two, or same-site HTTPS pages look like `http://` and are refused as `origin_not_allowed`. Directory listing is off by default in nginx. `php -S` is not a supported server: it neither routes `/api/` nor honours `.htaccess`.
 
 ## Isolation and operation
 

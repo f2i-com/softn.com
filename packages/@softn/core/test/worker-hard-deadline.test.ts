@@ -102,6 +102,24 @@ describe('a worker that never answers', () => {
     expect(onFatal).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores a press on the app it leaves on screen, as an engine that stopped on the page does', async () => {
+    const onFatal = vi.fn();
+    const runtime = new WorkerScriptRuntime(makeContext(), undefined, 'app', undefined, undefined, {
+      hardDeadlineMs: 10,
+      onFatal,
+    });
+    const worker = FakeWorker.instances[0];
+    const load = runtime.loadScript(script);
+    worker.answer(worker.posted[0].id, { state: {}, functionNames: ['go'], syncFunctionNames: [], computedNames: [], dbMutations: [], lsMutations: [] });
+    const { functions } = await load;
+    const outstanding = functions.go();
+    vi.advanceTimersByTime(11);
+    expect(onFatal).toHaveBeenCalledTimes(1);
+    // Neither is an uncaught rejection: the app says it has stopped.
+    await expect(outstanding).resolves.toBeUndefined();
+    await expect(functions.go()).resolves.toBeUndefined();
+  });
+
   it('refuses later work instead of starting a replacement worker', async () => {
     const runtime = new WorkerScriptRuntime(makeContext(), undefined, 'app', undefined, undefined, {
       hardDeadlineMs: 10,

@@ -213,6 +213,15 @@ ErrorDocument 404 /index.html
   # with the admin key — is never served. The data/.htaccess says so too.
   RewriteRule ^data(?:/|$) - [R=404,L]
 
+  # A dot file or a dot folder is nobody's page, and "real files win" below
+  # would serve it: .git/config, .env. /.well-known/ stays, for a certificate's
+  # challenge. Nor is anything a copy of data/ or a backup leaves in this
+  # folder, config.json with the admin key above all; the site ships no such
+  # file. Only a real one: /web/app/~Notes.zip is an app's address.
+  RewriteRule (?:^|/)\.(?!well-known(?:/|$)) - [R=404,L]
+  RewriteCond %{REQUEST_FILENAME} -f
+  RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ - [R=404,L]
+
   # An app's page, when a browser asks for it, comes through the API so the
   # <meta> tags carry the app's own name and picture: a link pasted into a
   # chat unfurls as the app, not as the site. The site's other pages are the
@@ -246,6 +255,10 @@ ErrorDocument 404 /index.html
   # protects extensionless files requested from known static directories.
   RewriteRule ^(?:assets|demos|softn-files|shared)(?:/|$) - [R=404,L]
   RewriteRule ^(?:web|builder|studio|play)/(?:assets|demos)(?:/|$) - [R=404,L]
+  # Not /web/app/: that is an address in the runtime whatever it says, and an
+  # app from a file is at ~<its name>, so "Notes v1.2" was lost on a reload.
+  # What asks for one that is no browser navigation has its 404 below.
+  RewriteCond %{REQUEST_URI} !^/web/app/
   RewriteCond %{REQUEST_URI} /[^/]*\.[^/]+$
   RewriteRule ^ - [R=404,L]
 
@@ -324,14 +337,30 @@ server {
     # checkers act on.
     error_page 404 /index.html;
 
-    # The directory API is PHP: hand /api/ to PHP-FPM, refuse /data/ outright,
-    # and let an app's page go through the API so its <meta> tags are its own.
-    location /data/ { return 404; }
+    # The directory's state is never served. ^~ is what makes that so: nginx
+    # prefers a regular expression to a plain prefix, and without it the rule
+    # for ordinary files below answered /data/config.json, admin key and all.
+    location = /data { return 404; }
+    location ^~ /data/ { return 404; }
+
+    # The directory API is PHP: hand /api/ to PHP-FPM. An address there is a
+    # route, which serves no file, so it goes ahead of the refusals below.
     location ~ ^/api(/|$) {
         fastcgi_pass unix:/run/php/php-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
         include fastcgi_params;
     }
+
+    # nginx does not protect dot files automatically. Ahead of every rule that
+    # serves a file, because the first regular expression that matches is the
+    # one that answers. /.well-known/ stays, for a certificate's challenge.
+    location ~ /\.(?!well-known(?:/|$)) { return 404; }
+
+    # What a copy of data/ or a backup leaves in this folder, config.json with
+    # the admin key above all. The site ships no such file.
+    location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
+
+    # An app's page goes through the API so its <meta> tags are its own.
     location ~ ^/app/[^/]+/?$ {
         fastcgi_pass unix:/run/php/php-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
@@ -380,9 +409,6 @@ server {
     # location below, which would otherwise answer 404.
     location ~ ^/softn-files/([^/]+\.softn)$ { return 301 /demos/$1; }
 
-    # nginx does not protect Apache control files automatically.
-    location ~ /\.(?!well-known(?:/|$)) { return 404; }
-
     # Force the MIME types that older distro mime.types files may omit.
     location ~* \.wasm$ {
         types { application/wasm wasm; }
@@ -410,6 +436,9 @@ server {
     # (Apache does this with DirectorySlash); the docs are real files, so
     # the general rules below serve them and 404 what is not there.
     location ~ ^/docs/[^/.]+$ { return 301 $uri/; }
+    # An address in the runtime whatever it says: an app from a file is at
+    # ~<its name>, so "Notes v1.2" must not reach the rules for files above.
+    location ^~ /web/app/ { try_files $uri @softn_web; }
     location /web/ { try_files $uri $uri/ @softn_web; }
     location /builder/ { try_files $uri $uri/ @softn_builder; }
     location /studio/ { try_files $uri $uri/ @softn_studio; }
@@ -468,7 +497,8 @@ On first use the API writes \`data/config.json\` — which holds the site's
 **admin key**${withDemos ? ' — and publishes the example bundles into the directory' : ''}. Keep that file
 private (it is, by the rules above) and use the key to moderate: approve or
 rename suggested categories, hide apps, remove comments. Back the directory up
-by copying \`data/\`; move it by copying it; reset it by emptying it.
+by copying \`data/\` to somewhere outside the document root, because the copy
+holds the same key; move it by copying it; reset it by emptying it.
 
 ## Adding apps
 
@@ -581,8 +611,11 @@ configuration, change its \`server_name\` and \`root\`, then validate and reload
     sudo systemctl reload nginx
 
 Add TLS in nginx or at your hosting proxy/CDN. HTTPS is required for service
-workers, browser permissions and cross-origin isolation (which lets a local
-language model use every CPU core) outside localhost.
+workers, browser permissions and cross-origin isolation outside localhost.
+
+Keep the \`location\` lines for \`/data\` as they are. nginx prefers a regular
+expression to a plain prefix, so \`location /data/\` without its \`^~\` serves
+the admin key.
 
 ## What is included
 
@@ -605,6 +638,13 @@ with the site's own not-found page as the body; only \`/\`, \`/apps\`,
 \`/app/<slug>\` and \`/publish\` are the site's pages. Some demo networking or AI
 features may need their separately configured service or provider, but the
 website and browser apps themselves are static.
+
+Then ask for what must never be served. Each of these must answer 403 or 404,
+never 200, whichever server you use:
+
+    for path in data/config.json data/README.txt .git/config .env; do
+      curl -s -o /dev/null -w "%{http_code} /$path\\n" "https://your.site/$path"
+    done
 `;
 
 function run(args, env) {

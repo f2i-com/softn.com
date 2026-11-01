@@ -5,6 +5,7 @@
  *   node scripts/dev/serve-topology.mjs                 (dist/, a free port)
  *   node scripts/dev/serve-topology.mjs --port 1425
  *   node scripts/dev/serve-topology.mjs --root smoke-root --keep-data
+ *   node scripts/dev/serve-topology.mjs --no-publish-limit   (as the e2e run starts it)
  *
  * The end-to-end gate (e2e/) needs the site, the runtime, Studio, Builder,
  * the play shell and the directory API on ONE origin at their deployed
@@ -91,6 +92,12 @@ const port = requestedPort > 0 ? requestedPort : await freePort();
 const base = `http://${host}:${port}`;
 // A folder to keep is named without an owner, so no later start removes it.
 const dataDir = keepData ? fs.mkdtempSync(path.join(os.tmpdir(), 'softn-topology-')) : ownedTempDir('softn-topology-');
+// Every browser of the matrix publishes from this one address into this one
+// directory, and ten an hour is a visitor's limit, not a test run's. The API
+// adds its keys to a config.json that has none.
+if (args.includes('--no-publish-limit')) {
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ limits: { publish: [100000, 3600] } }));
+}
 
 // PHP's built-in server answers one request at a time unless told to fork
 // workers, and a page of the runtime asks for dozens of chunks at once.

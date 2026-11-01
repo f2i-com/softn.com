@@ -190,6 +190,10 @@ export async function getCachedAppByName(name: string): Promise<CachedApp | null
 /** An address that is a slug as the directory writes one (Catalog::validSlug). */
 const DIRECTORY_SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+export function isDirectorySlug(address: string): boolean {
+  return DIRECTORY_SLUG.test(address);
+}
+
 /**
  * The saved app an address of the runtime means (appUrl's tabAddress): the
  * directory's app of that slug, or an app with no directory page by its name,

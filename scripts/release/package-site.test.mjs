@@ -263,7 +263,7 @@ test('the nginx config maps the same pages, 404s the rest, and uses the site as 
   assert.ok(site[1].includes('if ($softn_site_page = 0) { return 404; }'));
   assert.ok(site[1].includes('try_files /index.html =404;'));
   for (const kept of [
-    'location /data/ { return 404; }',
+    'location ^~ /data/ { return 404; }',
     'location ~ ^/api(/|$) {',
     'location ~ ^/app/[^/]+/?$ {',
     'location ~ ^/play/[^/]+/?$ {',
@@ -364,7 +364,17 @@ test("the API directory's own files are never served by either host", () => {
   assert.ok(!/try_files|alias|root /.test(location[1]), 'the /api location serves no file');
   const nginxApi = /^\/api(\/|$)/;
   for (const path of PRIVATE_PATHS) assert.ok(nginxApi.test(`/${path}`), `nginx hands "/${path}" to the API script`);
-  assert.ok(nginx.includes('location /data/ { return 404; }'));
+  // ^~ is the refusal. nginx prefers a regular expression to a plain prefix, so
+  // without it the rule for ordinary files served /data/config.json. server-rules
+  // asks a real nginx; this holds it on a machine that has none.
+  assert.ok(nginx.includes('location = /data { return 404; }'));
+  assert.ok(nginx.includes('location ^~ /data/ { return 404; }'));
+  assert.doesNotMatch(nginx, /location \/data/, 'no plain prefix for /data');
+  assert.ok(nginx.indexOf('location ^~ /data/') < nginx.indexOf('location ~'), 'before any regular expression');
+  // An address under /api/ is a route first, and dot files go before anything that serves one.
+  const dotRule = nginx.indexOf('location ~ /\\.(?!well-known');
+  assert.ok(nginx.indexOf('location ~ ^/api(/|$)') < dotRule, 'the API before the refusals');
+  assert.ok(dotRule < nginx.indexOf('location ~ ^/play/'), 'dot files before the first rule that serves one');
   // The CLI helpers refuse HTTP themselves.
   for (const helper of ['backup.php', 'seed-folder.php']) {
     const source = fs.readFileSync(new URL(`../../apps/softn-api/${helper}`, import.meta.url), 'utf8');

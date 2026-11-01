@@ -31,8 +31,8 @@ export function pageBundle({ id, name, html, permissions = {} }: { id: string; n
 }
 
 /** A .softn bundle of one `.ui` page, with `.logic` beside it if given, as a buffer for a file input. */
-export function uiBundle({ name, ui, logic }: { name: string; ui: string; logic?: string }): Buffer {
-  const manifest = { name, version: '1.0.0', description: 'Built by the e2e gate.', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: logic === undefined ? [] : ['logic/main.logic'] } };
+export function uiBundle({ name, ui, logic, config }: { name: string; ui: string; logic?: string; config?: Record<string, unknown> }): Buffer {
+  const manifest = { name, version: '1.0.0', description: 'Built by the e2e gate.', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: logic === undefined ? [] : ['logic/main.logic'] }, ...(config ? { config } : {}) };
   const files: Record<string, string> = {
     'manifest.json': JSON.stringify(manifest, null, 2),
     'permission.json': JSON.stringify({ permissions: {} }),

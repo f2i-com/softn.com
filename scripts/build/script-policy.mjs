@@ -62,11 +62,20 @@ export function inlineScripts(html) {
  * capturing listener is how a script element's `error` is heard from outside
  * it (the event does not bubble), and it stands down once the page has drawn.
  * Only the entry's failure lands here: a chunk loaded later is the app's to report.
+ *
+ * A file cut short does arrive, so its element has no `error`: what it does not
+ * parse reaches the window as a SyntaxError that names the file. Only that: a
+ * script that ran and threw has arrived, and is not what this says. A SyntaxError
+ * thrown as it ran (a bad JSON.parse) reads the same, and that page has drawn
+ * nothing either. Read from the message, the one place all three engines put it
+ * for a module.
  */
 export const ENTRY_WATCH =
   "addEventListener('error',function(event){" +
   "var script=event.target,root=document.getElementById('root');" +
-  "if(!root||!script||script.tagName!=='SCRIPT'||script.type!=='module')return;" +
+  "var missing=script&&script.tagName==='SCRIPT'&&script.type==='module';" +
+  "var broken=/SyntaxError/.test(event.message||'')&&(event.filename||'').indexOf(location.origin+'/')===0&&/\\.m?js([?#]|$)/.test(event.filename);" +
+  "if(!root||!(missing||broken))return;" +
   "if(root.childElementCount>0&&!document.getElementById('boot'))return;" +
   "var box=document.createElement('div'),text=document.createElement('p'),again=document.createElement('button');" +
   "box.setAttribute('role','alert');" +

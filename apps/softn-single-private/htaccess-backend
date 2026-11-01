@@ -12,6 +12,15 @@ DirectoryIndex index.php
 <FilesMatch "\.(softn|key|cache)$">
     Require all denied
 </FilesMatch>
+# FilesMatch sees a file's own name and no folder of its path: it refuses .env
+# and not .git/config. /.well-known/ stays, for a certificate's challenge. The
+# second line is what a copied backend or a backup leaves here. Neither looks
+# at /api/: these run ahead of the rewrite below, and an address there is the
+# app's own route, whatever it ends in.
+<IfModule mod_alias.c>
+    RedirectMatch 404 "^(?!.*/api/).*/\.(?!well-known(?:/|$))"
+    RedirectMatch 404 "^(?!.*/api/).*(?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
+</IfModule>
 AddType application/wasm .wasm
 AddType text/javascript .mjs
 # The optional backend: /api/... is answered by api.php once backend/ is set

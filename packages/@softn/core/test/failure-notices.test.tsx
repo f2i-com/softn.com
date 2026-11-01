@@ -199,6 +199,8 @@ describe('a failure after the app has started', () => {
     expect(notices()).toHaveLength(1);
     expect(notices()[0].textContent).toContain('This app has stopped');
     expect(container.querySelector('#count')?.textContent).not.toBe('10');
+    // Nothing else says why the app ignores every press, or leads back from it.
+    expect([...notices()[0].querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Reload']);
 
     await act(async () => [...notices()[0].querySelectorAll('button')].find((b) => b.textContent === 'Reload')!.click());
     // A fresh start, as a reload's: what the page held has gone, and a new engine answers.
@@ -218,6 +220,65 @@ describe('a failure after the app has started', () => {
     });
     expect(notices()).toHaveLength(0);
     expect(console.error).toHaveBeenCalledWith('[SoftN] Error executing function go:', expect.anything());
+  });
+});
+
+describe('a save the browser refused', () => {
+  const saves = () => [...container.querySelectorAll('[data-softn-notice="persistence"]')];
+  const dismissSave = () => act(async () => [...saves()[0].querySelectorAll('button')].find((b) => b.textContent === 'Dismiss')!.click());
+  const SAVING = 'function go() { count = count + 1; try { localStorage.setItem("best", String(count)); } catch (e) {} } function other() { try { localStorage.setItem("board", "x"); } catch (e) {} }';
+
+  it('is said once for a key, however often the app saves it', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Over quota', 'QuotaExceededError');
+    });
+    await app(SAVING);
+    await press('go');
+    await until(() => saves().length > 0, 'a bar');
+    expect(saves()[0].textContent).toContain('could not save "best" (QuotaExceededError)');
+    expect(saves()[0].textContent).toContain('free up storage');
+    await dismissSave();
+    for (let i = 0; i < 5; i++) await press('go');
+    await until(() => container.querySelector('#count')?.textContent === '6', 'every press ran');
+    expect(saves()).toHaveLength(0);
+    // Another key is another thing lost.
+    await press('other');
+    await until(() => saves().length > 0, 'the other key');
+    expect(saves()[0].textContent).toContain('could not save "board"');
+  });
+
+  it('does not tell a person to free up storage when room is not what is missing', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('The operation is insecure.', 'SecurityError');
+    });
+    await app(SAVING);
+    await press('go');
+    await until(() => saves().length > 0, 'a bar');
+    expect(saves()[0].textContent).toContain('refusing this site\'s storage');
+    expect(saves()[0].textContent).not.toContain('free up storage');
+  });
+
+  it('leaves it to the store\'s own notice when the browser refuses site data altogether', async () => {
+    const real = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
+    // As Firefox refuses it, with cookies blocked: the property itself throws.
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('The operation is insecure.', 'SecurityError');
+      },
+    });
+    try {
+      await app(SAVING);
+      await press('go');
+      await until(() => container.querySelector('#count')?.textContent === '1', 'the press ran');
+      await press('other');
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(saves()).toHaveLength(0);
+    } finally {
+      Object.defineProperty(window, 'localStorage', real);
+    }
   });
 });
 

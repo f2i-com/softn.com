@@ -58,8 +58,9 @@ function mayUseSpaFallback(pathname) {
   // A missing static asset must stay a 404 even when a browser sends
   // `Accept: text/html` (for example, when an asset URL is pasted in a tab).
   // Returning an SPA shell with status 200 hides broken builds and produces
-  // confusing MIME errors instead of the real missing-file response.
-  if (/\/[^/]*\.[^/]+$/.test(pathname)) return false;
+  // confusing MIME errors instead of the real missing-file response. Not under
+  // /web/app/, as on the hosts: an address in the runtime is no file, whatever it says.
+  if (/\/[^/]*\.[^/]+$/.test(pathname) && !pathname.startsWith('/web/app/')) return false;
   if (/^\/(?:assets|demos|softn-files|shared)(?:\/|$)/.test(pathname)) return false;
   if (/^\/(?:web|builder|studio)\/(?:assets|demos)(?:\/|$)/.test(pathname)) return false;
   return true;

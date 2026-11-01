@@ -13,6 +13,11 @@ it('refreshes directory apps and unknown names remotely', async () => {
   expect(remote).toHaveBeenNthCalledWith(1, { directorySlug: 'public-app' });
   expect(remote).toHaveBeenNthCalledWith(2, undefined);
 });
+it('leaves a local import of that name to the fallback when the address is the directory\'s', async () => {
+  const local=vi.fn(async()=> 'Local app'), remote=vi.fn(async()=> 'Public app');
+  expect(await reopenBundle(async()=>({directorySlug:undefined}),local,remote,true)).toBe('Public app');
+  expect(local).not.toHaveBeenCalled();
+});
 it('can still fetch when cache access fails', async () => {
   expect(await reopenBundle(async()=>{throw Error('cache unavailable')},async()=>null,async()=> 'Public app')).toBe('Public app');
 });

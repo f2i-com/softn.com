@@ -243,7 +243,12 @@ final class Catalog
     }
     public static function readJson(string $path, bool $cache = false): array {
         if (is_link($path)) throw new ApiError(503, 'JSON metadata must not be a symlink.');
-        if (!is_file($path)) return [];
+        if (!is_file($path)) {
+            // Not there is nothing yet. A folder of that name is the same file
+            // that will not read, and read as nothing it was then written to.
+            if (!$cache && is_dir($path)) throw new ApiError(503, 'JSON metadata must be a regular file.');
+            return [];
+        }
         try {
             $value = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
             if (!is_array($value)) throw new RuntimeException('Expected a JSON object.');
@@ -284,9 +289,10 @@ final class Catalog
             // group PHP isn't in would refuse every write to it, in silence for
             // a play. Said in the log, and the staged file is no more open.
             clearstatcache(true, $tmp);
-            $staged = function_exists('stat') ? @stat($tmp) : null;
-            if ($staged === false) throw new ApiError(503, 'Cannot inspect staged metadata.');
-            if ($staged !== null && $previous !== false && $staged['gid'] !== $previous['gid'] && !(function_exists('chgrp') && @chgrp($tmp, $previous['gid'])))
+            // Only asked in order to keep the group, so a miss doesn't cost the write: on Windows it
+            // came back false now and then with PHP processes racing on one record.
+            $staged = function_exists('stat') ? @stat($tmp) : false;
+            if ($staged !== false && $previous !== false && $staged['gid'] !== $previous['gid'] && !(function_exists('chgrp') && @chgrp($tmp, $previous['gid'])))
                 error_log("softn-api: $path could not keep its group; check the PHP service account and shared group");
             if (!(function_exists('chmod') && @chmod($tmp, $mode))) error_log("softn-api: $path could not keep its permissions");
             if (!rename($tmp, $path)) throw new ApiError(503, 'Cannot replace metadata.');

@@ -573,6 +573,10 @@ function describePersistenceFailure(failure: PersistenceFailure): string {
       : failure.operation === 'removeItem'
         ? `could not remove its saved "${failure.key}"`
         : `could not save "${failure.key}"`;
+  // Room is not what is missing here, so freeing some up would not help.
+  if (failure.error.name === 'SecurityError') {
+    return `This app ${what} (${cause}): the browser is refusing this site's storage, so what it saves now is not kept. Allow this site's data in the browser's settings to keep it.`;
+  }
   return `This app ${what} (${cause}). What it saved before is unchanged; free up storage in the browser, or export the app's data before going on.`;
 }
 
@@ -599,7 +603,8 @@ function PersistenceNotice({
   kind = 'persistence',
 }: {
   message: string;
-  onDismiss: () => void;
+  /** Left out where the bar is the only way back: an app that has stopped. */
+  onDismiss?: () => void;
   /** The one thing to do about it, beside dismissing it. */
   action?: { label: string; run: () => void };
   /**
@@ -639,9 +644,11 @@ function PersistenceNotice({
           {action.label}
         </button>
       )}
-      <button type="button" onClick={onDismiss} style={buttonStyle}>
-        {kind === 'alert' ? 'OK' : 'Dismiss'}
-      </button>
+      {onDismiss && (
+        <button type="button" onClick={onDismiss} style={buttonStyle}>
+          {kind === 'alert' ? 'OK' : 'Dismiss'}
+        </button>
+      )}
     </div>
   );
 }
@@ -762,7 +769,7 @@ export function SoftNRenderer({
   // A save the browser refused, in words for the person using the app. The
   // script is told by an exception; without this the person is told by
   // nothing, and finds out when they come back for the save.
-  const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
+  const [persistenceNotice, setPersistenceNotice] = useState<{ text: string; save: string } | null>(null);
   // What the page's `alert()` last said, shown in the app as the app's.
   const [appAlert, setAppAlert] = useState<string | null>(null);
   const showAlert = useCallback((message: string) => setAppAlert(message), []);
@@ -773,8 +780,9 @@ export function SoftNRenderer({
   const [parseNoticeGone, setParseNoticeGone] = useState<SoftNDocument | null>(null);
   // What keeps a script that fails over and over to one bar: when it last
   // changed, what the person has dismissed, and whether the app has stopped,
-  // which nothing after it can add to.
-  const failuresSeen = useRef({ at: 0, dismissed: new Set<string>(), stopped: false });
+  // which nothing after it can add to. `saves` is the saves they have dismissed:
+  // a game saves on every move, and each move brought the same bar back.
+  const failuresSeen = useRef({ at: 0, dismissed: new Set<string>(), stopped: false, saves: new Set<string>() });
   const failureNoticesRef = useRef(failureNotices);
   failureNoticesRef.current = failureNotices;
   // How many times the person has started a stopped app again (see restartApp).
@@ -1020,6 +1028,17 @@ export function SoftNRenderer({
   // (see app-scope.tsx); the instance is memoised per appId so a re-render
   // cannot move it, and the provider goes on at the render below.
   const scopedXdb = useMemo(() => xdbProp ?? getXDB(appId), [xdbProp, appId]);
+  const scopedXdbRef = useRef(scopedXdb);
+  scopedXdbRef.current = scopedXdb;
+
+  const showPersistenceFailure = useCallback((failure: PersistenceFailure) => {
+    // Site data refused: the store's notice already says that nothing is kept,
+    // for the whole app, and this bar would only say it again under that one.
+    if (failure.error.name === 'SecurityError' && scopedXdbRef.current.getStorageStatus().state === 'memory-only') return;
+    const save = `${failure.operation}:${failure.key}`;
+    if (failuresSeen.current.saves.has(save)) return;
+    setPersistenceNotice((shown) => shown ?? { text: describePersistenceFailure(failure), save });
+  }, []);
 
   // Peer-to-peer sync is for the app on screen (sync-activity.ts): its rooms
   // wait while the host shows another of its apps, rejoin when it shows this
@@ -1047,9 +1066,12 @@ export function SoftNRenderer({
     // A refused save belonged to the runtime being replaced, and so did a failure.
     setPersistenceNotice(null);
     setScriptNotice(null);
-    failuresSeen.current = { at: 0, dismissed: new Set(), stopped: false };
+    failuresSeen.current = { at: 0, dismissed: new Set(), stopped: false, saves: new Set() };
     const onScriptFailure = (failure: ScriptFailure) => {
       if (!stale) showScriptFailure(failure);
+    };
+    const onPersistenceFailure = (failure: PersistenceFailure) => {
+      if (!stale && mountedRef.current) showPersistenceFailure(failure);
     };
 
     if (resolvedSource) {
@@ -1397,10 +1419,7 @@ export function SoftNRenderer({
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
-                onPersistenceFailure: (failure) => {
-                  if (stale || !mountedRef.current) return;
-                  setPersistenceNotice(describePersistenceFailure(failure));
-                },
+                onPersistenceFailure,
               },
               bundleFileProvider,
               runtimeFunctions
@@ -1448,17 +1467,24 @@ export function SoftNRenderer({
                 // bundled model): a worker-mode app read none before.
                 assetResolver: readAsset,
                 externalFunctions: runtimeFunctions,
-                // A worker that missed its hard deadline has been terminated;
-                // the app is shown as failed rather than left frozen.
+                // A worker that missed its hard deadline, or whose engine
+                // stopped, has been terminated. An app that had started is on
+                // screen and goes on being: the bar says so with the way back,
+                // as for an engine on this thread, where the card took the app
+                // away and left only Close. One that never started, or a host
+                // that keeps its own list, has the card as before.
                 onFatal: (err) => {
                   if (stale || !mountedRef.current) return;
-                  setState((prev) => ({ ...prev, error: err }));
-                  onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
+                  const failure = err instanceof Error ? err : new Error(String(err));
+                  if (scriptLanded && failureNoticesRef.current) {
+                    const silent = failure.message.startsWith('worker_hard_deadline');
+                    showScriptFailure({ where: 'the app', message: silent ? 'a call did not finish in time' : 'a call exceeded its budget', stopped: true });
+                  } else {
+                    setState((prev) => ({ ...prev, error: err }));
+                  }
+                  onErrorRef.current?.(failure);
                 },
-                onPersistenceFailure: (failure) => {
-                  if (stale || !mountedRef.current) return;
-                  setPersistenceNotice(describePersistenceFailure(failure));
-                },
+                onPersistenceFailure,
               }
             );
           } else if (effectiveMode === 'worker') {
@@ -1500,10 +1526,7 @@ export function SoftNRenderer({
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
-                onPersistenceFailure: (failure) => {
-                  if (stale || !mountedRef.current) return;
-                  setPersistenceNotice(describePersistenceFailure(failure));
-                },
+                onPersistenceFailure,
               },
               bundleFileProvider,
               runtimeFunctions
@@ -1543,10 +1566,7 @@ export function SoftNRenderer({
                 pythonProject: runtimePython,
                 observedStateNames,
                 drawnNames,
-                onPersistenceFailure: (failure) => {
-                  if (stale || !mountedRef.current) return;
-                  setPersistenceNotice(describePersistenceFailure(failure));
-                },
+                onPersistenceFailure,
               },
               bundleFileProvider,
               runtimeFunctions
@@ -1806,6 +1826,7 @@ export function SoftNRenderer({
     // Stable: made once with useCallback.
     showAlert,
     showScriptFailure,
+    showPersistenceFailure,
     readAsset,
     restarts,
     runtimePython,
@@ -2302,8 +2323,11 @@ export function SoftNRenderer({
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       {persistenceNotice && (
         <PersistenceNotice
-          message={persistenceNotice}
-          onDismiss={() => setPersistenceNotice(null)}
+          message={persistenceNotice.text}
+          onDismiss={() => {
+            failuresSeen.current.saves.add(persistenceNotice.save);
+            setPersistenceNotice(null);
+          }}
         />
       )}
       {appAlert !== null && (
@@ -2321,10 +2345,16 @@ export function SoftNRenderer({
           kind="failure"
           message={scriptNotice.text}
           action={scriptNotice.stopped ? { label: 'Reload', run: restartApp } : undefined}
-          onDismiss={() => {
-            if (scriptNotice.where) failuresSeen.current.dismissed.add(scriptNotice.where);
-            setScriptNotice(null);
-          }}
+          // A stopped app ignores every press, so this bar is what says why and
+          // the only way back: gone, it left a dead app with nothing to say so.
+          onDismiss={
+            scriptNotice.stopped
+              ? undefined
+              : () => {
+                  if (scriptNotice.where) failuresSeen.current.dismissed.add(scriptNotice.where);
+                  setScriptNotice(null);
+                }
+          }
         />
       )}
       {/* What the app's CSS is kept inside (scope-css.ts). It draws no box of

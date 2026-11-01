@@ -107,8 +107,29 @@ describe('a same-origin path that redirects away', () => {
 
   it('is allowed when the redirect stays on this origin', async () => {
     vi.stubGlobal('fetch', landingAt(`${ORIGIN}/demos/snakegame.softn`));
-    const bytes = await fetchRemoteBundle(new URL(`${ORIGIN}/demos/SnakeGame.softn`));
-    expect(Array.from(bytes.slice(0, 2))).toEqual([0x50, 0x4b]);
+    const { data } = await fetchRemoteBundle(new URL(`${ORIGIN}/demos/SnakeGame.softn`));
+    expect(Array.from(data.slice(0, 2))).toEqual([0x50, 0x4b]);
+  });
+});
+
+describe('the slug of a bundle from the directory', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const answering = (headers: Record<string, string>) =>
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([0x50, 0x4b]), { headers })));
+
+  it('is the one its answer names, not the spelling that was asked for', async () => {
+    answering({ 'content-location': '/api/apps/twenty48/bundle.softn' });
+    const { directorySlug } = await fetchRemoteBundle(new URL(`${ORIGIN}/api/apps/Twenty48/bundle.softn`));
+    expect(directorySlug).toBe('twenty48');
+  });
+
+  it('is nothing from a server that does not say, and the address stands', async () => {
+    answering({});
+    const { directorySlug } = await fetchRemoteBundle(new URL(`${ORIGIN}/api/apps/twenty48/bundle.softn`));
+    expect(directorySlug).toBeUndefined();
   });
 });
 

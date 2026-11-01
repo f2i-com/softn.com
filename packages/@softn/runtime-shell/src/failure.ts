@@ -116,10 +116,12 @@ const RULES: Rule[] = [
   },
   {
     // An app that came from a file has an address in the browser that opened
-    // it and nowhere else, so a link to one reaches nobody else's.
+    // it and nowhere else, so a link to one reaches nobody else's. One opened
+    // by a link carries that link (appUrl's tabLink), unless it was reopened
+    // from Home, which has only the saved copy.
     test: /is not saved in this browser$/,
     title: 'This app isn’t saved in this browser',
-    hint: 'It was opened from a file, so its address works only where that was done. To run it here, open the .softn file.',
+    hint: 'Its address works only where it was opened. To run it here, open the .softn file, or the link it came from.',
     anotherFile: true,
   },
   {

@@ -331,6 +331,17 @@ test('metadata, versions and the thumbnail need the edit key', skip, async () =>
   assert.equal(notImage.status, 400);
 });
 
+test('a bundle says the address it is at, to a request that only spelt its slug', skip, async () => {
+  const url = `${base}/api/apps/Test%20Snake/bundle.softn`;
+  const spelt = await fetch(url, { redirect: 'manual' });
+  assert.equal(spelt.status, 200);
+  assert.equal(spelt.headers.get('content-location'), '/api/apps/test-snake/bundle.softn');
+  await spelt.arrayBuffer();
+  const same = await fetch(url, { redirect: 'manual', headers: { 'If-None-Match': spelt.headers.get('etag') } });
+  assert.equal(same.status, 304);
+  assert.equal(same.headers.get('content-location'), '/api/apps/test-snake/bundle.softn');
+});
+
 test('a bundle revalidates by ETag, answers HEAD, and holds a digest-addressed URL for a day', skip, async () => {
   // test-snake has two versions by now; the bare URL is v2.
   const url = `${base}/api/apps/test-snake/bundle.softn`;

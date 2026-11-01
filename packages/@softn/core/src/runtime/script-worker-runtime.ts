@@ -887,12 +887,14 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       try {
         out = await this.call<EntryResult & { result: unknown }>('call_fn', payload);
       } catch (err) {
-        // A worker that is gone stays the caller's to hear about. Anything
-        // else is a call that failed, said and answered as the main-thread
-        // runtime says and answers it, so the app goes on: the rejection
-        // used to reach a caller that does not wait on it, and surfaced as
-        // an uncaught rejection that named no function.
-        if (this.terminated) throw err;
+        // A worker that is gone has been told to the host (onFatal), and a
+        // press on the app it leaves on screen is ignored, as one is when the
+        // engine stops on the main thread. Anything else is a call that
+        // failed, said and answered as the main-thread runtime says and
+        // answers it, so the app goes on. Thrown, either reached a caller that
+        // does not wait on it, and surfaced as an uncaught rejection that
+        // named no function.
+        if (this.terminated) return undefined;
         console.error(`[SoftN] Error executing function ${name}:`, err instanceof Error ? err.message : String(err));
         this.reportFailure(name, err);
         return undefined;

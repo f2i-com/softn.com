@@ -34,6 +34,7 @@ import {
   describeSnapshotCounts,
   hasStoredData,
   holdsNothingOfItsOwn,
+  isDirectorySlug,
   isOfflineReady,
   getCachedAppByAddress,
   getCachedAppByName,
@@ -45,8 +46,8 @@ import {
 } from './lib/appCache';
 import { displayNameFor, findCachedAppTab, findTabForAddress } from './lib/tabIdentity';
 import { openBundle, type OpenBundleHost, type OpenBundleRequest, type OpenTab } from './lib/openBundle';
-import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress } from './lib/appUrl';
-import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
+import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress, tabLink } from './lib/appUrl';
+import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl, directorySlugOf } from './lib/remoteBundle';
 
 // ── URL Routing Helpers ──────────────────────────────────────────
 
@@ -174,6 +175,8 @@ function readEntry(): {
   embedded: boolean;
   /** Where Close goes when the app was opened from another page of this site. */
   backTo: string | null;
+  /** Where the app at this address was opened from, by a link (appUrl's tabLink). */
+  linkedFrom: string | null;
 } {
   restoreForwardedPath();
   const params = new URLSearchParams(window.location.search);
@@ -185,10 +188,10 @@ function readEntry(): {
   const openValue = params.get('open');
   if (openValue === 'handoff') {
     const { id } = handoffIdFrom(window.location.search, 'runtime');
-    return { openValue: id ? `handoff:${id}` : 'handoff', appName: null, page: null, embedded, backTo };
+    return { openValue: id ? `handoff:${id}` : 'handoff', appName: null, page: null, embedded, backTo, linkedFrom: null };
   }
-  if (openValue) return { openValue, appName: null, page: null, embedded, backTo };
-  return { openValue: null, ...parseAppUrl(), embedded, backTo };
+  if (openValue) return { openValue, appName: null, page: null, embedded, backTo, linkedFrom: null };
+  return { openValue: null, ...parseAppUrl(), embedded, backTo, linkedFrom: sameOriginPath(params.get('from')) };
 }
 
 /** A line on Home, and the one thing to do about it when there is one. */
@@ -198,17 +201,6 @@ interface HomeNotice {
   warning?: boolean;
   /** Stop a running app, which is what the line asks for. */
   stop?: { tabId: string; label: string };
-}
-
-/** The directory slug a bundle URL names, if it is one of the directory's. */
-function directorySlugOf(url: URL): string | undefined {
-  const m = url.pathname.match(/^\/api\/apps\/([^/]+)\//);
-  if (!m) return undefined;
-  try {
-    return decodeURIComponent(m[1]);
-  } catch {
-    return undefined;
-  }
 }
 
 // ── App Component ────────────────────────────────────────────────
@@ -336,12 +328,15 @@ function App(): React.ReactElement {
   }, []);
 
   // Keep validated entry context through rewrites and reloads. The one-shot
-  // open/handoff parameters are removed, but Close must still know its way back.
+  // open/handoff parameters are removed, but Close must still know its way back,
+  // and an app opened by a link keeps where it came from, so that its address
+  // is good in a browser that has no saved copy.
   const entryUrl = useCallback(
-    (path: string) => {
+    (path: string, linkedFrom?: string | null) => {
       const params = new URLSearchParams();
       if (embedded) params.set('embed', '1');
       if (backTo) params.set('back', backTo);
+      if (linkedFrom) params.set('from', linkedFrom);
       const query = params.toString();
       return query ? `${path}?${query}` : path;
     },
@@ -590,10 +585,14 @@ function App(): React.ReactElement {
         loadAbortsRef.current.set(skeletonTabId, controller);
 
         let data: Uint8Array;
+        // The slug the directory answered with, for one the address only spelt.
+        let slug = directorySlug;
         try {
           // Named for the loading screen's progress only when this tab is the
           // one on screen: a tab restored in the background is not.
-          data = await fetchRemoteBundle(url, controller.signal, isForeground() ? displayName : undefined);
+          const fetched = await fetchRemoteBundle(url, controller.signal, isForeground() ? displayName : undefined);
+          data = fetched.data;
+          slug = fetched.directorySlug ?? directorySlug;
         } catch (err) {
           // An abort is the user closing the tab, not a failure to report.
           if (controller.signal.aborted) return null;
@@ -620,7 +619,7 @@ function App(): React.ReactElement {
             data,
             fileName: `${displayName}.softn`,
             initialPage,
-            directorySlug,
+            directorySlug: slug,
             placeholderId: skeletonTabId,
             isForeground,
           });
@@ -1012,7 +1011,7 @@ function App(): React.ReactElement {
     if (activeTabIdRef.current === tabId) {
       const tab = openTabsRef.current.find((t) => t.id === tabId);
       if (tab) {
-        const url = entryUrl(buildAppUrl(tabAddress(tab), page));
+        const url = entryUrl(buildAppUrl(tabAddress(tab), page), tabLink(tab));
         if (currentUrl() !== url) {
           window.history.replaceState({}, '', url);
         }
@@ -1029,10 +1028,9 @@ function App(): React.ReactElement {
 
     if (urlInit.openValue) {
       // ?open= is a one-shot instruction: once it has been acted on the URL
-      // becomes the ordinary /app/<name> form, so a reload replays the bundle
-      // out of the cache instead of downloading it a second time — and a value
-      // that was rejected does not sit in the address bar reproducing the same
-      // error on every refresh.
+      // becomes the ordinary /app/<address> form, with where it came from beside
+      // it, and a value that was rejected does not sit in the address bar
+      // reproducing the same error on every refresh.
       // Canonicalize from committed selection state, not this older request's
       // result: the user may have returned Home or selected another tab by now.
       // Whatever the open does, the URL becomes one a reload can act on: a
@@ -1068,18 +1066,27 @@ function App(): React.ReactElement {
           ? fromApi(cached)
           : fromCatalogue().then((opened) => opened ?? fromApi());
       };
-      const attempt = reopenBundle(
-        () => getCachedAppByAddress(wanted),
-        (cached) =>
-          processBundleData({
-            data: cached.bundleData,
-            fileName: `${cached.name}.softn`,
-            cachedAppId: cached.id,
-            initialPage: urlInit.page || undefined,
-            isForeground,
-          }),
-        fromRemote,
-      );
+      // An app opened by a link refreshes from it, as a directory app does from
+      // the directory, with the same fallback to the saved copy. Whatever else
+      // this browser has saved under that name is not what the link names.
+      const attempt = urlInit.linkedFrom !== null && savedOnlyName(wanted) !== null
+        ? openFromUrl(urlInit.linkedFrom, isForeground, urlInit.page || undefined)
+        : reopenBundle(
+            () => getCachedAppByAddress(wanted),
+            (cached) =>
+              processBundleData({
+                data: cached.bundleData,
+                fileName: `${cached.name}.softn`,
+                cachedAppId: cached.id,
+                initialPage: urlInit.page || undefined,
+                isForeground,
+              }),
+            fromRemote,
+            // Unmarked and spelt as a slug, it is the directory's first: an app
+            // from a file is at ~<name>, and an old bookmark of one still finds
+            // it below, when the directory has no such app.
+            isDirectorySlug(wanted),
+          );
       attempt
         .then(async (appName) => {
           if (!appName) {
@@ -1117,15 +1124,17 @@ function App(): React.ReactElement {
     }
 
     let url = buildAppUrl(null);
+    let linkedFrom: string | null = null;
     if (activeTabId) {
       const tab = openTabs.find((t) => t.id === activeTabId);
       if (tab) {
         const page = tabPagesRef.current[activeTabId] ?? tab.initialPage;
         url = buildAppUrl(tabAddress(tab), page);
+        linkedFrom = tabLink(tab);
       }
     }
 
-    const next = entryUrl(url);
+    const next = entryUrl(url, linkedFrom);
     if (currentUrl() !== next) {
       if (replaceNextUrlRef.current) window.history.replaceState({}, '', next);
       else window.history.pushState({}, '', next);

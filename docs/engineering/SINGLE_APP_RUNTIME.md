@@ -37,8 +37,8 @@ isolation softn.com sends for `/play/<app>`. It makes `SharedArrayBuffer`
 available to the page, which nothing shipped uses today; `credentialless`
 keeps images and model files from other origins working without CORP
 headers. A host that reads no
-`.htaccess` (nginx) must add the two headers itself, or an app that uses
-that provider runs slower self-hosted than on the site. Cross-origin
+`.htaccess` (nginx) must add the two headers itself, or an app is not
+isolated there as it is on the site. Cross-origin
 `<iframe>` embeds inside an app need the framed page to send a COEP of its
 own, exactly as on the site.
 
@@ -49,6 +49,13 @@ permission bar and its Allow button, and a site that framed it could cover
 the bar with a look-alike and take a visitor's click as a grant. To embed
 the app on another site of your own, list that origin after `'self'` and
 remove `X-Frame-Options`. On nginx, add these three headers too.
+
+A folder this is uploaded into may hold what is not meant for visitors, so the
+`.htaccess` refuses dot files and folders (`.git/config`, `.env`, but not
+`/.well-known/`, which a certificate's challenge needs), `config.json`, and
+the endings backups have. On nginx, the same is
+`location ~ /\.(?!well-known(?:/|$)) { deny all; }` and
+`location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }`.
 
 ### Inside softn.com
 

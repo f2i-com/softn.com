@@ -8,7 +8,7 @@
  * real browser is the check for all of them: a notice on every app is only
  * seen on a real render.
  */
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '@playwright/test';
 import { uiBundle } from '../helpers/bundle';
 import { watchConsole } from '../helpers/console';
 import { DEMO } from '../helpers/demo';
@@ -37,10 +37,7 @@ async function publish(request: APIRequestContext, listing: string, bundle: Buff
   return app.slug;
 }
 
-/** Answer the page's entry script with a 404, as a half-finished upload does. */
-async function withoutEntry(page: Page): Promise<void> {
-  await page.route(/\/assets\/index-[^/]+\.js$/, (route) => route.fulfill({ status: 404, contentType: 'text/plain', body: 'Not found' }));
-}
+const ENTRY = /\/assets\/index-[^/]+\.js$/;
 
 test.describe('a page whose code did not arrive', () => {
   for (const [what, address] of [
@@ -50,22 +47,36 @@ test.describe('a page whose code did not arrive', () => {
     ['Studio', '/studio/'],
     ['a play page', `/play/${SLUG}`],
   ] as const) {
-    test(`${what} says so and offers a reload`, async ({ page }, testInfo) => {
-      const log = watchConsole(page, testInfo);
-      await withoutEntry(page);
-      await page.goto(address);
-      const notice = page.getByRole('alert');
-      await expect(notice).toContainText('This page could not load', { timeout: 30_000 });
-      await expect(notice.getByRole('button', { name: 'Reload' })).toBeVisible();
-      // Under the page's real policy: refused, the script that says this would not have run.
-      expect(log.errors.filter((line) => /Content Security Policy/i.test(line))).toEqual([]);
+    for (const [how, answer] of [
+      // As a half-finished upload leaves it: not there yet, or there and cut short.
+      ['missing', { status: 404, contentType: 'text/plain', body: 'Not found' }],
+      ['cut short', { status: 200, contentType: 'text/javascript', body: 'export const a = {' }],
+    ] as const) {
+      test(`${what} says so and offers a reload when its code is ${how}`, async ({ page }, testInfo) => {
+        const log = watchConsole(page, testInfo);
+        await page.route(ENTRY, (route) => route.fulfill(answer));
+        await page.goto(address);
+        const notice = page.getByRole('alert');
+        await expect(notice).toContainText('This page could not load', { timeout: 30_000 });
+        await expect(notice.getByRole('button', { name: 'Reload' })).toBeVisible();
+        // Under the page's real policy: refused, the script that says this would not have run.
+        expect(log.errors.filter((line) => /Content Security Policy/i.test(line))).toEqual([]);
 
-      await page.unroute(/\/assets\/index-[^/]+\.js$/);
-      await notice.getByRole('button', { name: 'Reload' }).click();
-      await expect(notice).toHaveCount(0, { timeout: 30_000 });
-      await log.attach('entry-missing');
-    });
+        await page.unroute(ENTRY);
+        await notice.getByRole('button', { name: 'Reload' }).click();
+        await expect(notice).toHaveCount(0, { timeout: 30_000 });
+        await log.attach('entry-missing');
+      });
+    }
   }
+
+  test('code that arrived and threw is not called missing', async ({ page }) => {
+    await page.route(ENTRY, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: 'throw new Error("ran, and failed");' }));
+    const thrown = page.waitForEvent('pageerror');
+    await page.goto('/web/');
+    await thrown;
+    await expect(page.getByRole('alert').filter({ hasText: 'This page could not load' })).toHaveCount(0);
+  });
 });
 
 test.describe('the storage notice', () => {
@@ -140,9 +151,45 @@ test.describe('what fails in an app', () => {
 
       await page.getByRole('button', { name: 'Spin', exact: true }).click();
       await expect(notice).toContainText('This app has stopped', { timeout: 30_000 });
+      // The way back stays: dismissed, it left an app that ignored every press and said nothing.
+      await expect(notice.getByRole('button')).toHaveText(['Reload']);
       await notice.getByRole('button', { name: 'Reload' }).click();
       await expect(page.getByText('Pressed 0')).toBeVisible({ timeout: 60_000 });
       await expect(notice).toHaveCount(0);
+    }
+  });
+
+  test('an app on a worker that stops keeps its screen and gets the same way back', async ({ page, request }) => {
+    const slug = await publish(request, 'E2E Worker App', uiBundle({
+      name: 'E2E Worker App',
+      config: { execution: 'worker' },
+      ui: '<logic src="../logic/main.logic" />\n<App><Text>{"Pressed " + pressed}</Text><Button @click={press}>Press</Button><Button @click={spins}>Spin</Button></App>',
+      logic: 'let pressed = 0\nfunction press() { pressed = pressed + 1 }\nfunction spins() { while (true) {} }\n',
+    }));
+    const uncaught: string[] = [];
+    page.on('pageerror', (error) => uncaught.push(error.message));
+    for (const address of [`/play/${slug}`, `/web/app/${slug}`]) {
+      await page.goto(address);
+      await expect(page.getByText('Pressed 0')).toBeVisible({ timeout: 60_000 });
+      await page.getByRole('button', { name: 'Press', exact: true }).click();
+      await expect(page.getByText('Pressed 1')).toBeVisible();
+
+      await page.getByRole('button', { name: 'Spin', exact: true }).click();
+      const notice = page.locator('[data-softn-notice="failure"]');
+      await expect(notice).toContainText('This app has stopped', { timeout: 30_000 });
+      await expect(page.getByText('Pressed 1')).toBeVisible();
+      await expect(notice.getByRole('button')).toHaveText(['Reload']);
+      // A press on what is left of it is ignored, in the page too.
+      await page.getByRole('button', { name: 'Press', exact: true }).click();
+      await expect(page.getByText('Pressed 1')).toBeVisible();
+      await expect.poll(() => uncaught).toEqual([]);
+
+      await notice.getByRole('button', { name: 'Reload' }).click();
+      await expect(page.getByText('Pressed 0')).toBeVisible({ timeout: 60_000 });
+      await expect(notice).toHaveCount(0);
+      // A new worker: the one that stopped answers nothing.
+      await page.getByRole('button', { name: 'Press', exact: true }).click();
+      await expect(page.getByText('Pressed 1')).toBeVisible();
     }
   });
 });
@@ -191,11 +238,48 @@ test.describe('the address an app is at', () => {
     await expect(page.getByText('The team board')).toBeVisible({ timeout: 60_000 });
     await expect(page).toHaveURL(new RegExp(`/web/app/${slug}$`));
   });
+
+  test('an old address opens the app, and the bar and the library take its real slug', async ({ page }) => {
+    await page.goto(`/web/app/${DEMO.name}`);
+    await expect(page.getByText(DEMO.firstScreenText)).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(new RegExp(`/web/app/${SLUG}$`));
+    await page.reload();
+    await expect(page.getByText(DEMO.firstScreenText)).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(new RegExp(`/web/app/${SLUG}$`));
+  });
+
+  test('an app opened by a link keeps an address that opens it in another browser', async ({ page, browser }) => {
+    await page.goto(`/web/?open=/demos/${DEMO.name}.softn`);
+    await expect(page.getByText(DEMO.firstScreenText)).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(new RegExp(`/web/app/~${DEMO.name}\\?from=`));
+    const address = page.url();
+
+    const elsewhere = await browser.newContext();
+    const other = await elsewhere.newPage();
+    await other.goto(address);
+    await expect(other.getByText(DEMO.firstScreenText)).toBeVisible({ timeout: 60_000 });
+    await elsewhere.close();
+  });
+
+  test('an app from a file with a slash in its name comes back on a reload, with the same address', async ({ page }) => {
+    await page.goto('/web/');
+    await page.locator('input[type="file"]').first().setInputFiles({
+      name: 'named.softn',
+      mimeType: 'application/octet-stream',
+      buffer: uiBundle({ name: 'Notes v1.2/Draft', ui: '<App><Text>The draft</Text></App>' }),
+    });
+    await expect(page.getByText('The draft')).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(/\/web\/app\/~Notes%20v1\.2~2FDraft$/);
+    await page.reload();
+    await expect(page.getByText('The draft')).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(/\/web\/app\/~Notes%20v1\.2~2FDraft$/);
+  });
 });
 
-test('a play page is cross-origin isolated, each policy sent once', async ({ page }) => {
+test('a play page is cross-origin isolated, each policy sent once', async ({ page, browserName }) => {
   const answer = await page.goto(`/play/${SLUG}`);
   const sent = (await answer!.headersArray()).filter((header) => /^cross-origin-(opener|embedder)-policy$/i.test(header.name));
   expect(sent.map((header) => header.name.toLowerCase()).sort()).toEqual(['cross-origin-embedder-policy', 'cross-origin-opener-policy']);
-  expect(await page.evaluate(() => window.crossOriginIsolated)).toBe(true);
+  // WebKit has no COEP `credentialless`, so it is isolated on no page of any site that sends it.
+  if (browserName !== 'webkit') expect(await page.evaluate(() => window.crossOriginIsolated)).toBe(true);
 });

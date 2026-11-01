@@ -7,9 +7,34 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress } from '../src/lib/appUrl';
+import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress, tabLink } from '../src/lib/appUrl';
 
 describe('the address a tab is at', () => {
+  it('writes no slash into the path, which Apache answers with its own 404 before any rule runs', () => {
+    expect(buildAppPath(tabAddress({ name: 'My/App' }), null, '/web/')).toBe('/web/app/~My~2FApp');
+    expect(buildAppPath(tabAddress({ name: 'My\\App' }), null, '/web/')).toBe('/web/app/~My~5CApp');
+  });
+
+  it.each(['My/App', 'a/b/c.d', '/', 'Back\\slash', '%', '100%25', 'a%2Fb', '~', '~odd', 'x~2Fy', '~7E', '~~', '.', '..', 'Notes v1.2', 'Émile', '長い名前', 'a?b#c'])('reads %j back as it was written', (name) => {
+    const url = buildAppPath(tabAddress({ name }), 'settings', '/web/');
+    const { appName, page } = parseAppPath(url, '/web/');
+    expect(savedOnlyName(appName!)).toBe(name);
+    expect(page).toBe('settings');
+  });
+
+  it('keeps a slash in a page a slash, for the same reason', () => {
+    const url = buildAppPath('notes', 'admin/users', '/web/');
+    expect(url).toBe('/web/app/notes/admin/users');
+    expect(parseAppPath(url, '/web/')).toEqual({ appName: 'notes', page: 'admin/users' });
+  });
+
+  it('keeps where an app opened by a link came from, and nothing for the directory', () => {
+    expect(tabLink({ bundleUrl: 'https://softn.example/demos/Twenty48.softn' })).toBe('/demos/Twenty48.softn');
+    expect(tabLink({ bundleUrl: 'https://softn.example/x.softn?v=2' })).toBe('/x.softn?v=2');
+    expect(tabLink({ bundleUrl: 'https://softn.example/api/apps/notes/bundle.softn', directorySlug: 'notes' })).toBeNull();
+    expect(tabLink({})).toBeNull();
+  });
+
   it('is a directory app’s slug, whatever its bundle calls itself', () => {
     expect(tabAddress({ name: 'notes', directorySlug: 'my-team-board' })).toBe('my-team-board');
     expect(savedOnlyName('my-team-board')).toBeNull();
@@ -78,7 +103,7 @@ describe('names that need encoding', () => {
 
   it('round-trips a slash without inventing a page segment', () => {
     const url = buildAppPath('a/b', 'c/d', '/web/');
-    expect(url).toBe('/web/app/a%2Fb/c%2Fd');
+    expect(url).toBe('/web/app/a%2Fb/c/d');
     expect(parseAppPath(url, '/web/')).toEqual({ appName: 'a/b', page: 'c/d' });
   });
 

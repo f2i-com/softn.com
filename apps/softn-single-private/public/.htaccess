@@ -12,6 +12,13 @@ DirectoryIndex index.php
 <FilesMatch "\.(softn|key|cache)$">
     Require all denied
 </FilesMatch>
+# FilesMatch sees a file's own name and no folder of its path: it refuses .env
+# and not .git/config. /.well-known/ stays, for a certificate's challenge. The
+# second line is what a backup leaves here.
+<IfModule mod_alias.c>
+    RedirectMatch 404 "/\.(?!well-known(?:/|$))"
+    RedirectMatch 404 "(?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$"
+</IfModule>
 AddType application/wasm .wasm
 AddType text/javascript .mjs
 <IfModule mod_headers.c>
