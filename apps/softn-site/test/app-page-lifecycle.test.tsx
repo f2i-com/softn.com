@@ -64,6 +64,19 @@ describe('app listing lifecycle', () => {
     expect(container.querySelector('[aria-label="5 stars"]')?.getAttribute('aria-checked')).toBe('false');
   });
 
+  it('shows the new count when Back brings the page out of the browser\'s memory', async () => {
+    await render('demo');
+    getApp.mockImplementation(async (slug: string) => ({ ...app(slug), runs: 7 }));
+    const runs = () => Array.from(container.querySelectorAll('.stat-label')).find((label) => /^runs?$/.test(label.textContent ?? ''))?.parentElement?.textContent;
+    expect(runs()).toBe('0runs');
+
+    await act(async () => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false })));
+    expect(runs()).toBe('0runs');
+
+    await act(async () => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    expect(runs()).toBe('7runs');
+  });
+
   it('ignores a stale detail response and its page title', async () => {
     let finish!: (value: AppDetail) => void;
     getApp.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));

@@ -221,6 +221,21 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, attempt]);
 
+  // Back from the app brings this page out of the browser's memory just as it
+  // was left, with the count from before the play.
+  useEffect(() => {
+    const refresh = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      getApp(slug)
+        .then((a) => setApp((shown) => (shown && shown.slug === a.slug ? { ...shown, runs: a.runs, launches: a.launches } : shown)))
+        .catch(() => {
+          /* The count from before is still a count. */
+        });
+    };
+    window.addEventListener('pageshow', refresh);
+    return () => window.removeEventListener('pageshow', refresh);
+  }, [slug]);
+
   const onRate = async (stars: number) => {
     if (!app || ratingPending.current) return;
     ratingPending.current = true;

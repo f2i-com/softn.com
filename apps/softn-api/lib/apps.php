@@ -345,7 +345,9 @@ final class Apps
             if ($search!=='' && array_filter($words,fn($w)=>!str_contains($text,$w))) continue;
             $r['_relevance']=$search!=='' && str_contains(mb_strtolower($r['name']),mb_strtolower($search))?1:0;
             $daily=Catalog::doc($r['slug'])['runsDaily'];$runs7=0;
-            foreach ($daily as $d) if ($d['day']>=floor($since/86400)) $runs7+=$d['count'];
+            // Visitors, as one client can open an app 120 times a minute. A day
+            // kept before they were counted apart counted each one once.
+            foreach ($daily as $d) if ($d['day']>=floor($since/86400)) $runs7+=$d['visitors']??$d['count'];
             $r['_trend']=$runs7*3+$r['remixes']*5+$r['rating_count']*2+$r['comments']+($r['created_at']>$since?4:0);
             $r['_average']=$r['rating_count']?$r['rating_sum']/$r['rating_count']:0;
             $rows[]=$r;

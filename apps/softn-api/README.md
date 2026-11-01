@@ -606,7 +606,7 @@ Nothing else about a visitor is kept.
 | `POST /api/apps/{slug}/remix` | Publish a new app that records this one as its parent. Same fields as publish; the bundle is optional and defaults to the parent's |
 | `POST /api/apps/{slug}/comments` | `{name, body}` |
 | `POST /api/apps/{slug}/rating` | `{stars}`, one per visitor |
-| `POST /api/apps/{slug}/runs` | Counts a play: once a day for each visitor and app, so one client cannot move an app up the trending order (runs weigh three there). The day's visitor-and-app pairs are kept as hashes in `cache/runs-<day>.log`, which is removed the next day; past 8 MB in a day no new pair is counted. Always `204` |
+| `POST /api/apps/{slug}/runs` | Counts a play: every opening counts, refreshes and repeat visitors included, and that is the number an app's page shows. Trending goes by visitors instead, once a day for each visitor and app, so one client cannot move an app up that order (runs weigh three there). The day's visitor-and-app pairs are kept as hashes in `cache/runs-<day>.log`, noted once the run is stored and removed the next day; past 8 MB in a day no new visitor is counted. `204`, or `429` past the rate limit, or `503` when the catalogue cannot be written |
 | `POST /api/apps/{slug}/storage` | The app's own storage, see below |
 | `GET /api/apps/{slug}/storage`, `/storage/{collection}` | What an app has stored: collection names and counts, then a page of one collection |
 | `GET /api/README.md` | This file |

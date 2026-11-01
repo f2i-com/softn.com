@@ -658,6 +658,6 @@ test('an app keeps ninety days of daily run counts, not every day it ever ran', 
   assert.equal((await s.api('POST', `/api/apps/${pub.app.slug}/runs`)).status, 204);
   const kept = JSON.parse(fs.readFileSync(file, 'utf8')).runsDaily;
   assert.equal(kept.length, 90, `${kept.length} days kept`);
-  assert.deepEqual(kept.at(-1), { slug: pub.app.slug, day: today, count: 1 });
+  assert.deepEqual(kept.at(-1), { slug: pub.app.slug, day: today, count: 1, visitors: 1 });
   assert.equal(kept[0].day, today - 89);
 });

@@ -197,7 +197,7 @@ final class Catalog
         foreach($doc['versions'] as $v)if(!is_array($v)||!is_int($v['version']??null)||$v['version']<1||!is_string($v['file']??null)||basename($v['file'])!==$v['file']||str_contains($v['file'],'\\'))$fail();
         foreach($doc['comments'] as $c)if(!self::validComment($c))$fail();
         foreach($doc['ratings'] as $r)if(!is_array($r)||!is_string($r['visitor']??null)||!in_array($r['stars']??null,[1,2,3,4,5],true))$fail();
-        foreach($doc['runsDaily'] as $r)if(!is_array($r)||!is_int($r['day']??null)||!is_int($r['count']??null)||$r['count']<0)$fail();
+        foreach($doc['runsDaily'] as $r)if(!is_array($r)||!is_int($r['day']??null)||!is_int($r['count']??null)||$r['count']<0||!is_int($r['visitors']??0)||($r['visitors']??0)<0)$fail();
     }
     private static function validComment(mixed $c): bool {
         return is_array($c) && is_int($c['id'] ?? null) && is_string($c['name'] ?? null) && is_string($c['body'] ?? null) && is_string($c['visitor'] ?? null) && isset($c['created_at'], $c['hidden']);
@@ -255,7 +255,12 @@ final class Catalog
     }
     /** Write a complete sibling, flush it, then atomically replace the old file. */
     public static function writeJson(string $path, array $value): void {
+        clearstatcache(true, $path);
         if (is_link($path)) throw new ApiError(503, 'JSON metadata must not be a symlink.');
+        $previous = @lstat($path);
+        if ($previous !== false && ($previous['mode'] & 0170000) !== 0100000)
+            throw new ApiError(503, 'JSON metadata must be a regular file.');
+        $mode = $previous !== false ? ($previous['mode'] & 0777) : 0600;
         $dir = dirname($path);
         if (!is_dir($dir) && !mkdir($dir, 0775, true)) throw new ApiError(503, 'Cannot create metadata folder.');
         $bytes = json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
@@ -271,6 +276,17 @@ final class Catalog
                 if (!fflush($f)) throw new ApiError(503, 'Cannot flush metadata.');
                 if (function_exists('fsync') && !fsync($f)) throw new ApiError(503, 'Cannot sync metadata.');
             } finally { fclose($f); }
+            // rename() keeps the staged file's mode/group, not the old target's.
+            // Keep new metadata private, and preserve existing ordinary access bits.
+            // Neither is worth a visitor's play or comment: a file owned by a
+            // group PHP isn't in would refuse every write to it, in silence for
+            // a play. Said in the log, and the staged file is no more open.
+            clearstatcache(true, $tmp);
+            $staged = @stat($tmp);
+            if ($staged === false) throw new ApiError(503, 'Cannot inspect staged metadata.');
+            if ($previous !== false && $staged['gid'] !== $previous['gid'] && !@chgrp($tmp, $previous['gid']))
+                error_log("softn-api: $path could not keep its group; check the PHP service account and shared group");
+            if (!@chmod($tmp, $mode)) error_log("softn-api: $path could not keep its permissions");
             if (!rename($tmp, $path)) throw new ApiError(503, 'Cannot replace metadata.');
         } finally { if (is_file($tmp)) @unlink($tmp); Timings::add('commit', $committing); }
     }

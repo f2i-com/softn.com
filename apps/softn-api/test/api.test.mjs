@@ -478,7 +478,6 @@ test('comments, ratings and runs', skip, async () => {
   assert.equal(detail.ratingBreakdown[5], 1);
 
   const before = detail.runs;
-  resetRunLog();
   const run = await api('POST', '/api/apps/test-snake/runs');
   assert.equal(run.status, 204);
   assert.equal((await api('GET', '/api/apps/test-snake')).json.app.runs, before + 1);
@@ -935,11 +934,6 @@ test('the play page opens in the side the app declares: a light app does not boo
  */
 function resetRateLimits() { fs.rmSync(path.join(root, 'data/ratelimits'), { recursive: true, force: true });
 }
-/** Forget today's runs: every request here comes from one address, whose run of an app counts once a day. */
-function resetRunLog() {
-  const cache = path.join(root, 'data/cache');
-  for (const name of fs.existsSync(cache) ? fs.readdirSync(cache) : []) if (/^runs-\d+\.log$/.test(name)) fs.rmSync(path.join(cache, name));
-}
 
 test("a bundle's declaration is held to the capability schema", skip, async () => {
   resetRateLimits();
@@ -1204,20 +1198,16 @@ test('the storage quota is the data itself, and is enforced as it is written', s
 });
 
 test('a launch and a run are counted apart', skip, async () => {
-  resetRunLog();
   const before = (await api('GET', '/api/apps/test-snake')).json.app;
   assert.equal((await api('POST', '/api/apps/test-snake/runs', { body: { stage: 'launch' } })).status, 204);
   assert.equal((await api('POST', '/api/apps/test-snake/runs', { body: { stage: 'open' } })).status, 204);
   let after = (await api('GET', '/api/apps/test-snake')).json.app;
   assert.equal(after.launches, before.launches + 1);
   assert.equal(after.runs, before.runs + 1);
-  // The same visitor's next run of it today is answered the same, and not counted.
-  assert.equal((await api('POST', '/api/apps/test-snake/runs')).status, 204, 'no stage is an open, as before');
-  after = (await api('GET', '/api/apps/test-snake')).json.app;
-  assert.equal(after.runs, before.runs + 1);
-  resetRunLog();
+  // The same visitor's next run counts too, as a refresh or a second play does.
   assert.equal((await api('POST', '/api/apps/test-snake/runs')).status, 204);
-  assert.equal((await api('GET', '/api/apps/test-snake')).json.app.runs, before.runs + 2, 'no stage is an open');
+  after = (await api('GET', '/api/apps/test-snake')).json.app;
+  assert.equal(after.runs, before.runs + 2, 'no stage is an open');
 });
 
 test('rate limits refuse a flood', skip, async () => {
