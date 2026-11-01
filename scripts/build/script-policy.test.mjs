@@ -1,6 +1,7 @@
 // The policy written into each app's built page (script-policy.mjs).
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { inlineScripts, scriptPolicy, scriptPolicyPlugin } from './script-policy.mjs';
 
@@ -41,4 +42,13 @@ test('is written first in the head, before any script it governs', () => {
   assert.ok(meta > 0 && meta < out.indexOf('<script'));
   // Once.
   assert.equal(scriptPolicyPlugin().transformIndexHtml.handler(out), out);
+});
+
+test('both editors keep the policy in the build FormLogic frames', () => {
+  for (const app of ['softn-builder', 'softn-studio']) {
+    const config = readFileSync(new URL(`../../apps/${app}/vite.config.ts`, import.meta.url), 'utf8');
+    const line = config.split('\n').find((text) => text.includes('scriptPolicyPlugin()'));
+    assert.ok(line, `${app} uses the plugin`);
+    assert.doesNotMatch(line, /VITE_FORMLOGIC_EDITOR/, `${app} leaves it out of FormLogic's build`);
+  }
 });

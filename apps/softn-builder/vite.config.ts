@@ -23,9 +23,9 @@ export default defineConfig({
     react(),
     coreWorkerAssetPlugin(),
     // What runs as script: this deployment's files only (scripts/build/script-policy.mjs). Not in
-    // the desktop build, whose webview has a policy of its own, nor in FormLogic's, which is
-    // drawn inside FormLogic's own document.
-    ...(isTauri || env.VITE_FORMLOGIC_EDITOR === '1' ? [] : [scriptPolicyPlugin()]),
+    // the desktop build, whose webview has a policy of its own. FormLogic frames this page as a
+    // document of its own, so it needs the policy as much as a site does.
+    ...(isTauri ? [] : [scriptPolicyPlugin()]),
     softnPwa({
       // A service worker buys nothing inside the Tauri webview — the assets are
       // already local — and it can keep serving a previous build after the app
