@@ -20,6 +20,9 @@ function describe(status: XDBStorageStatus): { title: string; detail: string; to
     if (corrupt) return { title: `Collection "${corrupt.collection}" is damaged`, detail: `${corrupt.message} Export the original bytes or restore a backup before writing to it.`, tone: 'error' };
     const hydration = status.issues.find(i => i.kind === 'hydration-failed');
     if (hydration) return { title: 'Some records did not load', detail: hydration.message, tone: 'warning' };
+    // Before the quota: a save with no answer refuses every save after it, and those read as a full store.
+    const unknown = status.issues.find(i => i.kind === 'write-unknown');
+    if (unknown) return { title: 'A save may not have landed', detail: unknown.message, tone: 'error' };
     const quota = status.issues.find(i => i.kind === 'quota');
     if (quota) return { title: 'Storage is full', detail: quota.message, tone: 'error' };
     const migration = status.issues.find(i => i.kind === 'migration-incomplete');

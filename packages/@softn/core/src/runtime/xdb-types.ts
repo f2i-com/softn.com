@@ -90,6 +90,8 @@ export type AcknowledgedStoragePersistence =
   | (StoragePersistenceObserver & { readonly protocol: 0 })
   | (StoragePersistenceObserver & {
       readonly protocol: 1;
+      /** Nothing but this page reads the store: no room or server sync can reach it. */
+      readonly localOnly?: boolean;
       /** Admission preflight precedes optimistic cache mutation. */
       setItem(key: string, value: string): StorageWriteReceipt;
       removeItem(key: string): StorageWriteReceipt;

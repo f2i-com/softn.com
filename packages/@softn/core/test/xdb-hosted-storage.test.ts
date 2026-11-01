@@ -140,9 +140,41 @@ describe('XDB acknowledged hosted persistence', () => {
       expect(f.xdb.create('notes', { body }).id).toBeTruthy();
       expect(f.xdb.create('notes', { body }).id).toBeTruthy();
       expect(f.xdb.getAll('notes')).toHaveLength(held);
-      const raw = f.xdb.getAllRaw('notes').filter((record) => record.deleted);
-      expect(raw.map((record) => record.id)).toEqual(made.slice(0, 2));
-      expect(raw.map((record) => record.data)).toEqual([{}, {}]);
+      // No room or server sync reaches this store, so nothing reads a deleted record: its row goes too.
+      expect(f.xdb.getAllRaw('notes').filter((record) => record.deleted)).toEqual([]);
+    } finally { f.close(); }
+  });
+
+  it('adds and deletes small records for as long as an app lives', async () => {
+    const f = realAdapterFixture();
+    try {
+      // An emptied row still costs about 170 characters, so at 170 of them the collection was full,
+      // nothing was left to delete, and every later add was refused for good.
+      for (let index = 0; index < 500; index++) {
+        const { id } = f.xdb.create('tasks', { title: 'Buy milk', done: false });
+        expect(f.xdb.delete(id)).toBe(true);
+        if (index % 20 === 0) {
+          for (const message of f.posted) f.queue.settle(message.id, { result: { saved: true } });
+          await flush();
+        }
+      }
+      expect(f.xdb.getAll('tasks')).toEqual([]);
+      expect(f.xdb.getStorageStatus().issues).toEqual([]);
+    } finally { f.close(); }
+  });
+
+  it('does not say a collection nobody saved could not be saved', async () => {
+    const f = realAdapterFixture();
+    try {
+      const { id } = f.xdb.create('notes', { title: 'gone' });
+      f.xdb.delete(id);
+      let refused: unknown;
+      // Two keys in turn, so saves don't merge: the queue fills, and a refusal looks for room in `notes`.
+      for (let index = 0; index < 40 && !refused; index++) {
+        try { f.xdb.create(index % 2 ? 'orders' : 'lines', { index }); } catch (error) { refused = error; }
+      }
+      expect(refused).toBeTruthy();
+      expect(f.xdb.getStorageStatus().issues.map((issue) => issue.collection)).not.toContain('notes');
     } finally { f.close(); }
   });
 
@@ -188,7 +220,7 @@ describe('XDB acknowledged hosted persistence', () => {
       for (const id of photos) f.xdb.delete(id);
       expect(f.xdb.getAll('photos')).toHaveLength(0);
       expect(f.xdb.create('notes2', { body }).id).toBeTruthy();
-      expect(f.xdb.getAllRaw('photos').every((record) => Object.keys(record.data).length === 0)).toBe(true);
+      expect(f.xdb.getAllRaw('photos')).toEqual([]);
     } finally { f.close(); }
   });
 

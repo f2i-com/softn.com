@@ -289,6 +289,18 @@ test('a write keeps the access a metadata file had, and a new one stays private'
  }finally{f.close();}
 });
 
+// A shared host may disable these. In PHP 8 that is an Error @ does not stop, so every write of
+// metadata failed: app pages, plays and comments answered 500, and a fresh install every route.
+test('a host that disables chmod and chgrp still saves metadata',{skip:!available||process.platform==='win32'},()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'softn-disabled-'));
+ try{
+  const target=path.join(dir,'app.json').replaceAll('\\','/');
+  const code=`foreach(["http","db","catalog"] as $l) require "${api.replaceAll('\\','/')}/lib/$l.php";Catalog::writeJson("${target}",["a"=>1]);Catalog::writeJson("${target}",["a"=>2]);echo file_get_contents("${target}");`;
+  const out=spawnSync('php',['-d','disable_functions=chmod,chgrp,lstat,stat','-r',code],{encoding:'utf8'});
+  assert.deepEqual(JSON.parse(out.stdout),{a:2},out.stderr);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
 // Anyone can publish a remix of any app, under any name, and the newest twelve
 // were on the parent's page, counted five each in trending, for good.
 test('an owner hides a remix from the app\'s page and its count, and can show it again',skip,()=>{

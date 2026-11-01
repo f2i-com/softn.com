@@ -257,7 +257,9 @@ final class Catalog
     public static function writeJson(string $path, array $value): void {
         clearstatcache(true, $path);
         if (is_link($path)) throw new ApiError(503, 'JSON metadata must not be a symlink.');
-        $previous = @lstat($path);
+        // A shared host may list these in disable_functions, and a disabled function is an Error in
+        // PHP 8 that @ does not stop: every play and comment would fail on a nicety.
+        $previous = function_exists('lstat') ? @lstat($path) : false;
         if ($previous !== false && ($previous['mode'] & 0170000) !== 0100000)
             throw new ApiError(503, 'JSON metadata must be a regular file.');
         $mode = $previous !== false ? ($previous['mode'] & 0777) : 0600;
@@ -282,11 +284,11 @@ final class Catalog
             // group PHP isn't in would refuse every write to it, in silence for
             // a play. Said in the log, and the staged file is no more open.
             clearstatcache(true, $tmp);
-            $staged = @stat($tmp);
+            $staged = function_exists('stat') ? @stat($tmp) : null;
             if ($staged === false) throw new ApiError(503, 'Cannot inspect staged metadata.');
-            if ($previous !== false && $staged['gid'] !== $previous['gid'] && !@chgrp($tmp, $previous['gid']))
+            if ($staged !== null && $previous !== false && $staged['gid'] !== $previous['gid'] && !(function_exists('chgrp') && @chgrp($tmp, $previous['gid'])))
                 error_log("softn-api: $path could not keep its group; check the PHP service account and shared group");
-            if (!@chmod($tmp, $mode)) error_log("softn-api: $path could not keep its permissions");
+            if (!(function_exists('chmod') && @chmod($tmp, $mode))) error_log("softn-api: $path could not keep its permissions");
             if (!rename($tmp, $path)) throw new ApiError(503, 'Cannot replace metadata.');
         } finally { if (is_file($tmp)) @unlink($tmp); Timings::add('commit', $committing); }
     }

@@ -8,9 +8,9 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
-- FormLogic: a loop of writes is not refused. XDB keeps a collection under one key, so each record added wrote the whole collection again, and the frame holds 32 saves: the 33rd was refused as a full store with room to spare. The save last in the queue now takes a newer value of the same key, with that value's deadline, and every receipt says what became of it. A save already handed over is never changed, keys land in the order they were written, and a parent on protocol 0 gets every write as before.
+- FormLogic: a loop of writes to one collection is not refused. XDB keeps a collection under one key, so each record added wrote the whole collection again, and the frame holds 32 saves: the 33rd was refused as a full store with room to spare. The save last in the queue now takes a newer value of the same key, with that value's deadline, and every receipt says what became of it. A save already handed over is never changed, keys land in the order they were written, and a parent on protocol 0 gets every write as before. Writes that take turns between collections cannot merge, so the 33rd of those is still refused while the queue is full.
 - FormLogic: a store that refuses a write says so in the frame, where the parent confirms saves. A collection in FormLogic's browser storage holds 30,000 characters, and past it the app's write failed with nothing on screen. The note goes once a save of that collection goes through.
-- A deleted record gives its room back. It keeps its place for sync, which reads its id and stamp, and it kept its data too, so deleting freed nothing and a full store stayed full. When the store refuses a save, the data of deleted records goes, in every collection, because the limit is shared, and the save is tried again. While there is room they stay whole.
+- A deleted record gives its room back. It keeps its place for sync, which reads its id and stamp, and it kept its data too, so deleting freed nothing and a full store stayed full. When the store refuses a save, the data of deleted records goes, in every collection, because the limit is shared, and the save is tried again. While there is room they stay whole. In FormLogic's frame, where no sync can reach the store, the rows go too: an emptied row still costs about 170 characters, so an app that added and deleted small records ended full, with nothing left to delete.
 - FormLogic: no app runs in a frame without an opaque origin. The document's framing headers and FormLogic's sandbox are what give it one, and a page or a server that left them out would have run the app on the site's own origin.
 - The Builder's FormLogic build carries the script policy its other builds and Studio's do.
 - A seed record whose id is a number is kept, under the same digits, where it was dropped without a word. A record with no id or a blank one, or with `data` that is not an object, is left out and counted in the file's warning: a blank id stored made its whole collection read as damaged.
@@ -19,7 +19,9 @@ section here. Write the section before tagging. Headings are the tag
 - The static single-app package always asks for `index.html`. It had no `Cache-Control`, so a browser could reuse the page by its own rule after a deploy had replaced the scripts it names.
 - The directory API turns PHP's error display off before it reads its first library. During an upload, a library missing or half written answered 200 with the server's paths.
 - softn-runner is on wasmtime 50.0.1 (it was 45), which closes the critical advisory on Cranelift for aarch64. It needs Rust 1.97; the runner is built with 1.99.0, and the guest is unchanged.
-- The directory's play counter counts every opening, trending counts visitors once a day, and a metadata file keeps its access.
+- The directory's play counter counts every opening, trending counts visitors once a day, and a metadata file keeps its access. On a host that disables `chmod` or `chgrp`, metadata still saves, and the log says what it could not keep.
+- The Builder reads a seed record's id as the runtime does. A numeric id was skipped there and kept by the runtime, so an edit to any other row wrote the file back without the rows the published app showed.
+- A save with an unknown outcome is named as that in the notice, not as a full store. A refused save no longer leaves "Storage is full" on a collection nobody tried to save.
 
 ## v0.0.30
 

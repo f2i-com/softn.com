@@ -217,7 +217,8 @@ export function installAppStorage(
   const whenIdle = () => Promise.allSettled([...waiting, ...(active ? [active] : [])].map(item => item.receipt.completion)).then(() => {});
   const common = { getStatus: status, subscribe(listener: (status: StoragePersistenceStatus) => void) { listeners.add(listener); return () => listeners.delete(listener); }, whenIdle };
   const acknowledgedPersistence: AcknowledgedStoragePersistence = protocol === 0 ? { protocol: 0, ...common } : {
-    protocol: 1, ...common, setItem, removeItem,
+    // The frame has no permissions and resumes no sync room, so only this page reads this store.
+    protocol: 1, localOnly: true, ...common, setItem, removeItem,
     replaceBatch(replacements) {
       if (!Array.isArray(replacements) || !replacements.length || replacements.length > STORAGE_LIMITS.entries) throw quota();
       const keys = new Set<string>();

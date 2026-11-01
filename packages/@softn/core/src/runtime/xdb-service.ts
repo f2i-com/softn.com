@@ -385,8 +385,16 @@ function byField(field: string, order: 'asc' | 'desc'): (a: XDBRecord, b: XDBRec
  *
  * Falls back to localStorage when running standalone in browser.
  */
-/** The records with the data of deleted ones emptied, or null when none has any. */
-function withoutDeletedData(records: readonly XDBRecord[]): XDBRecord[] | null {
+/**
+ * The records with the data of deleted ones emptied, or null when none has any. `rowsToo`, where
+ * nothing can read a deleted record: emptied, a row still costs about 170 characters, so small
+ * records never gave their room back, and an app ended with nothing to delete and no room to add.
+ */
+function withoutDeletedData(records: readonly XDBRecord[], rowsToo = false): XDBRecord[] | null {
+  if (rowsToo) {
+    const live = records.filter((record) => !record.deleted);
+    return live.length < records.length ? live : null;
+  }
   let lighter = false;
   const kept = records.map((record) => {
     if (!record.deleted || Object.keys(record.data ?? {}).length === 0) return record;
@@ -1194,7 +1202,7 @@ export class XDBService {
         // data too, so deleting freed nothing and a full store stayed full. Only when the store
         // refuses, that data goes, here and in the other collections: the limit is shared, so
         // deleting from one has to make room for the rest.
-        const lighter = withoutDeletedData(records);
+        const lighter = withoutDeletedData(records, this.nothingReadsDeleted());
         const freedElsewhere = this.freeDeletedData(collection);
         if (lighter === null && !freedElsewhere) throw err;
         if (lighter !== null) records.splice(0, records.length, ...lighter);
@@ -1209,6 +1217,9 @@ export class XDBService {
         this.notifyStatus();
       }
     } catch (err) {
+      // Giving back another collection's deleted data is a try on the way to a save of this one.
+      // Nobody asked to save that one, so it is not told that it could not be.
+      if (this.freeingDeletedData) throw err;
       // localStorage.setItem is atomic: the previous value is intact. Say so
       // instead of pretending the write happened (audit SN-02).
       const message = err instanceof Error ? err.message : String(err);
@@ -1221,6 +1232,12 @@ export class XDBService {
     return persisted;
   }
 
+  /** A deleted record keeps its row for sync to read. Where no sync can reach the store, nothing reads it. */
+  private nothingReadsDeleted(): boolean {
+    const persistence = this.storagePersistence;
+    return persistence?.protocol === 1 && persistence.localOnly === true;
+  }
+
   /** The data of deleted records in every collection but `except`. Whether any was given back. */
   private freeDeletedData(except: string): boolean {
     if (this.freeingDeletedData) return false;
@@ -1230,7 +1247,7 @@ export class XDBService {
       for (const collection of this.getAllCollectionKeys()) {
         if (collection === except) continue;
         try {
-          const lighter = withoutDeletedData(this.getAllCollectionData(collection));
+          const lighter = withoutDeletedData(this.getAllCollectionData(collection), this.nothingReadsDeleted());
           if (lighter === null) continue;
           this.setCollectionData(collection, lighter);
           freed = true;
