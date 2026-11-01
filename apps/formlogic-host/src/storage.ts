@@ -28,6 +28,8 @@ interface Operation {
   resolve: () => void;
   reject: (reason: Error) => void;
   controller: AbortController;
+  /** Later saves of this key that this one now carries; their receipts end with it. */
+  joined: { resolve: () => void; reject: (reason: Error) => void }[];
   /** Protocol 1's admission deadline; protocol 0 has none. */
   timer?: ReturnType<typeof setTimeout>;
   deadlineAt: number;
@@ -103,6 +105,10 @@ export function installAppStorage(
     // Unknown sent writes reach release only after a late reply or disposal.
     operation.input = {};
   };
+  const refuse = (operation: Operation, reason: Error) => {
+    operation.reject(reason);
+    for (const receipt of operation.joined) receipt.reject(reason);
+  };
   const finish = (operation: Operation, reply?: unknown, timedOut = false) => {
     if (operation.state !== 'pending') return;
     clearTimeout(operation.timer);
@@ -111,12 +117,13 @@ export function installAppStorage(
     const outcome = reply && typeof reply === 'object' ? (reply as { outcome?: string }).outcome : undefined;
     if (!timedOut && answered(reply)) {
       operation.state = 'confirmed'; apply(confirmed, operation.input); release(operation); operation.resolve();
+      for (const receipt of operation.joined) receipt.resolve();
     } else if ((timedOut || outcome === 'unknown') && operation.dispatched && outcome !== 'unsent') {
       operation.state = 'unknown'; unknown = operation;
-      operation.reject(failure('unknown', 'The app save outcome is unknown.'));
+      refuse(operation, failure('unknown', 'The app save outcome is unknown.'));
     } else {
       operation.state = 'failed'; failedWrites++; release(operation);
-      operation.reject(failure('failed', protocol === 0 ? 'The app save failed.' : 'The app save was not confirmed.'));
+      refuse(operation, failure('failed', protocol === 0 ? 'The app save failed.' : 'The app save was not confirmed.'));
     }
     notify(); pump();
   };
@@ -146,6 +153,21 @@ export function installAppStorage(
     } catch { finish(operation, { outcome: 'unsent' }); }
   }
   const quota = () => new DOMException('App storage limit reached', 'QuotaExceededError');
+  /**
+   * A save still waiting that this one makes pointless. A set holds the key's whole value, and XDB
+   * keeps a collection under one key, so a loop adding records wrote the whole collection again each
+   * time: the 33rd was refused as a full store with room to spare. A remove, a clear or a batch
+   * touches keys in an order of its own, so nothing goes past one.
+   */
+  const unsentSetOf = (input: Record<string, unknown>) => {
+    if (protocol !== 1 || input.operation !== 'set') return undefined;
+    for (let index = waiting.length - 1; index >= 0; index--) {
+      const earlier = waiting[index];
+      if (earlier.input.operation !== 'set') return undefined;
+      if (earlier.input.key === input.key) return earlier;
+    }
+    return undefined;
+  };
   function admit(input: Record<string, unknown>): StorageWriteReceipt {
     if (disposed) throw new DOMException('App storage is disposed', 'InvalidStateError');
     if (unknown) throw new DOMException('An earlier app save has an unknown outcome', 'InvalidStateError');
@@ -159,14 +181,23 @@ export function installAppStorage(
     const candidate = new Map(entries); apply(candidate, frozen);
     // Protocol 0 holds a set to the cache's limits, and nothing else, as it always did.
     if ((protocol === 1 || frozen.operation === 'set') && (candidate.size > STORAGE_LIMITS.entries || JSON.stringify(Object.fromEntries(candidate)).length > STORAGE_LIMITS.map)) throw quota();
-    if (protocol === 1 && (waiting.length + (active ? 1 : 0) >= STORAGE_LIMITS.outstanding || units + serialized.length > STORAGE_LIMITS.queued)) throw quota();
+    const earlier = unsentSetOf(frozen);
+    if (protocol === 1 && ((!earlier && waiting.length + (active ? 1 : 0) >= STORAGE_LIMITS.outstanding) || units - (earlier?.units ?? 0) + serialized.length > STORAGE_LIMITS.queued)) throw quota();
     let resolve!: () => void; let reject!: (reason: Error) => void;
     const completion = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     // Sync WebStorage callers may ignore receipts; failures stay observable
     // without an unhandled rejection. This does not change the returned promise.
     void completion.catch(() => {});
+    if (earlier) {
+      // It keeps its place and its deadline, and takes the newest value. Both receipts say what became of that.
+      units += serialized.length - earlier.units;
+      earlier.units = serialized.length; earlier.input = frozen; earlier.joined.push({ resolve, reject });
+      entries.clear(); for (const [key, value] of candidate) entries.set(key, value);
+      notify();
+      return Object.freeze({ generation, sequence: ++sequence, completion, get state() { return earlier.state; } });
+    }
     const deadlineAt = Date.now() + (options.deadlineMs ?? STORAGE_LIMITS.deadline);
-    const operation = { input: frozen, units: serialized.length, state: 'pending' as StorageWriteState, resolve, reject, controller: new AbortController(), deadlineAt, dispatched: false } as Operation;
+    const operation = { input: frozen, units: serialized.length, state: 'pending' as StorageWriteState, resolve, reject, controller: new AbortController(), joined: [] as Operation['joined'], deadlineAt, dispatched: false } as Operation;
     operation.receipt = Object.freeze({ generation, sequence: ++sequence, completion, get state() { return operation.state; } });
     if (protocol === 1) operation.timer = setTimeout(() => { operation.controller.abort(); finish(operation, undefined, true); }, Math.max(0, deadlineAt - Date.now()));
     units += operation.units; waiting.push(operation);

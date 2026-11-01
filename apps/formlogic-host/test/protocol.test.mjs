@@ -31,6 +31,18 @@ test('saves take a lane of their own only where the parent says it takes them ap
   assert.match(main, /storageCalls\?\.dispose\(BACKEND_UNREADABLE\);/);
 });
 
+test('no app runs in a frame that is not sandboxed', () => {
+  // First in the try, before an engine or a file of the app is touched.
+  const guard = main.indexOf("if (self.origin !== 'null') throw new Error(");
+  assert.ok(guard > 0);
+  assert.ok(guard < main.indexOf('acceptEngine(event.data.engine, served)'));
+  assert.ok(guard > main.indexOf('  try {'));
+});
+
+test('a store that refuses a write says so in the frame', () => {
+  assert.match(main, /<XDBStorageNotice appId=\{event\.data\.appId\} problemsOnly \/>/);
+});
+
 test('an error says whether the app failed to open or failed while running', () => {
   assert.match(main, /port\?\.postMessage\(\{ type: 'error', reason, phase \}\);/);
   // Before the first page is drawn it is a load failure; after, a runtime one.

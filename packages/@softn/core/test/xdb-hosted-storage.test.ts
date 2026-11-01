@@ -107,6 +107,53 @@ describe('XDB acknowledged hosted persistence', () => {
     return { queue, adapter, xdb, posted, close() { xdb.destroy(); adapter.dispose(); queue.dispose('test closed'); document.getElementById('app-storage-error')?.remove(); vi.unstubAllGlobals(); } };
   }
 
+  it('adds far more records in one go than the frame holds saves, and saves them all', async () => {
+    const f = realAdapterFixture();
+    try {
+      for (let index = 0; index < 100; index++) f.xdb.create('notes', { title: `note ${index}` });
+      expect(f.xdb.getAll('notes')).toHaveLength(100);
+      expect(f.xdb.getStorageStatus().issues).toEqual([]);
+      for (let index = 0; index < f.posted.length; index++) { f.queue.settle(f.posted[index].id, { result: { saved: true } }); await flush(); }
+      expect(f.posted.length).toBeLessThanOrEqual(4);
+      expect(JSON.parse(Object.values(f.adapter.confirmedSnapshot()).find((value) => value.startsWith('['))!)).toHaveLength(100);
+    } finally { f.close(); }
+  });
+
+  it('a full collection says so, and deleting from it makes room', async () => {
+    const f = realAdapterFixture();
+    try {
+      const body = 'x'.repeat(2000);
+      const made: string[] = [];
+      let refused: unknown;
+      for (let index = 0; index < 40 && !refused; index++) {
+        try { made.push(f.xdb.create('notes', { body }).id); } catch (error) { refused = error; }
+      }
+      expect(String(refused)).toContain('Could not save "notes"');
+      expect(f.xdb.getStorageStatus().issues.map((issue) => issue.kind)).toEqual(['quota']);
+      const held = made.length;
+
+      expect(f.xdb.delete(made[0])).toBe(true);
+      expect(f.xdb.getAll('notes')).toHaveLength(held - 1);
+      expect(f.xdb.delete(made[1])).toBe(true);
+      expect(f.xdb.getAll('notes')).toHaveLength(held - 2);
+      // The room comes back when a save needs it: the deleted records keep their place, not their data.
+      expect(f.xdb.create('notes', { body }).id).toBeTruthy();
+      expect(f.xdb.create('notes', { body }).id).toBeTruthy();
+      expect(f.xdb.getAll('notes')).toHaveLength(held);
+      const raw = f.xdb.getAllRaw('notes').filter((record) => record.deleted);
+      expect(raw.map((record) => record.id)).toEqual(made.slice(0, 2));
+      expect(raw.map((record) => record.data)).toEqual([{}, {}]);
+    } finally { f.close(); }
+  });
+
+  it('keeps a deleted record whole while there is room', () => {
+    const { storage } = hostedStorage();
+    const xdb = service(storage);
+    const { id } = xdb.create('notes', { title: 'kept' });
+    xdb.delete(id);
+    expect(xdb.getAllRaw('notes')[0].data).toEqual({ title: 'kept' });
+  });
+
   it('integrates XDB with the real hosted adapter and queue: matched FIFO acknowledgments confirm one batch, not later writes', async () => {
     const f = realAdapterFixture();
     try {

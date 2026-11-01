@@ -6,6 +6,17 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- FormLogic: a loop of writes is not refused. XDB keeps a collection under one key, so each record added wrote the whole collection again, and the frame holds 32 saves: the 33rd was refused as a full store with room to spare. A save still waiting now takes the newest value of its key, and every receipt says what became of it. Unsent saves are the only ones changed, a remove, a clear or a batch is never passed, and a parent on protocol 0 gets every write as before.
+- FormLogic: a store that refuses a write says so in the frame. A collection in FormLogic's browser storage holds 30,000 characters, and past it the app's write failed with nothing on screen.
+- A deleted record gives its room back. It keeps its place for sync, which reads its id and stamp, and it kept its data too, so deleting freed nothing and a full store stayed full. When the store refuses a save, the data of the collection's deleted records goes and the save is tried again. While there is room they stay whole.
+- FormLogic: no app runs in a frame without an opaque origin. The document's framing headers and FormLogic's sandbox are what give it one, and a page or a server that left them out would have run the app on the site's own origin.
+- The Builder's FormLogic build carries the script policy its other builds and Studio's do.
+- A seed record whose id is a number is kept, under the same digits, where it was dropped without a word. A record with no id, or with `data` that is not an object, is left out and counted in the file's warning.
+- softn-runner is on wasmtime 50.0.1 (it was 45), which closes the critical advisory on Cranelift for aarch64. It needs Rust 1.97; the runner is built with 1.99.0, and the guest is unchanged.
+- The directory's play counter counts every opening, trending counts visitors once a day, and a metadata file keeps its access.
+
 ## v0.0.30
 
 - Upgrading from v0.0.29: the engine is still ZIPP v0.0.32, so nothing is rebuilt, and the FormLogic runtime and every protocol are v0.0.29's. Scene3D loads a model given as a `data:` URL (below), which is how FormLogic's frame and OAIY's preview give an app's assets: a host that changed the runtime's code to hand models over as `blob:` URLs need not.

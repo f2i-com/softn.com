@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SoftNWithXDB, composeBundleSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
+import { SoftNWithXDB, XDBStorageNotice, composeBundleSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
@@ -127,6 +127,9 @@ window.addEventListener('message', async event => {
   // saved that may not be.
   port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); storageCalls?.failInFlight(BACKEND_UNREADABLE); };
   try {
+    // The app's code runs in this document, so what keeps it off this site's origin is the frame's
+    // sandbox. Framed without one, by a page or a server that left it out, nothing of the app runs.
+    if (self.origin !== 'null') throw new Error('Apps run only in a sandboxed frame with an opaque origin');
     // `engine` is an addition: absent means the engine this document has always
     // run, so a FormLogic that predates the choice is unaffected. One it does
     // not serve is refused by name, never quietly replaced.
@@ -188,6 +191,7 @@ window.addEventListener('message', async event => {
     // A bundle's permission.json cannot enable arbitrary network, hardware or sync access.
     // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
     root.render(<Boundary><ThemeProvider defaultDarkMode={event.data.dark === true} declaredMode={declaredThemeMode(manifest)}>
+      <XDBStorageNotice appId={event.data.appId} problemsOnly />
       <SoftNWithXDB {...composed} appId={event.data.appId} resumeSavedSyncRoom={false}
         permissionConfig={{ permissions: {} }} scriptExecutionMode="main"
         assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}

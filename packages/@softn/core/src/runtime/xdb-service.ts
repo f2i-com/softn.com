@@ -385,6 +385,17 @@ function byField(field: string, order: 'asc' | 'desc'): (a: XDBRecord, b: XDBRec
  *
  * Falls back to localStorage when running standalone in browser.
  */
+/** The records with the data of deleted ones emptied, or null when none has any. */
+function withoutDeletedData(records: readonly XDBRecord[]): XDBRecord[] | null {
+  let lighter = false;
+  const kept = records.map((record) => {
+    if (!record.deleted || Object.keys(record.data ?? {}).length === 0) return record;
+    lighter = true;
+    return { ...record, data: {} };
+  });
+  return lighter ? kept : null;
+}
+
 export class XDBService {
   private storage: XDBStorage;
   /** What the app's records may take of the browser's store, when that is where they are. */
@@ -1163,13 +1174,26 @@ export class XDBService {
     } catch (err) {
       throw new XDBStorageError('invalid-data', `"${collection}" cannot be saved: a record's data is not something JSON can hold (${err instanceof Error ? err.message : String(err)}).`, collection);
     }
-    try {
-      if (this.storagePersistence?.protocol === 1) persisted = this.hostedWrite(this.storagePersistence.setItem(key, value), [collection]);
+    const save = (saving: string) => {
+      if (this.storagePersistence?.protocol === 1) persisted = this.hostedWrite(this.storagePersistence.setItem(key, saving), [collection]);
       else {
-        this.budget?.admit(key, value, reserve);
-        this.storage.setItem(key, value);
-        this.budget?.wrote(key, value);
+        this.budget?.admit(key, saving, reserve);
+        this.storage.setItem(key, saving);
+        this.budget?.wrote(key, saving);
         if (this.storagePersistence) persisted = this.unsupportedPersistence(collection);
+      }
+    };
+    try {
+      try {
+        save(value);
+      } catch (err) {
+        // A deleted record keeps its place for sync, which reads its id and stamp, and it kept its
+        // data too. So deleting freed nothing, and in a full store the delete itself was refused:
+        // nothing could ever be removed to make room. Only when the store refuses, its data goes.
+        const lighter = withoutDeletedData(records);
+        if (lighter === null) throw err;
+        records.splice(0, records.length, ...lighter);
+        save(JSON.stringify(lighter));
       }
       this.acknowledged.delete(collection);
     } catch (err) {

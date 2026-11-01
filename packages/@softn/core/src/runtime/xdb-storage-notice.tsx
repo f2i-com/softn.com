@@ -32,12 +32,13 @@ function describe(status: XDBStorageStatus): { title: string; detail: string; to
   return null;
 }
 
-export function XDBStorageNotice({ appId, xdb, className }: { appId?: string; xdb?: XDBService; className?: string }): React.ReactElement | null {
+/** `problemsOnly`: for a host that says itself that it is saving. */
+export function XDBStorageNotice({ appId, xdb, className, problemsOnly }: { appId?: string; xdb?: XDBService; className?: string; problemsOnly?: boolean }): React.ReactElement | null {
   const service = xdb ?? getXDB(appId);
   const status = useXDBStorageStatus(service);
   const message = describe(status);
   const [retrying, setRetrying] = React.useState(false);
-  if (!message && status.pendingWrites === 0) return null;
+  if (!message && (problemsOnly || status.pendingWrites === 0)) return null;
   if (!message) {
     return <div role="status" aria-live="polite" className={className} data-xdb-storage="pending" style={{ fontSize: 12, padding: '4px 12px' }}>
       Saving {status.pendingWrites} change{status.pendingWrites === 1 ? '' : 's'}…

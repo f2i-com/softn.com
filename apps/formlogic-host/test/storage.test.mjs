@@ -175,14 +175,80 @@ test('outstanding count and serialized retained-size bounds refuse before cache 
 
 test('serialized retained-size bound is independent of cache map size', t => {
   const bounded = fixture(t);
-  // Repeated same-key values keep the map small while the queue retains
-  // each caller's immutable input and truthful receipt.
+  // A value and its removal keep the map small while the queue retains each
+  // caller's immutable input and truthful receipt: a remove is never passed.
   let admitted = 0;
-  while (true) { try { bounded.storage.setItem('same', 'x'.repeat(24000) + admitted); admitted++; } catch { break; } }
+  while (true) { try { bounded.storage.setItem('same', 'x'.repeat(24000) + admitted); bounded.storage.removeItem('same'); admitted++; } catch { break; } }
   assert.equal(admitted, 10);
-  assert.equal(bounded.acknowledgedPersistence.getStatus().pendingWrites, 10);
-  assert.equal(bounded.storage.getItem('same').endsWith('9'), true);
+  assert.equal(bounded.acknowledgedPersistence.getStatus().pendingWrites, 20);
+  assert.equal(bounded.storage.getItem('same'), null);
   assert.equal(bounded.posted.length, 1);
+});
+
+test('a loop of saves of one key is not refused, and sends only what is still news', async t => {
+  const f = fixture(t);
+  const receipts = [];
+  for (let index = 0; index < 500; index++) receipts.push(f.api.setItem('xdb:app:notes', `records-${index}`));
+  assert.equal(f.storage.getItem('xdb:app:notes'), 'records-499');
+  assert.equal(f.api.getStatus().pendingWrites, 2, 'the one sent, and one waiting that holds the rest');
+  assert.equal(f.posted.length, 1);
+  f.queue.settle(f.posted[0].id, acknowledged); await microtasks();
+  assert.equal(f.posted.length, 2);
+  assert.equal(f.posted[1].input.value, 'records-499');
+  f.queue.settle(f.posted[1].id, acknowledged); await microtasks();
+  await Promise.all(receipts.map(receipt => receipt.completion));
+  assert.ok(receipts.every(receipt => receipt.state === 'confirmed'));
+  assert.deepEqual(f.confirmedSnapshot(), { 'xdb:app:notes': 'records-499' });
+  assert.equal(f.api.getStatus().pendingWrites, 0);
+});
+
+test('a save that joined another shares its outcome', async t => {
+  const f = fixture(t);
+  f.api.setItem('first', 'sent');
+  const waiting = f.api.setItem('key', 'older');
+  const joined = f.api.setItem('key', 'newer');
+  f.queue.settle(f.posted[0].id, acknowledged); await microtasks();
+  f.queue.settle(f.posted[1].id, { error: 'refused' }); await microtasks();
+  await assert.rejects(waiting.completion, /not confirmed/);
+  await assert.rejects(joined.completion, /not confirmed/);
+  assert.equal(waiting.state, 'failed');
+  assert.equal(joined.state, 'failed');
+  assert.equal(f.api.getStatus().failedWrites, 1, 'one save failed, however many asked for it');
+  assert.deepEqual(f.confirmedSnapshot(), { first: 'sent' });
+});
+
+test('a save goes past saves of other keys, and past nothing else', async t => {
+  const f = fixture(t);
+  f.api.setItem('first', 'sent');
+  f.api.setItem('a', 'a1');
+  f.api.setItem('b', 'b1');
+  f.api.setItem('a', 'a2');
+  f.storage.removeItem('b');
+  f.api.setItem('a', 'a3');
+  for (let index = 0; index < 5; index++) {
+    assert.ok(index < f.posted.length, `a save ${index} was posted`);
+    f.queue.settle(f.posted[index].id, acknowledged); await microtasks();
+  }
+  assert.deepEqual(f.posted.map(item => [item.input.operation, item.input.key, item.input.value]), [
+    ['set', 'first', 'sent'], ['set', 'a', 'a2'], ['set', 'b', 'b1'], ['remove', 'b', undefined], ['set', 'a', 'a3'],
+  ]);
+  assert.deepEqual(f.confirmedSnapshot(), { first: 'sent', a: 'a3' });
+});
+
+test('a save already handed over is never changed', async t => {
+  const f = fixture(t);
+  f.api.setItem('key', 'sent');
+  f.api.setItem('key', 'next');
+  assert.equal(f.posted[0].input.value, 'sent');
+  f.queue.settle(f.posted[0].id, acknowledged); await microtasks();
+  assert.equal(f.posted[1].input.value, 'next');
+});
+
+test('a protocol 0 parent still gets every write, as it always did', async t => {
+  const f = fixture(t, {}, { acknowledged: false });
+  for (let index = 0; index < 4; index++) f.storage.setItem('key', String(index));
+  for (let index = 0; index < 4; index++) { f.queue.settle(f.posted[index].id, { result: {} }); await microtasks(); }
+  assert.deepEqual(f.posted.map(item => item.input.value), ['0', '1', '2', '3']);
 });
 
 test('batch admission preflights all replacements and freezes one FIFO parent commit', async t => {
