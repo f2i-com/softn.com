@@ -163,7 +163,7 @@ Capabilities such as network, microphone and synchronization require support and
 
 | Topic                   | Read next                                                                                                                                                      |
 | :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The guides              | [softn.com/docs](https://softn.com/docs/): thirty pages from "What is SoftN?" to hosting, generated from [`docs/content/softn-docs.json`](docs/README.md)         |
+| The guides              | [softn.com/docs](https://softn.com/docs/): thirty-one pages from "What is SoftN?" to hosting, generated from [`docs/content/softn-docs.json`](docs/README.md)     |
 | Language and components | Expand the reference below for `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                   |
 | Data modeling           | [Builder collections, ER relationships and record references](docs/engineering/BUILDER_DATA.md)                                                                         |
 | Loading and composition | [Bundle loading](docs/engineering/BUNDLE_LOADING.md) · [Component loading](docs/engineering/COMPONENT_LOADING.md) · [Reopening local apps](docs/engineering/LOCAL_APP_REOPEN.md)                   |

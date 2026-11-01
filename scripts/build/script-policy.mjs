@@ -54,6 +54,31 @@ export function inlineScripts(html) {
   return found;
 }
 
+/**
+ * What a page says when its own code does not arrive. A half-finished upload,
+ * or an old copy of the page naming files a deployment has replaced, left a
+ * blank page, or the loading wheel for ever: the code that says what went wrong
+ * is the code that is missing. So this much is written into the page. The
+ * capturing listener is how a script element's `error` is heard from outside
+ * it (the event does not bubble), and it stands down once the page has drawn.
+ * Only the entry's failure lands here: a chunk loaded later is the app's to report.
+ */
+export const ENTRY_WATCH =
+  "addEventListener('error',function(event){" +
+  "var script=event.target,root=document.getElementById('root');" +
+  "if(!root||!script||script.tagName!=='SCRIPT'||script.type!=='module')return;" +
+  "if(root.childElementCount>0&&!document.getElementById('boot'))return;" +
+  "var box=document.createElement('div'),text=document.createElement('p'),again=document.createElement('button');" +
+  "box.setAttribute('role','alert');" +
+  "box.style.cssText='min-height:100dvh;box-sizing:border-box;padding:24px;display:grid;place-content:center;justify-items:center;gap:12px;text-align:center;font:16px/1.5 system-ui';" +
+  "text.style.margin='0';" +
+  "text.textContent='This page could not load: part of it is missing. That can happen while the site is being updated.';" +
+  "again.type='button';again.textContent='Reload';" +
+  "again.addEventListener('click',function(){location.reload()});" +
+  "box.appendChild(text);box.appendChild(again);" +
+  "root.textContent='';root.appendChild(box)" +
+  "},true);";
+
 export function scriptPolicyPlugin() {
   return {
     name: 'softn-script-policy',
@@ -63,9 +88,12 @@ export function scriptPolicyPlugin() {
       order: 'post',
       handler(html) {
         if (/http-equiv=["']Content-Security-Policy["']/i.test(html)) return html;
-        const meta = `<meta http-equiv="Content-Security-Policy" content="${scriptPolicy(inlineScripts(html))}" />`;
+        // Here, so that the policy below is written with it: an inline script
+        // runs by its hash. Ahead of the page's other scripts, to hear of them.
+        const watched = html.replace(/<head(\s[^>]*)?>/i, (head) => `${head}\n    <script>${ENTRY_WATCH}</script>`);
+        const meta = `<meta http-equiv="Content-Security-Policy" content="${scriptPolicy(inlineScripts(watched))}" />`;
         // First in the head, before any script it governs.
-        return html.replace(/<head(\s[^>]*)?>/i, (head) => `${head}\n    ${meta}`);
+        return watched.replace(/<head(\s[^>]*)?>/i, (head) => `${head}\n    ${meta}`);
       },
     },
   };

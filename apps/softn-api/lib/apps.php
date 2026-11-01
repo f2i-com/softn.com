@@ -916,20 +916,45 @@ final class Categories
         ['other', 'Other', 'Everything else', '📦', 90],
     ];
 
-    public static function ensure(): void {
-        $rows=Catalog::categories();$before=$rows;
+    /** `$rows` with the categories the site starts with. @param array<string, array<string, mixed>> $rows */
+    private static function withCore(array $rows): array {
         foreach(self::CORE as [$id,$name,$desc,$emoji,$sort]) {
             if(isset($rows[$id]) && $rows[$id]['status']!=='core')continue;
             $rows[$id]=['id'=>$id,'name'=>$name,'description'=>$desc,'emoji'=>$emoji,'status'=>'core','sort'=>$sort,'created_at'=>$rows[$id]['created_at']??time()];
         }
-        if($rows!==$before)Catalog::saveCategories($rows);
+        return $rows;
+    }
+
+    public static function ensure(): void {
+        // Nothing to bring up to date in a file that cannot be read: writing
+        // over it would lose what it holds, which readable() below goes without.
+        try { $rows=Catalog::categories(); } catch (ApiError) { return; }
+        $next=self::withCore($rows);
+        if($next!==$rows)Catalog::saveCategories($next);
+    }
+
+    /**
+     * The categories, for reading. A categories.json that cannot be read is
+     * the owner's to mend and is kept as it is, but the site's own categories
+     * are built in, and a file of labels is no reason to take the listing and
+     * every play page down: what suggested and renamed categories it held wait
+     * for it, and writing to them is refused meanwhile (Catalog::categories).
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private static function readable(): array {
+        try { return Catalog::categories(); }
+        catch (ApiError $e) {
+            error_log('softn-api: going on with the built-in categories: ' . $e->getMessage());
+            return self::withCore([]);
+        }
     }
 
     /** @return array<int, array<string, mixed>> */
     public static function all(bool $includeHidden = false): array
     {
         self::ensure();
-        $rows=array_values(Catalog::categories());$apps=Catalog::all();
+        $rows=array_values(self::readable());$apps=Catalog::all();
         foreach($rows as &$r)$r['app_count']=count(array_filter($apps,fn($a)=>$a['category']===$r['id']&&!$a['hidden']));unset($r);
         usort($rows,fn($a,$b)=>[in_array($a['status'],['core','approved'])?0:1,$a['sort'],$a['name']]<=>[in_array($b['status'],['core','approved'])?0:1,$b['sort'],$b['name']]);
         $out = [];
@@ -953,7 +978,7 @@ final class Categories
         self::ensure();$id=Apps::slugOf($given);$name=mb_strtolower(trim($given));
         // Nothing given is `other`, whatever categories there are.
         if($name==='')return 'other';
-        foreach(Catalog::categories() as $r)if($r['status']!=='hidden' && (($id!=='' && $r['id']===$id) || mb_strtolower($r['name'])===$name))return $r['id'];
+        foreach(self::readable() as $r)if($r['status']!=='hidden' && (($id!=='' && $r['id']===$id) || mb_strtolower($r['name'])===$name))return $r['id'];
         return 'other';
     }
 

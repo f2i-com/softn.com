@@ -50,6 +50,9 @@ if (str_contains($path, ':')) {
 // the shell's directory, which the shell's own chunks do (/play/GLTFLoader-….js).
 if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/app/[^/]+/?$#', $path)
     || (preg_match('#^/play/[^/]+/?$#', $path) && !is_file($root . rtrim($path, '/')))) {
+    // The API leaves these to the server (Response::html), and here the server is this file.
+    header('Cross-Origin-Opener-Policy: same-origin');
+    header('Cross-Origin-Embedder-Policy: credentialless');
     require "$root/api/index.php";
     return true;
 }
@@ -128,8 +131,8 @@ if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts
 
 // The single-page shells for every route inside them. These carry the
 // isolation headers too: /web/app/Pocket is the document a worker-mode app
-// runs in, and a document without them has no SharedArrayBuffer whatever
-// its scripts were served with. The deployed configs set the headers on
+// runs in, and a document without them is not isolated whatever its scripts
+// were served with. The deployed configs set the headers on
 // every response; this file has to say so for each branch it answers from,
 // and the release smoke test (scripts/release/smoke-site.mjs) checks that it does.
 foreach (['web', 'builder', 'studio'] as $app) {

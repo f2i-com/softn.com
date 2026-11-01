@@ -1,9 +1,8 @@
 /**
  * The self-hosted single app must reach the browser with the same
- * cross-origin isolation the site sends for /play/<app>: an app that uses
- * the CPU language-model provider (SharedArrayBuffer) would otherwise run
- * on one core here and on every core there. The rule is read from the
- * site's Apache config so the two cannot drift apart.
+ * cross-origin isolation the site sends for /play/<app>, so an app behaves
+ * the same in both. The rule is read from the site's Apache config so the
+ * two cannot drift apart.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';

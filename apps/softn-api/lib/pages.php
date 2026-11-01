@@ -28,8 +28,9 @@ final class Pages
         try {
             $slug = Apps::resolveSlug($slugGiven);
             $row = Apps::row($slug);
-        } catch (ApiError) {
-            return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
+        } catch (ApiError $err) {
+            // The site says it has no such app; a directory that cannot say is another matter.
+            return $err->status === 404 ? Response::html($html, 200, ['Cache-Control' => 'no-cache']) : self::problem($err->getMessage(), $err->status);
         }
         $origin = self::origin();
         $name = (string) $row['name'];
@@ -130,14 +131,7 @@ final class Pages
         } catch (ApiError $err) {
             // A real 404 with a way back, not the shell failing to load
             // something: a shared link to an app since unpublished should say so.
-            return Response::html(
-                '<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />'
-                . '<title>Not here — SoftN</title><style>html,body{margin:0;background:#171821;color:#f5f5f8;font-family:system-ui}'
-                . 'main{min-height:100dvh;display:grid;place-content:center;text-align:center;gap:12px;padding:24px}a{color:#acb8ff}</style></head>'
-                . '<body><main><h1>' . $e($err->getMessage()) . '</h1><p><a href="/apps">Browse the directory</a></p></main></body></html>',
-                $err->status === 404 ? 404 : $err->status,
-                ['Cache-Control' => 'no-cache']
-            );
+            return self::problem($err->getMessage(), $err->status);
         }
         $html = (string) file_get_contents($shell);
         $config = json_encode(self::playConfig($row, $ver), JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -162,6 +156,27 @@ final class Pages
         $html = str_replace('</head>', $inject, $html);
         // The page names the latest version, which the next publish moves.
         return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
+    }
+
+    /**
+     * What a person who followed a link to an app's page or its play page is
+     * told when it cannot be shown: a page, as the status the API would have
+     * answered, with a way back. The API's JSON is for a script, and this
+     * address is in someone's chat.
+     */
+    public static function problem(string $message, int $status): Response
+    {
+        $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        // Worded for an operator, whose site it is; a visitor is told what it means for them first.
+        $say = $status === 404 ? '<h1>' . $e($message) . '</h1>' : '<h1>This page can’t be shown right now.</h1><p>' . $e($message) . '</p>';
+        return Response::html(
+            '<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />'
+            . '<title>' . ($status === 404 ? 'Not here' : 'Unavailable') . ' — SoftN</title><style>html,body{margin:0;background:#171821;color:#f5f5f8;font-family:system-ui}'
+            . 'main{min-height:100dvh;display:grid;place-content:center;text-align:center;gap:12px;padding:24px}a{color:#acb8ff}</style></head>'
+            . '<body><main>' . $say . '<p><a href="/apps">Browse the directory</a></p></main></body></html>',
+            $status,
+            ['Cache-Control' => 'no-cache']
+        );
     }
 
     /**

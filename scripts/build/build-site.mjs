@@ -113,11 +113,11 @@ ErrorDocument 404 /index.html
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
   Header always set X-Frame-Options "SAMEORIGIN"
 
-  # Cross-origin isolation gives the page SharedArrayBuffer, which is what
-  # lets a language model on the CPU provider use every core instead of one:
-  # on a machine without a usable GPU that is the difference between slow and
-  # apparently hung. credentialless rather than require-corp, so images and
-  # model files fetched from other origins keep working without CORP headers.
+  # Cross-origin isolation, on every response. It puts the page in a process
+  # of its own and makes SharedArrayBuffer available, which nothing shipped
+  # uses today. credentialless rather than require-corp, so images and model
+  # files fetched from other origins keep working without CORP headers. Here
+  # and not in the API's PHP as well: a browser ignores a policy sent twice.
   Header always set Cross-Origin-Opener-Policy "same-origin"
   Header always set Cross-Origin-Embedder-Policy "credentialless"
 
@@ -151,7 +151,7 @@ ErrorDocument 404 /index.html
 
 # Prefer the .br/.gz twins the build wrote. Brotli at the quality used here is
 # far too slow to run per request, so the win only exists if the file is already
-# on disk: the engine alone is 6.1MB raw, 2.1MB gzipped and 1.5MB brotlied.
+# on disk: the engine alone is 7.3MB raw, 2.4MB gzipped and 1.8MB brotlied.
 # mod_deflate above still covers anything without a twin.
 #
 # AddEncoding, not a Header in a FilesMatch. The first version of this set
@@ -353,7 +353,7 @@ server {
 
     # Serve the .br/.gz twins the build wrote in preference to compressing per
     # request: brotli at build quality is far too slow to run live, and it is
-    # where the engine's 6.1MB becomes 1.5MB rather than the 1.8MB a live
+    # where the engine's 7.3MB becomes 1.8MB rather than the 2.1MB a live
     # brotli pass would manage. gzip_static is in the nginx of every
     # distribution and of nginx.org. brotli_static is the third-party
     # ngx_brotli module (on Debian and Ubuntu, the
@@ -452,8 +452,10 @@ host needs no database server and no accounts.
 
 What it needs from the host:
 
-- PHP 8.1+ with the \`pdo_sqlite\` and \`zip\` extensions (both are standard on
-  cPanel hosts; \`/api/health\` reports what it found).
+- PHP 8.1+ with the \`zip\`, \`zlib\` and \`mbstring\` extensions, and \`pdo_sqlite\`
+  for apps that keep records on the server. All are standard on cPanel hosts;
+  a stock Debian or Ubuntu PHP needs \`mbstring\` added (\`php-mbstring\`).
+  Without \`zip\`, \`zlib\` or \`mbstring\`, \`/api/health\` answers 503 and says which.
 - \`data/\` writable by PHP. Upload it with the site and, if the first request
   to \`/api/health\` says it is not writable, give it write permission (0775 or
   0777 on shared hosting).
@@ -539,8 +541,8 @@ compression rules when available.
 
 The build writes \`.br\` and \`.gz\` twins beside every compressible file.
 They exist because the quality worth having cannot be afforded per request: the
-zipp engine is 6.1MB raw, 2.1MB gzipped, and 1.5MB at the brotli quality used
-here -- 8s to produce against 0.1s for a live-quality pass (1.8MB), which is
+zipp engine is 7.3MB raw, 2.4MB gzipped, and 1.8MB at the brotli quality used
+here -- 10s to produce against 0.1s for a live-quality pass (2.1MB), which is
 why it is spent once at build time rather than per request. Serving the twin
 costs the server nothing.
 

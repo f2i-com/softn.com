@@ -1,6 +1,7 @@
 // What dist/private is made of: the shell template index.php renders, the
 // sample bundle and the sample configuration. Pure; assemble.mjs writes them.
 import { zipSync, strToU8 } from 'fflate';
+import { ENTRY_WATCH } from '../../../scripts/build/script-policy.mjs';
 
 /**
  * The tags Vite wrote for the entry — its module script, its stylesheet,
@@ -78,6 +79,7 @@ export function shellTemplate(tags) {
       }
     </style>
     <script id="softn-boot" type="application/json">{{BOOT_JSON}}</script>
+    <script>${ENTRY_WATCH}</script>
     ${tags}
   </head>
   <body>

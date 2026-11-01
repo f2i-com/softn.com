@@ -954,15 +954,10 @@ final class Response
     /** @param array<string, string> $headers */
     public static function html(string $html, int $status = 200, array $headers = []): self
     {
-        // Cross-origin isolation, as the deployed .htaccess also sets it, so a
-        // page served through the API (an app's share page) is isolated too:
-        // the runtime in its popup then gets SharedArrayBuffer, and a model
-        // on the CPU provider uses every core.
-        return new self($status, $headers + [
-            'Content-Type' => 'text/html; charset=utf-8',
-            'Cross-Origin-Opener-Policy' => 'same-origin',
-            'Cross-Origin-Embedder-Policy' => 'credentialless',
-        ], $html);
+        // The cross-origin isolation headers are the server's alone: .htaccess and the
+        // nginx config set them on every response, and router.php for `php -S`. Sent
+        // here as well they arrived twice, and a browser ignores a policy given twice.
+        return new self($status, $headers + ['Content-Type' => 'text/html; charset=utf-8'], $html);
     }
 
     /** @param array<string, string> $headers */

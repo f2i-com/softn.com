@@ -647,7 +647,13 @@ only when the app declared that capability. The page wears the same slim
 bar the runtime draws over every app: the way back to the directory and to
 the app's page, the menu, fullscreen, and a fold-away. It carries the app's
 name as its title and `<meta name="softn:app">`; an unpublished or unknown
-name is a real 404. The bare `/play/` redirects to the directory.
+name is a real 404. The bare `/play/` redirects to the directory. When the
+directory has a problem, `/app/{slug}` and `/play/{slug}` answer it as a page
+with a way back, at the status the API would give: they are links a person
+followed. The API's own routes stay JSON. A `categories.json` that cannot be
+read does not stop them: the listing, `GET /api/categories` and these pages go
+on with the built-in categories, the file is left as it is for you to mend, and
+what would write to it answers 503.
 
 An app runs with every capability it declares withheld until the visitor
 allows it on the bar above the app. **Trusting** an app removes that bar:

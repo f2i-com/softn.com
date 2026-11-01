@@ -216,8 +216,8 @@ function baseHeaders(file, length) {
     'Cache-Control': cacheControl(file),
     'Content-Length': length,
     'Content-Type': MIME.get(path.extname(file).toLowerCase()) || 'application/octet-stream',
-    // The runtime needs SharedArrayBuffer and a worker-mode app needs the
-    // embedder policy on every response, exactly as the deployment sends it.
+    // A worker-mode app needs the embedder policy on every response,
+    // exactly as the deployment sends it.
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Embedder-Policy': 'credentialless',
   };

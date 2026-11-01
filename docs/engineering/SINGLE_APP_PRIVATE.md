@@ -24,10 +24,12 @@ What differs is delivery.
 | `index.php?manifest`     | The web app manifest for installation, built from the deployment settings; no cookie needed.                                                                                  |
 
 Every page and asset the shell serves carries `Cross-Origin-Opener-Policy:
-same-origin` and `Cross-Origin-Embedder-Policy: credentialless`, set by
-`softn-serve.php` itself and repeated in both `.htaccess` variants, so the
-app is as cross-origin isolated here as on softn.com (`SharedArrayBuffer`
-for the CPU language-model provider). Nothing to configure on nginx.
+same-origin` and `Cross-Origin-Embedder-Policy: credentialless`, once each, so
+the app is as cross-origin isolated here as on softn.com. `softn-serve.php`
+sends them itself, for a host that reads no `.htaccess`; both `.htaccess`
+variants take its copies off and set their own, which also reach the static
+files, because a browser ignores a policy that arrives twice. On nginx the
+locations below add them for the files and leave `index.php` to send its own.
 
 The manifest is never sent raw: `config.server`, with any token in it, and
 every field the runtime does not read are dropped. Every other entry of the

@@ -33,10 +33,10 @@ Optional `host` names a same-origin JavaScript module whose default export retur
 
 The shipped `.htaccess` sends `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: credentialless`, the same cross-origin
-isolation softn.com sends for `/play/<app>`. It gives the page
-`SharedArrayBuffer`, which the CPU language-model provider uses to run on
-every core rather than one; `credentialless` keeps images and model files
-from other origins working without CORP headers. A host that reads no
+isolation softn.com sends for `/play/<app>`. It makes `SharedArrayBuffer`
+available to the page, which nothing shipped uses today; `credentialless`
+keeps images and model files from other origins working without CORP
+headers. A host that reads no
 `.htaccess` (nginx) must add the two headers itself, or an app that uses
 that provider runs slower self-hosted than on the site. Cross-origin
 `<iframe>` embeds inside an app need the framed page to send a COEP of its

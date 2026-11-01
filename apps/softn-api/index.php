@@ -186,11 +186,24 @@ try {
     // that ended, not one the shutdown would end after the reply is gone.
     Catalog::release();
     server_timing();
-    Response::json(['ok' => false, 'error' => $e->getMessage()] + $e->extra, $e->status,
+    if (is_page_request()) Pages::problem($e->getMessage(), $e->status)->send();
+    else Response::json(['ok' => false, 'error' => $e->getMessage()] + $e->extra, $e->status,
         isset($e->extra['retryAfter']) ? ['Retry-After' => (string) $e->extra['retryAfter']] : [])->send();
 } catch (Throwable $e) {
     error_log('softn-api: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
-    Response::json(['ok' => false, 'error' => 'The server could not complete that.'], 500)->send();
+    if (is_page_request()) Pages::problem('The server could not complete that.', 500)->send();
+    else Response::json(['ok' => false, 'error' => 'The server could not complete that.'], 500)->send();
+}
+
+/**
+ * Whether this request is for a page rather than the API: an app's share page
+ * or its play page, as a link names it or as a route of the API. Read from the
+ * request line, since what failed may be the reading of the request itself.
+ */
+function is_page_request(): bool
+{
+    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+    return is_string($path) && preg_match('#^(?:/api/page)?/(?:app|play)/[^/]+/?$#', rawurldecode($path)) === 1;
 }
 
 /**

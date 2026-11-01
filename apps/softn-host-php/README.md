@@ -108,9 +108,8 @@ location ^~ /api/ {
     fastcgi_pass unix:/run/php/php-fpm.sock;
 }
 add_header X-Content-Type-Options nosniff always;
-# Cross-origin isolation, as the .htaccess sends it: without it the page has
-# no SharedArrayBuffer, and an app on the CPU language-model provider runs on
-# one core.
+# Cross-origin isolation, as the .htaccess sends it, so an app behaves the same
+# here as on softn.com.
 add_header Cross-Origin-Opener-Policy same-origin always;
 add_header Cross-Origin-Embedder-Policy credentialless always;
 add_header Content-Security-Policy "frame-ancestors 'self'" always;

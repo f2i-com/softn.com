@@ -26,11 +26,14 @@ AddType text/javascript .mjs
 </IfModule>
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
-    # The same cross-origin isolation softn.com sends for this shell: it gives
-    # the page SharedArrayBuffer, which the CPU language-model provider uses
-    # to run on every core instead of one. credentialless rather than
-    # require-corp, so images and model files from other origins keep working
-    # without CORP headers. An app must behave the same here as on the site.
+    # The same cross-origin isolation softn.com sends for this shell.
+    # credentialless rather than require-corp, so images and model files from
+    # other origins keep working without CORP headers. An app must behave the
+    # same here as on the site. index.php sends these itself, for a host that
+    # reads no .htaccess, so its copies go first: a browser ignores a policy
+    # that arrives twice, and "always" does not replace what PHP sent.
+    Header unset Cross-Origin-Opener-Policy
+    Header unset Cross-Origin-Embedder-Policy
     Header always set Cross-Origin-Opener-Policy "same-origin"
     Header always set Cross-Origin-Embedder-Policy "credentialless"
     # The service worker may control the whole directory and must never be stale.

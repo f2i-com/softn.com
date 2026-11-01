@@ -348,8 +348,13 @@ test("the API directory's own files are never served by either host", () => {
   for (const path of PRIVATE_PATHS) assert.ok(api.test(path), `Apache hands "${path}" to the API script`);
   assert.ok(apache.includes('RewriteRule ^data(?:/|$) - [R=404,L]'));
   // The directory on its own: lib/ is forbidden, .md refused, data/ denied.
+  // All but the docs: a per-directory rewrite runs after a refusal, so one that
+  // took in README.md made the API's own route a 403 on Apache.
   assert.ok(apiHtaccess.includes('RewriteRule ^lib/ - [F,L]'));
-  assert.match(apiHtaccess, /<FilesMatch "\\\.md\$">\n\s*<IfModule mod_authz_core\.c>\n\s*Require all denied/);
+  const refused = apiHtaccess.match(/<FilesMatch "([^"]+)">\n\s*<IfModule mod_authz_core\.c>\n\s*Require all denied/);
+  assert.ok(refused, 'the .md refusal');
+  assert.ok(new RegExp(refused[1]).test('NOTES.md'));
+  assert.ok(!new RegExp(refused[1]).test('README.md'));
   assert.match(dataHtaccess, /<IfModule mod_authz_core\.c>\n\s*Require all denied/);
   // nginx: the /api location names the script, whatever the URI, and /data/ is gone.
   const nginx = rawBlock('NGINX_CONFIG');

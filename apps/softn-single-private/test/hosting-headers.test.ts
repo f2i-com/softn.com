@@ -30,6 +30,18 @@ describe('hosting headers', () => {
     expect(apacheHeaders(read('../htaccess-backend'))).toEqual(expected);
   });
 
+  // PHP's copies land in the table `Header always` does not touch, so both went
+  // out, and a browser ignores a policy it is given twice: on Apache the page
+  // was not isolated. A real server is what shows it; this keeps the two lines.
+  it.each(['../public/.htaccess', '../htaccess-backend'])('%s takes off what the shell sent before it sets its own', (file) => {
+    const config = read(file);
+    for (const name of ['Cross-Origin-Opener-Policy', 'Cross-Origin-Embedder-Policy']) {
+      const off = config.indexOf(`Header unset ${name}\n`);
+      expect(off, `${file} unsets ${name}`).toBeGreaterThan(0);
+      expect(off).toBeLessThan(config.indexOf(`Header always set ${name}`));
+    }
+  });
+
   it('the shell sends them itself, before any output', () => {
     const shell = read('../php/softn-serve.php');
     expect(phpHeaders(shell)).toEqual(expected);

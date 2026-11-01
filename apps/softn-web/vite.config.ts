@@ -126,8 +126,8 @@ export default defineConfig({
   server: {
     port: env.VITE_PORT ? Number(env.VITE_PORT) : 1420,
     strictPort: true,
-    // Cross-origin isolation, as the deployed .htaccess sets it: with it the
-    // CPU provider runs a model on every core (SharedArrayBuffer).
+    // Cross-origin isolation, as the deployed .htaccess sets it, so that a
+    // page behaves here as it does there.
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'credentialless',

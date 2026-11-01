@@ -44,10 +44,10 @@ if (function_exists('ini_set')) {
 if (function_exists('set_time_limit')) set_time_limit(60);
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: strict-origin-when-cross-origin');
-// The same cross-origin isolation softn.com sends (SharedArrayBuffer for the
-// CPU language-model provider); credentialless keeps cross-origin images and
-// model files working. Set here as well as in .htaccess so a host that reads
-// no .htaccess (nginx, the PHP development server) serves the app the same.
+// The same cross-origin isolation softn.com sends; credentialless keeps
+// cross-origin images and model files working. Set here for a host that reads
+// no .htaccess (nginx, the PHP development server); the shipped .htaccess takes
+// these off and sets its own, because a browser ignores a policy sent twice.
 header('Cross-Origin-Opener-Policy: same-origin');
 header('Cross-Origin-Embedder-Policy: credentialless');
 

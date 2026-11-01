@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { inlineScripts, scriptPolicy, scriptPolicyPlugin } from './script-policy.mjs';
+import { ENTRY_WATCH, inlineScripts, scriptPolicy, scriptPolicyPlugin } from './script-policy.mjs';
 
 const THEME = "(function () { document.documentElement.setAttribute('data-theme', 'dark'); })();";
 const PAGE = `<!doctype html>
@@ -42,6 +42,17 @@ test('is written first in the head, before any script it governs', () => {
   assert.ok(meta > 0 && meta < out.indexOf('<script'));
   // Once.
   assert.equal(scriptPolicyPlugin().transformIndexHtml.handler(out), out);
+});
+
+test('writes what the page says when its code is missing, ahead of the entry, and lets it run', () => {
+  const out = scriptPolicyPlugin().transformIndexHtml.handler(PAGE);
+  assert.deepEqual(inlineScripts(out), [ENTRY_WATCH, THEME]);
+  assert.ok(out.indexOf(ENTRY_WATCH) < out.indexOf('type="module"'));
+  const allowed = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(out)[1];
+  const hash = createHash('sha256').update(ENTRY_WATCH, 'utf8').digest('base64');
+  assert.ok(allowed.includes(`'sha256-${hash}'`), 'the policy names its hash');
+  // In a page's markup, its text must not end the element it is in.
+  assert.doesNotMatch(ENTRY_WATCH, /<\/script/i);
 });
 
 test('both editors keep the policy in the build FormLogic frames', () => {
