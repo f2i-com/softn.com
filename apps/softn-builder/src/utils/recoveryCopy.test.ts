@@ -25,7 +25,7 @@ import { useHistoryStore } from '../stores/historyStore';
 import { useNotificationStore } from '../stores/notificationStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSchemaStore } from '../stores/schemaStore';
-import { SESSION_STORAGE_KEY, captureSession, commitProjectSnapshot, prepareSessionSnapshot, startupAction } from './openProject';
+import { SESSION_STORAGE_KEY, captureSession, commitProjectSnapshot, noteOpenedFromLink, prepareSessionSnapshot, readQuarantinedSession, startupAction, takeOpenedFromLink } from './openProject';
 import { RECOVERY_OWNER_KEY, TAB_ID, recoveryOf, restoreOffer, writeRecoveryCopy } from './recoveryCopy';
 import { SESSION_ASSETS_KEY, joinStoredSession, resetRefusedAssets } from './storedAssets';
 import { resetPersistedRevisions, saveProject } from './saveProject';
@@ -68,6 +68,7 @@ function everythingNew(): void {
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   window.localStorage.clear();
+  takeOpenedFromLink();
   resetRefusedAssets();
   useNotificationStore.getState().clearAll();
   everythingNew();
@@ -118,6 +119,33 @@ describe('the copy of unsaved work', () => {
     expect([...copy.files.nodes.values()].filter((node) => node.fileType === 'asset')).toEqual([]);
     expect([...copy.files.nodes.values()].find((node) => node.path === 'assets')!.children).toEqual([]);
     expect([...copy.canvas.elements.values()].some((element) => element.props.children === 'Unsaved words')).toBe(true);
+  });
+
+  it('sets aside unsaved work a link opened another project over, rather than writing over it', () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    const first = stored()!;
+    // The front page's starter, opened in the same browser: the first edit in it is the first write.
+    noteOpenedFromLink();
+    everythingNew();
+    useProjectStore.getState().setName('Fieldnotes');
+    edit('A change to the starter');
+    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', setAside: 'Field Notes' });
+    const kept = readQuarantinedSession()!;
+    expect(kept.payload).toBe(first);
+    expect(kept.error).toContain('link');
+    expect(recoveryOf(stored()!)?.name).toBe('Fieldnotes');
+    // Told once: the next write is this project's own.
+    edit('Another change');
+    expect(writeRecoveryCopy({ view: 'design' })).not.toHaveProperty('setAside');
+  });
+
+  it('leaves a session Save wrote alone when a link opens over it: that work has a file', () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(captureSession('design')));
+    noteOpenedFromLink();
+    edit();
+    expect(writeRecoveryCopy({ view: 'design' })).not.toHaveProperty('setAside');
+    expect(readQuarantinedSession()).toBeNull();
   });
 
   it('is a failure handed back when the store will not take the text, and nothing is thrown', () => {

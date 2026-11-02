@@ -37,7 +37,7 @@ it('scales the real app to its container and offers a full-runtime link', () => 
   const destination = new URL(link.href);
   expect(destination.searchParams.get('open')).toBe('/examples/Fieldnotes.softn');
   expect(destination.searchParams.has('preview')).toBe(false);
-  expect(link.getAttribute('aria-label')).toBe('Open live Fieldnotes app in the runtime');
+  expect(link.getAttribute('aria-label')).toBe('Open in runtime: the live Fieldnotes app');
 });
 
 it('announces readiness only for the actual frame and its expected origin', () => {

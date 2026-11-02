@@ -25,7 +25,9 @@
  * Precedence at startup, decided in {@link startupAction}: a `?open=` link
  * wins over the session-restore prompt. The link is the reason the page was
  * opened; the saved session stays stored, untouched, for the next plain
- * launch. There is no second prompt after a remote open fails.
+ * launch, and is set aside if the first edit would replace unsaved work
+ * ({@link noteOpenedFromLink}). There is no second prompt after a remote open
+ * fails.
  */
 
 import { useCanvasStore } from '../stores/canvasStore';
@@ -776,6 +778,27 @@ export function startupAction(location: Location, history: History, storedSessio
   }
   if (storedSession) return { kind: 'restore-prompt', raw: storedSession };
   return { kind: 'nothing' };
+}
+
+/**
+ * A project opened from a link leaves the session it found in the store, for
+ * the next plain launch. That holds until the first edit: the recovery copy is
+ * one record, and a moment after the first change it would replace what was
+ * there. So the first write is told (see writeRecoveryCopy), and someone's only
+ * copy of unsaved work is set aside rather than written over.
+ */
+let openedOverSession = false;
+
+/** A link has opened a project over whatever session the store holds. */
+export function noteOpenedFromLink(): void {
+  openedOverSession = true;
+}
+
+/** Whether this write is the first since a link opened a project: asked once. */
+export function takeOpenedFromLink(): boolean {
+  const opened = openedOverSession;
+  openedOverSession = false;
+  return opened;
 }
 
 export type RemoteOpenOutcome =

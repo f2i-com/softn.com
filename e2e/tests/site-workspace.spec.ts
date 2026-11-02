@@ -61,7 +61,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
         const box = node.closest('.workspace-live-stage')!.getBoundingClientRect();
         return rect.width <= box.width && rect.height <= box.height + 1;
       })).toBe(true);
-      const runtimeButton = previewPanel.getByRole('link', { name: 'Open live Fieldnotes app in the runtime', exact: true });
+      const runtimeButton = previewPanel.getByRole('link', { name: 'Open in runtime: the live Fieldnotes app', exact: true });
       const previewBounds = await live.boundingBox();
       const buttonBounds = await runtimeButton.boundingBox();
       expect(buttonBounds!.y).toBeGreaterThanOrEqual(previewBounds!.y + previewBounds!.height);
@@ -79,7 +79,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
         await expect(shot).toHaveAttribute('alt', /SoftN|publish/i);
       }
       await testInfo.attach('landing-workspace', { body: await page.screenshot(), contentType: 'image/png' });
-      await previewPanel.getByRole('link', { name: 'Open live Fieldnotes app in the runtime', exact: true }).click();
+      await previewPanel.getByRole('link', { name: 'Open in runtime: the live Fieldnotes app', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Make space for what matters.', exact: true })).toBeVisible({ timeout: 60_000 });
       expect(new URL(page.url()).pathname).toMatch(/^\/web\//);
       expect(new URL(page.url()).searchParams.get('preview')).toBeNull();

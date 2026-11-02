@@ -28,6 +28,7 @@ import {
   openRemoteBundle,
   prepareProjectSnapshot,
   prepareSessionSnapshot,
+  noteOpenedFromLink,
   quarantineSession,
   type ProjectSnapshot,
   type ViewMode,
@@ -482,6 +483,7 @@ function App() {
       if (remoteOpenRef.current === controller) remoteOpenRef.current = null;
       if (outcome.kind === 'opened') {
         fileHandleRef.current = null;
+        noteOpenedFromLink();
         // A starter linked from the site opens on its running preview (`&view=preview`).
         setView(action.view ?? outcome.snapshot.view);
         sayOpenedWithWarnings(outcome.snapshot.warnings);

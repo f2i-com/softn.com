@@ -38,9 +38,9 @@
 import { useFilesStore } from '../stores/filesStore';
 import { useProjectStore } from '../stores/projectStore';
 import { flushCanvasToActiveFile } from './buildProjectBundle';
-import { captureSession, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
+import { captureSession, quarantineSession, SESSION_STORAGE_KEY, takeOpenedFromLink, type BuilderSession, type ViewMode } from './openProject';
 import { notePersistedRevision } from './saveProject';
-import { TAB_ID, captureAssets, missingAssetsSentence, storeAssets, type AssetStore, type AssetsKept } from './storedAssets';
+import { SESSION_ASSETS_KEY, TAB_ID, captureAssets, missingAssetsSentence, storeAssets, type AssetStore, type AssetsKept } from './storedAssets';
 
 /** A small record of which tab wrote the copy last, so another tab hears of it without reading the copy. */
 export const RECOVERY_OWNER_KEY = 'softn.builder.session.owner.v1';
@@ -56,7 +56,8 @@ export interface RecoveryMark {
 export type RecoverySession = BuilderSession & { recovery?: RecoveryMark };
 
 export type RecoveryWrite =
-  | { kind: 'written'; projectId: string; revision: number; assets: 'kept' | 'left-out' }
+  /** `setAside`: the project whose unsaved work this copy would have replaced, kept under Export → Recovery. */
+  | { kind: 'written'; projectId: string; revision: number; assets: 'kept' | 'left-out'; setAside?: string }
   | { kind: 'failed'; error: unknown };
 
 export interface RecoveryDeps {
@@ -73,6 +74,16 @@ export function writeRecoveryCopy(deps: RecoveryDeps): RecoveryWrite {
   try {
     (deps.flush ?? flushCanvasToActiveFile)();
     const storage = deps.storage ?? window.localStorage;
+    // The first write since a link opened a project over work that was not saved.
+    let setAside: string | undefined;
+    if (takeOpenedFromLink()) {
+      const found = storage.getItem?.(SESSION_STORAGE_KEY) ?? null;
+      const work = found === null ? null : recoveryOf(found);
+      if (found !== null && work) {
+        quarantineSession(found, new Error('It was set aside when a link opened another project.'), storage.getItem?.(SESSION_ASSETS_KEY) ?? null);
+        setAside = work.name;
+      }
+    }
     const assets = captureAssets(useFilesStore.getState().assetFiles);
     const session: RecoverySession = {
       ...captureSession(deps.view, { assets: 'apart' }),
@@ -95,7 +106,7 @@ export function writeRecoveryCopy(deps: RecoveryDeps): RecoveryWrite {
     const project = useProjectStore.getState();
     // A save that began before this and ends after it leaves this copy alone (saveProject.ts).
     notePersistedRevision(session.projectId ?? project.projectId, session.revision ?? project.revision);
-    return { kind: 'written', projectId: session.projectId ?? project.projectId, revision: session.revision ?? project.revision, assets: kept };
+    return { kind: 'written', projectId: session.projectId ?? project.projectId, revision: session.revision ?? project.revision, assets: kept, ...(setAside === undefined ? {} : { setAside }) };
   } catch (error) {
     return { kind: 'failed', error };
   }

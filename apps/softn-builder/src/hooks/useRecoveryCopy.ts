@@ -91,6 +91,9 @@ export function useRecoveryCopy(view: ViewMode, enabled = true): void {
         kept = { projectId: outcome.projectId, revision: outcome.revision };
         ownCopy = unsaved;
         toldFailure = false;
+        if (outcome.setAside !== undefined) {
+          useNotificationStore.getState().addNotification({ type: 'info', message: `Your unsaved work on ${outcome.setAside} was set aside: find it in Export → Recovery.`, duration: 15000 });
+        }
       } else if (unsaved && !toldFailure) {
         toldFailure = true;
         console.warn('[Builder] The recovery copy could not be written:', outcome.error);

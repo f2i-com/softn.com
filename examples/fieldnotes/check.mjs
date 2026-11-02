@@ -1,8 +1,7 @@
 // Exercise the actual Builder and Runtime with disposable browser storage.
 // PLAYWRIGHT_MODULE can point at an existing Playwright installation.
 import assert from 'node:assert/strict';
-import { readFile, mkdir } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { unzipSync, strFromU8 } from 'fflate';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root = new URL('../../', import.meta.url);
@@ -10,8 +9,6 @@ const bytes = await readFile(new URL('apps/softn-site/public/examples/Fieldnotes
 const sourceEntries = unzipSync(bytes);
 const builderUrl = process.env.BUILDER_URL || 'http://localhost:1420/builder/';
 const runtimeUrl = process.env.RUNTIME_URL || 'http://localhost:1420/web/';
-const assets = new URL('apps/softn-site/src/assets/', root);
-const capture = process.argv.includes('--capture');
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1.5 });
 // Exercise the supported browser-download save path without a native OS picker.
@@ -25,11 +22,6 @@ page.on('pageerror', error => {
 await page.route(url => url.pathname === '/__fieldnotes_example.softn', route => route.fulfill({ body: bytes, contentType: 'application/zip' }));
 const openUrl = base => `${base}?open=${encodeURIComponent('/__fieldnotes_example.softn')}`;
 const count = (frame, label) => frame.getByLabel(label, { exact: true }).innerText();
-const screenshot = async name => {
-  if (!capture) return;
-  await mkdir(assets, { recursive: true });
-  await page.screenshot({ path: fileURLToPath(new URL(name, assets)), animations: 'disabled' });
-};
 const saveBundle = async () => {
   const downloadEvent = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -48,7 +40,6 @@ try {
   assert.equal(await count(preview, 'Total tasks'), '5');
   // Allow transient open notification to disappear before the documentation capture.
   await page.getByText('Opened: Fieldnotes v1.0.0', { exact: true }).waitFor({ state: 'hidden' });
-  await screenshot('workspace-preview.png');
   await preview.getByLabel('Task name', { exact: true }).fill('Only in this preview');
   await preview.getByRole('button', { name: 'Add task' }).click();
   await preview.getByRole('button', { name: 'Complete Only in this preview' }).waitFor();
@@ -58,7 +49,6 @@ try {
   await page.getByRole('button', { name: 'Data', exact: true }).click();
   assert.equal(await page.locator('input').evaluateAll(inputs => inputs.some(input => input.value === 'Only in this preview')), false);
   assert.equal(await page.locator('table tbody tr').count(), 5);
-  await screenshot('workspace-data.png');
   const firstTitle = page.locator('table tbody tr').first().locator('input[type=text]').first();
   await firstTitle.fill('Edited in Data');
   await firstTitle.blur();

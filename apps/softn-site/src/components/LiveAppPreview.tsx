@@ -115,11 +115,13 @@ export function LiveAppPreview() {
     return () => window.removeEventListener('message', receive);
   }, []);
 
+  // Counted from the frame's start as well as its load: an iframe says nothing
+  // of a network failure, so one that stalls would otherwise load for ever.
   useEffect(() => {
-    if (!loaded || state !== 'loading') return;
-    const timer = window.setTimeout(() => setState('error'), 30_000);
+    if (!mounted || state !== 'loading') return;
+    const timer = window.setTimeout(() => setState('error'), loaded ? 30_000 : 60_000);
     return () => window.clearTimeout(timer);
-  }, [loaded, state]);
+  }, [mounted, loaded, state]);
 
   return <>
     <div ref={stage} className="workspace-live-stage" data-state={state} style={{ aspectRatio: `${viewportWidth} / ${viewportHeight}` }}>
@@ -136,7 +138,7 @@ export function LiveAppPreview() {
     <div className="workspace-live-footer" data-state={state}>
       <span className="workspace-live-status" role="status"><span aria-hidden="true" />{state === 'ready' ? 'Live · try it here' : state === 'error' ? 'Preview unavailable' : !started ? (held === 'phone' ? 'Loads when you start it' : 'Paused to save data') : 'Loading app…'}</span>
       {!started && <button type="button" className="workspace-live-start" onClick={start}>Start live preview</button>}
-      <a className="workspace-live-action" href={FIELDNOTES_RUNTIME} aria-label="Open live Fieldnotes app in the runtime">Open in runtime <span aria-hidden="true">↗</span></a>
+      <a className="workspace-live-action" href={FIELDNOTES_RUNTIME} aria-label="Open in runtime: the live Fieldnotes app">Open in runtime <span aria-hidden="true">↗</span></a>
     </div>
   </>;
 }
