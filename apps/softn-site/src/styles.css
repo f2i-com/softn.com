@@ -255,88 +255,75 @@ main:focus-visible {
   margin-top: 2rem;
 }
 
-/* The front door stays useful even before the directory has its first app. */
-.hero-create-grid {
+/* The front page's hero: what SoftN is and the two things a visitor came to do,
+   beside a real app running. On a phone the words and the two actions come
+   first, the app right under them. */
+.hero-home-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1fr);
   align-items: center;
   gap: clamp(2rem, 4vw, 4rem);
 }
-.hero-create .hero-title {
-  font-size: clamp(2.35rem, 4.2vw, 4.125rem);
-  line-height: 1.04;
-  max-width: none;
+.hero-home .hero-title {
+  font-size: clamp(2.35rem, 4.4vw, 4.25rem);
+  line-height: 1.02;
+  max-width: 14ch;
 }
-.hero-create .hero-title em { color: var(--coral); }
-.hero-create .hero-lede { font-size: 1.0625rem; max-width: 34rem; }
-.hero-alternative { margin-top: 1rem; font-size: 0.875rem; color: var(--dim); }
-.hero-alternative a { color: var(--paper); text-decoration: underline; text-underline-offset: 4px; }
+.hero-home .hero-lede { font-size: 1.0625rem; max-width: 33rem; }
+.cta-large { min-height: 48px; padding: 0.8125rem 1.375rem; font-size: 1rem; font-weight: 600; }
+.hero-links { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin-top: 1rem; font-size: 0.875rem; }
+.hero-links a {
+  padding-block: 0.5rem;
+  color: var(--dim);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 4px;
+}
+.hero-links a:hover { color: var(--paper); }
 .hero-facts {
   display: flex;
   flex-wrap: wrap;
   list-style: none;
   gap: 0.5rem 1rem;
-  margin-top: 1.75rem;
+  margin-top: 1.25rem;
   padding-top: 1.25rem;
   border-top: 1px solid var(--line);
   color: var(--dim);
   font-size: 0.75rem;
 }
 .hero-facts li::before { content: '✓'; margin-right: 0.375rem; color: var(--mint); }
-.hero-provider-note { margin-top: 0.75rem; color: var(--dimmer); font-size: 0.75rem; }
-.hero-workspace { min-width: 0; }
-.workspace-preview {
+.hero-app { min-width: 0; }
+.hero-app-card {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--ink-2);
   box-shadow: 0 20px 60px -20px var(--shadow);
   overflow: hidden;
 }
-.workspace-preview-head {
+.hero-app-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--line-soft);
-  font-size: 0.8125rem;
+  gap: 0.75rem;
+  padding: 0.75rem 0.75rem 0.75rem 1.25rem;
 }
-.workspace-preview-label { display: flex; align-items: center; gap: 0.625rem; font-weight: 500; }
-.workspace-preview-label > span { width: 8px; height: 8px; border-radius: 50%; background: var(--mint); }
-.workspace-preview-example { font-family: var(--mono); font-size: 0.6875rem; color: var(--dim); }
-.workspace-preview-tabs { display: flex; gap: 0.375rem; padding: 0.625rem; }
-.workspace-preview-tabs button {
+.hero-app-label { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 600; min-width: 0; overflow: hidden; white-space: nowrap; }
+.hero-app-label > span:first-child { align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--mint); flex: none; }
+.hero-app-kind { font-family: var(--mono); font-size: 0.6875rem; font-weight: 400; color: var(--dimmer); white-space: nowrap; }
+.hero-app-starter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
   min-height: 44px;
-  padding: 0.625rem 0.875rem;
-  border-radius: 7px;
-  color: var(--dim);
-  font-size: 0.8125rem;
-}
-.workspace-preview-tabs button:hover { color: var(--paper); background: var(--ink-3); }
-.workspace-preview-tabs [aria-selected='true'] { background: var(--paper); color: var(--ink); }
-.workspace-preview-tabs [aria-selected='true']:hover { background: var(--paper); color: var(--ink); }
-.workspace-preview-image {
-  position: relative;
-  display: block;
-  margin: 0 0.625rem;
+  padding: 0.5rem 0.875rem;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-  aspect-ratio: 2160 / 1650;
-  background: #f4f5f9;
+  border-radius: 7px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 180ms var(--ease), border-color 180ms var(--ease);
 }
-.workspace-preview-image img { display: block; width: 100%; height: 100%; object-fit: contain; }
-.workspace-preview-expand {
-  position: absolute;
-  right: 0.625rem;
-  bottom: 0.625rem;
-  padding: 0.375rem 0.625rem;
-  background: var(--paper);
-  color: var(--ink);
-  border-radius: 5px;
-  font-size: 0.6875rem;
-}
-.workspace-preview-image:focus-visible { outline-offset: -3px; }
+.hero-app-starter:hover { background: var(--ink-3); border-color: var(--dimmer); }
 .workspace-live-stage { position: relative; margin: 0 0.625rem; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #f6f5f1; }
 .workspace-live-canvas { position: absolute; inset: 0; opacity: 0; }
 .workspace-live-stage[data-state='ready'] .workspace-live-canvas { opacity: 1; }
@@ -353,28 +340,23 @@ main:focus-visible {
 .workspace-live-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.625rem; padding: 2rem 1rem 4rem; color: #596145; text-align: center; font-size: 0.75rem; }
 .workspace-live-placeholder strong { font-size: 1.2rem; letter-spacing: -0.04em; }
 .workspace-live-monogram { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: #656543; color: #fffefa; font: italic 32px Georgia, serif; }
-.workspace-preview figcaption { padding: 1rem 1.25rem 1.125rem; font-size: 0.8125rem; color: var(--dim); }
-.band-featured .hero-shelf { margin: 0 0 3rem; }
-.band-example { background: var(--ink-2); }
-.example-flow { list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; margin-top: 2.25rem; }
-.example-flow li { min-width: 0; padding: 1.5rem; border: 1px solid var(--line); border-radius: 12px; background: var(--ink); }
-.example-step { font-family: var(--mono); font-size: 0.6875rem; color: var(--coral); }
-.example-flow h3 { margin-top: 0.875rem; font-family: var(--display); font-size: 1.1875rem; letter-spacing: -0.02em; }
-.example-flow p { margin-top: 0.625rem; font-size: 0.9375rem; color: var(--dim); }
-.example-flow code { display: inline-block; margin-top: 1.25rem; padding: 0.25rem 0.5rem; background: var(--ink-3); border-radius: 4px; font-family: var(--mono); font-size: 0.75rem; color: var(--dim); }
-.example-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem 1.25rem; margin-top: 2rem; }
-.example-download { padding-block: 0.6875rem; font-size: 0.875rem; text-decoration: underline; text-underline-offset: 4px; }
-.example-note { margin-top: 1rem; color: var(--dim); font-size: 0.8125rem; }
-@media (max-width: 720px) { .example-flow { grid-template-columns: minmax(0, 1fr); gap: 0.875rem; } }
+.hero-app-card figcaption { padding: 0.875rem 1.25rem 1.125rem; font-size: 0.8125rem; color: var(--dim); }
+.band-featured .hero-shelf { margin: 0 0 2.5rem; }
 @media (max-width: 1020px) {
-  .hero-create-grid { grid-template-columns: minmax(0, 1fr); max-width: 800px; }
-  .hero-create .hero-title { font-size: clamp(2.35rem, 6.5vw, 4.125rem); }
-  .hero-create .hero-lede { max-width: 39rem; }
+  .hero-home-grid { grid-template-columns: minmax(0, 1fr); max-width: 800px; }
+  .hero-home .hero-title { font-size: clamp(2.35rem, 7vw, 4.25rem); max-width: 16ch; }
+  .hero-home .hero-lede { max-width: 39rem; }
 }
-@media (max-width: 400px) {
-  .hero-create .hero-cta { display: grid; grid-template-columns: 1fr; }
-  .hero-create .hero-cta .cta { justify-content: center; }
-  .workspace-preview-head { padding-inline: 0.875rem; }
+@media (max-width: 560px) {
+  .hero-home .hero-cta { display: grid; grid-template-columns: 1fr 1fr; }
+  .hero-home .hero-cta .cta { justify-content: center; padding-inline: 0.75rem; }
+}
+@media (max-width: 520px) {
+  .hero-app-kind { display: none; }
+}
+@media (max-width: 380px) {
+  .hero-home .hero-cta { grid-template-columns: 1fr; }
+  .hero-app-head { padding-left: 0.875rem; }
 }
 
 .cta {
@@ -453,9 +435,75 @@ main:focus-visible {
   flex: none;
 }
 
-/* ── Doors: the three apps ─────────────────────────────────────── */
+/* ── Three ways to start ────────────────────────────────────────── */
 
-.doors {
+.start-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.start-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: clamp(1.375rem, 2.4vw, 1.875rem);
+  background: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+}
+.start-card-recommended { border-color: var(--line); box-shadow: inset 0 3px 0 var(--mint); }
+.start-badge { font-family: var(--mono); font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dimmer); }
+.start-card-recommended .start-badge { color: var(--mint); }
+.start-name { font-family: var(--display); font-weight: 700; font-size: 1.3125rem; letter-spacing: -0.02em; }
+.start-copy { flex: 1; color: var(--dim); font-size: 0.9375rem; }
+.start-needs { padding-top: 0.75rem; border-top: 1px solid var(--line-soft); color: var(--dim); font-size: 0.8125rem; }
+.start-needs > span:first-child {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+}
+.start-copy code,
+.start-needs code,
+.why-copy code,
+.faq-a code { font-family: var(--mono); font-size: 0.875em; color: var(--coral); }
+.start-needs a,
+.why-copy a,
+.faq-a a { color: var(--paper); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.start-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 0.25rem; }
+.start-link {
+  padding-block: 0.625rem;
+  color: var(--dim);
+  font-size: 0.875rem;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 4px;
+}
+.start-link:hover { color: var(--paper); }
+@media (max-width: 900px) { .start-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── How it works: four steps, each in the tool where it happens ───── */
+
+.how-steps { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+.how-step { display: flex; flex-direction: column; min-width: 0; }
+.how-shot {
+  display: block;
+  aspect-ratio: 16 / 10;
+  margin-bottom: 0.875rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ink-2);
+}
+.how-shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; transition: transform 300ms var(--ease); }
+.how-shot:hover img { transform: scale(1.03); }
+@media (max-width: 1020px) { .how-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.75rem 1rem; } }
+@media (max-width: 560px) { .how-steps { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── What makes SoftN different ──────────────────────────────────── */
+
+.why-grid {
+  list-style: none;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
   gap: 1px;
@@ -464,97 +512,59 @@ main:focus-visible {
   border-radius: 12px;
   overflow: hidden;
 }
+.why { padding: clamp(1.375rem, 2.4vw, 1.875rem); background: var(--ink-2); }
+.why-name { margin-bottom: 0.5rem; font-family: var(--display); font-weight: 700; font-size: 1.125rem; letter-spacing: -0.02em; }
+.why-copy { color: var(--dim); font-size: 0.9375rem; }
 
-.door {
+/* ── For developers ──────────────────────────────────────────────── */
+
+.dev-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.dev-code { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-2); }
+.dev-links {
+  list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: clamp(1.5rem, 2.6vw, 2.125rem);
+  gap: 1px;
+  overflow: hidden;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.dev-links a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-height: 44px;
+  padding: 0.875rem 1.125rem;
   background: var(--ink-2);
-  transition: background 200ms var(--ease);
+  transition: background 180ms var(--ease);
 }
+.dev-links a:hover { background: var(--ink-3); }
+.dev-link-label { font-weight: 600; }
+.dev-link-detail { color: var(--dim); font-size: 0.8125rem; }
+@media (max-width: 860px) { .dev-grid { grid-template-columns: minmax(0, 1fr); } }
 
-.door:hover {
-  background: var(--ink-3);
-}
+/* ── Questions ───────────────────────────────────────────────────── */
 
-.door-glyph {
-  color: var(--dim);
-  margin-bottom: 0.25rem;
-}
-
-.door-name {
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 1.3125rem;
-  letter-spacing: -0.02em;
-}
-
-.door-copy {
-  color: var(--dim);
-  font-size: 0.9375rem;
-  flex: 1;
-}
-
-.door-foot {
+.faq-list { display: flex; flex-direction: column; max-width: 52rem; border-top: 1px solid var(--line); }
+.faq { border-bottom: 1px solid var(--line); }
+.faq-q {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-top: 0.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--line-soft);
+  min-height: 44px;
+  padding: 1.125rem 0.25rem;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 1.0625rem;
+  list-style: none;
+  cursor: pointer;
 }
-
-.door-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4375rem;
-  font-size: 0.9375rem;
-  font-weight: 500;
-  /* Wrapping this lifts the whole foot row and breaks the baseline the three
-     cards share; the badge beside it is the part that can afford to move. */
-  white-space: nowrap;
-}
-
-.door-open .cta-arrow {
-  transition: transform 180ms var(--ease);
-}
-
-.door-open:hover .cta-arrow {
-  transform: translateX(3px);
-}
-
-.door-badge {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--dimmer);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0.1875rem 0.4375rem;
-}
-
-/*
- * "Open the runtime" and the badge want 263px between them and a 320px card has
- * 230px, so the badge ran 8px past the panel and .doors cut the last letters off
- * it. The two-up window is worse: at 600px the badge overhangs its own card by
- * 12px and paints on the one beside it.
- *
- * Stacking rather than wrapping. Wrapping alone drops the badge on cards two and
- * three but leaves card one's inline — it fits by 2px — so the stack ends up with
- * one card laid out unlike the other two. Cards one and two do still share a foot
- * baseline here, since .doors is two tracks at 700 and 720px, but a baseline is
- * worth less than a badge whose last letters are legible.
- */
-@media (max-width: 720px) {
-  .door-foot {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.75rem;
-  }
-}
+.faq-q::-webkit-details-marker { display: none; }
+.faq-q::after { content: '+'; flex: none; font-family: var(--mono); font-size: 1.25rem; color: var(--dimmer); transition: transform 180ms var(--ease); }
+.faq[open] .faq-q::after { transform: rotate(45deg); }
+.faq-a { max-width: 46rem; padding: 0 0.25rem 1.25rem; color: var(--dim); }
 
 /* ── Language tabs ─────────────────────────────────────────────── */
 
@@ -1051,8 +1061,11 @@ main:focus-visible {
     padding-block: 0.6875rem;
   }
 
-  .door-open {
+  .start-link,
+  .hero-links a {
     min-height: 44px;
+    display: inline-flex;
+    align-items: center;
   }
 
   /* The bar is 38px, so a 44px target inside it would be clipped by the panel.
@@ -1123,7 +1136,8 @@ main:focus-visible {
   .stage-out,
   .foot-col-head,
   .foot-rule,
-  .door-badge,
+  .start-badge,
+  .hero-app-kind,
   .cat-count {
     font-size: 0.75rem;
   }
@@ -1489,17 +1503,6 @@ main:focus-visible {
 .notice strong {
   color: var(--paper);
 }
-.how-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-}
-.how {
-  background: var(--ink-2);
-  border: 1px solid var(--line-soft);
-  border-radius: 14px;
-  padding: 1.5rem;
-}
 .how-n {
   font-family: var(--mono);
   font-size: 0.7rem;
@@ -1526,11 +1529,6 @@ main:focus-visible {
   text-decoration: underline;
   text-decoration-color: var(--line);
   text-underline-offset: 3px;
-}
-@media (max-width: 820px) {
-  .how-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* The documentation, on the front door: numbered like the "how" cards,

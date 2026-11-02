@@ -201,6 +201,15 @@ describe('startup precedence', () => {
     expect(history.replaced).toEqual(['/?tab=2']);
   });
 
+  it('a link may ask for the view it opens on, and only a view Builder has', () => {
+    const history = fakeHistory();
+    const action = startupAction(fakeLocation('?open=/examples/Fieldnotes.softn&view=preview'), history, null);
+    expect(action).toEqual({ kind: 'remote-open', url: new URL('https://builder.test/examples/Fieldnotes.softn'), view: 'preview' });
+    expect(history.replaced, 'a reload does not ask again').toEqual(['/']);
+    const odd = startupAction(fakeLocation('?open=/examples/Fieldnotes.softn&view=settings'), fakeHistory(), null);
+    expect(odd).toEqual({ kind: 'remote-open', url: new URL('https://builder.test/examples/Fieldnotes.softn') });
+  });
+
   it('without a link, a stored session is offered; without either, nothing', () => {
     expect(startupAction(fakeLocation(''), fakeHistory(), '{"a":1}').kind).toBe('restore-prompt');
     expect(startupAction(fakeLocation(''), fakeHistory(), null).kind).toBe('nothing');

@@ -3,16 +3,19 @@ import { listApps, type AppCard as AppCardData, type Category } from '../lib/api
 import { AppGrid, Featured, FeaturedSkeleton } from '../components/directory/AppCard';
 import { useFeaturedShelf } from '../components/directory/featured';
 import { Arrow } from '../components/glyphs';
-import { CategoriesNotice, CategoryChips, SearchBox } from '../components/directory/Controls';
-import { Doors } from '../components/Doors';
+import { CategoriesNotice, CategoryChips } from '../components/directory/Controls';
 import { Language } from '../components/Language';
 import { Pipeline } from '../components/Pipeline';
 import { ComponentIndex } from '../components/ComponentIndex';
-import { Reveal } from '../components/Reveal';
 import { LearnDocs } from '../components/LearnDocs';
-import { WorkspacePreview } from '../components/WorkspacePreview';
-import { ExampleWalkthrough } from '../components/ExampleWalkthrough';
+import { HeroApp } from '../components/home/HeroApp';
+import { StartWays } from '../components/home/StartWays';
+import { HowItWorks } from '../components/home/HowItWorks';
+import { WhyDifferent } from '../components/home/WhyDifferent';
+import { ForDevelopers } from '../components/home/ForDevelopers';
+import { HomeFaq } from '../components/home/HomeFaq';
 import { BUILDER_HREF, STUDIO_HREF } from '../lib/appUrls';
+import { fieldnotesInRuntime } from '../lib/examples';
 
 const LISTS: Array<{ id: string; name: string }> = [
   { id: 'trending', name: 'Trending' },
@@ -21,22 +24,23 @@ const LISTS: Array<{ id: string; name: string }> = [
   { id: 'remixed', name: 'Most remixed' },
 ];
 
+/** How many of the directory's apps the front page shows: two rows of three. */
+const GALLERY_SIZE = 6;
+
 /**
- * Start with the creation workflow and real product screenshots. The live
- * directory follows the tools, independently of whether it has any apps yet.
+ * Show the product before teaching it: a real app running in the hero with the two things a visitor came to do — try
+ * an app, create one — then apps people have made, the ways to start, the workflow, and only then what makes it
+ * different and how it is built. The tools' names (Studio, Builder, the runtime) are introduced where they are the next
+ * step, never as a choice to decode first.
  *
- * The directory's apps do not run here: an app's bundle is only fetched when
- * someone presses Play, which opens it in the runtime. The one exception is
- * the hero's Fieldnotes preview, which embeds the real runtime — engine and
- * all — so LiveAppPreview mounts it only after the page has loaded and once
- * it is scrolled into view, and not at all until asked for on a phone, for a
- * visitor saving data or on a slow connection.
+ * The directory's apps do not run here: an app's bundle is only fetched when someone presses Play, which opens it in
+ * the runtime. The one exception is the hero's Fieldnotes preview, which embeds the real runtime — engine and all — so
+ * LiveAppPreview mounts it only after the page has loaded and once it is scrolled into view, and not at all until asked
+ * for on a phone, for a visitor saving data or on a slow connection.
  *
- * Three requests feed the page — categories, the featured shelf, the list —
- * and each has its own status. None gates another: the categories are labels
- * on the cards, and a failure there used to be read as "the directory is
- * down", which skipped the list request and showed an empty directory over
- * a working one.
+ * Three requests feed the gallery — categories, the featured shelf, the list — and each has its own status. None gates
+ * another: the categories are labels on the cards, and a failure there used to be read as "the directory is down",
+ * which skipped the list request and showed an empty directory over a working one.
  */
 export function HomePage({
   categories,
@@ -65,7 +69,7 @@ export function HomePage({
     setListError(null);
     setListLoading(true);
     setApps([]);
-    listApps({ sort, perPage: 8 }, ac.signal)
+    listApps({ sort, perPage: GALLERY_SIZE }, ac.signal)
       .then((r) => {
         if (ac.signal.aborted) return;
         setApps(r.items);
@@ -82,64 +86,48 @@ export function HomePage({
 
   return (
     <>
-      <header className="hero hero-create" id="top">
-        <div className="wrap hero-inner hero-create-grid">
+      <header className="hero hero-home" id="top">
+        <div className="wrap hero-inner hero-home-grid">
           <div className="hero-copy">
-            <p className="eyebrow rise">Create it. Keep it. Make it yours.</p>
+            <p className="eyebrow rise">Build it. Run it. Keep it.</p>
             <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
-              Your idea.
-              <br />
-              A working app.
-              <br />
-              <em>Yours to change.</em>
+              Build apps you can run, edit and share.
             </h1>
             <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-              Describe what you need with your own AI, or build it by hand. Edit the interface, write the logic in
-              JavaScript or Python, connect your data and run it in your browser. Take the source with you in one{' '}
-              <code>.softn</code> file.
+              SoftN lets you make portable web-style apps with a visual builder, familiar code or AI. Try a real app,
+              change it and publish your own.
             </p>
             <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
-              <a className="cta cta-primary" href={STUDIO_HREF}>
-                Create with AI
+              <a className="cta cta-primary cta-large" href={fieldnotesInRuntime('/#top')}>
+                Try an app
                 <Arrow />
               </a>
-              <a className="cta" href="/apps">
-                Explore apps
+              <a className="cta cta-large" href="#create">
+                Create an app
                 <Arrow />
               </a>
             </div>
-            <p className="hero-alternative">Prefer a canvas and code? <a href={BUILDER_HREF}>Open Builder <span aria-hidden="true">↗</span></a></p>
-            <ul className="hero-facts" aria-label="Getting started">
-              <li>No account to start</li>
-              <li>Your model, your choice</li>
-              <li>Download the source</li>
+            <p className="hero-links">
+              <a href="/apps">Explore all apps</a>
+              <a href="/docs/">Read the docs</a>
+            </p>
+            <ul className="hero-facts" aria-label="Before you start">
+              <li>No account needed to try</li>
+              <li>Editable source</li>
+              <li>Runs in your browser</li>
             </ul>
-            <p className="hero-provider-note">Studio uses the AI provider you connect. Your provider’s usage charges may apply.</p>
           </div>
-          <div className="rise hero-workspace" style={{ animationDelay: '180ms' }}><WorkspacePreview /></div>
+          <div className="rise hero-app" style={{ animationDelay: '180ms' }}><HeroApp /></div>
         </div>
       </header>
 
-      <ExampleWalkthrough />
-      <Doors />
-
       <section className="band band-featured" id="directory">
         <div className="wrap">
-          {(featured === null || featured.length >= 3) && (
-            <div className="hero-shelf rise" style={{ animationDelay: '260ms' }}>
-              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
-              {featuredSeenAt !== null && (
-                <p className="hero-shelf-note muted" role="status">
-                  The directory is not answering right now. This shelf is as it was on{' '}
-                  {new Date(featuredSeenAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
-                </p>
-              )}
-            </div>
-          )}
           <div className="band-head band-head-row">
             <div>
-              <p className="eyebrow">The directory</p>
-              <h2 className="band-title">What people are running</h2>
+              <p className="eyebrow">Made with SoftN</p>
+              <h2 className="band-title">Apps people have made</h2>
+              <p className="band-sub">Play one in your browser, open its source, or remix it into your own.</p>
             </div>
             {/* Plain pressed buttons: these filter a list, and the tab pattern
                 they used to claim comes with keyboard and panel semantics they
@@ -152,12 +140,15 @@ export function HomePage({
               ))}
             </div>
           </div>
-          <div className="hero-search">
-            <SearchBox autoFocus={false} />
-          </div>
-          {categories.length > 0 && (
-            <div className="hero-pills">
-              <CategoryChips categories={categories} selected="" hrefFor={(id) => (id === 'all' ? '/apps' : `/apps?category=${encodeURIComponent(id)}`)} limit={9} />
+          {(featured === null || featured.length >= 3) && (
+            <div className="hero-shelf">
+              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
+              {featuredSeenAt !== null && (
+                <p className="hero-shelf-note muted" role="status">
+                  The directory is not answering right now. This shelf is as it was on{' '}
+                  {new Date(featuredSeenAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
+                </p>
+              )}
             </div>
           )}
           <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} />
@@ -180,64 +171,31 @@ export function HomePage({
               )}
             </div>
           ) : (
-            <AppGrid apps={apps} categories={categories} skeleton={listLoading ? 8 : 0} loading={listLoading} />
+            <AppGrid apps={apps} categories={categories} skeleton={listLoading ? GALLERY_SIZE : 0} loading={listLoading} />
+          )}
+          {categories.length > 0 && (
+            <div className="hero-pills">
+              <CategoryChips categories={categories} selected="" hrefFor={(id) => (id === 'all' ? '/apps' : `/apps?category=${encodeURIComponent(id)}`)} limit={8} />
+            </div>
           )}
           <div className="band-foot">
             <a className="cta" href={`/apps?sort=${sort}`}>
-              See all
+              Explore all apps
               <Arrow />
             </a>
           </div>
         </div>
       </section>
 
-      <Reveal as="section" className="band band-how" id="how">
-        <div className="wrap">
-          <div className="band-head">
-            <p className="eyebrow">How it works</p>
-            <h2 className="band-title">Run it. Read it. Publish yours.</h2>
-            <p className="band-sub">
-              Start from something useful. Read its source, change it, and share your version.
-            </p>
-          </div>
-          <div className="how-grid">
-            <div className="how">
-              <span className="how-n">01</span>
-              <h3 className="how-name">Run it, in a sandbox</h3>
-              <p className="how-copy">
-                App logic, in JavaScript or Python, runs on <a href="https://github.com/f2i-com/zipp.org">zipp</a>, an engine
-                compiled to WebAssembly with nothing of the browser inside it. The network, your camera, its own server storage — an app
-                gets those from the host, only if its manifest asks, and only after the page has told you and you have
-                allowed it. That is a boundary, not a promise that an app is harmless.
-              </p>
-            </div>
-            <div className="how">
-              <span className="how-n">02</span>
-              <h3 className="how-name">Read it, remix it</h3>
-              <p className="how-copy">
-                Every app&rsquo;s source is on its page. Open it in <a href={STUDIO_HREF}>Studio</a> to have a model change it, or in{' '}
-                <a href={BUILDER_HREF}>Builder</a> to change it by hand, then publish the result as a remix that credits where it came
-                from.
-              </p>
-            </div>
-            <div className="how">
-              <span className="how-n">03</span>
-              <h3 className="how-name">Publish, no account</h3>
-              <p className="how-copy">
-                Upload a <code>.softn</code>, pick a category, get an edit key. That is the whole process, and it is also an API: a
-                script or an AI agent can publish with one <code>POST</code>. Apps that declare <code>storage</code> get their own
-                database on the server — a scoreboard, shared notes, whatever the app needs — that everyone running the app shares.
-              </p>
-            </div>
-          </div>
-        </div>
-      </Reveal>
-
+      <StartWays />
+      <HowItWorks />
+      <WhyDifferent />
+      <ForDevelopers />
       <LearnDocs />
-
       <Language />
       <Pipeline />
       <ComponentIndex />
+      <HomeFaq />
     </>
   );
 }

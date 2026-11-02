@@ -88,7 +88,7 @@ describe('app listing lifecycle', () => {
   });
 
   it('says an unknown app is not found, in the title too, and asks for it not to be indexed under its own address', async () => {
-    document.title = 'SoftN — create, refine and run your own apps';
+    document.title = 'SoftN — build apps you can run, edit and share';
     applyMeta(metaFor({ kind: 'app', slug: 'no-such-app' }));
     expect(document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href).toContain('/app/no-such-app');
     getApp.mockRejectedValueOnce(new ApiError(404, 'No app is published under that name.'));

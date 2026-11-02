@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { WEB_HREF } from '../lib/appUrls';
-import { FIELDNOTES_BUNDLE } from './ExampleWalkthrough';
+import { fieldnotesInRuntime } from '../lib/examples';
 
 const WIDTH = 1200;
 const HEIGHT = 960;
 const frameUrl = `${WEB_HREF}?preview=fieldnotes`;
-export const FIELDNOTES_RUNTIME = `${WEB_HREF}?open=${encodeURIComponent(FIELDNOTES_BUNDLE)}&back=${encodeURIComponent('/#top')}`;
+export const FIELDNOTES_RUNTIME = fieldnotesInRuntime('/#top');
 
 /**
  * The preview is the real runtime — its engine alone is several megabytes of

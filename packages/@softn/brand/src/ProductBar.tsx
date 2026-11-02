@@ -42,10 +42,19 @@ const PRODUCTS: Array<{ id: Exclude<Product, 'home'>; label: string }> = [
   { id: 'docs', label: 'Docs' },
 ];
 
+/** A destination of a bar that names its own: the site, whose visitors are new to the tools' names. */
+export interface ProductLink {
+  id: string;
+  label: string;
+  href: string;
+}
+
 export interface ProductBarProps {
-  /** Which product this bar sits on, so it can be marked. */
-  current: Product | null;
+  /** Which product (or, with `links`, which link's id) this bar sits on, so it can be marked. */
+  current: Product | string | null;
   urls?: Partial<ProductUrls>;
+  /** In place of the six products: the site leads with what a newcomer wants, the tools sit inside its pages. */
+  links?: ProductLink[];
   /** Desktop hosts open companion pages in the system browser. */
   onNavigate?: (href: string) => void;
   /** Stick to the top while the page scrolls. The tool apps do not scroll. */
@@ -62,8 +71,9 @@ export interface ProductBarProps {
  * geometry: the same inset from the window's edge on every surface, so the
  * mark never moves between pages.
  */
-export function ProductBar({ current, urls, onNavigate, sticky = false, children }: ProductBarProps): React.ReactElement {
+export function ProductBar({ current, urls, links, onNavigate, sticky = false, children }: ProductBarProps): React.ReactElement {
   const href: ProductUrls = { ...DEFAULT_URLS, ...urls };
+  const destinations: ProductLink[] = links ?? PRODUCTS.map((p) => ({ id: p.id, label: p.label, href: href[p.id] }));
   const navigate = (event: React.MouseEvent<HTMLAnchorElement>) => {
     if (!onNavigate) return;
     event.preventDefault();
@@ -77,8 +87,8 @@ export function ProductBar({ current, urls, onNavigate, sticky = false, children
           softn
         </a>
         <div className="softn-bar-links">
-          {PRODUCTS.map((p) => (
-            <a key={p.id} href={href[p.id]} onClick={navigate} aria-current={current === p.id ? 'page' : undefined}>
+          {destinations.map((p) => (
+            <a key={p.id} href={p.href} onClick={navigate} aria-current={current === p.id ? 'page' : undefined}>
               {p.label}
             </a>
           ))}

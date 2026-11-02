@@ -11,7 +11,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { Language, panelTag } from '../src/components/Language';
 import { Pipeline } from '../src/components/Pipeline';
 import { Footer } from '../src/components/Footer';
-import { Doors } from '../src/components/Doors';
+import { StartWays } from '../src/components/home/StartWays';
 import { SAMPLES } from '../src/data/language';
 import { highlight, languageOf } from '../src/lib/highlight';
 import { runsLabel } from '../src/lib/format';
@@ -34,7 +34,7 @@ const text = (element: React.ReactElement) => renderToStaticMarkup(element).repl
 
 it('names both logic languages wherever the site describes the engine', () => {
   expect(text(<Footer />)).toMatch(/engine for JavaScript\s+and Python/);
-  expect(text(<Doors />)).toContain('choose JavaScript or Python');
+  expect(text(<StartWays />)).toContain('choose JavaScript or Python');
   const pipeline = text(<Pipeline />);
   expect(pipeline).toContain('JavaScript, or Python');
   expect(pipeline).toMatch(/declares torch in its manifest/);

@@ -66,6 +66,7 @@ import type {
 } from '../types/builder';
 
 export type ViewMode = 'design' | 'preview' | 'code' | 'data';
+const VIEW_MODES: readonly ViewMode[] = ['design', 'preview', 'code', 'data'];
 
 export const SESSION_STORAGE_KEY = 'softn.builder.session.v1';
 /** Where a session that would not restore is kept, with the error, until exported or discarded. */
@@ -740,7 +741,8 @@ export async function exportQuarantinedSession(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 export type StartupAction =
-  | { kind: 'remote-open'; url: URL }
+  /** `view`: the link's `&view=` (a starter opens on its running preview), else the bundle's own. */
+  | { kind: 'remote-open'; url: URL; view?: ViewMode }
   | { kind: 'restore-prompt'; raw: string }
   | { kind: 'nothing' }
   | { kind: 'refused-link'; message: string };
@@ -755,7 +757,10 @@ export function startupAction(location: Location, history: History, storedSessio
   const params = new URLSearchParams(location.search);
   const open = params.get('open');
   if (open !== null) {
+    const asked = params.get('view');
+    const view = VIEW_MODES.find((mode) => mode === asked);
     params.delete('open');
+    params.delete('view');
     const rest = params.toString();
     history.replaceState(history.state, '', location.pathname + (rest ? `?${rest}` : '') + (location.hash || ''));
     let url: URL | null = null;
@@ -767,7 +772,7 @@ export function startupAction(location: Location, history: History, storedSessio
     if (!url || url.origin !== location.origin || !/\.softn$/i.test(url.pathname)) {
       return { kind: 'refused-link', message: 'Only a .softn served by this site can be opened from a link.' };
     }
-    return { kind: 'remote-open', url };
+    return view ? { kind: 'remote-open', url, view } : { kind: 'remote-open', url };
   }
   if (storedSession) return { kind: 'restore-prompt', raw: storedSession };
   return { kind: 'nothing' };

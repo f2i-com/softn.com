@@ -1,0 +1,17 @@
+<logic>
+  let name = ""
+  let message = ""
+
+  function greet() {
+    message = "Hello, " + name
+  }
+</logic>
+
+<App>
+  <main class="card">
+    <label for="visitor">Your name</label>
+    <input id="visitor" :bind={name} />
+    <button @click={greet}>Say hello</button>
+    <p>{message}</p>
+  </main>
+</App>

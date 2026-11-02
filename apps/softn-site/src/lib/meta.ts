@@ -12,10 +12,10 @@ import type { Page } from './router';
  * `noindex` rather than being indexed as a second copy of the 404 page.
  */
 
-export const HOME_TITLE = 'SoftN — create, refine and run your own apps';
+export const HOME_TITLE = 'SoftN — build apps you can run, edit and share';
 
 export const HOME_DESCRIPTION =
-  'Create apps with your own AI or by hand, in JavaScript or Python, and run them in your browser. Keep the source in one .softn file and share what you make.';
+  'Build apps you can run, edit and share: try a real app in your browser, change it visually, in JavaScript or Python, or with AI, and publish your own. The source travels in one .softn file.';
 
 export interface PageMeta {
   /** Path of the canonical URL, on the canonical origin. */

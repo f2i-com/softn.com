@@ -482,7 +482,8 @@ function App() {
       if (remoteOpenRef.current === controller) remoteOpenRef.current = null;
       if (outcome.kind === 'opened') {
         fileHandleRef.current = null;
-        setView(outcome.snapshot.view);
+        // A starter linked from the site opens on its running preview (`&view=preview`).
+        setView(action.view ?? outcome.snapshot.view);
         sayOpenedWithWarnings(outcome.snapshot.warnings);
         toast.success(`Opened: ${outcome.snapshot.label}`);
       } else if (outcome.kind === 'failed') {

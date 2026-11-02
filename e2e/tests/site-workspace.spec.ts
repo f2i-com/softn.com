@@ -26,17 +26,19 @@ async function startPreview(panel: Locator): Promise<void> {
 }
 
 test.describe('landing workspace and the Fieldnotes teaching app', () => {
-  test('a live app preview supports keyboard navigation and opens in the runtime', async ({ page }, testInfo) => {
+  test('the hero runs a real app, offers it as a starter, and opens it in the runtime', async ({ page }, testInfo) => {
     const log = watchConsole(page, testInfo);
     try {
       await page.goto('/');
-      await expect(page.getByRole('heading', { level: 1 })).toHaveText(/Your idea\.\s*A working app\.\s*Yours to change\./);
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('Build apps you can run, edit and share.');
+      const hero = page.locator('#top');
+      const tryApp = new URL((await hero.getByRole('link', { name: /^Try an app/ }).getAttribute('href'))!, page.url());
+      expect([tryApp.pathname, tryApp.searchParams.get('open'), tryApp.searchParams.get('back')]).toEqual(['/web/', BUNDLE_PATH, '/#top']);
+      await expect(hero.getByRole('link', { name: /^Create an app/ })).toHaveAttribute('href', '#create');
 
-      const preview = page.getByRole('tab', { name: 'App preview', exact: true });
-      const data = page.getByRole('tab', { name: 'Data collections', exact: true });
-      await expect(preview).toHaveAttribute('aria-selected', 'true');
-      await expect(data).toHaveAttribute('tabindex', '-1');
-      const previewPanel = page.getByRole('tabpanel', { name: 'App preview', exact: true });
+      const previewPanel = page.locator('.hero-app-card');
+      const starter = new URL((await previewPanel.getByRole('link', { name: /Use this starter/ }).getAttribute('href'))!, page.url());
+      expect([starter.pathname, starter.searchParams.get('open'), starter.searchParams.get('view')]).toEqual(['/builder/', BUNDLE_PATH, 'preview']);
       const live = previewPanel.locator('.workspace-live-stage');
       await live.scrollIntoViewIfNeeded();
       await startPreview(previewPanel);
@@ -66,31 +68,16 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
       expect(buttonBounds!.height).toBeGreaterThanOrEqual(44);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-      await preview.focus();
-      await preview.press('ArrowRight');
-      await expect(data).toBeFocused();
-      await expect(data).toHaveAttribute('aria-selected', 'true');
-      await expect(preview).toHaveAttribute('tabindex', '-1');
-      const dataPanel = page.getByRole('tabpanel', { name: 'Data collections', exact: true });
-      await expectLoadedImage(dataPanel.getByRole('img'));
-      await expect(dataPanel.getByRole('img')).toHaveAttribute('alt', /Fieldnotes/i);
-      const dataSource = await dataPanel.getByRole('img').getAttribute('src');
-      await expect(page.locator('iframe[title="Live Fieldnotes sample app"]')).toBeHidden();
-      await expect(dataPanel.getByRole('link', { name: 'View full-size screenshot: Data collections' })).toHaveAttribute('href', dataSource!);
-
-      await data.press('Home');
-      await expect(preview).toBeFocused();
-      await expect(preview).toHaveAttribute('aria-selected', 'true');
-      await preview.press('End');
-      await expect(data).toBeFocused();
-      await data.press('ArrowRight');
-      await expect(preview).toBeFocused();
-      await live.scrollIntoViewIfNeeded();
-      await startPreview(previewPanel);
-      await expect(live).toHaveAttribute('data-state', 'ready', { timeout: 60_000 });
-      await expect(frame.locator('[aria-label="Total tasks"]')).toHaveText('6');
-      await expect(page.locator('.workspace-preview')).not.toContainText(/Glamour/i);
-      await expect(page.locator('.workspace-preview img[alt*="Glamour" i]')).toHaveCount(0);
+      // The workflow, shown in the tools: four real screenshots that load.
+      const how = page.locator('#how');
+      await how.scrollIntoViewIfNeeded();
+      const shots = how.locator('.how-shot img');
+      await expect(shots).toHaveCount(4);
+      for (const shot of await shots.all()) {
+        await shot.scrollIntoViewIfNeeded();
+        await expectLoadedImage(shot);
+        await expect(shot).toHaveAttribute('alt', /SoftN|publish/i);
+      }
       await testInfo.attach('landing-workspace', { body: await page.screenshot(), contentType: 'image/png' });
       await previewPanel.getByRole('link', { name: 'Open live Fieldnotes app in the runtime', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Make space for what matters.', exact: true })).toBeVisible({ timeout: 60_000 });
@@ -128,9 +115,9 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
     try {
       await page.goto('/#try-it');
       const example = page.locator('#try-it');
-      await expect(example.getByRole('heading', { name: 'One small app. The whole workflow.' })).toBeVisible();
-      const tryLink = example.getByRole('link', { name: /Try Fieldnotes/ });
-      const builderLink = example.getByRole('link', { name: /Open example in Builder/ });
+      await expect(example.getByRole('heading', { name: 'Start with a working example' })).toBeVisible();
+      const tryLink = example.getByRole('link', { name: /Try it first/ });
+      const builderLink = example.getByRole('link', { name: /Open the example/ });
       const downloadLink = example.getByRole('link', { name: 'Download the .softn app', exact: true });
 
       const runtime = new URL((await tryLink.getAttribute('href'))!, page.url());
@@ -142,6 +129,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
       expect(builder.origin).toBe(runtime.origin);
       expect(builder.pathname).toBe('/builder/');
       expect(builder.searchParams.get('open')).toBe(BUNDLE_PATH);
+      expect(builder.searchParams.get('view'), 'the example opens on its running preview').toBe('preview');
       await expect(downloadLink).toHaveAttribute('href', BUNDLE_PATH);
       await expect(downloadLink).toHaveAttribute('download', 'Fieldnotes.softn');
 
@@ -160,7 +148,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
     const log = watchConsole(page, testInfo);
     try {
       await page.goto('/#try-it');
-      await page.locator('#try-it').getByRole('link', { name: /Try Fieldnotes/ }).click();
+      await page.locator('#try-it').getByRole('link', { name: /Try it first/ }).click();
       await expect(page).toHaveURL(/\/web\//);
       await expect(page.getByRole('heading', { name: 'Make space for what matters.', exact: true })).toBeVisible({ timeout: 60_000 });
       const total = page.locator('[aria-label="Total tasks"]');
