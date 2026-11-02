@@ -20,3 +20,6 @@ export const DATA_GUIDE_HREF = '/docs/offline-local-data/';
 
 /** What an app may use, and how it asks. */
 export const PERMISSIONS_GUIDE_HREF = '/docs/permissions/';
+
+/** An AI agent building an app on a FormLogic site and preparing it for the directory, with the person approving. */
+export const AI_PUBLISHING_GUIDE_HREF = '/docs/ai-publishing/';

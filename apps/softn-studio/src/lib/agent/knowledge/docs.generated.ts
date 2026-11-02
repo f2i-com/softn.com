@@ -1107,6 +1107,38 @@ export const DOC_PAGES: DocPage[] = [
   ]
  },
  {
+  "slug": "ai-publishing",
+  "title": "Publish with your AI agent",
+  "summary": "Have an AI agent build an app and prepare it for the directory, through a FormLogic site’s MCP server, with you approving before anything is public.",
+  "sections": [
+   {
+    "id": "two-ways",
+    "title": "Two ways an AI can help",
+    "text": "Studio writes and changes an app with the AI you connect, in your browser; publishing it is your step, on the Publish page. An AI agent can also work through a FormLogic site’s MCP server: it builds the app there as a hosted SoftN app, prepares a draft for a SoftN directory, and gives you a link. Nothing is public until you approve it on that link."
+   },
+   {
+    "id": "steps",
+    "title": "How it goes",
+    "text": "1. Connect your agent to a FormLogic site: Add the site’s MCP server to your AI client and sign in with your FormLogic account (OAuth). The site’s administrator must have named a SoftN directory for it to publish to.\n2. Ask for the app: The agent reads softn_get_started, builds the app as a hosted SoftN app on the site, and checks it there.\n3. The agent prepares a draft: softn_create_draft packs the app’s files as a .softn bundle and checks it: its size, file names, manifest and the permissions it declares. Its backend files stay on FormLogic. Nothing is public yet.\n4. You approve: softn_publish_draft gives the agent an approval link for you. The page shows where the app goes, who can see it, its listing, what it may use and the bundle’s hash. Only you, signed in, can publish it from there.\n5. It is listed: The agent reads back the app’s page and play links. Later versions go the same way: the agent prepares one, and you approve it."
+   },
+   {
+    "id": "public",
+    "title": "What becomes public, and what does not",
+    "text": "- Public: everything in the bundle (its pages, logic, styles and assets, readable by anyone) and its listing (name, description, category, tags).\n- Not in the bundle: the app’s server/ files and its records on FormLogic. The directory’s copy runs in the browser alone, and the draft says so when the app has a backend.\n- Kept private: the edit key the directory gives when the app is published. The FormLogic site keeps it encrypted for your account, to publish your later versions, and never shows it to the agent.\n- Never put API keys, passwords or private data in an app’s files: a bundle is source anyone can read."
+   },
+   {
+    "id": "clients",
+    "title": "Which AI clients",
+    "text": "Any client that can connect to a remote MCP server over HTTPS, sign in with OAuth 2.1, and call tools that make changes. Whether a particular product and plan lets an agent use tools that make changes is that product’s to say: check its current documentation before relying on it."
+   },
+   {
+    "id": "prompt",
+    "title": "A prompt to start from",
+    "text": "```text\nBuild me a simple appointment booking app as a hosted SoftN app on this FormLogic site.\nCheck it works, then prepare it for the SoftN directory as \"Booking\", category \"productivity\",\nwith a one-sentence description. Do not put any keys, passwords or private data in its files.\nGive me the approval link, and tell me its page and play links once I have approved it.\n```\n(Change the app, the name and the category to yours. The agent can only ask; you publish.)\n\nNote — Without an agent: Publish a .softn yourself on the Publish page, or with one request to the directory’s API, as Publishing describes."
+   }
+  ]
+ },
+ {
   "slug": "development",
   "title": "Develop SoftN from source",
   "summary": "Use the repository’s workspace commands and keep browser-app changes separate from rebuilding the engine.",

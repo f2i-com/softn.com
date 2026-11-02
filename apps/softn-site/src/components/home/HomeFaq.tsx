@@ -1,6 +1,6 @@
 import React from 'react';
 import { Reveal } from '../Reveal';
-import { DATA_GUIDE_HREF, FORMLOGIC_GUIDE_HREF, HTML_GUIDE_HREF, PUBLISHING_GUIDE_HREF } from '../../lib/guides';
+import { AI_PUBLISHING_GUIDE_HREF, DATA_GUIDE_HREF, FORMLOGIC_GUIDE_HREF, HTML_GUIDE_HREF, PUBLISHING_GUIDE_HREF } from '../../lib/guides';
 
 interface Answer {
   q: string;
@@ -71,10 +71,11 @@ const FAQ: Answer[] = [
     q: 'How can an AI publish for me?',
     a: (
       <>
-        Studio’s AI writes and changes apps; publishing is your step. A script or an agent can also publish a{' '}
-        <code>.softn</code> with one request to the directory’s API, which answers with the app’s page and an edit key.
-        Whoever holds that key can update the app, so keep it out of a model’s reach.{' '}
-        <a href={PUBLISHING_GUIDE_HREF}>Publishing</a>
+        Studio’s AI writes and changes apps; publishing is your step. An AI agent connected to a FormLogic site can build
+        an app there and prepare it for the directory, then hand you a link: nothing is public until you approve it.{' '}
+        <a href={AI_PUBLISHING_GUIDE_HREF}>Publish with your AI agent</a>. A script can also publish a <code>.softn</code>{' '}
+        with one request to the directory’s API, which answers with an edit key: whoever holds it can update the app, so
+        keep it out of a model’s reach. <a href={PUBLISHING_GUIDE_HREF}>Publishing</a>
       </>
     ),
   },
