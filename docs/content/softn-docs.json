@@ -1884,10 +1884,10 @@
                 "`<script src=\"main.js\"></script>` is `<logic src=\"main.js\" />`, and `<script>…</script>` is a `<logic>` block. `<script src=\"main.py\">` links Python, which, as in a `<logic>` tag, lives in its own file. A `<script>` whose `type` is not code, such as `application/ld+json`, is passed over.",
                 "`<link rel=\"stylesheet\" href=\"styles.css\">` places the rules of a stylesheet the app carries, as if they were written in a `<style>` block. `<style>` and `<script>` blocks may stand anywhere in the page, as HTML allows.",
                 "`<img src=\"images/logo.png\">`, `<video poster=\"…\">` and `url(images/paper.png)` in the page’s styles show the app’s own file, as `asset(\"images/logo.png\")` does. The path is read from the bundle’s root, where `index.html` stands; a path the bundle does not carry is left as written, for a server that has the file.",
-                "`<a href=\"about.html\">` to another page of the app shows that page in the app, as a browser shows the page a link names: the page with its own `<script src>` and `<title>`, run afresh, with the app’s records as they were, and the browser’s Back returning to the page before. A link to another site, a fragment, one opened in a new tab and one a handler cancels are the browser’s. (A page of your own site run with `softn.js` leaves every link to the browser: each page of the site starts the app at its own address.)",
+                "`<a href=\"about.html\">` to another page of the app shows that page in the app, as a browser shows the page a link names: the page with its own `<script src>` and `<title>`, run afresh, with the app’s records as they were. In an app with the window to itself, the browser’s Back returns to the page before; in a tab of the runtime, the pages’ own links are the way back. A link to another site, a fragment, one opened in a new tab and one a handler cancels are the browser’s. (A page of your own site run with `softn.js` leaves every link to the browser: each page of the site starts the app at its own address.)",
                 "`<br>`, `<img …>`, `<input …>`, `<hr>`, `<meta>`, `<link>` and the other void elements end with their tags; `/>` is not needed. A `</br>` is a `<br>` and a stray `</p>` an empty paragraph, as a browser reads them; `</input>` and the like are passed over.",
-                "`onclick=\"add()\"` and the other `on…` attributes of an HTML element run their code when the event fires, as `@click=\"add()\"` does, with the event as `event`: `event.target.value`, `event.target.checked` and `event.key` read, for `oninput` and `onchange` too, and `event.preventDefault()` cancels the browser’s default, as does a closing `return false`. Passed to a logic function, `onsubmit=\"send(event)\"`, the event is the same data, `e.target.value` and all; `e.preventDefault()` can be called there and does nothing, because the code runs apart from the page: cancel in the attribute or with `.prevent` when it matters. There is no `this`, and `if`, `let` and loops belong in a logic function.",
-                "A `<form>` with no `action` keeps its page when it is submitted: its handler runs, and the browser does not reload the page, which would take the app and what the person typed with it. A form with an `action` goes there, and `method=\"dialog\"` closes its dialog.",
+                "`onclick=\"add()\"` and the other `on…` attributes of an HTML element run their code when the event fires, as `@click=\"add()\"` does, with the event as `event`: `event.target.value`, `event.target.checked` and `event.key` read, for `oninput` and `onchange` too, and `event.preventDefault()` cancels the browser’s default, as does a closing `return false`. Passed to a logic function, `onsubmit=\"send(event)\"`, the event is the same data, `e.target.value` and all; `e.preventDefault()` can be called there and does nothing, because the code runs apart from the page: cancel in the attribute or with `.prevent` when it matters. Code in the attribute that reaches for the browser (`this`, `document`, `alert()`), or that is more than SoftN reads (`if`, `let`, loops), runs as a browser runs it, in the page’s own document (see Code written for a browser), and `<body onload=\"init()\">` runs once the page is drawn.",
+                "A `<form>` with no `action` keeps its page when it is submitted: its handler runs, and the browser does not reload the page, which would take the app and what the person typed with it. A form with an `action` goes there, unless its `onsubmit` cancels (`event.preventDefault()`, `return false`), and `method=\"dialog\"` closes its dialog. An `action` on another site goes the way of any other address: without the network permission for that host it is taken out, the form keeps its page, and nothing is sent.",
                 "An `<svg>` draws its shapes: `<path>`, `<circle>`, `<g>`, gradients, clip paths and filters. A reference to something in the page, `fill=\"url(#gradient)\"` or `<use href=\"#icon\">`, works; one to another site is loaded only as the app’s network permission allows.",
                 "`<input value=\"Ada\">` and `<input type=\"checkbox\" checked>` start with what they are given and can be changed. A `<textarea>` starts with the text written in it, and a `<pre>` keeps the spacing written in it.",
                 "`for`, `readonly`, `tabindex`, `maxlength`, `colspan` and HTML’s other attribute names are read as HTML reads them. Custom element names such as `<my-card>` are read as one tag.",
@@ -2270,10 +2270,10 @@
               "items": [
                 "HTML’s elements and attributes, read as a browser’s HTML parser reads them: void elements, omitted end tags, entities, misnested tags and any case.",
                 "`<!DOCTYPE html>`, `<html>`, `<head>` and `<body>`, read through: the page is what the body holds, and `<title>` names it.",
-                "Classes, `<style>` blocks and the project’s own stylesheets (`<link rel=\"stylesheet\" href=\"styles.css\">`). The rules hold inside the app, not on the page around it.",
-                "The project’s images, video and audio, by path from the project’s root.",
+                "Classes, `<style>` blocks and the project’s own stylesheets (`<link rel=\"stylesheet\" href=\"styles.css\">`, or `/css/site.css?v=3`: a leading `/` is the project’s root, and a `?` part says nothing about the file). The rules hold inside the app, not on the page around it.",
+                "The project’s images, video and audio, by their path, from the project’s root with a leading `/` or without one.",
                 "`onclick` and the other `on…` attributes, with `event` and `this`; `return false` and `event.preventDefault()` cancel the browser’s default.",
-                "Forms: a form with no `action` keeps its page and checks itself as a browser does (`required`, `pattern`, `min`, `max`…).",
+                "Forms: a form with no `action`, or an `onsubmit` that cancels, keeps its page and checks itself as a browser does (`required`, `pattern`, `min`, `max`…).",
                 "Links to the app’s other pages, which open in the app.",
                 "Browser code that works on the page through `document`, elements, events and forms, as listed in Code written for a browser."
               ]
@@ -2321,7 +2321,7 @@
         },
         {
           "id": "compatibility",
-          "title": "Feature by feature (SoftN 0.0.31)",
+          "title": "Feature by feature",
           "blocks": [
             {
               "type": "table",
@@ -2330,7 +2330,7 @@
                 "In SoftN",
                 "What to do instead"
               ],
-              "caption": "Each row as of SoftN 0.0.31. Supported: works as written. Read differently: works, in SoftN’s own way. Not supported: does not run, and the last column says what to do.",
+              "caption": "Supported: works as written. Read differently: works, in SoftN’s own way. Not supported: does not run, and the last column says what to do.",
               "rows": [
                 [
                   "HTML elements and attributes",
@@ -2343,19 +2343,24 @@
                   "Nothing to change"
                 ],
                 [
-                  "Stylesheets and fonts from other sites",
-                  "Not supported: not loaded",
+                  "Stylesheets and fonts from other sites, and `@import` in a stylesheet",
+                  "Not supported: not loaded, and an `@import` is taken out while the rest of the rules hold",
                   "Copy them into the project and link them by path"
                 ],
                 [
                   "The project’s images, video and audio",
-                  "Supported, by path from the project’s root",
+                  "Supported, by path",
                   "A path the project does not carry is left as written: add the file"
                 ],
                 [
+                  "Images, video and audio on other sites",
+                  "Read differently: shown only with permission, and otherwise their `src` is taken out",
+                  "Copy them into the project, or declare `net` for the host in `permission.json`"
+                ],
+                [
                   "`onclick` and other inline handlers",
-                  "Supported, with `event` and `this`",
-                  "Nothing to change"
+                  "Supported, with `event` and `this`, and `<body onload>`",
+                  "Nothing to change, but for `confirm()` and `prompt()`"
                 ],
                 [
                   "`<script>` and `<script src>` of the project’s files",
@@ -2395,7 +2400,7 @@
                 [
                   "Forms",
                   "Supported: one with no `action` keeps its page and validates",
-                  "A form with an `action` leaves the app: handle the submit with `onsubmit` or `@submit.prevent`"
+                  "An `action` of the app’s own leaves the app, and one on another site sends nothing without `net`. Leave out `action`, or cancel in `onsubmit`, and send with `fetch`"
                 ],
                 [
                   "`localStorage`, `sessionStorage`, the app’s records (`db.*`)",
@@ -2430,15 +2435,15 @@
               "items": [
                 {
                   "title": "Read the report first",
-                  "text": "`reportHtmlImport(html, { files })` from `@softn/core` reads a page without running it and lists what carries across, what is read differently and what does not run, each with its line and what to do instead. Every script, handler and form is in it, so nothing interactive is dropped without a word."
+                  "text": "The table above says what carries across. For a developer, `reportHtmlImport(html, { files, page })` from `@softn/core` reads a page without running it and lists the same for that page, each with its line and what to do instead. Every script, handler and form is in it, so nothing interactive is dropped without a word."
                 },
                 {
                   "title": "Move what will not run",
                   "text": "Copy stylesheets and code from other sites into the project, replace `confirm()`, `prompt()` and `XMLHttpRequest`, and turn a form that posts to a server into one handled on the page."
                 },
                 {
-                  "title": "Put the files in a project",
-                  "text": "The page as `index.html` at the project’s root, its other pages beside it or in `pages/`, its code and stylesheets as files. Studio makes new projects this way, and Builder opens and saves them."
+                  "title": "Import the site into Studio",
+                  "text": "Zip the folder with `index.html` at its top and its other pages, code, stylesheets and pictures around it, and choose Import a bundle in Studio: it takes a `.zip` as well as a `.softn`. Studio gives the project its manifest and exports a `.softn`, which Builder opens too."
                 },
                 {
                   "title": "Preview it at each size",
@@ -5524,7 +5529,7 @@
               "items": [
                 {
                   "title": "Connect your agent to a FormLogic site",
-                  "text": "Add the site’s MCP server to your AI client and sign in with your FormLogic account (OAuth). The site’s administrator must have named a SoftN directory for it to publish to."
+                  "text": "Add the site’s MCP server to your AI client and sign in with your FormLogic account (OAuth). The site’s administrator must have named a SoftN directory for it to publish to, and set a data encryption key on the server, which keeps the directory’s edit keys."
                 },
                 {
                   "title": "Ask for the app",
@@ -5536,7 +5541,7 @@
                 },
                 {
                   "title": "You approve",
-                  "text": "softn_publish_draft gives the agent an approval link for you. The page shows where the app goes, who can see it, its listing, what it may use and the bundle’s hash. Only you, signed in, can publish it from there."
+                  "text": "softn_publish_draft gives the agent an approval link for you. The page shows where the app goes, who can see it, its listing, what it may use, the files that go public and the bundle’s hash, and links to the app so you can try it. Only you, signed in, can publish it from there. A draft is the files as they were when it was made: if the app changes afterwards, the agent makes a new draft."
                 },
                 {
                   "title": "It is listed",
@@ -5555,7 +5560,7 @@
               "ordered": false,
               "items": [
                 "Public: everything in the bundle (its pages, logic, styles and assets, readable by anyone) and its listing (name, description, category, tags).",
-                "Not in the bundle: the app’s server/ files and its records on FormLogic. The directory’s copy runs in the browser alone, and the draft says so when the app has a backend.",
+                "Not in the bundle: what FormLogic never serves to a browser (the app’s server/, backend/ and private/ folders, .sql files and the manifest’s server settings) and its records. The directory’s copy runs in the browser alone, and the draft says so when the app has a backend.",
                 "Kept private: the edit key the directory gives when the app is published. The FormLogic site keeps it encrypted for your account, to publish your later versions, and never shows it to the agent.",
                 "Never put API keys, passwords or private data in an app’s files: a bundle is source anyone can read."
               ]

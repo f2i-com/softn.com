@@ -5,6 +5,7 @@ import {
   hasZipSignature,
   normalizeProjectPath,
   readJsonProject,
+  asProject,
   readProjectArchive,
   readProjectFile,
   resolveProjectRelativePath,
@@ -222,6 +223,30 @@ describe('a bundle zipped by hand', () => {
     expect(paths(zipSync({ 'Tasks/manifest.json': strToU8(MANIFEST), 'Tasks/ui/main.ui': strToU8(PAGE), 'README.md': strToU8('# Tasks') })))
       .toEqual(['README.md', 'Tasks/manifest.json', 'Tasks/ui/main.ui']);
     expect(paths(zipSync({ 'manifest.json': strToU8(MANIFEST), 'ui/main.ui': strToU8(PAGE) }))).toEqual(['manifest.json', 'ui/main.ui']);
+  });
+
+  it('opens a website zipped as its folder, which has an index.html and no manifest', () => {
+    const archive = zipSync({
+      'my-site/': dir,
+      'my-site/index.html': strToU8('<h1>Hello</h1>'),
+      'my-site/css/site.css': strToU8('h1 { color: red }'),
+    });
+    expect(paths(archive)).toEqual(['css/site.css', 'index.html']);
+  });
+
+  it('gives a website what a project starts with, so its export is an app', () => {
+    const site = [{ path: 'index.html', content: '<h1>Hello</h1>' }];
+    const project = asProject(site, 'My bakery');
+    expect(project.map((entry) => entry.path)).toEqual(['manifest.json', 'permission.json', 'index.html']);
+    expect(JSON.parse(project[0].content as string)).toEqual({ name: 'My bakery', version: '1.0.0', main: 'index.html' });
+    expect(JSON.parse(project[1].content as string)).toEqual({ permissions: {} });
+    // Its own permission.json stands, and anything with a manifest, or no page to run, is left as it came.
+    const declared = [...site, { path: 'permission.json', content: '{"permissions":{"net":{"enabled":true}}}' }];
+    expect(asProject(declared, 'My bakery').map((entry) => entry.path)).toEqual(['manifest.json', 'index.html', 'permission.json']);
+    const bundle = [{ path: 'manifest.json', content: MANIFEST }, ...site];
+    expect(asProject(bundle, 'My bakery')).toBe(bundle);
+    const notes = [{ path: 'notes.txt', content: 'x' }];
+    expect(asProject(notes, 'My bakery')).toBe(notes);
   });
 
   it('keeps a folder that holds everything but no manifest: it is not a wrapped bundle', () => {

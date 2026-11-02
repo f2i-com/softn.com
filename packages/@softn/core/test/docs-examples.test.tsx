@@ -78,6 +78,13 @@ describe('the examples the guides show', () => {
     for (const file of files) expect(parse(example(file)).diagnostics ?? [], file).toEqual([]);
   });
 
+  it('the guide shows hello-name as the file has it', () => {
+    const docs = JSON.parse(readFileSync(join(__dirname, '../../../../docs/content/softn-docs.json'), 'utf8')) as { pages: { slug: string; sections: { blocks: { type: string; code?: string; caption?: string }[] }[] }[] };
+    const guide = docs.pages.find((page) => page.slug === 'html-and-softn')!;
+    const shown = guide.sections.flatMap((section) => section.blocks).find((block) => block.caption?.includes('hello-name.ui'));
+    expect(shown?.code?.trim()).toBe(example('hello-name.ui').replace(/\r\n/g, '\n').trim());
+  });
+
   it('hello-name: an HTML page with SoftN in it — the field binds, the button runs the logic, the text shows it', async () => {
     await mount(example('hello-name.ui'), 'docs-hello-name', () => Boolean(container.querySelector('main.card input#visitor')) && Boolean(button('Say hello')));
     const label = container.querySelector('label') as HTMLLabelElement;

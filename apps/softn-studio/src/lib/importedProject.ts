@@ -1,5 +1,5 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
-import type { ProjectImportEntry } from './projectImport';
+import { asProject, type ProjectImportEntry } from './projectImport';
 import { resetProjectSessionForImport } from './projectSession';
 import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage, resolveManifest } from './studioProject';
 import { randomUUID } from '@softn/bundle-format/crypto';
@@ -24,14 +24,15 @@ function manifestName(batch: ProjectImportEntry[]): string | null {
  * calls this only once the whole import has been decoded, so a file that
  * cannot be read leaves the project that was open as it was.
  */
-export function openImportedInStores(fileName: string, batch: ProjectImportEntry[], opener: { name?: string } = {}): string {
+export function openImportedInStores(fileName: string, imported: ProjectImportEntry[], opener: { name?: string } = {}): string {
   const projectId = resetProjectSessionForImport();
-  useVFSStore.getState().batchCreateFiles(batch, 'user');
-
   // The project is named as its opener names it (a host opening an app under its own name for
   // it), else as its manifest names the app, else by its file. It took the file's name
   // whatever was inside: a second download of Counter Club opened as "Counter Club (1)".
-  const importedProjectName = opener.name?.trim() || manifestName(batch) || fileName.replace(/\.(softn|zip|json)$/i, '');
+  const importedProjectName = opener.name?.trim() || manifestName(imported) || fileName.replace(/\.(softn|zip|json)$/i, '');
+  const batch = asProject(imported, importedProjectName);
+  useVFSStore.getState().batchCreateFiles(batch, 'user');
+
   const importedWorkspace = useWorkspaceStore.getState();
   const importedVFS = useVFSStore.getState();
   importedWorkspace.setProjectName(importedProjectName);

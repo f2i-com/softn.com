@@ -31,8 +31,8 @@ const FAQ: Answer[] = [
       <>
         A simple one, with some work. Pages in HTML and CSS carry across, and their scripts run in the sandbox with the
         APIs SoftN provides. Scripts loaded from other sites, a framework’s build output (React, Vue), npm packages and
-        server code such as PHP do not come across as they are. Put the pages into a project in Builder, then check them
-        in Preview. <a href={HTML_GUIDE_HREF}>What carries across</a>
+        server code such as PHP do not come across as they are. Zip the site with its index.html, import the zip in
+        Studio, then check it in Preview. <a href={HTML_GUIDE_HREF}>What carries across</a>
       </>
     ),
   },
@@ -40,8 +40,8 @@ const FAQ: Answer[] = [
     q: 'Can I edit someone else’s app?',
     a: (
       <>
-        You can change your own copy. Every app in the directory shows its source: open it in Studio or Builder, change
-        it, and publish it as a remix, which credits the original. The original stays as its author published it — only
+        You can change your own copy. An app published to the directory as a bundle shows its source: open it in Studio
+        or Builder, change it, and publish it as a remix, which credits the original. The original stays as its author published it — only
         their edit key changes it.
       </>
     ),

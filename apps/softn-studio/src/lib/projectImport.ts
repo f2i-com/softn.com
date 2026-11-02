@@ -33,6 +33,19 @@ function isTextEntry(path: string, content: Uint8Array): boolean {
   return !keptAsBytes(path) && readsAsText(content);
 }
 
+/**
+ * A website, zipped: an `index.html` and no manifest. It previews as it is, and its export was a file with no manifest,
+ * which no runtime opens and Builder refuses. So it gets what a new project starts with: a manifest naming the page,
+ * which export fills in from the files, and an empty permission.json, so the site declares nothing it did not ask for.
+ */
+export function asProject(entries: ProjectImportEntry[], name: string): ProjectImportEntry[] {
+  const has = (path: string) => entries.some((entry) => entry.path === path);
+  if (has('manifest.json') || !has('index.html')) return entries;
+  const manifest = { path: 'manifest.json', content: JSON.stringify({ name, version: '1.0.0', main: 'index.html' }, null, 2) };
+  const permissions = { path: 'permission.json', content: JSON.stringify({ permissions: {} }, null, 2) };
+  return has('permission.json') ? [manifest, ...entries] : [manifest, permissions, ...entries];
+}
+
 /** Reject an oversized local file before allocating its bytes. */
 export async function readProjectFile(file: Pick<File, 'name' | 'size' | 'arrayBuffer'>): Promise<Uint8Array> {
   if (file.size > MAX_ZIP_INPUT_BYTES) {
@@ -144,18 +157,19 @@ function isArchiveLitter(path: string): boolean {
 
 /**
  * A bundle zipped as its folder holds the project one level down:
- * `Tasks/manifest.json`, `Tasks/ui/main.ui`. When every entry is inside one
- * folder and that folder holds the manifest, the project is what is inside
- * it, and the folder's name is taken off. Anything else is left as it is: a
- * file beside the folder, a manifest already at the root, a lone folder
- * with no manifest in it (that is just a bundle with one folder).
+ * `Tasks/manifest.json`, `Tasks/ui/main.ui`. A website zipped as its folder
+ * does the same, with `index.html` in place of the manifest. When every entry
+ * is inside one folder and that folder holds either, the project is what is
+ * inside it, and the folder's name is taken off. Anything else is left as it
+ * is: a file beside the folder, a manifest already at the root, a lone folder
+ * with neither in it (that is just a bundle with one folder).
  */
 function unwrapProjectFolder<T extends { path: string }>(entries: T[]): T[] {
   if (entries.length === 0 || entries.some((entry) => !entry.path.includes('/'))) return entries;
   const folder = entries[0].path.split('/')[0];
   const prefix = `${folder}/`;
   if (!entries.every((entry) => entry.path.startsWith(prefix))) return entries;
-  if (!entries.some((entry) => entry.path === `${prefix}manifest.json`)) return entries;
+  if (!entries.some((entry) => entry.path === `${prefix}manifest.json` || entry.path === `${prefix}index.html`)) return entries;
   return entries.map((entry) => ({ ...entry, path: entry.path.slice(prefix.length) }));
 }
 
