@@ -4304,7 +4304,10 @@ export function parse(source: string): SoftNDocument {
 //    A block header may leave out its parentheses (`#if ok`, to the end of
 //    its line), `#each` takes `of` as `in`, a template literal may be an
 //    attribute's value, and a `#` inside braces or a tag begins no block.
-export const PARSER_VERSION = 14;
+// 15 An HTML handler that reaches for the browser (`document`, `alert()`,
+//    `location`) stays the attribute, for the page's document to run, as
+//    `<body onload>` does, on a `<div>` marked `data-softn-body`.
+export const PARSER_VERSION = 15;
 
 /** Whether `expr`, read from the token `first`, is an `||` or `&&` not written in parentheses. */
 function isBareLogical(expr: Expression, first: Token): boolean {
