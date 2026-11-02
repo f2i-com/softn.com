@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
-import { SoftNWithXDB, XDBStorageNotice, type AppAssetResolver, type PythonProject } from '@softn/core';
+import { SoftNWithXDB, XDBStorageNotice, bundlePageAt, composePage, mainPage, type AppAssetResolver, type ComposedBundleSource, type PythonProject } from '@softn/core';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
@@ -32,6 +32,8 @@ interface AppRunnerProps {
   preIncludedLogicPaths?: string[];
   /** The app's Python project, when its logic is Python; without it a Python app runs no logic. */
   python?: PythonProject;
+  /** The bundle's text files, for a link to another of its pages; without them a link leaves the app. */
+  textFiles?: ReadonlyMap<string, string>;
   /** Where its page does not parse, from the composer: the bar over it names the file and line. */
   parseProblem?: string;
   /** The manifest's `config.execution`, forwarded to the renderer. */
@@ -142,8 +144,38 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
+  // Another page of the bundle, after a link to it (`<a href="about.html">`):
+  // the app composed with that page as its main one and run afresh, with its
+  // records as they were. Without this a link was an address the host page has
+  // no such file at, and the person left the app, here and on a directory's
+  // play page. The tab is this runner's alone, so nothing goes in the history.
+  const [page, setPage] = useState<{ path: string; composed: ComposedBundleSource } | null>(null);
+  const followLink = useCallback(
+    (href: string): boolean => {
+      if (!textFiles) return false;
+      const main = mainPage(textFiles);
+      if (main === null) return false;
+      const from = page?.path ?? main;
+      const path = bundlePageAt(textFiles, from, href);
+      if (path === null) return false;
+      if (path === from) return true;
+      if (path === main) {
+        setPage(null);
+        return true;
+      }
+      try {
+        setPage({ path, composed: composePage(textFiles, path) });
+      } catch (problem) {
+        console.warn(`[SoftN] ${path} cannot be shown:`, problem instanceof Error ? problem.message : problem);
+        return false;
+      }
+      return true;
+    },
+    [page, textFiles]
+  );
+  const shown = page?.composed ?? { source, logicBasePath, preIncludedLogicPaths, python, parseProblem };
   // The name of the box this app is drawn in, for the provider to write a
   // declared side on. Every open app stays mounted in the one document, and
   // a provider with no box writes on the document, where the last app opened
@@ -298,7 +330,10 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
         <RunnerErrorBoundary>
           <ThemeProvider followHost followSystem declaredMode={themeMode} box={themeBox}>
             <SoftNWithXDB
-              source={source}
+              key={page?.path ?? ''}
+              source={shown.source}
+              onLink={followLink}
+              pagesOnly
               initialState={initialState}
               permissions={permissions}
               importResolver={importResolver}
@@ -307,10 +342,10 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                   ? { asset: (...args: unknown[]) => assetResolver(String(args[0] ?? '')) }
                   : undefined
               }
-              logicBasePath={logicBasePath}
-              preIncludedLogicPaths={preIncludedLogicPaths}
-              python={python}
-              parseProblem={parseProblem}
+              logicBasePath={shown.logicBasePath}
+              preIncludedLogicPaths={shown.preIncludedLogicPaths}
+              python={shown.python}
+              parseProblem={shown.parseProblem}
               executionPreference={executionPreference}
               permissionConfig={permissionConfig}
               appId={runtimeAppId}

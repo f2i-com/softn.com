@@ -210,6 +210,17 @@ export function resolveBundlePath(basePath: string, relativePath: string): strin
 }
 
 /**
+ * The file a page names in `<script src>` or `<link href>`, as an HTML page
+ * names one: `/js/app.js` is from the project's root (a bundle is the whole
+ * site it is an app of), and the `?v=3` a site adds to outrun a cache says
+ * nothing about which file it is. Either used to stop the app opening at all.
+ */
+export function pageFilePath(pagePath: string, written: string): string {
+  const file = written.trim().split(/[?#]/)[0];
+  return file.startsWith('/') ? resolveBundlePath('index', file.replace(/^\/+/, '')) : resolveBundlePath(pagePath, file);
+}
+
+/**
  * Turn fragment-relative .logic imports into canonical bundle-root paths.
  *
  * The runtime treats a path without ./ or ../ as bundle-root relative. Once
@@ -737,7 +748,7 @@ function composePages(
       const type = attributeValue(attributes, 'type');
       if (src) {
         sawExternalLogic = true;
-        const externalPath = resolveBundlePath(uiPath, src);
+        const externalPath = pageFilePath(uiPath, src);
         const existing = externalFragments.get(externalPath);
         if (existing) return '';
 
@@ -802,7 +813,7 @@ function composePages(
       const [fullTag, attributes] = match as unknown as [string, string];
       const href = stylesheetHref(attributes);
       if (href === null) return fullTag;
-      const stylesheetPath = resolveBundlePath(pagePath, href);
+      const stylesheetPath = pageFilePath(pagePath, href);
       const rules = textFiles.get(stylesheetPath);
       if (rules === undefined) {
         console.warn(`[SoftN] ${pagePath}: the stylesheet ${stylesheetPath} is not in the bundle.`);

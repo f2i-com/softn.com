@@ -330,6 +330,13 @@ export interface SoftNRendererProps {
    * there. See SoftNRenderContext.followLink.
    */
   onLink?: (href: string) => boolean;
+  /**
+   * With `onLink`: the host shows the app's own pages and nothing else, so
+   * `location.href = …` in a page's code goes to one of those or nowhere.
+   * Where apps from anyone run on a site of the host's own (softn.com), the
+   * code does not get to send the window around that site.
+   */
+  pagesOnly?: boolean;
 
   /**
    * The page's code set `document.title`. A host that owns the window (the
@@ -728,6 +735,7 @@ export function SoftNRenderer({
   failureNotices = true,
   onPageChange,
   onLink,
+  pagesOnly,
   onTitleChange,
   importResolver,
   logicBasePath,
@@ -1175,7 +1183,7 @@ export function SoftNRenderer({
               // Never to another site: the code cannot send the person there.
               made.onNavigate = (href) => {
                 if (onLinkRef.current?.(href) === true) return;
-                if (!onLinkRef.current || typeof window === 'undefined') {
+                if (!onLinkRef.current || pagesOnlyRef.current || typeof window === 'undefined') {
                   console.warn(`[SoftN] The page's code asked to go to ${href}, and this host shows no other page.`);
                   return;
                 }
@@ -2052,6 +2060,8 @@ export function SoftNRenderer({
   // passes a fresh function each render does not redraw the page for it.
   const onLinkRef = useRef(onLink);
   onLinkRef.current = onLink;
+  const pagesOnlyRef = useRef(pagesOnly);
+  pagesOnlyRef.current = pagesOnly;
   const onTitleChangeRef = useRef(onTitleChange);
   onTitleChangeRef.current = onTitleChange;
   const followLink = useCallback((href: string) => onLinkRef.current?.(href) === true, []);

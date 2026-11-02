@@ -81,6 +81,8 @@ export interface OpenTab {
   preIncludedLogicPaths?: string[];
   /** The app's Python project, when its logic is Python. */
   python?: PythonProject;
+  /** The bundle's text files, for a link to another of its pages (`<a href="about.html">`). */
+  textFiles?: ReadonlyMap<string, string>;
   /** Where its page does not parse, from the composer. */
   parseProblem?: string;
   /** The manifest's `config.execution`: where the bundle asked its script to run. */
@@ -494,6 +496,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       logicBasePath,
       preIncludedLogicPaths,
       python,
+      textFiles,
       parseProblem,
       execution: manifest.config?.execution,
       themeMode: manifest.config?.theme?.mode,

@@ -19,18 +19,20 @@
  * What would mean something else is left as written, and fails as it did: an
  * import that renames (`{ a as b }`), a default or namespace import, a
  * package (`from "lodash"`), an anonymous `export default`. Line for line,
- * so an error's line is still the author's.
+ * so an error's line is still the author's: a list of names spread over
+ * several lines, as a formatter leaves a long one, leaves that many behind.
  */
 export function moduleSyntaxAsScript(code: string): string {
   if (!/\b(?:export|import)\b/.test(code)) return code;
+  const blankLines = (written: string) => written.replace(/[^\n]/g, '');
   return code
     .replace(/^([ \t]*)export[ \t]+default[ \t]+(?=(?:async[ \t]+)?function[ \t]*\*?[ \t]*[A-Za-z_$]|class[ \t]+[A-Za-z_$])/gm, '$1')
     .replace(/^([ \t]*)export[ \t]+(?=(?:async[ \t]+)?function\b|class\b|const\b|let\b|var\b)/gm, '$1')
     .replace(/^([ \t]*)export[ \t]+default[ \t]+[A-Za-z_$][\w$]*[ \t]*;?[ \t]*$/gm, '$1')
-    .replace(/^([ \t]*)export[ \t]*\{[^}\n]*\}[ \t]*;?[ \t]*$/gm, '$1')
+    .replace(/^([ \t]*)export[ \t]*\{[^}]*\}[ \t]*;?[ \t]*$/gm, (line, indent: string) => indent + blankLines(line))
     .replace(
-      /^([ \t]*)(?:import|export)[ \t]*\{([^}\n]*)\}[ \t]*from[ \t]*(["'])((?:\.{1,2})?\/[^"'\n]+)\3[ \t]*;?[ \t]*$/gm,
+      /^([ \t]*)(?:import|export)[ \t]*\{([^}]*)\}[ \t]*from[ \t]*(["'])((?:\.{1,2})?\/[^"'\n]+)\3[ \t]*;?[ \t]*$/gm,
       (line, indent: string, names: string, quote: string, path: string) =>
-        /\bas\b/.test(names) ? line : `${indent}import ${quote}${path}${quote}`
+        /\bas\b/.test(names) ? line : `${indent}import ${quote}${path}${quote}${blankLines(line)}`
     );
 }

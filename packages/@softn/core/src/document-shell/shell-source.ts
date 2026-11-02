@@ -4635,6 +4635,9 @@ var __softnShell = (function (win) {
     d.ready = 'interactive';
     dispatch(doc, new Event('DOMContentLoaded', { bubbles: true }));
     d.ready = 'complete';
+    // <body onload="…">: the page's <body> is a <div> here, marked by the parser.
+    var body = doc.querySelector('[data-softn-body]');
+    if (body) dispatch(body, new Event('load'));
     var fire = windowLoad.slice();
     windowLoad = [];
     for (var i = 0; i < fire.length; i++) {

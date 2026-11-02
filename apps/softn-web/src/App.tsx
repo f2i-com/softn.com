@@ -1404,6 +1404,7 @@ function App(): React.ReactElement {
               logicBasePath={tab.logicBasePath}
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
               python={tab.python}
+              textFiles={tab.textFiles}
               parseProblem={tab.parseProblem}
               executionPreference={tab.execution}
               themeMode={tab.themeMode}

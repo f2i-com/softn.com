@@ -4,6 +4,7 @@
  * Parses .softn source code into an Abstract Syntax Tree.
  */
 
+import { usesDocument } from '../document-shell/names';
 import { Lexer } from './lexer';
 import { Token, TokenType, SourceLocation } from './token';
 import {
@@ -645,12 +646,15 @@ export class Parser {
    * and `<script>` are the page's and its elements are drawn. A `<body>`
    * with attributes keeps them, on a `<div>` around the page; one without is
    * passed over like the others. Their closing tags are passed over in
-   * `parse()`.
+   * `parse()`. A `<div>` never loads, so `<body onload="init()">` is marked,
+   * and the page's document fires it once the page is drawn (shell-source.ts).
    */
   private parseDocumentWrapper(wrapper: DocumentWrapper): ElementNode | null {
     if (wrapper === 'body' && this.peekToken.type !== TokenType.TAG_CLOSE) {
       const element = this.parseElement() as ElementNode;
       element.tag = 'div';
+      const onload = element.props.find((prop) => prop.name === 'onload' && prop.value.type === 'static');
+      if (onload) element.props.push({ ...onload, name: 'data-softn-body', value: { type: 'static', value: '' } });
       return element;
     }
     while (
@@ -1566,6 +1570,12 @@ export class Parser {
         return false;
       }
       if (prop.value.type !== 'static') return true;
+      // Code for a browser (`document.getElementById('m').hidden = true`,
+      // `alert('Saved')`) reads as an expression, and as one it found nothing:
+      // no `document` or `alert` in the page's scope, so the click did
+      // nothing. It stays the attribute, as `<body onload>` does (see
+      // parseDocumentWrapper): the page is given its document for it.
+      if (usesDocument(prop.value.value) || (event === 'load' && element.tag.toLowerCase() === 'body')) return true;
       const handler = this.quotedHandler(event, [], prop.value.value, prop.loc, prop.name);
       if (handler) element.events.push(handler);
       // Code SoftN does not read (`this.classList.toggle('on')`) stays the

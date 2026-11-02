@@ -10,6 +10,7 @@ export * from './asset-classification';
 export * from './bundle';
 export * from './source-composer';
 export * from './manifest';
+export * from './pages';
 export { createBundleRuntime, SoftNBundleRenderer, useSoftNBundle } from './runtime';
 
 export * from './inspect';

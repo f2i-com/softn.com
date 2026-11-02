@@ -147,10 +147,13 @@ export function keepFieldEditable(tag: string, node: ElementNode, props: SoftNPr
  * `event.preventDefault()` in the code, took the app away: the code runs
  * apart from the page and cannot cancel what the browser does. A form that
  * names an `action` still goes there, and `method="dialog"` still closes
- * its dialog.
+ * its dialog, unless a handler written for a browser says to stay
+ * (`onsubmit="event.preventDefault(); …"`): it runs in the page's document,
+ * too late to cancel anything, so what it says is done here.
  */
 export function keepFormOnPage(props: SoftNProps): void {
-  if (typeof props.action === 'string' && props.action.trim() !== '') return;
+  const stays = typeof props.onsubmit === 'string' && /\bpreventDefault\b|\breturn\s+false\b/.test(props.onsubmit);
+  if (!stays && typeof props.action === 'string' && props.action.trim() !== '') return;
   if (typeof props.method === 'string' && props.method.trim().toLowerCase() === 'dialog') return;
   const given = props.onSubmit;
   props.onSubmit = (event: unknown, ...rest: unknown[]) => {
@@ -163,14 +166,15 @@ export function keepFormOnPage(props: SoftNProps): void {
  * A path a page names a file of its own by, `images/logo.png` or
  * `../images/logo.png`, as the bundle path it most likely means: from the
  * bundle's root, where an `index.html` stands, with no leading `./` or
- * `../` (nothing climbs out of a bundle). Null for anything else: an
- * address on another site, `data:` and `blob:`, a fragment, a path from the
- * site's root.
+ * `../` (nothing climbs out of a bundle). A path from the site's root,
+ * `/images/logo.png`, is the same file: a bundle is the site it is an app of,
+ * and showBundleFiles leaves as written one it does not carry. Null for
+ * anything else: an address on another site, `data:` and `blob:`, a fragment.
  */
 export function bundlePathOf(written: string): string | null {
   const path = written.trim();
-  if (path === '' || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('/') || path.startsWith('#')) return null;
-  const file = path.replace(/^(?:\.\.?\/)+/, '').split(/[?#]/)[0];
+  if (path === '' || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('//') || path.startsWith('#')) return null;
+  const file = path.replace(/^(?:\.{0,2}\/)+/, '').split(/[?#]/)[0];
   return file === '' ? null : file;
 }
 
