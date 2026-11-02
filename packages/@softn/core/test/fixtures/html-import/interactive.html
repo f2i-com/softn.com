@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Tasks</title>
+  <script src="tasks.js"></script>
+</head>
+<body>
+  <h1 id="title">Tasks</h1>
+  <form id="add"><input id="task"> <button>Add</button></form>
+  <ul id="list"></ul>
+  <button onclick="clearDone()">Clear done</button>
+  <script>
+    const list = document.getElementById('list');
+    document.getElementById('add').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('task');
+      const saved = await fetch('https://api.example.com/tasks', { method: 'POST', body: input.value });
+      const li = document.createElement('li');
+      li.textContent = input.value;
+      list.appendChild(li);
+    });
+    function clearDone() {
+      if (!confirm('Clear the finished tasks?')) return;
+      list.querySelectorAll('.done').forEach((li) => li.remove());
+    }
+  </script>
+</body>
+</html>

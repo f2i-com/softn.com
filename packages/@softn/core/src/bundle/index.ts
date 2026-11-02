@@ -14,3 +14,4 @@ export { createBundleRuntime, SoftNBundleRenderer, useSoftNBundle } from './runt
 
 export * from './inspect';
 export * from './handoff';
+export * from './html-import-report';

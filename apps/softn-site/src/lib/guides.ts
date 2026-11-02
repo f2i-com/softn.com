@@ -4,7 +4,7 @@
  */
 
 /** What carries across from an HTML page, what SoftN adds, and what does not run as it would in a browser tab. */
-export const HTML_GUIDE_HREF = '/docs/ui-language/#as-html';
+export const HTML_GUIDE_HREF = '/docs/html-and-softn/';
 
 /** What is inside a .softn file. */
 export const FORMAT_GUIDE_HREF = '/docs/softn-app-format/';
