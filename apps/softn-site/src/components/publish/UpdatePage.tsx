@@ -6,7 +6,7 @@ import { navigate } from '../../lib/router';
 import { Thumb } from '../directory/AppCard';
 import { CategoriesNotice } from '../directory/Controls';
 import { BundleDrop } from './BundleDrop';
-import { KeyImport, ReplaceKey } from './keys';
+import { KeyImport, PushWithGit, ReplaceKey } from './keys';
 import { errorText, singleItem, useDroppedBundles, useSelection, useThumbnail, type CategoriesStatus } from './shared';
 
 /**
@@ -321,7 +321,10 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
                 setApp(a);
                 selector.clear();
                 setNotes('');
-                setDone(`v${a.version} is live. Anyone opening the app now gets it.`);
+                const dropped = a.droppedVersions ?? [];
+                setDone(
+                  `v${a.version} is live. Anyone opening the app now gets it.${dropped.length ? ` To make room, v${dropped[0]} was removed: an app keeps its first version and its latest ones.` : ''}`,
+                );
               })
             }
           >
@@ -386,6 +389,13 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
             </div>
           </div>
         </section>
+
+        {!app.external && (
+          <section className="update-section">
+            {/* The app's own name, not the address's: `slug` is what the link said, and the panel's commands get pasted into a shell. */}
+            <PushWithGit slug={app.slug} />
+          </section>
+        )}
 
         <section className="update-section">
           <h2 className="section-title">Replace the key</h2>

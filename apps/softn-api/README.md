@@ -300,9 +300,11 @@ How the checks fall:
 
 **Align the host.** PHP reads a POST body only up to its own
 `post_max_size` and a multipart file up to `upload_max_filesize`; a web
-server in front (nginx `client_max_body_size`, Apache `LimitRequestBody`)
-may cut earlier still. Each must be at least the bundle envelope, or an
-upload the API would take arrives empty and fails as "no bundle was sent".
+server in front (nginx `client_max_body_size`, which the shipped example sets;
+Apache `LimitRequestBody`; `FcgidMaxRequestLen` under mod_fcgid, which is
+128 KB as it comes and answers a 500 past it) may cut earlier still. Each must
+be at least the bundle envelope, or an upload the API would take arrives empty
+and fails as "no bundle was sent".
 `api/.user.ini` sets 64 MB for PHP-FPM and CGI hosts; a mod_php host ignores
 that file and needs `php_value post_max_size 64M` and
 `php_value upload_max_filesize 64M` added (the shipped `.htaccess` has none,
@@ -584,6 +586,165 @@ limits and one rating per person per app. An IPv6 address counts as its /64
 for both, since a subscriber picks a fresh address in their prefix at will.
 Nothing else about a visitor is kept.
 
+## Publishing with git
+
+An app with an edit key is a git remote that takes pushes:
+
+```
+git remote add softn https://my-app@softn.com/api/git/my-app.git
+git config remote.softn.push HEAD:refs/heads/main
+git config remote.softn.skipFetchAll true
+git config http.postBuffer 64M
+git push softn
+```
+
+The remote's push refspec makes a plain `git push softn` publish the commit checked
+out, from any branch. Without it git answers that with `git push --set-upstream softn
+main`, and a branch that follows it pulls from the directory from then on: every `git
+pull` then fails, as the directory serves no fetches, and its answer says how to undo
+that. `skipFetchAll` leaves it out of `git fetch --all` and `git remote update`.
+
+A repository's top folder is the bundle's: `manifest.json` is there. A commit with
+none there is refused before anything else in it is looked at, naming the folders
+nearest the top that have one, with the line that publishes one of them alone
+(`git commit-tree` of `HEAD:<folder>`, pushed to main); a folder whose name is not
+plain letters, digits, spaces, `.`, `_` and `-` is named and left out of the line,
+which is pasted into a shell. Each push to `main` makes a new version from the files of the
+commit pushed, its subject as the notes (git's subject: the first paragraph on one
+line, from the encoding the commit names), by the same road as `POST /api/apps/{slug}/versions`: the `version` rate
+limit, `requireRoom`, `Bundle::inspect`, the storage-policy check and
+the version limit. A refusal reaches the terminal as a `remote:` line. A push whose
+files make the bundle the latest version already is makes no new version: the
+bundle is written the same way each time.
+
+**How many versions an app keeps.** `maxVersionsPerApp` (50) counts the versions an
+app has, not their numbers, which carry on from the latest. A new version past it
+takes the place of the oldest, by any route: its bundle is removed once the new one
+is in place, and the answer says which went (`droppedVersions`, and a `remote:` line).
+Version 1 stays, and so does a bundle the operator put in the app's folder by hand:
+only a `vN.softn` the directory wrote goes. One goes for each new version, however
+far over the limit an app is, so lowering the limit stops apps growing and does not
+delete dozens at a stroke. A project pushed often is not stopped for good, and disk
+use is what it was, the limit times the largest bundle.
+
+This is the edit key's one power that cannot be undone. Someone with a stolen key can
+push an app's history out at the `version` window's rate, a version the operator
+uploaded with the admin key included, and can push their own version out of the
+record afterwards. The owner's copy and the site's backups are what bring it back. A
+site that would rather refuse a new version, as it always did, sets
+`dropOldVersions: false` in `data/config.json`.
+
+**The key.** The password is the app's edit key, so the app must be published
+first (by the publish page or the API), which is what shows the key. Keys are
+always generated here, and each app has its own: a key a person chose would need
+a password hash and could still be guessed, and one key across apps opens every
+one of them when it leaks. The app's name is the username in the remote, which is
+what makes git's credential helpers keep a key for each app; with no username they
+keep one for the host, and a second app's key replaces the first's. The key does
+not go in the address, or it would be in the repository's config in plain text. A
+wrong key is counted (`limits.gitKey`). Git asking with no key, as it always does
+first, is not. Replacing a key refuses the next push until git is given the new one.
+
+**Nothing is stored but the version.** The directory tells git it holds nothing, so
+each push carries all it needs, and only the commit pushed is read. There is no
+repository to back up, erase or fill, and what is in a project's history and not in
+its last commit is not kept or shown. That is also why `git clone` is told to
+download the source from the app's page instead. The cost is that a push sends the
+whole history: past 50,000 objects, or 256 MB expanded, it is refused, with the line
+that sends the latest files alone (`git commit-tree` of the tree, pushed to main).
+
+**What a push may hold.** Only `main`: other branches, tags and deletes are refused.
+Left out of the bundle: `.git*` at the top (`.gitignore`, `.github/`), and `.DS_Store`.
+Refused: symbolic links and submodules, which point outside what is being published;
+a name a bundle cannot hold; and a file that looks like it holds secrets (`.env`,
+`*.pem`, `id_rsa` and the like), as everything published can be read by anyone.
+
+**Git LFS.** A file kept in LFS is a pointer in the commit, a few lines under 1 KB,
+and the file itself goes to an LFS store that this is not. Published, the pointer's
+text would be where a picture should be, and the push would say it went through. So
+a pointer is refused by name, and `POST /api/git/{slug}.git/info/lfs/objects/batch`,
+which git-lfs asks before the push, answers 404 with a `message`, which git-lfs shows
+in place of its own "Repository or object not found". The way out is the app's files
+out of LFS (`git lfs migrate export --include="*.png" --everything`, which rewrites
+the commits that hold them), or the update page.
+
+**Reading a pack.** This runs no git, which a shared host may not have. A pack comes
+from whoever holds the key, and `POST /api/apps` hands out a key to anyone, so a key
+is no barrier and these limits are what stand. An object is refused past what it
+declares, a delta past its declared size before a byte of it is made, and the pack
+past its checksum. Objects go to a spool file as they are made, so the largest takes
+no more memory than the smallest; only a delta's base and the delta are in memory,
+and the folders a walk has open on its way down. Each is measured against
+`memory_limit` before it is read: past it PHP ends the request with a fatal error,
+which git shows as a bare 500 and then "Everything up-to-date", so what would not
+fit is refused in the terminal. A delta's refusal ends with the line that sends the
+latest files alone, which sends no earlier copy for a delta to be made against. At
+128 MB the largest delta git makes for a 50 MB file fits; at 64 MB it is refused.
+A folder can be 1 MB however little of it is read, so 40-odd nested ones are past
+48 MB. The search for an app's folder, when the top has no `manifest.json`, holds a
+path for each folder still to look in, so it skips a path past 4,096 bytes and looks
+in no more than 1,024 folders. An object past 50 MB is refused wherever it is in the
+history, with the same line.
+Bytes kept stop at 256 MB and bytes gone through at 1 GB, which is what holds the
+time: an object sent twice is kept once, and one step of a delta counts as 32 bytes.
+Deltas waiting for a base stop at 16 MB, as they wait in memory. A tree can name
+another twice, so the walk counts every name it meets, to 8,000, and a folder stops
+at 1 MB and a path at 4,096 bytes. The temp disk is looked at past the first 32 MB of
+spool and every 32 MB after it, against `minFreeBytes`.
+
+The `version` window is counted before the body is read, for any push; git's 4-byte
+probe is not a push. The body and the pack are read outside the catalogue lock, which
+is taken only to record the version and held from then on, so a ref may be named only
+once in a push and the work is done at most one time. `no-thin` is offered and
+`ofs-delta` is not, so a delta names its base and that base is in the same pack.
+
+**The host.** Apache keeps `Authorization` from PHP run as FastCGI or CGI;
+`api/.htaccess` hands it on, by a rewrite rule, since `CGIPassAuth` is a 500 on a
+host that forbids it. nginx passes it, and the shipped `nginx.conf.example` sets the
+`client_max_body_size` a push and an upload need, which is 1 MB unless it is set.
+Both shipped sets of rules leave `/api/git/{slug}.git/...` to the API: a `.git` at the
+end of a folder's name is not the dot folder they refuse.
+
+A push over 1 MB comes in chunks with no length unless `http.postBuffer` is raised,
+which is why that line is in the commands. What PHP is handed of a chunked body,
+measured on Apache 2.4.58, PHP 8.3 and nginx 1.24:
+
+| Host | A chunked body |
+| --- | --- |
+| nginx, mod_php | Arrives whole |
+| Apache `mod_fcgid` | Arrives whole, as far as `FcgidMaxRequestLen`, which has to be raised for uploads anyway |
+| Apache `mod_proxy_fcgi` (PHP-FPM) | Arrives empty unless Apache has the whole of it at once, which a body over a few KB does not |
+| Apache classic CGI | The connection fails, and git itself says to raise `http.postBuffer` |
+
+With the line in the commands, git sends a length and every one of these works. An
+empty body gets a `remote:` line that says what to do, and a failed report, so no
+client takes it for a success. That holds while the route takes less than 64 MB,
+45.6 MB at the default `maxBundleBytes`: git then sends pieces only for a push too
+large anyway, and is told so, with the line that sends the latest files alone. A
+`maxBundleBytes` past about 45 MB takes the route past 64 MB, and on these hosts a
+push between the two then reaches PHP empty; the 64M in the site's commands would have
+to rise with it. Clients other than the git command have no such
+setting: libgit2 (the library under some desktop tools) and dulwich send chunks, so
+on `mod_proxy_fcgi` they get through only when the whole body reaches Apache at once,
+and are otherwise told they cannot publish there. On classic CGI their connection
+fails. isomorphic-git sends a length, and works everywhere.
+
+**Do not cure that with `proxy-sendcl`.** Setting it from `.htaccess`
+(`RewriteRule ^ - [E=proxy-sendcl:1]`) does make Apache spool a chunked body and hand
+it to PHP with a length, and it is the obvious fix, and it was tried. Nothing limits
+that spool: `LimitRequestBody` in `.htaccess`, a `<Directory>`, a `<Location>` or at
+server level did not stop a body past it, and 1.2 GB went through with Apache's own
+default in force. The spool is written before PHP or any key is looked at, so anyone
+could fill the temp disk of the host.
+
+**Cloudflare.** Not tested. It sits in front of softn.com, so this is what to look at
+if a push fails there and not on the origin. A bot challenge is something git cannot
+answer. Cloudflare's docs say Bot Fight Mode cannot be skipped by a WAF custom rule or
+a Page Rule and covers the whole domain, so if it is what stops a push, the choice is
+to turn it off, or Super Bot Fight Mode on a paid plan, which does take a Skip rule for
+`/api/git/`. Its limit on a request body, 100 MB on the free plan, is above what a
+push can be here.
+
 ## Routes
 
 `GET /api` returns this list as JSON.
@@ -599,6 +760,8 @@ Nothing else about a visitor is kept.
 | `GET /api/categories` | Categories with counts. The site-owned ones (Games, Examples, …) are refreshed on every request so renamed core categories reach existing directories |
 | `POST /api/apps` | Publish. The bundle goes as a multipart field named `bundle`, as the raw request body, or as `bundleBase64` in JSON; other fields are `name`, `description`, `author`, `category`, `tags`, `notes`, `primary`, `parent`, `thumbnail`. `parent` is the slug of the app remixed, or its name when exactly one app has it. Answers with the listing and its `editKey` |
 | `POST /api/apps/{slug}/versions` | A new version of the bundle (`X-Edit-Key`) |
+| `GET /api/git/{slug}.git/info/refs`, `POST /api/git/{slug}.git/git-receive-pack` | `git push`, with the edit key as the password. See "Publishing with git" |
+| `POST /api/git/{slug}.git/info/lfs/objects/batch` | Always 404 with a `message` that git-lfs shows: files kept in LFS are not taken. See "Publishing with git" |
 | `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`). `hiddenRemixes`, a list of the app's remixes, takes those off its page and out of its remix count (in trending too) without changing `updated_at`; it is the whole list, and a name in it that is not a remix of the app is dropped. The page's detail names them as `hiddenRemixes`, so the owner can put them back |
 | `POST /api/apps/{slug}/thumbnail` | Replace the picture (`X-Edit-Key`) |
 | `DELETE /api/apps/{slug}` | Unpublish (`X-Edit-Key`): the app is hidden and keeps its slug. With `?purge=1` and `X-Admin-Key`, its folder is removed, and its slug is listed in `retired-slugs.json` and never given to another app: visitors' browsers keep a `/play/` app's records and settings by its address, so the next app of that name would have had them. A demo the seed retired takes its own slug back when it is filed again |

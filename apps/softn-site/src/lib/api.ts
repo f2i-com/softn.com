@@ -81,6 +81,8 @@ export interface AppDetail extends AppCard {
   lineage: Array<{ slug: string; name: string; author: string }>;
   storage: { collections: number; records: number; keys: number; bytes: number };
   manifest: { main: string | null; version: string | null; files: Record<string, number> } | null;
+  /** On the answer to a new version: the versions that went to make room for it. Absent from an older directory. */
+  droppedVersions?: number[];
 }
 
 export interface Category {

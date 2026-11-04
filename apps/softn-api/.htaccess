@@ -6,6 +6,11 @@ Options -Indexes
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
+  # `git push` signs in with HTTP Basic. Apache keeps that header from PHP run
+  # as FastCGI or CGI (most shared hosts) unless it is handed on, and this does
+  # it without CGIPassAuth, which is a 500 on a host that forbids AuthConfig.
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
   # The docs are a route of the API (GET /api/README.md), not the file.
   RewriteRule ^README\.md$ index.php [L]
   # The library is included by index.php and is never a page of its own.

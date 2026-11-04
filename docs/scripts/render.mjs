@@ -103,7 +103,7 @@ export function renderPage(doc,page,assets) {
 <body>
 <a class="skip-link" href="#article">${e(labels.skip)}</a>
 <nav class="softn-bar" data-sticky="true" aria-label="SoftN"><div class="softn-bar-inner"><a class="softn-bar-mark" href="${e(doc.site.homeHref)}">${MARK}${e(doc.site.wordmark??doc.site.name)}</a><div class="softn-bar-links">${(doc.site.products??[]).map(p=>`<a href="${e(p.href)}">${e(p.label)}</a>`).join('')}<a href="${e(doc.site.basePath)}" aria-current="${isIndex?'page':'true'}">${e(labels.docsShort??labels.docs)}</a></div><button class="softn-theme-toggle theme-toggle" type="button" hidden aria-label="Switch theme" data-to-light="Switch to light mode" data-to-dark="Switch to dark mode">${THEME_ICONS}</button><a class="softn-bar-repo" href="${e(doc.site.repositoryHref)}" target="_blank" rel="noopener noreferrer">GitHub</a></div></nav>
-<div class="page-layout"><aside class="sidebar">${navigation(doc,page.id)}<p class="sidebar-foot">${e(doc.site.tagline)}</p></aside>
+<div class="page-layout"><aside class="sidebar" aria-label="${e(labels.navigation)}">${navigation(doc,page.id)}<p class="sidebar-foot">${e(doc.site.tagline)}</p></aside>
 <div class="article-column"><details class="mobile-navigation"><summary>${e(labels.menu)}</summary>${navigation(doc,page.id)}</details>
 <div class="docs-search" role="search" hidden><label for="docs-search-input">${e(labels.search)}</label><input id="docs-search-input" type="search" placeholder="${e(labels.searchPlaceholder)}" autocomplete="off" aria-controls="search-results"><p id="search-hint" class="search-hint" hidden>${e(labels.searchHint)}</p><div id="search-results" aria-live="polite" data-empty="${e(labels.noResults)}" hidden></div></div>
 <main id="article" tabindex="-1"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="${e(doc.site.homeHref)}">${e(labels.home)}</a><span aria-hidden="true">/</span>${isIndex?`<span aria-current="page">${e(labels.docs)}</span>`:`<a href="${e(doc.site.basePath)}">${e(labels.docs)}</a><span aria-hidden="true">/</span><span aria-current="page">${e(page.title)}</span>`}</nav>
@@ -114,6 +114,6 @@ ${isIndex?`<section class="article-section" aria-labelledby="all-guides"><h2 id=
 ${page.relatedPageIds.length?`<section class="article-section" aria-labelledby="related-guides"><h2 id="related-guides">${e(labels.related)}</h2><div class="doc-cards">${page.relatedPageIds.map(id=>card(doc,lookup(doc,id))).join('')}</div></section>`:''}
 <section class="sources" aria-labelledby="docs-sources"><h2 id="docs-sources">${e(labels.sources)}</h2><p>${e(labels.sourceNote)}</p><ul>${page.sourceIds.map(id=>{const s=doc.sources.find(x=>x.id===id);return `<li><a href="${e(s.url)}" rel="noopener noreferrer">${e(s.title)}</a></li>`;}).join('')}</ul></section>
 </article><nav class="page-pagination" aria-label="Guide pagination">${adjacent(-1,labels.previous)}${adjacent(1,labels.next)}</nav>
-</main><footer class="site-footer"><strong>${e(doc.site.name)}</strong><p>${e(doc.site.footerText)}</p></footer></div><aside class="toc-sidebar">${toc}</aside></div>
+</main><footer class="site-footer"><strong>${e(doc.site.name)}</strong><p>${e(doc.site.footerText)}</p></footer></div><aside class="toc-sidebar" aria-label="${e(labels.onThisPage)}">${toc}</aside></div>
 </body></html>\n`;
 }

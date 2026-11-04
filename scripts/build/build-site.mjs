@@ -346,6 +346,9 @@ server {
     # The directory API is PHP: hand /api/ to PHP-FPM. An address there is a
     # route, which serves no file, so it goes ahead of the refusals below.
     location ~ ^/api(/|$) {
+        # What api/.user.ini gives PHP. nginx's own default is 1 MB, which
+        # refuses most bundles and pushes before PHP hears of them.
+        client_max_body_size 64m;
         fastcgi_pass unix:/run/php/php-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
         include fastcgi_params;

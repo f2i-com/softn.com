@@ -513,7 +513,20 @@ final class Apps
     public static function addVersion(string $slug, string $bundlePath, ?string $notes, bool $byAdmin = false, ?array $info = null): array {
         $row=self::row($slug,true);$info??=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);$before=$doc;
         $next=(int)$row['latest_version']+1;
-        if($next>(int)Config::get('maxVersionsPerApp',50))throw new ApiError(400,'This app has reached its version limit.');
+        // What goes to make room. An app counts its versions and not their numbers, which carry on from the
+        // latest, so a limit reached is a window that moves and not the end of the app. Version 1 stays: the
+        // seed owns it, and it is where an app started. One goes, however far over the app is: a limit lowered
+        // in config.json stops an app growing, and is not a way for its next version to delete dozens. Only a
+        // bundle under the name this writes, vN.softn for version N, can go: one the operator put in the folder by
+        // hand is theirs, and if it failed to be removed, discovery would give it the next number, as the newest.
+        $dropped=[];
+        if(count($doc['versions'])>=(int)Config::get('maxVersionsPerApp',50)){
+            $spare=array_values(array_filter($doc['versions'],static fn($v)=>(int)$v['version']>1&&$v['file']==='v'.(int)$v['version'].'.softn'));
+            usort($spare,static fn($a,$b)=>$a['version']<=>$b['version']);
+            if(Config::get('dropOldVersions',true)!==true||$spare===[])throw new ApiError(400,'This app has reached its version limit.');
+            $dropped=[$spare[0]];
+            $doc['versions']=array_values(array_filter($doc['versions'],static fn($v)=>$v['version']!==$spare[0]['version']));
+        }
         $promised=self::promisedPolicies($row);
         if(!$byAdmin&&$promised!==null)self::refuseChangedPolicies($promised,$info);
         $dir=self::dir($slug);$file="v$next.softn";
@@ -549,7 +562,10 @@ final class Apps
             if(is_file($staged))@unlink($staged);
         }
         if($untrusted)error_log("softn-api: $slug has a new version from its publisher; it is no longer trusted until the operator sets trusted again");
-        return self::detail(self::row($slug,true));
+        // Only now that the new one is in place, so a failure before this keeps what there was. A file that will not
+        // go is found by the next discovery under its own number, as the oldest, and the next version made takes it.
+        foreach($dropped as $v)if(!@unlink("$dir/".basename($v['file'])))error_log("softn-api: $slug: version {$v['version']} is out of the record, and its file could not be removed");
+        return self::detail(self::row($slug,true))+['droppedVersions'=>array_column($dropped,'version')];
     }
 
     /**
@@ -736,12 +752,17 @@ final class Apps
     public static function requireOwner(Request $req, string $slug): void
     {
         if (Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) return;
-        $row = self::row($slug, true);
         $presented = $req->credential('x-edit-key', 'editKey');
-        $hash = $row['edit_key_hash'];
-        if (!is_string($presented) || $presented === '' || !is_string($hash) || !hash_equals($hash, hash('sha256', $presented))) {
+        if (!is_string($presented) || !self::keyOpens($slug, $presented)) {
             throw new ApiError(403, 'That needs the edit key this app was published with.');
         }
+    }
+
+    /** Whether a key is this app's edit key. An app with no key is the site's, and none opens it. */
+    public static function keyOpens(string $slug, #[\SensitiveParameter] string $key): bool
+    {
+        $hash = self::row($slug, true)['edit_key_hash'];
+        return $key !== '' && is_string($hash) && hash_equals($hash, hash('sha256', $key));
     }
 
     /**

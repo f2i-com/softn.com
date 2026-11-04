@@ -19,6 +19,7 @@ require __DIR__ . '/lib/db.php';
 require __DIR__ . '/lib/catalog.php';
 require __DIR__ . '/lib/bundle.php';
 require __DIR__ . '/lib/apps.php';
+require __DIR__ . '/lib/git.php';
 require __DIR__ . '/lib/social.php';
 require __DIR__ . '/lib/storage.php';
 require __DIR__ . '/lib/seed.php';
@@ -117,6 +118,9 @@ $routes = [
     ['GET', '#^/apps/([^/]+)/source$#', 'source'],
     ['POST', '#^/apps/([^/]+)/versions$#', 'addVersion'],
     ['POST', '#^/apps/([^/]+)/key$#', 'replaceKey'],
+    ['GET', '#^/git/([^/]+?)(?:\.git)?/info/refs$#', 'gitRefs'],
+    ['POST', '#^/git/([^/]+?)(?:\.git)?/git-receive-pack$#', 'gitPush'],
+    ['POST', '#^/git/([^/]+?)(?:\.git)?/info/lfs/objects/batch$#', 'gitLfs'],
     ['POST', '#^/apps/([^/]+)/remix$#', 'remix'],
     ['GET', '#^/apps/([^/]+)/comments$#', 'comments'],
     ['POST', '#^/apps/([^/]+)/comments$#', 'addComment'],
@@ -327,6 +331,7 @@ function handle(string $handler, array $args, Request $req): Response
                     'GET /api/categories',
                     'POST /api/apps  (multipart bundle=@file, or raw zip body, or JSON {bundleBase64}; fields: name, description, author, category, tags, notes, primary, parent, thumbnail; X-Admin-Key lifts the hourly limit)',
                     'POST /api/apps/{slug}/versions  (X-Edit-Key)',
+                    'git push https://{slug}@…/api/git/{slug}.git HEAD:main  (the edit key as the password)',
                     'PATCH /api/apps/{slug}  (X-Edit-Key; JSON fields)',
                     'POST /api/apps/{slug}/thumbnail  (X-Edit-Key)',
                     'DELETE /api/apps/{slug}  (X-Edit-Key)',
@@ -611,6 +616,15 @@ function handle(string $handler, array $args, Request $req): Response
             Apps::requireBundle($slug);
             return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'), $byAdmin, $info)], 201);
         }
+
+        case 'gitRefs':
+            return GitRemote::advertise($req, $args[0]);
+
+        case 'gitPush':
+            return GitRemote::receive($req, $args[0]);
+
+        case 'gitLfs':
+            return GitRemote::lfs();
 
         case 'replaceKey': {
             // A key is the only proof of ownership and a bearer secret: one

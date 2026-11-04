@@ -74,6 +74,8 @@ const SPELLINGS = ['/data%2Fconfig.json', '//data/config.json', '/web/../data/co
 /** A certificate's challenge is a dot folder that is meant to be served. */
 const CHALLENGE = '.well-known/acme-challenge/token';
 /** Addresses in the runtime: a reload of each is the runtime's page, whatever it looks like. */
+/** What `git push` asks for, and git-lfs before it. */
+const GIT_ROUTES = ['/api/git/my-app.git/info/refs?service=git-receive-pack', '/api/git/my-app.git/git-receive-pack', '/api/git/my-app.git/info/lfs/objects/batch'];
 const APP_ADDRESSES = ['/web/app/~Plain%20App', '/web/app/~Notes%20v1.2', '/web/app/~Dr.%20Mario', '/web/app/~..', '/web/app/~...', '/web/app/~.hidden', '/web/app/~Report.softn', '/web/app/~engine.wasm', '/web/app/~x.js', '/web/app/~Backup.zip', '/web/app/~config.json', '/web/app/~My~2FApp', '/web/app/notes/page.v2'];
 
 function plant(root, names, body = NOT_FOR_VISITORS) {
@@ -202,6 +204,14 @@ async function checkTwins(port, files, { brotli }) {
   }
 }
 
+test('nginx lets through a body as large as PHP is told to take: its own default is 1 MB', () => {
+  const api = rawBlock('NGINX_CONFIG').match(/location ~ \^\/api\(\/\|\$\) \{[\s\S]*?\n {4}\}/)?.[0];
+  assert.ok(api, 'the location of the API');
+  const phpTakes = fs.readFileSync(new URL('../../apps/softn-api/.user.ini', import.meta.url), 'utf8').match(/^post_max_size = (\d+)M/m)?.[1];
+  assert.ok(phpTakes, 'post_max_size in .user.ini');
+  assert.match(api, new RegExp(`client_max_body_size ${phpTakes}m;`));
+});
+
 test('coi.js is asked for as sw.js is: sw.js loads it, and a stale copy outlives the new worker', () => {
   assert.match(buildSource, /<FilesMatch "\^\(\?:registerSW\|sw\|service-worker\|coi\)\\\.js/, 'Apache');
   assert.match(buildSource, /\(\?:registerSW\|sw\|service-worker\|coi\)\\\.js\$\s+"no-cache/, 'nginx');
@@ -255,6 +265,15 @@ test('Apache serves each twin under its original type, through the shipped .htac
     assert.equal((await get(port, '/assets/missing-1a2b3c4d.js', { 'Accept-Encoding': 'gzip' })).status, 404);
     await checkPrivate(port);
     await checkAddresses(port);
+    // A git remote's address ends in .git, which must not be taken for the dot folder of that name. No PHP here: the
+    // rewrite is what is being looked at, and it lands on this file.
+    plant(root, ['api/index.php'], 'the API');
+    fs.copyFileSync(new URL('../../apps/softn-api/.htaccess', import.meta.url), path.join(root, 'api/.htaccess'));
+    for (const route of GIT_ROUTES) {
+      const answer = await get(port, route);
+      assert.equal(answer.status, 200, route);
+      assert.equal(answer.body.toString(), 'the API', route);
+    }
   });
 });
 
@@ -272,7 +291,7 @@ test('nginx starts on the shipped config without ngx_brotli, and serves each .gz
     await checkPrivate(port);
     await checkAddresses(port);
     // The API's addresses are routes. PHP-FPM is not here: a 502 is one that reached the location for it.
-    for (const route of ['/api/apps', '/api/x/config.json', '/api/x/export.zip', '/api/.user.ini']) assert.equal((await get(port, route)).status, 502, route);
+    for (const route of ['/api/apps', '/api/x/config.json', '/api/x/export.zip', '/api/.user.ini', ...GIT_ROUTES]) assert.equal((await get(port, route)).status, 502, route);
   });
 });
 

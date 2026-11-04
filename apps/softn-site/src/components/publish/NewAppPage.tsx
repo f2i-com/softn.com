@@ -11,7 +11,7 @@ import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '../../
 import { bundleFiles } from '../../lib/dropped';
 import { isSettled, pendingCount, type SelectOptions } from '../../lib/selection';
 import { BundleDrop } from './BundleDrop';
-import { KeyBackupDownload, KeyKeptNotice } from './keys';
+import { KeyBackupDownload, KeyKeptNotice, PushWithGit } from './keys';
 import { YourApps } from './YourApps';
 import { AUTHOR_KEY, PrepublishReport, errorText, singleItem, useDroppedBundles, useSelection, useThumbnail, type CategoriesStatus } from './shared';
 
@@ -550,6 +550,7 @@ export function NewAppPage({
                 Update from here: <a href={`/publish?update=${app.slug}`}>the update page</a>. Or from a script:{' '}
                 <code>curl -F bundle=@app.softn -H &quot;X-Edit-Key: …&quot; {window.location.origin}/api/apps/{app.slug}/versions</code>
               </p>
+              <PushWithGit slug={app.slug} />
             </section>
           )}
         </div>

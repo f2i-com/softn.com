@@ -368,7 +368,7 @@ final class Bundle
      * such an entry and runs the rest; the directory refuses the bundle.
      * A folder entry is held to the first four only.
      */
-    private static function unsafeName(string $name): bool
+    public static function unsafeName(string $name): bool
     {
         $escapes = str_starts_with($name, '/') || str_contains($name, '..') || str_contains($name, "\0") || preg_match('/^[a-zA-Z]:/', $name) === 1;
         if ($escapes || str_ends_with($name, '/')) return $escapes;

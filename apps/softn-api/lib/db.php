@@ -68,6 +68,8 @@ final class Config
                 // what scripts/bench/catalog-bench.mjs reads. Off unless asked.
                 'debugTimings' => false,
                 'maxVersionsPerApp' => 50,
+                // Past that number the oldest after version 1 goes to make room. False refuses the new one instead.
+                'dropOldVersions' => true,
                 'storage' => [
                     'maxCollections' => 32,
                     'maxRecordsPerCollection' => 20000,
@@ -79,6 +81,9 @@ final class Config
                     // [count, seconds] per visitor
                     'publish' => [10, 3600],
                     'version' => [30, 3600],
+                    // A wrong edit key given to git. A key cannot be guessed;
+                    // this is for what a run of them costs.
+                    'gitKey' => [30, 3600],
                     // Replacing an edit key (POST /apps/{slug}/key); an owner
                     // replacing the key of every app they hold, at once.
                     'rekey' => [30, 3600],
@@ -157,11 +162,11 @@ final class Config
      * full disk fails every write the directory makes, its own metadata's
      * among them. A disk whose free space cannot be read is not refused.
      */
-    public static function requireRoom(int $bytes = 0): void
+    public static function requireRoom(int $bytes = 0, ?string $dir = null): void
     {
         $floor = (int) self::get('minFreeBytes', 256 * 1024 * 1024);
         if ($floor <= 0) return;
-        $free = @disk_free_space(self::dataDir());
+        $free = @disk_free_space($dir ?? self::dataDir());
         if ($free === false) return;
         if ($free - max(0, $bytes) < $floor) {
             error_log(sprintf('softn-api: refused a write of %d bytes: %d bytes free, below minFreeBytes (%d)', $bytes, (int) $free, $floor));
