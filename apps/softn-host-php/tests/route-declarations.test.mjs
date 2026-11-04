@@ -12,7 +12,7 @@
  */
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readdirSync,readFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,rmSync,existsSync,readdirSync,readFileSync,chmodSync,statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -462,6 +462,19 @@ test('an error\'s positions are the logic\'s own lines, strict or not',async t=>
   }
 });
 
+// A failure that names an app's table is read as that failure: "correio" ends in
+// the letters of Node's EIO code, and was once taken for a disk that cannot be
+// written.
+test('a migration that names a missing table fails as a migration, whatever the table is called',t=>{
+  const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
+  t.after(b.close);
+  writeFileSync(join(b.root,'app/server/migrations/001.sql'),'INSERT INTO correio VALUES(1);\n');
+  const r=b.logged({method:'GET',path:'/api/ping'});
+  assert.equal(r.status,503);
+  assert.deepEqual(r.body,{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:'database_migrations'});
+  assert.match(r.stderr,/no such table: correio/);
+});
+
 test('a startup that fails names its stage on stderr, without the path that was missing',t=>{
   const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
   t.after(b.close);
@@ -473,6 +486,68 @@ test('a startup that fails names its stage on stderr, without the path that was 
   assert.ok(!r.stderr.includes(b.root)&&!r.stderr.includes('001.sql'),r.stderr);
 });
 
+// Every request writes the rate limiter's row, reads included. A database the
+// disk will not take a write for is said as that: it was "Check its private
+// configuration", which sent the operator to the wrong place.
+test('a database that cannot be written says so, not that the configuration is wrong',t=>{
+  const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
+  t.after(b.close);
+  // Full as SQLite means it: the worker allows 131072 pages, and this file has
+  // them all, at a page size that keeps it to 64 MB.
+  const file=join(b.root,'private/data/application.sqlite');
+  const db=new DatabaseSync(file);
+  db.exec('PRAGMA page_size=512; PRAGMA journal_mode=DELETE; CREATE TABLE fill(b BLOB)');
+  db.prepare('INSERT INTO fill VALUES(zeroblob(?))').run(131072*512);
+  db.close();
+  const r=b.logged({method:'GET',path:'/api/ping'});
+  assert.equal(r.status,503);
+  assert.deepEqual(r.body,{error:'The backend cannot write its database: the disk may be full or read-only, or the database may be at its size limit.',code:'backend_unavailable',diagnostic:'database_unwritable'});
+  assert.match(r.stderr,/^softn: startup stage database_\w+: database or disk is full/);
+});
+
+// A database file left read-only (0444) is still the app's own: both runners
+// make it private (0600) again and write it, where the Rust runner refused to
+// open it and blamed the configuration, and the Node runner refused the first
+// request.
+test('a database file left read-only is made private again and written, not refused',t=>{
+  if(process.platform==='win32'){t.skip('file modes are POSIX');return;}
+  const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
+  t.after(b.close);
+  assert.equal(b.logged({method:'GET',path:'/api/ping'}).status,200);
+  const file=join(b.root,'private/data/application.sqlite');
+  chmodSync(file,0o444);
+  const r=b.logged({method:'GET',path:'/api/ping'});
+  assert.equal(r.status,200,JSON.stringify(r.body)+r.stderr);
+  assert.equal(statSync(file).mode&0o777,0o600);
+  // Its -wal or -shm left read-only open it read-only as surely (SQLite falls back to reading
+  // either), so both are taken back too. The database is in WAL mode by now; SQLite removes both
+  // when the request's connection closes, so the answer is what is checked.
+  for(const suffix of ['-wal','-shm']){
+    writeFileSync(file+suffix,'');
+    chmodSync(file+suffix,0o444);
+    const again=b.logged({method:'GET',path:'/api/ping'});
+    assert.equal(again.status,200,suffix+' '+JSON.stringify(again.body)+again.stderr);
+    if(existsSync(file+suffix))assert.equal(statSync(file+suffix).mode&0o777,0o600,suffix);
+  }
+});
+// Not one its owner cannot read: softn-runner takes a file back through a read
+// handle, which such a file does not give, so both runners leave it and refuse.
+test('a database file its owner cannot read is left as it is and refused, by either runner',t=>{
+  if(process.platform==='win32'){t.skip('file modes are POSIX');return;}
+  if(process.getuid?.()===0){t.skip('root reads any file');return;}
+  const b=backend(manifest([{method:'GET',path:'/api/ping',handler:'ping'}]));
+  t.after(b.close);
+  assert.equal(b.logged({method:'GET',path:'/api/ping'}).status,200);
+  const file=join(b.root,'private/data/application.sqlite');
+  for(const mode of [0o000,0o200]){
+    chmodSync(file,mode);
+    const r=b.logged({method:'GET',path:'/api/ping'});
+    assert.equal(r.status,503,JSON.stringify(r.body));
+    assert.equal(r.body.diagnostic,'database_open',JSON.stringify(r.body));
+    assert.equal(statSync(file).mode&0o777,mode,'its mode is left as it was');
+  }
+  chmodSync(file,0o600);
+});
 test('a host call carries 2 MiB of arguments, as on the Rust host',t=>{
   const b=backend(manifest([{method:'GET',path:'/api/big',handler:'big'}]));
   t.after(b.close);

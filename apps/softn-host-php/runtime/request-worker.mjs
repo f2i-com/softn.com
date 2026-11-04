@@ -45,6 +45,12 @@ function emit(result) {
 // past busy_timeout. Transient, so answered as the retryable busy response,
 // not as a configuration fault.
 const busy=e=>e?.errcode===5||e?.errcode===6||/database is (locked|busy)/i.test(String(e?.message));
+// A database the disk will not take a write for: every request writes the
+// rate limiter's row, reads included, so a full or read-only disk stops them
+// all. Said as that, and not as configuration (worker.rs `unwritable`).
+// SQLite's words, the system's (sql.rs), and Node's codes only where Node puts them, at the start: a
+// message also holds an app's own table and folder names.
+const unwritable=e=>/database or disk is full|attempt to write a readonly database|disk I\/O error|read-only file system|no space left on device|input\/output error/i.test(String(e?.message))||/^E(?:ROFS|NOSPC|IO): /.test(String(e?.message));
 // Static diagnostic labels identify the failed check without exposing values,
 // paths, SQL, provider responses, or exception messages to clients.
 let startupStage='configuration_read';
@@ -112,7 +118,17 @@ try {
   if(!request||typeof request.path!=='string'||!request.path.startsWith('/api/')||!['GET','POST','PUT','DELETE'].includes(request.method)||typeof request.client_ip!=='string')throw new Error('Invalid request');
   startupStage='database_open';
   const file=join(data,'application.sqlite');
-  try{if(lstatSync(file).isSymbolicLink())throw new Error('Invalid database');}catch(e){if(e.code!=='ENOENT')throw e;}
+  let mode=null;
+  try{const found=lstatSync(file);if(found.isSymbolicLink())throw new Error('Invalid database');mode=found.mode;}catch(e){if(e.code!=='ENOENT')throw e;}
+  // Private (0600) before SQLite opens it, as sql.rs does: a file left read-only (0444) would be
+  // opened read-only, and this request refused, though it is the app's own to write. Only a file
+  // its owner can read: sql.rs takes one back through a read handle, so a file with no read bit
+  // (0000, 0200) is left as it is and refused, by both.
+  if(mode!==null&&(mode&0o400))try{chmodSync(file,0o600);}catch(e){if(e.code!=='ENOENT')throw e;}
+  // Its -wal and -shm, left read-only beside it (restored with it, say), open it read-only as
+  // surely: taken back the same way, as sql.rs does. Not a link, which chmod would follow, and a
+  // mode that cannot be changed is left for SQLite to report.
+  for(const companion of [file+'-wal',file+'-shm'])try{const found=lstatSync(companion);if(found.isFile()&&(found.mode&0o400))chmodSync(companion,0o600);}catch{}
   db=new DatabaseSync(file,{allowExtension:false,limits:SQL_LIMITS});chmodSync(file,0o600);
   // Lock waits are three seconds, as on the Rust host, and the wait is set
   // before anything that can meet a lock: with journal_mode first, a request
@@ -217,5 +233,6 @@ try {
   // A busy database is a moment's load, not something to look into.
   if(!busy(e))logFailure('startup stage '+startupStage,e);
   emit(busy(e)?{status:503,body:{error:'The server is busy. Please retry.',code:'database_busy'}}
+    :unwritable(e)?{status:503,body:{error:'The backend cannot write its database: the disk may be full or read-only, or the database may be at its size limit.',code:'backend_unavailable',diagnostic:'database_unwritable'}}
     :{status:503,body:{error:'The backend is unavailable. Check its private configuration.',code:'backend_unavailable',diagnostic:startupStage}});
 } finally {try{db?.close();}catch{}}

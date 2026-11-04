@@ -46,8 +46,33 @@ pub fn open(path: &Path) -> Result<Connection, HostError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).mode(0o600).open(path).map_err(HostError::library)?;
+        let file = match std::fs::OpenOptions::new().read(true).write(true).create(true).mode(0o600).open(path) {
+            Ok(file) => file,
+            // The app's own file left read-only (0444): made private again through a handle that
+            // only reads, as request-worker.mjs's chmod does, rather than refused. When there is no
+            // such file (a folder it cannot write, on a first start), what is said is why it could
+            // not be made, not that it is not there.
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                std::fs::File::open(path).map_err(|_| HostError::library(e))?
+            }
+            Err(e) => return Err(HostError::library(e)),
+        };
         file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(HostError::library)?;
+        // Its -wal and -shm, left read-only beside it (restored with it, say), open it read-only
+        // as surely: taken back the same way, as request-worker.mjs does. Not a link, and a mode
+        // that cannot be changed is left for SQLite to report.
+        for suffix in ["-wal", "-shm"] {
+            let mut name = path.as_os_str().to_owned();
+            name.push(suffix);
+            let companion = std::path::PathBuf::from(name);
+            let readable = std::fs::symlink_metadata(&companion)
+                .is_ok_and(|found| found.file_type().is_file() && found.permissions().mode() & 0o400 != 0);
+            if readable {
+                if let Ok(handle) = std::fs::File::open(&companion) {
+                    let _ = handle.set_permissions(std::fs::Permissions::from_mode(0o600));
+                }
+            }
+        }
     }
     let conn = Connection::open(path).map_err(HostError::sqlite)?;
     // node:sqlite's DatabaseSync: double-quoted string literals are off (they
@@ -546,6 +571,31 @@ mod tests {
         assert!(like(LIKE_PATTERN_LIMIT as usize + 1).is_err());
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A first start in a data folder the runner cannot write: what is said is why the file
+    /// could not be made, not that it is not there (the read-only fallback's own error).
+    #[cfg(unix)]
+    #[test]
+    fn a_database_that_cannot_be_made_is_reported_as_not_permitted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("softn-runner-unmade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // Root writes there anyway, and has nothing to be refused.
+        let root = std::fs::write(dir.join("probe"), b"").is_ok();
+        let result = open(&dir.join("application.sqlite"));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        if root {
+            return;
+        }
+        match result {
+            Err(HostError::Library(message)) => assert!(message.contains("ermission denied"), "{message}"),
+            Err(other) => panic!("{other:?}"),
+            Ok(_) => panic!("opened in a folder it cannot write"),
+        }
     }
 
     #[test]

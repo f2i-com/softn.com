@@ -166,6 +166,9 @@ pub fn run(root: &Path, input: &str, guest: &Guest, migration: &Arc<Mutex<Option
             // A busy database is a moment's load, not something to look into.
             if error.busy() {
                 answer(503, serde_json::json!({ "error": "The server is busy. Please retry.", "code": "database_busy" }))
+            } else if error.unwritable() {
+                js::log_failure(&format!("startup stage {stage}"), error.reason());
+                answer(503, serde_json::json!({ "error": "The backend cannot write its database: the disk may be full or read-only, or the database may be at its size limit.", "code": "backend_unavailable", "diagnostic": "database_unwritable" }))
             } else {
                 js::log_failure(&format!("startup stage {stage}"), error.reason());
                 answer(503, serde_json::json!({ "error": "The backend is unavailable. Check its private configuration.", "code": "backend_unavailable", "diagnostic": stage }))

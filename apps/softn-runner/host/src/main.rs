@@ -77,6 +77,20 @@ impl HostError {
         let text = self.reason().to_ascii_lowercase();
         text.contains("database is locked") || text.contains("database is busy") || text.contains("database table is locked")
     }
+
+    /// A database the disk will not take a write for (request-worker.mjs
+    /// `unwritable`): every request writes the rate limiter's row, reads
+    /// included, so a full or read-only disk stops them all.
+    pub fn unwritable(&self) -> bool {
+        let text = self.reason().to_ascii_lowercase();
+        text.contains("database or disk is full")
+            || text.contains("attempt to write a readonly database")
+            || text.contains("disk i/o error")
+            // The same said by the system, opening the file (sql.rs `open`).
+            || text.contains("read-only file system")
+            || text.contains("no space left on device")
+            || text.contains("input/output error")
+    }
 }
 
 /// The migration running, so the deadline can say which one it stopped.
