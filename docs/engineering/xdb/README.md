@@ -163,6 +163,18 @@ starts networking only if it was enabled before; the host registers the
 commands it uses with `tauri::generate_handler!` (the desktop runtime's
 list is in `apps/softn-loader/src-tauri/src/lib.rs`).
 
+Tauri ends the process when setup fails, and a release build has no console,
+so the desktop runtime does not let a failure there pass silently
+(`open_local_data` in its `lib.rs`, words in `startup.rs`). It shows a native
+dialog naming the file or folder and what SQLite said. If SQLite refuses the
+default database itself as damaged, the person may set it aside: it and those
+of its `-wal`, `-shm` and `-journal` files still there are renamed
+`data.sqlite.damaged-<time>` beside it, never deleted, and a new one is made.
+If the start still fails, the files are put back. Any other failure (a full
+disk, a folder that cannot be written) stops the start with that message. The
+window is made only once the data is open (its `tauri.conf.json` entry has
+`"create": false`), so no page runs behind the dialog.
+
 The default database is `<app data>/apps/_default/data.sqlite`; a named app's
 is `<app data>/apps/<sanitized app ID>/data.sqlite`, and an empty or missing
 ID means `_default`. `setup_xdb_with_path` puts the default database at the

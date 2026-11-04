@@ -51,6 +51,17 @@ webpki-root-certs = "1"
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 
+# A native message when SoftN cannot open its data as it starts (lib.rs
+# `startup_dialog`), shown on the main thread in the setup hook: rfd's on Windows
+# and macOS (the dialog plugin's own copy, with its features), GTK's own on
+# Linux, where rfd's would wait on a thread of its own that cannot run while
+# setup holds GTK's main context. Both are in the tree already, through Tauri.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
+
+[target.'cfg(not(any(windows, target_os = "macos", target_os = "android", target_os = "ios")))'.dependencies]
+gtk = "0.18"
+
 # The tests drive the commands through Tauri's mock IPC, as the page calls them.
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

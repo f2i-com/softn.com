@@ -24,6 +24,8 @@ pub mod data_identity;
 mod disk;
 mod net;
 pub mod scoped_xdb;
+#[cfg(desktop)]
+mod startup;
 
 use data_identity::DataIdentity;
 
@@ -138,6 +140,44 @@ struct FileOpenedEvent {
 fn is_softn_path(path: &str) -> bool {
     std::path::Path::new(path).extension().and_then(|e| e.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("softn"))
+}
+
+/// A path a second launch was given, as that launch meant it: a relative one is read
+/// from the folder it was started in, not from this (the first) instance's.
+#[cfg(desktop)]
+fn path_from_launch(arg: &str, cwd: &str) -> String {
+    let path = Path::new(arg);
+    if path.is_relative() && !cwd.is_empty() {
+        Path::new(cwd).join(path).to_string_lossy().into_owned()
+    } else {
+        arg.to_string()
+    }
+}
+
+/// A .softn file the system handed this running instance (a second launch, or macOS's
+/// Finder): readable as the bundle chosen now, kept for a page that has not asked yet,
+/// and sent to the page, whose window comes to the front.
+#[cfg(desktop)]
+fn open_handed_over(app: &tauri::AppHandle, path: &str) {
+    if !is_softn_path(path) {
+        return;
+    }
+    // Chosen under the lock the command line's file and the data's record are decided under too (setup): a launch
+    // handed over while SoftN starts (inside a startup dialog, or while Windows waits on WebView2 to make the window,
+    // or from the D-Bus thread on Linux) is the file chosen last, whichever way the two interleave.
+    match app.try_state::<OpenedFile>() {
+        Some(state) => {
+            if let Ok(mut guard) = state.path.lock() {
+                remember_opened(app, path);
+                *guard = Some(path.to_string());
+            }
+        }
+        None => remember_opened(app, path),
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("file-opened", FileOpenedEvent { path: path.to_string() });
+        let _ = window.set_focus();
+    }
 }
 
 /// Whether `path` is an Android content URI, which is what the system picker returns there.
@@ -432,6 +472,105 @@ fn set_window_icon(app: tauri::AppHandle, icon_data: Vec<u8>) -> Result<(), Stri
         .map_err(|e| format!("Failed to set window icon: {}", e))
 }
 
+/// A native error message as SoftN starts, shown and answered on this thread, the main one,
+/// where Tauri runs the setup hook (inside the event loop, before anything else is let through).
+/// `choice`: the button that goes ahead and the one that does not; without it, OK alone. Whether
+/// the person chose to go ahead.
+///
+/// The dialog plugin's dialogs wait off this thread for an answer this thread would have to give,
+/// so they are not used here. rfd's show on the calling thread on Windows and macOS. On Linux
+/// rfd's GTK dialogs are run by a thread of its own on GLib's main context, which this thread
+/// holds while setup runs: the dialog never showed and SoftN hung, so GTK's own runs here.
+#[cfg(desktop)]
+fn startup_dialog(title: &str, text: &str, choice: Option<(&str, &str)>) -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+        let buttons = match choice {
+            Some((go, stop)) => MessageButtons::OkCancelCustom(go.into(), stop.into()),
+            None => MessageButtons::Ok,
+        };
+        let answer = MessageDialog::new().set_level(MessageLevel::Error).set_title(title).set_description(text).set_buttons(buttons).show();
+        // Windows reports the button by its label; elsewhere the first button may come back as OK.
+        choice.is_some_and(|(go, _)| matches!(answer, MessageDialogResult::Ok) || matches!(&answer, MessageDialogResult::Custom(label) if label == go))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        use gtk::prelude::*;
+        let dialog = gtk::MessageDialog::new(None::<&gtk::Window>, gtk::DialogFlags::MODAL, gtk::MessageType::Error, gtk::ButtonsType::None, text);
+        dialog.set_title(title);
+        match choice {
+            Some((go, stop)) => {
+                dialog.add_button(stop, gtk::ResponseType::Cancel);
+                dialog.add_button(go, gtk::ResponseType::Accept);
+            }
+            None => {
+                dialog.add_button("OK", gtk::ResponseType::Close);
+            }
+        }
+        // A nested main loop on this thread, which owns GTK's context: the dialog shows and is answered here.
+        let answer = dialog.run();
+        // Hidden, a window GTK keeps for as long as SoftN runs.
+        // SAFETY: the dialog is not used after this.
+        unsafe { dialog.destroy() };
+        choice.is_some() && answer == gtk::ResponseType::Accept
+    }
+}
+
+/// XDB's databases, opened before the window is made. Tauri ends the process when setup fails,
+/// and a release build has no console, so a failure here is put to the person in a native
+/// dialog (startup.rs, `startup_dialog`). A default database SQLite refuses as damaged can be
+/// set aside (renamed beside itself, never deleted) when the person says so, and a new one
+/// made; if SoftN still cannot start, the file is put back. Otherwise SoftN quits after saying
+/// why.
+#[cfg(desktop)]
+fn open_local_data(app: &tauri::App) {
+    fn quit(text: String) -> ! {
+        startup_dialog("SoftN cannot start", &text, None);
+        std::process::exit(1)
+    }
+
+    let error = match xdb::tauri::setup_xdb(app) {
+        Ok(()) => return,
+        Err(e) => e.to_string(),
+    };
+    tracing::error!("XDB could not open its databases: {error}");
+    let folder = app.path().app_data_dir().ok();
+    let damaged = folder
+        .as_ref()
+        .map(|dir| dir.join("apps").join("_default").join("data.sqlite"))
+        .filter(|file| startup::looks_damaged(&error) && file.is_file());
+    let Some(file) = damaged else { quit(startup::cannot_open_text(folder.as_deref(), &error)) };
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let set_aside = startup_dialog(
+        "SoftN's data file is damaged",
+        &startup::damaged_text(&file, stamp, &error),
+        Some((startup::SET_ASIDE, startup::QUIT)),
+    );
+    if !set_aside {
+        std::process::exit(1);
+    }
+    let moved = match startup::set_aside(&file, stamp) {
+        Ok(moved) => moved,
+        Err(e) if e.left.is_empty() => quit(format!("SoftN could not set the file aside, so it is left as it was:\n\n{}\n\n({})", file.display(), e.error)),
+        Err(e) => quit(format!("SoftN could not set the file aside ({}).\n\n{}", e.error, startup::still_aside_text(&e.left))),
+    };
+    if let Err(e) = xdb::tauri::setup_xdb(app) {
+        let mut text = startup::cannot_open_text(folder.as_deref(), &e.to_string());
+        let left = startup::undo(&file, stamp, &moved);
+        if !left.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(&startup::still_aside_text(&left));
+        }
+        quit(text);
+    }
+    info!("The damaged default database was set aside as {}", startup::aside_name(&file, stamp));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize tracing for logging
@@ -452,30 +591,10 @@ pub fn run() {
     {
         builder = builder
             .plugin(tauri_plugin_cli::init())
-            .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             // When another instance tries to open, check for file argument
             if argv.len() > 1 {
-                let file_path = &argv[1];
-                if is_softn_path(file_path) {
-                    remember_opened(app, file_path);
-                    // Store the opened file path
-                    if let Some(state) = app.try_state::<OpenedFile>() {
-                        if let Ok(mut guard) = state.path.lock() {
-                            *guard = Some(file_path.clone());
-                        }
-                    }
-
-                    // Emit event to frontend
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit(
-                            "file-opened",
-                            FileOpenedEvent {
-                                path: file_path.clone(),
-                            },
-                        );
-                        let _ = window.set_focus();
-                    }
-                }
+                open_handed_over(app, &path_from_launch(&argv[1], &cwd));
             }
         }));
     }
@@ -586,6 +705,9 @@ pub fn run() {
             // user explicitly enabled it (persisted network-settings.json); see
             // docs/engineering/xdb/networking-and-restore-policy.md (audit XD-01).
             info!("Initializing XDB local database (peer networking opt-in)...");
+            #[cfg(desktop)]
+            open_local_data(app);
+            #[cfg(not(desktop))]
             xdb::tauri::setup_xdb(app)?;
             info!("XDB initialized successfully");
 
@@ -593,24 +715,57 @@ pub fn run() {
             // the same folder as the databases. Managed before the command line is read: a
             // file named there is the first app opened.
             let data_dir = app.state::<xdb::tauri::SharedDbManager>().base_dir().clone();
-            app.manage(DataIdentity::open(&data_dir));
+            // Made under the opened file's lock (`open_handed_over`), and told of a file handed over before
+            // this ran: the one macOS hands over to start SoftN comes before launching finishes, and a second
+            // launch can come while a startup dialog waits. Kept by then, but not known to the record just
+            // made, which would otherwise say no app was opened through SoftN. One handed over after this is
+            // told by `open_handed_over` itself, so none is told twice or missed.
+            {
+                let opened = app.state::<OpenedFile>();
+                let guard = opened.path.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                app.manage(DataIdentity::open(&data_dir));
+                if let Some(path) = guard.as_deref() {
+                    app.state::<DataIdentity>().bundle_chosen(Path::new(path));
+                }
+            }
+
+            // The window is made now, with the data open and its record managed, rather than by
+            // Tauri before this ran (tauri.conf.json's window has "create": false). Made first,
+            // its page loaded and could be used behind a startup dialog, and every data command
+            // it sent failed, as nothing above was managed yet.
+            let window = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|config| config.label == "main")
+                .cloned()
+                .ok_or("tauri.conf.json has no main window")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.build()?;
 
             // Desktop-only: Handle CLI arguments and set window icon
             #[cfg(desktop)]
             {
-                // Handle CLI arguments (file opened via double-click or command line)
+                // Handle CLI arguments (file opened via double-click or command line). A file
+                // handed over before this (another launch reached this instance while it
+                // started) was chosen after this one: it is the one opened, and this one is
+                // left. Decided under the lock `open_handed_over` holds, so it holds however
+                // the two interleave.
                 match app.cli().matches() {
                     Ok(matches) => {
                         if let Some(file_arg) = matches.args.get("file") {
                             if let serde_json::Value::String(path) = &file_arg.value {
-                                if is_softn_path(path) {
-                                    remember_opened(app.handle(), path);
-                                    // Store the opened file path
-                                    let opened_file: State<'_, OpenedFile> = app.state();
-                                    if let Ok(mut guard) = opened_file.path.lock() {
+                                let opened_file: State<'_, OpenedFile> = app.state();
+                                let chosen = is_softn_path(path)
+                                    && opened_file.path.lock().is_ok_and(|mut guard| {
+                                        if guard.is_some() {
+                                            return false;
+                                        }
+                                        remember_opened(app.handle(), path);
                                         *guard = Some(path.clone());
-                                    }
-
+                                        true
+                                    });
+                                if chosen {
                                     // Emit event to frontend
                                     if let Some(window) = app.get_webview_window("main") {
                                         let _ = window.emit(
@@ -652,8 +807,21 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, _event| {
+            // macOS hands a file opened from Finder (double-click, Open With, the Dock) to the
+            // running app as an event, never on the command line. Tauri's own file-association
+            // pattern; the variant exists on macOS, iOS and Android, and only macOS is handled.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &_event {
+                for url in urls {
+                    if let Ok(path) = url.to_file_path() {
+                        open_handed_over(_app, &path.to_string_lossy());
+                    }
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -666,6 +834,19 @@ mod tests {
         } else {
             PathBuf::from("/data/user/0/com.softn.runtime/cache")
         }
+    }
+
+    #[test]
+    fn a_second_launchs_relative_path_is_read_from_where_it_was_started() {
+        let (cwd, absolute) = if cfg!(windows) {
+            (r"D:\projects\clock", r"C:\Users\someone\app.softn")
+        } else {
+            ("/home/someone/projects/clock", "/home/someone/app.softn")
+        };
+        assert_eq!(path_from_launch("app.softn", cwd), Path::new(cwd).join("app.softn").to_string_lossy());
+        assert_eq!(path_from_launch("../other/app.softn", cwd), Path::new(cwd).join("../other/app.softn").to_string_lossy());
+        assert_eq!(path_from_launch(absolute, cwd), absolute, "an absolute path is kept as given");
+        assert_eq!(path_from_launch("app.softn", ""), "app.softn", "no folder given: as it came");
     }
 
     #[test]
