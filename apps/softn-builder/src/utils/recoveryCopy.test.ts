@@ -18,17 +18,17 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RECOVERY_DELAY_MS, RECOVERY_FAILED, RECOVERY_TAKEN, useRecoveryCopy } from '../hooks/useRecoveryCopy';
+import { RECOVERY_DELAY_MS, RECOVERY_FAILED, RECOVERY_TAKEN, recoveryHeld, useRecoveryCopy } from '../hooks/useRecoveryCopy';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useFilesStore } from '../stores/filesStore';
 import { useHistoryStore } from '../stores/historyStore';
 import { useNotificationStore } from '../stores/notificationStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSchemaStore } from '../stores/schemaStore';
-import { SESSION_STORAGE_KEY, captureSession, commitProjectSnapshot, noteOpenedFromLink, prepareSessionSnapshot, readQuarantinedSession, startupAction, takeOpenedFromLink } from './openProject';
+import { QUARANTINE_ASSETS_KEY, QUARANTINE_STORAGE_KEY, RECOVERY_UNREAD, SESSION_STORAGE_KEY, SET_ASIDE_NOT_RESTORED, captureSession, commitProjectSnapshot, discardQuarantinedSession, exportQuarantinedSession, noteOpenedFromLink, noteRestoreOffered, prepareSessionSnapshot, readQuarantinedSession, restoredFromStore, setAsideUnrestored, startupAction, takeOpenedFromLink } from './openProject';
 import { RECOVERY_OWNER_KEY, TAB_ID, recoveryOf, restoreOffer, writeRecoveryCopy } from './recoveryCopy';
 import { SESSION_ASSETS_KEY, joinStoredSession, resetRefusedAssets } from './storedAssets';
-import { resetPersistedRevisions, saveProject } from './saveProject';
+import { resetPersistedRevisions, saveProject, sessionNotes } from './saveProject';
 import { keepSavedPoint } from './savedPoint';
 import { redoCanvas, undoCanvas } from './canvasHistory';
 
@@ -140,6 +140,280 @@ describe('the copy of unsaved work', () => {
     expect(writeRecoveryCopy({ view: 'design' })).not.toHaveProperty('setAside');
   });
 
+  it('writes nothing over unsaved work it could not set aside, and says so, until it can', () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    const first = stored()!;
+    // A store near its quota: the second copy of the work that setting it aside needs does not fit.
+    const real = Storage.prototype.setItem;
+    const full = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === QUARANTINE_STORAGE_KEY) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, key, value);
+    });
+    try {
+      noteOpenedFromLink();
+      everythingNew();
+      useProjectStore.getState().setName('Fieldnotes');
+      edit('A change to the starter');
+      expect(writeRecoveryCopy({ view: 'design' })).toEqual({ kind: 'held', keeping: 'Field Notes', reason: 'room' });
+      expect(stored()).toBe(first);
+      // Asked again at the next change, not only the first: the store still holds the only copy.
+      edit('Another change');
+      expect(writeRecoveryCopy({ view: 'design' })).toEqual({ kind: 'held', keeping: 'Field Notes', reason: 'room' });
+      expect(stored()).toBe(first);
+    } finally {
+      full.mockRestore();
+    }
+    // With room again, it is set aside as it would have been.
+    edit('And another');
+    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', setAside: 'Field Notes' });
+    expect(readQuarantinedSession()!.payload).toBe(first);
+  });
+
+  it('does not replace a session Recovery already keeps with the one a link would write over', () => {
+    const earlier = JSON.stringify({ quarantinedAt: '2026-11-01T00:00:00.000Z', error: 'It would not restore', payload: '{"kept":"for them"}' });
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, earlier);
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    const first = stored()!;
+    noteOpenedFromLink();
+    everythingNew();
+    edit('A change to the starter');
+    expect(writeRecoveryCopy({ view: 'design' })).toEqual({ kind: 'held', keeping: 'Field Notes', reason: 'recovery' });
+    expect(window.localStorage.getItem(QUARANTINE_STORAGE_KEY)).toBe(earlier);
+    expect(stored()).toBe(first);
+  });
+
+  it('says once that this project is not kept while the other is', async () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, JSON.stringify({ quarantinedAt: '', error: 'x', payload: '{}' }));
+    noteOpenedFromLink();
+    everythingNew();
+    vi.useFakeTimers();
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    try {
+      act(() => root.render(React.createElement(() => (useRecoveryCopy('design'), null))));
+      for (const words of ['one', 'two']) {
+        act(() => edit(words));
+        act(() => vi.advanceTimersByTime(RECOVERY_DELAY_MS + 10));
+      }
+      expect(said()).toEqual([recoveryHeld('Field Notes', 'recovery')]);
+    } finally {
+      act(() => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a session that would not restore in Recovery when it has room, and says so', () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, '{"project":{"name":"Broken"},"files":');
+    const raw = stored()!;
+    expect(setAsideUnrestored(raw, new Error('Unexpected end of JSON input'), null)).toBe('It was kept; download it from Export → Recovery.');
+    expect(readQuarantinedSession()).toMatchObject({ payload: raw, error: 'Unexpected end of JSON input' });
+    expect(stored()).toBeNull();
+  });
+
+  it('does not replace what Recovery keeps with a session that would not restore, or write over that session after', () => {
+    const earlier = JSON.stringify({ quarantinedAt: '2026-11-01T00:00:00.000Z', error: 'It would not restore', payload: '{"kept":"for them"}' });
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, earlier);
+    // Not a copy of unsaved work as far as can be read: it would not restore, so it is held all the same.
+    window.localStorage.setItem(SESSION_STORAGE_KEY, '{"project":{"name":"Broken"},"files":null}');
+    const raw = stored()!;
+    const told = setAsideUnrestored(raw, new Error('Unexpected end of JSON input'), null);
+    expect(told).toMatch(/^It is left where it is, and nothing is written over it: Recovery already keeps another\./);
+    expect(told).not.toMatch(/It was kept/);
+    expect(window.localStorage.getItem(QUARANTINE_STORAGE_KEY)).toBe(earlier);
+    expect(stored()).toBe(raw);
+
+    // The project the page goes on with: its first changes are not written over it.
+    edit('A change');
+    expect(writeRecoveryCopy({ view: 'design' })).toEqual({ kind: 'held', keeping: 'Broken', reason: 'recovery' });
+    edit('Another change');
+    expect(writeRecoveryCopy({ view: 'design' })).toEqual({ kind: 'held', keeping: 'Broken', reason: 'recovery' });
+    expect(stored()).toBe(raw);
+
+    // Recovery emptied: it is set aside with the reason it would not restore, and this project's copy is kept.
+    window.localStorage.removeItem(QUARANTINE_STORAGE_KEY);
+    edit('And another');
+    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', setAside: 'Broken' });
+    expect(readQuarantinedSession()).toMatchObject({ payload: raw, error: 'Unexpected end of JSON input' });
+    expect(recoveryOf(stored()!)?.name).toBe('Field Notes');
+  });
+
+  it('discards or downloads only the session Recovery was showing, not one another tab set aside since', async () => {
+    const shown = { quarantinedAt: '2026-11-04T01:00:00.000Z', error: 'x', payload: '{"project":{"name":"Shown"}}' };
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, JSON.stringify(shown));
+    // Another tab discards it, and the unsaved work it was holding moves into Recovery.
+    const since = { quarantinedAt: '2026-11-04T02:00:00.000Z', error: 'x', payload: '{"project":{"name":"Only copy"}}' };
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, JSON.stringify(since));
+    window.localStorage.setItem(QUARANTINE_ASSETS_KEY, '{"assets":{}}');
+    expect(discardQuarantinedSession(shown)).toBe(false);
+    expect(await exportQuarantinedSession(shown)).toBe(false);
+    expect(readQuarantinedSession()).toMatchObject({ payload: since.payload });
+    expect(window.localStorage.getItem(QUARANTINE_ASSETS_KEY)).toBe('{"assets":{}}');
+    // The one shown now goes when asked.
+    expect(discardQuarantinedSession(since)).toBe(true);
+    expect(readQuarantinedSession()).toBeNull();
+    expect(window.localStorage.getItem(QUARANTINE_ASSETS_KEY)).toBeNull();
+    // Already gone: nothing more to do, and that is not a refusal.
+    expect(discardQuarantinedSession(since)).toBe(true);
+  });
+
+  it('says a session that would not restore is left where it is when the store has no room to set it aside', () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, 'not a session at all');
+    const real = Storage.prototype.setItem;
+    const full = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === QUARANTINE_STORAGE_KEY) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, key, value);
+    });
+    try {
+      expect(setAsideUnrestored('not a session at all', new Error('Unexpected token'), null)).toMatch(/^It is left where it is, and nothing is written over it: this browser’s storage has no room to set it aside\./);
+      edit('A change');
+      expect(writeRecoveryCopy({ view: 'design' })).toEqual({ kind: 'held', keeping: 'the session that would not restore', reason: 'room' });
+      expect(stored()).toBe('not a session at all');
+    } finally {
+      full.mockRestore();
+    }
+  });
+
+  it('sets aside work the Builder offered to restore and was told "Not now", before the first change is written', () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    const first = stored()!;
+    // The next page load: the offer is made, declined, and the empty project is changed.
+    noteRestoreOffered();
+    everythingNew();
+    edit('A new start');
+    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', setAside: 'Field Notes' });
+    expect(readQuarantinedSession()).toMatchObject({ payload: first, error: SET_ASIDE_NOT_RESTORED });
+  });
+
+  it('writes restored work as this tab\'s own once it is restored', () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    noteRestoreOffered();
+    everythingNew();
+    commitProjectSnapshot(prepareSessionSnapshot(stored()!));
+    restoredFromStore(stored()!);
+    edit('More of it');
+    expect(writeRecoveryCopy({ view: 'design' })).not.toHaveProperty('setAside');
+    expect(readQuarantinedSession()).toBeNull();
+  });
+
+  it('sets aside the work another tab kept while the offer waited, once the copy offered is restored here', () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    const offered = stored()!;
+    noteRestoreOffered();
+    // While the question waits, another tab goes on with its work and keeps a newer copy, then closes.
+    const session = JSON.parse(offered) as { recovery: object; project: object };
+    const theirs = JSON.stringify({ ...session, recovery: { ...session.recovery, tab: 'another-tab' }, project: { ...session.project, name: 'Their Work' } });
+    window.localStorage.setItem(SESSION_STORAGE_KEY, theirs);
+    // The person answers Restore: the copy offered is put back, as it was offered.
+    everythingNew();
+    commitProjectSnapshot(prepareSessionSnapshot(offered));
+    restoredFromStore(offered);
+    edit('More of it');
+    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', setAside: 'Their Work' });
+    expect(readQuarantinedSession()!.payload).toBe(theirs);
+  });
+
+  it('leaves where it is a session another tab kept since, when the one read as the page opened is set aside', () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, '{"theirs":true}');
+    window.localStorage.setItem(SESSION_ASSETS_KEY, '{"files":[]}');
+    expect(setAsideUnrestored('{"read as the page opened":true}', new Error('It would not restore'), '{"files":[["a",{}]]}')).toMatch(/^It was kept/);
+    expect(stored()).toBe('{"theirs":true}');
+    expect(window.localStorage.getItem(SESSION_ASSETS_KEY)).toBe('{"files":[]}');
+    expect(readQuarantinedSession()!.payload).toBe('{"read as the page opened":true}');
+    expect(window.localStorage.getItem(QUARANTINE_ASSETS_KEY)).toBe('{"files":[["a",{}]]}');
+  });
+
+  it('lets go of a session it held for not restoring once another tab has written its own over it', () => {
+    const earlier = JSON.stringify({ quarantinedAt: '2026-11-01T00:00:00.000Z', error: 'It would not restore', payload: '{"kept":"for them"}' });
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, earlier);
+    window.localStorage.setItem(SESSION_STORAGE_KEY, 'not a session at all');
+    expect(setAsideUnrestored('not a session at all', new Error('Unexpected token'), null)).toMatch(/Recovery already keeps another/);
+    // Another tab saves its project: what is stored now is a session Save wrote, which has its file.
+    const saved = JSON.stringify(captureSession('design'));
+    window.localStorage.setItem(SESSION_STORAGE_KEY, saved);
+    edit('This tab goes on');
+    const outcome = writeRecoveryCopy({ view: 'design' });
+    expect(outcome).toMatchObject({ kind: 'written' });
+    expect(outcome).not.toHaveProperty('setAside');
+    expect(window.localStorage.getItem(QUARANTINE_STORAGE_KEY)).toBe(earlier);
+  });
+
+  it('keeps another tab\'s work from being written over when the session that would not restore is no longer stored here', () => {
+    edit('Their work');
+    writeRecoveryCopy({ view: 'design' });
+    const session = JSON.parse(stored()!) as { recovery: object };
+    const theirs = JSON.stringify({ ...session, recovery: { ...session.recovery, tab: 'another-tab' } });
+    window.localStorage.setItem(SESSION_STORAGE_KEY, theirs);
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, JSON.stringify({ quarantinedAt: '2026-11-01T00:00:00.000Z', error: 'It would not restore', payload: '{"kept":"for them"}' }));
+    // This tab offered the session it read as it opened; Restore failed after the other tab wrote over it.
+    noteRestoreOffered();
+    expect(setAsideUnrestored('the session read as the page opened', new Error('Unexpected token'), null)).toMatch(/could not be set aside/);
+    everythingNew();
+    edit('This tab');
+    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'held' });
+    expect(stored()).toBe(theirs);
+  });
+
+  it('says a session set aside without its pictures was kept without them', () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, '{"theirs":true}');
+    const setItem = Storage.prototype.setItem;
+    const full = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === QUARANTINE_ASSETS_KEY) throw new DOMException('full', 'QuotaExceededError');
+      setItem.call(this, key, value);
+    });
+    try {
+      expect(setAsideUnrestored('{"read as the page opened":true}', new Error('It would not restore'), '{"files":[["a",{}]]}')).toMatch(/^It was kept without its pictures/);
+    } finally {
+      full.mockRestore();
+    }
+    expect(readQuarantinedSession()!.payload).toBe('{"read as the page opened":true}');
+  });
+
+  it('shows a Recovery record it cannot read as it is, so it can be downloaded or discarded and Recovery made free', () => {
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, 'not a record this Builder writes');
+    const shown = readQuarantinedSession()!;
+    expect(shown).toEqual({ quarantinedAt: '', error: RECOVERY_UNREAD, payload: 'not a record this Builder writes' });
+    window.localStorage.setItem(SESSION_STORAGE_KEY, '{"another":true}');
+    expect(setAsideUnrestored('{"another":true}', new Error('It would not restore'), null)).toMatch(/Recovery already keeps another/);
+    expect(discardQuarantinedSession(shown)).toBe(true);
+    expect(window.localStorage.getItem(QUARANTINE_STORAGE_KEY)).toBeNull();
+    // An empty record keeps nothing, and is no reason to refuse the next.
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, '');
+    expect(readQuarantinedSession()).toBeNull();
+    window.localStorage.setItem(SESSION_STORAGE_KEY, '{"another":true}');
+    expect(setAsideUnrestored('{"another":true}', new Error('It would not restore'), null)).toMatch(/^It was kept/);
+  });
+
+  it('sets aside a session that would not restore when a link opens over it, with the reason it would not', () => {
+    // Not a copy of unsaved work as far as it says, and in no form the Builder opens: nothing else has it.
+    window.localStorage.setItem(SESSION_STORAGE_KEY, '{"project":{"name":"Broken"},"files":null}');
+    const raw = stored()!;
+    noteOpenedFromLink();
+    edit('A change to the starter');
+    expect(writeRecoveryCopy({ view: 'design' })).toMatchObject({ kind: 'written', setAside: 'Broken' });
+    expect(readQuarantinedSession()!.payload).toBe(raw);
+    expect(readQuarantinedSession()!.error).toMatch(/missing its project, canvas, schema or files/);
+  });
+
+  it('holds a session that will not even parse when a link opens over it and Recovery is full', () => {
+    const earlier = JSON.stringify({ quarantinedAt: '2026-11-01T00:00:00.000Z', error: 'It would not restore', payload: '{"kept":"for them"}' });
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, earlier);
+    window.localStorage.setItem(SESSION_STORAGE_KEY, 'not a session at all');
+    noteOpenedFromLink();
+    edit('A change to the starter');
+    expect(writeRecoveryCopy({ view: 'design' })).toEqual({ kind: 'held', keeping: 'the session that would not restore', reason: 'recovery' });
+    expect(stored()).toBe('not a session at all');
+    expect(window.localStorage.getItem(QUARANTINE_STORAGE_KEY)).toBe(earlier);
+    // What the person is told says how to make room, and Download alone does not.
+    expect(recoveryHeld('x', 'recovery')).toMatch(/download the one in Export → Recovery if you want it, then discard it\.$/);
+  });
+
   it('leaves a session Save wrote alone when a link opens over it: that work has a file', () => {
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(captureSession('design')));
     noteOpenedFromLink();
@@ -196,6 +470,46 @@ describe('a save that is still writing its file while the work goes on', () => {
     expect('sessionSuperseded' in outcome).toBe(false);
     // The record is the saved one now: not a copy of unsaved work.
     expect(recoveryOf(stored()!)).toBeNull();
+  });
+});
+
+describe('a save straight after a link opens a project over unsaved work', () => {
+  const save = (as?: 'export') => saveProject({ ...(as ? { as } : {}), view: 'design', existingHandle: null, build: async () => new Uint8Array([1]), writeFile: async () => null, writeExport: async () => null });
+
+  it('leaves the work where it is when it cannot be set aside, and says so; the file is still written', async () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    const first = stored()!;
+    window.localStorage.setItem(QUARANTINE_STORAGE_KEY, JSON.stringify({ quarantinedAt: '', error: 'x', payload: '{}' }));
+    // The starter opened, and saved or exported at once, before any edit in it.
+    noteOpenedFromLink();
+    everythingNew();
+    useProjectStore.getState().setName('Fieldnotes');
+    for (const as of [undefined, 'export'] as const) {
+      const written: string[] = [];
+      const outcome = await saveProject({ ...(as ? { as } : {}), view: 'design', existingHandle: null, build: async () => new Uint8Array([1]),
+        writeFile: async () => (written.push('file'), null), writeExport: async () => (written.push('export'), null) });
+      expect(written).toHaveLength(1);
+      expect(outcome).toMatchObject({ kind: 'saved', sessionStored: false, sessionHeld: { keeping: 'Field Notes', reason: 'recovery' } });
+      expect('sessionError' in outcome && outcome.sessionError).toBeFalsy();
+      expect(stored()).toBe(first);
+      expect(sessionNotes(outcome as never)).toEqual(['Your unsaved work on Field Notes is still kept for recovery, and was not replaced: the file is this project’s copy.']);
+    }
+  });
+
+  it('sets the work aside first when it can, and says where it went', async () => {
+    edit('Only copy of this');
+    writeRecoveryCopy({ view: 'design' });
+    const first = stored()!;
+    noteOpenedFromLink();
+    everythingNew();
+    useProjectStore.getState().setName('Fieldnotes');
+    const outcome = await save();
+    expect(outcome).toMatchObject({ kind: 'saved', sessionStored: true, setAside: 'Field Notes' });
+    expect(readQuarantinedSession()!.payload).toBe(first);
+    expect(recoveryOf(stored()!)).toBeNull();
+    // Asked once: the next save is this project's own.
+    expect(await save()).not.toHaveProperty('setAside');
   });
 });
 

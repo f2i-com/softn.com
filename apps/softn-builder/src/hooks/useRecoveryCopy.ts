@@ -31,6 +31,14 @@ import { readLocalStorage } from '../utils/safeStorage';
 export const RECOVERY_DELAY_MS = 1500;
 
 export const RECOVERY_FAILED = 'Your unsaved work could not be kept for recovery: this browser’s storage is full or blocked. Save the project to a file to keep it.';
+/**
+ * A link opened this project over unsaved work that could not be set aside, so this project's copy
+ * is not kept over it. Save writes this project to a file and leaves that work where it is.
+ */
+export const recoveryHeld = (name: string, reason: 'recovery' | 'room'): string =>
+  reason === 'recovery'
+    ? `Your unsaved work on ${name} is still kept for recovery, so this project’s changes are not: Recovery keeps one, and already has another. Save this project to a file to keep it, or make room: download the one in Export → Recovery if you want it, then discard it.`
+    : `Your unsaved work on ${name} is still kept for recovery, so this project’s changes are not: this browser’s storage has no room for both. Save this project to a file to keep it.`;
 export const RECOVERY_TAKEN =
   'Another Builder tab has just kept its own unsaved work as the recovery copy, in place of this tab’s. Only one is kept: this tab’s is kept again when you next change something. Save to a file to be sure of both.';
 
@@ -46,6 +54,7 @@ export function useRecoveryCopy(view: ViewMode, enabled = true): void {
     let ownCopy = false;
     let toldFailure = false;
     let toldTaken = false;
+    let toldHeld = false;
 
     /**
      * Whether there is unsaved work that the copy does not have yet, or a
@@ -93,6 +102,12 @@ export function useRecoveryCopy(view: ViewMode, enabled = true): void {
         toldFailure = false;
         if (outcome.setAside !== undefined) {
           useNotificationStore.getState().addNotification({ type: 'info', message: `Your unsaved work on ${outcome.setAside} was set aside: find it in Export → Recovery.`, duration: 15000 });
+        }
+      } else if (outcome.kind === 'held') {
+        // Nothing is kept of this project, and it is asked again at the next change.
+        if (!toldHeld) {
+          toldHeld = true;
+          useNotificationStore.getState().addNotification({ type: 'warning', message: recoveryHeld(outcome.keeping, outcome.reason), duration: 15000 });
         }
       } else if (unsaved && !toldFailure) {
         toldFailure = true;

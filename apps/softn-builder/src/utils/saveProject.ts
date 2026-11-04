@@ -43,7 +43,7 @@ import { useProjectStore } from '../stores/projectStore';
 import { useFilesStore } from '../stores/filesStore';
 import { exportBundleToFile, saveBundleToFile } from './bundleExporter';
 import { buildProjectBundle, bundleFileName, flushCanvasToActiveFile } from './buildProjectBundle';
-import { captureSession, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
+import { captureSession, setAsideBeforeWriting, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
 import type { BundleFileHandle } from './desktop';
 import { captureAssets, storeAssets, type AssetStore, type CapturedAssets } from './storedAssets';
 import { captureSavedPoint, forgetSavedPoint, keepSavedPoint, type SavedPoint } from './savedPoint';
@@ -73,6 +73,17 @@ export type SaveOutcome =
        * was being written (utils/recoveryCopy.ts). Nothing failed.
        */
       sessionSuperseded?: boolean;
+      /**
+       * A link opened this project over another's unsaved work, and storing
+       * this record set that work aside first, under Export → Recovery.
+       */
+      setAside?: string;
+      /**
+       * The record was not stored: the store holds that project's unsaved
+       * work, which could not be set aside, and this would have written over
+       * it. The file just written is this project's copy. Nothing failed.
+       */
+      sessionHeld?: { keeping: string; reason: 'recovery' | 'room' };
       /**
        * Export only: what was written is a copy beside the place the project
        * is kept, which it does not replace, so nothing was marked clean.
@@ -205,10 +216,17 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   let sessionStored = false;
   let sessionError: unknown;
   let sessionAssets: 'kept' | 'left-out' | undefined;
+  let setAside: string | undefined;
+  let sessionHeld: { keeping: string; reason: 'recovery' | 'room' } | undefined;
   const sessionSuperseded = !projectChanged && (persisted.get(projectId) ?? -1) > revision;
   if (!projectChanged && !sessionSuperseded) {
     try {
       const storage = deps.storage ?? window.localStorage;
+      // Another project's unsaved work a link opened this one over: set aside first, or not written over. The
+      // recovery copy asks the same; Save or Export straight after opening a starter comes here first.
+      const before = setAsideBeforeWriting(storage);
+      if (before.kind === 'held') throw new HeldSession(before.keeping, before.reason);
+      if (before.kind === 'set-aside') setAside = before.name;
       storage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
       persisted.set(projectId, revision);
       sessionStored = true;
@@ -216,7 +234,8 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
       // A set the store refused while the work went on is asked for again here.
       sessionAssets = storeAssets(storage, assets, { again: true }).kind === 'refused' ? 'left-out' : 'kept';
     } catch (e) {
-      sessionError = e;
+      if (e instanceof HeldSession) sessionHeld = { keeping: e.keeping, reason: e.reason };
+      else sessionError = e;
     }
   }
 
@@ -231,7 +250,29 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
     sessionError,
     ...(sessionAssets ? { sessionAssets } : {}),
     ...(sessionSuperseded ? { sessionSuperseded } : {}),
+    ...(setAside !== undefined ? { setAside } : {}),
+    ...(sessionHeld !== undefined ? { sessionHeld } : {}),
   };
+}
+
+/** The record is not stored over another project's unsaved work (setAsideBeforeWriting). */
+class HeldSession extends Error {
+  constructor(
+    readonly keeping: string,
+    readonly reason: 'recovery' | 'room',
+  ) {
+    super(`The unsaved work on ${keeping} is kept where it is.`);
+  }
+}
+
+/** What a save says of the recovery record beside its file: set aside, or left where it is. */
+export function sessionNotes(outcome: { setAside?: string; sessionHeld?: { keeping: string } }): string[] {
+  const notes: string[] = [];
+  if (outcome.setAside !== undefined) notes.push(`Your unsaved work on ${outcome.setAside} was set aside: find it in Export → Recovery.`);
+  if (outcome.sessionHeld !== undefined) {
+    notes.push(`Your unsaved work on ${outcome.sessionHeld.keeping} is still kept for recovery, and was not replaced: the file is this project’s copy.`);
+  }
+  return notes;
 }
 
 export type HostedSaveReport =

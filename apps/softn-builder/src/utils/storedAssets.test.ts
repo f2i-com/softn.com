@@ -29,7 +29,7 @@ import { useNotificationStore } from '../stores/notificationStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSchemaStore } from '../stores/schemaStore';
 import type { AssetFile } from '../types/builder';
-import { SESSION_STORAGE_KEY, captureSession, commitProjectSnapshot, exportQuarantinedSession, prepareSessionSnapshot, quarantineSession } from './openProject';
+import { SESSION_STORAGE_KEY, captureSession, commitProjectSnapshot, exportQuarantinedSession, prepareSessionSnapshot, quarantineSession, readQuarantinedSession } from './openProject';
 import { restoreOffer, writeRecoveryCopy } from './recoveryCopy';
 import { resetPersistedRevisions, saveProject } from './saveProject';
 import { SESSION_ASSETS_HEAD_KEY, SESSION_ASSETS_KEY, captureAssets, joinStoredSession, resetRefusedAssets } from './storedAssets';
@@ -315,7 +315,7 @@ describe('a stored session that will not restore', () => {
     address.revokeObjectURL = () => undefined;
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     try {
-      expect(await exportQuarantinedSession()).toBe(true);
+      expect(await exportQuarantinedSession(readQuarantinedSession()!)).toBe(true);
     } finally {
       address.createObjectURL = before.create;
       address.revokeObjectURL = before.revoke;

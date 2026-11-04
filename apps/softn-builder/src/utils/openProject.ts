@@ -666,56 +666,108 @@ export interface QuarantinedSession {
  * aside with it: left where it was it is the next project's to remove at
  * its first change, and the session kept would be its text alone. Moved,
  * not copied: the store has not the room for two of it.
+ *
+ * Whether it was set aside: a store that will not take it leaves it where it
+ * was, and a caller about to write over that place must not. `keepEarlier`
+ * leaves a session already set aside where it is, and this one too: it may be
+ * someone's only copy, kept for them until they discard it (downloading it leaves it there).
  */
-export function quarantineSession(raw: string, error: unknown, assetsRaw: string | null = null): void {
+export function quarantineSession(raw: string, error: unknown, assetsRaw: string | null = null, options: { keepEarlier?: boolean } = {}): false | 'kept' | 'kept-without-assets' {
+  if (options.keepEarlier && recoveryKeepsOne()) return false;
   const record: QuarantinedSession = {
     quarantinedAt: new Date().toISOString(),
     error: error instanceof Error ? error.message : String(error),
     payload: raw,
   };
+  // `raw` may be a session read some time ago (as the page opened), and another tab may have
+  // kept its own work there since: that one is left where it is, with its assets.
+  const live = readLocalStorage(SESSION_STORAGE_KEY) === raw;
   try {
     window.localStorage.setItem(QUARANTINE_STORAGE_KEY, JSON.stringify(record));
   } catch (e) {
     // The live key is left in place then: better a repeated prompt than a lost session.
     console.warn('[openProject] Could not quarantine the session; leaving it where it is:', e);
-    return;
+    return false;
   }
-  removeLocalStorage(SESSION_STORAGE_KEY);
+  if (live) removeLocalStorage(SESSION_STORAGE_KEY);
   // Whatever was set aside before went with the session this one replaces.
   removeLocalStorage(QUARANTINE_ASSETS_KEY);
-  if (assetsRaw === null) return;
-  removeLocalStorage(SESSION_ASSETS_KEY);
-  removeLocalStorage(SESSION_ASSETS_HEAD_KEY);
+  if (assetsRaw === null) return 'kept';
+  if (live) {
+    removeLocalStorage(SESSION_ASSETS_KEY);
+    removeLocalStorage(SESSION_ASSETS_HEAD_KEY);
+  }
   try {
     window.localStorage.setItem(QUARANTINE_ASSETS_KEY, assetsRaw);
   } catch (e) {
+    // (copied, not moved, when another tab's session took its place: two copies may not fit, and what the person is
+    // told says the session was kept without them)
     console.warn('[openProject] The assets of the quarantined session could not be kept with it:', e);
+    return 'kept-without-assets';
   }
+  return 'kept';
 }
 
+/** What Recovery is said to hold when its record is not one this Builder writes. */
+export const RECOVERY_UNREAD = 'the record it was kept in could not be read';
+
+/**
+ * The session Recovery keeps, or null when it keeps none. A record this Builder cannot read
+ * (damaged, or in another form) is given as it is, so it can still be downloaded or discarded:
+ * counted as kept but shown as nothing, it held Recovery for good, and every later set-aside was
+ * refused for want of room no one could make.
+ */
 export function readQuarantinedSession(): QuarantinedSession | null {
   const raw = readLocalStorage(QUARANTINE_STORAGE_KEY);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (!isObject(parsed) || typeof parsed.payload !== 'string') return null;
-    return {
-      quarantinedAt: typeof parsed.quarantinedAt === 'string' ? parsed.quarantinedAt : '',
-      error: typeof parsed.error === 'string' ? parsed.error : 'unknown error',
-      payload: parsed.payload,
-    };
+    if (isObject(parsed) && typeof parsed.payload === 'string') {
+      return {
+        quarantinedAt: typeof parsed.quarantinedAt === 'string' ? parsed.quarantinedAt : '',
+        error: typeof parsed.error === 'string' ? parsed.error : 'unknown error',
+        payload: parsed.payload,
+      };
+    }
   } catch {
-    return null;
+    // Given as it is, below.
   }
+  return { quarantinedAt: '', error: RECOVERY_UNREAD, payload: raw };
 }
 
-export function discardQuarantinedSession(): void {
+/** Whether Recovery keeps a session, as Export → Recovery shows it: one test, wherever it is asked. */
+function recoveryKeepsOne(): boolean {
+  return readQuarantinedSession() !== null;
+}
+
+/**
+ * Whether Recovery still holds the session the person was shown. Another tab
+ * may have discarded that one and set another aside since (a session held for
+ * want of room moves in as soon as there is room), and that one is nobody's to
+ * download or discard unseen.
+ */
+function stillHolds(shown: Pick<QuarantinedSession, 'quarantinedAt' | 'payload'>): boolean {
+  const now = readQuarantinedSession();
+  return now !== null && now.quarantinedAt === shown.quarantinedAt && now.payload === shown.payload;
+}
+
+/**
+ * Discard the session in Recovery the person was shown, and only that one:
+ * false, discarding nothing, when Recovery holds another now.
+ */
+export function discardQuarantinedSession(shown: Pick<QuarantinedSession, 'quarantinedAt' | 'payload'>): boolean {
+  if (recoveryKeepsOne() && !stillHolds(shown)) return false;
   removeLocalStorage(QUARANTINE_STORAGE_KEY);
   removeLocalStorage(QUARANTINE_ASSETS_KEY);
+  return true;
 }
 
-/** The quarantined payload as a file the person can keep. */
-export async function exportQuarantinedSession(): Promise<boolean> {
+/**
+ * The session in Recovery the person was shown, as a file they can keep:
+ * false, saving nothing, when Recovery holds another now.
+ */
+export async function exportQuarantinedSession(shown: Pick<QuarantinedSession, 'quarantinedAt' | 'payload'>): Promise<boolean> {
+  if (!stillHolds(shown)) return false;
   const record = readQuarantinedSession();
   if (!record) return false;
   const name = `softn-builder-session-${record.quarantinedAt.replace(/[:.]/g, '-') || 'quarantined'}.json`;
@@ -787,18 +839,180 @@ export function startupAction(location: Location, history: History, storedSessio
  * there. So the first write is told (see writeRecoveryCopy), and someone's only
  * copy of unsaved work is set aside rather than written over.
  */
-let openedOverSession = false;
+/** `raw`, for a session that would not restore: the text held, which the hold is for while the store still holds it. */
+let pendingSetAside: { reason: string; unrestored: boolean; raw?: string } | null = null;
 
-/** A link has opened a project over whatever session the store holds. */
+/** The reason kept with work set aside because a link opened another project over it. */
+export const SET_ASIDE_BY_LINK = 'It was set aside when a link opened another project.';
+
+/** The reason kept with work set aside because it was not restored when the Builder offered to. */
+export const SET_ASIDE_NOT_RESTORED = 'It was set aside when it was not restored as the Builder opened.';
+
+/**
+ * A link is opening a project over whatever session the store holds. Said as the link is followed,
+ * not once its project is open: a link that fails or is declined leaves the page on an empty
+ * project, and a change made to it, or made while the link is loading, would write over the session.
+ */
 export function noteOpenedFromLink(): void {
-  openedOverSession = true;
+  pendingSetAside = { reason: SET_ASIDE_BY_LINK, unrestored: false };
+}
+
+/**
+ * The Builder has offered to restore the stored session. Until it is restored (takeOpenedFromLink
+ * then), the next write sets it aside first: "Not now" leaves the page on an empty project, and its
+ * first change would otherwise write over the work it declined for now.
+ */
+export function noteRestoreOffered(): void {
+  pendingSetAside = { reason: SET_ASIDE_NOT_RESTORED, unrestored: false };
+}
+
+/**
+ * A session that would not restore, and that Recovery would not take (it keeps another, or the
+ * store has no room), is left where it is: the next write sets it aside first, with `reason`, or
+ * writes nothing over it. Held whatever the session is, a copy of unsaved work or not: it would
+ * not restore, so nothing else has it in a form this Builder can open.
+ */
+export function holdUnrestoredSession(reason: string, raw: string): void {
+  pendingSetAside = { reason, unrestored: true, raw };
 }
 
 /** Whether this write is the first since a link opened a project: asked once. */
 export function takeOpenedFromLink(): boolean {
-  const opened = openedOverSession;
-  openedOverSession = false;
+  const opened = pendingSetAside !== null;
+  pendingSetAside = null;
   return opened;
+}
+
+/**
+ * The session `raw`, offered as the page opened, was restored: it is this tab's work now, and the
+ * next write is its copy. Unless what is stored is no longer it: another tab kept its own work
+ * there while the offer waited for an answer, and that is set aside before anything is written over
+ * it, as after "Not now".
+ */
+export function restoredFromStore(raw: string): void {
+  const stored = readLocalStorage(SESSION_STORAGE_KEY);
+  if (stored === null || stored === raw) takeOpenedFromLink();
+}
+
+/**
+ * Set aside a session that would not restore: in Recovery when it has room, and Recovery's own
+ * is never replaced. When it is not set aside it stays where it is, and nothing is written over
+ * it (holdUnrestoredSession). Returns what the person is told.
+ */
+export function setAsideUnrestored(raw: string, error: unknown, assetsRaw: string | null): string {
+  const occupied = recoveryKeepsOne();
+  const kept = quarantineSession(raw, error, assetsRaw, { keepEarlier: true });
+  if (kept === 'kept-without-assets') {
+    return 'It was kept without its pictures and other assets (this browser’s storage has no room for a copy of them); download it from Export → Recovery.';
+  }
+  if (kept) {
+    return 'It was kept; download it from Export → Recovery.';
+  }
+  // No longer stored here (another tab kept its own work where it was): nothing of it is left to hold, and the set-aside
+  // already waiting (as after "Not now") goes on keeping what is there now from being written over.
+  if (readLocalStorage(SESSION_STORAGE_KEY) !== raw) {
+    return 'It could not be set aside (Recovery keeps another, or this browser’s storage is full), and another tab has kept its own work where it was stored, so it is not kept here.';
+  }
+  holdUnrestoredSession(error instanceof Error ? error.message : String(error), raw);
+  return occupied
+    ? 'It is left where it is, and nothing is written over it: Recovery already keeps another. To make room, download that one in Export → Recovery if you want it, then discard it; or save this project to a file.'
+    : 'It is left where it is, and nothing is written over it: this browser’s storage has no room to set it aside. Save this project to a file to keep your work.';
+}
+
+let judged: { raw: string; error: string | null } | null = null;
+
+/**
+ * Why a stored session would not restore, or null when it would. Asked once for each text: a
+ * session that is held is asked about again at every write.
+ */
+function restoreError(raw: string): string | null {
+  if (judged?.raw !== raw) {
+    let error: string | null = null;
+    try {
+      prepareSessionSnapshot(raw);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+    judged = { raw, error };
+  }
+  return judged.error;
+}
+
+/** A stored session's project name, read as far as it can be: for saying whose work is held. */
+function sessionName(raw: string): string {
+  try {
+    const name = (JSON.parse(raw) as { project?: { name?: unknown } } | null)?.project?.name;
+    if (typeof name === 'string' && name) return name;
+  } catch {
+    // A session that will not parse has no name to give.
+  }
+  return 'the session that would not restore';
+}
+
+/** What a copy of unsaved work says of itself (utils/recoveryCopy.ts). */
+export interface RecoveryMark {
+  tab: string;
+  unsaved: true;
+  assets: 'kept' | 'left-out';
+}
+
+/** What a stored session says of itself as a copy of unsaved work, or null for one Save wrote. */
+export function recoveryOf(raw: string): (RecoveryMark & { name: string; savedAt: string }) | null {
+  try {
+    const session = JSON.parse(raw) as { recovery?: Partial<RecoveryMark>; project?: { name?: unknown }; savedAt?: unknown };
+    if (!session || typeof session !== 'object' || session.recovery?.unsaved !== true) return null;
+    return {
+      tab: typeof session.recovery.tab === 'string' ? session.recovery.tab : '',
+      unsaved: true,
+      assets: session.recovery.assets === 'left-out' ? 'left-out' : 'kept',
+      name: typeof session.project?.name === 'string' && session.project.name ? session.project.name : 'Untitled App',
+      savedAt: typeof session.savedAt === 'string' ? session.savedAt : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export type SetAside =
+  /** Nothing to set aside: no link opened this project over unsaved work, or that is done. */
+  | { kind: 'clear' }
+  /** The unsaved work of `name` is under Export → Recovery now. */
+  | { kind: 'set-aside'; name: string }
+  /**
+   * `keeping`'s unsaved work could not be set aside, and nothing may be written over it: Recovery
+   * already keeps another (`recovery`), or the store has no room for a second copy (`room`).
+   * Asked again at the next write.
+   */
+  | { kind: 'held'; keeping: string; reason: 'recovery' | 'room' };
+
+/**
+ * Asked before anything of this tab's is written where the session is kept: by the recovery copy
+ * and by Save (and Export), whichever comes first. Unsaved work a link opened this project over is
+ * set aside first, or not written over at all: a store with no room for a second copy of it, or
+ * Recovery already keeping another, leaves it where it is.
+ */
+export function setAsideBeforeWriting(storage: { getItem?: (key: string) => string | null }): SetAside {
+  const pending = pendingSetAside;
+  pendingSetAside = null;
+  if (pending === null) return { kind: 'clear' };
+  const found = storage.getItem?.(SESSION_STORAGE_KEY) ?? null;
+  const work = found === null ? null : recoveryOf(found);
+  if (found === null) return { kind: 'clear' };
+  // A session that would not restore is held for itself: once another tab has written its own over it (a session
+  // Save wrote, which has its file, or its copy of unsaved work), there is nothing of it left here to keep, and what is
+  // there now is not to be held, or set aside, under the reason it would not restore.
+  if (pending.unrestored && pending.raw !== undefined && found !== pending.raw) return { kind: 'clear' };
+  // A session Save wrote is in its file, unless it would not restore: then nothing has it in a form
+  // this Builder opens, whatever opened over it, and it is kept with the reason it would not.
+  const broken = work === null && !pending.unrestored ? restoreError(found) : null;
+  if (work === null && !pending.unrestored && broken === null) return { kind: 'clear' };
+  const name = work?.name ?? sessionName(found);
+  const occupied = recoveryKeepsOne();
+  if (!quarantineSession(found, new Error(broken ?? pending.reason), storage.getItem?.(SESSION_ASSETS_KEY) ?? null, { keepEarlier: true })) {
+    pendingSetAside = pending;
+    return { kind: 'held', keeping: name, reason: occupied ? 'recovery' : 'room' };
+  }
+  return { kind: 'set-aside', name };
 }
 
 export type RemoteOpenOutcome =

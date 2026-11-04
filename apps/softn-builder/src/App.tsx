@@ -29,11 +29,13 @@ import {
   prepareProjectSnapshot,
   prepareSessionSnapshot,
   noteOpenedFromLink,
-  quarantineSession,
+  noteRestoreOffered,
+  setAsideUnrestored,
+  restoredFromStore,
   type ProjectSnapshot,
   type ViewMode,
 } from './utils/openProject';
-import { saveProject, saveToHost } from './utils/saveProject';
+import { saveProject, saveToHost, sessionNotes } from './utils/saveProject';
 import { STUDIO_URL, RUNTIME_URL, PRODUCT_URLS } from './utils/siteUrls';
 import { forgetDesktopFile, isDesktop, openCompanionUrl, takeOpenedDesktopFile, type BundleFileHandle } from './utils/desktop';
 import { ToastContainer } from './components/feedback/ToastContainer';
@@ -438,6 +440,9 @@ function App() {
   useProjectStartup((action) => {
     if (action.kind === 'nothing') return;
     if (action.kind === 'refused-link') {
+      // A link wins over the restore offer, so a stored session was not offered: as after "Not now",
+      // it is set aside before the empty project's first change is written over it.
+      noteRestoreOffered();
       toast.error(action.message);
       return;
     }
@@ -451,26 +456,30 @@ function App() {
         snapshot = prepareSessionSnapshot(joined.raw);
       } catch (e) {
         // Kept, with the reason, not deleted: it may be the only copy.
-        console.error('[App] The saved session could not be restored; quarantined:', e);
-        quarantineSession(action.raw, e, assetsRaw);
-        toast.error('The saved session could not be restored. It was kept; download it from Export → Recovery.');
+        console.error('[App] The saved session could not be restored:', e);
+        toast.error(`The saved session could not be restored. ${setAsideUnrestored(action.raw, e, assetsRaw)}`);
         return;
       }
       // A copy of unsaved work says so, and what of the project is not in it (utils/recoveryCopy.ts).
       // Asked in the Builder's own dialog, which may mount after this runs; the
       // answer is for the workspace it was asked about.
       const generation = useProjectStore.getState().workspaceGeneration;
+      // Until it is restored, what is stored is set aside before anything is written over it:
+      // "Not now", or a change made before the question is answered (utils/openProject.ts).
+      noteRestoreOffered();
       void askConfirm(restoreOffer(action.raw, joined.assets), { title: 'Restore your work?', confirmLabel: 'Restore', cancelLabel: 'Not now' }).then((yes) => {
         if (!yes || useProjectStore.getState().workspaceGeneration !== generation) return;
         try {
           applySnapshotRef.current(snapshot);
+          // Restored: it is this tab's work now, and the next write is its copy, unless another
+          // tab has kept its own there since the offer was made (that is set aside first).
+          restoredFromStore(action.raw);
           // It was not saved when it was kept, and is not now: it says "Unsaved",
           // leaving asks first, and undoing an edit does not make it saved.
           if (recoveryOf(action.raw)) markUnsaved();
         } catch (e) {
           console.error('[App] Failed to restore session:', e);
-          quarantineSession(action.raw, e, assetsRaw);
-          toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. It was kept; download it from Export → Recovery.`);
+          toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. ${setAsideUnrestored(action.raw, e, assetsRaw)}`);
         }
       });
       return;
@@ -479,11 +488,13 @@ function App() {
     const controller = new AbortController();
     remoteOpenRef.current = controller;
     const { url } = action;
+    // Said before the link is loaded: one that fails or is declined leaves an empty project, whose
+    // first change, like one made while it loads, must not write over the session it found.
+    noteOpenedFromLink();
     void openRemoteBundle(url, controller.signal).then((outcome) => {
       if (remoteOpenRef.current === controller) remoteOpenRef.current = null;
       if (outcome.kind === 'opened') {
         fileHandleRef.current = null;
-        noteOpenedFromLink();
         // A starter linked from the site opens on its running preview (`&view=preview`).
         setView(action.view ?? outcome.snapshot.view);
         sayOpenedWithWarnings(outcome.snapshot.warnings);
@@ -533,8 +544,10 @@ function App() {
     if (outcome.sessionAssets === 'left-out' && !outcome.projectChanged) {
       toast.info('The local recovery copy was kept without the project’s pictures and other assets (this browser’s storage is full); the file itself was saved.');
     }
-    // A newer copy of the work is already kept: nothing went wrong, and nothing is said.
-    if (!outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded) {
+    for (const note of sessionNotes(outcome)) toast.info(note);
+    // A newer copy of the work is already kept, or another project's unsaved work was left where it is: nothing
+    // went wrong, and nothing more is said.
+    if (!outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded && !outcome.sessionHeld) {
       // The file is written; only the local recovery copy is missing.
       console.warn('[App] Could not store session for restore:', outcome.sessionError);
       toast.info('The local recovery copy could not be stored (storage full or blocked); the file itself was saved.');

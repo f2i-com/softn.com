@@ -30,14 +30,17 @@ import { toast } from '../../stores/notificationStore';
 import { buildProjectBundle, bundleFileName, gatherCollections } from '../../utils/buildProjectBundle';
 import type { PermissionDeclaration } from '../../utils/permissions';
 import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils/handoff';
-import { exportMessage, saveProject, type SaveOutcome } from '../../utils/saveProject';
+import { exportMessage, saveProject, sessionNotes, type SaveOutcome } from '../../utils/saveProject';
 import { danglingReferences, describeDangling, type DanglingReference } from '../../utils/projectReferences';
 import { pageDiagnostics, type PageDiagnostic } from '../../utils/pageDiagnostics';
 import { namePaths, unseenEntries } from '../../utils/unseenEntries';
 import {
   discardQuarantinedSession,
   exportQuarantinedSession,
+  QUARANTINE_STORAGE_KEY,
   readQuarantinedSession,
+  SET_ASIDE_BY_LINK,
+  SET_ASIDE_NOT_RESTORED,
   type QuarantinedSession,
 } from '../../utils/openProject';
 import { dialogStyles } from './dialogStyles';
@@ -283,6 +286,24 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
     if (isOpen) setQuarantine(readQuarantinedSession());
     else setHostsDraft(null);
   }, [isOpen]);
+  // Recovery as it is now, while the dialog is open: another tab may discard
+  // the session shown and set another aside.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key === QUARANTINE_STORAGE_KEY) setQuarantine(readQuarantinedSession());
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [isOpen]);
+  /** Recovery holds another session than the one shown: show that one, and say so. */
+  const recoveryChanged = (what: string) => {
+    const now = readQuarantinedSession();
+    setQuarantine(now);
+    toast.info(now
+      ? `Recovery holds another session now, set aside in another tab. ${what} Look at it before you discard it.`
+      : `That session was discarded in another tab, and Recovery holds none now. ${what}`);
+  };
 
   // The collections the bundle will carry, for a policy row each.
   const collections = useMemo(() => {
@@ -408,7 +429,8 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           // A copy that leaves changes unsaved is news, not a success to wave through.
           if (outcome.copy?.unsaved || outcome.stale || outcome.projectChanged) toast.warning(said);
           else toast.success(said);
-          if (!outcome.copy && !outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded) {
+          for (const note of sessionNotes(outcome)) toast.info(note);
+          if (!outcome.copy && !outcome.sessionStored && !outcome.projectChanged && !outcome.sessionSuperseded && !outcome.sessionHeld) {
             toast.info('The local recovery copy could not be stored (storage full or blocked); the file itself was exported.');
           }
           if (!outcome.copy && outcome.sessionAssets === 'left-out' && !outcome.projectChanged) {
@@ -688,12 +710,24 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                 <div style={styles.section}>
                   <div style={styles.sectionTitle}>Recovery</div>
                   <div style={styles.sectionNote}>
-                    A locally saved session from {quarantine.quarantinedAt ? new Date(quarantine.quarantinedAt).toLocaleString() : 'earlier'} could not be
-                    restored ({quarantine.error}). It was kept as it was, not deleted; download it to keep a copy.
+                    {quarantine.error === SET_ASIDE_BY_LINK || quarantine.error === SET_ASIDE_NOT_RESTORED ? (
+                      <>
+                        Unsaved work set aside at {quarantine.quarantinedAt ? new Date(quarantine.quarantinedAt).toLocaleString() : 'an earlier time'},{' '}
+                        {quarantine.error === SET_ASIDE_BY_LINK ? 'when a link opened another project' : 'when it was not restored as the Builder opened'}. It was
+                        kept as it was; download it to keep a copy.
+                      </>
+                    ) : (
+                      <>
+                        A locally saved session from {quarantine.quarantinedAt ? new Date(quarantine.quarantinedAt).toLocaleString() : 'earlier'} could not be
+                        restored ({quarantine.error}). It was kept as it was, not deleted; download it to keep a copy.
+                      </>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button type="button" className="bl-btn bl-btn-sm" onClick={() => {
-                      void exportQuarantinedSession().catch((err: unknown) => {
+                      void exportQuarantinedSession(quarantine).then((saved) => {
+                        if (!saved) recoveryChanged('Nothing was downloaded.');
+                      }).catch((err: unknown) => {
                         if (!(err instanceof Error && err.name === 'AbortError')) toast.error('Could not save the recovery file. It is still stored here.');
                       });
                     }}>
@@ -703,8 +737,8 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                       type="button"
                       className="bl-btn bl-btn-sm"
                       onClick={() => {
-                        discardQuarantinedSession();
-                        setQuarantine(null);
+                        if (discardQuarantinedSession(quarantine)) setQuarantine(null);
+                        else recoveryChanged('Nothing was discarded.');
                       }}
                     >
                       Discard

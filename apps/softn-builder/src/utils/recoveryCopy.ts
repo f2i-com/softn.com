@@ -38,26 +38,26 @@
 import { useFilesStore } from '../stores/filesStore';
 import { useProjectStore } from '../stores/projectStore';
 import { flushCanvasToActiveFile } from './buildProjectBundle';
-import { captureSession, quarantineSession, SESSION_STORAGE_KEY, takeOpenedFromLink, type BuilderSession, type ViewMode } from './openProject';
+import { captureSession, recoveryOf, setAsideBeforeWriting, SESSION_STORAGE_KEY, type BuilderSession, type RecoveryMark, type ViewMode } from './openProject';
 import { notePersistedRevision } from './saveProject';
-import { SESSION_ASSETS_KEY, TAB_ID, captureAssets, missingAssetsSentence, storeAssets, type AssetStore, type AssetsKept } from './storedAssets';
+import { TAB_ID, captureAssets, missingAssetsSentence, storeAssets, type AssetStore, type AssetsKept } from './storedAssets';
 
 /** A small record of which tab wrote the copy last, so another tab hears of it without reading the copy. */
 export const RECOVERY_OWNER_KEY = 'softn.builder.session.owner.v1';
 
-export { TAB_ID };
-
-export interface RecoveryMark {
-  tab: string;
-  unsaved: true;
-  assets: 'kept' | 'left-out';
-}
+export { TAB_ID, recoveryOf, type RecoveryMark };
 
 export type RecoverySession = BuilderSession & { recovery?: RecoveryMark };
 
 export type RecoveryWrite =
   /** `setAside`: the project whose unsaved work this copy would have replaced, kept under Export → Recovery. */
   | { kind: 'written'; projectId: string; revision: number; assets: 'kept' | 'left-out'; setAside?: string }
+  /**
+   * Nothing written: the store holds `keeping`'s unsaved work, which could not be set aside (no room for a second
+   * copy of it, or Recovery already holds another), and this copy would have written over it. Asked again at the
+   * next write.
+   */
+  | { kind: 'held'; keeping: string; reason: 'recovery' | 'room' }
   | { kind: 'failed'; error: unknown };
 
 export interface RecoveryDeps {
@@ -74,16 +74,10 @@ export function writeRecoveryCopy(deps: RecoveryDeps): RecoveryWrite {
   try {
     (deps.flush ?? flushCanvasToActiveFile)();
     const storage = deps.storage ?? window.localStorage;
-    // The first write since a link opened a project over work that was not saved.
-    let setAside: string | undefined;
-    if (takeOpenedFromLink()) {
-      const found = storage.getItem?.(SESSION_STORAGE_KEY) ?? null;
-      const work = found === null ? null : recoveryOf(found);
-      if (found !== null && work) {
-        quarantineSession(found, new Error('It was set aside when a link opened another project.'), storage.getItem?.(SESSION_ASSETS_KEY) ?? null);
-        setAside = work.name;
-      }
-    }
+    // The first write since a link opened a project over work that was not saved: set aside, or nothing is written.
+    const before = setAsideBeforeWriting(storage);
+    if (before.kind === 'held') return { kind: 'held', keeping: before.keeping, reason: before.reason };
+    const setAside = before.kind === 'set-aside' ? before.name : undefined;
     const assets = captureAssets(useFilesStore.getState().assetFiles);
     const session: RecoverySession = {
       ...captureSession(deps.view, { assets: 'apart' }),
@@ -109,23 +103,6 @@ export function writeRecoveryCopy(deps: RecoveryDeps): RecoveryWrite {
     return { kind: 'written', projectId: session.projectId ?? project.projectId, revision: session.revision ?? project.revision, assets: kept, ...(setAside === undefined ? {} : { setAside }) };
   } catch (error) {
     return { kind: 'failed', error };
-  }
-}
-
-/** What a stored session says of itself as a copy of unsaved work, or null for one Save wrote. */
-export function recoveryOf(raw: string): (RecoveryMark & { name: string; savedAt: string }) | null {
-  try {
-    const session = JSON.parse(raw) as { recovery?: Partial<RecoveryMark>; project?: { name?: unknown }; savedAt?: unknown };
-    if (!session || typeof session !== 'object' || session.recovery?.unsaved !== true) return null;
-    return {
-      tab: typeof session.recovery.tab === 'string' ? session.recovery.tab : '',
-      unsaved: true,
-      assets: session.recovery.assets === 'left-out' ? 'left-out' : 'kept',
-      name: typeof session.project?.name === 'string' && session.project.name ? session.project.name : 'Untitled App',
-      savedAt: typeof session.savedAt === 'string' ? session.savedAt : '',
-    };
-  } catch {
-    return null;
   }
 }
 

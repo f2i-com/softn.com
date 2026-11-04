@@ -164,7 +164,7 @@ describe('a malformed saved session', () => {
     expect(kept?.payload).toBe(raw);
     expect(kept?.error).toMatch(/missing/);
     expect(JSON.parse(window.localStorage.getItem(QUARANTINE_STORAGE_KEY)!).payload).toBe(raw);
-    discardQuarantinedSession();
+    expect(discardQuarantinedSession(kept!)).toBe(true);
     expect(readQuarantinedSession()).toBeNull();
   });
 
