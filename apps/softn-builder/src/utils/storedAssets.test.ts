@@ -296,13 +296,14 @@ describe('a stored session whose asset list this Builder did not write', () => {
     const raw = JSON.stringify({
       version: 1,
       files: {
-        assetRefs: [42, 'loose', ['asset_a.png'], ['asset_b.png', null], ['asset_c.png', { size: 3, hash: 'h', name: 'c.png', type: 'image/png' }]],
-        nodes: [['asset_a.png', {}], ['folder', { children: ['asset_b.png', 'kept'] }]],
+        assetRefs: [42, 'loose', ['asset_a.png'], ['asset_b.png', null], ['asset_c.png', { size: 3, hash: 'h', name: 'c.png', type: 'image/png' }], ['asset_c.png', { size: 3, hash: 'h', name: 'c.png', type: 'image/png' }]],
+        nodes: [['asset_a.png', {}], ['loose', {}], ['folder', { children: ['asset_b.png', 'kept'] }]],
         openTabs: ['asset_c.png', 'kept'],
       },
     });
     const joined = joinStoredSession(raw, null);
-    expect(joined.assets).toEqual({ total: 3, missing: 3 });
+    // A bare id is an asset not kept; one listed twice counts once.
+    expect(joined.assets).toEqual({ total: 4, missing: 4 });
     const files = JSON.parse(joined.raw).files;
     expect(files.assetFiles).toEqual([]);
     expect(files.assetRefs).toBeUndefined();

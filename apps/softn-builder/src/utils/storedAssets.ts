@@ -203,14 +203,15 @@ export function joinStoredSession(raw: string, assetsRaw: string | null): { raw:
   const gone = new Set<string>();
   // Each entry is taken as this Builder writes it, an [id, reference] pair, only when it is one: an entry it did not
   // write (another version's, a hand edit) threw here, outside every catch, so the Builder stopped at each start and
-  // Recovery's Download of that copy failed. An entry with an id and no usable reference is an asset not kept; one
-  // without an id names nothing.
-  let total = 0;
+  // Recovery's Download of that copy failed. An entry with an id and no usable reference (a bare id, too) is an asset
+  // not kept, taken out of the file tree and the tabs like any other; one without an id names nothing; an id listed
+  // twice is one asset, so the offer's "N of its M" counts each once.
+  const seen = new Set<string>();
   for (const entry of files.assetRefs as unknown[]) {
-    if (!Array.isArray(entry) || typeof entry[0] !== 'string') continue;
-    const id = entry[0];
-    const ref = entry[1] && typeof entry[1] === 'object' ? (entry[1] as AssetRef) : null;
-    total += 1;
+    const id = typeof entry === 'string' ? entry : Array.isArray(entry) && typeof entry[0] === 'string' ? entry[0] : null;
+    if (id === null || seen.has(id)) continue;
+    seen.add(id);
+    const ref = Array.isArray(entry) && entry[1] && typeof entry[1] === 'object' ? (entry[1] as AssetRef) : null;
     const found = ref ? stored.get(id) : undefined;
     if (ref && found && found.size === ref.size && found.hash === ref.hash) {
       kept.push([id, { ...(ref.bundlePath ? { bundlePath: ref.bundlePath } : {}), name: ref.name, type: ref.type, data: found.data }]);
@@ -229,7 +230,7 @@ export function joinStoredSession(raw: string, assetsRaw: string | null): { raw:
     if (Array.isArray(files.openTabs)) files.openTabs = (files.openTabs as string[]).filter((id) => !gone.has(id));
     if (typeof files.activeFileId === 'string' && gone.has(files.activeFileId)) files.activeFileId = null;
   }
-  return { raw: JSON.stringify(session), assets: { total, missing: gone.size } };
+  return { raw: JSON.stringify(session), assets: { total: seen.size, missing: gone.size } };
 }
 
 /** What the offer to restore says of assets that are not in the copy; nothing when all of them are. */
