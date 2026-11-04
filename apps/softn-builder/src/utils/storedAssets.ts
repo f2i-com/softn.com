@@ -201,10 +201,18 @@ export function joinStoredSession(raw: string, assetsRaw: string | null): { raw:
 
   const kept: Array<[string, SerializedAssetFile]> = [];
   const gone = new Set<string>();
-  const refs = files.assetRefs as Array<[string, AssetRef]>;
-  for (const [id, ref] of refs) {
-    const found = stored.get(id);
-    if (found && found.size === ref.size && found.hash === ref.hash) {
+  // Each entry is taken as this Builder writes it, an [id, reference] pair, only when it is one: an entry it did not
+  // write (another version's, a hand edit) threw here, outside every catch, so the Builder stopped at each start and
+  // Recovery's Download of that copy failed. An entry with an id and no usable reference is an asset not kept; one
+  // without an id names nothing.
+  let total = 0;
+  for (const entry of files.assetRefs as unknown[]) {
+    if (!Array.isArray(entry) || typeof entry[0] !== 'string') continue;
+    const id = entry[0];
+    const ref = entry[1] && typeof entry[1] === 'object' ? (entry[1] as AssetRef) : null;
+    total += 1;
+    const found = ref ? stored.get(id) : undefined;
+    if (ref && found && found.size === ref.size && found.hash === ref.hash) {
       kept.push([id, { ...(ref.bundlePath ? { bundlePath: ref.bundlePath } : {}), name: ref.name, type: ref.type, data: found.data }]);
     } else {
       gone.add(id);
@@ -221,7 +229,7 @@ export function joinStoredSession(raw: string, assetsRaw: string | null): { raw:
     if (Array.isArray(files.openTabs)) files.openTabs = (files.openTabs as string[]).filter((id) => !gone.has(id));
     if (typeof files.activeFileId === 'string' && gone.has(files.activeFileId)) files.activeFileId = null;
   }
-  return { raw: JSON.stringify(session), assets: { total: refs.length, missing: gone.size } };
+  return { raw: JSON.stringify(session), assets: { total, missing: gone.size } };
 }
 
 /** What the offer to restore says of assets that are not in the copy; nothing when all of them are. */

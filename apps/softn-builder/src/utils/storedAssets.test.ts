@@ -291,6 +291,26 @@ describe('a record from before the assets were kept apart', () => {
   });
 });
 
+describe('a stored session whose asset list this Builder did not write', () => {
+  it('is read without throwing: entries that are not pairs name nothing, and an id with no usable reference is an asset not kept', () => {
+    const raw = JSON.stringify({
+      version: 1,
+      files: {
+        assetRefs: [42, 'loose', ['asset_a.png'], ['asset_b.png', null], ['asset_c.png', { size: 3, hash: 'h', name: 'c.png', type: 'image/png' }]],
+        nodes: [['asset_a.png', {}], ['folder', { children: ['asset_b.png', 'kept'] }]],
+        openTabs: ['asset_c.png', 'kept'],
+      },
+    });
+    const joined = joinStoredSession(raw, null);
+    expect(joined.assets).toEqual({ total: 3, missing: 3 });
+    const files = JSON.parse(joined.raw).files;
+    expect(files.assetFiles).toEqual([]);
+    expect(files.assetRefs).toBeUndefined();
+    expect(files.nodes).toEqual([['folder', { children: ['kept'] }]]);
+    expect(files.openTabs).toEqual(['kept']);
+  });
+});
+
 describe('a stored session that will not restore', () => {
   it('is set aside with its pictures: the next project\'s work does not take them out of the store, and the download has them', async () => {
     setAsset('photo.png', picture(5000, 7));

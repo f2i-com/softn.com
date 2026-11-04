@@ -450,9 +450,11 @@ function App() {
     if (action.kind === 'restore-prompt') {
       // The session's text, with the project's assets put back into it from their own record.
       const assetsRaw = readLocalStorage(SESSION_ASSETS_KEY);
-      const joined = joinStoredSession(action.raw, assetsRaw);
+      let joined: ReturnType<typeof joinStoredSession>;
       let snapshot: ProjectSnapshot;
       try {
+        // (inside the catch too: a session this Builder cannot read must not stop it starting)
+        joined = joinStoredSession(action.raw, assetsRaw);
         snapshot = prepareSessionSnapshot(joined.raw);
       } catch (e) {
         // Kept, with the reason, not deleted: it may be the only copy.
