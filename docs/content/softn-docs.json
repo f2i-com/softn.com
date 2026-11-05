@@ -70,14 +70,14 @@
       },
       {
         "url": "https://github.com/f2i-com/zipp.org",
-        "ref": "v0.0.31",
+        "ref": "v0.0.32",
         "commit": "fd6b48a57f561b3291127a246ebf10dc59a0f3d2"
       }
     ],
     "limitations": [
       "The edition of 25 September 2026 was compared in full with the softn.com working tree at commit 9ac48624ef62db7cc38fbb314865e1b64eaaee7c, with uncommitted changes (engineering/VALIDATION_REPORT.md). Builder and Studio were still changing then; their labels describe that working tree.",
       "Pages revised since then, as their updatedAt dates show, were checked against the source of that date. On 27 October 2026 the statements a review against the code had found untrue or missing were corrected against the dev branch at the softn.com commit named above, with uncommitted changes. The guides were not compared in full again.",
-      "The ZIPP commit is the source revision recorded in the installed engine’s SOURCE.json for release v0.0.31. ZIPP’s own source was not inspected.",
+      "The ZIPP commit is the source revision recorded in the installed engine’s SOURCE.json for release v0.0.32. ZIPP’s own source was not inspected.",
       "Code samples follow the syntax the current parser and composer accept but were not each executed. Fieldnotes and examples/torch-trainer are the runnable references.",
       "ZIPP’s website pages (Python, WebAssembly, architecture) were last read on 15 September 2026 and were not re-read for this edition.",
       "No production deployment, private backend or FormLogic host was exercised. The hosting guides describe the repository’s packaging scripts and deployment guides.",
@@ -220,7 +220,7 @@
       "kind": "repository-source",
       "reviewedAt": "2026-10-21",
       "retrieval": "retrieved",
-      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). The package version, 0.0.31, is not the ZIPP engine version."
+      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). The package version, 0.0.32, is not the ZIPP engine version."
     },
     {
       "id": "zipp-wasm",
