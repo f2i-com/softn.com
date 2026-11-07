@@ -7,10 +7,10 @@
  * does not answers a real 404, so a stale link is seen as one by a crawler
  * and a person alike, rather than the site's front page with a 200.
  *
- * The bar is the same element on every surface. The runtime, Studio and Builder
- * carry the six products; the site carries what a newcomer looks for instead
- * (Explore apps, Create, How it works, Docs), the tools being introduced in its
- * pages. At a phone's 390 px every link must be on screen at once — the bar may
+ * The bar is the same element on every surface, with the same six products on
+ * the site as in the runtime, Studio and Builder. The front page adds a
+ * sub-header of its own places (Explore apps, Create, How it works) under it.
+ * At a phone's 390 px every link must be on screen at once — the bar may
  * scroll sideways as a fallback, but at this width nothing should be hidden off
  * its edge, and the page itself must not scroll sideways.
  */
@@ -26,11 +26,10 @@ const PRODUCTS = [
   { label: 'Docs', href: '/docs/' },
 ] as const;
 
-const SITE = [
+const LANDING = [
   { label: 'Explore apps', href: '/apps' },
-  { label: 'Create', href: '/#create' },
-  { label: 'How it works', href: '/#how' },
-  { label: 'Docs', href: '/docs/' },
+  { label: 'Create', href: '#create' },
+  { label: 'How it works', href: '#how' },
 ] as const;
 
 test('/docs/ serves a guide, and a guide that does not exist is a 404', async ({ page }) => {
@@ -52,7 +51,7 @@ test('/docs/ serves a guide, and a guide that does not exist is a 404', async ({
 test.describe('at 390 px', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  for (const [where, path, expected] of [['the site', '/', SITE], ['the runtime', '/web/', PRODUCTS]] as const) {
+  for (const [where, path, expected] of [['the site', '/', PRODUCTS], ['the runtime', '/web/', PRODUCTS]] as const) {
   test(`on ${where}, the product bar shows every destination without scrolling`, async ({
     page,
   }, testInfo) => {
@@ -84,4 +83,31 @@ test.describe('at 390 px', () => {
     }
   });
   }
+
+  test('on the front page, its own places are under the bar, whole, and on no other page', async ({ page }, testInfo) => {
+    const log = watchConsole(page, testInfo);
+    try {
+      await page.goto('/');
+      const sub = page.getByRole('navigation', { name: 'On this page', exact: true });
+      await expect(sub).toBeVisible({ timeout: 30_000 });
+      const links = sub.getByRole('link');
+      await expect(links).toHaveCount(LANDING.length);
+      for (const [i, place] of LANDING.entries()) {
+        await expect(links.nth(i)).toHaveText(place.label);
+        await expect(links.nth(i)).toHaveAttribute('href', place.href);
+        await expect(links.nth(i)).toBeInViewport({ ratio: 1 });
+      }
+      const bar = page.getByRole('navigation', { name: 'SoftN', exact: true }).first();
+      const barBottom = await bar.evaluate((el) => el.getBoundingClientRect().bottom);
+      const subTop = await sub.evaluate((el) => el.getBoundingClientRect().top);
+      expect(subTop).toBeGreaterThanOrEqual(barBottom - 1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      await page.goto('/apps');
+      await expect(page.getByRole('navigation', { name: 'SoftN', exact: true }).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole('navigation', { name: 'On this page', exact: true })).toHaveCount(0);
+      expect(log.uncaught).toEqual([]);
+    } finally {
+      await log.attach('landing-sub-header-390');
+    }
+  });
 });

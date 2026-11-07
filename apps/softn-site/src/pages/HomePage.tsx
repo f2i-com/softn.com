@@ -4,18 +4,14 @@ import { AppGrid, Featured, FeaturedSkeleton } from '../components/directory/App
 import { useFeaturedShelf } from '../components/directory/featured';
 import { Arrow } from '../components/glyphs';
 import { CategoriesNotice, CategoryChips } from '../components/directory/Controls';
-import { Language } from '../components/Language';
-import { Pipeline } from '../components/Pipeline';
-import { ComponentIndex } from '../components/ComponentIndex';
 import { LearnDocs } from '../components/LearnDocs';
-import { HeroApp } from '../components/home/HeroApp';
+import { LandingNav } from '../components/Nav';
 import { StartWays } from '../components/home/StartWays';
 import { HowItWorks } from '../components/home/HowItWorks';
 import { WhyDifferent } from '../components/home/WhyDifferent';
 import { ForDevelopers } from '../components/home/ForDevelopers';
 import { HomeFaq } from '../components/home/HomeFaq';
 import { BUILDER_HREF, STUDIO_HREF } from '../lib/appUrls';
-import { fieldnotesInRuntime } from '../lib/examples';
 
 const LISTS: Array<{ id: string; name: string }> = [
   { id: 'trending', name: 'Trending' },
@@ -28,17 +24,15 @@ const LISTS: Array<{ id: string; name: string }> = [
 const GALLERY_SIZE = 6;
 
 /**
- * Show the product before teaching it: a real app running in the hero with the two things a visitor came to do — try
- * an app, create one — then apps people have made, the ways to start, the workflow, and only then what makes it
- * different and how it is built. The tools' names (Studio, Builder, the runtime) are introduced where they are the next
- * step, never as a choice to decode first.
+ * The apps first: the hero is the directory's featured shelf, under one line of what SoftN is and the two things a
+ * visitor came to do — find an app, make one. Then the rest of the directory, the ways to start, the four steps from
+ * playing an app to publishing one, what makes it different, a page of markup, the guides and the questions people ask.
+ * The tools' names (Studio, Builder, the runtime) are in the product bar, and introduced in the page where each is the
+ * next step. The language, the engine's pipeline and the component list are in the guides.
  *
- * The directory's apps do not run here: an app's bundle is only fetched when someone presses Play, which opens it in
- * the runtime. The one exception is the hero's Fieldnotes preview, which embeds the real runtime — engine and all — so
- * LiveAppPreview mounts it only after the page has loaded and once it is scrolled into view, and not at all until asked
- * for on a phone, for a visitor saving data or on a slow connection.
+ * Nothing runs here: an app's bundle is only fetched when someone presses Play, which opens it in the runtime.
  *
- * Three requests feed the gallery — categories, the featured shelf, the list — and each has its own status. None gates
+ * Three requests feed the page — categories, the featured shelf, the list — and each has its own status. None gates
  * another: the categories are labels on the cards, and a failure there used to be read as "the directory is down",
  * which skipped the list request and showed an empty directory over a working one.
  */
@@ -86,20 +80,23 @@ export function HomePage({
 
   return (
     <>
-      <header className="hero hero-home" id="top">
-        <div className="wrap hero-inner hero-home-grid">
-          <div className="hero-copy">
-            <p className="eyebrow rise">Build it. Run it. Keep it.</p>
-            <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
-              Build apps you can run, edit and share.
-            </h1>
-            <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-              SoftN lets you make portable web-style apps with a visual builder, familiar code or AI. Try a real app,
-              change it and publish your own.
-            </p>
+      <LandingNav />
+      <header className="hero hero-apps" id="top">
+        <div className="wrap hero-inner">
+          <div className="hero-apps-head">
+            <div className="hero-copy">
+              <p className="eyebrow rise">Made with SoftN</p>
+              <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
+                Apps you can play, open and make your own.
+              </h1>
+              <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
+                Every app here runs in your browser, with nothing to install. Play one, look inside it and remix it, or
+                make your own with a visual builder, code or AI.
+              </p>
+            </div>
             <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
-              <a className="cta cta-primary cta-large" href={fieldnotesInRuntime('/#top')}>
-                Try an app
+              <a className="cta cta-primary cta-large" href="/apps">
+                Explore all apps
                 <Arrow />
               </a>
               <a className="cta cta-large" href="#create">
@@ -107,17 +104,23 @@ export function HomePage({
                 <Arrow />
               </a>
             </div>
-            <p className="hero-links">
-              <a href="/apps">Explore all apps</a>
-              <a href="/docs/">Read the docs</a>
-            </p>
-            <ul className="hero-facts" aria-label="Before you start">
-              <li>No account needed to try</li>
-              <li>Editable source</li>
-              <li>Runs in your browser</li>
-            </ul>
           </div>
-          <div className="rise hero-app" style={{ animationDelay: '180ms' }}><HeroApp /></div>
+          {(featured === null || featured.length >= 3) && (
+            <div className="hero-shelf rise" style={{ animationDelay: '180ms' }}>
+              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
+              {featuredSeenAt !== null && (
+                <p className="hero-shelf-note muted" role="status">
+                  The directory is not answering right now. This shelf is as it was on{' '}
+                  {new Date(featuredSeenAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
+                </p>
+              )}
+            </div>
+          )}
+          <ul className="hero-facts" aria-label="Before you start">
+            <li>No account needed to play</li>
+            <li>Runs in your browser</li>
+            <li>Every app’s source is yours to open</li>
+          </ul>
         </div>
       </header>
 
@@ -125,8 +128,7 @@ export function HomePage({
         <div className="wrap">
           <div className="band-head band-head-row">
             <div>
-              <p className="eyebrow">Made with SoftN</p>
-              <h2 className="band-title">Apps people have made</h2>
+              <h2 className="band-title">More apps to play</h2>
               <p className="band-sub">Play one in your browser, open its source, or remix it into your own.</p>
             </div>
             {/* Plain pressed buttons: these filter a list, and the tab pattern
@@ -140,17 +142,6 @@ export function HomePage({
               ))}
             </div>
           </div>
-          {(featured === null || featured.length >= 3) && (
-            <div className="hero-shelf">
-              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
-              {featuredSeenAt !== null && (
-                <p className="hero-shelf-note muted" role="status">
-                  The directory is not answering right now. This shelf is as it was on{' '}
-                  {new Date(featuredSeenAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
-                </p>
-              )}
-            </div>
-          )}
           <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} />
           {listError ? (
             <div className="notice" role="status">
@@ -192,9 +183,6 @@ export function HomePage({
       <WhyDifferent />
       <ForDevelopers />
       <LearnDocs />
-      <Language />
-      <Pipeline />
-      <ComponentIndex />
       <HomeFaq />
     </>
   );

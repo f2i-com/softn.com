@@ -66,10 +66,10 @@ describe('focus on navigation', () => {
     try {
       act(() => navigate('/apps'));
       await settle();
-      act(() => navigate('/#language'));
+      act(() => navigate('/#how'));
       await settle();
       act(() => frames.forEach((callback) => callback(0)));
-      expect(document.activeElement?.id).toBe('language');
+      expect(document.activeElement?.id).toBe('how');
       expect(scroll).toHaveBeenCalledWith({ block: 'start' });
     } finally {
       HTMLElement.prototype.scrollIntoView = original;

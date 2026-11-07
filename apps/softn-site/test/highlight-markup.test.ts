@@ -10,7 +10,27 @@
 
 import { describe, expect, it } from 'vitest';
 import { highlight, languageOf, type HighlightLanguage } from '../src/lib/highlight';
-import { SAMPLES } from '../src/data/language';
+
+/** A logic file of the kind an app ships: comparisons, calls, comments, no markup. */
+const LOGIC_SAMPLE = {
+  file: 'logic/main.logic',
+  source: `// Real JavaScript, running on zipp. No eval, no host.
+let clients = []
+
+function _init() {
+  clients = db.query("clients")
+}
+
+function addClient(name, email) {
+  if (name.length < 2 || email.indexOf("@") < 1) return
+  db.create("clients", { name: name, email: email })
+  clients = db.query("clients")
+}
+
+function share(room) {
+  db.startSync(room)
+}`,
+};
 
 const tokens = (source: string, language: HighlightLanguage): Array<[string, string]> =>
   highlight(source, language).map((el) => [el.props.className as string, el.props.children as string]);
@@ -57,9 +77,8 @@ describe('logic', () => {
     expect(tagged('for (let i=0; i<n; i++) { total += i }', 'softn')).toEqual([]);
   });
 
-  it('finds no tag in the landing page’s logic sample', () => {
-    const logic = SAMPLES.find((s) => s.file.endsWith('.logic'))!;
-    expect(languageOf(logic.file)).toBe('softn');
-    expect(tagged(logic.source, languageOf(logic.file))).toEqual([]);
+  it('finds no tag in a logic file', () => {
+    expect(languageOf(LOGIC_SAMPLE.file)).toBe('softn');
+    expect(tagged(LOGIC_SAMPLE.source, languageOf(LOGIC_SAMPLE.file))).toEqual([]);
   });
 });

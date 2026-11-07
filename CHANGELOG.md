@@ -6,6 +6,14 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- FormLogic: an app drawn to fill its window now fills FormLogic's frame. The frame's page, body and root had no height of their own, as SoftN Web's have, so an app whose root is `height: 100%` (a game's often is) was laid out and cut off to nothing: a blank frame. A page taller than the frame scrolls as before.
+- FormLogic: a parent can raise how much an app's browser storage holds, in `init.storageLimits`: a value up to 8 MiB, the store up to 64 MiB, 2,000 entries, and as much in one save and waiting. A game's saved state is hundreds of kilobytes a slot, past the 30,000 characters a value could hold. A parent that names none keeps the old limits, and none is ever lowered; the protocol numbers are unchanged. The store's size is now kept as it changes: it was measured by serialising the whole store on every save.
+- FormLogic: a parent can grant an app `softn.files` (`init.permissions: { files: true }`): opening the files the person picks and saving the files they ask for. Nothing else can be granted in the frame. The parent settles the grant before the app opens, because a grant changed under a running app restarts its logic.
+- The site wears the same product bar as the runtime, Studio and Builder on every page (Apps, Runtime, Studio, Builder, Publish, Docs). The front page adds its own places under it: Explore apps, Create, How it works.
+- The front page leads with the apps: the directory's featured shelf is the hero, under one line of what SoftN is and the two things a visitor came to do. Fieldnotes no longer runs in it; it is still the working example under Create. How it works starts with playing an app, then opening it, changing it and publishing it, each a line of what you do and where, without the screenshots. What makes SoftN different is four points, two by two. The language tour, the engine's pipeline and the component list left the front page; the guides have them.
+
 ## v0.0.32
 
 - Upgrading from v0.0.31: the engine is ZIPP v0.0.33 (it was v0.0.32), in the browser, in the Rust backend host and in softn-runner; what logic can see of it is in its entry below, and the module every app downloads is 6.58 MB, 765 KB smaller (1.65 MB with Brotli, from 1.80 MB). A FormLogic that installs this release rebuilds its server sandbox from ZIPP v0.0.33 (with Rust 1.92.0, as before); FormLogic's adapter and every protocol number are v0.0.31's.
