@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/f2i-com/zipp.org",
-  "ref": "v0.0.32",
-  "commit": "e312cf40afe5f02e3cdebbadcfd30c9ead889384",
+  "ref": "v0.0.33",
+  "commit": "cc75c2a38980fb84696e4b2da7abf943fcf7dd58",
   "path": "crates/zipp-wasm",
   "checkedAgainstKit": true,
   "ggufWasm": {

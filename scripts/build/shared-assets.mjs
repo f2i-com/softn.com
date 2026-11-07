@@ -3,7 +3,7 @@
  * the QR decoder — kept once, under /shared/assets/, rather than once per app.
  *
  * The site deploys four apps (/web/, /studio/, /builder/, /play/), each built
- * on its own and each emitting the same engine (7.3 MB, and its .br and .gz)
+ * on its own and each emitting the same engine (6.6 MB, and its .br and .gz)
  * and the same QR decoder (0.9 MB) under its own assets/. That was some 30 MB
  * of a deployment in copies, and a visitor who opened a second app downloaded
  * the engine again under the second app's URL. In the site build

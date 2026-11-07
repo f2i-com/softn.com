@@ -177,7 +177,7 @@ def train(steps):
   checks run in the Builder's and Studio's previews and in Studio's
   validator, because they all compose through `composeBundleSource`.
 - **Loaded on demand.** The engine Softn ships is ZIPP's `javascript-python-base`
-  (7.34 MB raw), which has no torch built in. When a Python app that
+  (6.58 MB raw), which has no torch built in. When a Python app that
   declares torch starts on an engine that does not provide it
   (`pythonPackages()`: not `torchBuiltIn`, not `installed`),
   `PythonLogicAdapter.initializePythonProject` first adds ZIPP's torch
@@ -246,7 +246,7 @@ to at install.
 `tsup` copies `zipp_torch.wasm` into core's `dist/` and its
 `dist/core-runtime/` mirror, and bundles the loader as a chunk of its own
 (`zipp_torch-<hash>.js`); an app's `coreWorkerAssetPlugin` copies it to
-`assets/core-runtime/zipp_torch.wasm`. The PWAs precache the engine (7.34 MB,
+`assets/core-runtime/zipp_torch.wasm`. The PWAs precache the engine (6.58 MB,
 under their 8 MiB caps) and not the package: `assets/core-runtime/` is in
 every PWA's `globIgnores`. An app carries the engine once, as its hashed
 asset: the page compiles it (`zippEngineForWorker` in `zipp-wasm-loader.ts`)
@@ -259,29 +259,31 @@ must be the recorded one.
 
 | | raw | gzip -9 | Brotli-11 |
 | --- | ---: | ---: | ---: |
-| `javascript-python` engine (torch built in; not taken) | 9,380,719 | 2,906,660 | 2,172,177 |
-| `javascript-python-base` engine (every app) | 7,343,820 | 2,431,783 | 1,795,413 |
-| `zipp_torch.wasm` (apps that declare torch) | 2,163,109 | 499,409 | 403,239 |
+| `javascript-python` engine (torch built in; not taken) | 8,616,452 | 2,700,893 | 2,021,232 |
+| `javascript-python-base` engine (every app) | 6,579,140 | 2,225,433 | 1,646,601 |
+| `zipp_torch.wasm` (apps that declare torch) | 2,163,109 | 499,397 | 403,378 |
 
-These are ZIPP v0.0.32's files as published, each module with its `zipp.meta`
+These are ZIPP v0.0.33's files as published, each module with its `zipp.meta`
 record and each engine with its bindings, of which the engine's are 62,142
-bytes raw (13,784 with Brotli), measured with Node 24.19's zlib and Brotli.
-0.0.30's engine was 6,667,188 bytes raw and 1,653,720 with Brotli, and its
-torch package the same size raw (403,308 with Brotli); 0.0.29's 6,569,310 and
-1,630,183; 0.0.25's, the last published as zip bundles and without its
-bindings inside, 6,187,748 and 1,535,660. An app that does not declare torch
-downloads 2.04 MB less (377 KB less with Brotli) than it would with the
-complete engine; one that does downloads about 126 KB more in all (26 KB with
-Brotli).
+bytes raw (14,043 with Brotli), measured with Node 24.19's zlib and Brotli.
+0.0.33 leaves Node's layer out of its WebAssembly engines, so the engine is
+764,680 bytes smaller than 0.0.32's 7,343,820 (1,795,413 with Brotli, 148,812
+more than now). 0.0.30's engine was 6,667,188 bytes raw and 1,653,720 with
+Brotli, and its torch package the same size raw (403,308 with Brotli);
+0.0.29's 6,569,310 and 1,630,183; 0.0.25's, the last published as zip bundles
+and without its bindings inside, 6,187,748 and 1,535,660. An app that does not
+declare torch downloads 2.04 MB less (375 KB less with Brotli) than it would
+with the complete engine; one that does downloads about 126 KB more in all
+(29 KB with Brotli).
 
 ## The JavaScript-only web variant
 
 ZIPP publishes six WebAssembly modules per release (five before 0.0.31; as
 zip bundles before 0.0.26, under names starting `web`): `javascript-python`
-(JavaScript and Python with torch built in, 9.38 MB raw),
-`javascript-python-base` (the same without torch, identical glue, 7.34 MB),
+(JavaScript and Python with torch built in, 8.62 MB raw),
+`javascript-python-base` (the same without torch, identical glue, 6.58 MB),
 `torch-package` (torch as a package for the base engine, 2.16 MB),
-`javascript`, the same VM compiled without Python, about 24% smaller than
+`javascript`, the same VM compiled without Python, about 26% smaller than
 `javascript-python-base`, with a 1 MiB stack in place of 16 MiB,
 `javascript-typescript` (that one with TypeScript read as well, since 0.0.31)
 and `javascript-lite` (ZIPP Lite: the JavaScript core without `Intl` and
@@ -300,7 +302,7 @@ as the engine; its `zipp.meta` record says `javascript`, `["javascript"]` and
 the SAME commit as the engine, and names the bindings it carries; its stack is
 1 MiB; the module asks the host for nothing the engine's glue does not provide
 and exports nothing the engine does not (so the engine's glue binds it — Softn
-ships one glue, `dd1aa3c3…`, and records the module's own `0ebc4911…` in
+ships one glue, `43bb1628…`, and records the module's own `7828eb2e…` in
 `glueSha256` for provenance only; the web module imports one hook fewer, the
 torch kernel, which instantiation leaves unread); and,
 really loaded under that glue, `zippProfile().languages` is exactly
