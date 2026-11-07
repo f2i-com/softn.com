@@ -6,8 +6,9 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.34
 
+- Upgrading from v0.0.33: the engine is still ZIPP v0.0.33, so nothing is rebuilt, and every protocol number is v0.0.33's. What changes is what an app shows while it opens (below), and FormLogic's frame telling its parent when the app is on screen; a FormLogic that installs this release covers the frame with the app's own loading screen until then.
 - An app opening shows a wheel and no words: `Loading this app's data…` and FormLogic's `Opening app…` are core's `LoadingIndicator`, which a screen reader hears by its label, which pulses for someone who asked for less motion, and which a host colours with `--softn-loading-color` and `--softn-loading-background`.
 - FormLogic: the frame tells its parent when the app's first page is shown (`ready`'s `shown: 1`, then `{ type: 'shown' }` on the port, once), so a parent can cover the frame with its own loading view until the app is there, without a second wheel or a flash between them. A load failure is reported instead, as before.
 
