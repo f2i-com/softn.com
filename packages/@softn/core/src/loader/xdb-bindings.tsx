@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { SoftNRenderer, useSoftN, useStructurallyStableValue, type SoftNRendererProps } from './SoftNRenderer';
+import { LoadingIndicator } from './LoadingIndicator';
 import type { PermissionConfig } from '../runtime/script-runtime';
 import { createSyncControls, type SyncControls } from '../runtime/db-sync-controls';
 import { describeHostAllowlist } from '../runtime/egress-policy';
@@ -682,11 +683,8 @@ export function SoftNWithXDB({
   );
 
   if (!storeLoaded) {
-    return (
-      <div className="softn-store-loading" role="status" aria-live="polite" style={{ padding: '1rem', opacity: 0.7 }}>
-        Loading this app&apos;s data…
-      </div>
-    );
+    // A wheel and no words (LoadingIndicator): its label is what a screen reader hears.
+    return <LoadingIndicator className="softn-store-loading" label="Loading this app’s data" />;
   }
   return (
     <SoftNRenderer

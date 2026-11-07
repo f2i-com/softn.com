@@ -7,6 +7,7 @@
 export { SoftNRenderer, useSoftN } from './SoftNRenderer';
 export type { SoftNRendererProps } from './SoftNRenderer';
 export { useDataBlock, createXDBHelpers, SoftNWithXDB } from './xdb-bindings';
+export { LoadingIndicator } from './LoadingIndicator';
 export type { SoftNWithXDBProps } from './xdb-bindings';
 
 // How @softn/components learns what the host has allowed: which capabilities

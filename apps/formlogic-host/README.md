@@ -21,6 +21,19 @@ against the engine's own profile, not against anyone's records.
 `features` for later runtime capabilities), read straight from `src/engineInit.ts` so the
 manifest and these announcements cannot drift apart.
 
+## While the app opens
+
+The frame shows a wheel and no words (core's `LoadingIndicator`, labelled for screen readers)
+until the engine has loaded and the app's saved data has opened. `ready` also says `shown: 1`:
+when the app's first page is drawn, the frame posts `{ "type": "shown" }` on its port, once. A
+parent may cover the frame with its own loading view until then, its own colours and all, and
+uncover it on `shown`, or on `error` with `phase: "load"`, which comes instead when the app fails
+to open. A parent that never sees `shown: 1` gets no `shown` and waits for nothing.
+
+`LoadingIndicator` takes its colours from CSS variables on any ancestor:
+`--softn-loading-color` (the wheel; `currentColor` by default) and `--softn-loading-background`
+(transparent by default). Someone who asked for less motion sees it pulse slowly instead of spin.
+
 ## Theme
 
 `init.dark` is FormLogic's own theme, and an app whose project declares none is drawn in it, as

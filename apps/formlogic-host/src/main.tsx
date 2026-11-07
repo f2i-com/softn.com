@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SoftNWithXDB, XDBStorageNotice, composeBundleSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
+import { LoadingIndicator, SoftNWithXDB, XDBStorageNotice, composeBundleSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
@@ -36,7 +36,9 @@ policy.content = framePolicy(assets, served);
 document.head.appendChild(policy);
 registerRuntimeComponents();
 const root = createRoot(document.getElementById('root')!);
-root.render(<p style={{ padding: 24, fontFamily: 'system-ui' }}>Opening app…</p>);
+// A wheel while the engine and the app's data load (core's LoadingIndicator). A parent that said
+// it would cover the frame until the app is shown (FormLogic's own splash) shows that instead.
+root.render(<LoadingIndicator label="Opening app" />);
 let started = false;
 let port: MessagePort | undefined;
 let appStorage: ReturnType<typeof installAppStorage> | undefined;
@@ -211,7 +213,9 @@ window.addEventListener('message', async event => {
         importResolver={async path => files.get(path.replace(/^\//, '')) ?? null}
         // Before its first page is drawn the app has not opened; after it, it is drawn and
         // what went wrong shows inside it.
-        onLoad={() => { drawn = true; }}
+        // shown: the app's first page is on screen, so a parent covering the frame while it opens
+        // (ready's shown: 1) uncovers it. A failure to load is reported instead (error).
+        onLoad={() => { if (!drawn) port?.postMessage({ type: 'shown' }); drawn = true; }}
         onError={error => reportError(reasonOf(error), drawn ? 'runtime' : 'load')} />
     </ThemeProvider></Boundary>);
   } catch (error) {
@@ -229,4 +233,6 @@ window.addEventListener('message', async event => {
 // variant's digest for `zipp-web`, `true` where it wants none. A parent that
 // reads only `zipp` and sends no `engine` sees what it always did, which on
 // this document's other entry is a refusal by name.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities) }, '*');
+// shown: 1 is an addition: this document posts shown on its port when the app's first page is
+// drawn, so a parent may cover the frame until then; one that never sees it never waits for it.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1 }, '*');

@@ -49,10 +49,20 @@ test('a store that refuses a write says so, where saves are confirmed and nowher
 test('an error says whether the app failed to open or failed while running', () => {
   assert.match(main, /port\?\.postMessage\(\{ type: 'error', reason, phase \}\);/);
   // Before the first page is drawn it is a load failure; after, a runtime one.
-  assert.match(main, /onLoad=\{\(\) => \{ drawn = true; \}\}/);
+  assert.match(main, /onLoad=\{\(\) => \{ if \(!drawn\) port\?\.postMessage\(\{ type: 'shown' \}\); drawn = true; \}\}/);
   assert.match(main, /onError=\{error => reportError\(reasonOf\(error\), drawn \? 'runtime' : 'load'\)\}/);
   // What replaces the app with the frame's own message is a load failure.
   assert.match(main, /componentDidCatch\(error: unknown\) \{ reportError\(reasonOf\(error\), 'load'\); \}/);
   assert.match(main, /reportError\(reason, 'load'\);/);
   assert.ok(!/reportError\([^,()]*\)/.test(main.replace(/function reportError\([^)]*\)/, '')), 'every report names its phase');
+});
+
+test('a parent covering the frame while the app opens is told when its first page is shown, once', () => {
+  // ready says it will (an addition: a parent that never sees shown: 1 never waits for it).
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, shown: 1 \}, '\*'\);/);
+  // Posted from the first draw only, on the app's own port, before drawn is set.
+  assert.equal((main.match(/type: 'shown'/g) || []).length, 1);
+  // And no words while it opens: core's wheel, labelled for a screen reader.
+  assert.match(main, /root\.render\(<LoadingIndicator label="Opening app" \/>\);/);
+  assert.doesNotMatch(main, />Opening app…</);
 });
