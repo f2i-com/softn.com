@@ -130,6 +130,13 @@ snapshot `init` carries in `storage` (`src/storage.ts`). Each change goes to the
   32,768 characters. While saves are pending the frame says so, and closing the page asks
   first where the browser lets a frame ask: not in a sandbox without `allow-modals`, which
   FormLogic's frame is, so there the frame's own notice is all that shows.
+  How much the store holds: a key of 256 characters, a value of 30,000, 200 entries, 256 KB
+  for the whole store (as `JSON.stringify` of it measures), one save as sent of 32,768 and 256 KB
+  of saves waiting at once. A parent that keeps the store somewhere larger than WebStorage says
+  how much it takes in `init.storageLimits` (`value`, `entries`, `map`, `input`, `queued`); each
+  is raised to what it names, up to 8 MiB for a value or a save and 64 MiB for the store or
+  what waits, 2,000 entries, and none is ever lowered. A game's saved state is hundreds of
+  kilobytes a slot. A parent that names none (FormLogic before v0.1.24) keeps the old limits.
   XDB's `createAsync`, `updateAsync` and `deleteAsync` resolve when their own save is
   confirmed, and an import goes as one `batch` the parent must commit whole.
 - A parent that does not (protocol 0) gets the storage it always had: a reply without `error`
@@ -140,6 +147,24 @@ snapshot `init` carries in `storage` (`src/storage.ts`). Each change goes to the
   async writes update the records and then reject with `persistence-unsupported`, imports and
   restores are refused, its status is `degraded`, and closing the page asks first where the
   browser lets the frame ask (above).
+
+## Permissions
+
+The app's own `permission.json` never reaches the frame (FormLogic replaces it), and the frame
+runs it with nothing granted but what `init.permissions` grants: `{ files: true }` lets
+`softn.files` open the files the person picks and save files they ask for (`src/permissions.ts`).
+Nothing else can be granted there; the network, the camera and sync stay refused. The parent
+settles the grant before the app opens, asking the person if its owner chose that, because a
+grant changed under a running app restarts its logic. A saved file is a download, which the
+frame's sandbox blocks unless the parent adds `allow-downloads` to it, which it should do only
+where it grants files.
+
+## Page height
+
+The frame's page, its body and `#root` are the frame's whole height, as SoftN Web's are, so an
+app drawn to fill its window (`height: 100%` on its root, as a game's often is) fills the frame.
+It had no height of its own, and such an app was laid out and then cut off to nothing. A page
+taller than the frame scrolls as before.
 
 `{type: 'formlogic:dispose'}` on the port, or the page going away for good (a `pagehide` that
 does not keep it in the back/forward cache), ends the app: waiting saves and calls are

@@ -4,7 +4,8 @@ import { SoftNWithXDB, XDBStorageNotice, composeBundleSource, configureZippWasmS
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
-import { installAppStorage, STORAGE_LIMITS, STORAGE_PROTOCOL } from './storage';
+import { installAppStorage, storageLimits, STORAGE_LIMITS, STORAGE_PROTOCOL } from './storage';
+import { grantedPermissions, type FramePermissions } from './permissions';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { createNativeNetFetch } from './nativeFetch';
@@ -116,6 +117,9 @@ window.addEventListener('message', async event => {
       firstId: STORAGE_FIRST_ID,
     });
   }
+  // What the parent grants, decided before the app opens: a grant changed under a running app
+  // restarts its logic, so the parent asks the person first and sends the answer here.
+  const framePermissions: FramePermissions = grantedPermissions(event.data.permissions);
   port.onmessage = event => {
     if (event.data?.type === 'formlogic:dispose') { terminate(); return; }
     if (!calls.settle(event.data?.id, event.data?.result)) storageCalls?.settle(event.data?.id, event.data?.result);
@@ -171,7 +175,11 @@ window.addEventListener('message', async event => {
     let netFetchHandler: ReturnType<typeof createNativeNetFetch> | undefined;
     if (event.data.native === true) {
       const lane = storageCalls ?? calls;
-      appStorage = installAppStorage(event.data.storage || {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle), { acknowledged: event.data.storageProtocol === STORAGE_PROTOCOL });
+      appStorage = installAppStorage(event.data.storage || {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle), {
+        acknowledged: event.data.storageProtocol === STORAGE_PROTOCOL,
+        // An addition: a parent that keeps the store somewhere larger says how much it takes.
+        limits: storageLimits(event.data.storageLimits),
+      });
       // The app's source is left as it came. Its declared API origin is routed
       // by the trusted parent to this app's native backend, without direct
       // egress, from the first line of logic that runs (nativeFetch.ts).
@@ -191,12 +199,13 @@ window.addEventListener('message', async event => {
     const seeding = await seedBundledData(files, manifest, getXDB(event.data.appId), parseXDBFile, seedXDBBundleData, () => !terminated);
     if (terminated) return;
     for (const warning of seeding.warnings) console.warn(`[SoftN] ${warning}`);
-    // A bundle's permission.json cannot enable arbitrary network, hardware or sync access.
+    // A bundle's permission.json cannot enable arbitrary network, hardware or sync access: the
+    // parent grants what it grants (permissions.ts), files at most.
     // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
     root.render(<Boundary><ThemeProvider defaultDarkMode={event.data.dark === true} declaredMode={declaredThemeMode(manifest)}>
       {savesAcknowledged && <XDBStorageNotice appId={event.data.appId} problemsOnly />}
       <SoftNWithXDB {...composed} appId={event.data.appId} resumeSavedSyncRoom={false}
-        permissionConfig={{ permissions: {} }} scriptExecutionMode="main"
+        permissionConfig={framePermissions} scriptExecutionMode="main"
         assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}
         backendCall={backendCall} netFetchHandler={netFetchHandler}
         importResolver={async path => files.get(path.replace(/^\//, '')) ?? null}

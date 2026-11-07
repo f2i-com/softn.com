@@ -18,6 +18,36 @@ import type { BackendCallLifecycle } from './backendQueue';
 
 export const STORAGE_PROTOCOL = 1;
 export const STORAGE_LIMITS = Object.freeze({ key: 256, value: 30000, entries: 200, map: 256 * 1024, input: 32768, outstanding: 32, queued: 256 * 1024, deadline: 20000 });
+export type StorageLimits = { -readonly [K in keyof typeof STORAGE_LIMITS]: number };
+/**
+ * The most a parent may raise the limits it can name to, in UTF-16 units as the rest are. A
+ * parent that keeps an app's store somewhere larger than WebStorage (FormLogic's IndexedDB)
+ * says how much it takes in `init.storageLimits`; one that names none, which is every parent
+ * before it, keeps STORAGE_LIMITS. A game's saved state runs to hundreds of kilobytes a slot.
+ */
+export const STORAGE_MAXIMA = Object.freeze({ value: 8 * 1024 * 1024, entries: 2000, map: 64 * 1024 * 1024, input: 8 * 1024 * 1024 + 4096, queued: 64 * 1024 * 1024 });
+const NEGOTIATED = ['value', 'entries', 'map', 'input', 'queued'] as const;
+
+/**
+ * The limits this frame holds an app's store to: STORAGE_LIMITS, each of the five a parent may
+ * name raised to what it names, up to STORAGE_MAXIMA. Never lowered, and anything that is not a
+ * whole number above the default is ignored, so a malformed offer is the old limits.
+ */
+export function storageLimits(offered: unknown): StorageLimits {
+  const limits: StorageLimits = { ...STORAGE_LIMITS };
+  if (!offered || typeof offered !== 'object' || Array.isArray(offered)) return limits;
+  for (const name of NEGOTIATED) {
+    let value: unknown;
+    try { value = Object.getOwnPropertyDescriptor(offered, name)?.value; } catch { continue; }
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > limits[name]) limits[name] = Math.min(value, STORAGE_MAXIMA[name]);
+  }
+  return limits;
+}
+
+/** What one entry adds to `JSON.stringify` of the whole store: its key and value as JSON, and the colon. */
+const entryCost = (key: string, value: string) => JSON.stringify(key).length + 1 + JSON.stringify(value).length;
+/** `JSON.stringify` of a store's length, from its entries' costs: the braces, the entries and the commas between them. */
+const storeLength = (count: number, costs: number) => 2 + costs + Math.max(0, count - 1);
 let mountSequence = 0;
 
 interface Operation {
@@ -46,12 +76,40 @@ interface Operation {
 export function installAppStorage(
   snapshot: Record<string, string>,
   persist: (input: Record<string, unknown>, lifecycle?: BackendCallLifecycle) => Promise<unknown>,
-  options: { acknowledged?: boolean; deadlineMs?: number } = {},
+  options: { acknowledged?: boolean; deadlineMs?: number; limits?: StorageLimits } = {},
 ) {
   const protocol = options.acknowledged === true ? 1 : 0;
+  const limits: StorageLimits = options.limits ?? { ...STORAGE_LIMITS };
   const generation = `host-storage-${++mountSequence}`;
   const entries = new Map(Object.entries(snapshot));
   const confirmed = new Map(entries);
+  // Each entry's share of the store's JSON length, kept as the store changes: the whole store,
+  // which may now be tens of megabytes, was serialised again on every save to be measured.
+  const costs = new Map<string, number>();
+  let costTotal = 0;
+  for (const [key, value] of entries) { const cost = entryCost(key, value); costs.set(key, cost); costTotal += cost; }
+  /** The store's size after `input`: its entry count and their costs, and each touched key's new cost (null: gone). */
+  const measure = (input: Record<string, unknown>) => {
+    if (input.operation === 'clear') return { count: 0, total: 0, touched: null as Map<string, number | null> | null };
+    const touched = new Map<string, number | null>();
+    let count = entries.size, total = costTotal;
+    const was = (key: string) => (touched.has(key) ? touched.get(key)! : costs.get(key) ?? null);
+    const put = (key: string, cost: number | null) => {
+      const before = was(key);
+      if (before !== null) { total -= before; count--; }
+      if (cost !== null) { total += cost; count++; }
+      touched.set(key, cost);
+    };
+    if (input.operation === 'remove') put(input.key as string, null);
+    else if (input.operation === 'set') put(input.key as string, entryCost(input.key as string, input.value as string));
+    else for (const item of input.replacements as { key: string; value: string }[]) put(item.key, entryCost(item.key, item.value));
+    return { count, total, touched };
+  };
+  const commitCosts = (measured: ReturnType<typeof measure>) => {
+    if (!measured.touched) costs.clear();
+    else for (const [key, cost] of measured.touched) { if (cost === null) costs.delete(key); else costs.set(key, cost); }
+    costTotal = measured.total;
+  };
   const listeners = new Set<(status: StoragePersistenceStatus) => void>();
   const waiting: Operation[] = [];
   let active: Operation | undefined;
@@ -176,15 +234,16 @@ export function installAppStorage(
     // Freeze the exact bounded wire input once. No caller can change a queued
     // batch after admission, and accounting uses the parent's UTF-16 units.
     const serialized = JSON.stringify(input);
-    if (protocol === 1 && serialized.length > STORAGE_LIMITS.input) throw quota();
+    if (protocol === 1 && serialized.length > limits.input) throw quota();
     const frozen = JSON.parse(serialized) as Record<string, unknown>;
     if (Array.isArray(frozen.replacements)) { for (const item of frozen.replacements) Object.freeze(item); Object.freeze(frozen.replacements); }
     Object.freeze(frozen);
-    const candidate = new Map(entries); apply(candidate, frozen);
+    const measured = measure(frozen);
     // Protocol 0 holds a set to the cache's limits, and nothing else, as it always did.
-    if ((protocol === 1 || frozen.operation === 'set') && (candidate.size > STORAGE_LIMITS.entries || JSON.stringify(Object.fromEntries(candidate)).length > STORAGE_LIMITS.map)) throw quota();
+    if ((protocol === 1 || frozen.operation === 'set') && (measured.count > limits.entries || storeLength(measured.count, measured.total) > limits.map)) throw quota();
     const earlier = unsentSetOf(frozen);
-    if (protocol === 1 && ((!earlier && waiting.length + (active ? 1 : 0) >= STORAGE_LIMITS.outstanding) || units - (earlier?.units ?? 0) + serialized.length > STORAGE_LIMITS.queued)) throw quota();
+    if (protocol === 1 && ((!earlier && waiting.length + (active ? 1 : 0) >= STORAGE_LIMITS.outstanding) || units - (earlier?.units ?? 0) + serialized.length > limits.queued)) throw quota();
+    apply(entries, frozen); commitCosts(measured);
     let resolve!: () => void; let reject!: (reason: Error) => void;
     const completion = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     // Sync WebStorage callers may ignore receipts; failures stay observable
@@ -197,7 +256,6 @@ export function installAppStorage(
       units += serialized.length - earlier.units;
       earlier.units = serialized.length; earlier.input = frozen; earlier.joined.push({ resolve, reject });
       earlier.deadlineAt = deadlineAt; expireAtDeadline(earlier);
-      entries.clear(); for (const [key, value] of candidate) entries.set(key, value);
       notify();
       return Object.freeze({ generation, sequence: ++sequence, completion, get state() { return earlier.state; } });
     }
@@ -205,25 +263,24 @@ export function installAppStorage(
     operation.receipt = Object.freeze({ generation, sequence: ++sequence, completion, get state() { return operation.state; } });
     if (protocol === 1) expireAtDeadline(operation);
     units += operation.units; waiting.push(operation);
-    entries.clear(); for (const [key, value] of candidate) entries.set(key, value);
     notify(); pump(); return operation.receipt;
   }
   const setItem = (key: string, value: string) => {
     key = String(key); value = String(value);
-    if (key.length > STORAGE_LIMITS.key || value.length > STORAGE_LIMITS.value) throw quota();
+    if (key.length > limits.key || value.length > limits.value) throw quota();
     return admit({ operation: 'set', key, value });
   };
-  const removeItem = (key: string) => { key = String(key); if (protocol === 1 && key.length > STORAGE_LIMITS.key) throw quota(); return admit({ operation: 'remove', key }); };
+  const removeItem = (key: string) => { key = String(key); if (protocol === 1 && key.length > limits.key) throw quota(); return admit({ operation: 'remove', key }); };
   const whenIdle = () => Promise.allSettled([...waiting, ...(active ? [active] : [])].map(item => item.receipt.completion)).then(() => {});
   const common = { getStatus: status, subscribe(listener: (status: StoragePersistenceStatus) => void) { listeners.add(listener); return () => listeners.delete(listener); }, whenIdle };
   const acknowledgedPersistence: AcknowledgedStoragePersistence = protocol === 0 ? { protocol: 0, ...common } : {
     // The frame has no permissions and resumes no sync room, so only this page reads this store.
     protocol: 1, localOnly: true, ...common, setItem, removeItem,
     replaceBatch(replacements) {
-      if (!Array.isArray(replacements) || !replacements.length || replacements.length > STORAGE_LIMITS.entries) throw quota();
+      if (!Array.isArray(replacements) || !replacements.length || replacements.length > limits.entries) throw quota();
       const keys = new Set<string>();
       for (const item of replacements) {
-        if (!item || typeof item.key !== 'string' || typeof item.value !== 'string' || item.key.length > STORAGE_LIMITS.key || item.value.length > STORAGE_LIMITS.value || keys.has(item.key)) throw quota();
+        if (!item || typeof item.key !== 'string' || typeof item.value !== 'string' || item.key.length > limits.key || item.value.length > limits.value || keys.has(item.key)) throw quota();
         keys.add(item.key);
       }
       return admit({ operation: 'batch', replacements });
