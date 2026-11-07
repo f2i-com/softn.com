@@ -4,7 +4,7 @@
  * Parses .softn source code into an Abstract Syntax Tree.
  */
 
-import { usesDocument } from '../document-shell/names';
+import { codeWithoutText, usesDocument } from '../document-shell/names';
 import { Lexer } from './lexer';
 import { Token, TokenType, SourceLocation } from './token';
 import {
@@ -1574,8 +1574,9 @@ export class Parser {
       // `alert('Saved')`) reads as an expression, and as one it found nothing:
       // no `document` or `alert` in the page's scope, so the click did
       // nothing. It stays the attribute, as `<body onload>` does (see
-      // parseDocumentWrapper): the page is given its document for it.
-      if (usesDocument(prop.value.value) || (event === 'load' && element.tag.toLowerCase() === 'body')) return true;
+      // parseDocumentWrapper): the page is given its document for it. What
+      // its strings and comments say is not read (`status = 'See history.'`).
+      if (usesDocument(codeWithoutText(prop.value.value)) || (event === 'load' && element.tag.toLowerCase() === 'body')) return true;
       const handler = this.quotedHandler(event, [], prop.value.value, prop.loc, prop.name);
       if (handler) element.events.push(handler);
       // Code SoftN does not read (`this.classList.toggle('on')`) stays the

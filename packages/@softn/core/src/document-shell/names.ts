@@ -128,6 +128,89 @@ export function usesDocument(code: string): boolean {
 }
 
 /**
+ * Code with what its strings and comments say taken out: `'Moved to history.'`
+ * is `''`, and a template's `${…}` stays, as the code it is. For a handler
+ * written in quotes, where a word decides where the handler runs, not only
+ * whether a page is given a document: `status = 'See history.'` is SoftN's to
+ * run, as it was before parser 15, and `alert('Saved')` is still the browser's.
+ */
+export function codeWithoutText(code: string): string {
+  let out = '';
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === '/' && code[i + 1] === '/') {
+      const end = code.indexOf('\n', i);
+      i = end < 0 ? code.length : end;
+      continue;
+    }
+    if (c === '/' && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      i = end < 0 ? code.length : end + 2;
+      out += ' ';
+      continue;
+    }
+    // A regular expression (`/'/.test(s)`) is passed over as it is written, so a quote in it starts no string
+    // that would hide the code after it. A `/` after a value (`total / 2`) divides. (Only the end of what is
+    // read so far is looked at: the whole of it, at every `/`, took seconds over a long handler.)
+    if (c === '/' && /(?:^|[(,=:[!&|?{};+\-*%<>~^]|\b(?:return|typeof|case|in|of))\s*$/.test(out.slice(-24))) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < code.length && code[j] !== '\n' && (inClass || code[j] !== '/')) {
+        if (code[j] === '\\') j++;
+        else if (code[j] === '[') inClass = true;
+        else if (code[j] === ']') inClass = false;
+        j++;
+      }
+      out += code.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < code.length && code[j] !== c && code[j] !== '\n') j += code[j] === '\\' ? 2 : 1;
+      // A quote never closed (`it's`, written in code) starts no string: what follows it stays code.
+      if (j >= code.length || code[j] !== c) {
+        out += c;
+        i++;
+        continue;
+      }
+      // Code given as text, `setTimeout('history.back()', 500)` or `eval('…')`, is code, and stays.
+      out += /\b(?:setTimeout|setInterval|eval|Function)\s*\(\s*$/.test(out.slice(-24)) ? code.slice(i, j + 1) : c + c;
+      i = j + 1;
+      continue;
+    }
+    if (c === '`') {
+      let j = i + 1;
+      out += '`';
+      while (j < code.length && code[j] !== '`') {
+        if (code[j] === '\\') {
+          j += 2;
+        } else if (code[j] === '$' && code[j + 1] === '{') {
+          let depth = 1;
+          let k = j + 2;
+          while (k < code.length && depth > 0) {
+            if (code[k] === '{') depth++;
+            else if (code[k] === '}') depth--;
+            k++;
+          }
+          out += ' ' + codeWithoutText(code.slice(j + 2, depth === 0 ? k - 1 : k)) + ' ';
+          j = k;
+        } else {
+          j++;
+        }
+      }
+      out += '`';
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/**
  * Whether a page's markup has a handler written for a browser that SoftN
  * does not read (`onclick="this.classList.toggle('on')"`, kept as the
  * attribute by the parser): such a page is given its document, where the

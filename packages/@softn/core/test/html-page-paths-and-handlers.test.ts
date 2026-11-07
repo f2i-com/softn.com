@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { bundlePageAt, composeBundleSource, mainPage, pageFilePath } from '../src/bundle';
-import { hasPageHandlers } from '../src/document-shell/names';
+import { codeWithoutText, hasPageHandlers } from '../src/document-shell/names';
 import { parse } from '../src/parser';
 import { bundlePathOf, keepFormOnPage } from '../src/renderer/html-elements';
 import { moduleSyntaxAsScript } from '../src/runtime/module-syntax';
@@ -74,6 +74,43 @@ describe('a handler written for a browser', () => {
   it('one that calls the page’s own logic is still read as SoftN reads it', () => {
     expect(element('<button onclick="save()">x</button>').events.map((e) => e.name)).toEqual(['click']);
     expect(element('<input onchange="total = 1">').events.map((e) => e.name)).toEqual(['change']);
+  });
+
+  it.each([
+    ['onclick="status = \'Moved to history.\'"'],
+    ['onclick="note = \'Check the URL.\' /* not location.href */"'],
+    ['onclick="msg = `Open the document. ${count}`"'],
+  ])('%s, naming the browser only in its text, is still SoftN’s, as before parser 15', (attribute) => {
+    expect(element(`<button ${attribute}>x</button>`).events.map((e) => e.name)).toEqual(['click']);
+  });
+
+  it('a template’s code is read: `${document.title}` is the browser’s', () => {
+    expect(element('<button onclick="msg = `Now: ${document.title}`">x</button>').events).toEqual([]);
+  });
+
+  it('a quote inside a regular expression hides nothing after it, and a division is no regular expression', () => {
+    expect(element('<button onclick="ok = /\'/.test(s); alert(1)">x</button>').events).toEqual([]);
+    expect(element('<button onclick="half = total / 2; note = \'See history.\'">x</button>').events.map((e) => e.name)).toEqual(['click']);
+    expect(codeWithoutText("a = /[/']x/; b = c / d / e; f('history.')")).toBe("a = /[/']x/; b = c / d / e; f('')");
+  });
+
+  it('code given as text, and a quote never closed, are still read as code', () => {
+    expect(element('<button onclick="setTimeout(\'history.back()\', 500)">x</button>').events).toEqual([]);
+    expect(element('<button onclick="eval(\'location.reload()\')">x</button>').events).toEqual([]);
+    const page = parse('<button onclick="t = it\'s; document.title = t">x</button>');
+    expect((page.template[0] as unknown as { events: unknown[] }).events).toEqual([]);
+    expect(page.diagnostics ?? [], 'and nothing warns of it').toEqual([]);
+  });
+
+  it('a long handler is read in time, slashes and all', () => {
+    const started = performance.now();
+    codeWithoutText('a' + '/b'.repeat(64 * 1024));
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it('codeWithoutText keeps the code and leaves out what strings and comments say', () => {
+    expect(codeWithoutText(`alert('a.b'); x = "it's" // history.back()`)).toBe(`alert(''); x = "" `);
+    expect(codeWithoutText('a /* location.href */ + `t ${ {k: 1}.k } u` + \'\\\'q\'')).toBe("a   + `  {k: 1}.k  ` + ''");
   });
 
   it('<body onload> is held for the page’s document, which fires it once the page is drawn', () => {
