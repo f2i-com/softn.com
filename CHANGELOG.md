@@ -6,11 +6,13 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.33
 
+- Upgrading from v0.0.32: the engine is still ZIPP v0.0.33, so nothing is rebuilt, and every protocol number is v0.0.32's. What changes is FormLogic's frame (below: an app drawn to fill its window fills it, more browser storage when the parent offers it, and files when the parent grants them), the editors FormLogic opens, and this site's front page. A FormLogic gets the frame by installing this release; one that offers neither storage limits nor files sees no change but the height.
 - FormLogic: an app drawn to fill its window now fills FormLogic's frame. The frame's page, body and root had no height of their own, as SoftN Web's have, so an app whose root is `height: 100%` (a game's often is) was laid out and cut off to nothing: a blank frame. A page taller than the frame scrolls as before.
 - FormLogic: a parent can raise how much an app's browser storage holds, in `init.storageLimits`: a value up to 8 MiB, the store up to 64 MiB, 2,000 entries, and as much in one save and waiting. A game's saved state is hundreds of kilobytes a slot, past the 30,000 characters a value could hold. A parent that names none keeps the old limits, and none is ever lowered; the protocol numbers are unchanged. The store's size is now kept as it changes: it was measured by serialising the whole store on every save.
 - FormLogic: a parent can grant an app `softn.files` (`init.permissions: { files: true }`): opening the files the person picks and saving the files they ask for. Nothing else can be granted in the frame. The parent settles the grant before the app opens, because a grant changed under a running app restarts its logic.
+- FormLogic: the Builder and Studio open an app archive of up to 80 MB for a host, and give one back (it was 24 MB): room for the largest app FormLogic keeps, 64 MB of source and media, which barely compresses. A game with hundreds of pictures and sounds no longer stops at Edit.
 - The site wears the same product bar as the runtime, Studio and Builder on every page (Apps, Runtime, Studio, Builder, Publish, Docs). The front page adds its own places under it: Explore apps, Create, How it works.
 - The front page leads with the apps: the directory's featured shelf is the hero, under one line of what SoftN is and the two things a visitor came to do. Fieldnotes no longer runs in it; it is still the working example under Create. How it works starts with playing an app, then opening it, changing it and publishing it, each a line of what you do and where, without the screenshots. What makes SoftN different is four points, two by two. The language tour, the engine's pipeline and the component list left the front page; the guides have them.
 

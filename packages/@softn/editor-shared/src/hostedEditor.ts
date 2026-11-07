@@ -102,6 +102,12 @@ export const HOSTED_AGENT_RUNS_VERSION = 1;
 /** A request the host asks the editor's agent to carry out as soon as the project is open. */
 export interface HostedBrief { prompt: string; kind: 'build' | 'edit' }
 /** Longest brief the editor takes from a host. */
+/**
+ * The largest app archive the editors open for a host and give back to it: room for FormLogic's
+ * largest app (64 MB of source and media, which barely compresses). It was 24 MB.
+ */
+export const HOSTED_ARCHIVE_MAX_BYTES = 80 * 1024 * 1024;
+
 export const HOSTED_BRIEF_MAX_CHARS = 8000;
 
 /**
@@ -355,7 +361,7 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
       try {
         if (data.method === 'open' && !loaded) {
           // Checked by tag, not instanceof: a cloned array can come from another realm.
-          if (Object.prototype.toString.call(data.bytes) !== '[object Uint8Array]' || data.bytes.byteLength > 24 * 1024 * 1024) throw new Error('Invalid app archive.');
+          if (Object.prototype.toString.call(data.bytes) !== '[object Uint8Array]' || data.bytes.byteLength > HOSTED_ARCHIVE_MAX_BYTES) throw new Error('Invalid app archive.');
           if (data.theme === 'light' || data.theme === 'dark') {
             document.documentElement.setAttribute('data-theme', data.theme);
             document.documentElement.dispatchEvent(new CustomEvent('softn:theme', { detail: data.theme }));
@@ -367,7 +373,7 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
           if (!disposed) { loaded = true; reply({ opened: true }); }
         } else if (data.method === 'export' && loaded) {
           const bytes = await handlers.export();
-          if (bytes.byteLength > 24 * 1024 * 1024) throw new Error('This app exceeds the hosted editor archive limit.');
+          if (bytes.byteLength > HOSTED_ARCHIVE_MAX_BYTES) throw new Error('This app exceeds the hosted editor archive limit.');
           reply(bytes);
         } else throw new Error('The editor has not opened this app yet.');
       } catch (error) {
