@@ -23,3 +23,9 @@ export const PERMISSIONS_GUIDE_HREF = '/docs/permissions/';
 
 /** An AI agent building an app on a FormLogic site and preparing it for the directory, with the person approving. */
 export const AI_PUBLISHING_GUIDE_HREF = '/docs/ai-publishing/';
+
+/** The UI language: tags, expressions and the rest of a .ui file. */
+export const UI_LANGUAGE_GUIDE_HREF = '/docs/ui-language/';
+
+/** Every component, by what it is for. */
+export const COMPONENTS_GUIDE_HREF = '/docs/components/';

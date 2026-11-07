@@ -1,6 +1,7 @@
 import React from 'react';
 import { Mark } from '@softn/brand';
 import { BUILDER_HREF, REPO_URL, STUDIO_HREF, WEB_HREF, ZIPP_URL } from '../lib/appUrls';
+import { COMPONENTS_GUIDE_HREF, UI_LANGUAGE_GUIDE_HREF } from '../lib/guides';
 
 export function Footer(): React.ReactElement {
   return (
@@ -34,6 +35,7 @@ export function Footer(): React.ReactElement {
 
             <div className="foot-col">
               <div className="foot-col-head">Tools</div>
+              <a href="/#how">How it works</a>
               <a href={STUDIO_HREF}>Studio</a>
               <a href={BUILDER_HREF}>Builder</a>
               <a href={WEB_HREF}>Web runtime</a>
@@ -47,8 +49,9 @@ export function Footer(): React.ReactElement {
               <a href={ZIPP_URL} target="_blank" rel="noreferrer">
                 zipp.org
               </a>
-              <a href="/#language">The language</a>
-              <a href="/#components">Components</a>
+              {/* The front page no longer tours the language or lists the components: the guides do. */}
+              <a href={UI_LANGUAGE_GUIDE_HREF}>The language</a>
+              <a href={COMPONENTS_GUIDE_HREF}>Components</a>
               <a href="/docs/">Documentation</a>
             </div>
           </div>

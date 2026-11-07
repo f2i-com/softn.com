@@ -14,10 +14,11 @@ import { SEARCH_DEMO } from '../helpers/demo';
 
 test('cross-page section links reach the section and source stays readable on a phone', async ({ page }) => {
   await page.goto('/apps');
-  await page.locator('footer a[href="/#language"]').click();
-  const language = page.locator('#language');
-  await expect(language).toBeFocused();
-  await expect.poll(() => language.evaluate((element) => Math.round(element.getBoundingClientRect().top))).toBeLessThan(100);
+  await page.locator('footer a[href="/#how"]').click();
+  const how = page.locator('#how');
+  await expect(how).toBeFocused();
+  // Below the bar and the front page's own row of places, which stick (scroll-padding-top: 7rem).
+  await expect.poll(() => how.evaluate((element) => Math.round(element.getBoundingClientRect().top))).toBeLessThan(140);
 
   await page.goto(`/apps?q=${SEARCH_DEMO.query}`);
   await page.locator('a.app-card-name', { hasText: SEARCH_DEMO.cardName }).first().click();
