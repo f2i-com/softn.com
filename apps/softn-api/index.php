@@ -331,7 +331,7 @@ function handle(string $handler, array $args, Request $req): Response
                     'GET /api/categories',
                     'POST /api/apps  (multipart bundle=@file, or raw zip body, or JSON {bundleBase64}; fields: name, description, author, category, tags, notes, primary, parent, thumbnail; X-Admin-Key lifts the hourly limit)',
                     'POST /api/apps/{slug}/versions  (X-Edit-Key)',
-                    'git push https://{slug}@…/api/git/{slug}.git HEAD:main  (the edit key as the password)',
+                    'git push https://{slug}@…/api/git/{slug}.git HEAD:refs/heads/main  (the edit key as the password)',
                     'PATCH /api/apps/{slug}  (X-Edit-Key; JSON fields)',
                     'POST /api/apps/{slug}/thumbnail  (X-Edit-Key)',
                     'DELETE /api/apps/{slug}  (X-Edit-Key)',

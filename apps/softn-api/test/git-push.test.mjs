@@ -188,10 +188,12 @@ test('a shallow clone, as CI checks a project out, publishes its latest commit',
 test('the guide’s way to publish from CI: the key from the environment, in no argument, address or config', skip, async () => {
   const docs = fs.readFileSync(new URL('../../../docs/content/softn-docs.json', import.meta.url), 'utf8');
   const item = JSON.parse(docs).pages.flatMap((p) => p.sections ?? []).find((section) => section.id === 'push-with-git').blocks.flatMap((b) => b.items ?? []).find((text) => text.includes('SOFTN_EDIT_KEY'));
-  const command = item.match(/`(git -c credential\.helper='([^']+)' -c (http\.postBuffer=64M) push (https:\/\/my-app@softn\.com\/api\/git\/my-app\.git) (HEAD:main))`/);
+  const command = item.match(/`(git -c credential\.helper='([^']+)' -c (http\.postBuffer=64M) push (https:\/\/my-app@softn\.com\/api\/git\/my-app\.git) (HEAD:refs\/heads\/main))`/);
   assert.ok(command, item);
   const app = await published('ci');
   const dir = project();
+  // CI checks out a commit, not a branch (a tag, a pull request, GitLab always): `HEAD:main` cannot be read there.
+  git(dir, ['checkout', '-q', '--detach']);
   // As a shell hands it to git: the helper as one argument, with the variable's name in it and not its value.
   const args = ['-c', `credential.helper=${command[2]}`, '-c', command[3], 'push', command[4].replace('https://my-app@softn.com/api/git/my-app.git', remote(app.app.slug)), command[5]];
   assert.ok(!args.some((arg) => arg.includes(app.editKey)));
@@ -251,7 +253,7 @@ test('only main is published: another branch, a tag and a delete are refused, wi
   const dir = project();
   const branch = push(dir, slug, app.editKey, 'HEAD:refs/heads/work');
   assert.notEqual(branch.status, 0);
-  assert.match(branch.out, /git push softn HEAD:main/);
+  assert.match(branch.out, /git push softn HEAD:refs\/heads\/main/);
   git(dir, ['tag', 'v1']);
   assert.notEqual(push(dir, slug, app.editKey, 'refs/tags/v1').status, 0);
   assert.notEqual(push(dir, slug, app.editKey, ':main').status, 0, 'a delete');
@@ -776,7 +778,7 @@ test('a push of every branch past the most refs is told in the terminal, and not
   const r = git(dir, ['push', '--all', remote(app.app.slug)], app.editKey);
   assert.notEqual(r.status, 0);
   assert.match(r.out, /remote: That push names too many refs/, r.out);
-  assert.match(r.out, /git push softn HEAD:main/, r.out);
+  assert.match(r.out, /git push softn HEAD:refs\/heads\/main/, r.out);
   assert.doesNotMatch(r.out, /Everything up-to-date/, r.out);
   assert.equal((await versions(app.app.slug)).length, 1);
 });

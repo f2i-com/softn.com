@@ -519,7 +519,7 @@ final class GitRemote
         foreach ($commands as $command) {
             $ref = $command['ref'];
             try {
-                if ($ref !== self::BRANCH) throw new GitRefused(str_starts_with($ref, 'refs/heads/') ? 'Only main is published. Push your branch to it: git push softn HEAD:main' : 'Only main is published. Tags and other refs are not kept.');
+                if ($ref !== self::BRANCH) throw new GitRefused(str_starts_with($ref, 'refs/heads/') ? 'Only main is published. Push your branch to it: git push softn HEAD:refs/heads/main' : 'Only main is published. Tags and other refs are not kept.');
                 if ($command['new'] === self::NO_ID) throw new GitRefused('A push does not delete an app. Unpublish it from its page.');
                 $said[] = self::publish($req, $slug, $in, $start, $size, $command['new']);
                 $statuses[] = "ok $ref\n";
@@ -627,7 +627,7 @@ final class GitRemote
         while (($line = self::readPkt($in)) !== null) {
             // A shallow clone says where its history stops. Only the commit pushed is read, so nothing hangs on it.
             if (str_starts_with($line, 'shallow ')) continue;
-            if (count($commands) >= 16) throw new ApiError(400, 'That push names too many refs, and only main is published. Push that alone: git push softn HEAD:main');
+            if (count($commands) >= 16) throw new ApiError(400, 'That push names too many refs, and only main is published. Push that alone: git push softn HEAD:refs/heads/main');
             $nul = strpos($line, "\0");
             if ($nul !== false) {
                 $capabilities = array_values(array_filter(explode(' ', trim(substr($line, $nul + 1)))));
