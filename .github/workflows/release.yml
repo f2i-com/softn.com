@@ -190,6 +190,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
       # build:site builds the packages the apps need itself. The journeys are
       # served by the topology server, which never sends a .br/.gz twin, so
@@ -250,6 +253,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
       - name: The static Linux target
         if: runner.os == 'Linux'
@@ -355,6 +361,9 @@ jobs:
       # the SHA256SUMS digest the gate saw (job env). Everything below reads it,
       # the release notes' archive names and licenses:check first.
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
 
       - name: Audit dependency lockfile

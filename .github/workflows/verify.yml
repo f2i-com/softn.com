@@ -86,6 +86,9 @@ jobs:
       # SHA256SUMS. The build, test, typecheck and licence hooks would install
       # it too; this step makes it visible and fails first if it cannot.
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
 
       # The web app's build carries the pinned demo bundles, as it does
@@ -160,6 +163,9 @@ jobs:
         run: npm ci
 
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
 
       # The demo bundles are not in this repository: their sources live in
@@ -299,6 +305,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
       # Each crate brings its own toolchain (rust-toolchain.toml: the guest's
       # 1.92.0 with wasm32-wasip1, the runner's 1.99.0); the runner's static
@@ -408,6 +417,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
       - name: Cache Cargo
         uses: actions/cache@v6

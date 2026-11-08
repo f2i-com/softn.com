@@ -364,10 +364,10 @@ const releaseUrl = (tag, name) => `${REPOSITORY}/releases/download/${tag}/${name
 // GitHub's redirect to the newest release's asset: no API call, no token, no rate limit.
 const LATEST_SUMS_URL = `${REPOSITORY}/releases/latest/download/SHA256SUMS`;
 
-async function download(url, fetchImpl) {
+async function download(url, fetchImpl, headers = undefined) {
   let response;
   try {
-    response = await fetchImpl(url, { signal: AbortSignal.timeout(120_000) });
+    response = await fetchImpl(url, { signal: AbortSignal.timeout(120_000), ...(headers ? { headers } : {}) });
     if (response.ok) return Buffer.from(await response.arrayBuffer());
   } catch (error) {
     const unreachable = new ZippReleaseError(`could not fetch ${url}: ${error.message}`);
@@ -375,6 +375,53 @@ async function download(url, fetchImpl) {
     throw unreachable;
   }
   refuse(`${url} answered ${response.status}`);
+}
+
+// GitHub's API names each release asset by id, and serves its bytes from an address of its own.
+// That route kept working when the plain download addresses above answered 504 for every
+// f2i-com release (2026-11-08), so it is tried first: signed in where the environment carries a
+// token (GITHUB_TOKEN, as a workflow passes it, or GH_TOKEN), which also lifts the API's limit of
+// 60 anonymous requests an hour. Either way what arrives is checked against SHA256SUMS exactly
+// as before: the route changes where bytes come from, never what is accepted.
+const API = REPOSITORY.replace('https://github.com/', 'https://api.github.com/repos/');
+const apiHeaders = (accept) => {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  return { Accept: accept, 'User-Agent': 'softn-fetch-zipp-release', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+};
+const releaseAssets = new Map();
+
+/** A tag's assets by name, from the API, asked once per tag. */
+async function assetsOf(tag, fetchImpl) {
+  if (!releaseAssets.has(tag)) {
+    const pending = download(`${API}/releases/tags/${tag}`, fetchImpl, apiHeaders('application/vnd.github+json'))
+      .then((bytes) => new Map((JSON.parse(bytes.toString('utf8')).assets ?? []).map((asset) => [asset.name, asset.url])));
+    releaseAssets.set(tag, pending);
+    pending.catch(() => releaseAssets.delete(tag));
+  }
+  return releaseAssets.get(tag);
+}
+
+/**
+ * A release file's bytes: through the API's asset address, then the plain download address. A
+ * failure names both; it is "unreachable" (for the offline hint) when the plain address could not
+ * be reached at all.
+ */
+async function downloadReleaseFile(tag, name, fetchImpl) {
+  let apiError;
+  try {
+    const url = (await assetsOf(tag, fetchImpl)).get(name);
+    if (url) return await download(url, fetchImpl, apiHeaders('application/octet-stream'));
+    apiError = new ZippReleaseError(`the ${tag} release lists no ${name}`);
+  } catch (error) {
+    apiError = error;
+  }
+  try {
+    return await download(releaseUrl(tag, name), fetchImpl);
+  } catch (error) {
+    const both = new ZippReleaseError(`through GitHub's API: ${apiError.message}; then ${error.message}`);
+    both.unreachable = error.unreachable === true;
+    throw both;
+  }
 }
 
 function readReleaseFile(releaseDir, name) {
@@ -436,7 +483,7 @@ function requireModuleRelease(tag) {
  */
 async function downloadSums(tag, { cacheDir, fetchImpl }) {
   try {
-    return await download(releaseUrl(tag, 'SHA256SUMS'), fetchImpl);
+    return await downloadReleaseFile(tag, 'SHA256SUMS', fetchImpl);
   } catch (error) {
     const cached = path.resolve(cacheDir, tag);
     if (error.unreachable && ['SHA256SUMS', ...releaseFiles(tag.slice(1))].every((name) => fs.existsSync(path.join(cached, name)))) {
@@ -472,10 +519,19 @@ export async function resolveRelease({ tag, latest = false, releaseDir, cargoTom
     requireFilesListed(sums, tag, releaseDir ? `in ${releaseDir}` : `published under ${tag}`);
     return { release: tag, sums };
   }
-  const latestSums = await download(LATEST_SUMS_URL, fetchImpl);
+  // The latest release by the API first (its tag, then that tag's SHA256SUMS as any release's),
+  // the plain redirect to the latest release's SHA256SUMS where the API cannot answer.
+  let latestSums;
+  try {
+    const latestTag = JSON.parse((await download(`${API}/releases/latest`, fetchImpl, apiHeaders('application/vnd.github+json'))).toString('utf8')).tag_name;
+    if (!isReleaseTag(latestTag)) refuse(`GitHub's latest ZIPP release is "${latestTag}", not a release tag`);
+    latestSums = await downloadReleaseFile(latestTag, 'SHA256SUMS', fetchImpl);
+  } catch {
+    latestSums = await download(LATEST_SUMS_URL, fetchImpl);
+  }
   const release = `v${versionFromSums(latestSums)}`;
   requireModuleRelease(release);
-  const tagged = await download(releaseUrl(release, 'SHA256SUMS'), fetchImpl);
+  const tagged = await downloadReleaseFile(release, 'SHA256SUMS', fetchImpl);
   if (!latestSums.equals(tagged)) refuse(`the latest release's SHA256SUMS is not the one published under ${release}; the latest release changed while it was read, so try again`);
   requireFilesListed(tagged, release, `published under ${release}`);
   return { release, sums: tagged };
@@ -490,7 +546,7 @@ async function loadReleaseFile({ release, sums, name, releaseDir, cacheDir = CAC
   else {
     const cached = path.join(cacheDir, release, name);
     bytes = fs.existsSync(cached) ? fs.readFileSync(cached) : null;
-    if (!bytes || sha256(bytes) !== expected) bytes = await download(releaseUrl(release, name), fetchImpl);
+    if (!bytes || sha256(bytes) !== expected) bytes = await downloadReleaseFile(release, name, fetchImpl);
   }
   const actual = sha256(bytes);
   if (actual !== expected) refuse(`${name} has sha256 ${actual}; the ${release} SHA256SUMS says ${expected}`);
@@ -1350,14 +1406,14 @@ export function checkVariant(dir, primarySource, primaryFiles, id = WEB_VARIANT.
 export async function checkEngineOnline(dir = ENGINE_DIR, { fetch: fetchImpl = globalThis.fetch, curatedNotices } = {}) {
   const source = checkEngine(dir, { curatedNotices });
   const problems = [];
-  const sums = await download(releaseUrl(source.release, 'SHA256SUMS'), fetchImpl);
+  const sums = await downloadReleaseFile(source.release, 'SHA256SUMS', fetchImpl);
   if (!sums.equals(fs.readFileSync(path.join(dir, 'RELEASE-SHA256SUMS')))) problems.push(`RELEASE-SHA256SUMS is not the SHA256SUMS published under ${source.release}`);
   const torch = source.packages[TORCH_PACKAGE.id];
   for (const [bundle, file] of [[source.bundle, path.join(dir, 'zipp_wasm_bg.wasm')], [source.variants[WEB_VARIANT.id].bundle, path.join(variantDir(dir), 'zipp_wasm_bg.wasm')], [torch.bundle, path.join(packageDir(dir), TORCH_PACKAGE.artifact)]]) {
-    const published = await download(releaseUrl(source.release, bundle), fetchImpl);
+    const published = await downloadReleaseFile(source.release, bundle, fetchImpl);
     if (!published.equals(fs.readFileSync(file))) problems.push(`${rel(file)} is not the published ${bundle}`);
   }
-  const kit = await download(releaseUrl(source.release, source.kit.bundle), fetchImpl);
+  const kit = await downloadReleaseFile(source.release, source.kit.bundle, fetchImpl);
   if (sha256(kit) !== source.kit.bundleSha256) problems.push(`the published ${source.kit.bundle} is not the recorded ${source.kit.bundleSha256}`);
   else {
     const entries = await unzipKit(kit, source.version);

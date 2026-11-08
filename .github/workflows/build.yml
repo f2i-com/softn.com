@@ -47,6 +47,9 @@ jobs:
       # packages/@softn/core/wasm-zipp/ is generated: the ZIPP release the
       # apps/softn-host-rust/Cargo.toml zipp-vm tag names.
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
 
       # softn-runner, built as release.yml's runner job builds it (static
@@ -180,6 +183,9 @@ jobs:
         run: npm ci
 
       - name: Install the ZIPP release
+        # Through GitHub's API, signed in (fetch-zipp-release.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
 
       - name: Build shared packages

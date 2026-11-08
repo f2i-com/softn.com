@@ -28,6 +28,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { zipSync } from 'fflate';
 import { CURATED_NOTICES, INSTALLED_FILES, PACKAGE_INSTALLED_FILES, REPOSITORY, TORCH_DECLARATIONS, TORCH_LOADER, TORCH_PACKAGE, VARIANT_INSTALLED_FILES, WEB_VARIANT, ZippReleaseError, checkEngine, checkEngineOnline, ensureEngine, ensureReleaseEngine, installLocal, installRelease, moduleGlue, packageDir, packageModuleProblems, removeStaleLock, resolveRelease, sha256, variantDir, variantModuleProblems, verifyPackage, verifyRelease, verifyVariant, withInstallLock, writeInstall } from './fetch-zipp-release.mjs';
+const API_ROOT = REPOSITORY.replace('https://github.com/', 'https://api.github.com/repos/');
 import { wasmCustomSections, wasmExportNames, wasmImportNames, wasmStackBytes } from '../../../../scripts/lib/zipp-engine-copy.mjs';
 
 const CORE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -1007,7 +1008,9 @@ test('--latest takes GitHub\'s latest release only when its SHA256SUMS is the on
   const resolved = await resolveRelease({ latest: true, fetch: same.fetch });
   assert.equal(resolved.release, 'v0.0.27');
   assert.ok(resolved.sums.equals(listing('0.0.27', '1')));
-  assert.deepEqual(same.calls, [latestUrl, tagUrl], 'no API call: the latest redirect, then the tag\'s own asset');
+  // GitHub's API first (it answers 404 here), then the latest redirect and the tag's own asset.
+  assert.deepEqual(same.calls.filter((url) => url.startsWith(REPOSITORY)), [latestUrl, tagUrl], 'the latest redirect, then the tag\'s own asset');
+  assert.ok(same.calls[0].startsWith(API_ROOT), 'the API was asked first');
   const moved = serve(new Map([[latestUrl, listing('0.0.27', '1')], [tagUrl, listing('0.0.27', '2')]]));
   await assert.rejects(resolveRelease({ latest: true, fetch: moved.fetch }), (error) => error instanceof ZippReleaseError && /try again/.test(error.message));
   // A latest release that publishes zip bundles names no engine this reads.
@@ -1345,6 +1348,29 @@ test('a release whose SHA256SUMS is not the digest recorded for it is refused, a
   assert.equal(checkEngine(out).sumsSha256, sha256(folder.top));
 });
 
+test("GitHub's API serves a release when its plain download addresses do not (they answered 504 for every f2i-com release on 2026-11-08)", async (t) => {
+  const folder = releaseFolder(t);
+  const api = new Map();
+  const assets = [];
+  for (const [url, bytes] of publishedUrls(folder)) {
+    if (!url.startsWith(`${REPOSITORY}/releases/download/${TAG}/`)) continue;
+    const assetUrl = `${API_ROOT}/releases/assets/${assets.length + 1}`;
+    assets.push({ name: url.slice(url.lastIndexOf('/') + 1), url: assetUrl });
+    api.set(assetUrl, bytes);
+  }
+  api.set(`${API_ROOT}/releases/tags/${TAG}`, Buffer.from(JSON.stringify({ tag_name: TAG, assets })));
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push([url, init?.headers?.Accept ?? null]);
+    if (url.startsWith(REPOSITORY)) return new Response('', { status: 504 });
+    return api.has(url) ? new Response(api.get(url)) : new Response('', { status: 404 });
+  };
+  const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+  await installRelease({ dir: out, tag: TAG, cacheDir: tempDir(t, 'zipp-cache-'), fetch, log: quiet, warn: quiet });
+  assert.equal(checkEngine(out).release, TAG);
+  assert.deepEqual(calls.filter(([url]) => url.startsWith(REPOSITORY)), [], 'the plain addresses were never needed');
+  assert.ok(calls.some(([url, accept]) => url.startsWith(`${API_ROOT}/releases/assets/`) && accept === 'application/octet-stream'), 'the bytes came through the asset addresses');
+});
 test('downloads are cached per tag, whole files only, and a cached file that no longer matches is fetched again', async (t) => {
   const folder = releaseFolder(t);
   const cacheDir = tempDir(t, 'zipp-cache-');
@@ -1354,12 +1380,12 @@ test('downloads are cached per tag, whole files only, and a cached file that no 
   const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
   await installRelease({ dir: out, tag: TAG, cacheDir, fetch, log: quiet, warn: quiet });
   assert.deepEqual(fs.readdirSync(path.join(cacheDir, TAG)).sort(), ['SHA256SUMS', BUNDLE, WEB_BUNDLE, TORCH_BUNDLE, KIT].sort(), 'no partial file is left');
-  assert.equal(calls.length, 5, 'SHA256SUMS, three modules and the kit');
+  assert.equal(calls.filter((url) => url.startsWith(REPOSITORY)).length, 5, 'SHA256SUMS, three modules and the kit');
   // A second install asks only for SHA256SUMS, then for the one cached file that was spoiled.
   calls.length = 0;
   fs.appendFileSync(path.join(cacheDir, TAG, WEB_BUNDLE), Buffer.from([0]));
   fs.rmSync(out, { recursive: true });
   await installRelease({ dir: out, tag: TAG, cacheDir, fetch, log: quiet, warn: quiet });
-  assert.deepEqual(calls, [`${REPOSITORY}/releases/download/${TAG}/SHA256SUMS`, `${REPOSITORY}/releases/download/${TAG}/${WEB_BUNDLE}`]);
+  assert.deepEqual(calls.filter((url) => url.startsWith(REPOSITORY)), [`${REPOSITORY}/releases/download/${TAG}/SHA256SUMS`, `${REPOSITORY}/releases/download/${TAG}/${WEB_BUNDLE}`]);
   assert.equal(checkEngine(out).release, TAG);
 });
