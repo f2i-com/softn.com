@@ -352,8 +352,9 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
       const m = manifestOf(`app-editors/${kind}`);
       assert.equal(m.engines, undefined, `${kind} is an editor, not an app runtime`);
       assert.ok('index.html' in m.files, `${kind} index`);
+      // No engine of its own (v0.0.35): FormLogic's page gives it the one it downloaded.
       const wasm = Object.entries(m.files).filter(([p]) => /zipp_wasm_bg(?:-[^/]+)?\.wasm$/.test(p));
-      assert.ok(wasm.length > 0 && wasm.every(([, h]) => h === source.sha256), `${kind} carries the installed engine`);
+      assert.deepEqual(wasm, [], `${kind} carries no engine`);
     }
     manifestOf('app-editors');
     assert.ok(![...entries.keys()].some((n) => n.endsWith('.map')), 'no source maps');
