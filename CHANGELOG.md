@@ -6,6 +6,12 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.35
+
+- Upgrading from v0.0.34: the engine is still ZIPP v0.0.33, so nothing is rebuilt, and every protocol number is v0.0.34's. What changes is the FormLogic archive, which is 20 MB smaller: its app runtime and editors carry no engine of their own. FormLogic installs it from v0.1.29; v0.1.28 and earlier refuse it, because they ask for a copy of the engine in each.
+- FormLogic: the Builder and Studio run the engine FormLogic's page already downloaded and checked, as its app frame does, so one 6.58 MB file (1.65 MB with Brotli) serves the page, the frame and both editors. They name the ZIPP build they were made with when they say they are ready (the editor bridge's `engine` capability), and the page sends its bytes with the connection. A host that sends none leaves them to fetch their own copy, as before; this release's archive carries none, so such a host shows its editors without an engine. Core's `awaitZippWasmSource` is how any host can do the same: a start waits for the bytes it promises.
+- The archive's check (`archiveEngineProblems`) refuses an engine anywhere in `hosted-runtime/` or `app-editors/`: the archive holds the engine at `zipp/` and the native runtime alone, and the web variant at `zipp-web/`.
+
 ## v0.0.34
 
 - Upgrading from v0.0.33: the engine is still ZIPP v0.0.33, so nothing is rebuilt, and every protocol number is v0.0.33's. What changes is what an app shows while it opens (below), and FormLogic's frame telling its parent when the app is on screen; a FormLogic that installs this release covers the frame with the app's own loading screen until then.
