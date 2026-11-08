@@ -202,26 +202,27 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     for (const field of ['version', 'sha256', 'revision', 'release', 'bundle', 'bundleSha256', 'sumsSha256', 'variant', 'languages', 'build', 'glueSha256', 'notices']) assert.ok(release.zipp[field] !== undefined, `release.zipp.${field}`);
 
     // Every engine copy, found by its exports, is the installed release: the
-    // web variant at zipp-web/, the primary at all five known places and
-    // nowhere else (the copies at assets/core-runtime/ went in v0.0.28). The variant asks the host for nothing the primary does not
-    // and exports a subset, which is what lets one glue run both.
+    // web variant at zipp-web/, the primary at zipp/ and in the native runtime
+    // and nowhere else. The copies at assets/core-runtime/ went in v0.0.28, and
+    // the hosted runtime's and the editors' in v0.0.35: FormLogic's page gives
+    // them the engine it downloaded. The variant asks the host for nothing the
+    // primary does not and exports a subset, which is what lets one glue run both.
     const copies = [...entries.keys()].filter((n) => isZippEngineWasm(bytes(n))).sort();
     const VARIANT_AT = 'zipp-web/zipp_wasm_bg.wasm';
     for (const n of copies) assert.equal(sha256(bytes(n)), n === VARIANT_AT ? web.sha256 : source.sha256, `${n} is the installed ${n === VARIANT_AT ? 'variant' : 'engine'}`);
     assert.equal(copies.filter((n) => sha256(bytes(n)) === web.sha256).length, 1, 'the variant digest appears once');
-    assert.equal(copies.filter((n) => sha256(bytes(n)) === source.sha256).length, 5, 'the primary digest appears five times');
+    assert.equal(copies.filter((n) => sha256(bytes(n)) === source.sha256).length, 2, 'the primary digest appears twice');
     assert.deepEqual(wasmImportNames(bytes(VARIANT_AT)).filter((i) => !wasmImportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(i)), []);
     assert.deepEqual(wasmExportNames(bytes(VARIANT_AT)).filter((e) => !wasmExportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(e)), []);
     const known = [
       /^zipp\/zipp_wasm_bg\.wasm$/,
       /^native-runtime\/wasm\/zipp_wasm_bg\.wasm$/,
-      /^hosted-runtime\/assets\/zipp_wasm_bg-[^/]+\.wasm$/,
-      /^app-editors\/builder\/assets\/zipp_wasm_bg-[^/]+\.wasm$/,
-      /^app-editors\/studio\/assets\/zipp_wasm_bg-[^/]+\.wasm$/,
       /^zipp-web\/zipp_wasm_bg\.wasm$/,
     ];
     for (const pattern of known) assert.equal(copies.filter((n) => pattern.test(n)).length, 1, `one engine at ${pattern}`);
     assert.equal(copies.length, known.length, `no engine copy outside the known places: ${copies.join(', ')}`);
+    // Not even under the name Vite gives it: the trees FormLogic's page gives the engine to carry none.
+    assert.deepEqual([...entries.keys()].filter((n) => /^(hosted-runtime|app-editors)\/.*zipp_wasm_bg[^/]*\.wasm$/.test(n)), []);
     // Neither hosted document nor either editor carries the variant: the
     // package build copies only the primary, and the PWA engine cap is about it.
     for (const n of [...entries.keys()]) {
