@@ -10,6 +10,7 @@ section here. Write the section before tagging. Headings are the tag
 
 - Upgrading from v0.0.36: v0.0.37 was tagged and never released (below), so this release carries its changes, and every protocol number is v0.0.36's; the engine is still ZIPP v0.0.33.
 - ZIPP's release installer (`fetch-zipp-release.mjs`, and the copy the FormLogic archive carries) downloads a release's files through GitHub's API first, signed in where the environment carries a token (`GITHUB_TOKEN` or `GH_TOKEN`), and through the plain download addresses only when the API cannot answer. On 2026-11-08 GitHub answered 504 to every anonymous plain download of an f2i-com release, ZIPP's included, while its API served the same files; v0.0.37's release could not install its engine. What arrives is checked against the release's SHA256SUMS exactly as before. The workflows give the token to the install steps alone.
+- The demo bundles (`npm run fetch:demos`) come the same way: each pinned softn-Examples file through GitHub's API asset address first, then through the address `index.json` pins, held to the pinned size and SHA-256 either way. By the evening of 2026-11-08 GitHub's plain release downloads answered 504 for every repository, signed in or not, and every CI job that fetched the demos failed. A token goes only to the pinned repository's own addresses, as before.
 
 ## v0.0.37 (tagged, never released: v0.0.38 carries it)
 

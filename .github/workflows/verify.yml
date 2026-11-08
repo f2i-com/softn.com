@@ -94,6 +94,9 @@ jobs:
       # The web app's build carries the pinned demo bundles, as it does
       # everywhere else (see the test shards below for where they come from).
       - name: Fetch the demo bundles
+        # Through GitHub's API, signed in (fetch-demos.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run fetch:demos
 
       # Include development tooling: the lockfile is part of the shipped build
@@ -174,6 +177,9 @@ jobs:
       # The directory API's tests seed from them, so they are fetched and
       # verified against their digests here.
       - name: Fetch the demo bundles
+        # Through GitHub's API, signed in (fetch-demos.mjs): this step alone gets the token.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run fetch:demos
 
       # The suites import core and components from dist/.

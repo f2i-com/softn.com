@@ -198,6 +198,12 @@ jobs:
       # served by the topology server, which never sends a .br/.gz twin, so
       # this build makes none (they were most of its time); the website job
       # below builds the site that ships, twins and all.
+      # Fetched here so that the token goes to this step alone; the build finds them verified.
+      - name: Fetch the demo bundles
+        # Through GitHub's API, signed in (fetch-demos.mjs).
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run fetch:demos
       - name: Build the site with the example bundles
         run: SOFTN_WITH_DEMOS=1 SOFTN_NO_PRECOMPRESS=1 npm run build:site
       - name: Install Chromium

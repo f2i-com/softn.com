@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mayCarryCredential } from './fetch-demos.mjs';
+import { mayCarryCredential, releaseAsset } from './fetch-demos.mjs';
 
 const REPO = 'f2i-com/softn-Examples';
 
@@ -28,6 +28,23 @@ test('a credential goes only to the pinned repository on GitHub', () => {
   ]) {
     assert.equal(mayCarryCredential(url, REPO), true, url);
   }
+});
+
+test("a release download address is taken apart for GitHub's API, and nothing else is", () => {
+  assert.deepEqual(releaseAsset(`https://github.com/${REPO}/releases/download/v1.0.3/Twenty48.softn`), { repository: REPO, tag: 'v1.0.3', name: 'Twenty48.softn' });
+  assert.deepEqual(releaseAsset(`https://github.com/${REPO}/releases/download/v1.0.3/catalogue.json`), { repository: REPO, tag: 'v1.0.3', name: 'catalogue.json' });
+  for (const url of [
+    'https://third-party.test/fixture.softn',
+    `https://github.com/${REPO}/releases/latest/download/x.softn`,
+    `https://github.com/${REPO}/releases/download/v1.0.3/x.softn?raw=1`,
+    `http://github.com/${REPO}/releases/download/v1.0.3/x.softn`,
+    `https://github.com.evil.test/${REPO}/releases/download/v1.0.3/x.softn`,
+    `https://github.com/${REPO}/releases/download/v1.0.3/%E0%A4%A.softn`,
+  ]) {
+    assert.equal(releaseAsset(url), null, url);
+  }
+  // The API's asset address it then downloads from is the pinned repository's, so a credential may go with it.
+  assert.equal(mayCarryCredential(`https://api.github.com/repos/${REPO}/releases/assets/123`, REPO), true);
 });
 
 test('and to nothing else', () => {

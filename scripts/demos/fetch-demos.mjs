@@ -148,13 +148,13 @@ function writeIndex(index) {
  * answers a release download with a redirect to its object store, and the
  * object store must not see the token.
  */
-async function download(url, { maxBytes, deadlineMs, attempts = 5 }) {
+async function download(url, { maxBytes, deadlineMs, attempts = 5, accept }) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error(`took longer than ${deadlineMs / 1000}s`)), deadlineMs);
     try {
-      return await downloadOnce(url, { maxBytes, signal: controller.signal });
+      return await downloadOnce(url, { maxBytes, signal: controller.signal, accept });
     } catch (error) {
       lastError = error;
       // A network failure or a deadline is tried again; an answer that will
@@ -173,17 +173,84 @@ async function download(url, { maxBytes, deadlineMs, attempts = 5 }) {
   throw new Error(`could not download ${url}: ${lastError.message}`);
 }
 
+/**
+ * A GitHub release download address, `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`,
+ * taken apart; null for any other address.
+ */
+export function releaseAsset(url) {
+  const match = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/?#]+)\/([^/?#]+)$/.exec(String(url));
+  if (!match) return null;
+  try {
+    return { repository: match[1], tag: decodeURIComponent(match[2]), name: decodeURIComponent(match[3]) };
+  } catch {
+    return null;
+  }
+}
+
+/** Each release's assets by name, asked of GitHub's API once per release; a failed answer stays failed for the run. */
+const releaseListings = new Map();
+
+/** The API's own address for a release download address's file, or null where the API names none. */
+async function apiAssetUrl(url) {
+  const asset = releaseAsset(url);
+  if (!asset) return null;
+  const key = `${asset.repository}@${asset.tag}`;
+  if (!releaseListings.has(key)) {
+    const api = `https://api.github.com/repos/${asset.repository}/releases`;
+    const listing = download(`${api}/tags/${encodeURIComponent(asset.tag)}`, {
+      maxBytes: MAX_CATALOGUE_BYTES,
+      deadlineMs: CATALOGUE_DEADLINE_MS,
+      attempts: 2,
+      accept: 'application/vnd.github+json',
+    }).then((bytes) => {
+      const assets = new Map();
+      for (const { name, url: assetUrl } of JSON.parse(bytes.toString('utf8')).assets ?? []) {
+        // Only the release's own asset addresses: the bytes are held to the pin either way, and a
+        // credential goes with them only where mayCarryCredential allows.
+        if (typeof name === 'string' && typeof assetUrl === 'string' && assetUrl.startsWith(`${api}/assets/`)) assets.set(name, assetUrl);
+      }
+      return assets;
+    });
+    listing.catch(() => {});
+    releaseListings.set(key, listing);
+  }
+  return (await releaseListings.get(key)).get(asset.name) ?? null;
+}
+
+/**
+ * Download a pinned source: a GitHub release file through the API's asset address first, then
+ * through the address as pinned. On 2026-11-08 GitHub answered 504 to plain release downloads
+ * (every repository's, signed in or not) while its API served the same files. Which address
+ * answered changes nothing that is accepted: the caller holds the bytes to the pinned size and
+ * digest.
+ */
+async function downloadPinned(url, options) {
+  let viaApi = null;
+  try {
+    const assetUrl = await apiAssetUrl(url);
+    if (assetUrl) return await download(assetUrl, { ...options, attempts: Math.min(options.attempts ?? 3, 3) });
+  } catch (error) {
+    viaApi = error;
+    console.warn(`GitHub's API could not serve ${url} (${error.message}); trying the address as pinned`);
+  }
+  try {
+    return await download(url, options);
+  } catch (error) {
+    throw new Error(viaApi ? `${error.message} (and through GitHub's API: ${viaApi.message})` : error.message);
+  }
+}
+
 function definitive(message) {
   const error = new Error(message);
   error.retryable = false;
   return error;
 }
 
-async function downloadOnce(url, { maxBytes, signal }) {
+async function downloadOnce(url, { maxBytes, signal, accept = 'application/octet-stream' }) {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (!/^https:\/\//.test(current)) throw definitive(`refusing a non-https source: ${current}`);
-    const headers = { 'User-Agent': 'softn.com fetch-demos', Accept: 'application/octet-stream' };
+    const headers = { 'User-Agent': 'softn.com fetch-demos', Accept: accept };
     if (token && mayCarryCredential(current)) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(current, { headers, redirect: 'manual', signal });
     if (response.status >= 300 && response.status < 400) {
@@ -230,7 +297,7 @@ async function pin(index, tag) {
     const url = `https://github.com/${repo}/releases/download/${tag}/catalogue.json`;
     console.log(`Pinning the demos to ${repo} ${tag} (${url})`);
     catalogue = JSON.parse(
-      (await download(url, { maxBytes: MAX_CATALOGUE_BYTES, deadlineMs: CATALOGUE_DEADLINE_MS })).toString('utf8')
+      (await downloadPinned(url, { maxBytes: MAX_CATALOGUE_BYTES, deadlineMs: CATALOGUE_DEADLINE_MS })).toString('utf8')
     );
   }
   const published = new Map();
@@ -311,7 +378,7 @@ async function main() {
 
     let bytes;
     try {
-      bytes = await download(entry.source, { maxBytes: entry.size, deadlineMs: TRANSFER_DEADLINE_MS });
+      bytes = await downloadPinned(entry.source, { maxBytes: entry.size, deadlineMs: TRANSFER_DEADLINE_MS });
     } catch (error) {
       problems.push(error.message);
       continue;
