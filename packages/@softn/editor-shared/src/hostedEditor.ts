@@ -316,6 +316,50 @@ export const HOSTED_ENGINE_VERSION = 1;
 const HOSTED_ENGINE_MAX_BYTES = 32 * 1024 * 1024;
 let engineBuild: { version: string; sha256: string } | null = null;
 let settleEngine: ((bytes: Uint8Array | null) => void) | null = null;
+/** A file of the host's own ZIPP: its address in the site's ZIPP folder and its digest. */
+export interface HostedZippFile { url: string; sha256: string }
+let settleGlue: ((site: { glue: HostedZippFile; torch?: HostedZippFile } | null) => void) | null = null;
+
+/**
+ * The bridge's `glue` capability (version 1, v0.0.36 on): beside `engine`, the
+ * editor runs a host's own ZIPP. The host names that ZIPP's glue in its site's
+ * ZIPP folder (`zippGlue: { url, sha256 }` in `formlogic-editor-connect`, the
+ * folder beside `/app-editors/`), with the engine bytes of the same ZIPP, so a
+ * host can take a ZIPP newer than the one the editor was built with. Core
+ * checks the glue's digest before importing it, and refuses one without a name
+ * it calls.
+ */
+export const HOSTED_GLUE_VERSION = 1;
+
+/**
+ * The host's own ZIPP the host will name, for core's `awaitZippGlue` (its glue)
+ * and `configureZippTorchSource` (its torch package, `zippTorch`, where it has
+ * one): called once, with {@link hostedEngineSource}, before anything starts
+ * ZIPP. Settles at connect: the host's files, or null for a host that names
+ * none (the editor's own glue and torch package run, with its own engine).
+ */
+export function hostedGlueSource(): Promise<{ glue: HostedZippFile; torch?: HostedZippFile } | null> {
+  return new Promise(resolve => { settleGlue = resolve; });
+}
+
+/** The site's ZIPP folder: `/zipp/` beside `/app-editors/`, where this editor is `/app-editors/<kind>/`. */
+export function hostedZippFolder(): string {
+  return new URL('../../zipp/', location.href).href;
+}
+
+/**
+ * A file a connect message names, held to one ZIPP's folder in the site's ZIPP
+ * folder (12 hex digits, the engine's), the file's own name and a digest; or null.
+ */
+function readHostedZippFile(value: unknown, file: 'zipp_wasm.js' | 'zipp_torch.wasm'): HostedZippFile | null {
+  const named = value as { url?: unknown; sha256?: unknown } | null;
+  if (!named || typeof named !== 'object' || typeof named.url !== 'string' || typeof named.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(named.sha256)) return null;
+  let url: URL;
+  try { url = new URL(named.url, location.href); } catch { return null; }
+  const folder = hostedZippFolder();
+  if (!url.href.startsWith(folder) || url.search || url.hash || url.username || url.password || !new RegExp(`^[0-9a-f]{12}/${file.replace('.', '\\.')}$`).test(url.href.slice(folder.length))) return null;
+  return { url: url.href, sha256: named.sha256 };
+}
 
 /**
  * The engine the host will send, for core's `awaitZippWasmSource`: called once,
@@ -360,12 +404,22 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
   let disposed = false;
   let loaded = false;
   let busy = false;
-  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION, ...(capabilities.agentRuns ? { agentRuns: HOSTED_AGENT_RUNS_VERSION } : {}), ...(engineBuild && settleEngine ? { engine: HOSTED_ENGINE_VERSION, zipp: engineBuild } : {}) }, location.origin); };
+  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION, ...(capabilities.agentRuns ? { agentRuns: HOSTED_AGENT_RUNS_VERSION } : {}), ...(engineBuild && settleEngine ? { engine: HOSTED_ENGINE_VERSION, zipp: engineBuild, ...(settleGlue ? { glue: HOSTED_GLUE_VERSION } : {}) } : {}) }, location.origin); };
   const receive = (event: MessageEvent) => {
     if (event.source !== window.parent || event.origin !== location.origin || event.data?.kind !== 'formlogic-editor-connect' || event.data?.protocol !== 1 || port || !event.ports[0]) return;
     port = event.ports[0]; currentPort = port;
-    // The engine, once: what the host sent, or null for one that sent none.
-    if (settleEngine) { settleEngine(readHostedEngine(event.data.zippWasm)); settleEngine = null; }
+    // The engine, once: what the host sent, or null for one that sent none. Its glue with it: a
+    // host's own ZIPP is a glue and an engine together, so engine bytes without the glue they
+    // need would start the wrong pair, and a glue without its engine nothing. A host that named a
+    // glue this editor refused sent an engine for that glue, so neither is taken: the editor's
+    // own pair runs, or says it has no engine.
+    const named = settleGlue !== null && event.data.zippGlue !== undefined;
+    const glue = named ? readHostedZippFile(event.data.zippGlue, 'zipp_wasm.js') : null;
+    const torch = glue && event.data.zippTorch !== undefined ? readHostedZippFile(event.data.zippTorch, 'zipp_torch.wasm') : null;
+    const sent = readHostedEngine(event.data.zippWasm);
+    const engine = named && !glue ? null : sent;
+    if (settleGlue) { settleGlue(glue && engine ? { glue, ...(torch ? { torch } : {}) } : null); settleGlue = null; }
+    if (settleEngine) { settleEngine(engine); settleEngine = null; }
     // Optional: a host that takes tool calls says which version; one that does not says nothing.
     hostAITools = Number.isInteger(event.data.aiTools) && event.data.aiTools > 0 ? Math.min(event.data.aiTools, HOSTED_AI_TOOLS_VERSION) : 0;
     hostAgentRuns = capabilities.agentRuns && Number.isInteger(event.data.agentRuns) && event.data.agentRuns > 0 ? Math.min(event.data.agentRuns, HOSTED_AGENT_RUNS_VERSION) : 0;

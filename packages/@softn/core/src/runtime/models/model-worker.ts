@@ -9,7 +9,7 @@
  * the page; nothing here reaches the network: the checkpoint arrives as a
  * Blob the page already holds.
  */
-import initEngine, { Engine, zipp_install_panic_hook } from '../../../wasm-zipp/zipp_wasm.js';
+import { adoptZippGlue, loadZippGlue, zippGlue } from '../zipp-glue';
 // @ts-expect-error -- vendored JavaScript
 import initGguf, * as gguf from '../../../vendor/zipp-models/model-plugins/wasm/gguf/gguf_wasm.js';
 import qwen3Manifest from '../../../vendor/zipp-models/model-plugins/plugins/qwen3/plugin.json?raw';
@@ -19,7 +19,7 @@ import { ZippModelRunner, type ModelBackend, type GenerateOptions } from './zipp
 import type { ChatMessage } from './chat-template';
 
 export type WorkerRequest =
-  | { type: 'open'; id: number; blob: Blob; engine: WebAssembly.Module | BufferSource; backend?: ModelBackend; context?: number }
+  | { type: 'open'; id: number; blob: Blob; engine: WebAssembly.Module | BufferSource; glue?: string | null; backend?: ModelBackend; context?: number }
   | { type: 'generate'; id: number; messages: ChatMessage[]; options: GenerateOptions }
   | { type: 'cancel'; id: number };
 
@@ -45,11 +45,16 @@ let runner: ZippModelRunner | null = null;
 let ready: Promise<void> | null = null;
 const cancelled = new Set<number>();
 
-/** The engine is the page's, compiled once and posted with `open`: there is no copy beside this worker. */
-function boot(engine: WebAssembly.Module | BufferSource): Promise<void> {
+/**
+ * The engine is the page's, compiled once and posted with `open`: there is no copy beside this
+ * worker. So is its glue, where the page runs a host's ZIPP (`glue`, its address); otherwise core's.
+ */
+function boot(engine: WebAssembly.Module | BufferSource, glueUrl?: string | null): Promise<void> {
   ready ??= (async () => {
-    await initEngine({ module_or_path: engine });
-    zipp_install_panic_hook();
+    adoptZippGlue(glueUrl);
+    const glue = await loadZippGlue();
+    await glue.default({ module_or_path: engine });
+    glue.zipp_install_panic_hook();
     await initGguf({ module_or_path: new URL('./models/gguf_wasm_bg.wasm', import.meta.url) });
   })();
   return ready;
@@ -58,9 +63,9 @@ function boot(engine: WebAssembly.Module | BufferSource): Promise<void> {
 async function handle(request: WorkerRequest): Promise<unknown> {
   if (request.type === 'open') {
     if (runner) throw new Error('This worker already holds a model');
-    await boot(request.engine);
+    await boot(request.engine, request.glue);
     runner = await ZippModelRunner.open(request.blob, {
-      engine: () => new Engine(),
+      engine: () => new (zippGlue().Engine)(),
       gguf,
       kernels: { wasmUrl: new URL('./models/kernels.wasm', import.meta.url) },
       plugins: PLUGINS,

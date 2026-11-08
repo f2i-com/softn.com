@@ -234,6 +234,50 @@ installs runs without an engine of its own:
   before this) leaves it to fetch the copy beside its chunk, which an archive
   from v0.0.35 does not carry. A host that cannot download the engine says so
   itself rather than connect an editor that has none.
+- With `glue: 1` beside `engine: 1` (unreleased, for v0.0.36), the editor runs
+  the host's own ZIPP: the host sends its engine bytes and names that ZIPP's
+  glue in the site's ZIPP folder (`zippGlue: { url, sha256 }`, the folder
+  beside `/app-editors/`), whichever ZIPP the editor was built with. Core
+  imports the glue only after its bytes match the digest (`awaitZippGlue`,
+  `zipp-glue.ts`), and refuses one that lacks a name core calls
+  (`ZIPP_GLUE_EXPORTS`). A glue named without engine bytes, outside the
+  folder or without its digest is ignored, and the editor runs its own.
+
+### A host's own ZIPP (unreleased, for v0.0.36)
+
+A FormLogic can run a ZIPP other than the one a SoftN release was built with,
+in the browser: the app frame and the editors take the engine bytes from the
+page, as they do already, and ZIPP's glue and torch package from the site's
+ZIPP folder, `/zipp/` beside `/hosted-runtime/`, one folder per ZIPP named by
+the first 12 hex digits of its engine's sha256. The engine and its glue are a
+pair (the glue's imports are the engine's, by names that change with every
+ZIPP build), so the host always sends the two together.
+
+- The runtime declares `host-zipp/1` in `runtime-manifest.json` `features`,
+  and its `formlogic:ready` says `zippGlue: 1` with `zippGlueExports`, the
+  names a glue must export for core to run it.
+- A host that speaks it sends, beside `zippWasm`, `zippGlue: { url, sha256 }`
+  and, where its ZIPP has one, `zippTorch: { url, sha256 }`, both in the ZIPP
+  folder (`acceptZippAddress`: resolved as URLs first, a `.js` glue and a
+  `.wasm` package, no query, nothing outside the folder). The frame checks each
+  file's digest before it imports the glue or runs the package, and refuses a
+  glue without one of `zippGlueExports`. Without them the frame runs the glue
+  it was built with, and the host must send that build's engine, as before.
+- The frame's policy names the ZIPP folder in `script-src` (for the glue, the
+  one script it imports from outside its own folder) and `connect-src` (for
+  those checks and the torch package). It is the host's static install; nothing
+  an app sends reaches it. `host.html` names it too, so the two documents still
+  differ by `'unsafe-eval'` alone.
+- Workers a SoftN page starts are given the glue's address with the compiled
+  engine (`zippGlueForWorker`, `adoptZippGlue`), so they run the same pair.
+- Only the browser: an app's backend still runs on the native runtime this
+  archive carries, with the ZIPP it was built with.
+
+FormLogic's side: `publish-zipp.mjs` writes the folder from its installed ZIPP,
+`HostedAppFrame` and `AppEditorDialog` name its files, and its server rules
+answer the folder to the frame's opaque origin. Tested with FormLogic on ZIPP
+v0.0.32 and this runtime and these editors built with v0.0.33: every hosted-app
+end-to-end test passed, the frame and both editors running v0.0.32's pair.
 
 Any host's `open` may also carry `saveLabel`, its own name for taking the
 editor's work back ("Save changes"; one line, up to 32 characters). Studio's

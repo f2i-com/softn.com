@@ -1,15 +1,15 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LoadingIndicator, SoftNWithXDB, XDBStorageNotice, composeBundleSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
+import { LoadingIndicator, SoftNWithXDB, XDBStorageNotice, ZIPP_GLUE_EXPORTS, composeBundleSource, configureZippGlue, configureZippTorchSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
 import { installAppStorage, storageLimits, STORAGE_LIMITS, STORAGE_PROTOCOL } from './storage';
 import { grantedPermissions, type FramePermissions } from './permissions';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
-import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
+import { acceptEngine, acceptZippAddress, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { createNativeNetFetch } from './nativeFetch';
-import { framePolicy } from './framePolicy';
+import { framePolicy, zippDirectory } from './framePolicy';
 import { mediaUrl } from './media';
 import { seedBundledData } from './seed';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
@@ -34,6 +34,8 @@ policy.httpEquiv = 'Content-Security-Policy';
 const assets = new URL('./', document.baseURI).href;
 policy.content = framePolicy(assets, served);
 document.head.appendChild(policy);
+// Where a host keeps a ZIPP of its own, the one other folder the policy lets the shell load from.
+const zippFolder = zippDirectory(assets);
 registerRuntimeComponents();
 const root = createRoot(document.getElementById('root')!);
 // A wheel while the engine and the app's data load (core's LoadingIndicator). A parent that said
@@ -160,6 +162,16 @@ window.addEventListener('message', async event => {
       if (terminated) return;
       installHostJsEngine();
     } else {
+      // A host that serves a ZIPP of its own (v0.0.36 on) names that ZIPP's glue, and its torch
+      // package, in the site's ZIPP folder, beside the engine bytes of the same ZIPP: the shell
+      // runs that pair, so the host can take a ZIPP newer than this runtime was built with. The
+      // glue is checked against its digest before it is imported, and refused when it lacks a
+      // name core calls (zipp-glue.ts). A host that names none gets the glue built in, as before,
+      // and has to send this runtime's own engine.
+      if (event.data.zippGlue !== undefined) {
+        configureZippGlue(acceptZippAddress(event.data.zippGlue, zippFolder, 'glue'));
+        if (event.data.zippTorch !== undefined) configureZippTorchSource(acceptZippAddress(event.data.zippTorch, zippFolder, 'torch'));
+      }
       configureZippWasmSource(acceptZippBytes(event.data.zippWasm));
       // Ask the engine that actually loaded what it can run, before any app code
       // does. ZIPP's builds share one glue, so the id the parent named and the
@@ -235,4 +247,8 @@ window.addEventListener('message', async event => {
 // this document's other entry is a refusal by name.
 // shown: 1 is an addition: this document posts shown on its port when the app's first page is
 // drawn, so a parent may cover the frame until then; one that never sees it never waits for it.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1 }, '*');
+// zippGlue: 1 is an addition (v0.0.36): this document runs a host's own ZIPP, whose glue and torch
+// package `init` names in the site's ZIPP folder (zippGlue, zippTorch), so a parent need not send
+// the engine `zipp` names. zippGlueExports is what that glue must export, which the shell checks
+// when it loads it; a parent can hold its ZIPP to the same list before it offers it.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1, zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS }, '*');

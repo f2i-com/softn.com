@@ -1,10 +1,6 @@
-import initWasm, {
-  addPythonPackage,
-  pythonPackages,
-  zipp_install_panic_hook,
-  zippProfile,
-  type InitOutput,
-} from '../../wasm-zipp/zipp_wasm.js';
+import type { InitOutput } from '../../wasm-zipp/zipp_wasm.js';
+import { loadZippGlue, runsHostGlue, zippGlue } from './zipp-glue';
+import { sha256Hex } from '../bundle/crypto';
 import { retryableSingleFlight } from './retryable-single-flight';
 import { countResponse, responseBodyLength, trackLoad } from './load-progress';
 
@@ -128,8 +124,11 @@ const initialize = retryableSingleFlight<InitOutput>(async () => {
   // instantiated (a test hands it the bytes directly); it reads it only when
   // it has to instantiate one.
   const module = { then: (resolve: (value: WebAssembly.Module) => void, reject: (reason: unknown) => void) => compileEngine().then(resolve, reject) };
-  const exports = await initWasm({ module_or_path: module as unknown as WebAssembly.Module });
-  zipp_install_panic_hook();
+  // The glue that goes with the engine: core's own, or the one a host named
+  // with the engine it sent (zipp-glue.ts).
+  const glue = await loadZippGlue();
+  const exports = await glue.default({ module_or_path: module as unknown as WebAssembly.Module });
+  glue.zipp_install_panic_hook();
   return exports;
 });
 
@@ -170,7 +169,7 @@ export function ensureZippWasm(): Promise<InitOutput> {
 export async function zippLanguages(): Promise<string[]> {
   await ensureZippWasm();
   try {
-    const profile = JSON.parse(zippProfile()) as { languages?: unknown };
+    const profile = JSON.parse(zippGlue().zippProfile()) as { languages?: unknown };
     return Array.isArray(profile.languages)
       ? profile.languages.filter((name): name is string => typeof name === 'string')
       : [];
@@ -192,6 +191,7 @@ export async function zippLanguages(): Promise<string[]> {
 export async function zippPythonPackages(): Promise<string[]> {
   await ensureZippWasm();
   try {
+    const { pythonPackages } = zippGlue() as { pythonPackages?: () => string };
     if (typeof pythonPackages !== 'function') return [];
     const report = JSON.parse(pythonPackages()) as { torchBuiltIn?: unknown; installed?: unknown };
     const names = new Set<string>();
@@ -213,6 +213,7 @@ export async function zippPythonPackages(): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 let suppliedTorchSource: Uint8Array | WebAssembly.Module | undefined;
+let suppliedTorchAddress: { url: string; sha256?: string } | undefined;
 let torchLoadStarted = false;
 
 /**
@@ -221,13 +222,23 @@ let torchLoadStarted = false;
  * core's chunk. For a host that already holds the bytes, and for tests, which
  * have no server to fetch from. Byte sources are copied; like the engine's
  * source, it cannot be changed once a load has started.
+ *
+ * Or where to fetch it (`{ url, sha256 }`): a host that serves a ZIPP of its
+ * own names that ZIPP's package, which is the one its engine takes (a package
+ * is built for one engine ABI), checked against the digest where one is given.
+ * It is fetched only when an app first needs torch.
  */
-export function configureZippTorchSource(source: BufferSource | WebAssembly.Module): void {
+export function configureZippTorchSource(source: BufferSource | WebAssembly.Module | { url: string; sha256?: string }): void {
   if (torchLoadStarted) {
     throw new Error('The torch package source must be configured before it is first loaded');
   }
   if (source instanceof WebAssembly.Module) {
     suppliedTorchSource = source;
+    return;
+  }
+  if (source && typeof source === 'object' && 'url' in source && typeof source.url === 'string') {
+    if (source.sha256 !== undefined && !/^[0-9a-f]{64}$/.test(source.sha256)) throw new TypeError('The torch package digest must be 64 lowercase hex digits');
+    suppliedTorchAddress = { url: source.url, ...(source.sha256 ? { sha256: source.sha256 } : {}) };
     return;
   }
   const bytes = source instanceof ArrayBuffer
@@ -262,7 +273,7 @@ async function torchPackageSource(): Promise<Uint8Array | WebAssembly.Module> {
   if (suppliedTorchSource !== undefined) {
     return suppliedTorchSource instanceof WebAssembly.Module ? suppliedTorchSource : suppliedTorchSource.slice();
   }
-  const url = zippTorchWasmUrl();
+  const url = suppliedTorchAddress ? new URL(suppliedTorchAddress.url) : zippTorchWasmUrl();
   let response: Response;
   try {
     // Revalidated, not taken from the HTTP cache unasked: the file keeps its
@@ -271,7 +282,7 @@ async function torchPackageSource(): Promise<Uint8Array | WebAssembly.Module> {
     // 0.0.24's is protocol 3), so a copy cached before a deployment could
     // fail every torch app until it expired. Unchanged, the server answers
     // 304; offline, the service worker's copy answers as before.
-    response = await fetch(url, { cache: 'no-cache' });
+    response = await fetch(url, { cache: 'no-cache', ...(suppliedTorchAddress ? { credentials: 'omit' as const } : {}) });
   } catch (error) {
     throw new Error(`${url.pathname} could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -279,17 +290,28 @@ async function torchPackageSource(): Promise<Uint8Array | WebAssembly.Module> {
   countResponse(response, trackLoad('torch', 'torch', { total: responseBodyLength(response) }));
   // Bytes rather than compileStreaming: a server that labels the file with
   // another MIME type still serves the right bytes.
-  return new Uint8Array(await response.arrayBuffer());
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (suppliedTorchAddress?.sha256) {
+    const digest = await sha256Hex(bytes);
+    if (digest !== suppliedTorchAddress.sha256) throw new Error(`${url.pathname} is not the torch package its host named (${digest.slice(0, 12)}, expected ${suppliedTorchAddress.sha256.slice(0, 12)})`);
+  }
+  return bytes;
 }
 
 const loadTorch = retryableSingleFlight<void>(async () => {
   await ensureZippWasm();
   if ((await zippPythonPackages()).includes('torch')) return;
+  // A host's own ZIPP takes that ZIPP's torch package (a package is built for one engine ABI): the
+  // copy beside this chunk is the one for the ZIPP core was built with, which the host's engine
+  // would refuse, so a host that named none has no torch to give.
+  if (runsHostGlue() && suppliedTorchSource === undefined && !suppliedTorchAddress) {
+    throw new Error('The ZIPP this site runs comes without a torch package for this app');
+  }
   const [{ addTorch }, source] = await Promise.all([import('../../wasm-zipp-torch/zipp_torch.js'), torchPackageSource()]);
   // ZIPP's own loader: it instantiates the package module and hands its
   // archive to the engine, which checks the format, the engine ABI and every
   // file's SHA-256 before registering anything, and throws with the reason.
-  await addTorch({ addPythonPackage }, source);
+  await addTorch({ addPythonPackage: zippGlue().addPythonPackage }, source);
   if (!(await zippPythonPackages()).includes('torch')) {
     throw new Error('the engine did not register the torch package');
   }

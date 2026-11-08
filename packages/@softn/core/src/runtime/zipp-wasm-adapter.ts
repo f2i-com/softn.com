@@ -17,7 +17,8 @@
  *   in `.logic` still reaches devtools and the buffer cannot grow unbounded.
  */
 
-import { Engine, accelGuestCall } from '../../wasm-zipp/zipp_wasm.js';
+import type { Engine } from '../../wasm-zipp/zipp_wasm.js';
+import { zippGlue } from './zipp-glue';
 import { ensureZippWasm } from './zipp-wasm-loader';
 import { flushEngineOutput } from './engine-output';
 import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
@@ -274,7 +275,7 @@ export class ZippWasmAdapter {
   /** Create a new adapter instance. Must be awaited. */
   static async create(): Promise<ZippWasmAdapter> {
     await ensureWasm();
-    const engine = new Engine();
+    const engine = new (zippGlue().Engine)();
 
     // Key the global fingerprints before anything can be digested.
     //
@@ -584,7 +585,7 @@ export class ZippWasmAdapter {
         if (!wasmExports) throw new Error('accel: the engine is not instantiated');
         return wasmExports.memory;
       },
-      guestCall: (name, args) => accelGuestCall(name, args),
+      guestCall: (name, args) => zippGlue().accelGuestCall(name, args),
     });
     // The engine reports a failed bridge call to the guest as a bare "host
     // bridge call failed", so the reason is said here, once per method: a

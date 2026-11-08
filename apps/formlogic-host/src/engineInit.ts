@@ -114,10 +114,16 @@ export const LOGIC_LANGUAGES_PROTOCOL = 1;
  * and an engine that cannot run one of them is refused by name rather than
  * handed the file.
  *
+ * `host-zipp/1` (v0.0.36) is {@link acceptZippAddress}: the runtime runs a
+ * host's own ZIPP, its glue and torch package named in `init` from the site's
+ * ZIPP folder beside the runtime, so a FormLogic can take a ZIPP newer than
+ * the one this runtime was built with. `ready` says the same (`zippGlue: 1`)
+ * with what that glue must export.
+ *
  * Written out rather than computed for the same reason the engine list is: the
  * packager reads it without running anything.
  */
-export const RUNTIME_FEATURES: readonly string[] = ['python-logic/1'];
+export const RUNTIME_FEATURES: readonly string[] = ['host-zipp/1', 'python-logic/1'];
 
 /** Every document list, for the test that keeps {@link RUNTIME_ENGINES} honest. */
 export const DOCUMENT_ENGINE_LISTS: ReadonlyArray<readonly EngineId[]> = [
@@ -196,6 +202,39 @@ export function acceptZippBytes(value: unknown): ArrayBuffer {
     throw new Error('The parent must supply the matching ZIPP engine bytes');
   }
   return value;
+}
+
+/** A file of the host's own ZIPP, as the shell takes it: its address in the site's ZIPP folder and its SHA-256. */
+export interface ZippFileAddress {
+  url: string;
+  sha256: string;
+}
+
+/**
+ * A file of the host's own ZIPP the parent names in `init` (v0.0.36 on): the
+ * glue of the ZIPP whose engine bytes it sends (`zippGlue`, a `.js` file), or
+ * that ZIPP's torch package (`zippTorch`, a `.wasm` file), or a refusal.
+ *
+ * Only a file in `folder`, the site's ZIPP folder beside the runtime (the one
+ * place the frame's policy lets it load a script from besides its own), and
+ * only with the digest of its bytes, which the shell checks before it imports
+ * or runs anything. The address is read as a URL first, so a `..` or an
+ * encoded one is resolved before it is held to the folder.
+ */
+export function acceptZippAddress(value: unknown, folder: string, kind: 'glue' | 'torch'): ZippFileAddress {
+  const named = value as { url?: unknown; sha256?: unknown } | null;
+  if (!named || typeof named !== 'object' || typeof named.url !== 'string' || typeof named.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(named.sha256)) {
+    throw new Error(`The parent must name the ZIPP ${kind} by its address and SHA-256`);
+  }
+  let url: URL;
+  try { url = new URL(named.url); } catch { throw new Error(`The ZIPP ${kind}'s address ${describe(named.url)} is not one`); }
+  // Exactly a file of one ZIPP's folder (named by 12 hex digits of its engine), by its own name:
+  // nothing that an encoded slash or backslash could carry somewhere a server decodes it.
+  const file = kind === 'glue' ? 'zipp_wasm.js' : 'zipp_torch.wasm';
+  if (!url.href.startsWith(folder) || url.search || url.hash || url.username || url.password || !new RegExp(`^[0-9a-f]{12}/${file.replace('.', '\\.')}$`).test(url.href.slice(folder.length))) {
+    throw new Error(`The ZIPP ${kind} must be ${file} in a ZIPP's folder in this site's ZIPP folder (${folder})`);
+  }
+  return { url: url.href, sha256: named.sha256 };
 }
 
 /**

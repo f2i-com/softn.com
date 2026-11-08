@@ -81,3 +81,68 @@ describe('the engine a hosted editor takes from FormLogic', () => {
     dispose();
   });
 });
+
+describe("a host's own ZIPP in an editor (glue: 1)", () => {
+  const glue = { url: 'http://formlogic.test/zipp/a844efe3d7d0/zipp_wasm.js', sha256: 'c'.repeat(64) };
+
+  it('says it takes one, and takes the glue the host names in its ZIPP folder with the engine', async () => {
+    hostedLocation();
+    const mod = await loadModule();
+    const engine = mod.hostedEngineSource(BUILD);
+    const named = mod.hostedGlueSource();
+    const dispose = mod.connectHostedEditor({ open: async () => {}, export: () => new Uint8Array([1]) });
+    expect(readyMessages()[0]).toMatchObject({ engine: 1, glue: mod.HOSTED_GLUE_VERSION, zipp: BUILD });
+    expect(mod.hostedZippFolder()).toBe('http://formlogic.test/zipp/');
+    const torch = { url: 'http://formlogic.test/zipp/a844efe3d7d0/zipp_torch.wasm', sha256: 'd'.repeat(64) };
+    connect({ zippWasm: engineBytes(), zippGlue: glue, zippTorch: torch });
+    expect(await named).toEqual({ glue, torch });
+    expect(await engine).toEqual(engineBytes());
+    dispose();
+  });
+
+  it('takes the glue without a torch package the host does not name, or names outside its folder', async () => {
+    for (const zippTorch of [undefined, { url: 'http://formlogic.test/assets/zipp_torch.wasm', sha256: 'd'.repeat(64) }]) {
+      hostedLocation();
+      const mod = await loadModule();
+      mod.hostedEngineSource(BUILD);
+      const named = mod.hostedGlueSource();
+      const dispose = mod.connectHostedEditor({ open: async () => {}, export: () => new Uint8Array([1]) });
+      connect({ zippWasm: engineBytes(), zippGlue: glue, ...(zippTorch ? { zippTorch } : {}) });
+      expect(await named).toEqual({ glue });
+      dispose();
+    }
+  });
+
+  it('takes none from elsewhere, without its digest, or without the engine it goes with, and then not that engine either', async () => {
+    for (const [zippGlue, zippWasm] of [
+      [{ ...glue, url: 'http://formlogic.test/assets/zipp_wasm.js' }, engineBytes()],
+      [{ ...glue, url: 'http://elsewhere.test/zipp/a844efe3d7d0/zipp_wasm.js' }, engineBytes()],
+      [{ ...glue, url: 'http://formlogic.test/zipp/../assets/app.js' }, engineBytes()],
+      [{ ...glue, url: 'http://formlogic.test/zipp/..%2fassets/zipp_wasm.js' }, engineBytes()],
+      [{ ...glue, url: 'http://formlogic.test/zipp/x/zipp_wasm.js' }, engineBytes()],
+      [{ url: glue.url }, engineBytes()],
+      [glue, undefined],
+    ] as const) {
+      hostedLocation();
+      const mod = await loadModule();
+      const engine = mod.hostedEngineSource(BUILD);
+      const named = mod.hostedGlueSource();
+      const dispose = mod.connectHostedEditor({ open: async () => {}, export: () => new Uint8Array([1]) });
+      connect({ ...(zippWasm ? { zippWasm } : {}), zippGlue });
+      expect(await named).toBeNull();
+      // The engine was sent for the glue that was refused: the editor does not start it on its own glue.
+      expect(await engine).toBeNull();
+      dispose();
+    }
+  });
+
+  it('does not say it takes one when the editor did not ask', async () => {
+    hostedLocation();
+    const mod = await loadModule();
+    mod.hostedEngineSource(BUILD);
+    const dispose = mod.connectHostedEditor({ open: async () => {}, export: () => new Uint8Array([1]) });
+    expect(readyMessages()[0]).toMatchObject({ engine: 1 });
+    expect(readyMessages()[0]).not.toHaveProperty('glue');
+    dispose();
+  });
+});

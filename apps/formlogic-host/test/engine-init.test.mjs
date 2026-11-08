@@ -17,6 +17,7 @@ import {
   RUNTIME_FEATURES,
   ZIPP_DOCUMENT_ENGINES,
   acceptEngine,
+  acceptZippAddress,
   acceptZippBytes,
   bundleLanguages,
   documentEngines,
@@ -284,8 +285,35 @@ test('the shell refuses the engine before it configures one, and routes native f
 
 test('the runtime says which optional capabilities it has, and how to read an app’s languages', () => {
   // The manifest's `features` is this list; the packager reads it from here.
-  assert.deepEqual([...RUNTIME_FEATURES], ['python-logic/1']);
+  assert.deepEqual([...RUNTIME_FEATURES], ['host-zipp/1', 'python-logic/1']);
   assert.ok(RUNTIME_FEATURES.every((f) => /^[a-z][a-z0-9-]*\/\d+$/.test(f)), 'named and versioned');
   assert.equal(LOGIC_LANGUAGES_PROTOCOL, 1);
   assert.ok(Number.isInteger(LOGIC_LANGUAGES_PROTOCOL));
+});
+
+test("a host's own ZIPP file is taken from the site's ZIPP folder alone, with its digest", () => {
+  const folder = 'https://site.example/zipp/';
+  const sha256 = 'a'.repeat(64);
+  assert.deepEqual(acceptZippAddress({ url: 'https://site.example/zipp/a844efe3d7d0/zipp_wasm.js', sha256 }, folder, 'glue'), { url: 'https://site.example/zipp/a844efe3d7d0/zipp_wasm.js', sha256 });
+  assert.deepEqual(acceptZippAddress({ url: 'https://site.example/zipp/a844efe3d7d0/zipp_torch.wasm', sha256 }, folder, 'torch').url, 'https://site.example/zipp/a844efe3d7d0/zipp_torch.wasm');
+  // Resolved before it is held to the folder: a step out, plain or encoded, is out.
+  const at = 'https://site.example/zipp/a844efe3d7d0/';
+  for (const url of ['https://site.example/zipp/../hosted-runtime/assets/app.js', 'https://site.example/zipp/%2e%2e/assets/app.js', 'https://site.example/zipp/..%2fassets/zipp_wasm.js', 'https://site.example/zipp/a844efe3d7d0/..%5cassets/zipp_wasm.js', 'https://site.example/zipp/a844efe3d7d0/x/zipp_wasm.js', 'https://site.example/zipp/x/zipp_wasm.js', 'https://site.example/assets/zipp_wasm.js', 'https://elsewhere.example/zipp/a844efe3d7d0/zipp_wasm.js', `${at}zipp_wasm.js?v=1`, `${at}zipp_wasm.mjs`, `${at}other.js`, 'https://u:p@site.example/zipp/a844efe3d7d0/zipp_wasm.js', 'data:text/javascript,export%20default%201', 'blob:https://site.example/1']) {
+    assert.throws(() => acceptZippAddress({ url, sha256 }, folder, 'glue'), /in this site's ZIPP folder|is not one/, url);
+  }
+  // A glue is a script, a torch package a module: neither is taken as the other.
+  assert.throws(() => acceptZippAddress({ url: `${at}zipp_torch.wasm`, sha256 }, folder, 'glue'), /must be zipp_wasm\.js/);
+  assert.throws(() => acceptZippAddress({ url: `${at}zipp_wasm.js`, sha256 }, folder, 'torch'), /must be zipp_torch\.wasm/);
+  // Never without the digest the shell checks it against.
+  for (const named of [undefined, null, `${at}zipp_wasm.js`, { url: `${at}zipp_wasm.js` }, { url: `${at}zipp_wasm.js`, sha256: 'A'.repeat(64) }]) {
+    assert.throws(() => acceptZippAddress(named, folder, 'glue'), /by its address and SHA-256/);
+  }
+});
+
+test('the shell takes a host ZIPP only as init names it, after the engine is chosen, and says it can', () => {
+  const main = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../src/main.tsx'), 'utf8');
+  const glue = main.indexOf('configureZippGlue(acceptZippAddress(event.data.zippGlue, zippFolder');
+  const bytes = main.indexOf('configureZippWasmSource(acceptZippBytes(');
+  assert.ok(glue > 0 && bytes > glue, 'the glue is configured before the engine bytes, both before ZIPP starts');
+  assert.match(main, /zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS/);
 });

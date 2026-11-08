@@ -17,6 +17,7 @@ import {
 } from './script-worker-bridges';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { adoptZippWasmSource } from './zipp-wasm-loader';
+import { adoptZippGlue } from './zipp-glue';
 import { TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { prologueIsStrict, STRICT_DIRECTIVE } from './directive-prologue';
 import { deepEqual } from './vm-state';
@@ -205,6 +206,8 @@ self.onmessage = async (evt: MessageEvent) => {
 
   // The page's compiled engine: there is no copy beside this worker to fetch.
   if (msg?.type === 'engine') {
+    // And its glue, where the page runs a host's ZIPP.
+    adoptZippGlue(msg.glue as string | null | undefined);
     adoptZippWasmSource(msg.engine as WebAssembly.Module);
     engineArrived();
     return;

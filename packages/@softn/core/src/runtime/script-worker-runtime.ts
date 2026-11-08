@@ -31,6 +31,7 @@ import { LogicTimers } from './logic-timers';
 import { failureText, printRuntimeLine, runtimeLineFailure } from './engine-output';
 import { getXDB } from './xdb-registry';
 import { zippEngineForWorker } from './zipp-wasm-loader';
+import { zippGlueForWorker } from './zipp-glue';
 import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
 import { clipboardWriteRefusal } from './clipboard-gate';
 import type { XDBService } from './xdb-service';
@@ -328,9 +329,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // posted): there is no copy beside the worker to fetch. The worker's
     // `init` waits for it, so a script can be sent before it arrives.
     const worker = this.worker;
-    zippEngineForWorker().then(
-      (engine) => {
-        if (!this.terminated) worker.postMessage({ type: 'engine', engine });
+    Promise.all([zippEngineForWorker(), zippGlueForWorker()]).then(
+      ([engine, glue]) => {
+        if (!this.terminated) worker.postMessage({ type: 'engine', engine, glue });
       },
       (error: unknown) => {
         if (this.terminated) return;

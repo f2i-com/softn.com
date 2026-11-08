@@ -20,6 +20,7 @@
 import type { AIPermissionConfig } from '../ai-manager';
 import { describeNetDestination, type NetPermission } from '../egress-policy';
 import { zippEngineForWorker } from '../zipp-wasm-loader';
+import { zippGlueForWorker } from '../zipp-glue';
 import type { ChatMessage } from './chat-template';
 import type { WorkerReply, WorkerRequest } from './model-worker';
 import type { GenerateOptions, GenerateResult, ModelBackend, ModelInfo } from './zipp-model-runner';
@@ -477,7 +478,8 @@ export class ModelHost {
       let info: ModelInfo;
       this.#opening.add(worker);
       try {
-        info = (await worker.request({ type: 'open', blob, engine, backend: device as ModelBackend, context: num(options.context) }, OPEN_TIMEOUT).done) as ModelInfo;
+        const glue = await zippGlueForWorker();
+      info = (await worker.request({ type: 'open', blob, engine, glue, backend: device as ModelBackend, context: num(options.context) }, OPEN_TIMEOUT).done) as ModelInfo;
       } catch (error) {
         worker.fail(error instanceof Error ? error : new Error(String(error)));
         throw error;

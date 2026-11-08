@@ -12,12 +12,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { framePolicy } from '../src/framePolicy.ts';
+import { framePolicy, zippDirectory } from '../src/framePolicy.ts';
 import { HOST_JS_DOCUMENT_ENGINES, ZIPP_DOCUMENT_ENGINES, documentEngines } from '../src/engineInit.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = path.join(here, '..');
 const ASSETS = 'https://runtime.example/hosted-runtime/';
+const ZIPP = 'https://runtime.example/zipp/';
 
 /**
  * The policy `index.html` carries, as one literal. It is written out rather
@@ -26,15 +27,25 @@ const ASSETS = 'https://runtime.example/hosted-runtime/';
  * allowed to do. The one change since the hosted runtime shipped is `data:` in
  * `connect-src` (v0.0.28), which reaches no network: it lets an app fetch its
  * own bundled assets, which are served as data: URLs, as a model loader does.
+ * The second (v0.0.36) is the site's ZIPP folder beside the runtime, `/zipp/`,
+ * in `script-src` and `connect-src`: the host's own ZIPP install, whose glue the
+ * shell imports (after checking its digest) and whose torch package it fetches.
  */
 const ZIPP_POLICY =
-  `default-src 'none'; script-src ${ASSETS} 'wasm-unsafe-eval'; connect-src ${ASSETS} data:; ` +
+  `default-src 'none'; script-src ${ASSETS} ${ZIPP} 'wasm-unsafe-eval'; connect-src ${ASSETS} ${ZIPP} data:; ` +
   `style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; ` +
   `worker-src blob:; form-action 'none'; base-uri 'none'; frame-src 'none'`;
 
-test('connect-src reaches the runtime directory and data: URLs, and no network beyond', () => {
+test('connect-src reaches the runtime directory, the site\'s ZIPP folder and data: URLs, and no network beyond', () => {
   const sources = framePolicy(ASSETS, ZIPP_DOCUMENT_ENGINES).split('; ').find((d) => d.startsWith('connect-src ')).split(' ').slice(1);
-  assert.deepEqual(sources, [ASSETS, 'data:']);
+  assert.deepEqual(sources, [ASSETS, ZIPP, 'data:']);
+});
+
+test('the ZIPP folder is the one beside the runtime directory, wherever the runtime is', () => {
+  assert.equal(zippDirectory(ASSETS), ZIPP);
+  assert.equal(zippDirectory('https://site.example/formlogic/hosted-runtime/'), 'https://site.example/formlogic/zipp/');
+  // A folder, so a source ends in `/` and matches only what is under it.
+  assert.ok(zippDirectory(ASSETS).endsWith('/'));
 });
 
 test('the ZIPP document keeps its policy, byte for byte', () => {

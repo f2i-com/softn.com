@@ -27,7 +27,8 @@
  *   remembers the names. Nothing outside reads an index it did not get here.
  */
 
-import { Engine } from '../../../wasm-zipp/zipp_wasm.js';
+import type { Engine } from '../../../wasm-zipp/zipp_wasm.js';
+import { zippGlue } from '../zipp-glue';
 import { ensureZippTorch, ensureZippWasm, zippLanguages, zippPythonPackages } from '../zipp-wasm-loader';
 import { sanitizeArgs } from '../vm-args';
 import { flushEngineOutput } from '../engine-output';
@@ -95,7 +96,7 @@ export class PythonLogicAdapter implements LogicEngine {
         }`
       );
     }
-    return new PythonLogicAdapter(new Engine());
+    return new PythonLogicAdapter(new (zippGlue().Engine)());
   }
 
   // ── Bridges a Python guest has no names for ──

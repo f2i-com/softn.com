@@ -59,7 +59,7 @@ test('an error says whether the app failed to open or failed while running', () 
 
 test('a parent covering the frame while the app opens is told when its first page is shown, once', () => {
   // ready says it will (an addition: a parent that never sees shown: 1 never waits for it).
-  assert.match(main, /type: 'formlogic:ready'[^\n]*, shown: 1 \}, '\*'\);/);
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, shown: 1(, [^\n]*)? \}, '\*'\);/);
   // Posted from the first draw only, on the app's own port, before drawn is set.
   assert.equal((main.match(/type: 'shown'/g) || []).length, 1);
   // And no words while it opens: core's wheel, labelled for a screen reader.

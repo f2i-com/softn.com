@@ -1,4 +1,5 @@
 import { zippEngineForWorker } from './zipp-wasm-loader';
+import { zippGlueForWorker } from './zipp-glue';
 
 /** Worker isolation bounds parsing/native builtins as well as VM fuel. */
 export class SandboxHost {
@@ -33,8 +34,8 @@ export class SandboxHost {
         // page's own compiled module: the worker has no copy to fetch. The
         // startup bound above covers the page compiling it the first time.
         if(!fresh){worker.postMessage({source,input});return;}
-        zippEngineForWorker().then(
-          zippWasm=>{if(!settled&&this.worker===worker)worker.postMessage({source,input,zippWasm});},
+        Promise.all([zippEngineForWorker(),zippGlueForWorker()]).then(
+          ([zippWasm,zippGlue])=>{if(!settled&&this.worker===worker)worker.postMessage({source,input,zippWasm,zippGlue});},
           error=>finish({error:`Sandbox engine unavailable: ${String(error).slice(0,400)}`}),
         );
       }catch(error){finish({error:String(error).slice(0,500)});}

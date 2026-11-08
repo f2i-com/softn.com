@@ -297,7 +297,7 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     assert.deepEqual(hosted.engines, [...RUNTIME_ENGINES]);
     assert.deepEqual(hosted.engines, ['host-js', 'zipp-web', 'zipp-web-python']);
     assert.deepEqual(hosted.features, [...RUNTIME_FEATURES]);
-    assert.deepEqual(hosted.features, ['python-logic/1']);
+    assert.deepEqual(hosted.features, ['host-zipp/1', 'python-logic/1']);
     for (const n of ['hosted-runtime/LICENSE', 'hosted-runtime/NOTICE', 'hosted-runtime/README.txt']) bytes(n);
 
     // The second entry document, and the one thing that differs between it and

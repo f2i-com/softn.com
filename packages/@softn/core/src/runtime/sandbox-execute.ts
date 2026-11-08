@@ -1,8 +1,8 @@
-import { Engine } from '../../wasm-zipp/zipp_wasm.js';
+import { zippGlue } from './zipp-glue';
 /** Each invocation is a fresh guest: no shared globals, bridges or host callbacks. */
 export function executeSandbox(source: string, input: unknown): unknown {
   if (typeof source !== 'string' || source.length > 65536) throw Error('Script exceeds 64 KiB');
-  const engine = new Engine();
+  const engine = new (zippGlue().Engine)();
   try {
     engine.setSyncHostCapabilities([]);
     engine.setInstructionBudget(500000);
