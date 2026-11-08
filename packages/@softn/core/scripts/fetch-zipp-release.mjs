@@ -109,7 +109,9 @@ const CORE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = path.resolve(CORE, '../../..');
 export const ENGINE_DIR = path.join(CORE, 'wasm-zipp');
 export const CURATED_NOTICES = path.join(CORE, 'zipp-notices', 'THIRD_PARTY_LICENSES.txt');
-export const CACHE_DIR = path.join(ROOT, '.zipp-release');
+// ZIPP_CACHE_DIR: where downloads are kept, for a copy of this script run outside this repository
+// (FormLogic runs the one its Softn release archive carries, zipp-tools/, with its own folders).
+export const CACHE_DIR = process.env.ZIPP_CACHE_DIR ? path.resolve(process.env.ZIPP_CACHE_DIR) : path.join(ROOT, '.zipp-release');
 export const CARGO_TOML = path.join(ROOT, 'apps/softn-host-rust/Cargo.toml');
 
 /** The first release published as plain modules with their bindings inside; older ones are zips this script does not read. */

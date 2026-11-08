@@ -91,6 +91,7 @@ import { TORCH_PACKAGE, WEB_VARIANT, ensureReleaseEngine, packageDir, releaseOpt
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 import { npmCommand } from '../lib/npm.mjs';
 import { RUNNER_NOTICES, RUNNER_PLATFORMS } from '../../apps/softn-runner/build.mjs';
+import { bundleZippInstaller } from './bundle-zipp-installer.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name) => {
@@ -215,6 +216,13 @@ for (const [k, v] of Object.entries(protocols)) if (!Number.isInteger(v)) fail(`
 const featuresDecl = engineInitSource.match(/export const RUNTIME_FEATURES[^=]*=\s*\[([^\]]*)\]/);
 if (!featuresDecl) fail('could not read RUNTIME_FEATURES from apps/formlogic-host/src/engineInit.ts');
 const hostedFeatures = [...featuresDecl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
+// What a ZIPP's glue must export for this runtime and these editors to run it (the host ZIPP feature):
+// core's ZIPP_GLUE_EXPORTS, read from its declaration like the features above. A FormLogic that
+// installs a ZIPP of its own holds that ZIPP's glue to this list before it offers it to them.
+const glueDecl = fs.readFileSync(path.join(root, 'packages/@softn/core/src/runtime/zipp-glue.ts'), 'utf8').match(/export const ZIPP_GLUE_EXPORTS = \[([^\]]*)\]/);
+if (!glueDecl) fail('could not read ZIPP_GLUE_EXPORTS from packages/@softn/core/src/runtime/zipp-glue.ts');
+const zippGlueExports = [...glueDecl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+if (!zippGlueExports.length) fail('core names no glue exports (ZIPP_GLUE_EXPORTS)');
 
 const adapterBytes = Buffer.from(fs.readFileSync(path.join(root, 'packages/@softn/core/src/integrations/formlogic.ts'), 'utf8').replace(/\r\n/g, '\n'), 'utf8');
 const adapter = { path: 'adapter/formlogic.ts', sha256: sha256(adapterBytes) };
@@ -300,7 +308,7 @@ try {
   // that engine without the document to run it in would be one FormLogic could
   // only discover was broken at mount time.
   if (!entries.has('hosted-runtime/host.html')) fail('apps/formlogic-host built no host.html');
-  add('hosted-runtime/runtime-manifest.json', Buffer.from(runtimeManifest('hosted-runtime', { engines: hostedEngines, features: hostedFeatures })));
+  add('hosted-runtime/runtime-manifest.json', Buffer.from(runtimeManifest('hosted-runtime', { engines: hostedEngines, features: hostedFeatures, zippGlueExports })));
 
   // app-editors/: Builder and Studio as hosted editors, per editor and as one folder.
   for (const kind of ['builder', 'studio']) {
@@ -318,7 +326,8 @@ try {
   // of one tag writes the same archive.
   const epoch = Number(process.env.SOURCE_DATE_EPOCH);
   const builtAt = (Number.isInteger(epoch) && epoch > 0 ? new Date(epoch * 1000) : new Date()).toISOString();
-  add('app-editors/manifest.json', Buffer.from(JSON.stringify({ protocol: protocols.editorBridge, editors: ['builder', 'studio'], builtAt }) + '\n'));
+  // features: the editors run the site's own ZIPP (the bridge's glue: 1), as the runtime does.
+  add('app-editors/manifest.json', Buffer.from(JSON.stringify({ protocol: protocols.editorBridge, editors: ['builder', 'studio'], builtAt, features: hostedFeatures.filter((feature) => feature.startsWith('host-zipp/')), zippGlueExports }) + '\n'));
   add('app-editors/LICENSE', fs.readFileSync(path.join(root, 'LICENSE')));
   add('app-editors/NOTICE', fs.readFileSync(path.join(root, 'NOTICE')));
   add('app-editors/runtime-manifest.json', Buffer.from(runtimeManifest('app-editors')));
@@ -378,6 +387,14 @@ try {
   // `packages.torch` names; the copies the built apps carry in
   // assets/core-runtime/ are held to the same digest below.
   addTree(wasmTorchDir, torchTree);
+
+  // zipp-tools/: ZIPP's release installer, bundled to run on Node alone (bundle-zipp-installer.mjs),
+  // so a FormLogic can install a ZIPP release of its own with every check this repository makes of
+  // one, for the runtime and the editors to run (the host ZIPP feature).
+  const toolsDir = path.join(stage, 'zipp-tools');
+  await bundleZippInstaller(toolsDir);
+  addTree(toolsDir, 'zipp-tools');
+  add('zipp-tools/README.txt', Buffer.from(`ZIPP's release installer (softn.com/packages/@softn/core/scripts/fetch-zipp-release.mjs), bundled. Apache-2.0.\nnode scripts/fetch-zipp-release.mjs vX.Y.Z installs a ZIPP release: ZIPP_OUT names the install (its web variant and torch package go in the sibling folders <name>-web and <name>-torch), ZIPP_CACHE_DIR the downloads, ZIPP_SUMS_SHA256 the sha256 its SHA256SUMS must have. --check verifies an install.\nThis runtime and these editors run a ZIPP whose glue exports: ${zippGlueExports.join(', ')}.\n`));
 
   // adapter/: the FormLogic starter adapter FormLogic vendors.
   add('adapter/formlogic.ts', adapterBytes);

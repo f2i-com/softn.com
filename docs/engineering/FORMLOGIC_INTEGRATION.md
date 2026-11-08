@@ -273,6 +273,18 @@ ZIPP build), so the host always sends the two together.
 - Only the browser: an app's backend still runs on the native runtime this
   archive carries, with the ZIPP it was built with.
 
+From v0.0.37 the archive carries ZIPP's release installer, `zipp-tools/`
+(`scripts/release/bundle-zipp-installer.mjs`): `packages/@softn/core/scripts/
+fetch-zipp-release.mjs` bundled with what it imports into one script that
+runs on Node alone, laid out as core is (`scripts/` beside `zipp-notices/`).
+A FormLogic runs it to install a ZIPP release of its own choosing, with every
+check this repository makes of one (`ZIPP_OUT`, `ZIPP_CACHE_DIR`,
+`ZIPP_SUMS_SHA256`); one verifier, not two. `hosted-runtime/runtime-manifest.json`
+and `app-editors/manifest.json` say what that ZIPP's glue must export
+(`zippGlueExports`), and the editors' manifest declares `host-zipp/1` beside
+the runtime's, so a host can tell before it installs a ZIPP whether this
+release's runtime and editors run it.
+
 FormLogic's side: `publish-zipp.mjs` writes the folder from its installed ZIPP,
 `HostedAppFrame` and `AppEditorDialog` name its files, and its server rules
 answer the folder to the frame's opaque origin. Tested with FormLogic on ZIPP

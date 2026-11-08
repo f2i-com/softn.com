@@ -298,6 +298,18 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     assert.deepEqual(hosted.engines, ['host-js', 'zipp-web', 'zipp-web-python']);
     assert.deepEqual(hosted.features, [...RUNTIME_FEATURES]);
     assert.deepEqual(hosted.features, ['host-zipp/1', 'python-logic/1']);
+    // What a site's own ZIPP must export for this runtime to run it, and the editors say the same.
+    assert.deepEqual(hosted.zippGlueExports, ['default', 'Engine', 'accelGuestCall', 'addPythonPackage', 'zipp_install_panic_hook', 'zippProfile']);
+    const editorsManifest = JSON.parse(bytes('app-editors/manifest.json').toString('utf8'));
+    assert.deepEqual(editorsManifest.features, ['host-zipp/1']);
+    assert.deepEqual(editorsManifest.zippGlueExports, hosted.zippGlueExports);
+    // ZIPP's installer, bundled: one script on Node alone, beside the notices it falls back to.
+    const installer = bytes('zipp-tools/scripts/fetch-zipp-release.mjs').toString('utf8');
+    assert.ok(installer.includes('zipp.glue'), 'the installer reads the engine\'s glue section');
+    assert.deepEqual([...installer.matchAll(/^import\s[^;]*?from\s+["']([^"']+)["']/gm)].map((m) => m[1]).filter((name) => !name.startsWith('node:') && name !== 'module'), []);
+    assert.equal(bytes('zipp-tools/zipp-notices/THIRD_PARTY_LICENSES.txt').length > 0, true);
+    assert.ok(bytes('zipp-tools/README.txt').toString('utf8').includes('ZIPP_SUMS_SHA256'));
+
     for (const n of ['hosted-runtime/LICENSE', 'hosted-runtime/NOTICE', 'hosted-runtime/README.txt']) bytes(n);
 
     // The second entry document, and the one thing that differs between it and
