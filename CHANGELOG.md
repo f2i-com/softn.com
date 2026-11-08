@@ -6,7 +6,12 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## v0.0.37
+## v0.0.38
+
+- Upgrading from v0.0.36: v0.0.37 was tagged and never released (below), so this release carries its changes, and every protocol number is v0.0.36's; the engine is still ZIPP v0.0.33.
+- ZIPP's release installer (`fetch-zipp-release.mjs`, and the copy the FormLogic archive carries) downloads a release's files through GitHub's API first, signed in where the environment carries a token (`GITHUB_TOKEN` or `GH_TOKEN`), and through the plain download addresses only when the API cannot answer. On 2026-11-08 GitHub answered 504 to every anonymous plain download of an f2i-com release, ZIPP's included, while its API served the same files; v0.0.37's release could not install its engine. What arrives is checked against the release's SHA256SUMS exactly as before. The workflows give the token to the install steps alone.
+
+## v0.0.37 (tagged, never released: v0.0.38 carries it)
 
 - Upgrading from v0.0.36: the engine is still ZIPP v0.0.33, and every protocol number is v0.0.36's. The FormLogic archive gains ZIPP's release installer (below); a FormLogic before v0.1.30 ignores it.
 - FormLogic: the archive carries ZIPP's release installer, `zipp-tools/scripts/fetch-zipp-release.mjs`, the one this repository installs its own engine with, bundled to run on Node alone. A FormLogic that pins a ZIPP release of its own installs it with it, with every check SoftN makes of a ZIPP release (the release's SHA256SUMS against the pinned digest, the glue the engine carries, the web variant and the torch package against the engine), so it can run a newer ZIPP than this release was built with. `ZIPP_CACHE_DIR` names where the script keeps its downloads.
