@@ -1,6 +1,6 @@
 {
   "name": "@softn/vite-plugin",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "description": "Vite plugin for SoftN UI language",
   "license": "Apache-2.0",
   "repository": {

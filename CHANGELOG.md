@@ -6,6 +6,13 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.36
+
+- Upgrading from v0.0.35: the engine is still ZIPP v0.0.33, so nothing is rebuilt, and every protocol number is v0.0.35's. What changes is that FormLogic's app frame and editors can run the site's own ZIPP, which may be newer than the one this release was built with (below). A FormLogic before v0.1.30 sees no change.
+- FormLogic: the app frame runs a ZIPP the host serves, in the site's ZIPP folder beside the runtime (`/zipp/<engine>/`): the parent names that ZIPP's glue and torch package in `init` (`zippGlue`, `zippTorch`, each with its sha256) beside the engine bytes of the same ZIPP, and the frame checks each file before it imports the glue or runs the package. The runtime declares `host-zipp/1`, and `ready` says `zippGlue: 1` with the names a glue must export (`zippGlueExports`); a glue without one of them is refused by name. The frame's policy names the ZIPP folder in `script-src` and `connect-src` and nothing else new; `host.html` names it too, so the two documents still differ by `'unsafe-eval'` alone. Only the browser: an app's backend runs on the native runtime this release carries.
+- FormLogic: Builder and Studio do the same through the editor bridge (`glue: 1` in ready, `zippGlue` and `zippTorch` in connect). An editor that refuses a named glue takes neither it nor the engine sent with it.
+- Core: `configureZippGlue` and `awaitZippGlue` choose the ZIPP glue a page runs (core's own unless a host names another), every engine core starts goes through it, and the workers a page starts are given the same glue, checked by the page first. `configureZippTorchSource` takes an address and digest too, and a page on a host's glue that was given no torch package refuses torch rather than load the one built for core's own ZIPP.
+
 ## v0.0.35
 
 - Upgrading from v0.0.34: the engine is still ZIPP v0.0.33, so nothing is rebuilt, and every protocol number is v0.0.34's. What changes is the FormLogic archive, which is 20 MB smaller: its app runtime and editors carry no engine of their own. FormLogic installs it from v0.1.29; v0.1.28 and earlier refuse it, because they ask for a copy of the engine in each.
