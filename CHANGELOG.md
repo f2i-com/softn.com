@@ -6,6 +6,12 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.37
+
+- Upgrading from v0.0.36: the engine is still ZIPP v0.0.33, and every protocol number is v0.0.36's. The FormLogic archive gains ZIPP's release installer (below); a FormLogic before v0.1.30 ignores it.
+- FormLogic: the archive carries ZIPP's release installer, `zipp-tools/scripts/fetch-zipp-release.mjs`, the one this repository installs its own engine with, bundled to run on Node alone. A FormLogic that pins a ZIPP release of its own installs it with it, with every check SoftN makes of a ZIPP release (the release's SHA256SUMS against the pinned digest, the glue the engine carries, the web variant and the torch package against the engine), so it can run a newer ZIPP than this release was built with. `ZIPP_CACHE_DIR` names where the script keeps its downloads.
+- FormLogic: the hosted runtime's `runtime-manifest.json` and the editors' `manifest.json` say what a ZIPP's glue must export for them to run it (`zippGlueExports`), and the editors' manifest declares `host-zipp/1` as the runtime's does, so a host can check a ZIPP before it installs it.
+
 ## v0.0.36
 
 - Upgrading from v0.0.35: the engine is still ZIPP v0.0.33, so nothing is rebuilt, and every protocol number is v0.0.35's. What changes is that FormLogic's app frame and editors can run the site's own ZIPP, which may be newer than the one this release was built with (below). A FormLogic before v0.1.30 sees no change.

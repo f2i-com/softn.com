@@ -5242,7 +5242,7 @@ dependencies = [
 
 [[package]]
 name = "softn-loader"
-version = "0.0.36"
+version = "0.0.37"
 dependencies = [
  "gtk",
  "image",
