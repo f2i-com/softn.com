@@ -18,6 +18,9 @@ import { root } from './release-packages.mjs';
 
 const LATEST = `${REPOSITORY}/releases/latest/download/SHA256SUMS`;
 const tagged = (tag) => `${REPOSITORY}/releases/download/${tag}/SHA256SUMS`;
+const API_ROOT = REPOSITORY.replace('https://github.com/', 'https://api.github.com/repos/');
+/** The plain download addresses asked for; GitHub's API is asked first (fetch-zipp-release.mjs). */
+const plain = (calls) => calls.filter((url) => url.startsWith(REPOSITORY));
 const sumsFor = (version, digit) => Buffer.from(['javascript.wasm', 'javascript-python-base.wasm', 'torch-package.wasm', 'wasm-embed-kit.zip'].map((file) => `${digit.repeat(64)}  zipp-${version}-${file}\n`).join(''));
 
 function tempDir(t) {
@@ -32,12 +35,23 @@ function cargoToml(dir, tag) {
   return file;
 }
 
-/** GitHub as it would answer, with v0.0.26 and v0.0.27 published and `latest` naming one of them. */
-function github(latest) {
+/**
+ * GitHub as it would answer, with v0.0.26 and v0.0.27 published and `latest` naming one of them.
+ * Its API answers 404 unless `api`, which serves the releases through the API alone and answers
+ * 504 to every plain download address, as GitHub did on 2026-11-08.
+ */
+function github(latest, { api = false } = {}) {
   const published = new Map([[tagged('v0.0.26'), sumsFor('0.0.26', '1')], [tagged('v0.0.27'), sumsFor('0.0.27', '2')]]);
   published.set(LATEST, published.get(tagged(latest)));
+  if (api) {
+    published.set(`${API_ROOT}/releases/latest`, Buffer.from(JSON.stringify({ tag_name: latest })));
+    for (const tag of ['v0.0.26', 'v0.0.27']) {
+      published.set(`${API_ROOT}/releases/tags/${tag}`, Buffer.from(JSON.stringify({ tag_name: tag, assets: [{ name: 'SHA256SUMS', url: `${API_ROOT}/releases/assets/sums-${tag}` }] })));
+      published.set(`${API_ROOT}/releases/assets/sums-${tag}`, published.get(tagged(tag)));
+    }
+  }
   const calls = [];
-  const fetch = async (url) => (calls.push(url), published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 }));
+  const fetch = async (url) => (calls.push(url), api && url.startsWith(REPOSITORY) ? new Response('', { status: 504 }) : published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 }));
   return { calls, fetch, published };
 }
 
@@ -45,9 +59,18 @@ test('the declared release is the latest: its tag and SHA256SUMS digest are the 
   const gh = github('v0.0.26');
   const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.26'), fetch: gh.fetch });
   assert.deepEqual(outputs, { 'zipp-release': 'v0.0.26', 'zipp-sums-sha256': sha256(sumsFor('0.0.26', '1')), 'zipp-latest': 'v0.0.26', 'zipp-older-allowed': 'false' });
-  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.26')], 'the latest redirect, then the tag\'s own SHA256SUMS; no API call');
+  assert.deepEqual(plain(gh.calls), [LATEST, tagged('v0.0.26')], 'GitHub\'s API answering 404, the latest redirect, then the tag\'s own SHA256SUMS');
+  assert.ok(gh.calls[0].startsWith(API_ROOT), 'the API was asked first');
   assert.equal(outputLines(outputs), `zipp-release=v0.0.26\nzipp-sums-sha256=${sha256(sumsFor('0.0.26', '1'))}\nzipp-latest=v0.0.26\nzipp-older-allowed=false\n`);
   assert.match(summaryLine(outputs), /^ZIPP release: v0\.0\.26, the latest release; SHA256SUMS sha256 [0-9a-f]{64}\n$/);
+});
+
+test("the gate reads ZIPP's releases through GitHub's API alone when the plain download addresses answer 504", async (t) => {
+  const gh = github('v0.0.26', { api: true });
+  const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.26'), fetch: gh.fetch });
+  assert.deepEqual(outputs, { 'zipp-release': 'v0.0.26', 'zipp-sums-sha256': sha256(sumsFor('0.0.26', '1')), 'zipp-latest': 'v0.0.26', 'zipp-older-allowed': 'false' });
+  assert.deepEqual(plain(gh.calls), [], 'no plain download address was needed');
+  await assert.rejects(zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.26'), fetch: github('v0.0.27', { api: true }).fetch }), /ZIPP v0\.0\.27 is published/);
 });
 
 test('a newer ZIPP release fails the gate with what to do', async (t) => {
@@ -73,7 +96,7 @@ test('a declared release that is newer than the latest (a pre-release) is refuse
   const gh = github('v0.0.26');
   const outputs = await zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.27'), allowOlder: true, fetch: gh.fetch });
   assert.deepEqual(outputs, { 'zipp-release': 'v0.0.27', 'zipp-sums-sha256': sha256(sumsFor('0.0.27', '2')), 'zipp-latest': 'v0.0.26', 'zipp-older-allowed': 'true' });
-  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.26'), tagged('v0.0.27')], 'the declared tag\'s own SHA256SUMS');
+  assert.deepEqual(plain(gh.calls), [LATEST, tagged('v0.0.26'), tagged('v0.0.27')], 'the declared tag\'s own SHA256SUMS');
   // Allowed only when it is published with the files an install takes: three modules and the kit.
   await assert.rejects(zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.28'), allowOlder: true, fetch: github('v0.0.26').fetch }), /releases\/download\/v0\.0\.28\/SHA256SUMS answered 404/);
 });
@@ -84,7 +107,8 @@ test('allow-older-zipp cannot ship a release from before 0.0.26, which published
     zippReleaseGate({ cargoToml: cargoToml(tempDir(t), 'v0.0.25'), allowOlder: true, fetch: gh.fetch }),
     (error) => error instanceof ZippReleaseError && /^ZIPP v0\.0\.25 was published as zip bundles, which this script no longer reads; Softn installs v0\.0\.26 or later/.test(error.message),
   );
-  assert.deepEqual(gh.calls, [LATEST, tagged('v0.0.26')], 'only the latest release is read');
+  assert.deepEqual(plain(gh.calls), [LATEST, tagged('v0.0.26')], 'only the latest release is read');
+  assert.ok(!gh.calls.some((url) => url.includes('v0.0.25')), 'GitHub is not asked for v0.0.25 in any way');
 });
 
 test('a Cargo.toml without a zipp-vm release tag is refused before GitHub is asked', async (t) => {

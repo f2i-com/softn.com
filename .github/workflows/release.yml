@@ -135,6 +135,8 @@ jobs:
         id: zipp
         env:
           ALLOW_OLDER_ZIPP: ${{ steps.decide.outputs.allow-older-zipp }}
+          # ZIPP's latest release through GitHub's API, signed in (fetch-zipp-release.mjs).
+          GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
