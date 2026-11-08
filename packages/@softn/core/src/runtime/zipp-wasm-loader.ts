@@ -13,7 +13,22 @@ declare const __SOFTN_ENGINE_BYTES__: number | undefined;
 const ENGINE_BYTES: number | undefined = typeof __SOFTN_ENGINE_BYTES__ === 'number' ? __SOFTN_ENGINE_BYTES__ : undefined;
 
 let suppliedSource: BufferSource | WebAssembly.Module | undefined;
+let awaitedSource: Promise<BufferSource | WebAssembly.Module | null> | undefined;
 let initializationStarted = false;
+
+/** A source as this realm keeps it: a module as given, bytes copied so later caller mutations cannot change the engine. */
+function keptSource(source: BufferSource | WebAssembly.Module): BufferSource | WebAssembly.Module {
+  if (source instanceof WebAssembly.Module) return source;
+  const bytes = source instanceof ArrayBuffer
+    ? new Uint8Array(source)
+    : ArrayBuffer.isView(source)
+      ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+      : null;
+  if (!bytes || bytes.byteLength < 8) {
+    throw new TypeError('The ZIPP engine source must be a WASM module or engine bytes');
+  }
+  return bytes.slice();
+}
 
 /**
  * Supply trusted engine bytes or compiled code before this realm starts ZIPP.
@@ -25,19 +40,22 @@ export function configureZippWasmSource(source: BufferSource | WebAssembly.Modul
   if (initializationStarted) {
     throw new Error('The ZIPP engine source must be configured before initialization starts');
   }
-  if (source instanceof WebAssembly.Module) {
-    suppliedSource = source;
-    return;
+  suppliedSource = keptSource(source);
+}
+
+/**
+ * The engine will come from a host that has not sent it yet: a hosted editor
+ * (FormLogic's Builder and Studio) is given the engine its parent page
+ * already downloaded and checked, when the parent connects, so the editor
+ * keeps no copy of its own. Called before anything starts ZIPP; a start before
+ * `source` settles waits for it. `null` means the host sent none, and the
+ * engine is fetched from beside this chunk as it is without a host.
+ */
+export function awaitZippWasmSource(source: Promise<BufferSource | WebAssembly.Module | null>): void {
+  if (initializationStarted) {
+    throw new Error('The ZIPP engine source must be configured before initialization starts');
   }
-  const bytes = source instanceof ArrayBuffer
-    ? new Uint8Array(source)
-    : ArrayBuffer.isView(source)
-      ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
-      : null;
-  if (!bytes || bytes.byteLength < 8) {
-    throw new TypeError('The ZIPP engine source must be a WASM module or engine bytes');
-  }
-  suppliedSource = bytes.slice();
+  awaitedSource = source;
 }
 
 /**
@@ -70,6 +88,10 @@ async function onThisDevice(url: URL): Promise<boolean> {
 
 /** The engine compiled once for this realm: from the configured source, or fetched from beside this chunk. */
 const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
+  if (suppliedSource === undefined && awaitedSource) {
+    const given = await awaitedSource;
+    if (given != null && suppliedSource === undefined) suppliedSource = keptSource(given);
+  }
   if (suppliedSource instanceof WebAssembly.Module) return suppliedSource;
   if (suppliedSource !== undefined) return WebAssembly.compile(suppliedSource);
   // The engine beside this chunk: the glue's own default, which a Vite build

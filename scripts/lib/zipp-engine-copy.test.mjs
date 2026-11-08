@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { KNOWN_ENGINE_COPIES, KNOWN_TORCH_COPIES, VARIANT_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, ZIPP_TORCH_EXPORTS, archiveEngineProblems, isZippEngineWasm, isZippTorchPackageWasm, wasmCustomSections, wasmExportNames, wasmImportNames, wasmStackBytes } from './zipp-engine-copy.mjs';
+import { ENGINE_FREE_TREES, KNOWN_ENGINE_COPIES, KNOWN_TORCH_COPIES, VARIANT_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, ZIPP_TORCH_EXPORTS, archiveEngineProblems, isZippEngineWasm, isZippTorchPackageWasm, wasmCustomSections, wasmExportNames, wasmImportNames, wasmStackBytes } from './zipp-engine-copy.mjs';
 
 /** A valid module exporting one function under each name: (type () -> ()), one body, one export per name. */
 function moduleExporting(names) {
@@ -60,9 +60,6 @@ function archive() {
     ['hosted-runtime/assets/kernels-1a2b.wasm', moduleExporting(['relu', 'zippProfile'])],
     ['hosted-runtime/index.html', Buffer.from('<!doctype html>')],
   ]);
-  for (const prefix of ['hosted-runtime', 'app-editors/builder', 'app-editors/studio']) {
-    entries.set(`${prefix}/assets/zipp_wasm_bg-C4f3.wasm`, new Uint8Array(engine));
-  }
   return { engine, source, entries };
 }
 
@@ -70,40 +67,42 @@ test('an archive whose every engine copy is the installed release, at every know
   const { source, entries } = archive();
   const { copies, problems } = archiveEngineProblems(entries, source);
   assert.deepEqual(problems, []);
-  assert.equal(copies.length, 5);
-  assert.equal(KNOWN_ENGINE_COPIES.length, 5, 'the primary set: the variant is not one of them');
+  assert.equal(copies.length, 2);
+  assert.equal(KNOWN_ENGINE_COPIES.length, 2, 'the primary set: the variant is not one of them');
   assert.deepEqual(VARIANT_ENGINE_COPIES, { web: 'zipp-web/zipp_wasm_bg.wasm' }, 'a top-level tree of its own, never inside zipp/');
   for (const pattern of KNOWN_ENGINE_COPIES) assert.equal(copies.filter((name) => pattern.test(name)).length, 1, `${pattern}`);
 });
 
 test('an engine of another build anywhere in the archive is a problem, whatever it is called', () => {
   const { source, entries } = archive();
-  entries.set('hosted-runtime/assets/other-abc.wasm', moduleExporting([...ZIPP_ENGINE_EXPORTS, 'debug_dump']));
-  entries.set('app-editors/studio/assets/core-runtime/zipp_wasm_bg.wasm', { data: moduleExporting([...ZIPP_ENGINE_EXPORTS, 'older']), mode: 0o644 });
+  entries.set('native-runtime/wasm/other-abc.wasm', moduleExporting([...ZIPP_ENGINE_EXPORTS, 'debug_dump']));
+  entries.set('adapter/zipp_wasm_bg.wasm', { data: moduleExporting([...ZIPP_ENGINE_EXPORTS, 'older']), mode: 0o644 });
   assert.deepEqual(archiveEngineProblems(entries, source).problems.sort(), [
-    `app-editors/studio/assets/core-runtime/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`,
-    `hosted-runtime/assets/other-abc.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`,
+    `adapter/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`,
+    `native-runtime/wasm/other-abc.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`,
   ]);
 });
 
 test('a known place without an engine is a problem, even when a file of that name is there', () => {
   const { source, entries } = archive();
-  entries.delete('app-editors/builder/assets/zipp_wasm_bg-C4f3.wasm');
   entries.set('native-runtime/wasm/zipp_wasm_bg.wasm', Buffer.from('not a module'));
   const { problems } = archiveEngineProblems(entries, source);
-  assert.deepEqual(problems, [
-    `no ZIPP engine matches ${KNOWN_ENGINE_COPIES[1]}; FormLogic takes a copy from there`,
-    `no ZIPP engine matches ${KNOWN_ENGINE_COPIES[3]}; FormLogic takes a copy from there`,
-  ]);
-  assert.match(problems[1], /app-editors\\\/builder\\\/assets\\\/zipp_wasm_bg-/);
+  assert.deepEqual(problems, [`no ZIPP engine matches ${KNOWN_ENGINE_COPIES[1]}; FormLogic takes a copy from there`]);
 });
 
-test('the copy releases through v0.0.27 carried at assets/core-runtime/ is not asked for, and is held to the digest where it is', () => {
-  const { source, entries } = archive();
-  assert.ok(![...entries.keys()].some((name) => name.includes('/core-runtime/zipp_wasm_bg.wasm')));
-  assert.deepEqual(archiveEngineProblems(entries, source).problems, []);
+test('the hosted runtime and the editors carry no engine, not even the release\'s own: FormLogic\'s page gives them its copy', () => {
+  const { engine, source, entries } = archive();
+  assert.deepEqual(ENGINE_FREE_TREES, ['hosted-runtime/', 'app-editors/']);
+  for (const prefix of ['hosted-runtime', 'app-editors/builder', 'app-editors/studio']) entries.set(`${prefix}/assets/zipp_wasm_bg-C4f3.wasm`, new Uint8Array(engine));
   entries.set('hosted-runtime/assets/core-runtime/zipp_wasm_bg.wasm', moduleExporting([...ZIPP_ENGINE_EXPORTS, 'older']));
-  assert.deepEqual(archiveEngineProblems(entries, source).problems, [`hosted-runtime/assets/core-runtime/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`]);
+  const tree = (name, prefix) => `${name} is a copy of the ZIPP engine in ${prefix}, which takes the engine from FormLogic's page; the archive carries it once, in zipp/`;
+  assert.deepEqual(archiveEngineProblems(entries, source).problems.sort(), [
+    tree('app-editors/builder/assets/zipp_wasm_bg-C4f3.wasm', 'app-editors/'),
+    tree('app-editors/studio/assets/zipp_wasm_bg-C4f3.wasm', 'app-editors/'),
+    `hosted-runtime/assets/core-runtime/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`,
+    tree('hosted-runtime/assets/core-runtime/zipp_wasm_bg.wasm', 'hosted-runtime/'),
+    tree('hosted-runtime/assets/zipp_wasm_bg-C4f3.wasm', 'hosted-runtime/'),
+  ].sort());
 });
 
 test('the native runtime\'s glue has to be zipp/\'s, byte for byte', () => {
@@ -238,7 +237,7 @@ test('a variant of the engine may carry its own digest at its one place, and now
   entries.set('zipp-web/zipp_wasm_bg.wasm', web);
   const ok = archiveEngineProblems(entries, source);
   assert.deepEqual(ok.problems, []);
-  assert.equal(ok.copies.length, 6);
+  assert.equal(ok.copies.length, 3);
   // The primary at the variant's place is as wrong as the variant anywhere else.
   entries.set('zipp-web/zipp_wasm_bg.wasm', engine);
   assert.deepEqual(archiveEngineProblems(entries, source).problems, [`zipp-web/zipp_wasm_bg.wasm is a ZIPP engine, but not the web variant of ZIPP v0.0.18 (${source.variants.web.sha256.slice(0, 12)})`]);
@@ -288,7 +287,7 @@ test('the torch package the install records is at each of its places and nowhere
   const ok = archiveEngineProblems(entries, source);
   assert.deepEqual(ok.problems, []);
   assert.deepEqual(ok.packageCopies.sort(), [...places].sort());
-  assert.equal(ok.copies.length, 5, 'the package is not counted as an engine');
+  assert.equal(ok.copies.length, 2, 'the package is not counted as an engine');
   for (const pattern of KNOWN_TORCH_COPIES) assert.equal(places.filter((name) => pattern.test(name)).length, 1, `${pattern}`);
   // Another build of the package anywhere, whatever it is called.
   const other = moduleExporting([...ZIPP_TORCH_EXPORTS, 'debug']);

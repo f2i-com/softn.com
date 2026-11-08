@@ -70,6 +70,47 @@ describe('shared ZIPP initialization', () => {
     expect(glue.seen[0]).toBeInstanceOf(WebAssembly.Module);
   });
 
+  it('waits for an engine a host will send, and compiles what it sends without fetching', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    let send!: (bytes: Uint8Array | null) => void;
+    loader.awaitZippWasmSource(new Promise((resolve) => { send = resolve; }));
+    glueInstantiates();
+    // Started before the host has connected (a hosted editor's first check): it waits.
+    const ready = loader.ensureZippWasm();
+    expect(() => loader.awaitZippWasmSource(Promise.resolve(null))).toThrow(/before initialization/);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(glue.seen).toHaveLength(0);
+    send(emptyModuleBytes());
+    await ready;
+    expect(glue.seen[0]).toBeInstanceOf(WebAssembly.Module);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('fetches its own engine when the host sends none (a host from before it)', async () => {
+    const fetch = vi.fn(async () => new Response(emptyModuleBytes(), { headers: { 'Content-Type': 'application/wasm' } }));
+    vi.stubGlobal('fetch', fetch);
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    loader.awaitZippWasmSource(Promise.resolve(null));
+    glueInstantiates();
+    await loader.ensureZippWasm();
+    expect(String((fetch.mock.calls[0] as unknown[])[0])).toMatch(/\/zipp_wasm_bg\.wasm$/);
+    expect(glue.seen[0]).toBeInstanceOf(WebAssembly.Module);
+  });
+
+  it('gives a worker the engine the host sent', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    loader.awaitZippWasmSource(Promise.resolve(emptyModuleBytes()));
+    const module = await loader.zippEngineForWorker();
+    expect(module).toBeInstanceOf(WebAssembly.Module);
+    // The same compiled engine for the page itself.
+    glueInstantiates();
+    await loader.ensureZippWasm();
+    expect(glue.seen[0]).toBe(module);
+  });
+
   it('says which file failed when the engine cannot be fetched', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('missing', { status: 404 })));
     const loader = await import('../src/runtime/zipp-wasm-loader');

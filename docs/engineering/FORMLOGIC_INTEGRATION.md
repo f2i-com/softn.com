@@ -84,13 +84,20 @@ Every copy of the torch package, recognised by its exports, must carry the
 digest `packages.torch` records: `zipp-torch/` and the `assets/core-runtime/`
 copy beside each built runtime and editor.
 
-The built runtime and editors carry the engine once, as their hashed asset:
-a SoftN page posts the engine it compiled to every worker it starts, so their
-`assets/core-runtime/` holds none. Archives through v0.0.27 added the engine
-at `assets/core-runtime/zipp_wasm_bg.wasm` in `hosted-runtime/` and each editor,
-because FormLogic's `fetch-softn-release.mjs` required a copy there. Nothing
-read it, FormLogic from v0.1.12 does not ask for it, and from v0.0.28 the
-archive does not carry it: 21 MB less, three copies of the 7 MB engine.
+From v0.0.35 the built runtime and editors carry no engine at all: FormLogic's
+page downloads `zipp/`'s engine once, checks it against `SOURCE.json`, and gives
+it to each of them. The hosted runtime has always run the bytes the page posts
+in `formlogic:init` (it never fetched the copy beside it); Builder and Studio
+take it through the editor bridge's `engine` capability (below). The packager
+drops the copy Vite emits beside each of them (`dropEngineCopies`), and
+`archiveEngineProblems` refuses an engine anywhere in `hosted-runtime/` or
+`app-editors/` (`ENGINE_FREE_TREES`), so the archive holds the engine at
+`zipp/` and `native-runtime/wasm/` alone (and the variant at `zipp-web/`): 20 MB
+less in every FormLogic install, three copies of the 6.6 MB engine. A SoftN
+page posts the engine it compiled to every worker it starts, so no worker reads
+a copy either. Archives through v0.0.34 carried one in each tree, and through
+v0.0.27 a second at `assets/core-runtime/zipp_wasm_bg.wasm`; FormLogic from
+v0.1.29 installs both shapes, holding any copy to the release's digest.
 
 `hosted-runtime/` has two entry documents. `index.html` serves the ZIPP
 engines; `host.html` is the same document with one attribute and serves only
@@ -209,6 +216,24 @@ FormLogic's side is `AppEditorDialog.tsx` (the `brief` prop and the status
 bar) and its SoftN app workspace, which opens Studio with the request from
 "Create app" or from its chat. A FormLogic that does not speak `agentRuns`
 opens Studio exactly as before.
+
+A third, `engine` (version `1`, v0.0.35 on), is how an editor FormLogic
+installs runs without an engine of its own:
+
+- Builder and Studio, built as hosted editors, announce it with the ZIPP build
+  they were made with: `{ kind: 'formlogic-editor-ready', protocol: 1, …, engine: 1, zipp: { version, sha256 } }`
+  (`hostedEngineSource` in `packages/@softn/editor-shared/src/hostedEditor.ts`,
+  called from each editor's `main.tsx` before anything starts ZIPP, and handed
+  to core's `awaitZippWasmSource`).
+- A host that has that build sends its bytes with the connection:
+  `{ kind: 'formlogic-editor-connect', protocol: 1, …, zippWasm }`, an
+  `ArrayBuffer` or `Uint8Array` of at most 32 MB, cloned, never transferred.
+  FormLogic sends the bytes its page downloaded and checked (the ones the app
+  frame is sent), so one file serves the page, the frame and both editors.
+- The editor's engine waits for the connection; a host that sends none (one
+  before this) leaves it to fetch the copy beside its chunk, which an archive
+  from v0.0.35 does not carry. A host that cannot download the engine says so
+  itself rather than connect an editor that has none.
 
 Any host's `open` may also carry `saveLabel`, its own name for taking the
 editor's work back ("Save changes"; one line, up to 32 characters). Studio's

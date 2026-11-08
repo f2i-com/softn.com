@@ -219,15 +219,22 @@ export const KNOWN_TORCH_COPIES = [
 
 /**
  * Where FormLogic takes a copy of the engine from in softn-formlogic-runtime-<tag>.zip; each must
- * hold one. Releases through v0.0.27 also carried one at `<prefix>/assets/core-runtime/` in the
- * hosted runtime and each editor, which nothing read and FormLogic from v0.1.12 does not ask for;
- * an engine there, as anywhere else, is still held to the release's digest.
+ * hold one: zipp/, the one its page downloads and gives the hosted runtime and both editors, and
+ * the native runtime's, which runs on the server.
  */
 export const KNOWN_ENGINE_COPIES = [
   /^zipp\/zipp_wasm_bg\.wasm$/,
   /^native-runtime\/wasm\/zipp_wasm_bg\.wasm$/,
-  ...['hosted-runtime', 'app-editors/builder', 'app-editors/studio'].map((prefix) => new RegExp(`^${prefix}/assets/zipp_wasm_bg-[^/]+\\.wasm$`)),
 ];
+
+/**
+ * The trees that take the engine from FormLogic's page and carry none of their own: the hosted
+ * runtime, which is sent it when it starts, and from v0.0.35 Builder and Studio, which are sent it
+ * when FormLogic connects to them. Releases through v0.0.34 carried one in each (and through
+ * v0.0.27 a second at `<prefix>/assets/core-runtime/`): 6.6 MB that nothing read, three times over
+ * in every FormLogic install. An engine in one of these trees is a problem, whatever it is called.
+ */
+export const ENGINE_FREE_TREES = ['hosted-runtime/', 'app-editors/'];
 
 /**
  * The one place in the archive each variant of the engine may be, by the id
@@ -254,7 +261,7 @@ export const VARIANT_ENGINE_COPIES = {
  * records none may carry none. Returns the engine copies, the package copies
  * and what is wrong, as sentences.
  */
-export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_COPIES, variantPlaces = VARIANT_ENGINE_COPIES, knownTorch = KNOWN_TORCH_COPIES } = {}) {
+export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_COPIES, variantPlaces = VARIANT_ENGINE_COPIES, knownTorch = KNOWN_TORCH_COPIES, engineFree = ENGINE_FREE_TREES } = {}) {
   const bytesOf = (name) => {
     const value = entries.get(name);
     return value === undefined || value instanceof Uint8Array ? value : value.data;
@@ -275,6 +282,10 @@ export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_CO
     if (variant) {
       if (digest !== variant.sha256) problems.push(`${name} is a ZIPP engine, but not the ${variant.id} variant of ZIPP ${source.release} (${variant.sha256.slice(0, 12)})`);
     } else if (digest !== source.sha256) problems.push(`${name} is a ZIPP engine, but not ZIPP ${source.release} (${source.sha256.slice(0, 12)})`);
+  }
+  for (const name of copies) {
+    const tree = engineFree.find((prefix) => name.startsWith(prefix));
+    if (tree) problems.push(`${name} is a copy of the ZIPP engine in ${tree}, which takes the engine from FormLogic's page; the archive carries it once, in zipp/`);
   }
   for (const pattern of known) if (!copies.some((name) => pattern.test(name))) problems.push(`no ZIPP engine matches ${pattern}; FormLogic takes a copy from there`);
   for (const [name, { id }] of variantAt) if (!copies.includes(name)) problems.push(`no ZIPP engine at ${name}; SOURCE.json records the ${id} variant there`);

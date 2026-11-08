@@ -302,6 +302,38 @@ export function requestHostedSave(): HostedSaveOutcome {
   return { handled: true, id, completion };
 }
 
+/**
+ * The engine capability of the bridge (`engine`). Version 1: the editor names
+ * the ZIPP build it was made with (`zipp: {version, sha256}`) in
+ * `formlogic-editor-ready`, and a host that has that build sends its bytes as
+ * `zippWasm` in `formlogic-editor-connect`. FormLogic's page has downloaded and
+ * checked that engine already, so the editor keeps no copy of its own and the
+ * site serves one file to its page, its app frame and both editors. A host that
+ * sends none (one before this) leaves the editor to fetch its own, as before.
+ */
+export const HOSTED_ENGINE_VERSION = 1;
+/** The largest engine taken from a host: the runtime frame's limit for the same bytes. */
+const HOSTED_ENGINE_MAX_BYTES = 32 * 1024 * 1024;
+let engineBuild: { version: string; sha256: string } | null = null;
+let settleEngine: ((bytes: Uint8Array | null) => void) | null = null;
+
+/**
+ * The engine the host will send, for core's `awaitZippWasmSource`: called once,
+ * before anything starts ZIPP, by an editor running in FormLogic. Settles when
+ * the host connects, with its bytes or with null.
+ */
+export function hostedEngineSource(zipp: { version: string; sha256: string }): Promise<Uint8Array | null> {
+  engineBuild = { version: String(zipp.version), sha256: String(zipp.sha256) };
+  return new Promise(resolve => { settleEngine = resolve; });
+}
+
+/** The engine bytes in a connect message, or null: a Uint8Array or ArrayBuffer of a plausible size, checked by tag (it was cloned from another realm). */
+function readHostedEngine(value: unknown): Uint8Array | null {
+  const tag = Object.prototype.toString.call(value);
+  const bytes = tag === '[object Uint8Array]' ? value as Uint8Array : tag === '[object ArrayBuffer]' ? new Uint8Array(value as ArrayBuffer) : null;
+  return bytes && bytes.byteLength >= 8 && bytes.byteLength <= HOSTED_ENGINE_MAX_BYTES ? bytes : null;
+}
+
 /** Number of saves FormLogic has not acknowledged yet (for teardown warnings). */
 export function pendingHostedSaves(): number { return pendingSaves.size; }
 
@@ -328,10 +360,12 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
   let disposed = false;
   let loaded = false;
   let busy = false;
-  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION, ...(capabilities.agentRuns ? { agentRuns: HOSTED_AGENT_RUNS_VERSION } : {}) }, location.origin); };
+  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION, ...(capabilities.agentRuns ? { agentRuns: HOSTED_AGENT_RUNS_VERSION } : {}), ...(engineBuild && settleEngine ? { engine: HOSTED_ENGINE_VERSION, zipp: engineBuild } : {}) }, location.origin); };
   const receive = (event: MessageEvent) => {
     if (event.source !== window.parent || event.origin !== location.origin || event.data?.kind !== 'formlogic-editor-connect' || event.data?.protocol !== 1 || port || !event.ports[0]) return;
     port = event.ports[0]; currentPort = port;
+    // The engine, once: what the host sent, or null for one that sent none.
+    if (settleEngine) { settleEngine(readHostedEngine(event.data.zippWasm)); settleEngine = null; }
     // Optional: a host that takes tool calls says which version; one that does not says nothing.
     hostAITools = Number.isInteger(event.data.aiTools) && event.data.aiTools > 0 ? Math.min(event.data.aiTools, HOSTED_AI_TOOLS_VERSION) : 0;
     hostAgentRuns = capabilities.agentRuns && Number.isInteger(event.data.agentRuns) && event.data.agentRuns > 0 ? Math.min(event.data.agentRuns, HOSTED_AGENT_RUNS_VERSION) : 0;

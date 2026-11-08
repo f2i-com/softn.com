@@ -14,6 +14,14 @@ import '@softn/brand/bar.css';
 import './styles/builder.css';
 import App from './App';
 import { AppBoundary } from './components/AppBoundary';
+import { awaitZippWasmSource } from '@softn/core';
+import { hostedEngineSource, isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
+
+// In FormLogic the engine comes from the page that opened the Builder, which
+// has downloaded and checked it already: one file for the whole site, and the
+// Builder FormLogic installs carries no copy of its own.
+if (isHostedEditor()) awaitZippWasmSource(hostedEngineSource(zippSource));
 
 // The components, registered as the runtimes register them: the start-up set
 // now, and every other component (the light groups, charts, editors, Scene3D

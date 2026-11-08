@@ -23,7 +23,7 @@ export * from './event-coalescer';
 export { buildSyncCacheKey } from './sync-cache-key';
 export { bindSyncOptions } from './host-bound-sync-options';
 export { retryableSingleFlight } from './retryable-single-flight';
-export { configureZippTorchSource, configureZippWasmSource, preloadZippTorch, zippLanguages, zippTorchWasmUrl } from './zipp-wasm-loader';
+export { awaitZippWasmSource, configureZippTorchSource, configureZippWasmSource, preloadZippTorch, zippLanguages, zippTorchWasmUrl } from './zipp-wasm-loader';
 export {
   countResponse,
   loadProgressItems,
