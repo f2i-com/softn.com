@@ -6,6 +6,10 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- The engine is ZIPP v0.0.35 (it was v0.0.33), in the browser, in the Rust backend host and in softn-runner. ZIPP 0.0.34 and 0.0.35 are speed releases. The behaviour fixes their notes name (a global that was deleted, or given a getter, a setter or read-only attributes, under a running compiled loop went on being read as the plain variable it had been; the experimental optimizing tier running a function that starts with a loop) are in compiled code, which the sandboxed, metered engines SoftN runs do not use. 0.0.34's leaner interpreter loop is in ZIPP's x86-64 builds and not in its WebAssembly engines, so the browser engine and softn-runner's guest run loops as before; nothing was measured here for speed. The engine's declarations are byte for byte 0.0.33's, and logic still has no `WebAssembly` and nothing of Node, which a test on each engine holds. The module every app downloads is 6.58 MB as before (1,319 bytes larger; 1.65 MB with Brotli, 631 bytes smaller). A FormLogic that installs a release with it rebuilds its server sandbox from ZIPP v0.0.35 (with Rust 1.92.0, as before); a FormLogic from v0.1.30 can also take ZIPP v0.0.35 for its own pages before that, by naming it in its `zipp-release.json`.
+
 ## v0.0.38
 
 - Upgrading from v0.0.36: v0.0.37 was tagged and never released (below), so this release carries its changes, and every protocol number is v0.0.36's; the engine is still ZIPP v0.0.33.

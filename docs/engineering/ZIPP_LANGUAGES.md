@@ -259,22 +259,23 @@ must be the recorded one.
 
 | | raw | gzip -9 | Brotli-11 |
 | --- | ---: | ---: | ---: |
-| `javascript-python` engine (torch built in; not taken) | 8,616,452 | 2,700,893 | 2,021,232 |
-| `javascript-python-base` engine (every app) | 6,579,140 | 2,225,433 | 1,646,601 |
-| `zipp_torch.wasm` (apps that declare torch) | 2,163,109 | 499,397 | 403,378 |
+| `javascript-python` engine (torch built in; not taken) | 8,617,556 | 2,700,237 | 2,022,547 |
+| `javascript-python-base` engine (every app) | 6,580,459 | 2,225,461 | 1,645,970 |
+| `zipp_torch.wasm` (apps that declare torch) | 2,163,109 | 499,396 | 403,192 |
 
-These are ZIPP v0.0.33's files as published, each module with its `zipp.meta`
-record and each engine with its bindings, of which the engine's are 62,142
-bytes raw (14,043 with Brotli), measured with Node 24.19's zlib and Brotli.
-0.0.33 leaves Node's layer out of its WebAssembly engines, so the engine is
-764,680 bytes smaller than 0.0.32's 7,343,820 (1,795,413 with Brotli, 148,812
-more than now). 0.0.30's engine was 6,667,188 bytes raw and 1,653,720 with
+These are ZIPP v0.0.35's files as published, each module with its `zipp.meta`
+record and each engine with its bindings, of which the engine's are 61,881
+bytes raw (13,978 with Brotli), measured with Node 24.19's zlib and Brotli.
+The engine is 1,319 bytes larger than 0.0.33's 6,579,140 (1,646,601 with
+Brotli, 631 more than now). 0.0.33 left Node's layer out of its WebAssembly
+engines, so its engine was 764,680 bytes smaller than 0.0.32's 7,343,820
+(1,795,413 with Brotli). 0.0.30's engine was 6,667,188 bytes raw and 1,653,720 with
 Brotli, and its torch package the same size raw (403,308 with Brotli);
 0.0.29's 6,569,310 and 1,630,183; 0.0.25's, the last published as zip bundles
 and without its bindings inside, 6,187,748 and 1,535,660. An app that does not
-declare torch downloads 2.04 MB less (375 KB less with Brotli) than it would
+declare torch downloads 2.04 MB less (377 KB less with Brotli) than it would
 with the complete engine; one that does downloads about 126 KB more in all
-(29 KB with Brotli).
+(27 KB with Brotli).
 
 ## The JavaScript-only web variant
 
