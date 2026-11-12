@@ -221,10 +221,14 @@ export function placeInclude(
   source: string,
   name: string,
   markup: string,
-  onIgnored: (ignored: IgnoredOnUse) => void
+  onIgnored: (ignored: IgnoredOnUse) => void,
+  /** Given a list, it is handed where each use stood, a list for each of the two passes: from, to. */
+  placed?: Array<Array<[number, number]>>
 ): string {
   const open = `<${name}`;
   const place = (text: string, paired: boolean): string => {
+    const uses: Array<[number, number]> | undefined = placed ? [] : undefined;
+    if (uses) placed!.push(uses);
     let out = '';
     let copied = 0;
     let search = 0;
@@ -260,6 +264,7 @@ export function placeInclude(
         onIgnored({ attributes: tag.attributes.map((attribute) => attribute.name), children });
       }
       out += text.slice(copied, at) + markup;
+      uses?.push([at, end]);
       copied = end;
       search = end;
     }
@@ -629,7 +634,11 @@ export interface IncludeReading {
  * Comments beside any of them are kept where they are. A page with none of
  * the three is returned exactly as it was given.
  */
-export function readInclude(source: string): IncludeReading {
+export function readInclude(
+  source: string,
+  /** Given a list, it is handed what was taken out of the page, in order: from, to. */
+  taken?: Array<[number, number]>
+): IncludeReading {
   const untouched: IncludeReading = { markup: source, collections: [], unusable: 0, styles: [] };
   if (!/<(?:data|style|App)[\s/>]/.test(source)) return untouched;
   const outline = outlinePage(source);
@@ -665,6 +674,7 @@ export function readInclude(source: string): IncludeReading {
   if (cuts.length === 0) return untouched;
 
   cuts.sort((a, b) => a[0] - b[0]);
+  taken?.push(...cuts);
   let markup = '';
   let copied = 0;
   for (const [start, end] of cuts) {

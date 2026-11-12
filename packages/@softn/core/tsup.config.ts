@@ -22,6 +22,11 @@ export default defineConfig({
     // @softn/core/host-js: no other entry imports it, so a build that does not
     // ask for it does not contain it.
     'src/runtime/host-js/index.ts',
+    // What a host needs to edit an app while it runs (which node drew an
+    // element, which file a stretch of the composed page was written in),
+    // reachable only as @softn/core/edit: a runtime asks for it when a person
+    // presses Edit, and its start-up code does not carry it.
+    'src/edit/index.ts',
   ],
   format: ['esm'],
   // The bundle contract (../bundle-format/src) is inlined through relative

@@ -15,6 +15,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { createLiveApp } from '../src/runtime/live-app';
+import { createEditMarks } from '../src/edit';
 import { logicEngineIsSandboxed } from '../src/runtime/vm-adapter';
 import { drawLivePage, type LivePage } from './helpers/live-page';
 
@@ -262,6 +263,25 @@ describe('a newer version with a problem', () => {
     expect(app.text('.count')).toBe('4');
     expect(app.text('.inits')).toBe('1');
     expect(app.container.querySelector('[data-softn-notice="update"]')).toBeNull();
+  });
+
+  it('leaves the saying of it to a host that is editing the app, and says it once the editor is gone', async () => {
+    // An editor says what is wrong beside the source, with the line. The bar
+    // over the app said it a second time, and pushed the app down at every
+    // slip of the keys.
+    const app = await counter();
+    const marks = createEditMarks();
+    await app.set({ editMarks: marks });
+    await app.set({ source: logic(COUNTER) + '<Stack><span class="count">{count}</span><p>half' });
+    const answer = await app.answer();
+    expect(answer.outcome).toBe('kept');
+    expect(answer.problem).toMatch(/Unclosed tag/);
+    expect(app.container.querySelector('[data-softn-notice="update"]')).toBeNull();
+    expect(app.text('.count')).toBe('3');
+    // The editor closes with the text still broken: the app is the last one that worked, and now says so itself.
+    await app.set({ editMarks: undefined });
+    await app.settle();
+    expect(app.container.querySelector('[data-softn-notice="update"]')?.textContent).toContain('the last version that worked is still showing');
   });
 
   it('keeps the logic that is running when the new logic does not parse', async () => {

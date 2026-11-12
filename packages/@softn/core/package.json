@@ -44,6 +44,10 @@
       "types": "./dist/loader/index.d.ts",
       "default": "./dist/loader/index.js"
     },
+    "./edit": {
+      "types": "./dist/edit/index.d.ts",
+      "default": "./dist/edit/index.js"
+    },
     "./bundle": {
       "types": "./dist/bundle/zip.d.ts",
       "default": "./dist/bundle/zip.js"

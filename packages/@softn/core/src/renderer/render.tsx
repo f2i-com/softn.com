@@ -25,6 +25,7 @@ import type { EditMarks, SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent, type DeclaredPropKinds } from './registry';
 import { cssPropertyName, inlineStyleObject } from './inline-style';
 import { isCallbackProp } from '../runtime/drawn-functions';
+import { hostHoldsKeyboard } from '../runtime/key-capture';
 import {
   beginPass,
   keep,
@@ -1538,6 +1539,16 @@ function renderElement(
   const isVoid = typeof FinalComponent === 'string' && VOID_ELEMENTS.has(node.tag.toLowerCase());
   const childless = isVoid || (children as React.ReactNode[]).every(isNothingDrawn);
 
+  // `autofocus` is the app asking for the keyboard, and it is not given while
+  // the person is using something of the host's (key-capture.ts
+  // `hostHoldsKeyboard`): an app drew a field with it on a timer, and what
+  // was being typed for the host went into the app. On an element or on a
+  // component, however the page spelled it.
+  if (('autoFocus' in props || 'autofocus' in props) && hostHoldsKeyboard()) {
+    delete props.autoFocus;
+    delete props.autofocus;
+  }
+
   // With everything this element would be made from in hand, see whether it
   // is what this place was made from last time; see reuse.ts.
   const active = typeof key === 'string' ? pass : null;
@@ -1577,6 +1588,7 @@ function renderElement(
   // Wrap registered (non-HTML) components in a per-component error boundary
   // so a single component crash doesn't take down the entire document
   const failure = active && typeof FinalComponent !== 'string' ? { caught: false } : undefined;
+  if (marks && typeof FinalComponent !== 'string') marks.components.add(node);
   const result =
     typeof FinalComponent !== 'string'
       ? React.createElement(

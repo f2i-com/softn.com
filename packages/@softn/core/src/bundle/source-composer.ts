@@ -613,17 +613,50 @@ function textSpans(source: string, code = false): Array<[number, number]> {
   return spans;
 }
 
-/** `source` with each of `matches` (in order, from linkTags or logicTags) replaced by what `replace` makes of it. */
+/**
+ * One stretch of a text replaced as a page is composed: from `start` to `end`
+ * of the text as it stood, by text of the composer's own or, for a page put
+ * in another, by that page's traced text.
+ */
+export type TraceEdit<T = unknown> = readonly [start: number, end: number, by: string | T];
+
+/**
+ * What a host that maps the composed page back to its files is handed while
+ * the page is put together (edit/source-origins.ts makes one). `T` is its own
+ * record of a text: which file each stretch of it was written in, and where.
+ *
+ * Only a host that edits an app as it runs asks for this. Without one the
+ * composer does what it always did, and keeps nothing.
+ */
+export interface ComposeTrace<T = unknown> {
+  /** A page's text, as it is read from its file. */
+  file(path: string, text: string): T;
+  /** `of` with each stretch replaced, the stretches in order and apart. */
+  edit(of: T, edits: ReadonlyArray<TraceEdit<T>>): T;
+  /** `of` once text was put in at one place of it, which made it `text`. */
+  added(of: T, text: string): T;
+  /** The composed page: the main page's text, and what the composer wrote after it. */
+  done(of: T | undefined, source: string): void;
+}
+
+/**
+ * `source` with each of `matches` (in order, from linkTags or logicTags)
+ * replaced by what `replace` makes of it. Each replacement that changes the
+ * text is added to `edits` when it is given.
+ */
 function replaceMatches(
   source: string,
   matches: Iterable<RegExpExecArray>,
-  replace: (match: RegExpExecArray) => string
+  replace: (match: RegExpExecArray) => string,
+  edits?: TraceEdit[]
 ): string {
   let out = '';
   let last = 0;
   for (const match of matches) {
-    out += source.slice(last, match.index) + replace(match);
+    const by = replace(match);
+    out += source.slice(last, match.index) + by;
     last = match.index + match[0].length;
+    if (edits && by !== match[0]) edits.push([match.index, last, by]);
   }
   return out + source.slice(last);
 }
@@ -655,6 +688,9 @@ export function pageLogicSources(source: string): string[] {
   }
   return sources;
 }
+
+/** A `//` line of an imported page, which is not placed with it. */
+const INCLUDE_COMMENT_LINE = /^\/\/[^\n]*\n/gm;
 
 /** What a use of an imported page carried that an include cannot take, as a sentence. */
 function describeIgnored(attributes: readonly string[], children: boolean): string {
@@ -696,10 +732,12 @@ function parseProblemOf(source: string, textFiles: ReadonlyMap<string, string>, 
 export function composeBundleSource(
   textFiles: ReadonlyMap<string, string>,
   mainFilePath: string,
-  manifestLogicPaths: readonly string[] = []
+  manifestLogicPaths: readonly string[] = [],
+  /** Told how the page is put together, for a host that maps it back to its files; see ComposeTrace. */
+  trace?: ComposeTrace
 ): ComposedBundleSource {
   const pages: string[] = [];
-  const composed = composePages(textFiles, mainFilePath, manifestLogicPaths, pages);
+  const composed = composePages(textFiles, mainFilePath, manifestLogicPaths, pages, trace);
   const parseProblem = parseProblemOf(composed.source, textFiles, pages);
   return parseProblem === undefined ? composed : { ...composed, parseProblem };
 }
@@ -709,7 +747,8 @@ function composePages(
   textFiles: ReadonlyMap<string, string>,
   mainFilePath: string,
   manifestLogicPaths: readonly string[],
-  pages: string[]
+  pages: string[],
+  trace?: ComposeTrace
 ): ComposedBundleSource {
   const mainPath = normalizeRootPath(mainFilePath);
   const mainUI = textFiles.get(mainPath);
@@ -737,7 +776,7 @@ function composePages(
     (fragment.main ? mainFragments : supplementalFragments).push(fragment);
   };
 
-  const collectLogic = (source: string, uiPath: string, main: boolean): string => {
+  const collectLogic = (source: string, uiPath: string, main: boolean, edits?: TraceEdit[]): string => {
     // See logicTagReference: what is left alone stays in the page, for the
     // parser.
     return replaceMatches(source, logicTags(source, textSpans(source)), (match) => {
@@ -797,7 +836,7 @@ function composePages(
       };
       rememberFragment(fragment);
       return '';
-    });
+    }, edits);
   };
 
   /**
@@ -808,7 +847,7 @@ function composePages(
    * left in the page, which does not load it; so is one the bundle does not
    * carry, said here. Lower case only: `<Link>` is a component.
    */
-  const inlineStylesheets = (source: string, pagePath: string): string =>
+  const inlineStylesheets = (source: string, pagePath: string, edits?: TraceEdit[]): string =>
     replaceMatches(source, linkTags(source, textSpans(source, true)), (match) => {
       const [fullTag, attributes] = match as unknown as [string, string];
       const href = stylesheetHref(attributes);
@@ -820,7 +859,10 @@ function composePages(
         return fullTag;
       }
       return `<style>\n${stylesheetFromRoot(rules, stylesheetPath)}\n</style>`;
-    });
+    }, edits);
+
+  // Each page as it was placed, for `trace`: empty without one.
+  const tracedPages = new Map<string, unknown>();
 
   const inlineImports = (
     source: string,
@@ -830,14 +872,24 @@ function composePages(
     main: boolean
   ): string => {
     pages.push(basePath);
-    let nextSource = collectLogic(inlineStylesheets(source, basePath), basePath, main);
+    // The page as `trace` follows it: every step below that changes the text
+    // says what it changed, so the two stay the same text.
+    let traced = trace?.file(basePath, source);
+    let edits: TraceEdit[] | undefined = trace ? [] : undefined;
+    let nextSource = inlineStylesheets(source, basePath, edits);
+    if (trace && edits) traced = trace.edit(traced, edits);
+    edits = trace ? [] : undefined;
+    nextSource = collectLogic(nextSource, basePath, main, edits);
+    if (trace && edits) traced = trace.edit(traced, edits);
 
     if (!main) {
       // An imported page is placed inside another, so what only a whole page
       // carries comes off it here, once, however often the page is used. It
       // is read before the pages it imports in turn, so that what it declares
       // comes before what they do.
-      const include = readInclude(nextSource);
+      const cuts: Array<[number, number]> | undefined = trace ? [] : undefined;
+      const include = readInclude(nextSource, cuts);
+      if (trace && cuts) traced = trace.edit(traced, cuts.map(([start, end]) => [start, end, '']));
       nextSource = include.markup;
       for (const collection of include.collections) {
         includedCollections.push({ ...collection, from: basePath });
@@ -882,23 +934,31 @@ function composePages(
       imports.push({ name: componentName, path: resolvedPath, content: inlined });
     }
 
-    nextSource = nextSource.replace(new RegExp(`${UI_IMPORT_PATTERN.source}\\n?`, 'g'), '');
+    const importLines = new RegExp(`${UI_IMPORT_PATTERN.source}\\n?`, 'g');
+    if (trace) {
+      traced = trace.edit(traced, Array.from(nextSource.matchAll(importLines), (line) => [line.index, line.index + line[0].length, '']));
+    }
+    nextSource = nextSource.replace(importLines, '');
 
     if (main) {
       // Every imported page has been read by now, so this is where what they
       // declared is declared: on the page that is the document.
       const declared = declareCollections(nextSource, includedCollections);
       nextSource = declared.source;
+      if (trace) traced = trace.added(traced, nextSource);
       for (const { declaration, holder } of declared.refused) {
         console.warn(
           `[SoftN] ${declaration.from}: <collection name="${declaration.name}" as="${declaration.as}"> is not declared, because this app already reads "${holder}" as ${declaration.as}.`
         );
       }
       nextSource = declareStyles(nextSource, includedStyles);
+      if (trace) traced = trace.added(traced, nextSource);
     }
 
     for (const imported of imports) {
-      const template = imported.content.replace(/^\/\/[^\n]*\n/gm, '').trim();
+      const uncommented = imported.content.replace(INCLUDE_COMMENT_LINE, '');
+      const template = uncommented.trim();
+      const placed: Array<Array<[number, number]>> | undefined = trace ? [] : undefined;
       nextSource = placeInclude(nextSource, imported.name, template, ({ attributes, children }) => {
         // Dropped, as they always were: the language has no properties or
         // events for an imported page. Said, because dropping them silently
@@ -906,14 +966,32 @@ function composePages(
         console.warn(
           `[SoftN] ${basePath}: <${imported.name}> is an imported page, so its ${describeIgnored(attributes, children)} are ignored. It is placed here as written and reads this page's state instead.`
         );
-      });
+      }, placed);
+      if (trace && placed) {
+        // The imported page as it is placed: without its comment lines, and
+        // without the space around it.
+        let part = trace.edit(
+          tracedPages.get(imported.path),
+          Array.from(imported.content.matchAll(INCLUDE_COMMENT_LINE), (line) => [line.index, line.index + line[0].length, ''])
+        );
+        const lead = uncommented.length - uncommented.trimStart().length;
+        const kept = uncommented.trimEnd().length;
+        part = trace.edit(part, kept > lead ? [[0, lead, ''], [kept, uncommented.length, '']] : [[0, uncommented.length, '']]);
+        for (const uses of placed) traced = trace.edit(traced, uses.map(([start, end]) => [start, end, part]));
+      }
     }
+    if (trace) tracedPages.set(basePath, traced);
     return nextSource;
   };
 
   let source = inlineImports(mainUI, mainPath, new Set([mainPath]), new Map(), true);
+  // Every way out of here hands `trace` the page as it ended up.
+  const done = (composed: ComposedBundleSource): ComposedBundleSource => {
+    trace?.done(tracedPages.get(mainPath), composed.source);
+    return composed;
+  };
   if (!firstFragment) {
-    return { source, preIncludedLogicPaths: [], languages: ['javascript'] };
+    return done({ source, preIncludedLogicPaths: [], languages: ['javascript'] });
   }
 
   // Main-document logic is the entry and runs after helpers/components. If the
@@ -1011,13 +1089,13 @@ function composePages(
         );
       }
     }
-    return {
+    return done({
       source: `${source}\n<logic>\n</logic>`,
       logicBasePath,
       preIncludedLogicPaths: [],
       languages: ['javascript', 'python'],
       python: { files, modules, packages },
-    };
+    });
   }
 
   const preIncluded = new Set<string>();
@@ -1028,10 +1106,10 @@ function composePages(
   }
 
   source = `${source}\n<logic>\n${ordered.map((fragment) => fragment.code).join('\n')}\n</logic>`;
-  return {
+  return done({
     source,
     logicBasePath,
     preIncludedLogicPaths: [...preIncluded],
     languages: ['javascript'],
-  };
+  });
 }

@@ -22,6 +22,7 @@
 import type { ElementNode, PropNode, TemplateNode, TextNode } from '../parser/ast';
 import type { SourceLocation } from '../parser/token';
 import { SHELL_HTML_ID } from './names';
+import { hostHoldsKeyboard } from '../runtime/key-capture';
 
 /** One node of the seed: an element, text, or an island. */
 export interface SeedNode {
@@ -400,7 +401,11 @@ export class DocumentShell implements DocumentShellView {
           option.selected = chosen.has(i);
         });
       } else if (name === 'measure') this.measure(id, element);
-      else if (name === 'focus') (element as HTMLElement).focus?.();
+      // The page's own `focus()`: not while the person is using something
+      // of the host's (key-capture.ts `hostHoldsKeyboard`).
+      else if (name === 'focus') {
+        if (!hostHoldsKeyboard(element.ownerDocument)) (element as HTMLElement).focus?.();
+      }
       else if (name === 'blur') (element as HTMLElement).blur?.();
       else if (name === 'scrollIntoView') element.scrollIntoView?.({ block: 'nearest' });
     }

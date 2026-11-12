@@ -80,7 +80,7 @@ import { releaseFilesOf } from '../runtime/file-registry';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
 import type { BindingTarget, Expression, TemplateNode } from '../parser/ast';
-import type { SoftNRenderContext, SoftNProps } from '../types';
+import type { EditMarks, SoftNRenderContext, SoftNProps } from '../types';
 import { parseStatePath } from '../runtime/state-path';
 import { debug } from '../runtime/debug';
 
@@ -508,6 +508,14 @@ export interface SoftNRendererProps {
    * for can only be given to logic that is loaded afresh).
    */
   onConsentStatus?: (status: { waiting: string[]; restartOnAllow: boolean }) => void;
+
+  /**
+   * Set by a host that is editing the app while it runs (made with
+   * `createEditMarks()` from `@softn/core/edit`): the renderer notes in it
+   * which node of the page drew each element, for `drawnFrom` to answer.
+   * Nothing is written on the page itself. Absent, nothing is noted.
+   */
+  editMarks?: EditMarks;
 }
 
 /** A running app, as the renderer knows it between a start and the next. */
@@ -1069,6 +1077,7 @@ export function SoftNRenderer({
   onUpdate,
   onShown,
   onConsentStatus,
+  editMarks,
 }: SoftNRendererProps): React.ReactElement | null {
   // One for the life of the mount: what the last drawing made, kept so the
   // next can hand React the same elements where nothing came out different.
@@ -1233,9 +1242,15 @@ export function SoftNRenderer({
       y: window.scrollY,
     };
 
-    // Capture focused element
+    // Capture focused element, when it is one of the app's own. The whole
+    // document was read: a person typing in a host's field beside the app (an
+    // editor's source, a chat box) had that field noted, and after the page
+    // was drawn again the focus was "put back" on the app's only element of
+    // the same tag. What they typed next for the host went into the app's
+    // field, where the app's own code reads it.
+    const container = containerRef.current;
     const activeElement = document.activeElement;
-    if (activeElement && activeElement !== document.body) {
+    if (container && activeElement && activeElement !== document.body && container.contains(activeElement)) {
       const inputEl = activeElement as HTMLInputElement;
       focusRef.current = {
         tagName: activeElement.tagName,
@@ -1262,33 +1277,35 @@ export function SoftNRenderer({
       }
     }
 
-    // Restore focus
-    if (focusRef.current) {
+    // Restore focus: to an element of the app's, found in the app, and not
+    // when the person has since put the focus somewhere outside it.
+    const within = containerRef.current;
+    const focusedNow = typeof document !== 'undefined' ? document.activeElement : null;
+    const movedOut = !!within && !!focusedNow && focusedNow !== document.body && !within.contains(focusedNow);
+    if (focusRef.current && within && !movedOut) {
       const { tagName, name, id, selectionStart, selectionEnd } = focusRef.current;
       let element: HTMLElement | null = null;
+      const tagged = () => Array.from(within.querySelectorAll<HTMLElement>(tagName.toLowerCase()));
 
       // Try to find by ID first
       if (id) {
-        element = document.getElementById(id);
+        element = tagged().find((candidate) => candidate.id === id) ?? null;
       }
 
       // Try to find by name
       if (!element && name) {
-        element =
-          Array.from(document.querySelectorAll<HTMLElement>(tagName.toLowerCase())).find(
-            (candidate) => candidate.getAttribute('name') === name
-          ) ?? null;
+        element = tagged().find((candidate) => candidate.getAttribute('name') === name) ?? null;
       }
 
       // Try to find by tag and index within container
-      if (!element && containerRef.current) {
-        const elements = containerRef.current.querySelectorAll(tagName.toLowerCase());
+      if (!element) {
+        const elements = tagged();
         if (elements.length === 1) {
-          element = elements[0] as HTMLElement;
+          element = elements[0];
         }
       }
 
-      if (element) {
+      if (element && element !== focusedNow) {
         element.focus();
 
         // Restore cursor position for text inputs
@@ -1718,6 +1735,10 @@ export function SoftNRenderer({
       const carriedIn = landing.carried;
       const carried = mode === 'carry' && carriedIn !== undefined && 'names' in carriedIn;
       const cleanBecause = !out.ok ? out.why : carriedIn && 'refused' in carriedIn ? carriedIn.refused : '';
+      // The one restart left when none of the others is why: a page whose
+      // code keeps it in its own document, changed. It is said once: the
+      // reason it started again is the reason nothing was carried.
+      const forShell = !logicChanged && !narrowed && !grantRestart && !stopped && !engineMoved;
       const why = logicChanged
         ? 'Its logic changed.'
         : narrowed
@@ -1726,13 +1747,17 @@ export function SoftNRenderer({
             ? 'What was allowed needs its logic started again.'
             : stopped
               ? 'Its logic had stopped.'
-              : 'The page changed in a way that needs its logic started again.';
+              : forShell
+                ? 'Its code keeps the page in its own document, so a change to the page starts it again.'
+                : 'The page changed in a way that needs its logic started again.';
       return {
         outcome: 'restarted',
         changed,
         reason: carried
           ? `${why} Its variables were carried over, and its start-up ran again.`
-          : `${why} It was started ${logicChanged ? 'clean' : 'again'}${cleanBecause ? `: ${cleanBecause}` : ''}.`,
+          : forShell
+            ? why
+            : `${why} It was started ${logicChanged ? 'clean' : 'again'}${cleanBecause ? `: ${cleanBecause}` : ''}.`,
         carried,
       };
     },
@@ -2857,8 +2882,10 @@ export function SoftNRenderer({
       renderCache,
       ...(documentShell ? { documentShell } : {}),
       ...(scopedStyle?.names ? { appStyleNames: scopedStyle.names } : {}),
+      ...(editMarks ? { editMarks } : {}),
     };
   }, [
+    editMarks,
     followLink,
     documentShell,
     scopedStyle,
@@ -3058,8 +3085,12 @@ export function SoftNRenderer({
         />
       )}
       {/* A newer version of the open app that cannot be shown: the last one
-          that worked stays, and this says what is wrong with the newest. */}
-      {failureNotices && heldProblem !== null && (
+          that worked stays, and this says what is wrong with the newest.
+          Not while a host is editing the app (`editMarks`): its editor says
+          it beside the source, with the line, and this bar said it a second
+          time over the app and pushed the app down at every slip of the
+          keys. The problem is kept: it is said here once the editor closes. */}
+      {failureNotices && heldProblem !== null && !editMarks && (
         <PersistenceNotice
           kind="update"
           message={`The newest change has a problem, so the last version that worked is still showing. ${heldProblem}`}

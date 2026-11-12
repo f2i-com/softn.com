@@ -213,6 +213,8 @@ export interface EditMarks {
   readonly drawn: WeakMap<object, import('../parser/ast').ElementNode>;
   /** @internal The function that notes an element, by its node's place, so React is given the same one each drawing. */
   readonly refs: WeakMap<object, (element: unknown) => void>;
+  /** @internal The nodes components were drawn from, as the renderer noted them: no prop an app writes is one. */
+  readonly components: WeakSet<object>;
 }
 
 /**
