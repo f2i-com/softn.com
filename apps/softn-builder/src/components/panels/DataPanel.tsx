@@ -76,13 +76,39 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-export function DataPanel() {
+interface DataPanelProps {
+  /**
+   * Under Properties this is a section that folds to its heading, which then
+   * carries the two counts: given, the heading is the button that folds it.
+   */
+  collapsed?: boolean;
+  onToggle?: () => void;
+}
+
+export function DataPanel({ collapsed = false, onToggle }: DataPanelProps) {
   const { entities, seedData } = useSchemaStore();
 
   const totalRecords = Array.from(seedData.values()).reduce(
     (sum, records) => sum + records.length,
     0
   );
+  const collectionsWord = entities.length === 1 ? 'collection' : 'collections';
+  const recordsWord = totalRecords === 1 ? 'record' : 'records';
+
+  if (onToggle) {
+    return (
+      <div className="bl-section" style={{ borderTop: '1px solid var(--line-soft)' }}>
+        <button type="button" className="bl-section-head" onClick={onToggle} aria-expanded={!collapsed} data-section="data">
+          <span>Data</span>
+          <span className="bl-section-count">
+            {entities.length} {collectionsWord}, {totalRecords} {recordsWord}
+          </span>
+          <span className="bl-section-chevron" aria-hidden="true">›</span>
+        </button>
+        {!collapsed && <div style={{ padding: '2px 12px 12px', fontSize: 13, color: 'var(--dim)' }}>{collectionList(entities, seedData)}</div>}
+      </div>
+    );
+  }
 
   return (
     <div style={styles.container}>
@@ -91,13 +117,25 @@ export function DataPanel() {
       <div style={styles.stats}>
         <div style={styles.stat}>
           <span style={styles.statValue}>{entities.length}</span>
-          <span>{entities.length === 1 ? 'collection' : 'collections'}</span>
+          <span>{collectionsWord}</span>
         </div>
         <div style={styles.stat}>
           <span style={styles.statValue}>{totalRecords}</span>
-          <span>{totalRecords === 1 ? 'record' : 'records'}</span>
+          <span>{recordsWord}</span>
         </div>
       </div>
+
+      {collectionList(entities, seedData)}
+    </div>
+  );
+}
+
+type SchemaState = ReturnType<typeof useSchemaStore.getState>;
+
+/** The collections by name, with what a page writes to read one; or where they are made. */
+function collectionList(entities: SchemaState['entities'], seedData: SchemaState['seedData']) {
+  return (
+    <>
 
       {entities.length > 0 ? (
         <div style={styles.entityList}>
@@ -134,6 +172,6 @@ export function DataPanel() {
           No collections yet. Design them and add sample records in the Data view.
         </div>
       )}
-    </div>
+    </>
   );
 }

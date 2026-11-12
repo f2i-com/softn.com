@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import React, { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -57,6 +59,28 @@ function submit() {
 function key(target: Element, name: string, extra: KeyboardEventInit = {}) {
   act(() => target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...extra })));
 }
+
+// The dialog had an overlay and a frame of its own, the whole height of the window: on a
+// phone its buttons stood over the status bar, where every other dialog of the Builder
+// leaves the bar's strip free (styles/builder.css, .bl-overlay and .bl-dialog).
+describe('the relationship dialog and the status bar', () => {
+  it('is laid out by the classes every dialog has, which keep the status bar’s strip free', () => {
+    mount();
+    const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+    const overlay = dialog.parentElement as HTMLElement;
+    expect(overlay.classList.contains('bl-overlay')).toBe(true);
+    expect(dialog.classList.contains('bl-dialog')).toBe(true);
+    // Nothing of its own that would put it back over the bar.
+    for (const name of ['padding', 'inset', 'position']) expect(overlay.style.getPropertyValue(name), name).toBe('');
+    expect(dialog.style.maxHeight).toBe('');
+    const css = readFileSync(resolve(process.cwd(), 'src/styles/builder.css'), 'utf8').replace(/\r\n/g, '\n');
+    expect(css).toMatch(/\.bl-overlay \{[^}]*padding: 16px 16px calc\(16px \+ var\(--bl-status-room\)\);/);
+    expect(css).toMatch(/\.bl-dialog \{[^}]*max-height: calc\(100dvh - 32px - var\(--bl-status-room\)\);/);
+    // And a message in the bar is raised over the dialog's shade, as it is for the others.
+    expect(css).toMatch(/:root:has\(\[data-relationship-overlay\]\) \.bl-status:has\(\.bl-status-said\)/);
+    expect(overlay.hasAttribute('data-relationship-overlay')).toBe(true);
+  });
+});
 
 describe('relationship editing', () => {
   it('opens a labeled modal with the source focused and all four explained cardinalities', () => {

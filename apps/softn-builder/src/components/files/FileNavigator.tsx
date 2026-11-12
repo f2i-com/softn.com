@@ -13,6 +13,9 @@ import type { ProjectFileNode } from '../../types/builder';
 import { FileGlyph, type FileGlyphKind } from './fileIcons';
 import { PANEL_WIDTHS } from '../../hooks/usePanelsThatFit';
 import { COMPONENTS_FOLDER, createComponentFile, pageFolderBeside } from '../../utils/componentFile';
+import { ASSETS_FOLDER, PICTURE_PATTERN, addAssetFiles, replaceAsset, replacedWords, replacementAccept } from '../../utils/addAssets';
+import { flushHeldPage, renameInProject, type RenameOutcome } from '../../utils/renameInProject';
+import { toast } from '../../stores/notificationStore';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -411,7 +414,7 @@ function FileNode({
     if (node.type === 'folder') return isExpanded ? 'folder-open' : 'folder';
     if (node.fileType === 'ui') return 'ui';
     if (node.fileType === 'logic') return 'logic';
-    if (node.fileType === 'asset') return 'file';
+    if (node.fileType === 'asset' && PICTURE_PATTERN.test(node.name)) return 'image';
     return 'file';
   };
 
@@ -523,8 +526,6 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     createFolder,
     deleteFile,
     deleteFolder,
-    renameFile,
-    renameFolder,
     deletionRefusedReason,
     uiFiles,
     logicFiles,
@@ -538,8 +539,6 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
       createFolder: state.createFolder,
       deleteFile: state.deleteFile,
       deleteFolder: state.deleteFolder,
-      renameFile: state.renameFile,
-      renameFolder: state.renameFolder,
       deletionRefusedReason: state.deletionRefusedReason,
       uiFiles: state.uiFiles,
       logicFiles: state.logicFiles,
@@ -770,6 +769,61 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     closeContextMenu();
   }, [contextMenu, nodes, handleQuickCreateStart, closeContextMenu]);
 
+  // A picture, or any other file the app is to carry, from the person's
+  // computer (utils/addAssets.ts). Nothing in the Builder could add one.
+  const assetInput = useRef<HTMLInputElement>(null);
+  const assetFolder = useRef(ASSETS_FOLDER);
+  const pickAssets = useCallback((folder: string) => {
+    assetFolder.current = folder;
+    assetInput.current?.click();
+  }, []);
+  const takeAssets = useCallback(
+    async (picked: File[]) => {
+      if (picked.length === 0) return;
+      const { added, refused } = await addAssetFiles(picked, assetFolder.current);
+      setFileError(refused.length > 0 ? refused.join(' ') : null);
+      // The first of them is opened, so that what was added is seen.
+      if (added.length > 0) openFile(added[0].id);
+    },
+    [openFile]
+  );
+
+  const handleAddAssets = useCallback(() => {
+    if (!contextMenu) return;
+    const node = nodes.get(contextMenu.nodeId);
+    if (!node || node.type !== 'folder') return;
+    closeContextMenu();
+    pickAssets(node.path);
+  }, [contextMenu, nodes, closeContextMenu, pickAssets]);
+
+  // Another file from the person's computer in place of a picture or other
+  // asset, under the path it has, so the pages that ask for it go on finding
+  // it (utils/addAssets.ts, replaceAsset). It was delete, then add again
+  // under a name that had to come out the same.
+  const replaceInput = useRef<HTMLInputElement>(null);
+  const replacingId = useRef<string | null>(null);
+  const handleReplaceStart = useCallback(() => {
+    if (!contextMenu) return;
+    const node = nodes.get(contextMenu.nodeId);
+    if (!node || node.fileType !== 'asset') return;
+    closeContextMenu();
+    replacingId.current = node.id;
+    const input = replaceInput.current;
+    if (!input) return;
+    // The picker is asked for the kind of file the name says.
+    input.accept = replacementAccept(node.path);
+    input.click();
+  }, [contextMenu, nodes, closeContextMenu]);
+  const takeReplacement = useCallback(async (file: File | undefined) => {
+    const id = replacingId.current;
+    if (!file || !id) return;
+    const result = await replaceAsset(id, file);
+    // What is refused is said here, where it was asked; what was done, as a save is.
+    setFileError(result.outcome === 'refused' ? result.reason : null);
+    const said = replacedWords(result, file.name);
+    if (said) (result.outcome === 'replaced' ? toast.success : toast.info)(said);
+  }, []);
+
   const handleRenameStart = useCallback(() => {
     if (!contextMenu) return;
     setRenamingId(contextMenu.nodeId);
@@ -781,16 +835,24 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
       const node = nodes.get(id);
       if (!node) return;
 
+      // A page names a picture by its path, and that path follows the rename
+      // now, as a page's imports and its logic always did (utils/
+      // renameInProject.ts): in the pages, in the logic and on the canvas, as
+      // one step that Undo takes back. It used to be left as it was, and all
+      // this could do was say which pages would not find the picture.
+      let outcome: RenameOutcome | null = null;
       attempt(() => {
-        if (node.type === 'folder') {
-          renameFolder(id, newName);
-        } else {
-          renameFile(id, newName);
-        }
+        outcome = renameInProject(id, newName);
       });
       setRenamingId(null);
+      const done = outcome as RenameOutcome | null;
+      if (done && done.followed.length > 0) {
+        const count = done.followed.length;
+        const who = count <= 3 ? done.followed.join(', ') : `${done.followed.slice(0, 2).join(', ')} and ${count - 2} more`;
+        toast.success(`${who} ${count === 1 ? 'asks' : 'ask'} for ${node.type === 'folder' ? 'what is in it' : 'it'} as ${done.to} now. Undo gives the old name back.`);
+      }
     },
-    [nodes, renameFile, renameFolder, attempt]
+    [nodes, attempt]
   );
 
   const handleDelete = useCallback(async () => {
@@ -801,6 +863,8 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
 
     // The pages that use it are named in the question: one that imports a
     // deleted file is left importing nothing, and the export writes it so.
+    // Asked of the pages as they are now, the one on the canvas with them.
+    flushHeldPage();
     const users = useFilesStore.getState().usersOf(nodeId);
     const left = users.length === 0
       ? ''
@@ -855,7 +919,8 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
         style={{
           ...styles.contextMenu,
           left: Math.min(contextMenu.x, window.innerWidth - 190),
-          top: Math.min(contextMenu.y, window.innerHeight - 200),
+          // A folder's menu is six items long: kept whole above the window's foot.
+          top: Math.min(contextMenu.y, window.innerHeight - (isFolder ? 240 : 200)),
         }}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleMenuKeyDown}
@@ -910,6 +975,23 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               </span>
               New folder
             </div>
+            <div
+              style={{
+                ...styles.menuItem,
+                ...(menuHoveredItem === 'addAssets' ? styles.menuItemHover : {}),
+              }}
+              onClick={handleAddAssets}
+              role="menuitem"
+              tabIndex={-1}
+              data-action="add-assets-here"
+              onMouseEnter={() => setMenuHoveredItem('addAssets')}
+              onMouseLeave={() => setMenuHoveredItem(null)}
+            >
+              <span style={styles.menuIcon}>
+                <FileGlyph kind="image" />
+              </span>
+              Add a picture or file
+            </div>
             <div style={styles.separator} />
           </>
         )}
@@ -926,6 +1008,23 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
         >
           Rename
         </div>
+        {node?.fileType === 'asset' && (
+          <div
+            style={{
+              ...styles.menuItem,
+              ...(menuHoveredItem === 'replace' ? styles.menuItemHover : {}),
+            }}
+            onClick={handleReplaceStart}
+            role="menuitem"
+            tabIndex={-1}
+            data-action="replace-asset"
+            title="Put another file in its place, under the same name"
+            onMouseEnter={() => setMenuHoveredItem('replace')}
+            onMouseLeave={() => setMenuHoveredItem(null)}
+          >
+            Replace…
+          </div>
+        )}
         {deleteRefused ? (
           <div
             style={{ ...styles.menuItem, ...styles.menuItemDisabled }}
@@ -985,6 +1084,44 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
           >
             <FileGlyph kind="folder" size={12} />
           </button>
+          <button
+            className="bl-mini"
+            onClick={() => pickAssets(ASSETS_FOLDER)}
+            title="Add a picture or file"
+            aria-label="Add a picture or file"
+            data-action="add-assets"
+          >
+            <FileGlyph kind="image" size={12} />
+          </button>
+          <input
+            ref={assetInput}
+            type="file"
+            multiple
+            hidden
+            tabIndex={-1}
+            aria-hidden="true"
+            data-add-assets-input=""
+            onChange={(e) => {
+              const picked = [...(e.target.files ?? [])];
+              // Emptied, so that the same file can be picked again.
+              e.target.value = '';
+              void takeAssets(picked);
+            }}
+          />
+          <input
+            ref={replaceInput}
+            type="file"
+            hidden
+            tabIndex={-1}
+            aria-hidden="true"
+            data-replace-asset-input=""
+            onChange={(e) => {
+              const picked = e.target.files?.[0];
+              // Emptied, so that the same file can be picked again.
+              e.target.value = '';
+              void takeReplacement(picked);
+            }}
+          />
           {onToggleDock && (
             <button
               className="bl-mini"

@@ -124,10 +124,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-const TEMPLATES: { key: StarterTemplate; title: string; description: string }[] = [
+/** The starters the dialog offers. Each is held to the components' own props (utils/newProject.test.ts). */
+export const TEMPLATES: { key: StarterTemplate; title: string; description: string }[] = [
   { key: 'blank', title: 'Blank', description: 'An empty page. Start from zero.' },
   { key: 'landing', title: 'Landing page', description: 'A centred heading, an intro and a call-to-action button.' },
-  { key: 'dashboard', title: 'Dashboard', description: 'A heading, stat tiles, cards and a list, ready for data.' },
+  { key: 'dashboard', title: 'Dashboard', description: 'A heading, stat tiles, cards and a list, with example rows to replace.' },
 ];
 
 const LANGUAGES: { key: LogicLanguage; title: string; description: string; path: string }[] = [

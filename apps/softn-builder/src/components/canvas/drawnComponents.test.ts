@@ -25,7 +25,7 @@ import { minimalComponents } from '@softn/components/minimal';
 import { getDefaultRegistry } from '@softn/core';
 import type { CanvasElement, ComponentMeta } from '../../types/builder';
 import { componentRegistry, getComponentMeta } from '../../utils/componentRegistry';
-import { drawnProps, neverPassed, WORDS } from '../../utils/drawnProps';
+import { drawnProps, drawsWhatIsWritten, neverPassed, WORDS } from '../../utils/drawnProps';
 import { drawnThemeFor, systemSide } from '../../utils/drawnTheme';
 import { starterProps } from '../../utils/starterProps';
 import { DrawnComponent, DrawnThemeProvider } from './DrawnComponent';
@@ -289,6 +289,46 @@ describe('what a drawn component is given', () => {
     // The sanitiser keeps what was withheld under a name that fetches nothing.
     expect(String(given.svg)).not.toMatch(/\s(xlink:)?href=|<image/);
     expect(String(given.svg)).toContain('data-softn-withheld-href');
+  });
+
+  // A new Dashboard is a SmartStats, a SmartCards and a SmartList with example rows written
+  // in them, and on the canvas it was three grey cards with their names: it looked empty
+  // until Live preview was on. Each is drawn as itself where its rows are on the page.
+  it('draws a component of rows from the rows the page wrote, and only then', () => {
+    const cards = element('SmartCards', { data: '[{ title: "Website refresh", description: "New home page" }, { title: "Survey", description: "Results are in" }]', title: 'title', description: 'description' }, ['data']);
+    expect(drawsWhatIsWritten(cards)).toBe(true);
+    draw(cards);
+    expect(host.querySelector('[data-stand-in]')).toBeNull();
+    expect(host.textContent).toContain('Website refresh');
+    expect(host.textContent).toContain('Results are in');
+
+    const stats = element('SmartStats', { stats: 'Open: 12, Done: 30, Overdue: 2', columns: 3 });
+    expect(drawsWhatIsWritten(stats)).toBe(true);
+    draw(stats);
+    for (const words of ['Open', '12', 'Done', '30', 'Overdue']) expect(host.textContent).toContain(words);
+
+    const list = element('SmartList', { data: '[{ title: "Write the brief", status: "Done" }]', primary: 'title', secondary: 'status' }, ['data']);
+    expect(drawsWhatIsWritten(list)).toBe(true);
+    draw(list);
+    expect(host.textContent).toContain('Write the brief');
+
+    // Rows from the logic are not on the canvas: "No items to display" would be a picture of
+    // what the app does not say, and the card with its name is drawn as before.
+    expect(drawsWhatIsWritten(element('SmartList', { data: 'tasks', primary: 'title' }, ['data']))).toBe(false);
+    expect(drawsWhatIsWritten(element('SmartCards', { data: 'projects.filter((p) => p.open)' }, ['data']))).toBe(false);
+    expect(drawsWhatIsWritten(element('SmartCards', { data: '[]' }, ['data']))).toBe(false);
+    expect(drawsWhatIsWritten(element('SmartStats', { stats: 'summary' }, ['stats']))).toBe(false);
+    expect(drawsWhatIsWritten(element('SmartStats', {}))).toBe(false);
+    // Every other component draws no rows, and is not asked.
+    expect(drawsWhatIsWritten(element('Badge', {}))).toBe(true);
+  });
+
+  it('draws the cards without the pictures their rows name, which the browser would fetch', () => {
+    const cards = element('SmartCards', { data: '[{ title: "Ada", photo: "https://example.com/ada.png" }]', title: 'title', image: 'photo' }, ['data']);
+    expect(drawnProps(cards, meta('SmartCards'))).toEqual({ data: [{ title: 'Ada', photo: 'https://example.com/ada.png' }], title: 'title' });
+    draw(cards);
+    expect(host.textContent).toContain('Ada');
+    expect(host.innerHTML).not.toContain('example.com');
   });
 
   it('carries no id into the editor\'s own document, where a label of the editor\'s could find it', () => {

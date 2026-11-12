@@ -142,7 +142,49 @@ const FUNCTIONS: Record<string, readonly string[]> = {
   Progress: ['formatLabel'],
   Select: ['createOptionText'],
   Slider: ['formatTooltip'],
+  SmartCards: ['renderCard'],
 };
+
+/**
+ * Props that name the field of a row a picture's address is in. The rows a
+ * page writes are handed over as they are, and the component would fetch
+ * whatever stands in that field as it draws: the cards are drawn without
+ * their pictures instead, as an Avatar is drawn without an address.
+ */
+const PICTURE_FIELDS: Record<string, readonly string[]> = {
+  SmartCards: ['image'],
+};
+
+/**
+ * The components that draw rows, each with the prop its rows come in. Such a
+ * component is drawn as itself only when the rows are written on the page (a
+ * list in braces, or a SmartStats' `Open: 12, Done: 30`): then the drawing is
+ * what the app will show. Rows that come from the logic are not on the
+ * canvas, and a drawing of "No items to display" would be a picture of
+ * something the app does not say; that one stays a card with its name.
+ */
+const ROWS: Record<string, string> = {
+  SmartStats: 'stats',
+  SmartCards: 'data',
+  SmartList: 'data',
+};
+
+/**
+ * Whether the canvas has what `element` draws. True for every component that
+ * draws no rows; for one that does, whether its rows are written on the page
+ * and there is at least one.
+ */
+export function drawsWhatIsWritten(element: CanvasElement): boolean {
+  const name = ROWS[element.componentType];
+  if (name === undefined) return true;
+  const value = element.props[name];
+  if (value === undefined || value === null) return false;
+  if (!(element.expressionProps ?? []).includes(name)) return typeof value === 'string' && value.trim() !== '';
+  const written = readLiteral(String(value));
+  if (!written.literal) return false;
+  if (Array.isArray(written.value)) return written.value.length > 0;
+  return typeof written.value === 'string' && written.value.trim() !== '';
+}
 
 /**
  * What React itself takes, and what the canvas decides for the component:
@@ -153,7 +195,12 @@ const NOT_THE_COMPONENTS = new Set(['key', 'ref', 'dangerouslySetInnerHTML', 'au
 
 /** Whether a prop of this name is never handed to a drawn component. */
 export function neverPassed(componentType: string, name: string): boolean {
-  return /^on[A-Z]/.test(name) || NOT_THE_COMPONENTS.has(name) || (FUNCTIONS[componentType]?.includes(name) ?? false);
+  return (
+    /^on[A-Z]/.test(name) ||
+    NOT_THE_COMPONENTS.has(name) ||
+    (FUNCTIONS[componentType]?.includes(name) ?? false) ||
+    (PICTURE_FIELDS[componentType]?.includes(name) ?? false)
+  );
 }
 
 /** Whether an expression written for this prop is shown as written. */

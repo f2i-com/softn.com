@@ -59,9 +59,10 @@ function logicFile() {
 
 function handler(text: string): void {
   const label = [...host.querySelectorAll('label')].find((element) => element.textContent === '@click')!;
-  const input = document.getElementById(label.htmlFor) as HTMLInputElement;
+  // The handler's box is the one that grows with what is in it (GrowingField.tsx).
+  const input = document.getElementById(label.htmlFor) as HTMLTextAreaElement;
   act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text);
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   // Leaving the field ends its run of edits, as it does for a person.

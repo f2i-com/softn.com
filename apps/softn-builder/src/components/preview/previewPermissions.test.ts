@@ -7,6 +7,11 @@
  * reached its hosts, and a Camera opened the camera, with nobody asked. And
  * with nothing declared, nothing was handed over, which core reads as a host
  * that enforces nothing: the page's markup fetched any address it named.
+ *
+ * An Allow hands the running app the declaration and does not start it
+ * again: what was typed and played in the preview is as it was (core takes
+ * the grant where the app stands, and starts its logic again, with its
+ * variables, only where that is needed). It used to be a new start.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
@@ -19,11 +24,14 @@ import { LivePreview } from './LivePreview';
 
 /** Each start of the app, with the declaration it was handed. */
 const started = vi.hoisted(() => [] as unknown[]);
+/** The declaration the app was handed, each time it was drawn. */
+const handed = vi.hoisted(() => [] as unknown[]);
 
 vi.mock('./PreviewRuntime', async () => {
   const { createElement, useState } = await import('react');
   function PreviewRuntime(props: { permissionConfig?: unknown }) {
     useState(() => started.push(props.permissionConfig));
+    handed.push(props.permissionConfig);
     return createElement('p', null, 'The app');
   }
   return { PreviewRuntime, previewRecordsFor: () => ({}) };
@@ -41,6 +49,7 @@ let host: HTMLDivElement;
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   started.length = 0;
+  handed.length = 0;
   useProjectStore.getState().reset();
   useFilesStore.getState().reset();
   useCanvasStore.getState().reset();
@@ -74,7 +83,7 @@ const press = async (label: string) => {
 };
 
 describe('the preview of an app that declares capabilities', () => {
-  it('starts it with them withheld, and again with them once they are allowed, until withheld again', async () => {
+  it('starts it with them withheld, and hands it them once they are allowed, until withheld again, in the one start', async () => {
     useProjectStore.getState().setPermissions({ capabilities: ['net', 'camera'], allowedHosts: ['api.example.com'], allowHttp: false, storagePolicies: {}, file: true });
     await open();
     expect(started.at(-1)).toEqual({ permissions: {}, consentPending: true });
@@ -83,22 +92,24 @@ describe('the preview of an app that declares capabilities', () => {
 
     await press('Allow in preview');
     expect(note()?.dataset.previewCapabilities).toBe('allowed');
-    expect(started.at(-1)).toEqual({ permissions: { net: { enabled: true, allowed_hosts: ['api.example.com'] }, camera: { enabled: true } } });
+    expect(handed.at(-1)).toEqual({ permissions: { net: { enabled: true, allowed_hosts: ['api.example.com'] }, camera: { enabled: true } } });
 
     await press('Withhold again');
-    expect(started.at(-1)).toMatchObject({ permissions: {}, consentPending: true });
+    expect(handed.at(-1)).toMatchObject({ permissions: {}, consentPending: true });
+    // The app that was running is the one that was handed each: it was not mounted again.
+    expect(started).toHaveLength(1);
   });
 
   it('asks again once the app declares more than was allowed', async () => {
     useProjectStore.getState().setPermissions({ capabilities: ['net'], allowedHosts: ['api.example.com'], allowHttp: false, storagePolicies: {}, file: true });
     await open();
     await press('Allow in preview');
-    expect(started.at(-1)).toMatchObject({ permissions: { net: { enabled: true } } });
+    expect(handed.at(-1)).toMatchObject({ permissions: { net: { enabled: true } } });
     await act(async () => {
       useProjectStore.getState().setPermissions({ capabilities: ['net'], allowedHosts: [], allowHttp: false, storagePolicies: {}, file: true });
     });
     expect(note()?.dataset.previewCapabilities).toBe('withheld');
-    expect(started.at(-1)).toMatchObject({ permissions: {}, consentPending: true });
+    expect(handed.at(-1)).toMatchObject({ permissions: {}, consentPending: true });
   });
 });
 

@@ -11,11 +11,12 @@ import { focusCandidatesAfterDelete, focusFirstDrawn } from '../../utils/focusAf
 import type { CanvasElement } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
+  // Its height is the column's to give (App.tsx): the rows scroll inside it.
   container: {
     background: 'var(--ink-2)',
     borderTop: '1px solid var(--line-soft)',
-    maxHeight: 250,
     overflow: 'auto',
+    minHeight: 0,
   },
   // A section inside the Properties panel: small and dim, sentence case.
   header: {
@@ -45,10 +46,10 @@ interface TreeNodeProps {
   depth: number;
 }
 
+// Its height is the class's (.bl-tree-row, builder.css): a line, and a finger's 44 pixels where the pointer is one.
 const nodeBaseStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  minHeight: 24,
   padding: '2px 8px',
   cursor: 'pointer',
   fontSize: 12.5,
@@ -182,6 +183,7 @@ function TreeNode({ element, depth }: TreeNodeProps) {
     <div>
       <div
         style={nodeStyle}
+        className="bl-tree-row"
         role="treeitem"
         tabIndex={isSelected || (depth === 0 && selectedIds.length === 0) ? 0 : -1}
         data-hierarchy-row={element.id}
@@ -199,12 +201,14 @@ function TreeNode({ element, depth }: TreeNodeProps) {
             tabIndex={-1}
             onClick={handleToggle}
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
+            className="bl-tree-toggle"
             style={{ ...toggleStyle, transform: isExpanded ? 'rotate(90deg)' : undefined }}
           >
             ›
           </button>
         ) : (
-          <span style={{ width: 16 }} />
+          // As wide as the button a row with children has, whatever that is under a finger.
+          <span className="bl-tree-toggle" style={{ width: 16, flexShrink: 0 }} />
         )}
 
         {/* A block is named by its header line — `#if (open)`, `#each (item in
@@ -224,11 +228,13 @@ function TreeNode({ element, depth }: TreeNodeProps) {
           {blockHeaderText(element) ?? elementLabel(element)}
         </span>
 
-        {element.parentId && isHovered && (
+        {/* On the row the pointer is over, and on the selected one: a finger hovers over nothing. */}
+        {element.parentId && (isHovered || isSelected) && (
           <button
             type="button"
             tabIndex={-1}
             onClick={handleDelete}
+            className="bl-tree-delete"
             style={deleteStyle}
             title="Delete (Del)"
             aria-label={`Delete ${elementLabel(element)}`}
@@ -251,24 +257,56 @@ function TreeNode({ element, depth }: TreeNodeProps) {
   );
 }
 
-export function TreeView() {
+interface TreeViewProps {
+  /**
+   * Under Properties the tree is a section that folds to its heading, so the
+   * properties can have the column: given, the heading is the button that
+   * folds it.
+   */
+  collapsed?: boolean;
+  onToggle?: () => void;
+  /** In a sheet of its own, on a phone: the way to put the sheet away. */
+  onClose?: () => void;
+}
+
+export function TreeView({ collapsed = false, onToggle, onClose }: TreeViewProps) {
   const { elements, rootId } = useCanvasStore();
   const rootElement = elements.get(rootId);
 
   if (!rootElement) return null;
 
+  // The page's own <App> is the tree's root, not one of its elements.
+  const count = elements.size - 1;
+
   return (
-    <div style={styles.container}>
-      <div style={styles.header} id="builder-hierarchy-title">Hierarchy</div>
+    <div style={styles.container} className="bl-section">
+      {onToggle ? (
+        <button type="button" className="bl-section-head" onClick={onToggle} aria-expanded={!collapsed} data-section="hierarchy">
+          <span id="builder-hierarchy-title">Hierarchy</span>
+          <span className="bl-section-count">{count}</span>
+          <span className="bl-section-chevron" aria-hidden="true">›</span>
+        </button>
+      ) : (
+        <div style={styles.header} className={onClose ? 'bl-section-bar' : undefined}>
+          <span id="builder-hierarchy-title">Hierarchy</span>
+          {onClose && (
+            <button type="button" className="bl-mini" onClick={onClose} aria-label="Hide hierarchy">
+              Hide
+            </button>
+          )}
+        </div>
+      )}
+      {!collapsed && (
       <div style={styles.tree} role="tree" aria-labelledby="builder-hierarchy-title">
         <TreeNode element={rootElement} depth={0} />
         {/* A tree of one node says nothing about how to grow it. */}
         {rootElement.children.length === 0 && (
           <div style={styles.emptyHint} data-tree-empty>
-            Empty so far. Drag a component from the palette onto the canvas, and it appears here.
+            Empty so far. Add a component to the page, and it appears here.
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

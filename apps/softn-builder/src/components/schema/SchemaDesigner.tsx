@@ -391,7 +391,7 @@ export function SchemaDesigner() {
   }, [addEntity]);
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} className="bl-schema">
       <div style={styles.toolbar}>
         <span style={styles.toolbarTitle}>Collections</span>
         <button type="button" className="bl-btn bl-btn-sm" onClick={handleAddEntity}>
@@ -405,8 +405,8 @@ export function SchemaDesigner() {
         </span>
       </div>
 
-      <div style={styles.main}>
-        <div style={styles.flowContainer} ref={flowContainer} tabIndex={-1}
+      <div style={styles.main} className="bl-schema-main">
+        <div style={styles.flowContainer} className="bl-schema-flow" ref={flowContainer} tabIndex={-1}
           onKeyDownCapture={event => {
             if (relationshipDialog || event.nativeEvent.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || !['Delete', 'Backspace'].includes(event.key)) return;
             const focusedEdge = event.target instanceof Element ? event.target.closest('.react-flow__edge') : null;
@@ -489,7 +489,7 @@ export function SchemaDesigner() {
               <button type="button" className="bl-btn bl-btn-primary bl-btn-lg" style={styles.emptyBtn} onClick={handleAddEntity}>
                 + Add your first collection
               </button>
-              <p style={styles.emptyHint}>
+              <p style={styles.emptyHint} className="bl-schema-empty-hint">
                 Or double-click anywhere on the canvas. Drag between two collections to relate them.
               </p>
             </div>

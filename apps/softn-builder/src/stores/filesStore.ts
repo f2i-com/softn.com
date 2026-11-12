@@ -20,6 +20,7 @@ import { writeBack } from '../utils/sourceFrame';
 import { withImportLines } from '../utils/pageImports';
 import { pagesFollowing } from '../utils/manifestPages';
 import { changeDataDeclarations, type CollectionChange } from '../utils/dataDeclarations';
+import { followAssetMove, type AssetMove } from '../utils/assetReferences';
 import {
   MAIN_LOGIC_PATHS,
   blankLogicFile,
@@ -197,6 +198,27 @@ function movedPath(path: string, from: string, to: string): string {
   return path;
 }
 
+/**
+ * The files after a picture or other asset moved (`move`; null when none
+ * did): every page and logic file that names it names it where it is now
+ * (utils/assetReferences.ts), and each file that changed is marked. A page's
+ * imports and its logic followed a rename and an asset's path did not: the
+ * page went on asking for a file that was no longer there.
+ */
+function followingAssets(
+  before: Map<string, UIFileState>,
+  files: { nodes: Map<string, ProjectFileNode>; uiFiles: Map<string, UIFileState>; logicFiles: Map<string, LogicFileState> },
+  move: AssetMove | null
+): { nodes: Map<string, ProjectFileNode>; uiFiles: Map<string, UIFileState>; logicFiles: Map<string, LogicFileState> } {
+  if (!move) return files;
+  // What each page was read as is settled for the paths rewritten above first (a logic file or
+  // an imported page that moved with the same folder), and then follows the asset with the page.
+  const followed = followAssetMove(baselinesFollowing(before, files.uiFiles), files.logicFiles, move);
+  let nodes = files.nodes;
+  for (const id of followed.changed) nodes = markedChanged(nodes, id);
+  return { nodes, uiFiles: followed.uiFiles, logicFiles: followed.logicFiles };
+}
+
 /** Every `<logic src="…">` in a source, with either quote. */
 const LOGIC_SRC_ATTRIBUTE = /(<logic\b[^>]*?\bsrc\s*=\s*)(["'])([^"']*)\2/gi;
 
@@ -368,6 +390,38 @@ function pythonNameReason(
   return null;
 }
 
+/** Whether a text names one of `paths` as a file of the bundle: the path in quotes, as `asset("…")` is given it. */
+function namesAsset(text: string, paths: readonly string[]): boolean {
+  return paths.some((path) => text.includes(`"${path}"`) || text.includes(`'${path}'`));
+}
+
+/** Whether a page names one of `paths`: in what an element is given, or in the text the page keeps. */
+function pageNamesAsset(file: UIFileState, paths: readonly string[]): boolean {
+  if (paths.length === 0) return false;
+  if (file.originalSource !== undefined && namesAsset(file.originalSource, paths)) return true;
+  for (const element of file.elements.values()) {
+    for (const value of Object.values(element.props)) {
+      if (typeof value === 'string' && (paths.includes(value) || namesAsset(value, paths))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The project's roots after a change to its files: the folders at the top
+ * of it, those it had in the order it had them and any new one after them.
+ *
+ * The list was set when a project was made or opened and by nothing else,
+ * and the Files panel draws from it. A folder made at the top of the project
+ * (New folder with `index.html` open, or `assets` made again after it was
+ * deleted) was in the project, written into the export, and in no list.
+ */
+function rootsOf(nodes: Map<string, ProjectFileNode>, roots: string[]): string[] {
+  const top = [...nodes.values()].filter((node) => node.type === 'folder' && !node.parentId).map((node) => node.id);
+  const next = [...roots.filter((id) => top.includes(id)), ...top.filter((id) => !roots.includes(id))];
+  return next.length === roots.length && next.every((id, at) => id === roots[at]) ? roots : next;
+}
+
 /**
  * Why a node cannot be deleted, or null.
  *
@@ -436,6 +490,22 @@ interface FilesStore {
   renameFolder: (id: string, newName: string) => void;
 
   createFile: (parentPath: string, name: string, type: 'ui' | 'logic') => string;
+  /**
+   * Put a picture, or any other file the app is to carry, into the project
+   * at `parentPath/name`. It is one of the project's assets from then on:
+   * listed in Files, written into a save and an export, given to Preview,
+   * and offered for an Image's source. The tab that is open stays open.
+   */
+  addAssetFile: (parentPath: string, name: string, type: string, data: Uint8Array) => string;
+  /**
+   * Put `data` in place of what an asset holds. Its path, its id and its
+   * type stay, so every page and logic file that asks for it by that path
+   * gets the new bytes, and a tab that has it open shows them. The bytes it
+   * held are gone from the project: there is no undo for a file, so the
+   * caller asks first (utils/addAssets.ts, replaceAsset). Throws when `id`
+   * is not an asset of the project.
+   */
+  replaceAssetFile: (id: string, data: Uint8Array) => void;
   deleteFile: (id: string) => void;
   renameFile: (id: string, newName: string) => void;
   /** Move a file into `newParentPath`, renaming it too when `newName` is given. */
@@ -445,9 +515,19 @@ interface FilesStore {
   /**
    * The pages, by path, that use this file or something in this folder: a
    * page that imports it with `<import … from>`, or links it with `<logic
-   * src>`. What is left pointing at nothing when it is deleted.
+   * src>`; and for a picture or other asset, each page and logic file that
+   * names it (`asset("assets/logo.png")`). What is left pointing at nothing
+   * when it is deleted.
    */
   usersOf: (id: string) => string[];
+  /**
+   * The pages and logic files, by path, that name this picture or other
+   * asset, or one in this folder, by its path (`asset("assets/logo.png")`).
+   * They follow it when it is renamed or moved (renameFolder and moveFile,
+   * with utils/assetReferences.ts), and are what a delete leaves asking for
+   * a file that is no longer there.
+   */
+  assetUsersOf: (id: string) => string[];
 
   // Tab actions
   openFile: (id: string) => void;
@@ -609,6 +689,14 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     set(...(args as Parameters<typeof set>));
     let after = get();
     if (after === before) return;
+    // The roots are the folders at the top of the project, as it now is (rootsOf).
+    if (after.nodes !== before.nodes) {
+      const rootFolders = rootsOf(after.nodes, after.rootFolders);
+      if (rootFolders !== after.rootFolders) {
+        set({ rootFolders });
+        after = get();
+      }
+    }
     // What each page was read as follows a text rewritten from outside it (baselinesFollowing).
     if (after.uiFiles !== before.uiFiles) {
       const uiFiles = baselinesFollowing(before.uiFiles, after.uiFiles);
@@ -790,12 +878,20 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         newAssetFiles.set(fileId, { ...file, name: move(file.name) });
       }
 
+      // A folder with a picture in it: what names the picture follows it.
+      const holdsAsset = [...state.nodes.values()].some((n) => n.type === 'file' && n.fileType === 'asset' && n.path.startsWith(`${oldPath}/`));
       return {
-        nodes: newNodes,
-        // A folder holds UI files, logic files or both, so a reference can
-        // have either end move, or both.
-        uiFiles: relinkLogicReferences(state.uiFiles, newUIFiles, move),
-        logicFiles: newLogicFiles,
+        ...followingAssets(
+          state.uiFiles,
+          {
+            nodes: newNodes,
+            // A folder holds UI files, logic files or both, so a reference can
+            // have either end move, or both.
+            uiFiles: relinkLogicReferences(state.uiFiles, newUIFiles, move),
+            logicFiles: newLogicFiles,
+          },
+          holdsAsset ? { from: oldPath, to: newPath, folder: true } : null
+        ),
         assetFiles: newAssetFiles,
       };
     });
@@ -858,6 +954,47 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     });
 
     return id;
+  },
+
+  addAssetFile: (parentPath, name, type, data) => {
+    const id = generateId();
+    const fullPath = parentPath ? `${parentPath}/${name}` : name;
+    const refused = nameReason(name, fullPath) ?? pathTakenReason(get().nodes, fullPath);
+    if (refused) throw new Error(refused);
+
+    edit((state) => {
+      const newNodes = new Map(state.nodes);
+      // The folder it goes in, made if the project has not got it yet.
+      const parentId = folderAt(newNodes, parentPath);
+      newNodes.set(id, { id, name, path: fullPath, type: 'file', fileType: 'asset', parentId, isDirty: true });
+      const parent = parentId ? newNodes.get(parentId) : undefined;
+      if (parentId && parent) newNodes.set(parentId, { ...parent, children: [...(parent.children ?? []), id] });
+
+      // Held as an opened bundle's assets are (loadFromBundle): under its whole path.
+      const newAssetFiles = new Map(state.assetFiles);
+      newAssetFiles.set(id, { bundlePath: fullPath, name: fullPath, type, data });
+      return { nodes: newNodes, assetFiles: newAssetFiles };
+    });
+
+    return id;
+  },
+
+  replaceAssetFile: (id, data) => {
+    const node = get().nodes.get(id);
+    if (!node || node.type !== 'file' || node.fileType !== 'asset' || !get().assetFiles.has(id)) {
+      throw new Error('That picture or file is no longer in the project.');
+    }
+
+    edit((state) => {
+      const held = state.assetFiles.get(id);
+      if (!held) return state;
+      // A new record around the new bytes, never the old one written into:
+      // what was last saved (utils/savedPoint.ts) and the recovery copy
+      // (utils/storedAssets.ts) know an asset by the array it holds.
+      const newAssetFiles = new Map(state.assetFiles);
+      newAssetFiles.set(id, { ...held, data });
+      return { nodes: markedChanged(state.nodes, id), assetFiles: newAssetFiles };
+    });
   },
 
   deleteFile: (id) => {
@@ -998,12 +1135,19 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       }
 
       return {
-        nodes: newNodes,
-        // Every `<logic src>` that pointed at a moved logic file has to follow
-        // it, and a moved UI file's own reference is relative to where it now
-        // is — or the app renders perfectly and every button is inert.
-        uiFiles: relinkLogicReferences(state.uiFiles, newUIFiles, (path) => movedPath(path, node.path, newPath)),
-        logicFiles: newLogicFiles,
+        ...followingAssets(
+          state.uiFiles,
+          {
+            nodes: newNodes,
+            // Every `<logic src>` that pointed at a moved logic file has to follow
+            // it, and a moved UI file's own reference is relative to where it now
+            // is — or the app renders perfectly and every button is inert.
+            uiFiles: relinkLogicReferences(state.uiFiles, newUIFiles, (path) => movedPath(path, node.path, newPath)),
+            logicFiles: newLogicFiles,
+          },
+          // A picture or other asset: what names it by its path follows it.
+          node.fileType === 'asset' ? { from: node.path, to: newPath, folder: false } : null
+        ),
         assetFiles: newAssetFiles,
       };
     });
@@ -1297,18 +1441,36 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   },
 
   usersOf: (id) => {
-    const { nodes, uiFiles } = get();
+    const { nodes, uiFiles, logicFiles } = get();
     const node = nodes.get(id);
     if (!node) return [];
     const within = (path: string) => path === node.path || (node.type === 'folder' && path.startsWith(`${node.path}/`));
+    // The pages and logic that name a picture or other asset that goes with it.
+    const named = new Set(get().assetUsersOf(id));
     const users: string[] = [];
     for (const file of uiFiles.values()) {
       // What is deleted with it is not left behind to miss it.
       if (within(file.path)) continue;
       const uses = [...file.imports.map((entry) => entry.source), ...(file.logicSrc ? [file.logicSrc] : [])];
-      if (uses.some((source) => within(resolveImportPath(file.path, source)))) users.push(file.path);
+      if (uses.some((source) => within(resolveImportPath(file.path, source))) || named.has(file.path)) users.push(file.path);
+    }
+    for (const file of logicFiles.values()) {
+      if (!within(file.path) && named.has(file.path)) users.push(file.path);
     }
     return users.sort();
+  },
+
+  assetUsersOf: (id) => {
+    const { nodes, uiFiles, logicFiles } = get();
+    const node = nodes.get(id);
+    if (!node) return [];
+    const within = (path: string) => path === node.path || (node.type === 'folder' && path.startsWith(`${node.path}/`));
+    const assets = [...nodes.values()].filter((n) => n.type === 'file' && n.fileType === 'asset' && within(n.path)).map((n) => n.path);
+    if (assets.length === 0) return [];
+    return [
+      ...[...uiFiles.values()].filter((file) => pageNamesAsset(file, assets)).map((file) => file.path),
+      ...[...logicFiles.values()].filter((file) => namesAsset(file.content, assets)).map((file) => file.path),
+    ].sort();
   },
 
   resolveImportPath: (fromPath, importPath) => {

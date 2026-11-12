@@ -12,6 +12,7 @@ import { AppPage, DrawnThemeProvider } from './DrawnComponent';
 import { DragLayer } from './DragLayer';
 import { canDropInto, isPaletteType } from '../../utils/blocks';
 import { redoCanvas, undoCanvas } from '../../utils/canvasHistory';
+import { Announcement } from '../feedback/Announcement';
 import { focusCandidatesAfterDelete, focusFirstDrawn } from '../../utils/focusAfterDelete';
 import { useDragAutoScroll } from '../../utils/dragScroll';
 import { useDrawnTheme } from '../../utils/drawnTheme';
@@ -109,17 +110,6 @@ const styles: Record<string, React.CSSProperties> = {
   dropActive: {
     boxShadow: '0 0 0 2px var(--line-strong)',
   },
-  // Read by a screen reader, seen by nobody.
-  announcement: {
-    position: 'absolute',
-    width: 1,
-    height: 1,
-    margin: -1,
-    padding: 0,
-    overflow: 'hidden',
-    clipPath: 'inset(50%)',
-    whiteSpace: 'nowrap',
-  },
 };
 
 interface CanvasProps {
@@ -129,9 +119,15 @@ interface CanvasProps {
    * it, where it used to say to drag from a panel that was not there.
    */
   onShowComponents?: () => void;
+  /**
+   * On a phone, where the panels are sheets over the canvas: the empty page
+   * says to tap, and where Properties is, since nothing there is dragged and
+   * nothing stands on the right.
+   */
+  byTouch?: boolean;
 }
 
-export function Canvas({ onShowComponents }: CanvasProps) {
+export function Canvas({ onShowComponents, byTouch = false }: CanvasProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [focusedElementId, setFocusedElementId] = useState<string | null>(null);
   // The part of the canvas that scrolls, which a drag held at its edge moves.
@@ -336,7 +332,6 @@ export function Canvas({ onShowComponents }: CanvasProps) {
   }, []);
 
   const dropIndicator = useCanvasStore((s) => s.dropIndicator);
-  const announcement = useCanvasStore((s) => s.announcement);
   const hasChildren = rootElement && rootElement.children.length > 0;
   const visibleElementIds = useMemo(() => {
     if (!rootElement) return [];
@@ -458,12 +453,12 @@ export function Canvas({ onShowComponents }: CanvasProps) {
                           <button type="button" style={styles.emptyButton} onClick={onShowComponents} data-action="show-components">
                             Open Components
                           </button>
-                          , then drag one onto this page, or double-click it to add it here.
+                          {byTouch ? ' and tap one to add it here.' : ', then drag one onto this page, or double-click it to add it here.'}
                         </>
                       ) : (
                         'Drag one from Components onto this page, or double-click it to add it here.'
                       )}{' '}
-                      Pick anything you add to change its properties on the right.
+                      {byTouch ? 'Tap what you add, then open Properties to change it.' : 'Pick anything you add to change its properties on the right.'}
                     </span>
                     {!isDesktop() && !isHostedEditor() && (
                       <a href={`?open=${encodeURIComponent(EXAMPLE_BUNDLE_PATH)}`} style={styles.emptyLink} data-action="open-example">
@@ -481,9 +476,7 @@ export function Canvas({ onShowComponents }: CanvasProps) {
       <DragLayer />
       {/* What a move made from the keyboard did, for a person who cannot
           see the canvas: read out, and not drawn. */}
-      <div role="status" aria-live="polite" data-canvas-announcement="" style={styles.announcement}>
-        {announcement}
-      </div>
+      <Announcement />
     </div>
   );
 }

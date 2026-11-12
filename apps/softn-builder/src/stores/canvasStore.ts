@@ -147,6 +147,8 @@ interface CanvasStore extends CanvasState {
 
   /** What was last done that a person who cannot see the canvas should hear (a move made from the keyboard). */
   announcement: string;
+  /** How many things have been announced: the same words twice are two announcements (components/feedback/Announcement.tsx). */
+  announced: number;
   announce: (text: string) => void;
   cutSelected: () => void;
 
@@ -795,8 +797,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   },
 
   announcement: '',
+  announced: 0,
   announce: (text) => {
-    set({ announcement: text });
+    set((state) => ({ announcement: text, announced: state.announced + 1 }));
   },
 
   reset: () => {

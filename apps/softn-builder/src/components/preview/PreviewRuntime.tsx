@@ -28,7 +28,13 @@ export function PreviewRuntime({ projectId, records, assets = EMPTY_ASSETS, ...p
   useEffect(() => {
     const resolver = createPreviewAssets(assets);
     setAssetSession({ assets, resolver });
-    return () => resolver.dispose?.();
+    // Let go a moment after the next set is in place, not before: the running
+    // app draws from this one until it is handed the next (a picture added to
+    // the project is swapped in where the app stands, and not by starting it
+    // again), and an address let go first was a broken picture in between.
+    return () => {
+      setTimeout(() => resolver.dispose?.(), 0);
+    };
   }, [assets]);
   const [session, setSession] = useState<{
     projectId: string; records: typeof records; scope: ReturnType<typeof createEphemeralXDBScope>;
@@ -52,7 +58,9 @@ export function PreviewRuntime({ projectId, records, assets = EMPTY_ASSETS, ...p
   }), [props.functions, assetSession]);
 
   // Do not let an old script observe the next project's seed records during an effect transition.
-  if (!session || session.projectId !== projectId || session.records !== records || assetSession?.assets !== assets) return <>{props.loading}</>;
+  // (The assets are not waited for the same way: the app goes on with the set
+  // it has for the one draw until the next is there.)
+  if (!session || session.projectId !== projectId || session.records !== records || !assetSession) return <>{props.loading}</>;
   // The problem list and the stop screen say what fails here, and Restart starts it
   // again: a bar's Reload would reload the Builder.
   return <SoftNWithXDB {...props} key={session.scope.appId} appId={session.scope.appId}

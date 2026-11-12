@@ -12,7 +12,7 @@ import { debug } from '../../utils/debug';
 import { buildPermissionJson } from '../../utils/permissions';
 import type { CollectionDef } from '../../types/builder';
 import { previewSourceFor, undeclaredPythonPackage } from '../../utils/previewSource';
-import { inspectDeclaration, type PermissionConfig } from '@softn/core';
+import { type AppUpdateResult, inspectDeclaration, type PermissionConfig } from '@softn/core';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
 import { PreviewProblems } from './PreviewProblems';
@@ -318,7 +318,46 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
   );
 }
 
-export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: DevicePreset }) {
+/**
+ * `value`, once it has stopped changing for `ms`: beside the canvas the
+ * page changes with every key pressed in a property, and the running app is
+ * handed the page when the typing pauses and not once a letter. (It takes a
+ * new page where it stands, with the state it has; a change to its logic
+ * starts the logic again with its variables carried over. See core's
+ * LiveApp.) The second thing returned says a change is waiting. With no
+ * delay the value is passed straight on.
+ */
+export function useSettled<T>(value: T, ms: number): [T, boolean] {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    if (ms <= 0 || Object.is(value, settled)) return;
+    const timer = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(timer);
+  }, [value, settled, ms]);
+  return ms <= 0 ? [value, false] : [settled, !Object.is(value, settled)];
+}
+
+interface LivePreviewProps {
+  initialDevice?: DevicePreset;
+  /**
+   * Beside the canvas, in Design. The header is the one row a pane has room
+   * for: whether the app is running, and the three devices; the pane is put
+   * away by the button that brought it, at the end of the row of tabs. And
+   * the app is handed the page after a pause in the editing
+   * ({@link useSettled}).
+   */
+  beside?: boolean;
+}
+
+/**
+ * How long the page must be left alone before the app beside the canvas is
+ * handed it. It was 450 ms while every change started the app again; a page
+ * is now drawn where the app stands, which costs little, so the wait is only
+ * there to gather a word's worth of keys.
+ */
+const SETTLE_MS = 200;
+
+export function LivePreview({ initialDevice = 'desktop', beside = false }: LivePreviewProps) {
   const { elements, rootId } = useCanvasStore();
   const { projectId, logicSource, collections: projectCollections, themeMode, permissions, pythonPackages, setPythonPackages, source: retainedSource, assets: projectAssets } = useProjectStore();
   // The preview runs under the project's own declaration, as the runtime
@@ -417,11 +456,31 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   // Get source - prioritize ui/main.ui for stable preview behavior.
   // IMPORTANT: useMemo must be a pure computation — no setState calls.
   // Errors and info are returned as part of the result and synced via useEffect.
-  const previewState = useMemo(
+  const previewStateNow = useMemo(
     () => previewSourceFor({ elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages }),
     [elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages]
   );
+  const [settledState] = useSettled(previewStateNow, beside ? SETTLE_MS : 0);
+  // A project that cannot be composed for a moment (a file half written)
+  // does not take the running app away: the last state that composed stays,
+  // for this start of the app, and a line under the header says what is
+  // wrong with the newest. Only while the project's packages are what they
+  // were: a package the app imports and no longer declares is said in the
+  // app's place, with its fix, as it always was.
+  const lastComposed = useRef<{ run: number; packages: typeof pythonPackages; state: typeof settledState } | null>(null);
+  if (!settledState.error && settledState.source.trim()) lastComposed.current = { run, packages: pythonPackages, state: settledState };
+  const heldState =
+    settledState.error && lastComposed.current?.run === run && lastComposed.current.packages === pythonPackages
+      ? lastComposed.current.state
+      : null;
+  const previewState = heldState ?? settledState;
+  const heldError = heldState ? settledState.error : null;
   const source = previewState.source;
+  // What became of the last change, as the running app's renderer said
+  // (core's AppUpdateResult): shown while it is news.
+  const [updateNews, setUpdateNews] = useState<AppUpdateResult | null>(null);
+  // Said in the header while the app shown is a moment behind the page.
+  const updating = previewStateNow.source !== source;
 
   // Sync error and info from the pure useMemo result into component state.
   useEffect(() => {
@@ -590,10 +649,10 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       );
 
       // Each start of the app has boundaries of its own, so a restart starts
-      // again a page that could not be drawn as well as an engine. An Allow,
-      // and a Withhold, is a start too: the app is handed its declaration as
-      // it begins.
-      const startKey = `${run}:${previewAllowed ? 'allowed' : 'withheld'}`;
+      // again a page that could not be drawn as well as an engine. An Allow
+      // is not a start: the running app is handed its declaration and goes
+      // on (a Withhold starts its logic again, with its variables).
+      const startKey = `${run}`;
       const preview = (
         <PreviewErrorBoundary key={startKey} fallback={renderError}>
           <PreviewComponent
@@ -612,6 +671,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
             // of a Python app ran nothing at all.
             python={previewState.composition?.python}
             permissionConfig={previewPermissionConfig}
+            onUpdate={setUpdateNews}
             onLoad={(doc: unknown) => {
               debug('[LivePreview] SoftNRenderer onLoad - document parsed:', doc);
             }}
@@ -660,14 +720,21 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
+    <div style={styles.container} data-preview-pane={beside ? 'beside' : 'view'}>
+      <div style={beside ? { ...styles.header, minHeight: 36, padding: '4px 8px' } : styles.header} className={beside ? 'bl-preview-beside' : undefined}>
         <span style={styles.title}>
-          Preview
-          {!error && !isLoading && source.trim() && !stopped && !failedInPlace && (
+          {/* Beside the canvas the button that opened the pane names it, just above. */}
+          {!beside && 'Preview'}
+          {!error && !isLoading && source.trim() && !stopped && !failedInPlace && !updating && (
             <span style={styles.live} data-preview-live="true">
               <span style={styles.liveDot} aria-hidden="true" />
               Running
+            </span>
+          )}
+          {/* The page has changed and the app shown has not started again yet. */}
+          {updating && (
+            <span className="bl-badge" data-preview-live="updating">
+              Updating
             </span>
           )}
           {!error && !isLoading && source.trim() && (stopped || failedInPlace) && (
@@ -683,9 +750,11 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
           )}
         </span>
         <div style={styles.controls}>
-          <span style={styles.size} aria-hidden="true">
-            {deviceDimensions[device].width} × {deviceDimensions[device].height}
-          </span>
+          {!beside && (
+            <span style={styles.size} aria-hidden="true">
+              {deviceDimensions[device].width} × {deviceDimensions[device].height}
+            </span>
+          )}
           <div className="bl-seg" role="group" aria-label="Preview device">
             {(['desktop', 'tablet', 'mobile'] as DevicePreset[]).map((d) => (
               <button
@@ -703,6 +772,21 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       </div>
       <PreviewProblems run={run} onRestart={() => setRun((n) => n + 1)} onStopped={setStopped} />
       {sourceInfo && <div style={styles.infoBanner}>{sourceInfo}</div>}
+      {/* The newest change, when it is news: kept back for a problem, or a
+          start that could not keep what the app held. */}
+      {(heldError || updateNews?.outcome === 'kept') && (
+        <div style={styles.infoBanner} role="status" data-preview-update="kept">
+          The newest change has a problem, so this is the last version that worked. {heldError ?? updateNews?.problem}
+        </div>
+      )}
+      {!heldError && updateNews?.outcome === 'restarted' && updateNews.carried === false && updateNews.reason && (
+        <div style={styles.infoBanner} role="status" data-preview-update="restarted">
+          The app was started again. {updateNews.reason}{' '}
+          <button type="button" className="bl-btn bl-btn-sm" onClick={() => setUpdateNews(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {collections.length > 0 && <div style={styles.infoBanner}>Try your app here. Records you add in the preview are thrown away when you leave it; the app’s saved records are edited in Data.</div>}
       {declaration.requested.length > 0 && (
         <div style={styles.infoBanner} role="note" data-preview-capabilities={previewAllowed ? 'allowed' : 'withheld'}>

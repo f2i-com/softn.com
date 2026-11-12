@@ -3,7 +3,7 @@
  */
 
 import { create } from 'zustand';
-import type { CanvasElement, HistoryEntry, LogicSnapshot } from '../types/builder';
+import type { CanvasElement, HistoryEntry, LogicSnapshot, RenameSnapshot } from '../types/builder';
 
 /**
  * How long a pause ends a run of edits to one field. Typing `handleSubmit()`
@@ -30,7 +30,14 @@ interface HistoryStore {
    * {@link COALESCE_MS} joins its step instead of adding one: undo returns
    * to before the run began.
    */
-  push: (elements: Map<string, CanvasElement>, rootId: string, key?: string, logic?: LogicSnapshot[]) => void;
+  push: (elements: Map<string, CanvasElement>, rootId: string, key?: string, logic?: LogicSnapshot[], rename?: RenameSnapshot) => void;
+  /**
+   * Change every step on one side of the history: the steps still to undo
+   * (`past`) or to redo (`future`). For a rename that a step could not take
+   * back, so the states beyond it name the file as it still is
+   * (utils/canvasHistory.ts).
+   */
+  rewrite: (side: 'past' | 'future', change: (entry: HistoryEntry) => HistoryEntry) => void;
   /** End the current run, so the next keyed edit starts a step of its own. */
   endCoalescing: () => void;
   /**
@@ -62,7 +69,11 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   coalesceKey: null,
   coalescedAt: 0,
 
-  push: (elements, rootId, key, logic) => {
+  rewrite: (side, change) => {
+    set((state) => ({ [side]: state[side].map(change) }) as Pick<HistoryStore, 'past' | 'future'>);
+  },
+
+  push: (elements, rootId, key, logic, rename) => {
     const now = Date.now();
     const current = get();
     if (key !== undefined && current.coalesceKey === key && current.past.length > 0 && now - current.coalescedAt < COALESCE_MS) {
@@ -75,6 +86,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       rootId,
       timestamp: Date.now(),
       ...(logic && logic.length > 0 ? { logic } : {}),
+      ...(rename ? { rename } : {}),
     };
 
     set((state) => {

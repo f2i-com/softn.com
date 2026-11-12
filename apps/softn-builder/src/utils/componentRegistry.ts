@@ -229,6 +229,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'collapsible', type: 'boolean' },
       { name: 'collapsed', type: 'boolean' },
       { name: 'showToggle', type: 'boolean' },
+      { name: 'mobileMenu', type: 'boolean', description: 'On a phone (768 pixels wide and under), a menu button opens the sidebar as a drawer. Off leaves it hidden there' },
       { name: 'background', type: 'color' },
       { name: 'className', type: 'string' },
     ],
@@ -466,6 +467,8 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'directory', type: 'boolean' },
       { name: 'label', type: 'string' },
       { name: 'variant', type: 'select' },
+      { name: 'value', type: 'expression', description: 'The files shown as chosen, when the page keeps them; an empty list shows none' },
+      { name: 'disabled', type: 'boolean' },
       { name: 'onSelect', type: 'event' },
       { name: 'className', type: 'string' },
     ],
@@ -926,6 +929,7 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'size', type: 'select' },
       { name: 'hoverable', type: 'boolean' },
       { name: 'stickyHeader', type: 'boolean' },
+      { name: 'mobileCards', type: 'select', description: 'On a phone (640 pixels wide and under), whether each row is drawn as a card: auto when the table is too wide for its box, always, or never' },
       { name: 'sortColumn', type: 'string' },
       { name: 'sortDirection', type: 'select' },
       { name: 'onSort', type: 'event' },
@@ -1176,6 +1180,8 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'collection', type: 'string', description: 'XDB collection to save into' },
       { name: 'recordId', type: 'expression' },
       { name: 'mode', type: 'select' },
+      { name: 'afterSave', type: 'select', description: 'After a new record is saved to the collection: clear starts the form again, keep leaves what was typed' },
+      { name: 'savedText', type: 'string', description: 'What the form says once a record is saved' },
       { name: 'onSubmit', type: 'event' },
       { name: 'onChange', type: 'event' },
       { name: 'onCancel', type: 'event' },
@@ -2052,6 +2058,7 @@ const MANIFEST_PROPS: Record<string, PropSchema[]> = {
   RichTextEditor: [ariaLabel(NAME_WHEN_UNLABELLED)],
   Section: [{ name: 'headingLevel', type: 'number', description: 'Heading level of the title (1–6, default 2)' }],
   SegmentedControl: [ariaLabel('Accessible name for the group')],
+  Sidebar: [{ name: 'menuLabel', type: 'string', description: 'Accessible name for the phone menu button and the drawer it opens (default "Menu")' }],
   Slider: [ariaLabel('Accessible name for the slider')],
   SortableList: [ariaLabel(NAME_WHEN_UNLABELLED)],
   Spacer: [{ name: 'className', type: 'string' }],
@@ -2068,8 +2075,137 @@ const MANIFEST_PROPS: Record<string, PropSchema[]> = {
   TreeView: [ariaLabel(NAME_WHEN_UNLABELLED)],
 };
 
-/** Props the property panel shows under Accessibility rather than Advanced. */
-export const ACCESSIBILITY_PROP_NAMES: ReadonlySet<string> = new Set(['ariaLabel', 'removeLabel', 'caption', 'headingLevel', 'role']);
+/** Props the property panel shows under Accessibility rather than among the element's own. */
+export const ACCESSIBILITY_PROP_NAMES: ReadonlySet<string> = new Set(['ariaLabel', 'removeLabel', 'menuLabel', 'caption', 'headingLevel', 'role']);
+
+const flag = (name: string, description?: string): PropSchema => ({ name, type: 'boolean', ...(description ? { description } : {}) });
+const words = (name: string, description?: string): PropSchema => ({ name, type: 'string', ...(description ? { description } : {}) });
+const count = (name: string, description?: string): PropSchema => ({ name, type: 'number', ...(description ? { description } : {}) });
+const choice = (name: string, description?: string): PropSchema => ({ name, type: 'select', ...(description ? { description } : {}) });
+const colour = (name: string, description?: string): PropSchema => ({ name, type: 'color', ...(description ? { description } : {}) });
+
+/**
+ * Props the components take (component-manifest.json) that the entries above
+ * left out, and that a person would look for in the panel: a Toast that
+ * stays while it is pointed at, a Sidebar that starts folded, a field's label
+ * and the line under it, a Text that is muted. Found by reading each
+ * component's props against what the panel offered; a prop that takes an
+ * element, a function that returns one, or a record of them is not here, and
+ * is written in Code. Each default and each list of choices is the
+ * component's own (withComponentFacts), as for every other prop.
+ */
+const EXPECTED_PROPS: Record<string, PropSchema[]> = {
+  AnimatedBox: [count('delay', 'Milliseconds before it starts'), words('easing', 'A CSS timing function')],
+  AnimatedNumber: [flag('separator', 'Group the thousands'), choice('trigger', 'When it counts up: as it mounts, or as it comes into view')],
+  AreaChart: [flag('showXAxis'), flag('showYAxis'), count('yMin'), count('yMax')],
+  Avatar: [words('alt', 'What the picture shows'), choice('status'), choice('statusPosition'), flag('border'), flag('ring')],
+  Badge: [choice('badgeStyle'), flag('pill'), flag('dot', 'A dot with no text'), count('max', 'A number above this is shown as it and a plus'), flag('pulse'), flag('glow')],
+  Breadcrumb: [choice('size')],
+  Button: [flag('rounded', 'Fully rounded ends'), flag('iconOnly', 'A square button around an icon; give it an accessible name')],
+  Camera: [count('frameRate', 'Frames a second'), count('quality', 'From 0 to 1'), flag('audio', 'Record sound too')],
+  Card: [flag('selected')],
+  Checkbox: [words('description', 'A line under the label'), choice('size'), flag('indeterminate', 'Neither ticked nor not: some of what it stands for is')],
+  ColorPicker: [flag('fullWidth')],
+  Content: [colour('background')],
+  DatePicker: [flag('readOnly'), flag('fullWidth')],
+  Drawer: [flag('showClose'), flag('showOverlay'), flag('closeOnEscape')],
+  EmptyState: [count('iconSize'), colour('iconColor'), flag('noEntranceAnimation')],
+  GaugeChart: [choice('variant'), flag('animated'), count('width'), count('height')],
+  Grid: [
+    choice('alignItems'),
+    choice('justifyItems'),
+    words('minColumnWidth', 'As many columns as fit at this width, such as 240px'),
+    flag('responsive', 'Fewer columns on a narrow screen'),
+    flag('collapseOnMobile', 'One column on a phone'),
+  ],
+  Header: [words('title'), colour('background'), colour('borderColor')],
+  Heading: [count('lineClamp', 'Lines shown before the rest is cut off')],
+  Image: [words('objectPosition', 'Which part is kept when it is cropped, such as top or 20% 50%')],
+  Input: [
+    words('label'),
+    words('helperText', 'A line under the field'),
+    words('name', 'The field’s name in a form'),
+    flag('readOnly'),
+    flag('clearable', 'A button that empties it'),
+    flag('fullWidth'),
+  ],
+  Layout: [choice('direction')],
+  Marquee: [count('gap', 'Pixels between one pass and the next')],
+  Microphone: [count('height')],
+  Modal: [flag('loading', 'Covers what it holds with a spinner'), words('loadingText')],
+  PixelCanvas: [choice('fit')],
+  Popover: [flag('defaultOpen')],
+  Progress: [colour('color')],
+  Radio: [words('label', 'A name for the group'), choice('size')],
+  Section: [words('title'), words('subtitle'), flag('collapsible'), flag('defaultCollapsed', 'Folded when the page opens'), colour('background')],
+  Select: [
+    words('label'),
+    flag('required'),
+    flag('clearable', 'A button that empties it'),
+    choice('size'),
+    flag('fullWidth'),
+    flag('loading'),
+    words('noOptionsText'),
+    words('searchPlaceholder'),
+  ],
+  Sidebar: [
+    flag('defaultCollapsed', 'Folded when the page opens, until its toggle is pressed'),
+    colour('borderColor', 'The line between it and the page'),
+    { name: 'onCollapse', type: 'event', description: 'Called when it is folded or unfolded' },
+  ],
+  Skeleton: [words('lineSpacing')],
+  Slider: [flag('tooltipAlwaysVisible')],
+  SmartGrid: [
+    flag('searchable'),
+    flag('sortable'),
+    flag('pageable'),
+    count('pageSize'),
+    flag('editable'),
+    flag('add', 'A button that adds a row'),
+    words('emptyMessage'),
+    flag('loading'),
+    words('rowKey', 'The field that tells one row from another'),
+  ],
+  Spacer: [count('flex', 'How much of the spare room it takes, beside other spacers')],
+  Spinner: [choice('variant'), words('label', 'What is said to a screen reader while it spins'), count('thickness'), count('speed', 'Seconds a turn'), flag('glow')],
+  Stack: [
+    flag('mobileVertical', 'A column on a phone, whatever its direction'),
+    flag('mobileHorizontal', 'A row on a phone, whatever its direction'),
+    flag('mobileReverse', 'The other way round on a phone'),
+  ],
+  Switch: [words('description', 'A line under the label')],
+  Text: [
+    choice('variant', 'Muted, or the colour of a state'),
+    flag('italic'),
+    choice('decoration'),
+    choice('transform'),
+    choice('lineHeight'),
+    choice('letterSpacing'),
+    flag('block', 'A line of its own'),
+  ],
+  TextArea: [
+    words('label'),
+    words('helperText', 'A line under the field'),
+    flag('readOnly'),
+    flag('required'),
+    choice('size'),
+    flag('autoResize', 'As tall as what is typed'),
+    count('maxLength'),
+    flag('showCharCount'),
+  ],
+  Toast: [
+    flag('pauseOnHover', 'Stays for as long as it is pointed at'),
+    flag('isVisible', 'Whether it is showing; give it a value from the logic to show and hide it'),
+  ],
+  Tooltip: [choice('animation'), flag('disabled'), flag('interactive', 'Stays open while it is pointed at, so what is in it can be pressed'), count('offset', 'Pixels from what it describes')],
+  Typewriter: [
+    count('deleteSpeed', 'Milliseconds a character, deleting'),
+    count('pauseDuration', 'Milliseconds between one text and the next'),
+    flag('cursor'),
+    words('cursorChar'),
+    { name: 'onComplete', type: 'event', description: 'Called when the last text is typed' },
+  ],
+};
 
 /**
  * Components that draw a fixed number of children and no more. A Split
@@ -2117,7 +2253,11 @@ const INLINE_KINDS: ReadonlySet<string> = new Set(['Icon', 'Kbd', 'Badge', 'Tag'
  * Camera, Microphone, AudioStream, QRReader, Scene3D, TileMap and the pixel
  * canvases ask for a device or a scene to paint; the charts, the Smart
  * components, DataGrid and TreeView draw from data the canvas does not
- * have, and would be a picture of numbers nobody wrote; and every layout
+ * have, and would be a picture of numbers nobody wrote (three of the Smart
+ * components are on the list all the same, and are drawn only when their
+ * rows are written on the page itself: utils/drawnProps.ts,
+ * drawsWhatIsWritten. A new Dashboard is those three, with example rows in
+ * it, and was a page of three grey cards); and every layout
  * component, the groups (TagGroup, AvatarGroup, ButtonGroup), List, Field,
  * Accordion, Collapse and NavItem are their children laid out. Spacer is
  * nothing to see, and its card is how it is found. The editors are whole
@@ -2133,6 +2273,8 @@ const DRAWN_FOR_REAL: ReadonlySet<string> = new Set([
   'Breadcrumb', 'Steps', 'Tabs', 'Pagination', 'Timeline', 'Table', 'EmptyState', 'QRCode', 'CopyButton',
   'Input', 'TextArea', 'Select', 'Checkbox', 'Radio', 'Switch', 'Slider', 'NumberInput', 'Rating', 'SegmentedControl',
   'DatePicker', 'ColorPicker',
+  // Only with their rows written on the page (drawsWhatIsWritten).
+  'SmartStats', 'SmartCards', 'SmartList',
 ]);
 
 /**
@@ -2163,7 +2305,8 @@ export function withComponentFacts(componentName: string, prop: PropSchema): Pro
 }
 
 export const componentRegistry: ComponentMeta[] = baseRegistry.map((meta) => {
-  const extra = (MANIFEST_PROPS[meta.name] ?? []).filter((prop) => !meta.propSchema.some((own) => own.name === prop.name));
+  // After the entry's own, in the order the tables give them: an entry's own wins a name.
+  const extra = [...(EXPECTED_PROPS[meta.name] ?? []), ...(MANIFEST_PROPS[meta.name] ?? [])].filter((prop) => !meta.propSchema.some((own) => own.name === prop.name));
   const limit = MAX_CHILDREN[meta.name];
   const inline = INLINE_KINDS.has(meta.name);
   const drawn = DRAWN_FOR_REAL.has(meta.name);

@@ -206,23 +206,23 @@ export function Toolbar({
         </span>
       )}
 
-      <div style={styles.divider} />
+      <div style={styles.divider} data-toolbar-divider="" />
 
       {/* The words of these two, and of New and Open, are put out of sight
           where the row is short (data-compact, builder.css); the name each
           has is said either way. */}
-      <button className="bl-tool" data-compact="1" aria-label="Undo" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${keys('Z')})` : `Undo ${elsewhere}`}>
+      <button className="bl-tool" data-compact="1" data-tool="undo" aria-label="Undo" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${keys('Z')})` : `Undo ${elsewhere}`}>
         <IconUndo /> <span className="bl-tool-label">Undo</span>
       </button>
 
-      <button className="bl-tool" data-compact="1" aria-label="Redo" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${keys('Y')})` : `Redo ${elsewhere}`}>
+      <button className="bl-tool" data-compact="1" data-tool="redo" aria-label="Redo" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${keys('Y')})` : `Redo ${elsewhere}`}>
         <IconRedo /> <span className="bl-tool-label">Redo</span>
       </button>
 
-      <div style={styles.spacer} />
+      <div style={styles.spacer} data-toolbar-spacer="" />
 
       {views.length > 1 && (
-        <div className="bl-seg" role="group" aria-label="Workspace view">
+        <div className="bl-seg" role="group" aria-label="Workspace view" data-tool="views">
           {views.map((v) => (
             <button
               key={v}
@@ -236,7 +236,7 @@ export function Toolbar({
         </div>
       )}
 
-      <div style={styles.spacer} />
+      <div style={styles.spacer} data-toolbar-spacer="" />
 
       <button className="bl-tool" data-compact="2" aria-label="New" onClick={onNew} title={`New app (${withMod('N')})`}>
         <IconNew /> <span className="bl-tool-label">New</span>
@@ -246,26 +246,28 @@ export function Toolbar({
         <IconOpen /> <span className="bl-tool-label">Open</span>
       </button>
 
-      <button className="bl-tool" onClick={onSave} disabled={isSaving} aria-busy={isSaving} title={`Save (${withMod('S')})`}>
-        <IconSave /> {isSaving ? 'Saving…' : saveLabel}
+      {/* Save and Export keep their words longest: they give them up only
+          where the row is a phone's (data-compact="3"). */}
+      <button className="bl-tool" data-compact="3" data-tool="save" aria-label={isSaving ? 'Saving…' : saveLabel} onClick={onSave} disabled={isSaving} aria-busy={isSaving} title={`Save (${withMod('S')})`}>
+        <IconSave /> <span className="bl-tool-label">{isSaving ? 'Saving…' : saveLabel}</span>
       </button>
 
       {/* Export had no control anywhere in the app. Its only route was
           Ctrl+Shift+E, a shortcut whose condition could never be true, so the
           feature was unreachable by any means. */}
-      <button className="bl-tool" onClick={onExport} title={`Export, run or publish (${withMod('Shift+E')})`}>
-        <IconExport /> Export
+      <button className="bl-tool" data-compact="3" data-tool="export" aria-label="Export" onClick={onExport} title={`Export, run or publish (${withMod('Shift+E')})`}>
+        <IconExport /> <span className="bl-tool-label">Export</span>
       </button>
 
       {canInstall && (
-        <button className="bl-tool" onClick={promptInstall} title="Install SoftN Builder as an app">
-          <IconInstall /> Install
+        <button className="bl-tool" data-compact="3" aria-label="Install" onClick={promptInstall} title="Install SoftN Builder as an app">
+          <IconInstall /> <span className="bl-tool-label">Install</span>
         </button>
       )}
 
-      <div style={styles.divider} />
+      <div style={styles.divider} data-toolbar-divider="" />
 
-      <button className="bl-tool" onClick={onShortcuts} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+      <button className="bl-tool" data-tool="shortcuts" onClick={onShortcuts} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
         <IconKeyboard />
       </button>
     </div>

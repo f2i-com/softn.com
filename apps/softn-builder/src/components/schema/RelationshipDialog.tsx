@@ -76,8 +76,12 @@ export function RelationshipDialog({ entities, initial, editing, onSave, onClose
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div ref={dialogRef} style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-intro`} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
+    // The overlay and the frame are the classes every dialog of the Builder has (styles/
+    // builder.css), which keep the status bar's strip free: a message shown there while the
+    // dialog is open is still read. This one had its own, the full height of the window: on a
+    // phone its buttons stood over the bar.
+    <div className="bl-overlay" style={styles.overlay} onClick={onClose} data-relationship-overlay="">
+      <div ref={dialogRef} className="bl-dialog" style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-intro`} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
         <div style={styles.header}>
           <div style={{ minWidth: 0 }}>
             <div style={styles.eyebrow}>Data model</div>
@@ -176,8 +180,9 @@ export function RelationshipDialog({ entities, initial, editing, onSave, onClose
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  overlay: { position: 'fixed', inset: 0, zIndex: 1200, background: 'var(--bl-overlay)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' },
-  dialog: { width: 'min(680px, 100%)', minWidth: 0, maxHeight: 'calc(100dvh - 32px)', display: 'flex', flexDirection: 'column', overflow: 'hidden', color: 'var(--paper)', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--bl-shadow-pop)' },
+  // What the classes do not say: where it stands among the workspace's layers, and how wide it is.
+  overlay: { zIndex: 1200, boxSizing: 'border-box' },
+  dialog: { width: 'min(680px, 100%)', minWidth: 0 },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '22px 24px 18px', borderBottom: '1px solid var(--line-soft)' },
   eyebrow: { fontSize: 12, fontWeight: 500, color: 'var(--dim)', marginBottom: 4 },
   title: { margin: 0, fontFamily: 'var(--display)', fontSize: 20, letterSpacing: '-0.025em', overflowWrap: 'anywhere' },

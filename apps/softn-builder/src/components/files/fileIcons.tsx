@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type FileGlyphKind = 'folder-open' | 'folder' | 'ui' | 'logic' | 'file';
+export type FileGlyphKind = 'folder-open' | 'folder' | 'ui' | 'logic' | 'image' | 'file';
 
 interface FileGlyphProps {
   kind: FileGlyphKind;
@@ -61,6 +61,19 @@ export function FileGlyph({ kind, size = 14, color = 'var(--dim)' }: FileGlyphPr
             strokeWidth="1.1"
             strokeLinejoin="round"
           />
+        </svg>
+      </span>
+    );
+  }
+
+  // A picture: a frame, the sun and a hill.
+  if (kind === 'image') {
+    return (
+      <span style={common} aria-hidden="true">
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+          <rect x="2" y="2.5" width="12" height="11" rx="1.6" stroke={color} strokeWidth="1.2" />
+          <circle cx="5.6" cy="6" r="1.1" fill={color} />
+          <path d="m2.6 11.6 3.1-3 2.2 2 2.3-2.6 3.2 3.4" stroke={color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </span>
     );

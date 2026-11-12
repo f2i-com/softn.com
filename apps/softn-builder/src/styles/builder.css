@@ -431,8 +431,8 @@ body {
  * itself, and where it is short the buttons a glance knows by their drawing
  * give up their words: Undo and Redo first, then New and Open. A word is
  * clipped to nothing and not removed, so each button keeps its name for a
- * screen reader (it has an aria-label as well). Whether Design is offered at
- * all is the window's to say, not the row's (App.tsx, useNarrowScreen).
+ * screen reader (it has an aria-label as well). Narrower than any window
+ * one row fits in, on a phone, the row becomes two (Workspace layout, below).
  */
 .bl-toolbar {
   container-type: inline-size;
@@ -470,6 +470,49 @@ body {
   font-family: var(--mono);
   font-size: 0.6875rem;
   color: var(--dimmer);
+}
+
+/*
+ * Where the open project came from, when that is Studio, and the way back
+ * (components/toolbar/StudioOrigin.tsx): one slim line over the toolbar. The
+ * name gives way before the button does, so Back to Studio is whole on a phone.
+ */
+.bl-origin {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+  padding: 0.25rem 0.75rem;
+  background: var(--ink-3);
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--body);
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+.bl-origin-from {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bl-origin-from strong {
+  color: var(--paper);
+  font-weight: 600;
+}
+
+/* A reason is read whole: it wraps where a name is cut short. */
+.bl-origin-problem {
+  flex: 1;
+  white-space: normal;
+  color: var(--paper);
+}
+
+.bl-origin .bl-btn {
+  flex-shrink: 0;
 }
 
 /* ── Panels ────────────────────────────────────────────────────── */
@@ -518,15 +561,22 @@ body {
   background: var(--bl-hover);
 }
 
-/* Collapsed dock rails. */
-.bl-rail-btn {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  border: 1px solid var(--line);
-  background: var(--ink);
+/*
+ * A panel put away: its rail. The whole rail is the button that brings the
+ * panel back. It was a small button at the rail's top, a narrow thing to
+ * find with a mouse and to press with a finger.
+ */
+.bl-rail {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--ink-2);
   color: var(--dim);
-  border-radius: var(--bl-radius);
-  padding: 10px 5px;
   font-family: var(--body);
   font-size: 0.6875rem;
   font-weight: 600;
@@ -534,12 +584,27 @@ body {
   cursor: pointer;
   transition:
     color 160ms var(--ease),
-    border-color 160ms var(--ease);
+    border-color 160ms var(--ease),
+    background 160ms var(--ease);
 }
 
-.bl-rail-btn:hover {
+.bl-rail > span {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+/* Something is selected, and its properties are behind this rail. The ink, as the unsaved dot is. */
+.bl-rail > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--paper);
+}
+
+.bl-rail:hover {
   color: var(--paper);
-  border-color: var(--dimmer);
+  border-color: var(--line-strong);
+  background: var(--ink-3);
 }
 
 /* ── Badges and notices ────────────────────────────────────────── */
@@ -599,13 +664,17 @@ body {
 
 /* ── Dialogs ───────────────────────────────────────────────────── */
 
+/* A dialog leaves the status bar's strip free: a message is shown there
+ * while the dialog is open, above its shade, and must not lie on the
+ * dialog's buttons. The strip is --bl-status-room, from the top of the bar
+ * to the bottom of the window (see "Status bar and messages"). */
 .bl-overlay {
   position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  padding: 16px 16px calc(16px + var(--bl-status-room));
   background: var(--bl-overlay);
   backdrop-filter: blur(3px);
 }
@@ -613,7 +682,7 @@ body {
 .bl-dialog {
   display: flex;
   flex-direction: column;
-  max-height: calc(100dvh - 32px);
+  max-height: calc(100dvh - 32px - var(--bl-status-room));
   max-width: 100%;
   overflow: hidden;
   border-radius: var(--bl-radius-lg);
@@ -730,19 +799,6 @@ body {
   }
 }
 
-/* ── Toasts ────────────────────────────────────────────────────── */
-
-@keyframes bl-toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 /* The code editors (components/editor/CodeEditor.tsx): SoftN's own editor in
  * the brand's colours, as the Monaco themes had them — the language's marks in
  * coral, strings and numbers in sand, names in the ink, comments, attributes
@@ -790,4 +846,1650 @@ body {
 
 .bl-code-editor textarea::selection {
   background: color-mix(in srgb, var(--coral) 25%, transparent);
+}
+
+/* ── Workspace layout ──────────────────────────────────────────── */
+
+/*
+ * The editor measures itself, and its rows go by that width and not the
+ * window's: the toolbar's second row and the bar of panels on a phone.
+ */
+.bl-shell {
+  container-type: inline-size;
+  container-name: bl-shell;
+}
+
+/*
+ * The toolbar on a phone or a narrow tablet. One row cannot hold it: at 390
+ * pixels the row was 130 longer than the window, which is why the editor was
+ * not offered there at all. It is two rows now, and nothing is dropped: the
+ * project's name with New, Open, Save, Export and the shortcuts, every one
+ * drawn without its word; then Undo and Redo beside the four views, which
+ * share the row's width.
+ */
+@container bl-shell (max-width: 899px) {
+  .bl-toolbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .bl-toolbar > [data-toolbar-divider],
+  .bl-toolbar > [data-toolbar-spacer] {
+    display: none;
+  }
+
+  .bl-toolbar > [data-project-name] {
+    flex-grow: 1;
+    max-width: none !important;
+  }
+
+  /* The break between the rows: a flex item as wide as the row, of no height. */
+  .bl-toolbar::after {
+    content: '';
+    order: 2;
+    flex-basis: 100%;
+    height: 0;
+  }
+
+  .bl-toolbar > [data-tool='undo'],
+  .bl-toolbar > [data-tool='redo'] {
+    order: 3;
+  }
+
+  .bl-toolbar > [data-tool='views'] {
+    order: 4;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .bl-toolbar > [data-tool='views'] > button {
+    flex: 1;
+    min-width: 0;
+    padding: 0 4px;
+  }
+
+  .bl-toolbar .bl-tool {
+    padding: 0 0.5rem;
+    min-width: 2rem;
+    justify-content: center;
+  }
+
+  .bl-tool[data-compact='3'] .bl-tool-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* A panel of the Design row, and the rail it is put away to. */
+.bl-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--ink-2);
+}
+
+/*
+ * A section under Properties that folds to its heading (the hierarchy, the
+ * app's data), so the properties can have the column: the heading is the
+ * button, with what the section holds said beside its name.
+ */
+.bl-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 12px 0 16px;
+  border: none;
+  background: var(--ink-2);
+  color: var(--dim);
+  font-family: var(--body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.bl-section-head:hover {
+  color: var(--paper);
+}
+
+.bl-section-count {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  color: var(--dimmer);
+  font-variant-numeric: tabular-nums;
+}
+
+.bl-section-chevron {
+  font-size: 0.8125rem;
+  line-height: 1;
+  transition: transform 160ms var(--ease);
+}
+
+.bl-section-head[aria-expanded='true'] .bl-section-chevron {
+  transform: rotate(90deg);
+}
+
+/* The same heading where it folds nothing: a sheet's, with the way to put the sheet away. */
+.bl-section-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/*
+ * The palette. A row is as tall as a line of the hierarchy, and the rows
+ * stand in as many columns as their names fit whole: one in the column
+ * beside the canvas, two or more in a sheet on a phone or a tablet.
+ */
+.bl-palette {
+  container-type: inline-size;
+}
+
+.bl-palette-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  column-gap: 4px;
+}
+
+.bl-palette-item {
+  min-height: 28px;
+  box-sizing: border-box;
+}
+
+.bl-palette[data-palette-add='tap'] .bl-palette-item {
+  cursor: pointer !important;
+}
+
+/*
+ * The canvas and the app running beside it. The pane is put away by its own
+ * Hide and brought back from the row of tabs; it is never drawn where it
+ * would leave the canvas less than a phone's width (App.tsx).
+ */
+.bl-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.bl-split > [data-panel='Canvas'] {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: auto;
+}
+
+.bl-split > [data-panel='Preview'] {
+  flex: 0 0 clamp(300px, 42%, 460px);
+  min-width: 0;
+  border-left: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+
+.bl-preview-beside .bl-seg > button {
+  padding: 0 8px;
+}
+
+/* The row of tabs, with what is done to the whole canvas at its end. */
+.bl-tabrow {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--ink);
+}
+
+.bl-tabrow > :first-child {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none !important;
+}
+
+.bl-tabrow-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.bl-mini[aria-pressed='true'] {
+  color: var(--paper);
+  border-color: var(--paper);
+  background: var(--bl-select);
+}
+
+/*
+ * A phone or a narrow tablet. The canvas keeps the screen; the panels are
+ * sheets that come up over it from a bar of five at the bottom, which stays
+ * where it is while a sheet is open so the next panel is one press away.
+ */
+.bl-dock {
+  flex-shrink: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border-top: 1px solid var(--line-soft);
+  background: var(--ink-2);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.bl-dock > button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 4px 2px;
+  border: none;
+  border-top: 2px solid transparent;
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--body);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.1;
+  cursor: pointer;
+}
+
+.bl-dock > button > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bl-dock > button[aria-pressed='true'] {
+  color: var(--paper);
+  border-top-color: var(--paper);
+  font-weight: 600;
+}
+
+.bl-dock > button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The stage is what a sheet is laid over: all of the editor above the bar of panels. */
+.bl-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bl-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: flex-end;
+  background: var(--bl-overlay);
+}
+
+.bl-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: min(72%, 640px);
+  min-height: min(320px, 100%);
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
+  background: var(--ink-2);
+  color: var(--paper);
+  box-shadow: var(--bl-shadow-pop);
+}
+
+.bl-sheet[data-tall='true'] {
+  height: 88%;
+}
+
+/*
+ * The panel in a sheet is the one that stands beside the canvas in a wide
+ * window, which gives itself a column's width and frame there: in a sheet it
+ * has the sheet's, whatever its own styles say.
+ */
+.bl-sheet > * {
+  flex: 1 1 auto;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-height: none !important;
+  min-height: 0;
+  border: none !important;
+  border-radius: 0 !important;
+}
+
+/* The schema designer's own row of diagram and details, one over the other where it is narrow. */
+/*
+ * The Data view on a phone. Its three parts (the diagram, the details of
+ * what is picked in it, the sample records) stood in one screen's height,
+ * the diagram between the other two: there it would be a strip. They are
+ * one under the other now, each its own height, and the view scrolls.
+ */
+@container bl-shell (max-width: 899px) {
+  .bl-schema {
+    overflow-y: auto;
+  }
+
+  .bl-schema > * {
+    flex-shrink: 0;
+  }
+
+  .bl-schema-main {
+    flex: none !important;
+    flex-direction: column;
+    overflow: visible !important;
+  }
+
+  .bl-schema-flow {
+    flex: none !important;
+    height: 380px;
+  }
+
+  .bl-schema-main > aside {
+    width: auto !important;
+    border-left: none !important;
+    border-top: 1px solid var(--line-soft);
+  }
+
+  /* What the details hold is made for a column 300 wide: here it has the screen's width. */
+  .bl-schema-main > aside > [role='tabpanel'] > * {
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  /* Said for a mouse; the row above the diagram says how two collections are related. */
+  .bl-schema-empty-hint {
+    display: none;
+  }
+
+  /* The diagram's own buttons in a row along its foot, clear of what is in its middle. */
+  #root .bl-schema-flow .react-flow__controls {
+    flex-direction: row;
+  }
+}
+
+/* A line of the hierarchy. */
+.bl-tree-row {
+  min-height: 24px;
+}
+
+/*
+ * Under a finger every press is at least 44 pixels, in the editor's own
+ * chrome: the rows and headings of the panels, the small buttons of their
+ * headers, the tabs, the dialogs' fields, and the diagram's own controls.
+ */
+@media (pointer: coarse) {
+  .bl-palette-item,
+  .bl-palette-section,
+  .bl-section-head,
+  .bl-tree-row,
+  .bl-palette input[type='search'],
+  .bl-dialog :is(input:not([type='checkbox'], [type='radio'], [type='file']), select),
+  #root [role='tab'] {
+    min-height: 2.75rem;
+  }
+
+  .bl-mini,
+  .bl-seg > button,
+  .bl-close,
+  .bl-tree-toggle,
+  .bl-tree-delete,
+  .bl-tab-close,
+  #root .react-flow__controls-button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  /* The row of tabs is as tall as what is pressed in it. */
+  .bl-tabrow > :first-child,
+  .bl-tabrow > :first-child > * > *,
+  .bl-tabrow > :first-child > * {
+    height: auto !important;
+    min-height: 2.75rem;
+  }
+
+  /* Each tool of the phone's toolbar is a square to press, with no gap wasted between them. */
+  .bl-toolbar .bl-tool {
+    min-width: 2.75rem;
+    justify-content: center;
+  }
+}
+
+@container bl-shell (max-width: 899px) {
+  .bl-toolbar {
+    column-gap: 0 !important;
+    padding-left: 12px !important;
+    padding-right: 6px !important;
+  }
+
+  /* "Unsaved", as the dot a tab has: the word is read out, the row is short. */
+  .bl-toolbar > [data-dirty] {
+    width: 7px;
+    height: 7px;
+    margin: 0 8px 0 6px !important;
+    border-radius: 50%;
+    background: var(--dim);
+    font-size: 0 !important;
+    overflow: hidden;
+  }
+
+  .bl-toolbar > [data-tool='views'] {
+    margin-left: 4px;
+    margin-right: 6px;
+  }
+}
+
+/* ── Properties panel ──────────────────────────────────────────── */
+
+/*
+ * components/panels/PropertyPanel.tsx and what it is made of.
+ *
+ * The panel goes by the width of what it stands in, never the window's: a
+ * column of 320 pixels beside the canvas, a sheet as wide as the screen on a
+ * phone or a tablet. Its rows are dense: a small label over its field, and
+ * groups that are a line and a heading, not a card inside the panel's card.
+ */
+.bl-pp {
+  container: bl-props / inline-size;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--ink-2);
+  color: var(--paper);
+}
+
+.bl-pp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.bl-pp-title {
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* What is selected and what can be done to it: under the header, where it
+ * stays while the fields scroll. */
+.bl-pp-sel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 3px 8px 3px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* Its name, and beside it what it is in a few words, which give way first. */
+.bl-pp-what {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+/* An element's tag in the language's colour, as the source would show it. */
+.bl-pp-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--coral);
+}
+
+.bl-pp-kind {
+  flex: 0 9999 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.bl-pp-name[data-several] {
+  font-family: var(--body);
+  font-weight: 600;
+  color: var(--paper);
+}
+
+.bl-pp-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.bl-pp-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--bl-radius-sm);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  transition:
+    background 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.bl-pp-act:hover:not([aria-disabled='true']) {
+  background: var(--bl-hover);
+  color: var(--paper);
+}
+
+.bl-pp-act[data-selection-action='remove']:hover:not([aria-disabled='true']) {
+  background: var(--bl-danger-soft);
+  color: var(--danger);
+}
+
+/* Not possible as the selection stands. It keeps its place for Tab. */
+.bl-pp-act[aria-disabled='true'] {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.bl-pp-body {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* The first part of the body: what there is to say of the element, and its own fields. */
+.bl-pp-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 8px 12px 16px;
+}
+
+.bl-pp-block:empty {
+  display: none;
+}
+
+.bl-pp-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bl-pp-lead {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bl-pp-about {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+
+.bl-pp-lead + .bl-pp-about,
+.bl-pp-about + .bl-pp-about {
+  margin-top: -4px;
+}
+
+/* Fields: one to a row, and two where the panel is wide enough (below). */
+.bl-pp-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 6px 16px;
+}
+
+.bl-pp-fields.bl-pp-pairs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 8px;
+}
+
+/* A field: its label, and under it what the label names, as wide as the panel. */
+.bl-pp-field {
+  min-width: 0;
+}
+
+.bl-pp-label {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A short field (a choice, a number, a tick, a colour, a word or two): its
+ * label beside it on one line, the fields in one column down the panel. What
+ * is said of the field stands under both.
+ */
+.bl-pp-field[data-inline] {
+  display: grid;
+  grid-template-columns: clamp(84px, 36%, 150px) minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+}
+
+.bl-pp-field[data-inline] > * {
+  grid-column: 2;
+}
+
+.bl-pp-field[data-inline] > .bl-pp-label {
+  grid-column: 1;
+  margin: 0;
+  padding-top: 6px;
+}
+
+.bl-pp-field[data-inline] > .bl-pp-hint {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+}
+
+.bl-pp-sub {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--dim);
+}
+
+.bl-pp-hint {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+
+/* The line at the top of a group, before its fields. */
+.bl-pp-note {
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+
+.bl-pp-warning {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--warn);
+}
+
+.bl-pp-control {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+select.bl-pp-control {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
+.bl-pp .bl-pp-mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+/* A control and what stands beside it: a list and its button, a colour and its text. */
+.bl-pp-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bl-pp-row > .bl-pp-control {
+  flex: 1;
+}
+
+.bl-pp-swatch {
+  flex-shrink: 0;
+  width: 36px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--bl-radius-sm);
+  background: var(--bl-field);
+  cursor: pointer;
+}
+
+.bl-pp-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Yes or no: the box where the other fields begin, and its label is a press on it too. */
+.bl-pp-field[data-control='boolean'] > .bl-pp-label {
+  cursor: pointer;
+}
+
+.bl-pp-check {
+  justify-self: start;
+  width: 16px;
+  height: 16px;
+  margin: 6px 0;
+}
+
+/*
+ * An expression (ExpressionField.tsx): a box as tall as what is in it, from
+ * one line to about fourteen, and scrolling inside past that. The text is
+ * drawn a second time, unseen, in the same cell of a grid and in the same
+ * face, and the cell takes its height; the box fills the cell. No script
+ * measures anything, so it is right at the first paint and at any width.
+ */
+.bl-pp-grow {
+  display: grid;
+}
+
+.bl-pp-grow::after {
+  content: attr(data-value) ' ';
+  visibility: hidden;
+  overflow: hidden;
+  border: 1px solid transparent;
+  pointer-events: none;
+}
+
+.bl-pp .bl-pp-grow > textarea,
+.bl-pp-grow::after {
+  grid-area: 1 / 1 / 2 / 2;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 28px;
+  max-height: 262px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 2;
+}
+
+.bl-pp-grow > textarea {
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Kept in the field and not written: the border and, beneath, the words. */
+#root .bl-pp .bl-pp-grow > textarea[aria-invalid='true'] {
+  border-color: var(--coral) !important;
+}
+
+.bl-pp-pending {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--coral);
+}
+
+.bl-pp-pending:empty {
+  display: none;
+}
+
+/*
+ * The logic file's functions under a handler field, while the field has the
+ * focus: a press writes the handler. They were the options of a one-line
+ * box's list, which a box of several lines does not have.
+ */
+.bl-pp-suggest {
+  display: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.bl-pp-handler:focus-within .bl-pp-suggest {
+  display: flex;
+}
+
+.bl-pp-chip {
+  max-width: 100%;
+  min-height: 22px;
+  padding: 1px 7px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--bl-radius-sm);
+  background: var(--bl-field);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bl-pp-chip:hover {
+  border-color: var(--line-strong);
+  background: var(--bl-hover);
+}
+
+.bl-pp-chip-more {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+/* A small thing to do to a field, in words, under it. */
+.bl-pp-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 2px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: var(--dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.bl-pp-link:hover {
+  color: var(--paper);
+}
+
+/* A group that folds to its heading, as the hierarchy's does under the panel. */
+.bl-pp-group {
+  padding: 0 8px 0 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.bl-pp-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--body);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Closed over something that is set: how many, beside the group's name. */
+.bl-pp-group-set {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--dim);
+}
+
+.bl-pp-chevron {
+  flex-shrink: 0;
+  color: var(--dim);
+  transition: transform 160ms var(--ease);
+}
+
+.bl-pp-group-head[aria-expanded='true'] .bl-pp-chevron {
+  transform: rotate(90deg);
+}
+
+.bl-pp-group-head:hover .bl-pp-chevron {
+  color: var(--paper);
+}
+
+.bl-pp-group-body {
+  padding: 2px 0 12px;
+}
+
+.bl-pp-wrap {
+  padding-top: 10px;
+  padding-bottom: 12px;
+}
+
+/*
+ * Wide enough for the short fields to stand two to a row: a sheet on a
+ * tablet, or on a phone held sideways. A field with the panel's width under
+ * its label keeps the row.
+ */
+@container bl-props (min-width: 640px) {
+  .bl-pp-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bl-pp-fields:not(.bl-pp-pairs) > .bl-pp-field:not([data-inline]) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* A finger: every field and button is 44 pixels tall, and text is typed at
+ * a size a phone does not zoom in on. */
+@media (pointer: coarse) {
+  .bl-pp-sel {
+    min-height: 50px;
+  }
+
+  .bl-pp-act {
+    width: 44px;
+    height: 44px;
+  }
+
+  .bl-pp .bl-pp-control {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .bl-pp .bl-pp-grow > textarea,
+  .bl-pp-grow::after {
+    min-height: 44px;
+    max-height: 332px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+
+  .bl-pp-swatch {
+    width: 52px;
+    height: 44px;
+  }
+
+  .bl-pp-field[data-inline] > .bl-pp-label {
+    padding-top: 14px;
+  }
+
+  /* The label of a tick is as tall as the row, and a press on it ticks. */
+  .bl-pp-field[data-control='boolean'] > .bl-pp-label {
+    align-self: stretch;
+    min-height: 44px;
+  }
+
+  .bl-pp-check {
+    width: 24px;
+    height: 24px;
+    margin: 10px 0;
+  }
+
+  .bl-pp-group-head,
+  .bl-pp-link {
+    min-height: 44px;
+  }
+
+  .bl-pp-suggest {
+    gap: 6px;
+  }
+
+  .bl-pp-chip {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  .bl-pp [data-project-theme] [role='radio'] {
+    min-height: 44px;
+  }
+}
+
+/* ── Assets ────────────────────────────────────────────────────── */
+
+/*
+ * An asset open in the middle of the workspace (components/files/
+ * AssetView.tsx): a row that says what it is and holds what can be done
+ * with it, a line on how a page asks for it, and the picture in the room
+ * that is left. Everything starts at the left edge and the panel is the
+ * only frame: it was a card inside the panel with the picture boxed again
+ * inside the card.
+ *
+ * It goes by its own width, not the window's: the same view stands in a
+ * column beside three panels and across the whole of a phone.
+ */
+.bl-asset {
+  container-type: inline-size;
+  container-name: bl-asset;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ink-2);
+  color: var(--paper);
+}
+
+.bl-asset-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.bl-asset-name {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.bl-asset-facts {
+  min-width: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--dim);
+}
+
+/* At the row's end, and at the end of the last row when the row has wrapped. */
+.bl-asset-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.bl-asset-use {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+/*
+ * The call with Copy after it, moved to a line as one thing: on a line that
+ * can hold both they stand side by side, and where none can the call breaks
+ * and Copy goes under it, at the left.
+ */
+.bl-asset-call {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  max-width: 100%;
+}
+
+.bl-asset-call > span {
+  min-width: 0;
+}
+
+.bl-asset-use code {
+  font-family: var(--mono);
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+
+/* What was refused, under the row it was asked in. */
+.bl-asset-said {
+  display: flex;
+  align-items: flex-start;
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 8px 14px;
+}
+
+.bl-asset-said > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bl-asset-dismiss {
+  flex-shrink: 0;
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  margin: -2px -6px -2px 0;
+  border: none;
+  border-radius: var(--bl-radius-sm);
+  background: transparent;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bl-asset-dismiss:hover {
+  background: var(--bl-hover);
+}
+
+/*
+ * The picture, on the ground the editor itself stands on. It is never drawn
+ * larger than it is, and one larger than the room is fitted to it: the two
+ * limits keep its shape between them. The line around it is where a picture
+ * with a clear or a white edge ends.
+ */
+.bl-asset-stage {
+  flex: 1 1 0;
+  min-height: 160px;
+  padding: 14px;
+  overflow: hidden;
+  background: var(--ink);
+}
+
+.bl-asset-picture {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  outline: 1px solid var(--line-soft);
+}
+
+.bl-asset-text {
+  flex: 1 1 0;
+  min-height: 160px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  background: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.bl-asset-more {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+.bl-asset-note {
+  flex: 1 1 0;
+  padding: 14px;
+  background: var(--ink);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.bl-asset-none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--dim);
+}
+
+.bl-asset-none-title {
+  margin-bottom: 6px;
+  font-family: var(--display);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--paper);
+}
+
+/* In a narrow column the facts take a row of their own, under the name. */
+@container bl-asset (max-width: 520px) {
+  .bl-asset-name {
+    flex-basis: 100%;
+  }
+
+  .bl-asset-stage,
+  .bl-asset-note {
+    padding: 12px;
+  }
+}
+
+@media (pointer: coarse) {
+  .bl-asset-use .bl-mini,
+  .bl-asset-dismiss {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+}
+
+/* ── Status bar and messages ───────────────────────────────────── */
+
+/*
+ * The row under the workspace (components/StatusBar.tsx) and the messages in
+ * it (components/feedback/ToastContainer.tsx). A message floated over the
+ * bottom right of the page for some seconds, on top of the panels' controls.
+ * The bar is the one part of the screen that is not a control, so a message
+ * is in it, in the page's flow, and covers nothing.
+ *
+ * The bar keeps its height for a message of one line, so the page above does
+ * not move when one arrives; a long one may take a second line. Where the
+ * pointer is a finger the bar is as tall as a message's buttons have to be,
+ * with or without a message, for the same reason.
+ */
+:root {
+  --bl-status-h: 28px;
+  /* From the top of the bar to the bottom of the window: the bar's own
+   * height where it is the last row, and more where something stands under
+   * it. StatusBar.tsx measures it; this is what stands until it has. */
+  --bl-status-room: var(--bl-status-h);
+}
+
+@media (pointer: coarse) {
+  :root {
+    --bl-status-h: 45px;
+  }
+}
+
+.bl-status {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: var(--bl-status-h);
+  padding: 0 12px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--ink-2);
+  font-size: 12px;
+  color: var(--dim);
+  container-type: inline-size;
+  container-name: bl-status;
+}
+
+.bl-status strong {
+  color: var(--paper);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.bl-status-counts {
+  flex-shrink: 0;
+  display: flex;
+  gap: 16px;
+  white-space: nowrap;
+}
+
+.bl-status-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.bl-status-hint {
+  flex-shrink: 0;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bl-status-hint:disabled {
+  cursor: default;
+}
+
+/* The focus ring of the page stands 2px off its control: off a button in
+ * this row that is past the bottom of the window. */
+#root .bl-status button:focus-visible {
+  outline-offset: 0;
+}
+
+/*
+ * The messages' place: the room the bar's own things leave. It is in the
+ * page with or without a message, as the live region in it has to be, and
+ * it is what the panel above the bar is hung from.
+ */
+.bl-status-msg {
+  position: relative;
+  align-self: stretch;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bl-status-live {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+}
+
+.bl-status-said {
+  --bl-status-kind: var(--dim);
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  color: var(--paper);
+  font-weight: 500;
+  line-height: 1.4;
+  animation: bl-status-in 1200ms var(--ease);
+}
+
+.bl-status-said[data-kind='success'],
+.bl-status-item[data-kind='success'] {
+  --bl-status-kind: var(--mint);
+}
+
+.bl-status-said[data-kind='error'],
+.bl-status-item[data-kind='error'] {
+  --bl-status-kind: var(--danger);
+}
+
+.bl-status-said[data-kind='warning'],
+.bl-status-item[data-kind='warning'] {
+  --bl-status-kind: var(--warn);
+}
+
+/* A message arrives with its ground lit in its kind's colour for a moment:
+ * nothing in the row moves. */
+@keyframes bl-status-in {
+  from {
+    background: color-mix(in srgb, var(--bl-status-kind) 26%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+/* The bar shows the newest message. The ones before it stay in the live
+ * region, where they were said, and are drawn in the panel. */
+.bl-status-said[data-older] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  animation: none;
+}
+
+.bl-status-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--bl-status-kind);
+}
+
+/* Two lines at most, then an ellipsis; the control beside it shows the rest. */
+.bl-status-text {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A message's buttons. The button is what is pressed, and is as tall as a
+ * finger needs where the pointer is one (below); what is drawn of it is the
+ * span inside, which keeps to the row's size either way.
+ */
+.bl-status-btn,
+.bl-status-x {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--bl-radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* What a message asks the person to do (Reload). */
+.bl-status-btn > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--bl-radius-sm);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+/* What opens the panel: the message's particulars, or the other messages. */
+.bl-status-btn[data-quiet] > span {
+  padding: 0 6px;
+  border-color: transparent;
+  color: var(--dim);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+/* How many more messages there are than the one shown. */
+.bl-status-btn.bl-status-count {
+  position: relative;
+}
+
+.bl-status-btn.bl-status-count > span {
+  border-color: var(--line);
+  border-radius: 999px;
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The rest of the count's name ("+2 more messages"): said, not drawn. */
+.bl-status-btn.bl-status-count > .bl-status-unseen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.bl-status-x {
+  width: 22px;
+}
+
+.bl-status-btn:hover > span,
+.bl-status-btn[aria-expanded='true'] > span,
+.bl-status-x:hover,
+.bl-status-hint:hover:not(:disabled) {
+  background: var(--bl-hover);
+  color: var(--paper);
+}
+
+/*
+ * The panel the person opens above the bar: every message there is, each
+ * whole, with its particulars. It is as wide as the messages' place at
+ * most, so it is inside the window wherever the bar is.
+ */
+.bl-status-panel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  width: min(440px, 100%);
+  max-height: min(420px, calc(100dvh - var(--bl-status-room) - 24px));
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--bl-radius);
+  background: var(--ink-2);
+  box-shadow: var(--bl-shadow-pop);
+  color: var(--paper);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.bl-status-panel-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.bl-status-list {
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.bl-status-item {
+  --bl-status-kind: var(--dim);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+}
+
+.bl-status-item + .bl-status-item {
+  border-top: 1px solid var(--line-soft);
+}
+
+.bl-status-item .bl-status-icon {
+  margin-top: 2px;
+}
+
+.bl-status-item-text {
+  flex: 1;
+  min-width: 0;
+  padding-top: 1px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* A message's particulars (what "Opened with 39 warnings" were): a list
+ * that scrolls in its place and does not run off the panel. */
+.bl-status-details {
+  margin-top: 6px;
+  padding-left: 18px;
+  max-height: 220px;
+  overflow-y: auto;
+  list-style: disc;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/*
+ * The bar's own things give way to a message by the room the bar has, which
+ * is not the window's where the bar is given part of it: the hint first,
+ * then the file's path, then the counts. A message has 300px or more at any
+ * width this way. Without one the bar reads as it always did, and only the
+ * hint goes, where there is no room for it beside the counts.
+ */
+.bl-status:has(.bl-status-said) .bl-status-path {
+  max-width: 24ch;
+}
+
+@container bl-status (max-width: 1000px) {
+  .bl-status:has(.bl-status-said) .bl-status-hint {
+    display: none;
+  }
+}
+
+@container bl-status (max-width: 760px) {
+  .bl-status:has(.bl-status-said) .bl-status-path {
+    display: none;
+  }
+}
+
+@container bl-status (max-width: 520px) {
+  .bl-status-hint,
+  .bl-status:has(.bl-status-said) .bl-status-counts {
+    display: none;
+  }
+}
+
+/*
+ * A dialog's shade lies over the whole window. The bar stands above it for
+ * as long as it holds a message, which is still to be read and answered
+ * there; the dialogs leave the bar's strip free (.bl-overlay, .bl-dialog),
+ * and the bar keeps to one line so that strip is all it takes. The bar's
+ * own things are out of reach then, as the page is, and look it. The same
+ * height is the bar's while its panel is open, over the page.
+ */
+.bl-status[data-modal]:has(.bl-status-said),
+.bl-status:has(.bl-status-panel) {
+  z-index: 1300;
+}
+
+/* The relationship dialog is the Data view's own and is drawn inside the page, so the bar is
+ * not told of it as it is of the others: a message it holds is raised over that shade here. */
+:root:has([data-relationship-overlay]) .bl-status:has(.bl-status-said) {
+  z-index: 1300;
+}
+
+.bl-status[data-modal] :is(.bl-status-counts, .bl-status-path, .bl-status-hint) {
+  opacity: 0.45;
+}
+
+.bl-status[data-modal] .bl-status-text {
+  -webkit-line-clamp: 1;
+}
+
+@media (pointer: coarse) {
+  .bl-status-btn,
+  .bl-status-x,
+  .bl-status-hint,
+  .bl-status-panel .bl-mini {
+    min-height: 2.75rem;
+  }
+
+  .bl-status-x {
+    width: 2.75rem;
+  }
 }

@@ -2,7 +2,7 @@
  * ComponentPalette - Left sidebar with draggable components
  */
 
-import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   paletteComponents,
   getComponentsByCategory,
@@ -19,10 +19,12 @@ import { useFilesStore } from '../../stores/filesStore';
 import type { ComponentMeta } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
+  // As wide as what holds it: a column beside the canvas, or a sheet over it (App.tsx).
   container: {
-    width: 260,
+    width: '100%',
+    height: '100%',
+    minHeight: 0,
     background: 'var(--ink-2)',
-    borderRight: '1px solid var(--line-soft)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
@@ -70,15 +72,15 @@ const styles: Record<string, React.CSSProperties> = {
   list: {
     flex: 1,
     overflow: 'auto',
-    padding: '8px 0',
+    padding: '4px 0 8px',
   },
   category: {
-    marginBottom: 4,
+    marginBottom: 2,
   },
   // A section inside the panel: small and dim, in sentence case.
   categoryHeader: {
     width: '100%',
-    padding: '8px 16px',
+    padding: '6px 16px',
     border: 'none',
     background: 'transparent',
     fontSize: 12,
@@ -103,9 +105,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
+// A row is as tall as a line of the hierarchy, and a finger's 44 pixels where
+// the pointer is one (.bl-palette-item, builder.css): at 35 pixels a row, the
+// four sections that start open were two screens of scrolling.
 const componentStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  margin: '1px 0',
+  padding: '2px 8px',
   borderRadius: 6,
   cursor: 'grab',
   display: 'flex',
@@ -244,10 +248,33 @@ function dragOnceMoved(e: React.MouseEvent, type: string, setDraggedType: (type:
   window.addEventListener('mouseup', handleMouseUp);
 }
 
+/**
+ * How a row of the palette is added by pointing at it. With a mouse a press
+ * may be the start of a drag, so adding is a double-click. A finger cannot
+ * drag a row (the drag is made of mouse moves) and a double tap is the
+ * browser's zoom: there one tap adds, and says it has (`onAdded`), which in
+ * a sheet over the canvas is what puts the sheet away so the page is seen.
+ */
+const PaletteTap = createContext<{ tap: boolean; onAdded?: () => void }>({ tap: false });
+
+/** Whether the pointer is a finger, as far as the browser says. */
+function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia('(pointer: coarse)');
+    const check = () => setCoarse(query.matches);
+    query.addEventListener?.('change', check);
+    return () => query.removeEventListener?.('change', check);
+  }, []);
+  return coarse;
+}
+
 function ComponentItem({ component }: ComponentItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const setDraggedType = useCanvasStore((state) => state.setDraggedType);
   const draggedType = useCanvasStore((state) => state.draggedType);
+  const { tap, onAdded } = useContext(PaletteTap);
 
   const isDragging = draggedType === component.name;
 
@@ -259,6 +286,10 @@ function ComponentItem({ component }: ComponentItemProps) {
   const handleDoubleClick = useCallback(() => {
     focusOnCanvas(insertFromPalette(component.name));
   }, [component.name]);
+
+  const handleTap = useCallback(() => {
+    if (insertFromPalette(component.name) !== null) onAdded?.();
+  }, [component.name, onAdded]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -284,19 +315,22 @@ function ComponentItem({ component }: ComponentItemProps) {
       data-palette-item={component.name}
       aria-label={`Add ${component.name}`}
       aria-description={component.description}
-      onMouseDown={handleMouseDown}
-      onDoubleClick={handleDoubleClick}
+      className="bl-palette-item"
+      onMouseDown={tap ? undefined : handleMouseDown}
+      onDoubleClick={tap ? undefined : handleDoubleClick}
+      onClick={tap ? handleTap : undefined}
       onKeyDown={handleKeyDown}
       style={style}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      title={`${component.description} — drag onto the canvas, or double-click to add`}
+      title={tap ? component.description : `${component.description} — drag onto the canvas, or double-click to add`}
     >
-      <span style={{ flex: 1, fontFamily: component.name.startsWith('#') ? 'var(--mono)' : undefined, color: component.name.startsWith('#') ? 'var(--coral)' : undefined }}>
-        {component.name}
-      </span>
+      {/* The drawing first, as in the canvas and the hierarchy, and the name whole beside it. */}
       <span style={iconChipStyle}>
         <TokenIcon token={component.icon} size={12} />
+      </span>
+      <span style={{ flex: 1, fontFamily: component.name.startsWith('#') ? 'var(--mono)' : undefined, color: component.name.startsWith('#') ? 'var(--coral)' : undefined }}>
+        {component.name}
       </span>
     </div>
   );
@@ -312,7 +346,7 @@ interface CategorySectionProps {
 function CategorySection({ category, components, isExpanded, onToggle }: CategorySectionProps) {
   return (
     <div style={styles.category}>
-      <button type="button" tabIndex={-1} data-palette-row="" style={styles.categoryHeader} onClick={onToggle} aria-expanded={isExpanded}>
+      <button type="button" tabIndex={-1} data-palette-row="" style={styles.categoryHeader} className="bl-palette-section" onClick={onToggle} aria-expanded={isExpanded}>
         <span>
           {category} <span style={{ color: 'var(--dimmer)', fontWeight: 400 }}>{components.length}</span>
         </span>
@@ -328,7 +362,7 @@ function CategorySection({ category, components, isExpanded, onToggle }: Categor
       </button>
 
       {isExpanded && (
-        <div style={styles.componentList}>
+        <div style={styles.componentList} className="bl-palette-rows">
           {components.map((comp) => (
             <ComponentItem key={comp.name} component={comp} />
           ))}
@@ -352,6 +386,7 @@ function PageItem({ page }: { page: Importable }) {
   const type = pageDragType(page.file.id);
   const fileName = page.file.path.split('/').pop() ?? page.file.path;
   const refused = page.refused !== undefined;
+  const { tap, onAdded } = useContext(PaletteTap);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -381,8 +416,10 @@ function PageItem({ page }: { page: Importable }) {
       aria-label={`Add ${fileName}`}
       aria-disabled={refused}
       aria-description={page.refused ?? `A page of this project, used here as ${page.name}`}
-      onMouseDown={handleMouseDown}
-      onDoubleClick={() => focusOnCanvas(insertFromPalette(type))}
+      className="bl-palette-item"
+      onMouseDown={tap ? undefined : handleMouseDown}
+      onDoubleClick={tap ? undefined : () => focusOnCanvas(insertFromPalette(type))}
+      onClick={tap ? () => { if (insertFromPalette(type) !== null) onAdded?.(); } : undefined}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -410,6 +447,11 @@ function useProjectPages(): Importable[] {
 
 interface ComponentPaletteProps {
   onToggleDock?: () => void;
+  /**
+   * Told each time a tap adds something. Given by the sheet the palette is
+   * in on a phone, which goes away so the page and what was added are seen.
+   */
+  onAdded?: () => void;
 }
 
 /**
@@ -422,7 +464,12 @@ const openSections = {
   pages: true,
 };
 
-export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
+export function ComponentPalette({ onToggleDock, onAdded }: ComponentPaletteProps) {
+  const coarse = useCoarsePointer();
+  // One tap adds wherever a finger is the pointer, and in a sheet whatever the pointer is:
+  // there is no canvas in sight to drag onto.
+  const tap = coarse || onAdded !== undefined;
+  const tapMode = useMemo(() => ({ tap, onAdded }), [tap, onAdded]);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCategories, setExpandedCategoriesState] = useState<Set<string>>(() => new Set(openSections.categories));
   const setExpandedCategories = useCallback((update: (previous: Set<string>) => Set<string>) => {
@@ -526,7 +573,8 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
     : null;
 
   return (
-    <div style={styles.container}>
+    <PaletteTap.Provider value={tapMode}>
+    <div style={styles.container} className="bl-palette" data-palette-add={tap ? 'tap' : 'drag'}>
       <div style={styles.header}>
         <div style={styles.headerLeft}>
           <span>Components</span>
@@ -551,12 +599,14 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
           style={styles.searchInput}
         />
         {/* Where the selection is, and the end of the page with nothing selected (placeBySelection). */}
-        <div style={styles.searchHint}>Drag onto the canvas, or double-click (or press Enter) to add into what is selected, or after it.</div>
+        <div style={styles.searchHint} data-palette-hint="">
+          {tap ? 'Tap one to add it' : 'Drag one onto the page, or double-click to add it'}: into what is selected, or after it.
+        </div>
       </div>
 
       <div style={styles.list} ref={listRef} data-palette-list="" onKeyDown={onListKeyDown} onFocus={onListFocus}>
         {filteredComponents ? (
-          <div style={styles.componentList}>
+          <div style={styles.componentList} className="bl-palette-rows">
             {matchingPages.map((page) => (
               <PageItem key={page.file.id} page={page} />
             ))}
@@ -574,7 +624,7 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
             {/* The project's own pages, first: what a person made is what they reach for. */}
             {projectPages.length > 0 && (
               <div style={styles.category} data-palette-pages="">
-                <button type="button" tabIndex={-1} data-palette-row="" style={styles.categoryHeader} onClick={() => setPagesExpanded((open) => !open)} aria-expanded={pagesExpanded}>
+                <button type="button" tabIndex={-1} data-palette-row="" style={styles.categoryHeader} className="bl-palette-section" onClick={() => setPagesExpanded((open) => !open)} aria-expanded={pagesExpanded}>
                   <span>
                     This project <span style={{ color: 'var(--dimmer)', fontWeight: 400 }}>{projectPages.length}</span>
                   </span>
@@ -583,7 +633,7 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
                   </span>
                 </button>
                 {pagesExpanded && (
-                  <div style={styles.componentList}>
+                  <div style={styles.componentList} className="bl-palette-rows">
                     {projectPages.map((page) => (
                       <PageItem key={page.file.id} page={page} />
                     ))}
@@ -615,5 +665,6 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
         )}
       </div>
     </div>
+    </PaletteTap.Provider>
   );
 }

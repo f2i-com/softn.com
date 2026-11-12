@@ -249,6 +249,27 @@ export interface HistoryEntry {
    * file goes back with it.
    */
   logic?: LogicSnapshot[];
+  /**
+   * The rename of a picture or other asset this step also made, as the way
+   * to this state: see RenameSnapshot.
+   */
+  rename?: RenameSnapshot;
+}
+
+/**
+ * A picture, another asset, or a folder of them, at one moment of the
+ * history: the path it had in this state, and the path it has to have now
+ * for the step to give it that one back. Its rename and every reference that
+ * followed it are one step (utils/renameInProject.ts): the canvas alone put
+ * back would ask for a name the file no longer has.
+ */
+export interface RenameSnapshot {
+  /** The file's or folder's node. */
+  id: string;
+  /** Where it was in this state. */
+  path: string;
+  /** Where the step left it. */
+  expects: string;
 }
 
 /**

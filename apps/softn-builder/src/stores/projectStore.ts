@@ -147,7 +147,9 @@ interface ProjectStore {
   updateCollection: (index: number, updates: Partial<CollectionDef>) => void;
   deleteCollection: (index: number) => void;
 
-  // Actions - Assets
+  // Actions - Assets. This list is what a project was given before it had
+  // files of its own, and is read for a project with none (utils/projectAssets.ts).
+  // A picture a person adds goes among the files: filesStore.addAssetFile.
   addAsset: (asset: AssetFile) => void;
   setAssets: (assets: AssetFile[]) => void;
   deleteAsset: (name: string) => void;

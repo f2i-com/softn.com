@@ -187,6 +187,54 @@ describe('adding from the palette', () => {
     // go into the selected element, or after it.
     act(() => root.render(React.createElement(ComponentPalette)));
     expect(host.textContent).not.toContain('to add at the end');
-    expect(host.textContent).toContain('to add into what is selected, or after it');
+    expect(host.querySelector('[data-palette-hint]')?.textContent).toBe('Drag one onto the page, or double-click to add it: into what is selected, or after it.');
+  });
+});
+
+/**
+ * A finger cannot drag a row (the drag is made of mouse moves), and on a
+ * phone the palette is a sheet over the canvas, with nothing in sight to
+ * drag onto. One tap adds there, and the sheet is told so it can go away.
+ */
+describe('adding with one tap, in a sheet or under a finger', () => {
+  const tap = (element: HTMLElement) => act(() => void element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+  const doubleClick = (element: HTMLElement) => act(() => void element.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })));
+
+  it('adds on a tap and says it has, once', () => {
+    let added = 0;
+    act(() => root.render(React.createElement(ComponentPalette, { onAdded: () => { added += 1; } })));
+    expect(host.querySelector('[data-palette-add]')?.getAttribute('data-palette-add')).toBe('tap');
+    expect(host.querySelector('[data-palette-hint]')?.textContent).toBe('Tap one to add it: into what is selected, or after it.');
+    const item = host.querySelector<HTMLElement>('[data-palette-item="Stack"]')!;
+    tap(item);
+    expect(count('Stack')).toBe(1);
+    expect(added).toBe(1);
+    // A double-click's own event adds nothing on top of its two taps.
+    doubleClick(item);
+    expect(count('Stack')).toBe(1);
+    // And one step for Undo, as from the keyboard.
+    const entry = useHistoryStore.getState().undo({ elements: canvas().elements, rootId: canvas().rootId, timestamp: Date.now() });
+    canvas().loadState(entry!.elements, entry!.rootId);
+    expect(count('Stack')).toBe(0);
+  });
+
+  it('adds nothing on one click beside the canvas, where a press may be the start of a drag', () => {
+    act(() => root.render(React.createElement(ComponentPalette)));
+    expect(host.querySelector('[data-palette-add]')?.getAttribute('data-palette-add')).toBe('drag');
+    const item = host.querySelector<HTMLElement>('[data-palette-item="Stack"]')!;
+    tap(item);
+    expect(count('Stack')).toBe(0);
+    doubleClick(item);
+    expect(count('Stack')).toBe(1);
+  });
+
+  it('draws each row with its drawing first and its name whole', () => {
+    act(() => root.render(React.createElement(ComponentPalette)));
+    const item = host.querySelector<HTMLElement>('[data-palette-item="SegmentedControl"]')!;
+    expect(item.lastElementChild?.textContent).toBe('SegmentedControl');
+    expect(item.firstElementChild?.querySelector('svg')).not.toBeNull();
+    // Nothing in the row cuts the name short.
+    expect((item.lastElementChild as HTMLElement).style.overflow).toBe('');
+    expect((item.lastElementChild as HTMLElement).style.textOverflow).toBe('');
   });
 });

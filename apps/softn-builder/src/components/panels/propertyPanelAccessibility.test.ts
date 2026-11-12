@@ -53,6 +53,7 @@ describe('accessibility props in the property panel', () => {
     for (const name of ['BarChart', 'Modal', 'Icon', 'Slider', 'Tabs', 'Table']) expect(offered(name), name).toContain('ariaLabel');
     expect(offered('Table')).toContain('caption');
     expect(offered('Tag')).toContain('removeLabel');
+    expect(offered('Sidebar')).toContain('menuLabel');
     expect(offered('Section')).toContain('headingLevel');
     expect(offered('Alert')).toContain('role');
     const viewMode = componentRegistry.find((c) => c.name === 'MarkdownEditor')!.propSchema.find((p) => p.name === 'onViewModeChange');

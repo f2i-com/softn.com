@@ -60,9 +60,10 @@ function blockOf(type: string): string {
   return match.id;
 }
 
-function setValue(input: HTMLInputElement, value: string): void {
-  // React listens to the native value setter, so the prototype's is used.
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+function setValue(input: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  // React listens to the native value setter, so the prototype's is used: the box's own,
+  // which for a condition, a list and a key is the one that grows (GrowingField.tsx).
+  const setter = Object.getOwnPropertyDescriptor(input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!;
   act(() => {
     setter.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -133,6 +134,31 @@ describe('the property panel for a block', () => {
     expect(canvas().elements.get(ifId)?.block?.condition).toBe('outer && ready');
     expect(generateSource(canvas().elements, canvas().rootId, '')).toContain('#if (outer && ready)');
     expect(useHistoryStore.getState().canUndo()).toBe(true);
+  });
+
+  // A condition was one line of text however long it was. It is the box an expression has:
+  // as tall as what is in it. A block's header is one line in the file, so a line break
+  // pasted into it is a space, and Enter adds none.
+  it('holds a long condition in a box that grows, and keeps it one line of the file', () => {
+    const ifId = blockOf('#if');
+    act(() => canvas().selectElement(ifId));
+    const host = mount(React.createElement(PropertyPanel));
+    const condition = host.querySelector<HTMLTextAreaElement>('[data-block-field="condition"]')!;
+    expect(condition.tagName).toBe('TEXTAREA');
+    expect(condition.rows).toBe(1);
+    const long = 'user && user.role === "admin" && !archived && tasks.length > 0';
+    setValue(condition, long);
+    expect(condition.closest('.bl-pp-grow')?.getAttribute('data-value')).toBe(long);
+    setValue(condition, 'outer &&\n  ready');
+    expect(canvas().elements.get(ifId)?.block?.condition).toBe('outer && ready');
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    act(() => { condition.dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(true);
+    // The names of an #each are each a word, and stay one-line boxes; its list and its key grow.
+    act(() => canvas().selectElement(blockOf('#each')));
+    expect(host.querySelector('[data-block-field="itemName"]')?.tagName).toBe('INPUT');
+    expect(host.querySelector('[data-block-field="iterable"]')?.tagName).toBe('TEXTAREA');
+    expect(host.querySelector('[data-block-field="keyExpression"]')?.tagName).toBe('TEXTAREA');
   });
 
   it('exposes the loop variables of an #each', () => {

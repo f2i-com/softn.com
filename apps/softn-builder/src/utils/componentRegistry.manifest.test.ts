@@ -176,3 +176,47 @@ describe('the defaults and choices the property panel offers', () => {
     expect(prop('App', 'theme').options).toEqual(['light', 'dark', 'system']);
   });
 });
+
+/**
+ * Props a component takes that the panel did not offer, though a person would
+ * look for them there: a Toast that stays while it is pointed at, a Sidebar
+ * that starts folded. They are in the panel now (componentRegistry.ts,
+ * EXPECTED_PROPS), each with the control its kind takes and the component's
+ * own default and choices.
+ */
+describe('the props a person would look for in the panel', () => {
+  const prop = (component: string, name: string) => componentRegistry.find((c) => c.name === component)!.propSchema.find((p) => p.name === name);
+
+  it('are offered for a Toast and a Sidebar, with the component’s own defaults', () => {
+    expect(prop('Toast', 'pauseOnHover')).toMatchObject({ type: 'boolean', default: true });
+    expect(prop('Toast', 'isVisible')).toMatchObject({ type: 'boolean', default: true });
+    expect(prop('Sidebar', 'defaultCollapsed')).toMatchObject({ type: 'boolean', default: false });
+    expect(prop('Sidebar', 'borderColor')).toMatchObject({ type: 'color' });
+    expect(prop('Sidebar', 'onCollapse')).toMatchObject({ type: 'event' });
+  });
+
+  it('are offered for the fields, the words and the layout a page is made of', () => {
+    const offered = (component: string) => componentRegistry.find((c) => c.name === component)!.propSchema.map((p) => p.name);
+    expect(offered('Input')).toEqual(expect.arrayContaining(['label', 'helperText', 'readOnly', 'clearable']));
+    expect(offered('TextArea')).toEqual(expect.arrayContaining(['label', 'helperText', 'autoResize', 'maxLength']));
+    expect(offered('Select')).toEqual(expect.arrayContaining(['label', 'clearable', 'noOptionsText']));
+    expect(offered('Header')).toEqual(expect.arrayContaining(['title', 'background']));
+    expect(offered('Section')).toEqual(expect.arrayContaining(['title', 'subtitle', 'collapsible', 'defaultCollapsed']));
+    expect(offered('Grid')).toEqual(expect.arrayContaining(['minColumnWidth', 'responsive', 'collapseOnMobile']));
+    // A choice comes with the choices the component's type names.
+    expect(prop('Text', 'variant')).toMatchObject({ type: 'select', default: 'default' });
+    expect(prop('Text', 'variant')!.options).toEqual(expect.arrayContaining(['muted', 'primary', 'error']));
+    expect(prop('Spinner', 'variant')!.options).toEqual(['ring', 'dots', 'bars', 'pulse']);
+  });
+
+  it('stand after the props the entry lists, and each name is offered once', () => {
+    for (const meta of componentRegistry) {
+      const names = meta.propSchema.map((p) => p.name);
+      expect(new Set(names).size, `${meta.name} offers a prop twice`).toBe(names.length);
+    }
+    const sidebar = componentRegistry.find((c) => c.name === 'Sidebar')!.propSchema.map((p) => p.name);
+    expect(sidebar.indexOf('defaultCollapsed')).toBeGreaterThan(sidebar.indexOf('mobileMenu'));
+    // What a screen reader is told keeps its place in the Accessibility group.
+    expect(sidebar).toContain('menuLabel');
+  });
+});

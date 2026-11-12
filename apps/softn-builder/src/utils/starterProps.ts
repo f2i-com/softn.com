@@ -28,7 +28,7 @@ export interface StarterProps {
 }
 
 /** `value` as the text the visual model keeps for `name={value}`, or null when it is not an expression. */
-function expressionText(source: string): string | null {
+export function expressionText(source: string): string | null {
   const doc = parse(`<Box v={${source}} />`);
   if ((doc.diagnostics ?? []).length > 0) return null;
   const box = doc.template[0];

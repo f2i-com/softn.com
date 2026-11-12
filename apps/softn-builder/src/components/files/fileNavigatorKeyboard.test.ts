@@ -148,7 +148,7 @@ describe('the file tree from the keyboard', () => {
     const menu = host.querySelector<HTMLElement>('[role="menu"]');
     expect(menu).not.toBeNull();
     const items = [...menu!.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-    expect(items.map((item) => item.textContent)).toEqual(['New UI file', 'New logic file', 'New folder', 'Rename', 'Delete']);
+    expect(items.map((item) => item.textContent)).toEqual(['New UI file', 'New logic file', 'New folder', 'Add a picture or file', 'Rename', 'Delete']);
     expect(document.activeElement).toBe(items[0]);
     press(items[0], 'ArrowDown');
     expect(document.activeElement).toBe(items[1]);

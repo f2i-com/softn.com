@@ -18,7 +18,7 @@
  * way to show one.
  */
 
-import { parse } from '@softn/core';
+import { parse, type Expression } from '@softn/core';
 import type { CanvasElement, PropSchema } from '../types/builder';
 
 /** A property as the model holds it. `value` undefined is a property that is not written. */
@@ -32,18 +32,100 @@ export function propState(element: CanvasElement, name: string): PropState {
   return { value: element.props[name], isExpression: (element.expressionProps ?? []).includes(name) };
 }
 
-/** Whether `text` is one whole expression, as it would stand between an attribute's braces. */
-export function isExpressionText(text: string): boolean {
-  if (text.trim() === '') return false;
+/** `text` as the one whole expression it is between an attribute's braces, or null when it is not one. */
+function expressionOf(text: string): Expression | null {
+  if (text.trim() === '') return null;
   try {
     const doc = parse(`<Probe v={${text}} />`);
-    if ((doc.diagnostics ?? []).length > 0) return false;
+    if ((doc.diagnostics ?? []).length > 0) return null;
     const [node, ...rest] = doc.template.filter((n) => n.type !== 'Text');
-    if (!node || rest.length > 0 || node.type !== 'Element') return false;
-    return node.props.length === 1 && node.props[0].name === 'v' && node.props[0].value.type === 'expression';
+    if (!node || rest.length > 0 || node.type !== 'Element') return null;
+    if (node.props.length !== 1 || node.props[0].name !== 'v') return null;
+    const value = node.props[0].value;
+    return value.type === 'expression' ? value.value : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Whether `text` is one whole expression, as it would stand between an attribute's braces. */
+export function isExpressionText(text: string): boolean {
+  return expressionOf(text) !== null;
+}
+
+/** An expression as it reads, without where in the text each part of it stands. */
+function reading(expression: Expression): string {
+  return JSON.stringify(expression, (key, value: unknown) => (key === 'loc' ? undefined : value));
+}
+
+/** Whether two texts are whole expressions that read as the same one: the same parts, holding the same, in the same order. */
+export function sameExpression(a: string, b: string): boolean {
+  const left = expressionOf(a);
+  const right = expressionOf(b);
+  return left !== null && right !== null && reading(left) === reading(right);
+}
+
+/**
+ * The entries of a list or record written as `text`, each as it is written,
+ * or null when `text` is not one pair of brackets around entries. Found by
+ * the brackets and quotes alone, which is not the whole of the language (a
+ * comment, or a template inside a template, is read wrongly): whoever lays
+ * the entries out again holds the result to `sameExpression`.
+ */
+function entriesOf(text: string): { open: string; close: string; entries: string[]; trailing: boolean } | null {
+  const open = text[0];
+  const close = open === '[' ? ']' : open === '{' ? '}' : null;
+  if (close === null || text[text.length - 1] !== close) return null;
+  const entries: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let from = 1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') quote = ch;
+    else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      depth--;
+      // Closed before its end: `[a] + [b]` is not one list.
+      if (depth === 0 && i !== text.length - 1) return null;
+    } else if (ch === ',' && depth === 1) {
+      entries.push(text.slice(from, i).trim());
+      from = i + 1;
+    }
+  }
+  if (depth !== 0 || quote !== null) return null;
+  const last = text.slice(from, -1).trim();
+  // A comma after the last entry is kept where it was.
+  const trailing = last === '' && entries.length > 0;
+  if (!trailing) entries.push(last);
+  return entries.every((entry) => entry !== '') ? { open, close, entries, trailing } : null;
+}
+
+/**
+ * A list or a record laid out with one entry to a line, for a field that
+ * shows it: `[{ a: 1 }, { a: 2 }]` with each record on a line of its own. Each
+ * entry is left as it was written; only the space between entries changes.
+ *
+ * Null when `text` is not a list or record of two entries or more, when it
+ * is laid out so already, and whenever the result cannot be shown to read as
+ * the same expression: nothing is offered that might change what was written.
+ */
+export function overLines(text: string): string | null {
+  const written = text.trim();
+  const parts = entriesOf(written);
+  if (parts === null || parts.entries.length < 2) return null;
+  const expression = expressionOf(written);
+  if (expression === null || (expression.type !== 'ArrayExpression' && expression.type !== 'ObjectExpression')) return null;
+  const laid = `${parts.open}\n${parts.entries.map((entry) => `  ${entry}`).join(',\n')}${parts.trailing ? ',' : ''}\n${parts.close}`;
+  if (laid === written) return null;
+  // Nothing but space was changed, and it still reads as it did.
+  if (laid.replace(/\s+/g, '') !== written.replace(/\s+/g, '')) return null;
+  return sameExpression(written, laid) ? laid : null;
 }
 
 /**

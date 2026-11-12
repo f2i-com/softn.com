@@ -5,6 +5,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useFilesStore } from '../../stores/filesStore';
 import { FileGlyph, type FileGlyphKind } from './fileIcons';
+import { PICTURE_PATTERN } from '../../utils/addAssets';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -179,7 +180,8 @@ function Tab({ fileId, isActive, onSelect, onClose, onContextMenu }: TabProps) {
   const getIcon = (): FileGlyphKind => {
     if (node.fileType === 'ui') return 'ui';
     if (node.fileType === 'logic') return 'logic';
-    if (node.fileType === 'asset') return 'file';
+    // A picture has the mark it has in the Files panel.
+    if (node.fileType === 'asset' && PICTURE_PATTERN.test(node.name)) return 'image';
     return 'file';
   };
 
@@ -231,6 +233,7 @@ function Tab({ fileId, isActive, onSelect, onClose, onContextMenu }: TabProps) {
           loses nothing — closeFile only drops the tab; the file's content
           stays in the store, and App flushes the canvas into it first. */}
       <button
+        className="bl-tab-close"
         style={{
           ...styles.closeBtn,
           ...(isCloseHovered ? styles.closeBtnHover : {}),

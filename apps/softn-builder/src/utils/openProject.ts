@@ -57,6 +57,7 @@ import { gatherCollections, gatherRecords } from './buildProjectBundle';
 import { xdbText, type KeptXdb } from './bundleExporter';
 import { elementsEqual } from './elementsEqual';
 import { isDesktop, saveDesktopFile } from './desktop';
+import { flipFrom } from './flipHandoff';
 import type {
   AssetFile,
   CanvasElement,
@@ -461,7 +462,13 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       pythonPackages: Array.isArray(project.pythonPackages) ? project.pythonPackages : readPythonPackages(source.manifest).packages,
       logicSource: project.logicSource || '',
       collections: project.collections || [],
-      assets: [...assetFiles.values()],
+      // A session's assets are its files' (`files.assetFiles`, below), and the
+      // project's own list is for a project with none there
+      // (utils/projectAssets.ts). Filled with the same assets, it was what a
+      // project made here was taken to have once its last picture was deleted:
+      // the canvas, Preview and the export went on with a picture Files no
+      // longer had.
+      assets: [],
       source,
     },
     canvas: { elements, rootId: s.canvas.rootId, imports: Array.isArray(s.canvas.imports) ? s.canvas.imports : [] },
@@ -799,16 +806,39 @@ export type StartupAction =
   | { kind: 'remote-open'; url: URL; view?: ViewMode }
   | { kind: 'restore-prompt'; raw: string }
   | { kind: 'nothing' }
-  | { kind: 'refused-link'; message: string };
+  | { kind: 'refused-link'; message: string }
+  /**
+   * A start that has to do with Studio (utils/studioVisit.ts): a project it
+   * has just handed over (`id`), a reload of the tab that was on one (`tab`),
+   * or a stored session one left (`session`). `otherwise` is the start to
+   * make when it comes to nothing of Studio's.
+   */
+  | { kind: 'from-studio'; id: string | null; tab: { projectId: string; visit: string } | null; session: string | null; otherwise: StartupAction };
+
+/** What the start is told of Studio: the visit this tab was on, and whether the stored session is one a visit left. */
+export interface StudioAtStartup {
+  tab: { projectId: string; visit: string } | null;
+  visitSession: boolean;
+}
 
 /**
  * What the page does first, decided once. A `?open=` link wins over the
  * session-restore prompt; the link is consumed from the address bar so a
  * reload does not open it again over edited work. Same-origin .softn URLs
  * only — the value comes from the address bar and is not ours to trust.
+ *
+ * A project Studio has just handed over comes before either: it is why the
+ * page was opened. What Studio put in the address stays there until the
+ * project is safely here, so a reload before that opens it again, and is
+ * taken out then (utils/studioVisit.ts). A reload of a tab that was on such
+ * a project goes on with it, and a stored session one left is offered back
+ * with its way to Studio.
  */
-export function startupAction(location: Location, history: History, storedSession: string | null): StartupAction {
+export function startupAction(location: Location, history: History, storedSession: string | null, studio: StudioAtStartup = { tab: null, visitSession: false }): StartupAction {
   const params = new URLSearchParams(location.search);
+  const stored: StartupAction = storedSession ? { kind: 'restore-prompt', raw: storedSession } : { kind: 'nothing' };
+  const handed = flipFrom(location.search, 'builder');
+  if (handed?.id) return { kind: 'from-studio', id: handed.id, tab: studio.tab, session: null, otherwise: stored };
   const open = params.get('open');
   if (open !== null) {
     const asked = params.get('view');
@@ -828,8 +858,10 @@ export function startupAction(location: Location, history: History, storedSessio
     }
     return view ? { kind: 'remote-open', url, view } : { kind: 'remote-open', url };
   }
-  if (storedSession) return { kind: 'restore-prompt', raw: storedSession };
-  return { kind: 'nothing' };
+  if (studio.tab || (storedSession && studio.visitSession)) {
+    return { kind: 'from-studio', id: null, tab: studio.tab, session: studio.visitSession ? storedSession : null, otherwise: stored };
+  }
+  return stored;
 }
 
 /**

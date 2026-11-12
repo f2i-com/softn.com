@@ -1,12 +1,23 @@
 ﻿/**
- * PropertyPanel - Right sidebar for editing component properties
+ * PropertyPanel - the properties of what is selected on the canvas.
+ *
+ * It names the selection and what can be done to it (move, duplicate,
+ * delete), then the element's own properties, then the groups a person goes
+ * to less often, the seldom-needed ones folded to their headings. A new
+ * selection is read from the top.
+ *
+ * Its look is classes in styles/builder.css ("Properties panel"), which go
+ * by the panel's own width: it stands in a column beside the canvas and, on
+ * a phone or a tablet, in a sheet as wide as the screen.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
-import { assetPath, useCurrentAssets } from '../../utils/projectAssets';
+import { toast } from '../../stores/notificationStore';
+import { useCurrentAssets } from '../../utils/projectAssets';
+import { PICTURE_ACCEPT, PICTURE_PATTERN, addAssetFiles } from '../../utils/addAssets';
 import { assetCall, assetCallPath } from '../../utils/assetSource';
 import { isRemoteAddress, remoteShown, showRemotePicture, useShownPictures } from '../../utils/remotePictures';
 import { useFilesStore } from '../../stores/filesStore';
@@ -17,230 +28,13 @@ import { eventKeyFor } from '../../utils/eventProps';
 import { nativeElementMeta } from '../../utils/nativeHtmlMetadata';
 import { blockHeaderText } from '../../utils/sourceGenerator';
 import { blockDescription, hasTextField, isBlockHead, isTextNode, textNodeMeta } from '../../utils/blocks';
-import { controlFor, propState, shownValue, withProp, writtenValue, type PropState } from '../../utils/propValues';
+import { controlFor, propState, shownValue, withProp, writtenValue, type PropControl, type PropState } from '../../utils/propValues';
 import type { CanvasBlock, PropSchema } from '../../types/builder';
 import { PAGE_TYPE } from '../../types/builder';
+import { ExpressionField } from './ExpressionField';
+import { GrowingField } from './GrowingField';
 import { ProjectThemeField } from './ProjectThemeField';
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    width: '100%',
-    height: '100%',
-    background: 'var(--ink-2)',
-    borderLeft: '1px solid var(--line-soft)',
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  },
-  header: {
-    padding: '12px 16px',
-    borderBottom: '1px solid var(--line-soft)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  headerTitle: {
-    fontFamily: 'var(--display)',
-    fontWeight: 700,
-    fontSize: 14,
-    letterSpacing: '-0.01em',
-    color: 'var(--paper)',
-  },
-  content: {
-    flex: 1,
-    overflowY: 'auto',
-    overflowX: 'hidden',
-    scrollbarGutter: 'stable',
-    padding: 16,
-  },
-  // The panel is 320px wide and full height, and this used to be one grey
-  // sentence pinned to the top of it, with the rest of the column empty. It
-  // centres now and says what to do rather than only what is missing.
-  empty: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    padding: '24px 28px',
-    textAlign: 'center' as const,
-    color: 'var(--dimmer)',
-    fontSize: 13,
-  },
-  emptyTitle: {
-    fontFamily: 'var(--display)',
-    fontSize: 16,
-    fontWeight: 700,
-    letterSpacing: '-0.01em',
-    color: 'var(--paper)',
-  },
-  emptyHint: {
-    fontSize: 12.5,
-    lineHeight: 1.55,
-    color: 'var(--dim)',
-    maxWidth: 240,
-  },
-  // Under the empty state: what is the project's and no element's.
-  projectSettings: {
-    padding: '0 12px 12px',
-  },
-  // The selected element: its tag in the language's colour, as the source
-  // would show it, then what it is.
-  componentInfo: {
-    marginBottom: 14,
-    padding: '2px 2px 12px',
-    borderBottom: '1px solid var(--line-soft)',
-  },
-  componentName: {
-    fontFamily: 'var(--mono)',
-    fontSize: 15,
-    fontWeight: 500,
-    color: 'var(--coral)',
-    marginBottom: 4,
-    overflowWrap: 'anywhere',
-  },
-  componentDescription: {
-    fontSize: 12,
-    lineHeight: 1.5,
-    color: 'var(--dim)',
-  },
-  section: {
-    marginBottom: 12,
-    border: '1px solid var(--line-soft)',
-    borderRadius: 8,
-    overflow: 'hidden',
-    background: 'var(--ink-2)',
-  },
-  sectionHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    padding: '7px 10px',
-    background: 'var(--ink)',
-    borderBottom: '1px solid var(--line-soft)',
-  },
-  // A section inside the panel: small, sentence case, never tracked capitals.
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: 600,
-    color: 'var(--paper)',
-  },
-  // The whole header folds the section, not only a 22px "+" at its end.
-  sectionToggle: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    width: '100%',
-    padding: '7px 10px',
-    border: 'none',
-    background: 'var(--ink)',
-    color: 'var(--paper)',
-    fontSize: 12,
-    fontWeight: 600,
-    textAlign: 'left',
-    cursor: 'pointer',
-  },
-  sectionChevron: {
-    color: 'var(--dim)',
-    fontSize: 13,
-    lineHeight: 1,
-    transition: 'transform 0.15s',
-  },
-  sectionBody: {
-    padding: 10,
-  },
-  field: {
-    marginBottom: 12,
-  },
-  label: {
-    display: 'block',
-    fontSize: 12,
-    fontWeight: 500,
-    color: 'var(--dim)',
-    marginBottom: 4,
-  },
-  input: {
-    width: '100%',
-    padding: '8px 10px',
-    borderRadius: 6,
-    fontSize: 13,
-  },
-  select: {
-    width: '100%',
-    padding: '7px 8px',
-    borderRadius: 6,
-    fontSize: 13,
-  },
-  checkbox: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  checkboxInput: {
-    width: 16,
-    height: 16,
-  },
-  colorInput: {
-    width: 40,
-    height: 32,
-    padding: 2,
-    border: '1px solid var(--line)',
-    borderRadius: 4,
-    cursor: 'pointer',
-  },
-  colorRow: {
-    display: 'flex',
-    gap: 8,
-    alignItems: 'center',
-  },
-  textarea: {
-    width: '100%',
-    padding: '8px 10px',
-    borderRadius: 6,
-    fontSize: 12.5,
-    minHeight: 80,
-    resize: 'vertical' as const,
-    fontFamily: 'var(--mono)',
-  },
-  fieldHint: {
-    marginTop: 4,
-    fontSize: 11.5,
-    lineHeight: 1.45,
-    color: 'var(--dim)',
-  },
-  fieldSubLabel: {
-    display: 'block',
-    fontSize: 11,
-    color: 'var(--dim)',
-    marginBottom: 4,
-  },
-  actionRow: {
-    display: 'flex',
-    flexWrap: 'wrap' as const,
-    gap: 6,
-  },
-  actionBtn: {
-    fontFamily: 'var(--mono)',
-  },
-  actionBtnDanger: {
-    color: 'var(--danger)',
-  },
-  handlerWarning: {
-    marginTop: 4,
-    fontSize: 11.5,
-    color: 'var(--warn)',
-  },
-  sectionNote: {
-    fontSize: 11,
-    color: 'var(--dim)',
-    marginBottom: 10,
-    lineHeight: 1.45,
-  },
-};
+import { SelectionActions } from './SelectionActions';
 
 /** The DOM events the panel offers on every element. */
 const GENERIC_EVENTS = ['click', 'change', 'submit', 'input', 'focus', 'blur', 'keydown', 'keyup'];
@@ -294,6 +88,9 @@ function useHandlerHelp(): HandlerHelp {
   }, [pageId, uiFiles, logicFiles, retainedSource]);
 }
 
+/** How many of the logic file's functions a handler field offers at once. */
+const HANDLER_SUGGESTIONS = 8;
+
 interface HandlerFieldProps {
   id: string;
   value: string;
@@ -310,32 +107,47 @@ interface HandlerFieldProps {
  * refusal — when it calls a function the file does not define.
  */
 function HandlerField({ id, value, onChange, onBlur, help, onCreate }: HandlerFieldProps) {
-  const listId = `${id}-functions`;
   const target = handlerTarget(value);
   const missing = help.logicPath && target && !help.callable.has(target) ? target : null;
+  // The logic file's functions, offered while the field is empty or holds the start of a
+  // name: once it holds a handler there is nothing left to suggest. They were the options of
+  // a one-line box's list; the box grows now (GrowingField.tsx), and a box of several lines
+  // has no such list, so they stand under it while it has the focus.
+  const start = value.trim();
+  const named = /^[A-Za-z_$][\w$]*$/.test(start);
+  const matching = start === '' || named ? help.functions.filter((fn) => fn.name.toLowerCase().startsWith(start.toLowerCase())) : [];
+  const offered = matching.slice(0, HANDLER_SUGGESTIONS);
   return (
-    <div>
-      <input
+    <div className="bl-pp-handler">
+      <GrowingField
         id={id}
-        type="text"
-        style={{ ...styles.input, fontFamily: 'var(--mono)' }}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={onChange}
         onBlur={onBlur}
         placeholder="handler()"
-        list={help.functions.length > 0 ? listId : undefined}
-        autoComplete="off"
-        spellCheck={false}
+        lines
       />
-      {help.functions.length > 0 && (
-        <datalist id={listId}>
-          {help.functions.map((fn) => (
-            <option key={fn.name} value={handlerFor(fn, help.language)} label={`${fn.name}(${fn.params})`} />
+      {offered.length > 0 && (
+        <div className="bl-pp-suggest" role="group" aria-label={`Functions in ${help.logicPath}`} data-handler-suggestions>
+          {offered.map((fn) => (
+            <button
+              key={fn.name}
+              type="button"
+              className="bl-pp-chip"
+              title={`${fn.name}(${fn.params})`}
+              data-suggest={fn.name}
+              // The press does not take the focus from the field it fills.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onChange(handlerFor(fn, help.language))}
+            >
+              {fn.name}
+            </button>
           ))}
-        </datalist>
+          {matching.length > offered.length && <span className="bl-pp-chip-more">{`and ${matching.length - offered.length} more: type the start of a name`}</span>}
+        </div>
       )}
       {missing && (
-        <div style={styles.handlerWarning} role="status" data-handler-warning={missing}>
+        <div className="bl-pp-warning" role="status" data-handler-warning={missing}>
           {`No function named ${missing} in ${help.logicPath}.`}
         </div>
       )}
@@ -348,7 +160,7 @@ function HandlerField({ id, value, onChange, onBlur, help, onCreate }: HandlerFi
           {`Create ${missing}`}
         </button>
       ) : (
-        <div style={styles.fieldHint} data-handler-unfinished>
+        <div className="bl-pp-hint" data-handler-unfinished>
           {`${help.logicPath} ends inside something unfinished (an open bracket, string or comment). Finish it, and ${missing} can be created from here.`}
         </div>
       ))}
@@ -372,55 +184,15 @@ interface PropEditorProps {
   state: PropState;
   /** Called with the property as it should now be held. */
   onChange: (next: PropState) => void;
+  /** Ends the run of edits that Undo takes back as one step. */
+  endEdit: () => void;
 }
 
 interface PropertyPanelProps {
   onToggleDock?: () => void;
 }
 
-/**
- * A field for an expression. What is typed is kept in the field as it is
- * typed and written to the element once it reads as a whole expression:
- * `count >` on its way to `count > 0` is not something to put in a file,
- * and throwing the keystroke away, as the list field used to, left a field
- * that could not be typed into.
- */
-function ExpressionField({
-  id,
-  shown,
-  multiline,
-  placeholder,
-  onInput,
-}: {
-  id: string;
-  shown: string;
-  multiline: boolean;
-  placeholder?: string;
-  /** Returns whether the text was taken. */
-  onInput: (text: string) => boolean;
-}) {
-  // What is typed and not yet written, with the written value it was typed
-  // over: when the element moves on by another route, the draft is dropped.
-  const [draft, setDraft] = useState<{ text: string; over: string } | null>(null);
-  const pending = draft !== null && draft.over === shown ? draft.text : null;
-  const handle = (text: string) => setDraft(onInput(text) ? null : { text, over: shown });
-  const common = {
-    id,
-    value: pending ?? shown,
-    placeholder,
-    'aria-invalid': pending !== null || undefined,
-    title: pending !== null ? 'Not a whole expression yet, so it is not written' : undefined,
-    spellCheck: false,
-  };
-  const style = pending !== null ? { borderColor: 'var(--coral)' } : {};
-  return multiline ? (
-    <textarea {...common} style={{ ...styles.textarea, ...style }} onChange={(e) => handle(e.target.value)} />
-  ) : (
-    <input {...common} type="text" style={{ ...styles.input, fontFamily: 'var(--mono)', ...style }} onChange={(e) => handle(e.target.value)} />
-  );
-}
-
-function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
+function PropEditor({ id, propDef, state, onChange, endEdit }: PropEditorProps) {
   const control = controlFor(propDef, state);
   const shown = shownValue(propDef, state);
   const write = (input: string | number | boolean): boolean => {
@@ -435,7 +207,7 @@ function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
         <input
           id={id}
           type="text"
-          style={styles.input}
+          className="bl-pp-control"
           value={shown as string}
           onChange={(e) => write(e.target.value)}
           placeholder={propDef.description}
@@ -447,31 +219,29 @@ function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
         <input
           id={id}
           type="number"
-          style={styles.input}
+          className="bl-pp-control"
           value={shown as number | string}
           onChange={(e) => write(e.target.value)}
         />
       );
 
+    // A tick beside its label; ticked or not says all that "Yes" and "No" after it did.
     case 'boolean':
       return (
-        <div style={styles.checkbox}>
-          <input
-            id={id}
-            type="checkbox"
-            style={styles.checkboxInput}
-            checked={shown === true}
-            onChange={(e) => write(e.target.checked)}
-          />
-          <span style={{ fontSize: 12, color: 'var(--dim)' }}>{shown === true ? 'Yes' : 'No'}</span>
-        </div>
+        <input
+          id={id}
+          type="checkbox"
+          className="bl-pp-check"
+          checked={shown === true}
+          onChange={(e) => write(e.target.checked)}
+        />
       );
 
     case 'select':
       return (
         <select
           id={id}
-          style={styles.select}
+          className="bl-pp-control"
           value={shown as string}
           onChange={(e) => write(e.target.value)}
         >
@@ -487,18 +257,18 @@ function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
 
     case 'color':
       return (
-        <div style={styles.colorRow}>
+        <div className="bl-pp-row">
           <input
             id={id}
             type="color"
-            style={styles.colorInput}
+            className="bl-pp-swatch"
             value={(shown as string) || '#000000'}
             onChange={(e) => write(e.target.value)}
           />
           {/* The label names the picker; this is the same colour, typed. */}
           <input
             type="text"
-            style={{ ...styles.input, flex: 1 }}
+            className="bl-pp-control"
             value={shown as string}
             onChange={(e) => write(e.target.value)}
             placeholder="#000000"
@@ -507,29 +277,84 @@ function PropEditor({ id, propDef, state, onChange }: PropEditorProps) {
         </div>
       );
 
+    // An expression, and a list or a record, which is an expression that is
+    // one: the same box, as tall as what is in it (ExpressionField.tsx).
     case 'expression':
-      return (
-        <ExpressionField
-          id={id}
-          shown={shown as string}
-          multiline={false}
-          placeholder={propDef.type === 'expression' ? 'an expression, such as count > 0' : 'an expression; empty it for the usual control'}
-          onInput={write}
-        />
-      );
-
     case 'json':
       return (
         <ExpressionField
           id={id}
           shown={shown as string}
-          multiline
-          placeholder={propDef.description || 'a list, a record or a name from the logic'}
+          placeholder={
+            control === 'json'
+              ? propDef.description || 'a list, a record or a name from the logic'
+              : propDef.type === 'expression'
+                ? 'an expression, such as count > 0'
+                : 'an expression; empty it for the usual control'
+          }
           onInput={write}
+          written={(text) => {
+            const next = writtenValue(propDef, state, text);
+            return next !== null && next.isExpression && typeof next.value === 'string' ? next.value : null;
+          }}
+          endEdit={endEdit}
         />
       );
   }
 }
+
+interface GroupProps {
+  /** The group's key: what `data-prop-group` says, and what its being open is kept under. */
+  name: string;
+  title: string;
+  open: boolean;
+  onToggle: (name: string) => void;
+  /** How many of its fields hold something: said on the heading while the group is closed. */
+  set?: number;
+  onBlur?: () => void;
+  children: React.ReactNode;
+}
+
+/**
+ * A group of fields that folds to its heading. They were cards, each with a
+ * border, a header bar and padding of its own inside the panel's: a line and
+ * a small heading now, with the fields at the panel's own edge. Closed over
+ * something that is set, the heading says how many are.
+ */
+function Group({ name, title, open, onToggle, set = 0, onBlur, children }: GroupProps) {
+  const hidden = !open && set > 0;
+  return (
+    <section className="bl-pp-group" data-prop-group={name}>
+      <button type="button" className="bl-pp-group-head" onClick={() => onToggle(name)} aria-expanded={open}>
+        <span>{title}</span>
+        <span className="bl-pp-group-set" data-group-set={hidden ? set : undefined}>{hidden ? `${set} set` : ''}</span>
+        <svg className="bl-pp-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3.5 1.5 7 5 3.5 8.5" />
+        </svg>
+      </button>
+      {open && (
+        <div className="bl-pp-group-body" onBlur={onBlur}>
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** The groups a person seldom needs: closed until asked for, unless something in them is set. */
+const STARTS_CLOSED: ReadonlySet<string> = new Set(['bindings', 'handlers', 'style', 'directives']);
+
+/** The bindings the panel offers on every component. */
+const BINDINGS = ['bind', 'value', 'checked', 'selected', 'disabled', 'visible', 'class', 'style'];
+
+/**
+ * The controls that stand beside their label on one line: a choice, a
+ * number, a tick, a colour, a word or two of text. An expression has the
+ * panel's width under its label, since it may be a list; so do an element's
+ * words. Which it is goes by the kind of field and never by how much is in
+ * it, so a field does not move while it is typed in.
+ */
+const BESIDE_LABEL: ReadonlySet<PropControl> = new Set<PropControl>(['string', 'number', 'boolean', 'select', 'color']);
 
 /** A plain text property, for a field that is one whatever the registry calls it. */
 const STRING_PROP: PropSchema = { name: 'src', type: 'string' };
@@ -548,7 +373,13 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   const endEdit = useHistoryStore(s => s.endCoalescing);
   const handlerHelp = useHandlerHelp();
   const assets = useCurrentAssets();
-  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+  // The groups a person has opened or closed by hand, which stay so from one
+  // element to the next while the panel is up; and the selected element with
+  // the groups that held something when it was picked (see `isOpen`).
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+  const [picked, setPicked] = useState<{ id: string | null; held: string[] }>({ id: null, held: [] });
+  // The part of the panel that scrolls.
+  const body = useRef<HTMLDivElement>(null);
 
   const meta = useMemo(() => {
     if (selectedElement && isTextNode(selectedElement)) return textNodeMeta;
@@ -732,7 +563,9 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   const groupedProps = useMemo(() => {
     if (!meta) return null;
 
-    const groups: Record<string, PropSchema[]> = { main: [], accessibility: [], style: [], events: [], advanced: [] };
+    // `own` is what the component takes and no other group does: its words,
+    // its look, its data. Those are first in the panel, under no heading.
+    const groups: { own: PropSchema[]; accessibility: PropSchema[]; style: PropSchema[]; events: PropSchema[] } = { own: [], accessibility: [], style: [], events: [] };
 
     for (const prop of meta.propSchema) {
       // Words that stand among elements are elements themselves, each with
@@ -741,9 +574,8 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
       if (prop.name === 'children' && wordsAmongElements) continue;
       if (prop.type === 'event') groups.events.push(prop);
       else if (prop.name === 'className' || prop.name === 'style') groups.style.push(prop);
-      else if (prop.name === 'children' || ['variant', 'size', 'disabled'].includes(prop.name)) groups.main.push(prop);
       else if (ACCESSIBILITY_PROP_NAMES.has(prop.name)) groups.accessibility.push(prop);
-      else groups.advanced.push(prop);
+      else groups.own.push(prop);
     }
 
     return groups;
@@ -763,20 +595,36 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
     );
   }, [groupedProps, selectedElement]);
 
-  const toggleSection = useCallback((key: string) => {
-    setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
-  }, []);
-
-  const isCollapsed = useCallback((key: string) => Boolean(collapsedSections[key]), [collapsedSections]);
-
   const picturesShown = useShownPictures();
-  const imageAssetOptions = useMemo(() => {
-    const files = assets
-      .map((asset) => assetPath(asset).replace(/^assets\//, ''))
-      .filter((name) => /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name))
-      .sort((a, b) => a.localeCompare(b));
-    return files.map((name) => `assets/${name}`);
-  }, [assets]);
+  // Each picture at the path it has in the project, which is what `asset("…")`
+  // is given: `assets/` was put before every path, so a picture a bundle keeps
+  // elsewhere (`images/hero.png`) was offered where the app has no file. One
+  // with no path of its own is under assets/, where the export writes it.
+  const imageAssetOptions = useMemo(
+    () =>
+      assets
+        .map((asset) => asset.bundlePath ?? `assets/${asset.name.replace(/^assets\//, '')}`)
+        .filter((path) => PICTURE_PATTERN.test(path))
+        .sort((a, b) => a.localeCompare(b)),
+    [assets]
+  );
+
+  // A picture from the person's computer: into the project's assets, and
+  // then the source of the element it was asked for (utils/addAssets.ts).
+  const pictureInput = useRef<HTMLInputElement>(null);
+  const takePicture = useCallback(
+    async (file: File | undefined, propName: string) => {
+      if (!file) return;
+      if (!PICTURE_PATTERN.test(file.name)) {
+        toast.error(`${file.name} is not a picture this can show. Choose a PNG, JPEG, GIF, WebP, SVG or BMP.`);
+        return;
+      }
+      const { added, refused } = await addAssetFiles([file]);
+      if (refused.length > 0) toast.error(refused[0]);
+      if (added.length > 0) handlePropChange(propName, { value: assetCall(added[0].path), isExpression: true });
+    },
+    [handlePropChange]
+  );
 
   const renderPropField = useCallback(
     (prop: PropSchema) => {
@@ -799,29 +647,57 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         const writtenAsPath = !srcIsExpression && imageAssetOptions.includes(normalizedCurrent.replace(/^\.\//, ''));
 
         return (
-          <div key={prop.name} style={styles.field}>
-            <span style={styles.label}>{prop.name}</span>
-            <label htmlFor={`panel-${selectedElement.id}-src-asset`} style={styles.fieldSubLabel}>Asset</label>
-            <select
-              id={`panel-${selectedElement.id}-src-asset`}
-              style={styles.select}
-              value={selectedAssetValue}
-              onChange={(e) =>
-                handlePropChange(prop.name, e.target.value ? { value: assetCall(e.target.value), isExpression: true } : { value: undefined, isExpression: false })
-              }
-            >
-              <option value="">Choose an image from assets…</option>
-              {imageAssetOptions.map((assetPath) => (
-                <option key={assetPath} value={assetPath}>
-                  {assetPath}
-                </option>
-              ))}
-            </select>
-            <label htmlFor={`panel-${selectedElement.id}-src-manual`} style={{ ...styles.fieldSubLabel, marginTop: 8 }}>Or a path, URL or variable</label>
+          <div key={prop.name} className="bl-pp-field">
+            <span className="bl-pp-label">{prop.name}</span>
+            <label htmlFor={`panel-${selectedElement.id}-src-asset`} className="bl-pp-sub">Asset</label>
+            <div className="bl-pp-row">
+              <select
+                id={`panel-${selectedElement.id}-src-asset`}
+                className="bl-pp-control"
+                value={selectedAssetValue}
+                onChange={(e) =>
+                  handlePropChange(prop.name, e.target.value ? { value: assetCall(e.target.value), isExpression: true } : { value: undefined, isExpression: false })
+                }
+              >
+                <option value="">{imageAssetOptions.length === 0 ? 'No pictures yet' : 'Choose a picture…'}</option>
+                {imageAssetOptions.map((assetPath) => (
+                  <option key={assetPath} value={assetPath}>
+                    {assetPath}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="bl-btn bl-btn-sm"
+                style={{ flexShrink: 0 }}
+                data-action="add-picture"
+                title="Add a picture from your computer to the project, and show it here"
+                aria-label="Add a picture from your computer"
+                onClick={() => pictureInput.current?.click()}
+              >
+                Add…
+              </button>
+              <input
+                ref={pictureInput}
+                type="file"
+                accept={PICTURE_ACCEPT}
+                hidden
+                tabIndex={-1}
+                aria-hidden="true"
+                data-add-picture-input=""
+                onChange={(e) => {
+                  const picked = e.target.files?.[0];
+                  // Emptied, so that the same file can be picked again.
+                  e.target.value = '';
+                  void takePicture(picked, prop.name);
+                }}
+              />
+            </div>
+            <label htmlFor={`panel-${selectedElement.id}-src-manual`} className="bl-pp-sub" style={{ marginTop: 6 }}>Or a URL, or a value from the logic</label>
             <input
               id={`panel-${selectedElement.id}-src-manual`}
               type="text"
-              style={styles.input}
+              className="bl-pp-control"
               value={shownValue(STRING_PROP, propState(selectedElement, prop.name)) as string}
               onChange={(e) => {
                 const next = writtenValue(STRING_PROP, propState(selectedElement, prop.name), e.target.value);
@@ -833,7 +709,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
                 (utils/remotePictures.ts). The canvas offers that beside the picture's place; this is
                 the same, where the keyboard reaches. */}
             {selectedElement.componentType === 'Image' && !srcIsExpression && isRemoteAddress(normalizedCurrent) && !remoteShown(normalizedCurrent) && (
-              <div className="bl-notice" role="status" data-remote-picture-note="" style={{ marginTop: 8, borderRadius: 'var(--bl-radius-sm)' }}>
+              <div className="bl-notice" role="status" data-remote-picture-note="" style={{ marginTop: 6, borderRadius: 'var(--bl-radius-sm)' }}>
                 Not loaded on the canvas: it asks nothing of another site until you say so.{' '}
                 <button type="button" className="bl-btn bl-btn-sm" data-action="show-remote-picture-panel" onClick={() => showRemotePicture(normalizedCurrent)}>
                   Show it on the canvas
@@ -841,12 +717,12 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
               </div>
             )}
             {writtenAsPath && (
-              <div className="bl-notice" role="status" data-src-as-path="" style={{ marginTop: 8, borderRadius: 'var(--bl-radius-sm)' }}>
+              <div className="bl-notice" role="status" data-src-as-path="" style={{ marginTop: 6, borderRadius: 'var(--bl-radius-sm)' }}>
                 {normalizedCurrent} is written as a path, which the app does not load. Choose it under Asset to write it as the app reads it.
               </div>
             )}
-            <div style={styles.fieldHint}>
-              Choose a picture of the project, or write a URL or data URI, or a value from the logic in braces: {'{appIconUrl}'}.
+            <div className="bl-pp-hint">
+              Choose a picture of the project or add one from your computer, or write a URL or data URI, or a value from the logic in braces: {'{appIconUrl}'}.
             </div>
           </div>
         );
@@ -861,8 +737,8 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         const key = eventKeyFor(prop.name);
         const id = `property-${selectedElement.id}-${prop.name}`;
         return (
-          <div key={prop.name} style={styles.field}>
-            <label htmlFor={id} style={styles.label}>@{key}</label>
+          <div key={prop.name} className="bl-pp-field" data-inline="">
+            <label htmlFor={id} className="bl-pp-label">@{key}</label>
             <HandlerField
               id={id}
               value={selectedElement.events?.[key] ?? ''}
@@ -875,280 +751,301 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         );
       }
 
+      const state = propState(selectedElement, prop.name);
+      const control = controlFor(prop, state);
+      const id = `property-${selectedElement.id}-${prop.name}`;
+      const beside = prop.name !== 'children' && BESIDE_LABEL.has(control);
       return (
-        <div key={prop.name} style={styles.field} onBlur={endEdit}>
-          <label htmlFor={`property-${selectedElement.id}-${prop.name}`} style={styles.label}>{prop.name === 'children' ? 'Text' : prop.name}</label>
+        <div key={prop.name} className="bl-pp-field" data-control={control} data-inline={beside ? '' : undefined} onBlur={endEdit}>
+          <label htmlFor={id} className="bl-pp-label">{prop.name === 'children' ? 'Text' : prop.name}</label>
           <PropEditor
-            id={`property-${selectedElement.id}-${prop.name}`}
+            id={id}
             propDef={prop}
-            state={propState(selectedElement, prop.name)}
+            state={state}
             onChange={(next) => handlePropChange(prop.name, next)}
+            endEdit={endEdit}
           />
           {/* A text field shows its description as a placeholder; every
               other control would hide it, so it is said beneath. */}
           {prop.description && prop.type !== 'string' && prop.type !== 'json' && (
-            <div style={styles.fieldHint}>{prop.description}</div>
+            <div className="bl-pp-hint">{prop.description}</div>
           )}
         </div>
       );
     },
     // picturesShown: the note under a picture's address goes when the picture has been asked for.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedElement, imageAssetOptions, handlePropChange, handleEventChange, endEdit, handlerHelp, createHandler, picturesShown]
+    [selectedElement, imageAssetOptions, handlePropChange, handleEventChange, endEdit, handlerHelp, createHandler, picturesShown, takePicture]
   );
 
-  const header = (
-    <div style={styles.header}>
-      <span style={styles.headerTitle}>Properties</span>
-      {onToggleDock && (
-        <button className="bl-mini" onClick={onToggleDock} title="Hide the properties panel" aria-label="Hide properties panel">
-          Hide
+  // How many fields of each group hold something. A group that is closed
+  // over any of them says so on its heading, so nothing set is out of sight
+  // without a sign of it.
+  const setIn = useMemo((): Record<string, number> => {
+    if (!selectedElement || !groupedProps) return {};
+    const written = (prop: PropSchema) => selectedElement.props[prop.name] !== undefined && selectedElement.props[prop.name] !== null;
+    return {
+      events: groupedProps.events.filter((prop) => Boolean(selectedElement.events?.[eventKeyFor(prop.name)])).length,
+      accessibility: groupedProps.accessibility.filter(written).length,
+      bindings: BINDINGS.filter((name) => Boolean(selectedElement.bindings?.[name])).length,
+      handlers: genericEvents.filter((name) => Boolean(selectedElement.events?.[name])).length,
+      style: groupedProps.style.filter(written).length,
+      directives: [selectedElement.conditionalIf, selectedElement.loopEach, selectedElement.loopAs].filter(Boolean).length,
+    };
+  }, [selectedElement, groupedProps, genericEvents]);
+
+  // The groups that held something when this element was picked: those are
+  // open from the start, the seldom-needed ones too. Asked once for each
+  // element and not as it is edited, or the group a person is typing in
+  // would fold under them when they emptied its last field.
+  const pickedId = selectedElement?.id ?? null;
+  let heldAtPick = picked.held;
+  if (picked.id !== pickedId) {
+    heldAtPick = Object.keys(setIn).filter((name) => setIn[name] > 0);
+    setPicked({ id: pickedId, held: heldAtPick });
+  }
+  // An element with no fields of its own (a component the Builder does not
+  // know) has its groups and nothing else: folded, the panel would look as
+  // if there were nothing to set on it.
+  const bare = !groupedProps || (groupedProps.own.length === 0 && groupedProps.events.length === 0 && groupedProps.accessibility.length === 0);
+  const isOpen = (name: string): boolean => toggled[name] ?? (bare || !STARTS_CLOSED.has(name) || heldAtPick.includes(name));
+  const toggleGroup = (name: string) => setToggled((before) => ({ ...before, [name]: !isOpen(name) }));
+
+  // A new selection is read from its top. The panel kept the place the last
+  // element was scrolled to, so the next one opened at its last group.
+  // Typing in a field selects nothing, and moves nothing.
+  const selectionKey = selectedIds.join(' ');
+  useLayoutEffect(() => {
+    if (body.current) body.current.scrollTop = 0;
+  }, [selectionKey]);
+
+  // The buttons that deleted it went with the selection, and the focus with
+  // them. The canvas is given it where it can take it (selectionMoves.ts);
+  // in a sheet over the canvas it cannot, and the panel keeps it.
+  const afterDelete = useCallback(() => {
+    requestAnimationFrame(() => {
+      const now = document.activeElement;
+      if (now instanceof HTMLElement && now !== document.body && now.isConnected) return;
+      body.current?.focus();
+    });
+  }, []);
+
+  // What is selected, as the header names it: an element's tag as the source
+  // would show it, a block's own first line, or how many elements.
+  const several = selectedIds.length > 1;
+  const selectionName = several
+    ? `${selectedIds.length} elements selected`
+    : selectedElement
+      ? blockHeaderText(selectedElement) ?? (isTextNode(selectedElement) ? 'Words' : selectedElement.componentType)
+      : null;
+  // What it is, in the component's own few words, beside the name: it had
+  // lines of its own above the fields. Not of a page used inside another,
+  // which is said what it is at more length below.
+  const selectionKind = !several && importedPath === undefined ? meta?.description ?? null : null;
+
+  const themeGroup = (
+    <Group name="theme" title="Project theme" open={isOpen('theme')} onToggle={toggleGroup}>
+      <ProjectThemeField />
+    </Group>
+  );
+
+  // Last in the panel, and small: it is seldom wanted, and it stood above
+  // every element's own properties as a card with two lines of explanation.
+  const wrapRow = selectedElement && !selectedElement.block && selectedElement.parentId && (
+    <div className="bl-pp-group bl-pp-wrap" data-prop-group="control-flow">
+      <div className="bl-pp-buttons">
+        <button type="button" className="bl-btn bl-btn-sm bl-pp-mono" onClick={() => wrapSelected('if')} data-block-action="wrap-if">
+          Wrap in #if
         </button>
-      )}
+        <button type="button" className="bl-btn bl-btn-sm bl-pp-mono" onClick={() => wrapSelected('each')} data-block-action="wrap-each">
+          Wrap in #each
+        </button>
+      </div>
+      <div className="bl-pp-hint">The condition or list is edited on the block.</div>
     </div>
   );
 
-  // Asked first: with several selected there is no single selected element,
-  // and the panel used to say "Nothing selected" to a selection of three.
-  if (selectedIds.length > 1) {
-    return (
-      <div style={styles.container}>
-        {header}
-        <div style={styles.empty}>
-          <div style={styles.emptyTitle}>{selectedIds.length} elements selected</div>
-          <div style={styles.emptyHint}>
-            Properties are edited one element at a time: pick one to edit it. Copy, cut, duplicate and delete act on all of them.
-          </div>
+  let content: React.ReactNode;
+
+  if (several) {
+    // Asked first: with several selected there is no single selected element,
+    // and the panel used to say "Nothing selected" to a selection of three.
+    content = (
+      <div className="bl-pp-block">
+        <div className="bl-pp-about">
+          Properties are edited one element at a time: pick one to edit it. Duplicate and delete, above, act on all of them.
         </div>
       </div>
     );
-  }
-
-  if (!selectedElement) {
-    return (
-      <div style={styles.container}>
-        {header}
-        <div style={styles.empty}>
-          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--dimmer)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M4 4h7v7H4z" />
-            <path d="M13.5 13.5 20 20" />
-            <path d="M13 13h3.5M13 13v3.5" />
-          </svg>
-          <div style={styles.emptyTitle}>Nothing selected</div>
-          <div style={styles.emptyHint}>
-            Pick an element on the canvas, or in the hierarchy below, and its properties appear here.
-          </div>
+  } else if (!selectedElement) {
+    // Said at the top, in a line or two. It was a picture, a title and a
+    // paragraph centred in the height of the column, with the project's
+    // theme, which is what there is to change here, at the bottom of it.
+    content = (
+      <>
+        <div className="bl-pp-block" data-nothing-selected="">
+          <div className="bl-pp-lead">Nothing selected</div>
+          <div className="bl-pp-about">Pick an element on the canvas or in the hierarchy to change it here.</div>
         </div>
-        {/* What belongs to the project and to no element: with nothing
-            selected is where the panel has room for it. */}
-        <div style={styles.projectSettings}>
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <div style={styles.sectionTitle}>Project theme</div>
-            </div>
-            <div style={styles.sectionBody}>
-              <ProjectThemeField />
-            </div>
-          </div>
-        </div>
-      </div>
+        {/* What belongs to the project and to no element. */}
+        {themeGroup}
+      </>
     );
-  }
-
-  // A page used inside another is an include: the app is put together by
-  // putting its content where the tag stands, in this page's own scope, and
-  // what is written on the tag is dropped (core, source-composer.ts). So it
-  // is offered no property, event or binding, which would each do nothing;
-  // it is said what it is, and its file is a press away.
-  if (importedPath !== undefined) {
-    return (
-      <div style={styles.container}>
-        {header}
-        <div style={styles.content}>
-          <div style={styles.componentInfo}>
-            <div style={styles.componentName}>{selectedElement.componentType}</div>
-            <div style={styles.componentDescription} data-imported-page="">
-              A page used inside another is its content; it reads this page’s state.
-            </div>
-            <div style={{ ...styles.componentDescription, marginTop: 6, fontFamily: 'var(--mono)', overflowWrap: 'anywhere' }}>{importedPath}</div>
+  } else if (importedPath !== undefined) {
+    // A page used inside another is an include: the app is put together by
+    // putting its content where the tag stands, in this page's own scope, and
+    // what is written on the tag is dropped (core, source-composer.ts). So it
+    // is offered no property, event or binding, which would each do nothing;
+    // it is said what it is, and its file is a press away.
+    content = (
+      <>
+        <div className="bl-pp-block">
+          <div className="bl-pp-about" data-imported-page="">
+            A page used inside another is its content; it reads this page’s state.
           </div>
-          <div style={styles.section}>
-            <div style={styles.sectionBody}>
-              {importedFileId ? (
-                <button
-                  type="button"
-                  className="bl-btn bl-btn-sm"
-                  data-action="open-imported-page"
-                  onClick={() => useFilesStore.getState().openFile(importedFileId)}
-                >
-                  Open {importedPath}
-                </button>
-              ) : (
-                <div style={styles.fieldHint} data-imported-missing="">
-                  The project has no {importedPath}: where this is used the app will say “Unknown component”. Make the file, or take this element out.
-                </div>
-              )}
-              <div style={{ ...styles.fieldHint, marginTop: 8 }}>
-                What is written on its tag, and anything put inside it, is dropped when the app is put together. What it shows is changed in its own file.
-              </div>
-            </div>
-          </div>
-          {selectedElement.parentId && (
-            <div style={styles.section}>
-              <div style={styles.sectionHeader}>
-                <div style={styles.sectionTitle}>Control flow</div>
-              </div>
-              <div style={styles.sectionBody}>
-                <div style={styles.actionRow}>
-                  <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => wrapSelected('if')} data-block-action="wrap-if">
-                    Wrap in #if
-                  </button>
-                  <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => wrapSelected('each')} data-block-action="wrap-each">
-                    Wrap in #each
-                  </button>
-                </div>
-                <div style={styles.fieldHint}>Puts a block around this element; its condition or list is edited on the block.</div>
-              </div>
+          <div className="bl-pp-about bl-pp-mono" style={{ overflowWrap: 'anywhere' }}>{importedPath}</div>
+          {importedFileId ? (
+            <button
+              type="button"
+              className="bl-btn bl-btn-sm"
+              data-action="open-imported-page"
+              onClick={() => useFilesStore.getState().openFile(importedFileId)}
+            >
+              Open {importedPath}
+            </button>
+          ) : (
+            <div className="bl-pp-hint" data-imported-missing="">
+              The project has no {importedPath}: where this is used the app will say “Unknown component”. Make the file, or take this element out.
             </div>
           )}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.container}>
-      {header}
-
-      <div style={styles.content}>
-        <div style={styles.componentInfo}>
-          <div style={styles.componentName}>
-            {blockHeaderText(selectedElement) ?? (isTextNode(selectedElement) ? 'Words' : selectedElement.componentType)}
+          <div className="bl-pp-hint">
+            What is written on its tag, and anything put inside it, is dropped when the app is put together. What it shows is changed in its own file.
           </div>
-          {meta && <div style={styles.componentDescription}>{meta.description}</div>}
-          {selectedElement.block && (
-            <div style={styles.componentDescription}>{blockDescription(selectedElement.block)}</div>
-          )}
+        </div>
+        {wrapRow}
+      </>
+    );
+  } else {
+    const block = selectedElement.block;
+    // The element's own properties, first: its words, then the rest in the
+    // order the component lists them. They were two cards, Main and
+    // Advanced, under a card for control flow, and most of what a component
+    // takes (a list's `data`, an Input's `value`) was in the second.
+    const listed = groupedProps?.own ?? [];
+    const own = [...listed.filter((prop) => prop.name === 'children'), ...listed.filter((prop) => prop.name !== 'children')];
+    const events = groupedProps?.events ?? [];
+    const accessibility = groupedProps?.accessibility ?? [];
+    const style = groupedProps?.style ?? [];
+    // Handlers, bindings and inline directives are a component's; a block
+    // has none, and its header is its own fields above. Words have none either.
+    const component = !block && !isTextNode(selectedElement);
+
+    content = (
+      <>
+        <div className="bl-pp-block">
+          {block && <div className="bl-pp-about">{blockDescription(block)}</div>}
           {wordsAmongElements && holdsWords && (
-            <div style={{ ...styles.componentDescription, marginTop: 6 }} data-words-among-elements>
-              Its words stand among the elements it holds. Pick the words on the canvas, or in the hierarchy below, to change them.
+            <div className="bl-pp-about" data-words-among-elements>
+              Its words stand among the elements it holds. Pick the words on the canvas, or in the hierarchy, to change them.
             </div>
           )}
           {wordsAmongElements && !holdsWords && (
-            <div style={{ ...styles.componentDescription, marginTop: 6 }} data-holds-elements>
+            <div className="bl-pp-about" data-holds-elements>
               What it shows is the elements it holds. It has a Text field again when it holds none.
             </div>
           )}
-        </div>
 
-        {/* The page: the project's theme beside the page's own `theme`
-            below, since which of the two it is drawn in is a question about
-            both. */}
-        {isPage && (
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <div style={styles.sectionTitle}>Project theme</div>
-            </div>
-            <div style={styles.sectionBody}>
-              <ProjectThemeField />
-            </div>
-          </div>
-        )}
-
-        {selectedElement.block && (
-          <div style={styles.section} data-block-editor={selectedElement.block.kind} onBlur={endEdit}>
-            <div style={styles.sectionHeader}>
-              <div style={styles.sectionTitle}>Block</div>
-            </div>
-            <div style={styles.sectionBody}>
-              {(selectedElement.block.kind === 'if' || selectedElement.block.kind === 'elseif') && (
-                <div style={styles.field}>
-                  <label htmlFor={`panel-${selectedElement.id}-condition-1`} style={styles.label}>condition</label>
-                  <input
+          {/* A block's header, as the block's own fields. */}
+          {block && (
+            <div className="bl-pp-stack" data-block-editor={block.kind} onBlur={endEdit}>
+              {(block.kind === 'if' || block.kind === 'elseif') && (
+                <div className="bl-pp-field">
+                  <label htmlFor={`panel-${selectedElement.id}-condition-1`} className="bl-pp-label">condition</label>
+                  {/* As tall as the condition is long: it was one line, and a long one was read by arrowing through it. */}
+                  <GrowingField
                     id={`panel-${selectedElement.id}-condition-1`}
-                    type="text"
-                    style={{ ...styles.input, fontFamily: 'var(--mono)' }}
-                    value={selectedElement.block.condition || ''}
-                    onChange={(e) => handleBlockChange('condition', e.target.value)}
+                    value={block.condition || ''}
+                    onChange={(text) => handleBlockChange('condition', text)}
                     placeholder="condition"
                     data-block-field="condition"
                   />
                 </div>
               )}
-              {selectedElement.block.kind === 'each' && (
+              {block.kind === 'each' && (
                 <>
-                  <div style={styles.field}>
-                    <label htmlFor={`panel-${selectedElement.id}-item-2`} style={styles.label}>item</label>
-                    <input
-                      id={`panel-${selectedElement.id}-item-2`}
-                      type="text"
-                      style={{ ...styles.input, fontFamily: 'var(--mono)' }}
-                      value={selectedElement.block.itemName || ''}
-                      onChange={(e) => handleBlockChange('itemName', e.target.value)}
-                      placeholder="item"
-                      data-block-field="itemName"
-                    />
+                  {/* Two names, each a word: side by side at any width. */}
+                  <div className="bl-pp-fields bl-pp-pairs">
+                    <div className="bl-pp-field">
+                      <label htmlFor={`panel-${selectedElement.id}-item-2`} className="bl-pp-label">item</label>
+                      <input
+                        id={`panel-${selectedElement.id}-item-2`}
+                        type="text"
+                        className="bl-pp-control bl-pp-mono"
+                        value={block.itemName || ''}
+                        onChange={(e) => handleBlockChange('itemName', e.target.value)}
+                        placeholder="item"
+                        data-block-field="itemName"
+                      />
+                    </div>
+                    <div className="bl-pp-field">
+                      <label htmlFor={`panel-${selectedElement.id}-index-optional-3`} className="bl-pp-label">index (optional)</label>
+                      <input
+                        id={`panel-${selectedElement.id}-index-optional-3`}
+                        type="text"
+                        className="bl-pp-control bl-pp-mono"
+                        value={block.indexName || ''}
+                        onChange={(e) => handleBlockChange('indexName', e.target.value)}
+                        placeholder="i"
+                        data-block-field="indexName"
+                      />
+                    </div>
                   </div>
-                  <div style={styles.field}>
-                    <label htmlFor={`panel-${selectedElement.id}-index-optional-3`} style={styles.label}>index (optional)</label>
-                    <input
-                      id={`panel-${selectedElement.id}-index-optional-3`}
-                      type="text"
-                      style={{ ...styles.input, fontFamily: 'var(--mono)' }}
-                      value={selectedElement.block.indexName || ''}
-                      onChange={(e) => handleBlockChange('indexName', e.target.value)}
-                      placeholder="i"
-                      data-block-field="indexName"
-                    />
-                  </div>
-                  <div style={styles.field}>
-                    <label htmlFor={`panel-${selectedElement.id}-in-list-4`} style={styles.label}>in list</label>
-                    <input
-                      id={`panel-${selectedElement.id}-in-list-4`}
-                      type="text"
-                      style={{ ...styles.input, fontFamily: 'var(--mono)' }}
-                      value={selectedElement.block.iterable || ''}
-                      onChange={(e) => handleBlockChange('iterable', e.target.value)}
-                      placeholder="items"
-                      data-block-field="iterable"
-                    />
-                  </div>
-                  <div style={styles.field}>
-                    <label htmlFor={`panel-${selectedElement.id}-key-optional-5`} style={styles.label}>key (optional)</label>
-                    <input
-                      id={`panel-${selectedElement.id}-key-optional-5`}
-                      type="text"
-                      style={{ ...styles.input, fontFamily: 'var(--mono)' }}
-                      value={selectedElement.block.keyExpression || ''}
-                      onChange={(e) => handleBlockChange('keyExpression', e.target.value)}
-                      placeholder="item.id"
-                      data-block-field="keyExpression"
-                    />
+                  <div className="bl-pp-fields">
+                    <div className="bl-pp-field">
+                      <label htmlFor={`panel-${selectedElement.id}-in-list-4`} className="bl-pp-label">in list</label>
+                      <GrowingField
+                        id={`panel-${selectedElement.id}-in-list-4`}
+                        value={block.iterable || ''}
+                        onChange={(text) => handleBlockChange('iterable', text)}
+                        placeholder="items"
+                        data-block-field="iterable"
+                      />
+                    </div>
+                    <div className="bl-pp-field">
+                      <label htmlFor={`panel-${selectedElement.id}-key-optional-5`} className="bl-pp-label">key (optional)</label>
+                      <GrowingField
+                        id={`panel-${selectedElement.id}-key-optional-5`}
+                        value={block.keyExpression || ''}
+                        onChange={(text) => handleBlockChange('keyExpression', text)}
+                        placeholder="item.id"
+                        data-block-field="keyExpression"
+                      />
+                    </div>
                   </div>
                 </>
               )}
-              <div style={styles.actionRow}>
-                {selectedElement.block.kind === 'if' && (
+              <div className="bl-pp-buttons">
+                {block.kind === 'if' && (
                   <>
-                    <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => addBranch('elseif')} data-block-action="add-elseif">
+                    <button type="button" className="bl-btn bl-btn-sm bl-pp-mono" onClick={() => addBranch('elseif')} data-block-action="add-elseif">
                       Add #elseif
                     </button>
                     {!existingBranches.has('else') && (
-                      <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => addBranch('else')} data-block-action="add-else">
+                      <button type="button" className="bl-btn bl-btn-sm bl-pp-mono" onClick={() => addBranch('else')} data-block-action="add-else">
                         Add #else
                       </button>
                     )}
                   </>
                 )}
-                {selectedElement.block.kind === 'each' && !existingBranches.has('empty') && (
-                  <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => addBranch('empty')} data-block-action="add-empty">
+                {block.kind === 'each' && !existingBranches.has('empty') && (
+                  <button type="button" className="bl-btn bl-btn-sm bl-pp-mono" onClick={() => addBranch('empty')} data-block-action="add-empty">
                     Add #empty
                   </button>
                 )}
                 {isBlockHead(selectedElement) ? (
                   <button
-                    className="bl-btn bl-btn-sm"
-                    style={styles.actionBtn}
+                    type="button"
+                    className="bl-btn bl-btn-sm bl-pp-mono"
                     onClick={unwrapSelected}
                     title="Remove the block; the elements of its main branch stay, its other branches go"
                     data-block-action="unwrap"
@@ -1157,7 +1054,9 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
                   </button>
                 ) : (
                   <button
-                    className="bl-btn bl-btn-sm" style={{ ...styles.actionBtn, ...styles.actionBtnDanger }}
+                    type="button"
+                    className="bl-btn bl-btn-sm bl-pp-mono"
+                    style={{ color: 'var(--danger)' }}
                     onClick={removeSelected}
                     title="Remove this branch and everything in it"
                     data-block-action="remove-branch"
@@ -1166,170 +1065,83 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
                   </button>
                 )}
               </div>
-              <div style={styles.fieldHint}>
+              <div className="bl-pp-hint">
                 {isBlockHead(selectedElement)
                   ? 'Drop elements into the block on the canvas to fill its branch.'
                   : 'This branch belongs to the block above it.'}
               </div>
             </div>
-          </div>
+          )}
+
+          {own.length > 0 && <div className="bl-pp-fields" data-prop-group="own">{own.map((prop) => renderPropField(prop))}</div>}
+        </div>
+
+        {/* The page: the project's theme beside the page's own `theme`
+            above, since which of the two it is drawn in is a question about
+            both. */}
+        {isPage && themeGroup}
+
+        {events.length > 0 && (
+          <Group name="events" title="Component events" open={isOpen('events')} onToggle={toggleGroup} set={setIn.events}>
+            <div className="bl-pp-note">{handlerNote(handlerHelp)}</div>
+            <div className="bl-pp-fields">{events.map((prop) => renderPropField(prop))}</div>
+          </Group>
         )}
 
-        {!selectedElement.block && selectedElement.parentId && (
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <div style={styles.sectionTitle}>Control flow</div>
+        {accessibility.length > 0 && (
+          <Group name="accessibility" title="Accessibility" open={isOpen('accessibility')} onToggle={toggleGroup} set={setIn.accessibility}>
+            <div className="bl-pp-fields">{accessibility.map((prop) => renderPropField(prop))}</div>
+          </Group>
+        )}
+
+        {component && (
+          <Group name="bindings" title="Bindings" open={isOpen('bindings')} onToggle={toggleGroup} set={setIn.bindings} onBlur={endEdit}>
+            <div className="bl-pp-fields">
+              {BINDINGS.map((bindingName) => {
+                const value = selectedElement.bindings?.[bindingName] || '';
+                const written = (text: string): string | null => {
+                  const next = writtenValue(BINDING_PROP, { value, isExpression: true }, text);
+                  if (next === null) return null;
+                  return typeof next.value === 'string' ? next.value : '';
+                };
+                return (
+                  <div key={bindingName} className="bl-pp-field" data-inline="">
+                    <label htmlFor={`panel-${selectedElement.id}-bind-${bindingName}`} className="bl-pp-label">:{bindingName}</label>
+                    {/* An expression, held to the rule of every other
+                        expression field: braces typed around it are taken
+                        off, and it is written once it reads as a whole one.
+                        The placeholder used to be `{expression}`, and
+                        `{about}` typed as it showed was `:bind={{about}}`. */}
+                    <ExpressionField
+                      id={`panel-${selectedElement.id}-bind-${bindingName}`}
+                      shown={value}
+                      placeholder={bindingName === 'bind' ? 'a name from the logic, such as title' : 'an expression'}
+                      onInput={(text) => {
+                        const next = written(text);
+                        if (next === null) return false;
+                        handleBindingChange(bindingName, next);
+                        return true;
+                      }}
+                      written={written}
+                      endEdit={endEdit}
+                    />
+                  </div>
+                );
+              })}
             </div>
-            <div style={styles.sectionBody}>
-              <div style={styles.actionRow}>
-                <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => wrapSelected('if')} data-block-action="wrap-if">
-                  Wrap in #if
-                </button>
-                <button className="bl-btn bl-btn-sm" style={styles.actionBtn} onClick={() => wrapSelected('each')} data-block-action="wrap-each">
-                  Wrap in #each
-                </button>
-              </div>
-              <div style={styles.fieldHint}>
-                Puts a block around this element; its condition or list is edited on the block.
-              </div>
-            </div>
-          </div>
+          </Group>
         )}
 
-        {groupedProps && (
-          <>
-            {groupedProps.main.length > 0 && (
-              <div style={styles.section}>
-                <button
-                  type="button"
-                  style={styles.sectionToggle}
-                  onClick={() => toggleSection('main')}
-                  aria-expanded={!isCollapsed('main')}
-                >
-                  <span>Main</span>
-                  <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('main') ? undefined : 'rotate(90deg)' }}>›</span>
-                </button>
-                {!isCollapsed('main') && (
-                  <div style={styles.sectionBody}>
-                    {groupedProps.main.map((prop) => (
-                      renderPropField(prop)
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {groupedProps.accessibility.length > 0 && (
-              <div style={styles.section} data-prop-group="accessibility">
-                <button
-                  type="button"
-                  style={styles.sectionToggle}
-                  onClick={() => toggleSection('accessibility')}
-                  aria-expanded={!isCollapsed('accessibility')}
-                >
-                  <span>Accessibility</span>
-                  <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('accessibility') ? undefined : 'rotate(90deg)' }}>›</span>
-                </button>
-                {!isCollapsed('accessibility') && (
-                  <div style={styles.sectionBody}>
-                    {groupedProps.accessibility.map((prop) => (
-                      renderPropField(prop)
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {groupedProps.advanced.length > 0 && (
-              <div style={styles.section}>
-                <button
-                  type="button"
-                  style={styles.sectionToggle}
-                  onClick={() => toggleSection('advanced')}
-                  aria-expanded={!isCollapsed('advanced')}
-                >
-                  <span>Advanced</span>
-                  <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('advanced') ? undefined : 'rotate(90deg)' }}>›</span>
-                </button>
-                {!isCollapsed('advanced') && (
-                  <div style={styles.sectionBody}>
-                    {groupedProps.advanced.map((prop) => (
-                      renderPropField(prop)
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {groupedProps.style.length > 0 && (
-              <div style={styles.section}>
-                <button
-                  type="button"
-                  style={styles.sectionToggle}
-                  onClick={() => toggleSection('style')}
-                  aria-expanded={!isCollapsed('style')}
-                >
-                  <span>Style</span>
-                  <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('style') ? undefined : 'rotate(90deg)' }}>›</span>
-                </button>
-                {!isCollapsed('style') && (
-                  <div style={styles.sectionBody}>
-                    {groupedProps.style.map((prop) => (
-                      renderPropField(prop)
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {groupedProps.events.length > 0 && (
-              <div style={styles.section}>
-                <button
-                  type="button"
-                  style={styles.sectionToggle}
-                  onClick={() => toggleSection('schemaEvents')}
-                  aria-expanded={!isCollapsed('schemaEvents')}
-                >
-                  <span>Component events</span>
-                  <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('schemaEvents') ? undefined : 'rotate(90deg)' }}>›</span>
-                </button>
-                {!isCollapsed('schemaEvents') && (
-                  <div style={styles.sectionBody}>
-                    <div style={styles.sectionNote}>{handlerNote(handlerHelp)}</div>
-                    {groupedProps.events.map((prop) => (
-                      renderPropField(prop)
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Handlers, bindings and inline directives are a component's; a
-            block has none, and its header is the Block section above. Words
-            have none either. */}
-        {!selectedElement.block && !isTextNode(selectedElement) && (
-        <>
-        <div style={styles.section}>
-          <button
-            type="button"
-            style={styles.sectionToggle}
-            onClick={() => toggleSection('handlers')}
-            aria-expanded={!isCollapsed('handlers')}
-          >
-            <span>Event handlers</span>
-            <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('handlers') ? undefined : 'rotate(90deg)' }}>›</span>
-          </button>
-          {!isCollapsed('handlers') && (
-            <div style={styles.sectionBody}>
-              {!groupedProps?.events.length && <div style={styles.sectionNote}>{handlerNote(handlerHelp)}</div>}
+        {component && (
+          <Group name="handlers" title="Event handlers" open={isOpen('handlers')} onToggle={toggleGroup} set={setIn.handlers}>
+            {events.length === 0 && <div className="bl-pp-note">{handlerNote(handlerHelp)}</div>}
+            <div className="bl-pp-fields">
               {genericEvents.map((eventName) => {
                 const value = selectedElement.events?.[eventName] || '';
                 const id = `handler-${selectedElement.id}-${eventName}`;
                 return (
-                  <div key={eventName} style={styles.field}>
-                    <label htmlFor={id} style={styles.label}>@{eventName}</label>
+                  <div key={eventName} className="bl-pp-field" data-inline="">
+                    <label htmlFor={id} className="bl-pp-label">@{eventName}</label>
                     <HandlerField
                       id={id}
                       value={value}
@@ -1342,100 +1154,84 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
                 );
               })}
             </div>
-          )}
-        </div>
+          </Group>
+        )}
 
-        <div style={styles.section}>
-          <button
-            type="button"
-            style={styles.sectionToggle}
-            onClick={() => toggleSection('bindings')}
-            aria-expanded={!isCollapsed('bindings')}
-          >
-            <span>Bindings</span>
-            <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('bindings') ? undefined : 'rotate(90deg)' }}>›</span>
-          </button>
-          {!isCollapsed('bindings') && (
-            <div style={styles.sectionBody} onBlur={endEdit}>
-              {['bind', 'value', 'checked', 'selected', 'disabled', 'visible', 'class', 'style'].map((bindingName) => {
-                const value = selectedElement.bindings?.[bindingName] || '';
-                return (
-                  <div key={bindingName} style={styles.field}>
-                    <label htmlFor={`panel-${selectedElement.id}-bind-${bindingName}`} style={styles.label}>:{bindingName}</label>
-                    {/* An expression, held to the rule of every other
-                        expression field: braces typed around it are taken
-                        off, and it is written once it reads as a whole one.
-                        The placeholder used to be `{expression}`, and
-                        `{about}` typed as it showed was `:bind={{about}}`. */}
-                    <ExpressionField
-                      id={`panel-${selectedElement.id}-bind-${bindingName}`}
-                      shown={value}
-                      multiline={false}
-                      placeholder={bindingName === 'bind' ? 'a name from the logic, such as title' : 'an expression'}
-                      onInput={(text) => {
-                        const next = writtenValue(BINDING_PROP, { value, isExpression: true }, text);
-                        if (!next) return false;
-                        handleBindingChange(bindingName, typeof next.value === 'string' ? next.value : '');
-                        return true;
-                      }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        {style.length > 0 && (
+          <Group name="style" title="Style" open={isOpen('style')} onToggle={toggleGroup} set={setIn.style}>
+            <div className="bl-pp-fields">{style.map((prop) => renderPropField(prop))}</div>
+          </Group>
+        )}
 
-        <div style={styles.section}>
-          <button
-            type="button"
-            style={styles.sectionToggle}
-            onClick={() => toggleSection('directives')}
-            aria-expanded={!isCollapsed('directives')}
-          >
-            <span>Directives</span>
-            <span aria-hidden="true" style={{ ...styles.sectionChevron, transform: isCollapsed('directives') ? undefined : 'rotate(90deg)' }}>›</span>
-          </button>
-          {!isCollapsed('directives') && (
-            <div style={styles.sectionBody} onBlur={endEdit}>
-              <div style={styles.field}>
-                <label htmlFor={`panel-${selectedElement.id}-if-6`} style={styles.label}>if</label>
-                <input
+        {component && (
+          <Group name="directives" title="Directives" open={isOpen('directives')} onToggle={toggleGroup} set={setIn.directives} onBlur={endEdit}>
+            <div className="bl-pp-fields">
+              <div className="bl-pp-field" data-inline="">
+                <label htmlFor={`panel-${selectedElement.id}-if-6`} className="bl-pp-label">if</label>
+                <GrowingField
                   id={`panel-${selectedElement.id}-if-6`}
-                  type="text"
-                  style={{ ...styles.input, fontFamily: 'var(--mono)' }}
                   value={selectedElement.conditionalIf || ''}
-                  onChange={(e) => handleDirectiveChange('conditionalIf', e.target.value)}
+                  onChange={(text) => handleDirectiveChange('conditionalIf', text)}
                   placeholder="condition"
                 />
               </div>
-              <div style={styles.field}>
-                <label htmlFor={`panel-${selectedElement.id}-each-7`} style={styles.label}>each</label>
-                <input
+              <div className="bl-pp-field" data-inline="">
+                <label htmlFor={`panel-${selectedElement.id}-each-7`} className="bl-pp-label">each</label>
+                <GrowingField
                   id={`panel-${selectedElement.id}-each-7`}
-                  type="text"
-                  style={{ ...styles.input, fontFamily: 'var(--mono)' }}
                   value={selectedElement.loopEach || ''}
-                  onChange={(e) => handleDirectiveChange('loopEach', e.target.value)}
+                  onChange={(text) => handleDirectiveChange('loopEach', text)}
                   placeholder="collection"
                 />
               </div>
-              <div style={styles.field}>
-                <label htmlFor={`panel-${selectedElement.id}-as-8`} style={styles.label}>as</label>
+              <div className="bl-pp-field" data-inline="">
+                <label htmlFor={`panel-${selectedElement.id}-as-8`} className="bl-pp-label">as</label>
                 <input
                   id={`panel-${selectedElement.id}-as-8`}
                   type="text"
-                  style={{ ...styles.input, fontFamily: 'var(--mono)' }}
+                  className="bl-pp-control bl-pp-mono"
                   value={selectedElement.loopAs || ''}
                   onChange={(e) => handleDirectiveChange('loopAs', e.target.value)}
                   placeholder="item, index"
                 />
               </div>
             </div>
-          )}
-        </div>
-        </>
+          </Group>
         )}
+
+        {wrapRow}
+      </>
+    );
+  }
+
+  return (
+    <div className="bl-pp">
+      <div className="bl-pp-head">
+        <span className="bl-pp-title">Properties</span>
+        {onToggleDock && (
+          <button type="button" className="bl-mini" onClick={onToggleDock} title="Hide the properties panel" aria-label="Hide properties panel">
+            Hide
+          </button>
+        )}
+      </div>
+
+      {/* What is selected and what can be done to it, where it stays while
+          the fields scroll: there was no way to move, copy or remove an
+          element but a key (SelectionActions.tsx). */}
+      {selectionName !== null && (
+        <div className="bl-pp-sel">
+          <div className="bl-pp-what" title={selectionKind ? `${selectionName}: ${selectionKind}` : selectionName}>
+            <span className="bl-pp-name" data-selection-name="" data-several={several ? '' : undefined}>{selectionName}</span>
+            {selectionKind && <span className="bl-pp-kind" data-selection-kind="">{selectionKind}</span>}
+          </div>
+          <SelectionActions onDeleted={afterDelete} />
+        </div>
+      )}
+
+      {/* Made anew for each selection: what is half typed in a field of one
+          element is never shown in the same field of the next. */}
+      <div ref={body} className="bl-pp-body" role="group" aria-label="Properties" tabIndex={-1}>
+        <React.Fragment key={selectionKey}>{content}</React.Fragment>
       </div>
     </div>
   );

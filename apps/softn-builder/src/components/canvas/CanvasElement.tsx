@@ -17,7 +17,7 @@ import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
 import { acceptsChildren, blockDescription, branchEnd, canDropInto, elementLabel, hasTextField, isTextNode, takesInline } from '../../utils/blocks';
-import { drawnHeld, type DrawnHeld } from '../../utils/drawnProps';
+import { drawnHeld, drawsWhatIsWritten, type DrawnHeld } from '../../utils/drawnProps';
 import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
 import { dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
 import { TokenIcon } from '../icons/TokenIcon';
@@ -755,9 +755,13 @@ export const CanvasElement = React.memo(function CanvasElement({
     // Skeleton, and any other container lays its children out itself: each
     // of those is drawn as before. And a name a page has imported over is
     // that page's component, not the library's.
+    // A component that draws rows is itself only where its rows are written
+    // on the page: rows from the logic are not on the canvas, and its card
+    // says what it is where a drawing of "No items" would say what it is not.
     const itself =
       meta?.drawn === true &&
       (element.children.length === 0 || held !== null || DRAWN_OVER_ITS_CHILDREN.has(element.componentType)) &&
+      drawsWhatIsWritten(element) &&
       !useCanvasStore.getState().getImportSource(element.componentType);
     if (itself) {
       return (

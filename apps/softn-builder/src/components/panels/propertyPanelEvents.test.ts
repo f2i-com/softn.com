@@ -33,9 +33,13 @@ afterEach(() => {
   host.remove();
 });
 
-function type(input: HTMLInputElement, text: string): void {
+/** A handler field: the box that grows with what is in it (GrowingField.tsx). */
+type Field = HTMLInputElement | HTMLTextAreaElement;
+
+function type(input: Field, text: string): void {
+  const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text);
+    Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(input, text);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
@@ -95,15 +99,27 @@ function mountButton(language: 'javascript' | 'python'): HTMLButtonElement['id']
   return button.id;
 }
 
-function field(label: string): HTMLInputElement {
+function field(label: string): Field {
   const found = [...host.querySelectorAll('label')].filter((element) => element.textContent === label);
   expect(found, `one ${label} field`).toHaveLength(1);
-  return document.getElementById(found[0].htmlFor) as HTMLInputElement;
+  return document.getElementById(found[0].htmlFor) as Field;
 }
 
-function suggestions(input: HTMLInputElement): string[] {
-  const list = input.getAttribute('list');
-  return list ? [...document.getElementById(list)!.querySelectorAll('option')].map((option) => option.value) : [];
+/** The functions offered under a handler field, as buttons. */
+function offered(input: Field): HTMLButtonElement[] {
+  return [...(input.closest('.bl-pp-handler')?.querySelectorAll<HTMLButtonElement>('[data-handler-suggestions] button') ?? [])];
+}
+
+/** What the field holds after each suggestion is pressed, in the order they are offered. */
+function suggestions(input: Field): string[] {
+  const before = input.value;
+  const values = offered(input).map((_button, at) => {
+    act(() => offered(input)[at].click());
+    const value = input.value;
+    type(input, before);
+    return value;
+  });
+  return values;
 }
 
 it('offers a Button its click handler once, not as a component event and a generic @click', () => {
@@ -113,6 +129,7 @@ it('offers a Button its click handler once, not as a component event and a gener
 
 it('suggests the linked JavaScript file\'s functions by name', () => {
   mountButton('javascript');
+  expect(offered(field('@click')).map((button) => button.textContent)).toEqual(['increment', 'decrement']);
   expect(suggestions(field('@click'))).toEqual(['increment', 'decrement']);
   expect(host.textContent).toContain('logic/main.logic');
   expect(host.textContent).not.toContain('Logic tab');
@@ -122,6 +139,25 @@ it('suggests a Python function without parameters as an arrow, since a handler i
   mountButton('python');
   expect(suggestions(field('@click'))).toEqual(['() => increment()', '() => decrement()']);
   expect(host.textContent).toContain('logic/main.py');
+});
+
+// A handler was one line of text whatever it held. It is the box an expression has now: as
+// tall as what is in it, and it may run over lines. The functions that were the options of
+// the one-line box's list stand under it, while it holds nothing or the start of a name.
+it('holds a handler in a box that grows, over several lines, and narrows what it offers as a name is typed', () => {
+  const id = mountButton('javascript');
+  const input = field('@click');
+  expect(input.tagName).toBe('TEXTAREA');
+  expect(input.closest('.bl-pp-grow')?.getAttribute('data-value')).toBe('');
+  type(input, 'dec');
+  expect(offered(input).map((button) => button.textContent)).toEqual(['decrement']);
+  const long = '() => {\n  count = count + 1\n  save(item)\n}';
+  type(input, long);
+  expect(useCanvasStore.getState().elements.get(id)!.events).toEqual({ click: long });
+  expect(input.closest('.bl-pp-grow')?.getAttribute('data-value')).toBe(long);
+  // It holds a handler: there is nothing left to suggest.
+  expect(offered(input)).toEqual([]);
+  expect(generateSource(useCanvasStore.getState().elements, useCanvasStore.getState().rootId!, '')).toContain(`@click={${long}}`);
 });
 
 it('warns, without refusing, when a handler names a function the logic does not define', () => {

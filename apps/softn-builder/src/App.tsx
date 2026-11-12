@@ -4,9 +4,10 @@
 
 import React, { lazy, Suspense, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ProductBar } from '@softn/brand';
-import { assetObjectUrl, classifyAsset } from '@softn/core';
+import { StatusBar } from './components/StatusBar';
+import { AssetView } from './components/files/AssetView';
+import { Sheet } from './components/Sheet';
 import { Toolbar } from './components/toolbar/Toolbar';
-import { NarrowScreenNotice } from './components/NarrowScreenNotice';
 import { ExportDialog } from './components/toolbar/ExportDialog';
 import { ShortcutsDialog } from './components/toolbar/ShortcutsDialog';
 import { NewProjectDialog, type NewProjectConfig } from './components/toolbar/NewProjectDialog';
@@ -30,21 +31,24 @@ import {
   prepareSessionSnapshot,
   noteOpenedFromLink,
   noteRestoreOffered,
+  takeOpenedFromLink,
+  SESSION_STORAGE_KEY,
   setAsideUnrestored,
   restoredFromStore,
   type ProjectSnapshot,
   type ViewMode,
 } from './utils/openProject';
 import { saveProject, saveToHost, sessionNotes } from './utils/saveProject';
-import { STUDIO_URL, RUNTIME_URL, PRODUCT_URLS } from './utils/siteUrls';
+import { PRODUCT_URLS } from './utils/siteUrls';
 import { forgetDesktopFile, isDesktop, openCompanionUrl, takeOpenedDesktopFile, type BundleFileHandle } from './utils/desktop';
-import { ToastContainer } from './components/feedback/ToastContainer';
 import { ConfirmDialog } from './components/feedback/ConfirmDialog';
 import { askConfirm, useConfirmStore } from './utils/confirm';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
 import { debug } from './utils/debug';
 import { useProjectStartup } from './hooks/useProjectStartup';
+import { startFromStudio } from './utils/studioVisit';
+import { StudioOrigin } from './components/toolbar/StudioOrigin';
 import { useUnsavedChanges } from './hooks/useUnsavedChanges';
 import { useRecoveryCopy } from './hooks/useRecoveryCopy';
 import { recoveryOf, restoreOffer } from './utils/recoveryCopy';
@@ -53,7 +57,7 @@ import { readLocalStorage } from './utils/safeStorage';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { useActiveFileOnCanvas } from './hooks/useActiveFileOnCanvas';
-import { PANEL_WIDTHS, useSidePanels } from './hooks/usePanelsThatFit';
+import { PANEL_WIDTHS, canvasWidthWith, useWorkspaceLayout, type PanelId } from './hooks/usePanelsThatFit';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
@@ -67,11 +71,18 @@ const SchemaDesigner = lazy(() => import('./components/schema').then((m) => ({ d
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
-    height: '100vh',
+    height: '100dvh',
     display: 'flex',
     flexDirection: 'column',
     background: 'var(--ink)',
     color: 'var(--paper)',
+  },
+  // Everything but the status bar, the bar of panels and the dialogs: what goes inert behind a dialog or a sheet.
+  shell: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
   },
   main: {
     flex: 1,
@@ -82,15 +93,13 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 8,
     background: 'var(--ink)',
   },
-  leftPanel: {
+  // On a phone the canvas has the screen to its edges: no frame, no gap.
+  mainSheets: {
+    flex: 1,
     display: 'flex',
-    flexDirection: 'column',
-    border: '1px solid var(--line-soft)',
-    borderRadius: 10,
     overflow: 'hidden',
-    width: PANEL_WIDTHS.components,
-    minWidth: PANEL_WIDTHS.components,
-    background: 'var(--ink-2)',
+    minHeight: 0,
+    background: 'var(--ink)',
   },
   centerWithTabs: {
     flex: 1,
@@ -109,71 +118,24 @@ const styles: Record<string, React.CSSProperties> = {
   },
   centerBottom: {
     height: 250,
+    flexShrink: 0,
     borderTop: '1px solid var(--line-soft)',
     overflow: 'hidden',
     background: 'var(--ink-2)',
-  },
-  rightPanel: {
     display: 'flex',
     flexDirection: 'column',
-    width: PANEL_WIDTHS.properties,
-    minWidth: PANEL_WIDTHS.properties,
-    border: '1px solid var(--line-soft)',
-    borderRadius: 10,
-    background: 'var(--ink-2)',
-    overflow: 'hidden',
   },
   rightPanelTop: {
     flex: 1,
+    minHeight: 0,
     overflow: 'hidden',
   },
+  // The hierarchy and the app's data, under Properties: each folds to its
+  // heading, and together they never take more than this of the column.
   rightPanelBottom: {
-    borderTop: '1px solid var(--line-soft)',
-    maxHeight: '45%',
-    overflow: 'auto',
-  },
-  statusBar: {
-    height: 28,
     flexShrink: 0,
-    borderTop: '1px solid var(--line-soft)',
-    background: 'var(--ink-2)',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 16,
-    padding: '0 12px',
-    fontSize: 12,
-    color: 'var(--dim)',
-  },
-  statusStrong: {
-    color: 'var(--paper)',
-    fontWeight: 600,
-    fontVariantNumeric: 'tabular-nums',
-  },
-  statusPath: {
-    fontFamily: 'var(--mono)',
-    fontSize: 11,
-    color: 'var(--dim)',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    minWidth: 0,
-  },
-  statusLink: {
-    border: 'none',
-    background: 'transparent',
-    color: 'var(--dim)',
-    fontSize: 11,
-    cursor: 'pointer',
-    padding: '2px 4px',
-    borderRadius: 4,
-    whiteSpace: 'nowrap',
-  },
-  assetName: {
-    fontFamily: 'var(--mono)',
-    fontSize: 13,
-    fontWeight: 600,
-    marginBottom: 4,
-    overflowWrap: 'anywhere',
+    maxHeight: '42%',
+    overflow: 'auto',
   },
   designShell: {
     flex: 1,
@@ -181,31 +143,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
   },
-  // A panel put away to its rail, on either side.
-  collapsedRail: {
-    width: PANEL_WIDTHS.rail,
-    minWidth: PANEL_WIDTHS.rail,
-    border: '1px solid var(--line-soft)',
-    borderRadius: 10,
-    background: 'var(--ink-2)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingTop: 10,
-    gap: 8,
-  },
-  collapsedLogicBar: {
-    height: 34,
-    borderTop: '1px solid var(--line-soft)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    padding: '0 8px',
-    background: 'var(--ink)',
-  },
   logicDockHeader: {
     height: 34,
+    flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -223,65 +163,58 @@ const styles: Record<string, React.CSSProperties> = {
   },
   emptyFileState: {
     height: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    textAlign: 'center',
-    padding: 24,
+    padding: 20,
     color: 'var(--dim)',
   },
   emptyFileTitle: {
     fontFamily: 'var(--display)',
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: 700,
     letterSpacing: '-0.02em',
     color: 'var(--paper)',
-    marginBottom: 6,
+    marginBottom: 4,
   },
   emptyFileHint: {
     fontSize: 13,
     color: 'var(--dim)',
   },
-  assetPreview: {
-    height: '100%',
-    overflow: 'auto',
-    padding: 18,
-    background: 'var(--ink)',
-  },
-  assetPreviewCard: {
-    background: 'var(--ink-2)',
-    border: '1px solid var(--line-soft)',
-    borderRadius: 10,
-    padding: 14,
-    maxWidth: 900,
-    margin: '0 auto',
-  },
-  assetPreviewMeta: {
-    fontSize: 12,
-    color: 'var(--dim)',
-    marginBottom: 12,
-  },
-  assetImageWrap: {
-    border: '1px solid var(--line-soft)',
-    borderRadius: 8,
-    background: 'var(--ink-2)',
-    minHeight: 220,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 10,
-  },
-  assetImage: {
-    maxWidth: '100%',
-    maxHeight: 520,
-    objectFit: 'contain',
-  },
-  assetUnsupported: {
-    padding: 20,
-    color: 'var(--dim)',
-    fontSize: 13,
-  },
 };
+
+/** The panels a phone opens as sheets, in the order of the bar they are opened from. */
+type SheetName = 'components' | 'properties' | 'hierarchy' | 'files' | 'logic';
+
+/** The least the canvas keeps beside the app running next to it: a phone's width. */
+const CANVAS_BESIDE_PREVIEW = 360;
+/** The narrowest the pane of the running app is drawn (builder.css, .bl-split). */
+const PREVIEW_PANE_MIN = 300;
+/**
+ * The logic dock starts open where the window is tall enough to leave the
+ * canvas the better part of it: at 900 pixels tall it took 250 of the 720
+ * the canvas had, in an editor a person opens to lay a page out.
+ */
+const LOGIC_OPEN_FROM = 960;
+
+const INERT = { inert: '' } as unknown as React.HTMLAttributes<HTMLElement>;
+
+const DOCK: { name: SheetName; label: string; icon: React.ReactNode }[] = [
+  { name: 'components', label: 'Components', icon: <path d="M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM11.25 9v4.5M9 11.25h4.5" /> },
+  { name: 'properties', label: 'Properties', icon: <path d="M2 4.5h7M12 4.5h2M2 11.5h2M7 11.5h7M10.5 3v3M5.5 10v3" /> },
+  { name: 'hierarchy', label: 'Hierarchy', icon: <path d="M2.5 3h6M5.5 8h8M5.5 13h8M3.5 3v10" /> },
+  { name: 'files', label: 'Files', icon: <path d="M14 12.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3.5L8 4.5h5a1 1 0 0 1 1 1z" /> },
+  { name: 'logic', label: 'Logic', icon: <path d="M5.5 4 2 8l3.5 4M10.5 4 14 8l-3.5 4" /> },
+];
+
+/** The window's width, kept as it changes: what the pane beside the canvas is fitted by. */
+function useWindowWidth(): number {
+  const [width, setWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const check = () => setWidth(window.innerWidth);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+  return width;
+}
 
 /**
  * What opening a project warned of, where the person can read it: the toast
@@ -294,44 +227,44 @@ function sayOpenedWithWarnings(warnings: readonly string[]): void {
   toast.warning(`Opened with ${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}`, [...warnings]);
 }
 
-function isPreviewableImage(path: string): boolean {
-  return /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(path);
-}
-
-/** True while the window is too narrow for the builder's panel layout. */
-function useNarrowScreen(minWidth = 900): boolean {
-  const [narrow, setNarrow] = useState(() => window.innerWidth < minWidth);
-  useEffect(() => {
-    const check = () => setNarrow(window.innerWidth < minWidth);
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, [minWidth]);
-  return narrow;
-}
-
 function App() {
   useUnsavedChanges();
-  const isNarrow = useNarrowScreen();
   const hostSaveLabel = useHostedSaveLabel();
-  const [narrowPreview, setNarrowPreview] = useState(false);
-  const projectName = useProjectStore((state) => state.name);
-  const projectDirty = useProjectStore((state) => state.isDirty);
   const [view, setView] = useState<ViewMode>('design');
   // Unsaved work is kept as it is made, for the next open to offer back. A
   // draft edited inside FormLogic is kept there, and has no copy here.
   useRecoveryCopy(view, !isHostedEditor());
-  // A panel the window has no room for starts as its rail, so the canvas is
-  // on the screen: at 900 pixels the three panels left it no room at all.
-  const { files: dockFiles, components: dockComponents, setFiles: setDockFiles, setComponents: setDockComponents } = useSidePanels();
+  // The canvas keeps the room a page needs, and the panels share what is over:
+  // all three beside it in a wide window, one of them at a time in a narrow
+  // one, and on a phone none, each a sheet opened over the canvas
+  // (hooks/usePanelsThatFit.ts).
+  const { mode: layoutMode, open: panelOpen, setOpen: setPanelOpen } = useWorkspaceLayout();
+  const sheets = layoutMode === 'sheets';
+  const [sheet, setSheet] = useState<SheetName | null>(null);
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+  const closeSheet = useCallback(() => setSheet(null), []);
+  // A window that has widened has its panels beside the canvas again.
+  useEffect(() => {
+    if (!sheets) setSheet(null);
+  }, [sheets]);
+  const windowWidth = useWindowWidth();
   // From the empty page's own sentence: the panel opens with the focus in
-  // its search, which is where a component is looked for.
+  // its search, which is where a component is looked for. Not on a phone,
+  // where the focus would bring the keyboard up over the list.
   const showComponents = useCallback(() => {
-    setDockComponents(true);
+    if (sheets) {
+      setSheet('components');
+      return;
+    }
+    setPanelOpen('components', true);
     requestAnimationFrame(() => document.querySelector<HTMLElement>('[aria-label="Search components"]')?.focus());
-  }, [setDockComponents]);
-  const [dockInspector, setDockInspector] = useState(true);
-  const [dockLogic, setDockLogic] = useState(true);
+  }, [sheets, setPanelOpen]);
+  const [dockLogic, setDockLogic] = useState(() => window.innerHeight >= LOGIC_OPEN_FROM);
+  // The app running beside the canvas, in Design (components/preview/LivePreview.tsx).
+  const [besidePreview, setBesidePreview] = useState(false);
+  const [foldHierarchy, setFoldHierarchy] = useState(false);
+  const [foldData, setFoldData] = useState(true);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
@@ -346,9 +279,7 @@ function App() {
   /** The part of the page that goes inert behind the export dialog. */
   const shellRef = useRef<HTMLDivElement | null>(null);
 
-  const selectedCount = useCanvasStore((state) => state.selectedIds.length);
-  // The page's own <App> is not one of its elements: an empty page said "1 element".
-  const elementCount = useCanvasStore((state) => state.elements.size - (state.elements.has(state.rootId) ? 1 : 0));
+  const openShortcuts = useCallback(() => setShowShortcuts(true), []);
   const handleCreateNewProject = useCallback((config: NewProjectConfig) => {
     fileHandleRef.current = null;
     forgetDesktopFile();
@@ -437,8 +368,22 @@ function App() {
     const project = useProjectStore.getState();
     if (project.revision === 0 && !project.isDirty && project.isAsKept === null) keepSavedPoint();
   }, []);
-  useProjectStartup((action) => {
+  useProjectStartup(function start(action): void | (() => void) {
     if (action.kind === 'nothing') return;
+    if (action.kind === 'from-studio') {
+      // A project Studio handed over, a reload of the tab that was on one, or a stored session one
+      // left (utils/studioVisit.ts). While that is found out, whatever session the store holds is
+      // not to be written over: said as it is for a session that is being offered back.
+      if (readLocalStorage(SESSION_STORAGE_KEY) !== null) noteRestoreOffered();
+      void startFromStudio(action, { apply: (snapshot) => applySnapshotRef.current(snapshot) }).then((arrival) => {
+        if (arrival.kind !== 'none' && arrival.kind !== 'failed') return;
+        // Nothing of Studio's to open after all (the line over the toolbar says why, when there
+        // is a why): the start any other page makes, with its own word about the stored session.
+        takeOpenedFromLink();
+        start(action.otherwise);
+      });
+      return;
+    }
     if (action.kind === 'refused-link') {
       // A link wins over the restore offer, so a stored session was not offered: as after "Not now",
       // it is set aside before the empty project's first change is written over it.
@@ -572,6 +517,7 @@ function App() {
   const { run: handleSave, isPending: isSaving } = useExclusiveAction(saveCurrentProject);
   const changeView = useCallback((next: ViewMode) => {
     flushCanvasToActiveFile();
+    setSheet(null);
     setView(next);
   }, []);
   const confirmOpen = useConfirmStore((state) => state.queue.length > 0);
@@ -588,45 +534,35 @@ function App() {
   // button that opened it, and React runs that cleanup before a passive
   // effect here would have cleared `inert` — so the focus request landed on
   // an element still inside an inert subtree and was dropped on the body.
+  // A sheet is a dialog in this: the page under it is out of reach too.
+  const behindSomething = modalOpen || sheet !== null;
   useLayoutEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
-    shell.toggleAttribute('inert', modalOpen);
-    if (modalOpen) shell.setAttribute('aria-hidden', 'true');
+    shell.toggleAttribute('inert', behindSomething);
+    if (behindSomething) shell.setAttribute('aria-hidden', 'true');
     else shell.removeAttribute('aria-hidden');
-  }, [modalOpen, isNarrow]);
+  }, [behindSomething]);
 
   // Sync active file with canvas when file selection changes
   const activeFileId = useFilesStore((state) => state.activeFileId);
-  const assetFiles = useFilesStore((state) => state.assetFiles);
   const fileNodes = useFilesStore((state) => state.nodes);
   const activeNode = activeFileId ? fileNodes.get(activeFileId) : null;
   const activeFileType = activeNode?.fileType ?? null;
 
   const pageHeld = useCanvasStore((state) => state.pageId !== null);
+  const somethingSelected = useCanvasStore((state) => state.selectedIds.length > 0);
 
   useWorkspaceShortcuts({
-    blocked: modalOpen, narrow: isNarrow, save: handleSave, open: handleOpen,
+    // The editor is offered at every width now; nothing is held back as "narrow".
+    blocked: behindSomething, narrow: false, save: handleSave, open: handleOpen,
     create: handleNew, export: handleExport, shortcuts: () => setShowShortcuts(true),
     changeView, canvas: pageInHand(view, activeFileType, pageHeld),
   });
   const isLogicFileActive = activeFileType === 'logic';
   const isAssetFileActive = activeFileType === 'asset';
   const hasActiveFile = !!activeNode;
-  const activeAsset = activeFileId ? assetFiles.get(activeFileId) : undefined;
-  const [activeAssetPreviewUrl, setActiveAssetPreviewUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isAssetFileActive || !activeAsset || !isPreviewableImage(activeAsset.name)) {
-      setActiveAssetPreviewUrl(null);
-      return;
-    }
-    // An SVG as a `data:` URL (core assetObjectUrl), which "Open image in new
-    // tab" cannot open as a page of the Builder, the bundle's script in it.
-    const objectUrl = assetObjectUrl(activeAsset.name, Uint8Array.from(activeAsset.data));
-    setActiveAssetPreviewUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [isAssetFileActive, activeAsset]);
+  const pageOpen = hasActiveFile && !isLogicFileActive && !isAssetFileActive;
 
   // Auto-switch view to 'design' when the active file type doesn't support the current view
   useEffect(() => {
@@ -638,120 +574,174 @@ function App() {
   // The page being left is put into its file, and the one opened onto the canvas.
   useActiveFileOnCanvas();
 
+  // A file pressed in the Files sheet is what the person asked to see: the
+  // sheet goes away, for the file that was open already as for another. Not
+  // for a folder, a button of the row or of the panel, or a name being typed
+  // there, which is how a new file is made and named.
+  const pickedInFilesSheet = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (sheetRef.current !== 'files') return;
+    const target = event.target as HTMLElement;
+    const row = target.closest('[data-file-row]');
+    if (!row || !row.hasAttribute('aria-selected') || target.closest('button, input, [role="menu"]')) return;
+    setTimeout(() => {
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement && active.closest('.bl-sheet')) return;
+      setSheet((open) => (open === 'files' ? null : open));
+    }, 0);
+  }, []);
+
+  // The app running beside the canvas has a pane of its own in the canvas's
+  // column, and is drawn only where the canvas keeps a phone's width beside
+  // it. Asked for where it does not fit, the panels that are in its way are
+  // put away, Files first; a panel opened again later takes the room back.
+  const columnWidth = sheets ? 0 : canvasWidthWith(windowWidth, panelOpen);
+  const previewFits = columnWidth >= CANVAS_BESIDE_PREVIEW + PREVIEW_PANE_MIN;
+  const previewBeside = besidePreview && previewFits && pageOpen && !sheets;
+  const togglePreviewBeside = useCallback(() => {
+    if (previewBeside) {
+      setBesidePreview(false);
+      return;
+    }
+    flushCanvasToActiveFile();
+    setBesidePreview(true);
+    const open = { ...panelOpen };
+    for (const panel of ['files', 'components', 'properties'] as const) {
+      if (canvasWidthWith(window.innerWidth, open) >= CANVAS_BESIDE_PREVIEW + PREVIEW_PANE_MIN) break;
+      if (!open[panel]) continue;
+      open[panel] = false;
+      setPanelOpen(panel, false);
+    }
+  }, [previewBeside, panelOpen, setPanelOpen]);
+
+  /** A panel beside the canvas, or the rail it is put away to. */
+  const sidePanel = (panel: PanelId, name: string, width: number, body: React.ReactNode, mark = false) =>
+    panelOpen[panel] ? (
+      <div data-panel={name} className="bl-panel" style={{ width, minWidth: width }}>
+        {body}
+      </div>
+    ) : (
+      // The rail is the panel's place in the row, so F6 still finds it there.
+      <button type="button" data-panel={name} className="bl-rail" style={{ width: PANEL_WIDTHS.rail }} onClick={() => setPanelOpen(panel, true)} aria-label={`Show ${name.toLowerCase()} panel`}>
+        <span>{name}</span>
+        {mark && <i aria-hidden="true" title="Something is selected" />}
+      </button>
+    );
+
+  const logicHeader = (onHide: () => void) => (
+    <div style={styles.logicDockHeader}>
+      <span style={styles.logicDockTitle}>Logic</span>
+      <button className="bl-mini" onClick={onHide} aria-label="Hide logic panel">
+        Hide
+      </button>
+    </div>
+  );
+
+  const middle = (
+    <>
+      <div className="bl-tabrow">
+        <FileTabs />
+        {/* What is done to the whole canvas, at the end of its row of tabs. */}
+        {pageOpen && !sheets && (
+          <div className="bl-tabrow-tools">
+            <button
+              type="button"
+              className="bl-mini"
+              aria-pressed={previewBeside}
+              onClick={togglePreviewBeside}
+              data-action="preview-beside"
+              title={previewBeside ? 'Hide the app running beside the canvas' : 'Run the app beside the canvas, and see each change as you make it'}
+            >
+              Live preview
+            </button>
+          </div>
+        )}
+      </div>
+      {!hasActiveFile ? (
+        <div data-panel="Canvas" style={styles.centerTop}>
+          <div style={styles.emptyFileState}>
+            <div style={styles.emptyFileTitle}>No file is open</div>
+            <div style={styles.emptyFileHint}>
+              {sheets ? 'Open Files below and choose one to start editing.' : 'Choose a file in the Files panel to start editing.'}
+            </div>
+          </div>
+        </div>
+      ) : isAssetFileActive ? (
+        <div data-panel="Canvas" style={styles.centerTop}>
+          <AssetView />
+        </div>
+      ) : isLogicFileActive ? (
+        <div data-panel="Canvas" style={styles.centerTop}>
+          <LogicEditor />
+        </div>
+      ) : (
+        <div className="bl-split">
+          <div data-panel="Canvas">
+            <Canvas onShowComponents={sheets || !panelOpen.components ? showComponents : undefined} byTouch={sheets} />
+          </div>
+          {previewBeside && (
+            <div data-panel="Preview">
+              <LivePreview initialDevice="mobile" beside />
+            </div>
+          )}
+        </div>
+      )}
+      {pageOpen && !sheets && dockLogic && (
+        <div data-panel="Logic" style={styles.centerBottom}>
+          {logicHeader(() => setDockLogic(false))}
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <LogicEditor />
+          </div>
+        </div>
+      )}
+      {pageOpen && !sheets && !dockLogic && (
+        // The dock put away: its heading, as the sections under Properties fold to theirs.
+        <button type="button" className="bl-section-head" style={{ borderTop: '1px solid var(--line-soft)', position: 'static', flexShrink: 0 }} onClick={() => setDockLogic(true)} aria-expanded={false} data-action="show-logic">
+          <span>Logic</span>
+          <span className="bl-section-count">State, computed values and functions</span>
+          <span className="bl-section-chevron" aria-hidden="true">›</span>
+        </button>
+      )}
+    </>
+  );
+
   const renderMainContent = () => {
     switch (view) {
       case 'design':
+        if (sheets) {
+          return (
+            <div style={styles.mainSheets}>
+              <div style={{ ...styles.centerWithTabs, border: 'none', borderRadius: 0 }}>{middle}</div>
+            </div>
+          );
+        }
         return (
           <div style={styles.designShell}>
             <div style={styles.main}>
               {/* Each part of the workspace is a panel F6 goes to (utils/panelFocus.ts). */}
-              {dockFiles ? (
+              {panelOpen.files ? (
                 <div data-panel="Files" style={{ display: 'contents' }}>
-                  <FileNavigator onToggleDock={() => setDockFiles(false)} />
+                  <FileNavigator onToggleDock={() => setPanelOpen('files', false)} />
                 </div>
               ) : (
-                <div data-panel="Files" style={styles.collapsedRail}>
-                  <button className="bl-rail-btn" onClick={() => setDockFiles(true)} aria-label="Show files panel">
-                    Files
-                  </button>
-                </div>
+                sidePanel('files', 'Files', PANEL_WIDTHS.files, null)
               )}
 
-              {dockComponents && (
-                <div data-panel="Components" style={styles.leftPanel}>
-                  <ComponentPalette onToggleDock={() => setDockComponents(false)} />
-                </div>
-              )}
-              {!dockComponents && (
-                <div data-panel="Components" style={styles.collapsedRail}>
-                  <button className="bl-rail-btn" onClick={() => setDockComponents(true)} aria-label="Show components panel">
-                    Components
-                  </button>
-                </div>
-              )}
+              {sidePanel('components', 'Components', PANEL_WIDTHS.components, <ComponentPalette onToggleDock={() => setPanelOpen('components', false)} />)}
 
-              <div style={styles.centerWithTabs}>
-                <FileTabs />
-                <div data-panel="Canvas" style={styles.centerTop}>
-                  {!hasActiveFile ? (
-                    <div style={styles.emptyFileState}>
-                      <div>
-                        <div style={styles.emptyFileTitle}>No file selected</div>
-                        <div style={styles.emptyFileHint}>
-                          Choose a file in the Files panel to start editing.
-                        </div>
-                      </div>
-                    </div>
-                  ) : isAssetFileActive ? (
-                    activeAsset ? (
-                      <div style={styles.assetPreview}>
-                        <div style={styles.assetPreviewCard}>
-                          <div style={styles.assetName}>{activeAsset.name}</div>
-                          <div style={styles.assetPreviewMeta}>
-                            {activeAsset.type || classifyAsset(activeAsset.name).mime} · {(activeAsset.data.byteLength / 1024).toFixed(1)} KB
-                          </div>
-                          {activeAssetPreviewUrl ? (
-                            <div style={styles.assetImageWrap}>
-                              <img src={activeAssetPreviewUrl} alt={activeAsset.name} style={styles.assetImage} />
-                            </div>
-                          ) : (
-                            <div style={styles.assetUnsupported}>
-                              Only images (PNG, JPEG, GIF, WebP, SVG and BMP) can be previewed here.
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={styles.emptyFileState}>
-                        <div>
-                          <div style={styles.emptyFileTitle}>Asset not found</div>
-                          <div style={styles.emptyFileHint}>The selected asset could not be loaded.</div>
-                        </div>
-                      </div>
-                    )
-                  ) : isLogicFileActive ? (
-                    <LogicEditor />
-                  ) : (
-                    <Canvas onShowComponents={dockComponents ? undefined : showComponents} />
-                  )}
-                </div>
-                {hasActiveFile && !isLogicFileActive && !isAssetFileActive && dockLogic && (
-                  <div data-panel="Logic" style={styles.centerBottom}>
-                    <div style={styles.logicDockHeader}>
-                      <span style={styles.logicDockTitle}>Logic</span>
-                      <button className="bl-mini" onClick={() => setDockLogic(false)} aria-label="Hide logic panel">
-                        Hide
-                      </button>
-                    </div>
-                    <LogicEditor />
-                  </div>
-                )}
-                {hasActiveFile && !isLogicFileActive && !isAssetFileActive && !dockLogic && (
-                  <div style={styles.collapsedLogicBar}>
-                    <button className="bl-mini" onClick={() => setDockLogic(true)}>
-                      Show logic
-                    </button>
-                  </div>
-                )}
-              </div>
+              <div style={styles.centerWithTabs}>{middle}</div>
 
-              {dockInspector && (
-                <div style={styles.rightPanel}>
+              {panelOpen.properties ? (
+                <div className="bl-panel" style={{ width: PANEL_WIDTHS.properties, minWidth: PANEL_WIDTHS.properties }}>
                   <div data-panel="Properties" style={styles.rightPanelTop}>
-                    <PropertyPanel onToggleDock={() => setDockInspector(false)} />
+                    <PropertyPanel onToggleDock={() => setPanelOpen('properties', false)} />
                   </div>
                   <div data-panel="Hierarchy" style={styles.rightPanelBottom}>
-                    <TreeView />
-                    <DataPanel />
+                    <TreeView collapsed={foldHierarchy} onToggle={() => setFoldHierarchy((folded) => !folded)} />
+                    <DataPanel collapsed={foldData} onToggle={() => setFoldData((folded) => !folded)} />
                   </div>
                 </div>
-              )}
-              {!dockInspector && (
-                <div style={styles.collapsedRail}>
-                  <button className="bl-rail-btn" onClick={() => setDockInspector(true)} aria-label="Show properties panel">
-                    Properties
-                  </button>
-                </div>
+              ) : (
+                sidePanel('properties', 'Properties', PANEL_WIDTHS.properties, null, somethingSelected)
               )}
             </div>
           </div>
@@ -759,17 +749,17 @@ function App() {
 
       case 'preview':
         return (
-          <div style={styles.main}>
-            <div data-panel="Preview" style={{ flex: 1, height: '100%', overflow: 'hidden' }}>
-              <LivePreview />
+          <div style={sheets ? styles.mainSheets : styles.main}>
+            <div data-panel="Preview" style={{ flex: 1, height: '100%', minWidth: 0, overflow: 'hidden' }}>
+              <LivePreview initialDevice={sheets ? 'mobile' : 'desktop'} />
             </div>
           </div>
         );
 
       case 'code':
         return (
-          <div style={styles.main}>
-            <div data-panel="Code" style={{ flex: 1 }}>
+          <div style={sheets ? styles.mainSheets : styles.main}>
+            <div data-panel="Code" style={{ flex: 1, minWidth: 0 }}>
               <SourceView />
             </div>
           </div>
@@ -777,16 +767,16 @@ function App() {
 
       case 'data':
         if (isHostedEditor()) return (
-          <section style={{ padding: 'clamp(24px, 5vw, 56px)', maxWidth: 760, margin: '0 auto', lineHeight: 1.7 }} aria-label="FormLogic app data">
-            <h1 style={{ fontFamily: 'var(--display)', fontSize: 24, letterSpacing: '-0.02em', marginBottom: 12 }}>Your app data lives in FormLogic</h1>
+          <section style={{ padding: 'clamp(16px, 3vw, 32px)', maxWidth: 760, lineHeight: 1.7, overflow: 'auto' }} aria-label="FormLogic app data">
+            <h1 style={{ fontFamily: 'var(--display)', fontSize: 20, letterSpacing: '-0.02em', marginBottom: 12 }}>Your app data lives in FormLogic</h1>
             <p>Browse and edit your app’s records in FormLogic: a SoftN app’s Data tab, or a forms app’s Data &amp; forms. To add a table or a column, add the next numbered migration in the app’s source, or ask AI Studio.</p>
             <p style={{ marginTop: 12 }}>Builder’s standalone database designer creates local XDB collections. Those are separate from your hosted database, so change the hosted schema in FormLogic.</p>
             <button type="button" className="bl-btn bl-btn-primary bl-btn-lg" onClick={() => void saveCurrentProject()} style={{ marginTop: 24 }}>{hostSaveLabel ?? 'Return to FormLogic'}</button>
           </section>
         );
         return (
-          <div style={styles.main}>
-            <div data-panel="Data" style={{ flex: 1 }}>
+          <div style={sheets ? styles.mainSheets : styles.main}>
+            <div data-panel="Data" style={{ flex: 1, minWidth: 0 }}>
               <Suspense fallback={<div role="status" style={{ padding: 24, color: 'var(--dim)' }}>Opening the data designer…</div>}>
                 <SchemaDesigner />
               </Suspense>
@@ -799,74 +789,92 @@ function App() {
     }
   };
 
-  // Below this the four panels stop fitting and the canvas is unusable with a
-  // finger. Measured, not guessed: at 768px the toolbar alone overflows by 130px.
-  if (isNarrow) {
-    return <>
-      {narrowPreview ? <div style={{ ...styles.app, height: '100dvh' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, gap: 12, borderBottom: '1px solid var(--line-soft)', background: 'var(--ink-2)' }}>
-          <button className="bl-btn" style={{ minHeight: 44 }} onClick={() => setNarrowPreview(false)}>Back</button>
-          <span style={{ fontFamily: 'var(--display)', fontWeight: 700, fontSize: 15, letterSpacing: '-0.02em', overflowWrap: 'anywhere', textAlign: 'center' }}>
-            {projectName}
-            {projectDirty && <span style={{ display: 'block', fontFamily: 'var(--body)', fontWeight: 500, fontSize: 11, letterSpacing: 0, color: 'var(--dim)' }}>Unsaved changes</span>}
-          </span>
-          <button className="bl-btn" style={{ minHeight: 44 }} onClick={handleSave} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving…' : hostSaveLabel ?? 'Save'}</button>
-        </div>
-        <div style={{ flex: 1, minHeight: 0 }}><LivePreview initialDevice="mobile" /></div>
-      </div> : <div style={{ ...styles.app, height: '100dvh' }}>
-        {/* The way to the other products stays, as it does on every SoftN page. */}
-        {!isHostedEditor() && <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
-          void openCompanionUrl(href).catch(() => toast.error('Could not open the Softn website.'));
-        } : undefined} />}
-        <NarrowScreenNotice studioUrl={STUDIO_URL} runtimeUrl={RUNTIME_URL}
-          projectName={projectName} isDirty={projectDirty} isSaving={isSaving} onOpen={handleOpen} onSave={handleSave}
-          onPreview={() => { flushCanvasToActiveFile(); setNarrowPreview(true); }} />
-      </div>}
-      <ConfirmDialog />
-      <ToastContainer />
-      <PwaUpdater />
-    </>;
-  }
+  const openSheet = () => {
+    switch (sheet) {
+      case 'components':
+        return <ComponentPalette onToggleDock={closeSheet} onAdded={closeSheet} />;
+      case 'properties':
+        return <PropertyPanel onToggleDock={closeSheet} />;
+      case 'hierarchy':
+        return <TreeView onClose={closeSheet} />;
+      case 'files':
+        return <FileNavigator onToggleDock={closeSheet} />;
+      case 'logic':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {logicHeader(closeSheet)}
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <LogicEditor />
+            </div>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
 
   return (
     <div style={styles.app}>
-      {/* Everything behind a dialog goes inert while it is open, so
-          Tab and a screen reader cannot reach the page under it. */}
-      <div ref={shellRef} style={styles.app}>
-        {/* The same bar as the site, the runtime and Studio: the way between them. */}
-        {!isHostedEditor() && <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
-          void openCompanionUrl(href).catch(() => toast.error('Could not open the Softn website.'));
-        } : undefined} />}
-        <Toolbar
-          view={view}
-          onViewChange={changeView}
-          onSave={handleSave}
-          isSaving={isSaving}
-          onNew={handleNew}
-          onOpen={handleOpen}
-          onShortcuts={() => setShowShortcuts(true)}
-          onExport={handleExport}
-          activeFileType={activeFileType}
-        />
+      <div className="bl-stage">
+        {/* Everything behind a dialog or a sheet goes inert while it is open,
+            so Tab and a screen reader cannot reach the page under it. */}
+        <div ref={shellRef} className="bl-shell" style={styles.shell}>
+          {/* The same bar as the site, the runtime and Studio: the way between them. */}
+          {!isHostedEditor() && <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
+            void openCompanionUrl(href).catch(() => toast.error('Could not open the Softn website.'));
+          } : undefined} />}
+          {/* A project opened from Studio says so, with the way back (drawn for no other project). */}
+          <StudioOrigin view={view} />
+          <Toolbar
+            view={view}
+            onViewChange={changeView}
+            onSave={handleSave}
+            isSaving={isSaving}
+            onNew={handleNew}
+            onOpen={handleOpen}
+            onShortcuts={openShortcuts}
+            onExport={handleExport}
+            activeFileType={activeFileType}
+          />
 
-        {renderMainContent()}
-
-        <div style={styles.statusBar}>
-          <span>
-            <span style={styles.statusStrong}>{elementCount}</span> {elementCount === 1 ? 'element' : 'elements'}
-          </span>
-          <span>
-            <span style={styles.statusStrong}>{selectedCount}</span> selected
-          </span>
-          {activeNode && (
-            <span style={styles.statusPath} title={activeNode.path}>{activeNode.path}</span>
-          )}
-          <span style={{ flex: 1 }} />
-          <button type="button" style={styles.statusLink} onClick={() => setShowShortcuts(true)}>
-            Press <kbd className="bl-kbd">?</kbd> for keyboard shortcuts
-          </button>
+          {renderMainContent()}
         </div>
+
+        {/* A panel of a phone's editor, over the canvas (components/Sheet.tsx). */}
+        {sheet !== null && (
+          // A sheet of its own for each panel: going from one to the next from the bar
+          // moves the focus into the new one, and gives it back to the button pressed.
+          <Sheet key={sheet} title={DOCK.find((entry) => entry.name === sheet)!.label} onClose={closeSheet} tall={sheet === 'logic'} onPress={pickedInFilesSheet}>
+            {openSheet()}
+          </Sheet>
+        )}
       </div>
+
+      {/* Outside the part that goes inert: a message is shown here, and is
+          still to be read while a dialog is open (components/StatusBar.tsx). */}
+      <StatusBar onShortcuts={openShortcuts} modalOpen={modalOpen} />
+
+      {/* The panels of a phone's editor: the bar stays under an open sheet,
+          so the next panel is one press away. */}
+      {sheets && view === 'design' && (
+        <nav className="bl-dock" aria-label="Panels" {...(modalOpen ? INERT : {})}>
+          {DOCK.map(({ name, label, icon }) => (
+            <button
+              key={name}
+              type="button"
+              aria-pressed={sheet === name}
+              disabled={name === 'logic' && !pageOpen}
+              onClick={() => setSheet((open) => (open === name ? null : name))}
+              data-sheet-button={name}
+            >
+              <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {icon}
+              </svg>
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
 
       <ExportDialog isOpen={showExportDialog} onClose={() => setShowExportDialog(false)} exportProject={exportCurrentProject} />
       <ShortcutsDialog isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
@@ -876,7 +884,6 @@ function App() {
         onCreate={handleCreateNewProject}
       />
       <ConfirmDialog />
-      <ToastContainer />
       <PwaUpdater />
     </div>
   );

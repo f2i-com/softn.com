@@ -224,8 +224,9 @@ describe('a checkbox', () => {
 
   it('shows a condition as the expression it is', () => {
     open('<App><Button disabled={!ready}>Go</Button></App>', 'Button');
-    expect(field<HTMLInputElement>('disabled').value).toBe('!ready');
-    expect(field<HTMLInputElement>('disabled').type).toBe('text');
+    expect(field<HTMLTextAreaElement>('disabled').value).toBe('!ready');
+    // The box every expression is edited in (ExpressionField.tsx), not a checkbox.
+    expect(field<HTMLTextAreaElement>('disabled').type).toBe('textarea');
   });
 });
 
@@ -274,8 +275,13 @@ describe('a binding', () => {
   // between braces as it stood: `{about}`, typed as the field showed, was
   // written `:bind={{about}}`, a record with one key, and half a name was
   // written into the file at every keystroke.
+  // The group is one a person seldom needs: it is closed until it is asked
+  // for, unless the element already holds a binding (propertyPanelLayout.test.ts).
+  const showBindings = () => act(() => host.querySelector<HTMLButtonElement>('[data-prop-group="bindings"] > button')!.click());
+
   it('typed in braces is the expression inside them', () => {
     drop('Modal');
+    showBindings();
     type(field<HTMLInputElement>(':bind'), '{about}');
     expect(source()).toContain(':bind={about}');
     expect(field<HTMLInputElement>(':bind').value).toBe('about');
@@ -283,6 +289,7 @@ describe('a binding', () => {
 
   it('is not written while it is half typed, and is once it is whole', () => {
     drop('Input');
+    showBindings();
     type(field<HTMLInputElement>(':bind'), 'form.');
     expect(source()).not.toContain(':bind');
     expect(field<HTMLInputElement>(':bind').value).toBe('form.');
@@ -338,6 +345,52 @@ describe('a picture chosen from the project\'s assets', () => {
   it('says nothing of an address, or of a path that is no file of the project', () => {
     open('<App><Image src="https://example.com/a.png" /></App>', 'Image');
     expect(host.querySelector('[data-src-as-path]')).toBeNull();
+  });
+
+  // A bundle's pictures need not be under assets/. The list put `assets/` before every path, so
+  // one at `images/hero.png` was offered as `assets/images/hero.png`, where the app has no file.
+  it('is offered at the path it has, wherever in the project that is', () => {
+    const elsewhere = { name: 'images/hero.png', bundlePath: 'images/hero.png', type: 'image/png', data: new Uint8Array([2]) };
+    act(() => useProjectStore.getState().setAssets([picture, elsewhere]));
+    open('<App><Image alt="Hero" /></App>', 'Image');
+    const offered = [...field<HTMLSelectElement>('Asset').options].map((option) => option.value);
+    expect(offered).toEqual(['', 'assets/logo.png', 'images/hero.png']);
+    choose(field<HTMLSelectElement>('Asset'), 'images/hero.png');
+    expect(source()).toContain('<Image alt="Hero" src={asset("images/hero.png")} />');
+    expect(field<HTMLSelectElement>('Asset').value).toBe('images/hero.png');
+  });
+});
+
+describe('a picture added from the property panel', () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+
+  /** Hand the panel's file input a picked file, as the file picker does, and wait for it to be taken in. */
+  async function pick(name: string, bytes: Uint8Array): Promise<void> {
+    const input = host.querySelector<HTMLInputElement>('[data-add-picture-input]')!;
+    const file = { name, size: bytes.byteLength, arrayBuffer: async () => bytes.slice().buffer };
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it('goes into the project and is the Image’s picture, written as the app loads it', async () => {
+    open('<App><Image alt="Team" /></App>', 'Image');
+    expect(host.querySelector('[data-action="add-picture"]')).not.toBeNull();
+    await pick('Team Photo.png', PNG);
+    expect(source()).toContain('<Image alt="Team" src={asset("assets/Team-Photo.png")} />');
+    expect(field<HTMLSelectElement>('Asset').value).toBe('assets/Team-Photo.png');
+    const kept = [...useFilesStore.getState().assetFiles.values()];
+    expect(kept.map((asset) => asset.bundlePath)).toEqual(['assets/Team-Photo.png']);
+    expect([...kept[0].data]).toEqual([...PNG]);
+  });
+
+  it('is not taken when it is not a picture an Image draws, and the Image is left as it was', async () => {
+    open('<App><Image alt="Team" /></App>', 'Image');
+    await pick('notes.pdf', PNG);
+    expect(source()).toContain('<Image alt="Team" />');
+    expect(useFilesStore.getState().assetFiles.size).toBe(0);
   });
 });
 

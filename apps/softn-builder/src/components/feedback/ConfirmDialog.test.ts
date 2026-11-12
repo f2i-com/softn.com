@@ -114,6 +114,98 @@ describe('ConfirmDialog', () => {
     expect(dialog()).toBeNull();
   });
 
+  // The dialog gives the focus back to what had it. When that has gone (the file the
+  // question was about, deleted on a yes), the focus fell to the page's body.
+  describe('where the keyboard goes when what asked the question has gone', () => {
+    const settle = () => act(async () => { await new Promise((done) => setTimeout(done, 5)); });
+    let page: HTMLDivElement;
+
+    beforeEach(() => {
+      page = document.createElement('div');
+      // A panel with a tree of rows in it, and the toolbar's view switch, as the workspace has them.
+      page.innerHTML = `
+        <div data-tool="views"><button aria-pressed="true" data-view>Design</button><button aria-pressed="false">Data</button></div>
+        <div data-panel tabindex="-1">
+          <div role="tree" aria-label="Project files">
+            <div data-file-row="a" tabindex="0">a.ui</div>
+            <div data-file-row="b" tabindex="-1">b.ui</div>
+          </div>
+          <button data-loose>Remove</button>
+        </div>`;
+      document.body.appendChild(page);
+    });
+    afterEach(() => page.remove());
+
+    it('goes back to what asked, when that is still there', async () => {
+      mount();
+      const row = page.querySelector<HTMLElement>('[data-file-row="b"]')!;
+      row.focus();
+      void ask('Delete file "b.ui"?', { danger: true });
+      act(() => button('cancel').click());
+      await settle();
+      expect(document.activeElement).toBe(row);
+    });
+
+    it('goes to the row that holds the tree’s stop when the row that asked is gone', async () => {
+      mount();
+      const row = page.querySelector<HTMLElement>('[data-file-row="b"]')!;
+      row.focus();
+      void ask('Delete file "b.ui"?', { danger: true });
+      act(() => button('ok').click());
+      row.remove();
+      await settle();
+      expect(document.activeElement).toBe(page.querySelector('[data-file-row="a"]'));
+    });
+
+    it('finds the tree again by its role and its name when it was drawn anew', async () => {
+      mount();
+      const tree = page.querySelector<HTMLElement>('[role="tree"]')!;
+      page.querySelector<HTMLElement>('[data-file-row="b"]')!.focus();
+      void ask('Delete file "b.ui"?', { danger: true });
+      act(() => button('ok').click());
+      // The Files tree is keyed by how many files there are: one fewer is a new tree.
+      const again = document.createElement('div');
+      again.setAttribute('role', 'tree');
+      again.setAttribute('aria-label', 'Project files');
+      again.innerHTML = '<div data-file-row="a" tabindex="0">a.ui</div>';
+      tree.replaceWith(again);
+      await settle();
+      expect(document.activeElement).toBe(again.querySelector('[data-file-row="a"]'));
+    });
+
+    it('goes to the panel around a button that is gone, and to the view switch when nothing around it is left', async () => {
+      mount();
+      const loose = page.querySelector<HTMLElement>('[data-loose]')!;
+      loose.focus();
+      void ask('Remove it?');
+      act(() => button('ok').click());
+      loose.remove();
+      await settle();
+      expect(document.activeElement).toBe(page.querySelector('[data-panel]'));
+
+      // Asked with the focus nowhere (a menu that closed before the question was put).
+      (document.activeElement as HTMLElement).blur();
+      expect(document.activeElement).toBe(document.body);
+      void ask('Restore your work?');
+      act(() => button('ok').click());
+      await settle();
+      expect(document.activeElement).toBe(page.querySelector('[data-view]'));
+    });
+
+    it('leaves the focus where a person or the next dialog has put it', async () => {
+      mount();
+      const loose = page.querySelector<HTMLElement>('[data-loose]')!;
+      loose.focus();
+      void ask('Remove it?');
+      act(() => button('ok').click());
+      loose.remove();
+      const chosen = page.querySelector<HTMLElement>('[data-file-row="a"]')!;
+      chosen.focus();
+      await settle();
+      expect(document.activeElement).toBe(chosen);
+    });
+  });
+
   it('an answer counts once', async () => {
     mount();
     const answer = ask('Delete folder "ui" and all its contents?');

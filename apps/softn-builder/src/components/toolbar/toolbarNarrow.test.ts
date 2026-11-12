@@ -13,6 +13,11 @@
  * New and Open. Each keeps its name for a screen reader and its tooltip.
  * Driven in Chromium at 900 pixels for what is left to the name; what can
  * be held here is that the pieces are in place.
+ *
+ * Below 900 pixels the editor used not to be offered at all, because this
+ * row could not be fitted: on a phone it is two rows now, Save and Export
+ * drawn without their words as well, and no control is left out of it.
+ * Driven in Chromium at 360, 390, 430 and 768 pixels.
  */
 
 import React, { act } from 'react';
@@ -73,9 +78,36 @@ describe('the toolbar in a narrow window', () => {
       expect(tool.querySelector('.bl-tool-label')?.textContent, name).toBe(name);
       expect(tool.getAttribute('title'), name).toContain(name);
     }
-    // Save and Export say what they do in every width.
-    expect(button('Save')).toBeUndefined();
-    expect([...host.querySelectorAll('button')].some((b) => b.textContent?.includes('Export') && !b.hasAttribute('data-compact'))).toBe(true);
+    // Save and Export say what they do in every width but a phone's, the last step.
+    for (const name of ['Save', 'Export']) {
+      const tool = button(name)!;
+      expect(tool, name).toBeDefined();
+      expect(tool.getAttribute('data-compact'), name).toBe('3');
+      expect(tool.querySelector('.bl-tool-label')?.textContent, name).toBe(name);
+    }
+  });
+
+  it('is two rows on a phone, with nothing dropped', () => {
+    // The editor measures itself, and the toolbar's second row goes by that width.
+    expect(/\.bl-shell\s*\{[^}]*container-type:\s*inline-size/.test(css)).toBe(true);
+    const phone = /@container bl-shell \(max-width:\s*(\d+)px\)\s*\{\s*\.bl-toolbar\s*\{([^}]*)\}/.exec(css);
+    expect(phone, 'the rule for the row on a phone').not.toBeNull();
+    expect(phone![2]).toContain('flex-wrap: wrap');
+    // Below the narrowest window the one-row steps are made for.
+    expect(Number(phone![1])).toBeLessThan(900);
+    // The words of the last step are clipped, not removed, as the others are.
+    const last = /\.bl-tool\[data-compact='3'\]\s+\.bl-tool-label\s*\{([^}]*)\}/.exec(css);
+    expect(last, 'the rule for Save and Export').not.toBeNull();
+    expect(last![1]).toContain('clip-path: inset(50%)');
+    expect(last![1]).not.toContain('display: none');
+    // Every control of the one row is in the two: what the second row holds is marked for it,
+    // and no rule of the phone's takes a control off the page.
+    for (const tool of ['undo', 'redo', 'views', 'save', 'export', 'shortcuts']) {
+      expect(host.querySelector(`[data-tool="${tool}"]`), tool).not.toBeNull();
+    }
+    const block = css.slice(css.indexOf('@container bl-shell (max-width: 899px) {\n  .bl-toolbar {'));
+    const hidden = [...block.slice(0, block.indexOf('\n}\n')).matchAll(/([^{}]+)\{[^}]*display:\s*none[^}]*\}/g)].map((m) => m[1].trim());
+    expect(hidden).toEqual(['.bl-toolbar > [data-toolbar-divider],\n  .bl-toolbar > [data-toolbar-spacer]']);
   });
 
   it('puts the words out of sight where the row is short, the undo pair first, in a way a screen reader still reads', () => {
