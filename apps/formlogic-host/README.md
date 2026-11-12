@@ -191,8 +191,33 @@ load" message over it. `reason` and `phase` are additions; a parent that reads o
 what it always did, and one that reads `phase` should take a missing one as `load`, which is
 what frames before v0.0.28 meant.
 
-Test the queue, the engine handshake, the protocol, the policy, media and seeding with
-`node --test apps/formlogic-host/test/*.mjs`.
+## A newer version of the app
+
+`ready` also says `update: 1`: once the app is shown, the parent may hand the frame a newer
+version of its files on the port, `{ type: 'formlogic:update', id, client, assets? }`, and the
+frame answers `{ type: 'updated', id, outcome, … }` (`src/update.ts`; the messages are set out
+in `docs/engineering/FORMLOGIC_INTEGRATION.md`). The frame still takes one `init`: the version
+the app opens with reaches the renderer in its props, as before, and each later one goes to
+core's live app (`createLiveApp`, `docs/engineering/LIVE_APPS.md`), which draws other markup,
+styles and pages where the app stands, starts it again for other logic, and keeps the last
+version that worked when the newest has a problem. The frame adds what is its own:
+
+- `reopen` for what only a new frame can take: another main page, another request for
+  permissions, logic in other languages or with other Python packages (the engine is chosen and
+  configured once), an update before the app is shown or after it failed to load, a malformed
+  message. A version whose manifest cannot be read, or whose files do not compose, is `kept`
+  with the problem instead: a new frame could not open it either.
+- Each version's logic has its imports answered from that version's files, and the page's media
+  comes from the media of the version it has. Other media, or another declared theme, draws the
+  frame's tree again without starting the app again.
+- Nothing stored is touched, and seed records are not added again.
+- One update at a time; those that come meanwhile are gathered, the newest taken and every `id`
+  answered. `init` holds its parent to no size; an update is held to 4,000 text files and 32 MiB
+  of characters, 4,000 media files and 128 MiB of media, and 32 waiting.
+
+Test the queue, the engine handshake, the protocol, the policy, media, seeding and updates with
+`node --test apps/formlogic-host/test/*.mjs`. `update-live.test.mjs` runs core's built renderer
+and the installed engine in a jsdom page, so it needs `packages/@softn/core` built.
 
 ## Updating
 

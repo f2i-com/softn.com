@@ -1,8 +1,8 @@
 // node --test apps/formlogic-host/test/protocol.test.mjs
 //
-// What the frame adds to its protocol with FormLogic in v0.0.28, read from
-// main.tsx: each addition is one an older FormLogic ignores, and each takes
-// effect only where the parent asks for it.
+// What the frame adds to its protocol with FormLogic in v0.0.28 and since, read
+// from main.tsx: each addition is one an older FormLogic ignores, and each
+// takes effect only where the parent asks for it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -41,7 +41,7 @@ test('no app runs in a frame that is not sandboxed', () => {
 
 test('a store that refuses a write says so, where saves are confirmed and nowhere else', () => {
   // Any other frame keeps its records in memory by design, and the notice says so in red.
-  assert.match(main, /\{savesAcknowledged && <XDBStorageNotice appId=\{event\.data\.appId\} problemsOnly \/>\}/);
+  assert.match(main, /\{savesAcknowledged && <XDBStorageNotice appId=\{appId\} problemsOnly \/>\}/);
   assert.match(main, /const savesAcknowledged = appStorage\?\.acknowledgedPersistence\.protocol === 1;/);
   assert.ok(main.indexOf('const savesAcknowledged') > main.indexOf('appStorage = installAppStorage('), 'read once the storage is there');
 });
@@ -65,4 +65,40 @@ test('a parent covering the frame while the app opens is told when its first pag
   // And no words while it opens: core's wheel, labelled for a screen reader.
   assert.match(main, /root\.render\(<LoadingIndicator label="Opening app" \/>\);/);
   assert.doesNotMatch(main, />Opening app…</);
+});
+
+test('a newer version of the app is taken on its port, and a frame still takes one init', () => {
+  // ready says it will (an addition: a parent that never sees update: 1 never sends one), and the
+  // protocol numbers are what they were.
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, update: 1 \}, '\*'\);/);
+  assert.match(main, /type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL,/);
+  // One init for the life of the frame, as before: a second is not read at all.
+  assert.match(main, /if \(started \|\| terminated \|\| event\.source !== parent \|\| event\.data\?\.type !== 'formlogic:init' \|\| !event\.ports\[0\]\) return;\s*started = true;/);
+  assert.equal((main.match(/\bstarted = /g) || []).length, 2, 'declared false and set true once, never set back');
+  assert.equal((main.match(/addEventListener\('message'/g) || []).length, 1, 'the window listens for init alone');
+  // An update comes on the port, and is told apart by its type before anything is read as the
+  // answer to a call: its id is the parent's own.
+  const update = main.indexOf("if (event.data?.type === 'formlogic:update') { updates.receive(event.data); return; }");
+  assert.ok(update > main.indexOf("if (event.data?.type === 'formlogic:dispose') { terminate(); return; }"));
+  assert.ok(update < main.indexOf('if (!calls.settle(event.data?.id'));
+  // The rules (update.ts) are given this frame's own parts, and are there before any app is open.
+  assert.match(main, /languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,/);
+  assert.ok(main.indexOf('const updates = createUpdater<') < main.indexOf("window.addEventListener('message'"));
+  // There is an app to update from its first page until it fails to load or the frame ends.
+  assert.match(main, /state: \(\) => terminated \? 'closed' : failed \? 'failed' : drawn \? 'running' : 'opening',/);
+  assert.match(main, /if \(phase === 'load'\) failed = true;/);
+  // The renderer is given the version the app opens with in its props, as it always was, and the
+  // app as something to hand the later ones to.
+  assert.match(main, /const live = createLiveApp\(\);/);
+  assert.match(main, /<SoftNWithXDB \{\.\.\.composed\} app=\{live\} /);
+  assert.match(main, /updates\.open\(\{ files, media, update: revision => live\.update\(revision\), redraw: next => \{ manifest = next; draw\(\); \} \}\);\s*draw\(\);/);
+  // The page's media and the first version's imports are read through the same module.
+  assert.match(main, /const resolveAsset = \(path: string\) => updates\.asset\(path\);/);
+  assert.match(main, /const imports = importsFrom\(files\);/);
+  assert.match(main, /importResolver=\{imports\}/);
+  // The tree can be drawn again, so it holds nothing of the init message (the app's files, its
+  // media, the engine's bytes), and nothing is drawn in a frame that has ended.
+  const draw = main.slice(main.indexOf('const draw = () => {'), main.indexOf('updates.open('));
+  assert.match(draw, /^const draw = \(\) => \{\s*if \(terminated\) return;/);
+  assert.doesNotMatch(draw, /\bevent\b/);
 });

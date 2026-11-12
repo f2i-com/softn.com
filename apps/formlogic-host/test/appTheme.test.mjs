@@ -35,8 +35,11 @@ test('a manifest that declares none, or is not shaped like one, declares nothing
 
 test('the frame hands the provider the declared mode beside FormLogic\'s own', () => {
   const provider = /<ThemeProvider\b[^>]*>/.exec(main)?.[0] ?? '';
-  assert.match(provider, /defaultDarkMode=\{event\.data\.dark === true\}/, 'FormLogic\'s theme is still what a project that declares nothing follows');
+  assert.match(main, /const dark = event\.data\.dark === true;/);
+  assert.match(provider, /defaultDarkMode=\{dark\}/, 'FormLogic\'s theme is still what a project that declares nothing follows');
+  // The manifest the app runs by: the one it opened with, then that of each update it takes.
   assert.match(provider, /declaredMode=\{declaredThemeMode\(manifest\)\}/);
+  assert.match(main, /redraw: next => \{ manifest = next; draw\(\); \}/);
   // One app is the whole document here, so the side is written on the document and no box is named.
   assert.doesNotMatch(provider, /\bbox=/);
 });

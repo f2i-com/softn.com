@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LoadingIndicator, SoftNWithXDB, XDBStorageNotice, ZIPP_GLUE_EXPORTS, composeBundleSource, configureZippGlue, configureZippTorchSource, configureZippWasmSource, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
+import { LoadingIndicator, SoftNWithXDB, XDBStorageNotice, ZIPP_GLUE_EXPORTS, composeBundleSource, configureZippGlue, configureZippTorchSource, configureZippWasmSource, createLiveApp, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
@@ -12,6 +12,7 @@ import { createNativeNetFetch } from './nativeFetch';
 import { framePolicy, zippDirectory } from './framePolicy';
 import { mediaUrl } from './media';
 import { seedBundledData } from './seed';
+import { createUpdater, importsFrom } from './update';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -45,6 +46,10 @@ let started = false;
 let port: MessagePort | undefined;
 let appStorage: ReturnType<typeof installAppStorage> | undefined;
 let terminated = false;
+// The app's first page has been drawn, and the parent told so.
+let drawn = false;
+// A failure to load has been reported: the parent was told the app is not showing.
+let failed = false;
 // Four calls at a time to the parent, which is the parent's own limit,
 // thirty-two waiting behind them. A slot is the parent's until it answers (see
 // backendQueue.ts). The parent validates every call on its side.
@@ -97,8 +102,22 @@ function reasonOf(error: unknown): string {
  * additions to the protocol; a parent that reads only `type` is unaffected.
  */
 function reportError(reason: string, phase: 'load' | 'runtime'): void {
+  // After a load failure the parent takes the app as not showing, so a newer version is a new frame's to open.
+  if (phase === 'load') failed = true;
   port?.postMessage({ type: 'error', reason, phase });
 }
+/**
+ * A newer version of the app's files, handed over while it runs (`formlogic:update` on the port;
+ * update.ts has the rules). It is taken where the app stands when it can be, and answered
+ * `reopen` when only a new frame can take it: before the app's first page is drawn, after a
+ * failure to load has been reported, and once the frame has ended, there is no app to hand it to.
+ * Made here, before any app is open, so an update that comes early is answered like any other.
+ */
+const updates = createUpdater<ReturnType<typeof composeBundleSource>>({
+  post: reply => port?.postMessage(reply),
+  state: () => terminated ? 'closed' : failed ? 'failed' : drawn ? 'running' : 'opening',
+  languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,
+});
 class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean; reason: string }> {
   state = { failed: false, reason: '' };
   static getDerivedStateFromError(error: unknown) { return { failed: true, reason: reasonOf(error) }; }
@@ -126,6 +145,9 @@ window.addEventListener('message', async event => {
   const framePermissions: FramePermissions = grantedPermissions(event.data.permissions);
   port.onmessage = event => {
     if (event.data?.type === 'formlogic:dispose') { terminate(); return; }
+    // A newer version of the app, told apart by its type before anything is read as an answer:
+    // its id is the parent's own, and may be a number one of the frame's calls has.
+    if (event.data?.type === 'formlogic:update') { updates.receive(event.data); return; }
     if (!calls.settle(event.data?.id, event.data?.result)) storageCalls?.settle(event.data?.id, event.data?.result);
   };
   // A result the port could not deserialise names no id: nothing in flight
@@ -182,8 +204,13 @@ window.addEventListener('message', async event => {
       requireEngineLanguages(engine, await zippLanguages());
     }
     if (terminated) return;
-    const manifest = JSON.parse(files.get('manifest.json') || '{}');
-    let drawn = false;
+    // The manifest the app runs by: the one it opened with, then that of each update it takes.
+    let manifest = JSON.parse(files.get('manifest.json') || '{}');
+    // What the app's tree is drawn from, read out of `init` once. The tree can be drawn again (an
+    // update that brings other media), and a drawing that held the message itself would hold the
+    // app's files, its media and the engine's bytes for as long as the frame lives.
+    const appId = event.data.appId;
+    const dark = event.data.dark === true;
     // Set for a native app; undefined otherwise, where `softn.net.fetch` is
     // refused like every other permission.
     let netFetchHandler: ReturnType<typeof createNativeNetFetch> | undefined;
@@ -207,29 +234,46 @@ window.addEventListener('message', async event => {
       const url = mediaUrl(path, value);
       if (url) media.set(path, url);
     }
-    const resolveAsset = (path: string) => media.get(path.replace(/^\.\//, '')) || '';
     const composed = composeBundleSource(files, manifest.main, manifest.files?.logic || []);
-    // The records the app ships with, added once, before it first draws (seed.ts).
-    const seeding = await seedBundledData(files, manifest, getXDB(event.data.appId), parseXDBFile, seedXDBBundleData, () => !terminated);
+    // The records the app ships with, added once, before it first draws (seed.ts). An update adds none.
+    const seeding = await seedBundledData(files, manifest, getXDB(appId), parseXDBFile, seedXDBBundleData, () => !terminated);
     if (terminated) return;
     for (const warning of seeding.warnings) console.warn(`[SoftN] ${warning}`);
-    // A bundle's permission.json cannot enable arbitrary network, hardware or sync access: the
-    // parent grants what it grants (permissions.ts), files at most.
-    // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
-    root.render(<Boundary><ThemeProvider defaultDarkMode={event.data.dark === true} declaredMode={declaredThemeMode(manifest)}>
-      {savesAcknowledged && <XDBStorageNotice appId={event.data.appId} problemsOnly />}
-      <SoftNWithXDB {...composed} appId={event.data.appId} resumeSavedSyncRoom={false}
-        permissionConfig={framePermissions} scriptExecutionMode="main"
-        assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}
-        backendCall={backendCall} netFetchHandler={netFetchHandler}
-        importResolver={async path => files.get(path.replace(/^\//, '')) ?? null}
-        // Before its first page is drawn the app has not opened; after it, it is drawn and
-        // what went wrong shows inside it.
-        // shown: the app's first page is on screen, so a parent covering the frame while it opens
-        // (ready's shown: 1) uncovers it. A failure to load is reported instead (error).
-        onLoad={() => { if (!drawn) port?.postMessage({ type: 'shown' }); drawn = true; }}
-        onError={error => reportError(reasonOf(error), drawn ? 'runtime' : 'load')} />
-    </ThemeProvider></Boundary>);
+    // The app as something to hand a newer version of (core's createLiveApp). The version it opens
+    // with reaches the renderer as it always has, in the props below, which never change after;
+    // each later one goes through `live.update`, which changes as little of the running app as it
+    // must and answers what became of it (update.ts sends that to the parent).
+    const live = createLiveApp();
+    // The logic's imports are answered from the files of the version it belongs to: these for the
+    // one the app opens with, and each update's own for that update (update.ts).
+    const imports = importsFrom(files);
+    // Drawn once to open the app, and again when an update brings other media or another declared
+    // theme: nothing else of this tree changes, and the app inside it is not started again by it.
+    const draw = () => {
+      if (terminated) return;
+      // The media is read from the version the app has now. A new reader for each drawing, because
+      // the page asks for its media again only when it is handed another one.
+      const resolveAsset = (path: string) => updates.asset(path);
+      // A bundle's permission.json cannot enable arbitrary network, hardware or sync access: the
+      // parent grants what it grants (permissions.ts), files at most.
+      // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
+      root.render(<Boundary><ThemeProvider defaultDarkMode={dark} declaredMode={declaredThemeMode(manifest)}>
+        {savesAcknowledged && <XDBStorageNotice appId={appId} problemsOnly />}
+        <SoftNWithXDB {...composed} app={live} appId={appId} resumeSavedSyncRoom={false}
+          permissionConfig={framePermissions} scriptExecutionMode="main"
+          assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}
+          backendCall={backendCall} netFetchHandler={netFetchHandler}
+          importResolver={imports}
+          // Before its first page is drawn the app has not opened; after it, it is drawn and
+          // what went wrong shows inside it.
+          // shown: the app's first page is on screen, so a parent covering the frame while it opens
+          // (ready's shown: 1) uncovers it. A failure to load is reported instead (error).
+          onLoad={() => { if (!drawn) port?.postMessage({ type: 'shown' }); drawn = true; }}
+          onError={error => reportError(reasonOf(error), drawn ? 'runtime' : 'load')} />
+      </ThemeProvider></Boundary>);
+    };
+    updates.open({ files, media, update: revision => live.update(revision), redraw: next => { manifest = next; draw(); } });
+    draw();
   } catch (error) {
     if (terminated) return;
     const reason = reasonOf(error);
@@ -251,4 +295,7 @@ window.addEventListener('message', async event => {
 // package `init` names in the site's ZIPP folder (zippGlue, zippTorch), so a parent need not send
 // the engine `zipp` names. zippGlueExports is what that glue must export, which the shell checks
 // when it loads it; a parent can hold its ZIPP to the same list before it offers it.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1, zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS }, '*');
+// update: 1 is an addition: once the app is shown, this document takes a newer version of its files
+// on the port (`formlogic:update`) and answers what became of it (`updated`), so a parent need not
+// make a new frame for every change. One that never sends an update sees nothing different.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1, zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS, update: 1 }, '*');

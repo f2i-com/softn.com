@@ -77,9 +77,13 @@ test('an app with no seed files never waits for its database, and a closed frame
 test('the shell seeds with core\'s own reader and seeder, into the database the app opens, before it draws', () => {
   const main = fs.readFileSync(path.join(here, '../src/main.tsx'), 'utf8');
   assert.match(main, /import \{[^}]*\bgetXDB\b[^}]*\bparseXDBFile\b[^}]*\bseedXDBBundleData\b[^}]*\} from '@softn\/core'/);
-  const seeding = main.indexOf('seedBundledData(files, manifest, getXDB(event.data.appId), parseXDBFile, seedXDBBundleData');
+  // The id is read out of init once, so the tree can be drawn again without holding the message.
+  assert.match(main, /const appId = event\.data\.appId;/);
+  const seeding = main.indexOf('seedBundledData(files, manifest, getXDB(appId), parseXDBFile, seedXDBBundleData');
   assert.ok(seeding > 0, 'seeded into the app id SoftNWithXDB is given');
   assert.ok(main.indexOf('appStorage = installAppStorage(') < seeding, 'after the native app\'s storage is in place');
   assert.ok(seeding < main.indexOf('root.render(<Boundary>'), 'before the app draws');
-  assert.match(main, /appId=\{event\.data\.appId\}/);
+  assert.match(main, /<SoftNWithXDB [^\n]*\bappId=\{appId\}/);
+  // And only there: an update's files are handed to the running app, never to the seeder.
+  assert.equal(main.split('seedBundledData(').length - 1, 1);
 });
