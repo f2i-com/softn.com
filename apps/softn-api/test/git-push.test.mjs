@@ -80,6 +80,21 @@ function commit(dir, message) {
 
 const remote = (slug) => `${s.base}/api/git/${slug}.git`.replace('://', `://${slug}@`);
 const push = (dir, slug, key, ref = 'HEAD:main', extra = []) => git(dir, ['push', ...extra, remote(slug), ref], key);
+
+/**
+ * The lines the site gives a publisher, all but the last (`git push softn`), each as git's arguments: read from the
+ * site's own source, so what is run here is what a person is given, and not a copy of it that can fall behind.
+ */
+function siteCommands(slug) {
+  const source = fs.readFileSync(new URL('../../softn-site/src/components/publish/keys.tsx', import.meta.url), 'utf8');
+  const body = source.match(/export function gitCommands\([^)]*\): string \{[\s\S]*?return \[([\s\S]*?)\]\.join\('\\n'\);/);
+  assert.ok(body, 'the site’s gitCommands was not found');
+  const origin = new URL(s.base);
+  const lines = [...body[1].matchAll(/^\s*(?:`([^`]*)`|'([^']*)'),?\s*$/gm)].map((m) => (m[1] ?? m[2]).replaceAll('${site.protocol}', origin.protocol).replaceAll('${site.host}', origin.host).replaceAll('${slug}', slug));
+  assert.ok(lines.length >= 5 && lines.every((line) => line.startsWith('git ') && !/[`$"'\\^%!]/.test(line)), `plain lines, the same in any shell: ${lines.join(' | ')}`);
+  assert.equal(lines.at(-1), 'git push softn');
+  return lines.slice(0, -1).map((line) => line.split(' ').slice(1));
+}
 const versions = async (slug) => (await s.api('GET', `/api/apps/${slug}`)).json.app.versions;
 const published = async (slug) => (await s.publish(`Pushed ${slug}`, {}, { category: 'tools' }));
 
@@ -106,14 +121,13 @@ test('the way the guide gives: a project in git, its first bundle by git archive
   git(dir, ['remote', 'add', 'origin', elsewhere]);
   assert.equal(git(dir, ['push', '-q', '-u', 'origin', 'master']).status, 0);
   // The site's gitCommands, against this server.
-  const origin = new URL(s.base);
-  const commands = [
-    ['remote', 'add', 'softn', `${origin.protocol}//${slug}@${origin.host}/api/git/${slug}.git`],
-    ['config', 'remote.softn.push', 'HEAD:refs/heads/main'],
-    ['config', 'remote.softn.skipFetchAll', 'true'],
-    ['config', 'http.postBuffer', '64M'],
-  ];
-  for (const command of commands) assert.equal(git(dir, command).status, 0);
+  for (const command of siteCommands(slug)) assert.equal(git(dir, command).status, 0, command.join(' '));
+  // Its last line, run straight after the page published these files, as "Copy the commands" has it: the page's
+  // bundle is another zip of the same files, and no second version is made of them.
+  const again = git(dir, ['push', 'softn'], first.json.editKey);
+  assert.equal(again.status, 0, again.out);
+  assert.match(again.out, /remote: Already published as version 1/);
+  assert.equal((await versions(slug)).length, 1);
   write(dir, { 'ui/main.ui': '<App><Text>the next version</Text></App>\n', 'assets/big.bin': crypto.randomBytes(2 * 1024 * 1024) });
   commit(dir, 'The next version');
   const r = git(dir, ['push', 'softn'], first.json.editKey);
@@ -139,19 +153,29 @@ test('an app that plays on its own site has no bundle here for a push to replace
   fs.writeFileSync(file, JSON.stringify(doc));
   const r = push(project(), slug, app.editKey);
   assert.notEqual(r.status, 0);
-  // Git shows a 404 on its first request as "not found", without the words; the reason is the API's.
-  assert.match(r.out, /not found/);
+  // Git shows a 404 on its first request as "not found", without the words, so the reason comes where the refs would.
+  assert.match(r.out, /fatal: remote error: This app plays on its own site, so the directory holds no bundle of it for a push to replace\./, r.out);
+  assert.doesNotMatch(r.out, /not found/);
   const authorization = `Basic ${Buffer.from(`${slug}:${app.editKey}`).toString('base64')}`;
   const refs = await fetch(`${s.base}/api/git/${slug}.git/info/refs?service=git-receive-pack`, { headers: { authorization } });
-  assert.equal(refs.status, 404);
-  assert.match(await refs.text(), /plays on its own site/);
+  assert.equal(refs.status, 200);
+  assert.match(await refs.text(), /ERR This app plays on its own site/);
+  // Only to the key that opens it: without one it asks for the key, as any app does.
+  assert.equal((await fetch(`${s.base}/api/git/${slug}.git/info/refs?service=git-receive-pack`)).status, 401);
+  // A push sent without asking first is told the same, as a push that was not read.
+  const { tip, objects } = aProject();
+  const sent = await raw(app, pack(objects), tip);
+  assert.equal(sent.status, 200, sent.text);
+  assert.match(sent.text, /This app plays on its own site.*unpack not read/s, sent.text);
   assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', slug, 'v2.softn')), 'nothing was added to it');
 });
 
 test('a push is a new version: the files of the commit, with its subject as the notes, and the page in the terminal', skip, async () => {
   const app = await published('one');
   const slug = app.app.slug;
-  const dir = project({ '.gitignore': 'node_modules\n', '.github/workflows/ci.yml': 'on: push\n', 'logic/main.logic': 'let x = 1\n', 'ui/.DS_Store': 'x' });
+  // Git's own files in the top folder and below it: an ignore list beside the files it is about, the file that keeps
+  // an empty folder in git, attributes for one folder.
+  const dir = project({ '.gitignore': 'node_modules\n', '.github/workflows/ci.yml': 'on: push\n', 'logic/main.logic': 'let x = 1\n', 'ui/.DS_Store': 'x', 'ui/.gitignore': '*.tmp\n', 'assets/.gitkeep': '', 'logic/deep/.gitattributes': '* text\n' });
   git(dir, ['commit', '-q', '--amend', '-m', 'Make the app say hello']);
 
   const r = push(dir, slug, app.editKey);
@@ -162,8 +186,18 @@ test('a push is a new version: the files of the commit, with its subject as the 
   assert.equal(list.length, 2);
   assert.equal(list[0].notes, 'Make the app say hello');
   const files = await bundleFiles(slug);
-  assert.deepEqual(Object.keys(files).sort(), ['logic/main.logic', 'manifest.json', 'ui/main.ui'], 'what is git’s and not the app’s stays out');
+  assert.deepEqual(Object.keys(files).sort(), ['logic/main.logic', 'manifest.json', 'ui/main.ui'], 'what is git’s and not the app’s stays out, in every folder');
   assert.equal(Buffer.from(files['ui/main.ui']).toString(), '<App><Text>hello</Text></App>\n');
+
+  // Git commits no `.git` folder below the top, and a hand-made tree can name one: it is left out like the rest.
+  const other = await published('one-crafted');
+  const config = Buffer.from('[core]\n');
+  const inner = tree([['100644', 'config', oid('blob', config)]]);
+  const sub = tree([['40000', '.git', oid('tree', inner)], ['100644', 'kept.txt', oid('blob', config)]]);
+  const crafted = aProject([['40000', 'sub', oid('tree', sub)]]);
+  const sent = await raw(other, pack([...crafted.objects, entry(TYPES.tree, sub), entry(TYPES.tree, inner), entry(TYPES.blob, config)]), crafted.tip);
+  assert.match(sent.text, /Published version 2/, sent.text);
+  assert.deepEqual(Object.keys(await bundleFiles(other.app.slug)).sort(), ['manifest.json', 'sub/kept.txt', 'ui.ui']);
 });
 
 test('a shallow clone, as CI checks a project out, publishes its latest commit', skip, async () => {
@@ -247,17 +281,75 @@ test('a key that has been replaced stops working, and the new one works', skip, 
   assert.equal(push(dir, slug, replaced.json.editKey).status, 0);
 });
 
-test('only main is published: another branch, a tag and a delete are refused, with what to do', skip, async () => {
+test('only main is published: another branch and a delete are refused, with what to do, and a tag alone publishes nothing', skip, async () => {
   const app = await published('refs');
   const slug = app.app.slug;
   const dir = project();
   const branch = push(dir, slug, app.editKey, 'HEAD:refs/heads/work');
   assert.notEqual(branch.status, 0);
-  assert.match(branch.out, /git push softn HEAD:refs\/heads\/main/);
+  assert.match(branch.out, /remote: Only main is published\. Push your branch to it: git push softn HEAD:refs\/heads\/main/);
   git(dir, ['tag', 'v1']);
-  assert.notEqual(push(dir, slug, app.editKey, 'refs/tags/v1').status, 0);
+  // A tag is never a failure, as git sends tags along by itself; pushed alone, it is told that nothing was published.
+  const tag = push(dir, slug, app.editKey, 'refs/tags/v1');
+  assert.equal(tag.status, 0, tag.out);
+  assert.match(tag.out, /remote: Nothing was published: tags are not kept, and only a push to main makes a version\. To publish the commit you are on: git push softn HEAD:refs\/heads\/main/);
+  // A delete: git does not send one for a ref it was not offered, and one sent all the same is told what to do.
   assert.notEqual(push(dir, slug, app.editKey, ':main').status, 0, 'a delete');
+  const zero = '0'.repeat(40);
+  const gone = await s.api('POST', `/api/git/${slug}.git/git-receive-pack`, { raw: Buffer.concat([pkt(`${zero} ${zero} refs/heads/main\0report-status side-band-64k\n`), Buffer.from('0000')]), headers: pushHeaders(app) });
+  assert.match(gone.text, /A push does not delete an app\. Unpublish it from its page\./, gone.text);
+  assert.match(gone.text, /ng refs\/heads\/main not published/, gone.text);
+  const notes = push(dir, slug, app.editKey, 'HEAD:refs/notes/commits');
+  assert.notEqual(notes.status, 0);
+  assert.match(notes.out, /remote: Only main is published\. Other refs are not kept\./);
   assert.equal((await versions(slug)).length, 1);
+});
+
+test('tags that git sends along never stop a push or fail it: main is published, and a line says tags are not kept', skip, async () => {
+  const app = await published('follow-tags');
+  const slug = app.app.slug;
+  const dir = project();
+  // Annotated tags, as `npm version` makes them, and more of them than the sixteen refs a push could once name.
+  for (let i = 1; i <= 20; i++) {
+    write(dir, { 'ui/main.ui': `<App><Text>release ${i}</Text></App>\n` });
+    commit(dir, `Release ${i}`);
+    assert.equal(git(dir, ['tag', '-a', `v1.0.${i}`, '-m', `v1.0.${i}`]).status, 0);
+  }
+  const r = git(dir, ['-c', 'push.followTags=true', 'push', remote(slug), 'HEAD:refs/heads/main'], app.editKey);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /remote: Published version 2/);
+  assert.equal(r.out.match(/remote: Tags are not kept: the directory keeps an app's versions, and nothing else of its project\./g)?.length, 1, r.out);
+  assert.doesNotMatch(r.out, /rejected|too many refs|failed to report/, r.out);
+  assert.equal(Buffer.from((await bundleFiles(slug))['ui/main.ui']).toString(), '<App><Text>release 20</Text></App>\n');
+  // The next push sends them all again, as the directory offers no refs, and is as quiet.
+  write(dir, { 'ui/main.ui': '<App><Text>after the releases</Text></App>\n' });
+  commit(dir, 'After the releases');
+  const next = git(dir, ['-c', 'push.followTags=true', 'push', remote(slug), 'HEAD:refs/heads/main'], app.editKey);
+  assert.equal(next.status, 0, next.out);
+  assert.match(next.out, /remote: Published version 3/);
+  // And `git push --tags` after a push, which a release script runs: no failure, nothing published.
+  const tags = git(dir, ['push', '--tags', remote(slug)], app.editKey);
+  assert.equal(tags.status, 0, tags.out);
+  assert.match(tags.out, /remote: Nothing was published: tags are not kept/);
+  assert.equal((await versions(slug)).length, 3);
+  assert.ok(!fs.readdirSync(path.join(s.dataDir, 'apps', slug)).some((name) => /tag|ref/.test(name)), 'nothing of a tag is kept');
+});
+
+test('more refs than are answered for: main is published all the same, and the rest are said to be unanswered', skip, async () => {
+  const app = await published('many-refs');
+  const { tip, objects } = aProject();
+  const zero = '0'.repeat(40);
+  // 1 MB of answers is some twelve thousand refs of this length; twenty thousand of them, with main in the middle.
+  const lines = Array.from({ length: 20000 }, (_, i) => pkt(`${zero} ${tip} refs/tags/${String(i).padStart(60, 'v')}\n`));
+  lines.splice(10000, 0, pkt(`${zero} ${tip} refs/heads/main\n`));
+  lines[0] = pkt(`${zero} ${tip} refs/tags/first\0report-status side-band-64k\n`);
+  const r = await s.api('POST', `/api/git/${app.app.slug}.git/git-receive-pack`, { raw: Buffer.concat([...lines, Buffer.from('0000'), pack(objects)]), headers: pushHeaders(app) });
+  assert.equal(r.status, 200);
+  assert.match(r.text, /Published version 2/);
+  assert.match(r.text, /ok refs\/heads\/main/);
+  assert.match(r.text, /This push names more refs than the directory answers for, so git will say that \d+ of them were not reported\. None of those is kept either\./);
+  assert.ok(r.text.length < 1200 * 1024, `the answer is held to its limit: ${r.text.length}`);
+  assert.equal((await versions(app.app.slug)).length, 2);
 });
 
 test('the refusal a bundle gets on the publish page reaches the terminal', skip, async () => {
@@ -304,13 +396,30 @@ test('a link and a submodule are refused, as a published app holds its files', s
 test('a file that holds secrets is refused; one removed before the commit pushed is never kept', skip, async () => {
   const app = await published('secrets');
   const slug = app.app.slug;
-  for (const name of ['.env', 'config/.env.production', 'server.pem', 'id_ed25519']) {
+  for (const name of ['.env', 'config/.env.production', 'server.pem', 'id_ed25519', 'server.key', 'deploy/.htpasswd', 'putty/me.ppk', '.envrc', '.env-local', 'keys/id_ecdsa_sk', 'android/release.keystore', '.aws/credentials', '.pypirc', 'Certs/Site.PFX']) {
     const dir = project({ [name]: 'TOKEN=sk-live-must-not-be-public\n' });
     const r = push(dir, slug, app.editKey);
     assert.notEqual(r.status, 0, name);
-    assert.match(r.out, /looks like it holds secrets/, name);
+    assert.match(r.out, new RegExp(`remote: ${name.replaceAll('.', '\\.')} looks like it holds secrets, and everything published is public\\. Take it out of the commit, with git rm --cached if you need to keep the file\\.`), `${name}: ${r.out}`);
   }
   assert.equal((await versions(slug)).length, 1);
+  // A private key under a name that says nothing, by how it begins. And the words alone, further in, are a file.
+  const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\n-----END OPENSSH PRIVATE KEY-----\n';
+  for (const [name, text] of [['deploy', pem], ['notes/key.txt', `${String.fromCharCode(0xfeff)}\r\n${pem.replace('OPENSSH', 'RSA')}`], ['backup.txt', 'PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\n']]) {
+    const r = push(project({ [name]: text }), slug, app.editKey);
+    assert.notEqual(r.status, 0, name);
+    assert.match(r.out, new RegExp(`remote: ${name.replaceAll('.', '\\.')} looks like it holds secrets`), `${name}: ${r.out}`);
+  }
+  assert.equal((await versions(slug)).length, 1);
+  // Ordinary files of an app, some of them near what is refused, all go through.
+  const ordinary = {
+    '.env.example': 'TOKEN=\n', 'config/.env.production.sample': 'TOKEN=\n', 'id_rsa.pub': 'ssh-rsa AAAA me@example\n', 'keys.json': '{"up":"ArrowUp"}\n', 'logic/hotkey.js': 'export const key = 1\n',
+    'docs/pem.md': 'A key file begins with\n-----BEGIN PRIVATE KEY-----\nand this is only a page about that.\n', 'logic/reader.js': 'const HEAD = "-----BEGIN RSA PRIVATE KEY-----";\n',
+    'environment.json': '{}\n', 'data/format.json': '{"format":"softn-edit-keys-are-not-this"}\n', 'assets/keyboard.keys': 'qwerty\n', '.envoy.yaml': 'static: {}\n',
+  };
+  const fine = push(project(ordinary), slug, app.editKey);
+  assert.equal(fine.status, 0, fine.out);
+  assert.deepEqual(Object.keys(await bundleFiles(slug)).sort(), [...Object.keys(ordinary), 'manifest.json', 'ui/main.ui'].sort());
 
   const dir = project({ '.env.example': 'TOKEN=\n', '.env': 'TOKEN=sk-live-must-not-be-public\n' });
   git(dir, ['rm', '-q', '.env']);
@@ -321,6 +430,289 @@ test('a file that holds secrets is refused; one removed before the commit pushed
   assert.deepEqual(Object.keys(files).sort(), ['.env.example', 'manifest.json', 'ui/main.ui']);
   const kept = fs.readdirSync(path.join(s.root, 'data/apps', slug));
   assert.ok(!kept.some((name) => /git|objects|pack/.test(name)), `no store of objects: ${kept.join(' ')}`);
+});
+
+/** What the site's "Download backup" writes: lib/keyStore.ts exportKeys, and lib/keyBackup.ts for one with a passphrase. */
+const keyBackup = (keys) => JSON.stringify({ format: 'softn-edit-keys', version: 1, keys }, null, 2);
+const sealedBackup = () => JSON.stringify({ format: 'softn-edit-keys', version: 2, encrypted: true, kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations: 310000 }, cipher: 'AES-GCM', salt: 'c2FsdA==', iv: 'aXY=', ciphertext: 'c2VhbGVk' }, null, 2);
+
+/** Everything about an app that a refused push must leave as it was: its record, and each file of its folder. */
+function appState(slug) {
+  const folder = path.join(s.dataDir, 'apps', slug);
+  return Object.fromEntries(fs.readdirSync(folder).sort().map((name) => [name, crypto.createHash('sha256').update(fs.readFileSync(path.join(folder, name))).digest('hex')]));
+}
+
+test('a backup of edit keys is never published: by its name, by what it holds under any name, with or without a passphrase', skip, async () => {
+  const app = await published('backup');
+  const other = await published('backup-other');
+  const slug = app.app.slug;
+  const before = appState(slug);
+  // As the reviewer did it: "Download backup" saved into the project, then git add -A, commit, push.
+  const cases = [
+    ['softn-edit-keys-2026-11-12.json', keyBackup({ [slug]: app.editKey, [other.app.slug]: other.editKey })],
+    ['docs/softn-edit-keys-2026-11-12 (1).json', keyBackup({ [other.app.slug]: other.editKey })],
+    ['Softn-Edit-Keys.JSON', '{}'],
+    // Renamed, and holding only another app's key, which this push did not present.
+    ['notes/my-keys.json', keyBackup({ [other.app.slug]: other.editKey })],
+    // Renamed, and holding this app's key among others: it is said to be the backup it is, as every key in it is to
+    // be replaced, and not only this app's.
+    ['all-my-keys.json', keyBackup({ [other.app.slug]: other.editKey, [slug]: app.editKey })],
+    ['config.txt', sealedBackup()],
+    // As PowerShell's `>` writes a file: UTF-16, with a byte order mark.
+    ['copy.json', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(keyBackup({ [other.app.slug]: other.editKey }), 'utf16le')])],
+  ];
+  for (const [name, content] of cases) {
+    const r = push(project({ [name]: content }), slug, app.editKey);
+    assert.notEqual(r.status, 0, name);
+    assert.ok(r.out.includes(`remote: ${name} is a backup of edit keys, and everything published is public: whoever reads it could change or unpublish every app it names. Take it out of the commit, with git rm --cached if you need to keep the file. If it was ever published, here or anywhere else, replace those keys on the Publish page.`), `${name}: ${r.out}`);
+    assert.match(r.out, /remote rejected/);
+    assert.ok(!r.out.includes(app.editKey) && !r.out.includes(other.editKey), 'and no key is repeated in the terminal');
+  }
+  assert.deepEqual(appState(slug), before, 'the app is as it was');
+  assert.ok(await s.tempEmpty(), 'nothing left on the temp disk');
+  const source = await s.api('GET', `/api/apps/${slug}/source`);
+  assert.ok(!source.text.includes(app.editKey) && !source.text.includes(other.editKey));
+  // Both keys still open their apps, and nobody else's does.
+  assert.equal((await s.api('PATCH', `/api/apps/${slug}`, { body: { description: 'still mine' }, headers: { 'X-Edit-Key': app.editKey } })).status, 200);
+});
+
+test('a file that holds the key a push came with is never published, wherever in it the key is and however it is written', skip, async () => {
+  const app = await published('own-key');
+  const slug = app.app.slug;
+  const refusal = (name) => `remote: ${name} holds this app's edit key, and everything published is public: whoever reads it could change or unpublish the app. Take the key out of the file, or the file out of the commit with git rm --cached. If it was ever published, here or anywhere else, replace the key on the Publish page.`;
+  const big = crypto.randomBytes(3 * 1024 * 1024);
+  const cases = [
+    ['notes.txt', `the key is ${app.editKey}\n`],
+    ['deploy.sh', `curl -H "X-Edit-Key: ${app.editKey.toUpperCase()}" https://softn.example/api/apps/x/versions\n`],
+    // Written by PowerShell's `>`: UTF-16, a zero byte beside each character.
+    ['key.txt', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${app.editKey}\r\n`, 'utf16le')])],
+    // Deep in a file that does not compress, so it lies across the pieces the bundle is read in.
+    ['assets/noise.bin', Buffer.concat([big, Buffer.from(app.editKey), big])],
+    ['logic/config.logic', `let key = "${app.editKey}"\n`],
+  ];
+  for (const [name, content] of cases) {
+    const r = push(project({ [name]: content }), slug, app.editKey);
+    assert.notEqual(r.status, 0, name);
+    assert.ok(r.out.includes(refusal(name)), `${name}: ${r.out}`);
+    assert.ok(!r.out.includes(app.editKey), 'and the key is not repeated in the terminal');
+  }
+  assert.equal((await versions(slug)).length, 1);
+  assert.ok(await s.tempEmpty(), 'nothing left on the temp disk');
+  // By a hand-made pack as well, at the very start of a file and at its very end.
+  for (const at of [0, 70000 - 40]) {
+    const data = crypto.randomBytes(70000);
+    data.write(app.editKey, at, 'latin1');
+    const { tip, objects } = aProject([['100644', 'padded.bin', oid('blob', data)]]);
+    await refused(app, pack([...objects, entry(TYPES.blob, data)]), tip, /padded\.bin holds this app's edit key/);
+  }
+  // Forty characters that are no app's key are a file, and so is the key cut short.
+  const fine = push(project({ 'notes.txt': `not a key: ${crypto.randomBytes(20).toString('hex')}\n${'a'.repeat(40)}\n${app.editKey.slice(0, 39)}\n` }), slug, app.editKey);
+  assert.equal(fine.status, 0, fine.out);
+  assert.match(fine.out, /Published version 2/);
+  // A key replaced since is the one looked for.
+  const replaced = await s.api('POST', `/api/apps/${slug}/key`, { headers: { 'X-Edit-Key': app.editKey } });
+  const stale = push(project({ 'notes.txt': `the new key is ${replaced.json.editKey}\n` }), slug, replaced.json.editKey);
+  assert.notEqual(stale.status, 0);
+  assert.ok(stale.out.includes(refusal('notes.txt')), stale.out);
+});
+
+test('a file that holds the edit key of any app in the directory is never published, and a lock file full of commit ids is', skip, async () => {
+  const app = await published('any-key');
+  const other = await published('any-key-other');
+  const third = await published('any-key-third');
+  const slug = app.app.slug;
+  const before = appState(slug);
+  const refusal = (name) => `remote: ${name} holds an edit key of a published app, and everything published is public: whoever reads it could change or unpublish that app. Take the key out of the file, or the file out of the commit with git rm --cached. If it was ever published, here or anywhere else, replace that key on the Publish page.`;
+  // A list of one's keys pasted into a note: no backup's marker, and not the key this push came with.
+  const cases = [
+    ['notes.txt', `my other app: ${other.editKey}\n`],
+    ['config/apps.json', JSON.stringify({ apps: [{ slug: third.app.slug, key: third.editKey }] })],
+    ['deploy.cmd', `set KEY=${other.editKey.toUpperCase()}\r\n`],
+    // As PowerShell's `>` writes it.
+    ['keys.txt', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${other.editKey}\r\n`, 'utf16le')])],
+    // Among commit ids, which are the same forty characters, and at the very end of a file with no line break.
+    ['CHANGELOG.md', `${Array.from({ length: 300 }, () => `- ${crypto.randomBytes(20).toString('hex')} a change`).join('\n')}\nkey ${third.editKey}`],
+  ];
+  for (const [name, content] of cases) {
+    const r = push(project({ [name]: content }), slug, app.editKey);
+    assert.notEqual(r.status, 0, name);
+    assert.ok(r.out.includes(refusal(name)), `${name}: ${r.out}`);
+    assert.match(r.out, /remote rejected/);
+    assert.ok(!r.out.toLowerCase().includes(other.editKey) && !r.out.toLowerCase().includes(third.editKey), 'the key is not repeated in the terminal');
+    assert.ok(!r.out.includes(other.app.slug) && !r.out.includes(third.app.slug), 'nor is the app it opens named');
+  }
+  assert.deepEqual(appState(slug), before, 'the app is as it was');
+  assert.ok(await s.tempEmpty(), 'nothing left on the temp disk');
+  assert.ok(!s.log.some((line) => line.includes(other.editKey) || line.includes(third.editKey)), 'and no key is in the server\'s log');
+
+  // An ordinary project: lock files with thousands of commit ids, its own among them, and a list of checksums.
+  const dir = project();
+  const ids = Array.from({ length: 6000 }, () => crypto.randomBytes(20).toString('hex'));
+  write(dir, {
+    'composer.lock': JSON.stringify({ packages: ids.slice(0, 3000).map((reference, i) => ({ name: `vendor/package-${i}`, source: { type: 'git', reference }, dist: { reference } })) }, null, 2),
+    'Podfile.lock': `SPEC CHECKSUMS:\n${ids.slice(3000).map((id, i) => `  Pod${i}: ${id}`).join('\n')}\n`,
+    'docs/history.txt': `${git(dir, ['rev-parse', 'HEAD']).out.trim()} First\n`,
+  });
+  commit(dir, 'Lock files');
+  const started = Date.now();
+  const ordinary = push(dir, slug, app.editKey);
+  assert.equal(ordinary.status, 0, ordinary.out);
+  assert.match(ordinary.out, /remote: Published version 2/);
+  assert.ok(Date.now() - started < 10000, 'and promptly');
+  assert.equal(Buffer.from((await bundleFiles(slug))['Podfile.lock']).toString().split('\n').length, 3002);
+
+  // A key that was replaced opens nothing, and is a file like any other; an unpublished app's key still opens it.
+  const replaced = await s.api('POST', `/api/apps/${other.app.slug}/key`, { headers: { 'X-Edit-Key': other.editKey } });
+  assert.equal(replaced.status, 200);
+  assert.match(push(project({ 'notes.txt': `an old key: ${other.editKey}\n` }), slug, app.editKey).out, /Published version 3/);
+  assert.ok(push(project({ 'notes.txt': `the new key: ${replaced.json.editKey}\n` }), slug, app.editKey).out.includes(refusal('notes.txt')));
+  assert.equal((await s.api('DELETE', `/api/apps/${third.app.slug}`, { headers: { 'X-Edit-Key': third.editKey } })).status, 204);
+  assert.ok(push(project({ 'notes.txt': `${third.editKey}\n` }), slug, app.editKey).out.includes(refusal('notes.txt')));
+  assert.equal((await versions(slug)).length, 3);
+});
+
+test('a push from a clone that never got the live version is published, and told what is not in it', skip, async () => {
+  const app = await published('stale');
+  const slug = app.app.slug;
+  const one = project();
+  // Two people, or one person's two computers: the second cloned before the first went on.
+  const two = path.join(scratch, `second-${++made}`);
+  assert.equal(git(scratch, ['clone', '-q', '--no-local', `file://${one.replace(/\\/g, '/')}`, two]).status, 0);
+  const first = push(one, slug, app.editKey);
+  assert.match(first.out, /Published version 2/);
+  assert.doesNotMatch(first.out, /does not contain/, 'the first version was uploaded: nothing is known of where its files came from');
+  write(one, { 'ui/feature.ui': '<Text>a feature</Text>\n' });
+  commit(one, 'A feature');
+  const feature = push(one, slug, app.editKey);
+  assert.match(feature.out, /Published version 3/);
+  assert.doesNotMatch(feature.out, /does not contain/, 'built on what was live');
+  const published3 = (await versions(slug))[0].createdAt;
+
+  write(two, { 'ui/main.ui': '<App><Text>something else</Text></App>\n' });
+  commit(two, 'Something else');
+  const stale = push(two, slug, app.editKey);
+  assert.equal(stale.status, 0, stale.out);
+  assert.match(stale.out, /remote: Published version 4/);
+  const when = new Date(published3);
+  const said = `${when.getUTCDate()} ${when.toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' })} ${when.getUTCFullYear()} at ${String(when.getUTCHours()).padStart(2, '0')}:${String(when.getUTCMinutes()).padStart(2, '0')} UTC`;
+  assert.ok(stale.out.includes(`remote: Version 4 does not contain version 3, which was live until now (published ${said}): that version's commit is not in the history this push sent. If it was pushed from another computer, or by someone else, its changes are not in version 4. To keep them, bring them into this project and push again.`), stale.out);
+  assert.ok(!('ui/feature.ui' in (await bundleFiles(slug))), 'published as it was pushed, as always');
+
+  // What it says to do: the first clone brings the second's work in, and its push holds both.
+  assert.equal(git(one, ['pull', '-q', '--no-rebase', '--no-edit', `file://${two.replace(/\\/g, '/')}`, 'main']).status, 0);
+  const merged = push(one, slug, app.editKey);
+  assert.match(merged.out, /Published version 5/);
+  assert.doesNotMatch(merged.out, /does not contain/, merged.out);
+  assert.ok('ui/feature.ui' in (await bundleFiles(slug)));
+
+  // Where it cannot be told, nothing is said: no history at all (the latest files alone, a tree, a shallow clone).
+  write(two, { 'ui/main.ui': '<App><Text>no history</Text></App>\n' });
+  commit(two, 'No history');
+  const tree = git(two, ['push', remote(slug), 'HEAD^{tree}:refs/heads/main'], app.editKey);
+  assert.match(tree.out, /Published version 6/);
+  assert.doesNotMatch(tree.out, /does not contain/, tree.out);
+  write(one, { 'ui/main.ui': '<App><Text>back on the first</Text></App>\n' });
+  commit(one, 'Back on the first');
+  assert.match(push(one, slug, app.editKey).out, /Published version 7/);
+  write(two, { 'ui/main.ui': '<App><Text>one commit</Text></App>\n' });
+  commit(two, 'One commit');
+  const lone = git(two, ['commit-tree', 'HEAD^{tree}', '-m', 'Publish']);
+  const single = git(two, ['push', remote(slug), `${lone.out.trim()}:refs/heads/main`], app.editKey);
+  assert.match(single.out, /Published version 8/);
+  assert.doesNotMatch(single.out, /does not contain/, single.out);
+  write(one, { 'ui/main.ui': '<App><Text>the first again</Text></App>\n' });
+  commit(one, 'The first again');
+  assert.match(push(one, slug, app.editKey).out, /Published version 9/);
+  const shallow = path.join(scratch, `shallow-${++made}`);
+  assert.equal(git(scratch, ['clone', '-q', '--depth', '1', '--no-local', `file://${two.replace(/\\/g, '/')}`, shallow]).status, 0);
+  write(shallow, { 'ui/main.ui': '<App><Text>from a shallow clone</Text></App>\n' });
+  commit(shallow, 'From a shallow clone');
+  const cut = push(shallow, slug, app.editKey);
+  assert.match(cut.out, /Published version 10/);
+  assert.doesNotMatch(cut.out, /does not contain/, cut.out);
+
+  // The commit is the app's to know and nobody else's to read.
+  const record = JSON.parse(fs.readFileSync(path.join(s.dataDir, 'apps', slug, 'app.json'), 'utf8')).app.pushed;
+  assert.deepEqual(Object.keys(record).sort(), ['commit', 'sha256', 'tree', 'version']);
+  assert.equal(record.version, 10);
+  assert.equal(record.commit, git(shallow, ['rev-parse', 'HEAD']).out.trim());
+  assert.ok(!(await s.api('GET', `/api/apps/${slug}`)).text.includes(record.commit));
+});
+
+test('a history rewritten over the same files is built on them still, and an upload in between ends what is known', skip, async () => {
+  const app = await published('rewritten');
+  const slug = app.app.slug;
+  const dir = project();
+  write(dir, { 'ui/main.ui': '<App><Text>two</Text></App>\n' });
+  commit(dir, 'Two');
+  assert.match(push(dir, slug, app.editKey).out, /Published version 2/);
+  // The message reworded, so the commit that was pushed is no longer in the history; its files are.
+  git(dir, ['commit', '-q', '--amend', '-m', 'Two, said better']);
+  write(dir, { 'ui/main.ui': '<App><Text>three</Text></App>\n' });
+  commit(dir, 'Three');
+  const reworded = push(dir, slug, app.editKey);
+  assert.match(reworded.out, /Published version 3/);
+  assert.doesNotMatch(reworded.out, /does not contain/, reworded.out);
+  // The latest files pushed alone, then the branch they came from: the files are in its history.
+  write(dir, { 'ui/main.ui': '<App><Text>four</Text></App>\n' });
+  commit(dir, 'Four');
+  assert.match(git(dir, ['push', remote(slug), 'HEAD^{tree}:refs/heads/main'], app.editKey).out, /Published version 4/);
+  write(dir, { 'ui/main.ui': '<App><Text>five</Text></App>\n' });
+  commit(dir, 'Five');
+  const after = push(dir, slug, app.editKey);
+  assert.match(after.out, /Published version 5/);
+  assert.doesNotMatch(after.out, /does not contain/, after.out);
+  // A commit changed and pushed again is not built on the one it replaces, and is told so: it cannot be told apart
+  // from another clone's.
+  write(dir, { 'ui/main.ui': '<App><Text>five, changed</Text></App>\n' });
+  git(dir, ['add', '-A']);
+  git(dir, ['commit', '-q', '--amend', '-m', 'Five, changed']);
+  const amended = push(dir, slug, app.editKey);
+  assert.match(amended.out, /Published version 6/);
+  assert.match(amended.out, /remote: Version 6 does not contain version 5, which was live until now/);
+
+  // A version from the update page: the next push is not held against a commit the page never had.
+  const form = new FormData();
+  form.append('bundle', new Blob([zipSync({ 'manifest.json': Buffer.from(JSON.stringify(MANIFEST)), 'ui/main.ui': Buffer.from('<App><Text>uploaded</Text></App>\n') })]), 'app.softn');
+  assert.equal((await s.api('POST', `/api/apps/${slug}/versions`, { body: form, headers: { 'X-Edit-Key': app.editKey } })).status, 201);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(s.dataDir, 'apps', slug, 'app.json'), 'utf8')).app.pushed, undefined);
+  const other = project();
+  write(other, { 'ui/main.ui': '<App><Text>from elsewhere</Text></App>\n' });
+  commit(other, 'From elsewhere');
+  const unrelated = push(other, slug, app.editKey);
+  assert.match(unrelated.out, /Published version 8/);
+  assert.doesNotMatch(unrelated.out, /does not contain/, unrelated.out);
+});
+
+test('git push --force-with-lease publishes, with the commands the site gives; the line that makes it so is the second', skip, async () => {
+  const app = await published('lease');
+  const slug = app.app.slug;
+  const dir = project();
+  for (const command of siteCommands(slug)) assert.equal(git(dir, command).status, 0, command.join(' '));
+  assert.match(git(dir, ['push', 'softn'], app.editKey).out, /Published version 2/);
+  assert.equal(git(dir, ['for-each-ref', 'refs/remotes']).out.trim(), '', 'a push leaves no ref behind for a lease to be held against');
+  write(dir, { 'ui/main.ui': '<App><Text>leased</Text></App>\n' });
+  commit(dir, 'Leased');
+  const leased = git(dir, ['push', '--force-with-lease', 'softn'], app.editKey);
+  assert.equal(leased.status, 0, leased.out);
+  assert.match(leased.out, /Published version 3/);
+  for (const quiet of [['fetch', '--all'], ['remote', 'update']]) assert.equal(git(dir, quiet).status, 0, quiet.join(' '));
+
+  // A project set up before that line was given: git itself refuses, and the line the guide gives puts it right.
+  const old = project();
+  for (const command of siteCommands(slug).filter((command) => !command.includes('--unset'))) assert.equal(git(old, command).status, 0);
+  write(old, { 'ui/main.ui': '<App><Text>set up earlier</Text></App>\n' });
+  commit(old, 'Set up earlier');
+  assert.match(git(old, ['push', 'softn'], app.editKey).out, /Published version 4/);
+  write(old, { 'ui/main.ui': '<App><Text>set up earlier, again</Text></App>\n' });
+  commit(old, 'Again');
+  const refusedByGit = git(old, ['push', '--force-with-lease', 'softn'], app.editKey);
+  assert.notEqual(refusedByGit.status, 0);
+  assert.match(refusedByGit.out, /stale info/);
+  assert.equal(git(old, ['config', '--unset', 'remote.softn.fetch']).status, 0);
+  const put = git(old, ['push', '--force-with-lease', 'softn'], app.editKey);
+  assert.equal(put.status, 0, put.out);
+  assert.match(put.out, /Published version 5/);
 });
 
 test('a push larger than git’s buffer: its probe, then a chunked body', skip, async () => {
@@ -381,18 +773,57 @@ test('a branch set to pull from the directory, as git suggests for a bare push, 
   assert.equal(followed.status, 0, followed.out);
   const pull = git(dir, ['pull'], app.editKey);
   assert.notEqual(pull.status, 0);
-  assert.match(pull.out, /If git pull brought you here, your branch is set to pull from the directory, and git branch --unset-upstream stops that\./);
-  // What it says to do is all it takes.
+  assert.match(pull.out, /If git pull brought you here and the project has another remote, your branch is set to pull from the directory, and git branch --unset-upstream stops that\./);
+  // What it says to do is all it takes, in a project that has another remote to pull from.
+  const elsewhere = path.join(scratch, `elsewhere-${++made}.git`);
+  assert.equal(git(scratch, ['init', '-q', '--bare', '-b', 'main', elsewhere]).status, 0);
+  git(dir, ['remote', 'add', 'origin', elsewhere]);
+  assert.equal(git(dir, ['push', '-q', 'origin', 'main']).status, 0);
   assert.equal(git(dir, ['branch', '--unset-upstream']).status, 0);
   assert.match(git(dir, ['status', '-sb']).out, /^## main$/m);
+  assert.doesNotMatch(git(dir, ['pull'], app.editKey).out, /takes pushes/, 'the directory is no longer asked');
+  const quiet = git(dir, ['pull', 'origin', 'main'], app.editKey);
+  assert.equal(quiet.status, 0, quiet.out);
 });
 
-test('an app that is not there is not found, and an app with no key has none to give', skip, async () => {
+test('in a project whose only remote is the directory, a pull is told there is nothing to pull, and not to run what changes nothing', skip, async () => {
+  const app = await published('only-remote');
   const dir = project();
-  assert.match(push(dir, 'no-such-app', 'x'.repeat(40)).out, /not found/);
+  for (const command of siteCommands(app.app.slug)) assert.equal(git(dir, command).status, 0);
+  assert.equal(git(dir, ['push', 'softn'], app.editKey).status, 0);
+  // No branch is set to pull from it, and git asks it all the same, as it is the only remote there is.
+  assert.match(git(dir, ['status', '-sb']).out, /^## main$/m);
+  const pull = git(dir, ['pull'], app.editKey);
+  assert.notEqual(pull.status, 0);
+  assert.match(pull.out, /remote error: This directory takes pushes, and does not serve clones, fetches or pulls\./, pull.out);
+  assert.match(pull.out, /If the directory is the project's only remote, git pull asks it whatever the branch is set to, and there is nothing here to pull\./, pull.out);
+});
+
+test('an address that names no app is told so in words git shows, before any key is asked for', skip, async () => {
+  const dir = project();
+  const r = push(dir, 'no-such-app', 'x'.repeat(40));
+  assert.notEqual(r.status, 0);
+  assert.match(r.out, /fatal: remote error: No app is published under that name\. Check the name in the remote's address, or publish the app's first version on the Publish page, which gives the commands with its name in them\./, r.out);
+  assert.doesNotMatch(r.out, /not found|Authentication failed/, r.out);
   const refs = await s.api('GET', '/api/git/no-such-app.git/info/refs?service=git-receive-pack');
-  assert.equal(refs.status, 404);
-  assert.equal(refs.headers.get('www-authenticate'), null);
+  assert.equal(refs.status, 200);
+  assert.equal(refs.headers.get('content-type'), 'application/x-git-receive-pack-advertisement');
+  assert.equal(refs.headers.get('www-authenticate'), null, 'no key is asked for, so git has none to keep under a wrong name');
+  assert.equal(refs.headers.get('cache-control'), 'no-store');
+  assert.doesNotMatch(refs.text, /no-such-app/, 'and nothing of the address is repeated to a terminal');
+  // The same whatever came with it, and for a push sent without asking first.
+  const keyed = await s.api('GET', '/api/git/no-such-app.git/info/refs?service=git-receive-pack', { headers: { Authorization: `Basic ${Buffer.from('x:wrong').toString('base64')}` } });
+  assert.equal(keyed.status, 200);
+  assert.match(keyed.text, /ERR No app is published under that name/);
+  const sent = await s.api('POST', '/api/git/no-such-app.git/git-receive-pack', { raw: Buffer.from('0000'), headers: { 'Content-Type': 'application/x-git-receive-pack-request' } });
+  assert.equal(sent.status, 200);
+  assert.match(sent.text, /No app is published under that name.*unpack not read/s);
+  // An unpublished app is no app to anyone but its owner's key, which is asked for as for any app.
+  const app = await published('taken-down');
+  assert.equal((await s.api('DELETE', `/api/apps/${app.app.slug}`, { headers: { 'X-Edit-Key': app.editKey } })).status, 204);
+  const hidden = push(dir, app.app.slug, app.editKey);
+  assert.notEqual(hidden.status, 0);
+  assert.match(hidden.out, /remote error: No app is published under that name/, hidden.out);
 });
 
 test('every reply says not to keep it', skip, async () => {
@@ -465,15 +896,17 @@ async function raw(app, packBytes, tip, server = s) {
   return server.api('POST', `/api/git/${app.app.slug}.git/git-receive-pack`, pushRequest(app, packBytes, tip));
 }
 
-function aProject(treeEntries = []) {
+/** A project of one commit; with `history`, of two, the first with the same files, sent along as a history is. */
+function aProject(treeEntries = [], { history = false } = {}) {
   const manifest = Buffer.from(JSON.stringify({ name: 'Crafted', version: '1.0.0', main: 'ui.ui' }));
   const page = Buffer.from('<App><Text>hi</Text></App>');
   const entries = [['100644', 'manifest.json', oid('blob', manifest)], ['100644', 'ui.ui', oid('blob', page)], ...treeEntries].sort((a, b) => (a[1] < b[1] ? -1 : 1));
   const treeData = tree(entries);
-  const commitData = Buffer.from(`tree ${oid('tree', treeData)}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\nCrafted\n`);
+  const earlier = Buffer.from(`tree ${oid('tree', treeData)}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\nEarlier\n`);
+  const commitData = Buffer.from(`tree ${oid('tree', treeData)}\n${history ? `parent ${oid('commit', earlier)}\n` : ''}author T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\nCrafted\n`);
   return {
     tip: oid('commit', commitData),
-    objects: [entry(TYPES.commit, commitData), entry(TYPES.tree, treeData), entry(TYPES.blob, manifest), entry(TYPES.blob, page)],
+    objects: [entry(TYPES.commit, commitData), ...(history ? [entry(TYPES.commit, earlier)] : []), entry(TYPES.tree, treeData), entry(TYPES.blob, manifest), entry(TYPES.blob, page)],
   };
 }
 
@@ -547,10 +980,25 @@ test('a stream that expands past what it declares stops where it says, not where
 
 test('an object or a push past the limits is refused from what it declares', skip, async () => {
   const app = await published('limits');
+  // Every object counts, history included, so the way to leave an old one behind is said with it: to a push that
+  // came with a history, in a line that runs the same in Command Prompt, PowerShell and a POSIX shell.
+  const long = aProject([], { history: true });
+  await refused(app, pack([...long.objects, varHeader(TYPES.blob, 51 * 1024 * 1024)]), long.tip, /larger than 50 MB, the most a file of an app can be\. It may be in an earlier commit and not in the latest\. To send only its latest files: git push softn "HEAD\^\{tree\}:refs\/heads\/main"\n/);
+  // A push that is its last commit alone has no earlier commit for the file to be in, and is not sent round again.
   const { tip, objects } = aProject();
-  // Every object counts, history included, so the way to leave an old one behind is said with it.
-  await refused(app, pack([...objects, varHeader(TYPES.blob, 51 * 1024 * 1024)]), tip, /larger than 50 MB, the most a file of an app can be\. It may be in an earlier commit and not in the latest\. To send only its latest files/);
-  await refused(app, pack(objects, 60000), tip, /60000 objects/);
+  const alone = await raw(app, pack([...objects, varHeader(TYPES.blob, 51 * 1024 * 1024)]), tip);
+  assert.match(alone.text, /larger than 50 MB, the most a file of an app can be\.\n/, alone.text);
+  assert.doesNotMatch(alone.text, /latest files|earlier commit/, alone.text);
+  // Before its commit is read, a push is taken to have a history, as most do.
+  await refused(app, pack(objects, 60000), tip, /60000 objects, and the most taken is 50000\. To send only its latest files: git push softn "HEAD\^\{tree\}:refs\/heads\/main"\n/);
+  // A shallow clone's push names a parent it did not send: that is the latest files alone too.
+  const manifest = Buffer.from(JSON.stringify({ name: 'Crafted', version: '1.0.0', main: 'ui.ui' }));
+  const page = Buffer.from('<App><Text>hi</Text></App>');
+  const top = tree([['100644', 'manifest.json', oid('blob', manifest)], ['100644', 'ui.ui', oid('blob', page)]]);
+  const cut = Buffer.from(`tree ${oid('tree', top)}\nparent ${'a'.repeat(40)}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\nShallow\n`);
+  const shallow = await raw(app, pack([entry(TYPES.commit, cut), entry(TYPES.tree, top), entry(TYPES.blob, manifest), entry(TYPES.blob, page), varHeader(TYPES.blob, 51 * 1024 * 1024)]), oid('commit', cut));
+  assert.match(shallow.text, /larger than 50 MB, the most a file of an app can be\.\n/, shallow.text);
+  assert.equal((await versions(app.app.slug)).length, 1);
 });
 
 test('a delta is held to what it declares, before anything is made', skip, async () => {
@@ -588,7 +1036,7 @@ test('a tree cannot name its way out of the bundle, or be missing what it names'
   const { tip, objects } = aProject([['100644', 'gone.txt', 'e'.repeat(40)]]);
   await refused(app, pack(objects), tip, /missing gone\.txt/);
   const notCommit = entry(TYPES.blob, blob);
-  await refused(app, pack([notCommit]), oid('blob', blob), /Only a branch of commits/);
+  await refused(app, pack([notCommit]), oid('blob', blob), /Only a commit, or the folder of one, is published\./);
 });
 
 test('a bundle that would be too large is refused', skip, async () => {
@@ -606,7 +1054,9 @@ test('a bundle that would be too large is refused', skip, async () => {
     // A body past the route's limit, before any of it is read, is told the way to send less.
     const past = await small.api('POST', `/api/git/${app.app.slug}.git/git-receive-pack`, { raw: Buffer.alloc(8 * 1024 * 1024), headers: pushHeaders(app) });
     assert.equal(past.status, 200, past.text);
-    assert.match(past.text, /larger than this route accepts.*To send only its latest files: git push softn/, past.text);
+    // Nothing of it was read, so it is not known whether its history is what makes it large: both cases are said, and
+    // a person whose latest files are the trouble is not sent to push them again.
+    assert.match(past.text, /larger than this route accepts \([^)]+\)\. If the project's history is what makes it that large, this sends its latest files alone: git push softn "HEAD\^\{tree\}:refs\/heads\/main"\. If the latest files alone are that large, the app is more than the directory takes, which is 4 KB as a bundle\.\n/, past.text);
     assert.match(past.text, /unpack not read/);
   } finally {
     small.stop();
@@ -646,7 +1096,7 @@ test('a chunked push a host hands PHP nothing of says what to do', skip, async (
   });
   assert.match(text, /git config http\.postBuffer 64M/);
   // Git with that set sends pieces only past 64 MB, too large anyway: it is told what does fit, not to set it again.
-  assert.match(text, /If http\.postBuffer is set already, this push is past 64 MB.*To send only its latest files/);
+  assert.match(text, /If http\.postBuffer is set already, this push is past 64 MB, more than the directory takes\. If the project's history is what makes it that large, this sends its latest files alone: git push softn "HEAD\^\{tree\}:refs\/heads\/main"\. If the latest files alone are that large/);
   // With no report at all, dulwich said the push had succeeded.
   assert.match(text, /unpack not read/);
 });
@@ -771,16 +1221,27 @@ test('a ref is named once, so the work of a push is not done again under the cat
   assert.equal((await versions(app.app.slug)).length, 1);
 });
 
-test('a push of every branch past the most refs is told in the terminal, and not as "Everything up-to-date"', skip, async () => {
+test('a push of every branch publishes main, however many the others are, and says once that they are not kept', skip, async () => {
   const app = await published('all-branches');
   const dir = project();
   for (let i = 0; i < 20; i++) assert.equal(git(dir, ['branch', `b${i}`]).status, 0);
   const r = git(dir, ['push', '--all', remote(app.app.slug)], app.editKey);
+  // Git ends in failure, as twenty branches a person named were not taken; main was, and is published.
   assert.notEqual(r.status, 0);
-  assert.match(r.out, /remote: That push names too many refs/, r.out);
-  assert.match(r.out, /git push softn HEAD:refs\/heads\/main/, r.out);
-  assert.doesNotMatch(r.out, /Everything up-to-date/, r.out);
-  assert.equal((await versions(app.app.slug)).length, 1);
+  assert.match(r.out, /remote: Published version 2/, r.out);
+  assert.equal(r.out.match(/remote: Only main is published: the other branches in this push are not kept\./g)?.length, 1, r.out);
+  assert.equal(r.out.match(/\[remote rejected\]/g)?.length, 20, r.out);
+  assert.doesNotMatch(r.out, /Everything up-to-date|too many refs|failed to report/, r.out);
+  assert.equal((await versions(app.app.slug)).length, 2);
+  // Without main among them, nothing is published, and the line says what to run.
+  git(dir, ['checkout', '-q', 'b0']);
+  git(dir, ['branch', '-D', 'main']);
+  write(dir, { 'ui/main.ui': '<App><Text>no main</Text></App>\n' });
+  commit(dir, 'No main');
+  const none = git(dir, ['push', '--all', remote(app.app.slug)], app.editKey);
+  assert.notEqual(none.status, 0);
+  assert.match(none.out, /remote: Only main is published\. Push your branch to it: git push softn HEAD:refs\/heads\/main/, none.out);
+  assert.equal((await versions(app.app.slug)).length, 2);
 });
 
 test('a pkt-line of nothing is refused as a bad request, not a failure of the server', skip, async () => {
@@ -982,18 +1443,49 @@ test('a large file with a history fits in the memory a small host gives', skip, 
   }
 });
 
-test('what the refusal says to do about a large history works: only the latest files, on the same branch', skip, async () => {
+/**
+ * A line a person is given, run as their shell runs it: Command Prompt on Windows, sh elsewhere. The key comes from
+ * git's own environment, as a line that is run as it is can name no helper.
+ */
+function inShell(dir, line, key) {
+  const env = { ...gitEnv(), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '', GIT_CONFIG_KEY_1: 'credential.helper', GIT_CONFIG_VALUE_1: `!f() { echo "password=${key}"; }; f` };
+  const r = process.platform === 'win32'
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', `"${line}"`], { cwd: dir, env, encoding: 'utf8', timeout: 60000, windowsVerbatimArguments: true })
+    : spawnSync('sh', ['-c', line], { cwd: dir, env, encoding: 'utf8', timeout: 60000 });
+  return { status: r.status, out: `${r.stdout}${r.stderr}` };
+}
+
+test('what the refusal says to do about a large history works, as a shell runs it: only the latest files, on the same branch', skip, async () => {
   const app = await published('latest');
   const dir = project({ 'old-secret.txt': 'was here once\n' });
   fs.rmSync(path.join(dir, 'old-secret.txt'));
   write(dir, { 'ui/main.ui': '<App><Text>latest</Text></App>\n' });
   commit(dir, 'Second');
+  // The line as a refusal gives it, taken from one.
+  const long = aProject([], { history: true });
+  const told = await raw(app, pack(long.objects, 60000), long.tip);
+  const line = told.text.match(/To send only its latest files: (git push softn "HEAD\^\{tree\}:refs\/heads\/main")\n/);
+  assert.ok(line, told.text);
+  assert.equal(git(dir, ['remote', 'add', 'softn', remote(app.app.slug)]).status, 0);
+  const before = git(dir, ['rev-parse', 'HEAD']).out;
+  const r = inShell(dir, line[1], app.editKey);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /remote: Published version 2/);
+  const files = await bundleFiles(app.app.slug);
+  assert.deepEqual(Object.keys(files).sort(), ['manifest.json', 'ui/main.ui']);
+  assert.equal(Buffer.from(files['ui/main.ui']).toString(), '<App><Text>latest</Text></App>\n');
+  assert.equal((await versions(app.app.slug))[0].notes, '', 'files pushed with no commit have no subject');
+  assert.equal(git(dir, ['rev-parse', 'HEAD']).out, before, 'and the branch is where it was');
+  assert.equal(git(dir, ['status', '--porcelain']).out, '');
+  // What that line replaced, a commit made of the tree, is published as it was, where a shell can run it.
+  write(dir, { 'ui/main.ui': '<App><Text>later</Text></App>\n' });
+  commit(dir, 'Third');
   const made = git(dir, ['commit-tree', 'HEAD^{tree}', '-m', 'Publish']);
   assert.equal(made.status, 0, made.out);
-  const r = git(dir, ['push', remote(app.app.slug), `${made.out.trim()}:refs/heads/main`], app.editKey);
-  assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /Published version 2/);
-  assert.equal(Buffer.from((await bundleFiles(app.app.slug))['ui/main.ui']).toString(), '<App><Text>latest</Text></App>\n');
+  const old = git(dir, ['push', remote(app.app.slug), `${made.out.trim()}:refs/heads/main`], app.editKey);
+  assert.equal(old.status, 0, old.out);
+  assert.match(old.out, /Published version 3/);
+  assert.equal((await versions(app.app.slug))[0].notes, 'Publish');
 });
 
 test('an app in a folder of a larger repository: the refusal names the folder, and the command it gives publishes it alone', skip, async () => {
@@ -1006,26 +1498,40 @@ test('an app in a folder of a larger repository: the refusal names the folder, a
   commit(dir, 'An app in a folder');
   const r = push(dir, app.app.slug, app.editKey);
   assert.notEqual(r.status, 0);
-  const command = r.out.match(/To publish app\/ alone: git push softn "\$\(git commit-tree "(HEAD:app)" -m Publish\):refs\/heads\/main"/);
+  const command = r.out.match(/To publish app\/ alone: (git push softn "HEAD:app:refs\/heads\/main")/);
   assert.ok(command, r.out);
-  // The command, as the shell would run it.
-  const folder = git(dir, ['commit-tree', command[1], '-m', 'Publish']);
-  assert.equal(folder.status, 0, folder.out);
-  const ok = git(dir, ['push', remote(app.app.slug), `${folder.out.trim()}:refs/heads/main`], app.editKey);
+  // The command, as a shell runs it: the folder's tree, pushed as it is.
+  assert.equal(git(dir, ['remote', 'add', 'softn', remote(app.app.slug)]).status, 0);
+  const ok = inShell(dir, command[1], app.editKey);
   assert.equal(ok.status, 0, ok.out);
   assert.match(ok.out, /Published version 2/);
   assert.deepEqual(Object.keys(await bundleFiles(app.app.slug)).sort(), ['manifest.json', 'ui/main.ui']);
+  // A folder with a space in its name, which is why the command is in quotes.
+  write(dir, { 'My App/manifest.json': JSON.stringify({ ...MANIFEST, name: 'Spaced' }), 'My App/ui/main.ui': '<App><Text>in a folder with a space</Text></App>\n' });
+  fs.rmSync(path.join(dir, 'app'), { recursive: true });
+  commit(dir, 'A folder with a space');
+  const spaced = push(dir, app.app.slug, app.editKey).out.match(/To publish My App\/ alone: (git push softn "HEAD:My App:refs\/heads\/main")/);
+  assert.ok(spaced);
+  const second = inShell(dir, spaced[1], app.editKey);
+  assert.equal(second.status, 0, second.out);
+  assert.match(second.out, /Published version 3/);
+  assert.equal(Buffer.from((await bundleFiles(app.app.slug))['ui/main.ui']).toString(), '<App><Text>in a folder with a space</Text></App>\n');
+  // What these lines replaced, a commit made of the folder's tree, is published as it was.
+  write(dir, { 'My App/ui/main.ui': '<App><Text>as before</Text></App>\n' });
+  commit(dir, 'As before');
+  const folder = git(dir, ['commit-tree', 'HEAD:My App', '-m', 'Publish']);
+  assert.match(git(dir, ['push', remote(app.app.slug), `${folder.out.trim()}:refs/heads/main`], app.editKey).out, /Published version 4/);
 
   // More than one, the nearest the top: each its own app. And none at all.
   write(dir, { 'apps/two/manifest.json': JSON.stringify({ ...MANIFEST, name: 'Two' }), 'apps/two/ui/main.ui': '<App><Text>two</Text></App>\n', 'apps/one/manifest.json': JSON.stringify({ ...MANIFEST, name: 'One' }), 'apps/one/ui/main.ui': '<App><Text>one</Text></App>\n' });
-  fs.rmSync(path.join(dir, 'app'), { recursive: true });
+  fs.rmSync(path.join(dir, 'My App'), { recursive: true });
   commit(dir, 'Two apps');
-  assert.match(push(dir, app.app.slug, app.editKey).out, /apps\/one\/, apps\/two\/ have one\. Each app is its own remote, with its own key\. To publish apps\/one\/ alone: git push softn "\$\(git commit-tree "HEAD:apps\/one"/);
+  assert.match(push(dir, app.app.slug, app.editKey).out, /apps\/one\/, apps\/two\/ have one\. Each app is its own remote, with its own key\. To publish apps\/one\/ alone: git push softn "HEAD:apps\/one:refs\/heads\/main"/);
   fs.rmSync(path.join(dir, 'apps'), { recursive: true });
   write(dir, { 'notes.txt': 'no app here\n' });
   commit(dir, 'No app');
   assert.match(push(dir, app.app.slug, app.editKey).out, /This commit has no manifest\.json in its top folder, which is where an app has it\./);
-  assert.equal((await versions(app.app.slug)).length, 2);
+  assert.equal((await versions(app.app.slug)).length, 4);
 });
 
 test('a folder name that is not plain is named, and never put in a command to paste', skip, async () => {
@@ -1037,12 +1543,19 @@ test('a folder name that is not plain is named, and never put in a command to pa
   const root = tree([['40000', '$(touch x)', oid('tree', inner)]]);
   const commitData = Buffer.from(`tree ${oid('tree', root)}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\nCrafted\n`);
   const objects = [commitData, root, inner, uiTree].map((data, i) => entry(i === 0 ? TYPES.commit : TYPES.tree, data));
-  await refused(app, pack([...objects, entry(TYPES.blob, blob), entry(TYPES.blob, ui)]), oid('commit', commitData), /\$\(touch x\)\/ has one\. Publish that folder on its own\.(?![^\n]*commit-tree)/);
+  await refused(app, pack([...objects, entry(TYPES.blob, blob), entry(TYPES.blob, ui)]), oid('commit', commitData), /\$\(touch x\)\/ has one\. Publish that folder on its own\.(?![^\n]*git push)/);
+  // Nor one that Command Prompt acts on inside quotes, or that ends the quotes.
+  for (const name of ['%PATH%', 'a^b', 'a"b', 'a!b', 'a`b', 'a&b', "a'b"]) {
+    const top = tree([['40000', name, oid('tree', inner)]]);
+    const data = Buffer.from(`tree ${oid('tree', top)}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\nCrafted\n`);
+    const sent = [data, top, inner, uiTree].map((bytes, i) => entry(i === 0 ? TYPES.commit : TYPES.tree, bytes));
+    await refused(app, pack([...sent, entry(TYPES.blob, blob), entry(TYPES.blob, ui)]), oid('commit', data), /has one\. Publish that folder on its own\.(?![^\n]*git push)/);
+  }
   // A space is safe inside the quotes, and a common name for a folder.
   const spaced = tree([['40000', 'My App', oid('tree', inner)]]);
   const spacedCommit = Buffer.from(`tree ${oid('tree', spaced)}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\nCrafted\n`);
   const more = [spacedCommit, spaced, inner, uiTree].map((data, i) => entry(i === 0 ? TYPES.commit : TYPES.tree, data));
-  await refused(app, pack([...more, entry(TYPES.blob, blob), entry(TYPES.blob, ui)]), oid('commit', spacedCommit), /To publish My App\/ alone: git push softn "\$\(git commit-tree "HEAD:My App" -m Publish\):refs\/heads\/main"/);
+  await refused(app, pack([...more, entry(TYPES.blob, blob), entry(TYPES.blob, ui)]), oid('commit', spacedCommit), /To publish My App\/ alone: git push softn "HEAD:My App:refs\/heads\/main"\n/);
 });
 
 test('a command too long for a line in the terminal is not given cut short', skip, async () => {
@@ -1059,9 +1572,9 @@ test('a command too long for a line in the terminal is not given cut short', ski
   };
   // The name is in the line three times, so a plain one of 300 bytes is a line past what the terminal is given.
   const long = 'a'.repeat(300);
-  await refused(app, ...withFolder(long), new RegExp(`${long}/ has one\\. Publish that folder on its own\\.(?![^\\n]*commit-tree)`));
+  await refused(app, ...withFolder(long), new RegExp(`${long}/ has one\\. Publish that folder on its own\\.(?![^\\n]*git push)`));
   const fits = 'b'.repeat(200);
-  await refused(app, ...withFolder(fits), new RegExp(`git commit-tree "HEAD:${fits}" -m Publish\\):refs/heads/main"\\n`));
+  await refused(app, ...withFolder(fits), new RegExp(`git push softn "HEAD:${fits}:refs/heads/main"\\n`));
 });
 
 test('a committed node_modules beside the app’s folder, more folders than are looked in, does not hide it', skip, async () => {
@@ -1206,8 +1719,12 @@ test('a delta too large for the memory a host gives is refused in the terminal, 
     }
     const copied = Buffer.concat([varint(base.length), varint(base.length), ...copies]);
     const copying = Buffer.concat([varHeader(7, copied.length), Buffer.from(oid('blob', base), 'hex'), zlib.deflateSync(copied)]);
-    const one = aProject();
-    await refused(app, pack([...one.objects, entry(TYPES.blob, base), copying]), one.tip, /more memory than this server gives a request\. To send only its latest files/, tight);
+    // With a history, the way out is the latest files alone, which sends no earlier copy for a change to be made to.
+    const one = aProject([], { history: true });
+    await refused(app, pack([...one.objects, entry(TYPES.blob, base), copying]), one.tip, /more memory than this server gives a request\. To send only its latest files: git push softn "HEAD\^\{tree\}:refs\/heads\/main"\n/, tight);
+    // A push that is those already can still hold two files alike, and is sent to the page that takes them whole.
+    const alone = aProject();
+    await refused(app, pack([...alone.objects, entry(TYPES.blob, base), copying]), alone.tip, /more memory than this server gives a request\. The app's update page takes the same files as a bundle\.\n/, tight);
 
     // A delta is held whole while it inflates, and can be copied as it grows: 30 MB of one, on a byte.
     const x = Buffer.from('x');

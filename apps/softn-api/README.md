@@ -592,6 +592,7 @@ An app with an edit key is a git remote that takes pushes:
 
 ```
 git remote add softn https://my-app@softn.com/api/git/my-app.git
+git config --unset remote.softn.fetch
 git config remote.softn.push HEAD:refs/heads/main
 git config remote.softn.skipFetchAll true
 git config http.postBuffer 64M
@@ -602,20 +603,45 @@ The remote's push refspec makes a plain `git push softn` publish the commit chec
 out, from any branch. Without it git answers that with `git push --set-upstream softn
 main`, and a branch that follows it pulls from the directory from then on: every `git
 pull` then fails, as the directory serves no fetches, and its answer says how to undo
-that. `skipFetchAll` leaves it out of `git fetch --all` and `git remote update`.
+that. `skipFetchAll` leaves it out of `git fetch --all` and `git remote update`. In a
+project with no other remote git asks the directory whatever the branch is set to,
+and the answer says that too: there is nothing to pull.
+
+The second line takes away the fetch refspec `git remote add` writes. The directory
+has no use for it, and with it every push leaves `refs/remotes/softn/main` behind,
+which `git push --force-with-lease softn` compares with what the directory offers
+(nothing) and refuses as "stale info", every time after the first. Every line, and
+the two commands below that push a tree, run as they are in Command Prompt,
+PowerShell and a POSIX shell.
 
 A repository's top folder is the bundle's: `manifest.json` is there. A commit with
 none there is refused before anything else in it is looked at, naming the folders
 nearest the top that have one, with the line that publishes one of them alone
-(`git commit-tree` of `HEAD:<folder>`, pushed to main); a folder whose name is not
+(`git push softn "HEAD:<folder>:refs/heads/main"`, the folder's tree pushed as it
+is); a folder whose name is not
 plain letters, digits, spaces, `.`, `_` and `-` is named and left out of the line,
 which is pasted into a shell. Each push to `main` makes a new version from the files of the
 commit pushed, its subject as the notes (git's subject: the first paragraph on one
 line, from the encoding the commit names), by the same road as `POST /api/apps/{slug}/versions`: the `version` rate
 limit, `requireRoom`, `Bundle::inspect`, the storage-policy check and
 the version limit. A refusal reaches the terminal as a `remote:` line. A push whose
-files make the bundle the latest version already is makes no new version: the
-bundle is written the same way each time.
+files are the latest version's makes no new version: the bundle is written the same
+way each time, and where the latest version came from the Publish page, zipped some
+other way, the two are compared file for file (`Bundle::sameFiles`: names, sizes and
+checksums first, then the bytes).
+
+**A push that is not built on the live version.** With no refs to offer, git never
+sees a push as "not a fast-forward", so a clone that never got the last version
+would put its old files back live without a word. The directory keeps no history
+to refuse it by. What it keeps of a pushed version, beside the app (`pushed` in
+`app.json`'s `app`), is the commit that was pushed and that commit's tree. The next
+push is published as always, and is told on a `remote:` line when neither that
+commit nor a commit with that tree is in the history it sent: the version's number
+and when it was published, and that someone else's changes, or the person's own from
+another computer, are not in the new one. The tree counts as well as the commit so
+that a reworded or squashed commit is not reported. Nothing is said where it cannot
+be told: a push with no history (a shallow clone, a tree, a single commit), a
+history of more than 10,000 commits, or a live version that was uploaded.
 
 **How many versions an app keeps.** `maxVersionsPerApp` (50) counts the versions an
 app has, not their numbers, which carry on from the latest. A new version past it
@@ -644,6 +670,10 @@ keep one for the host, and a second app's key replaces the first's. The key does
 not go in the address, or it would be in the repository's config in plain text. A
 wrong key is counted (`limits.gitKey`). Git asking with no key, as it always does
 first, is not. Replacing a key refuses the next push until git is given the new one.
+An address that names no app is answered before any key is asked for, with a 200
+and the reason where the refs would be, which git shows as `remote error: …`; a 404
+it shows as "repository not found" and none of the words. An app that plays on its
+own site is answered the same way, once its key is found good.
 
 **Nothing is stored but the version.** The directory tells git it holds nothing, so
 each push carries all it needs, and only the commit pushed is read. There is no
@@ -651,13 +681,81 @@ repository to back up, erase or fill, and what is in a project's history and not
 its last commit is not kept or shown. That is also why `git clone` is told to
 download the source from the app's page instead. The cost is that a push sends the
 whole history: past 50,000 objects, or 256 MB expanded, it is refused, with the line
-that sends the latest files alone (`git commit-tree` of the tree, pushed to main).
+that sends the latest files alone (`git push softn "HEAD^{tree}:refs/heads/main"`:
+the commit's tree, pushed as it is, which a git server would not put on a branch and
+which here is simply the files to publish; such a version has no notes). That line
+is given only to a push that carried a history. One too large to be read at all is
+told both cases, as nothing of it was looked at.
 
-**What a push may hold.** Only `main`: other branches, tags and deletes are refused.
-Left out of the bundle: `.git*` at the top (`.gitignore`, `.github/`), and `.DS_Store`.
+**What a push may hold.** Only `main` is published, and it is published whatever
+else the push names. Another branch and a delete are refused, each with what to
+do. A tag is answered as taken and is not kept, with a line that says so: git sends
+tags along by itself with `push.followTags`, every one of them each time, as the
+directory offers no refs, and a tag turned away made git exit in failure for a
+version that had been published. The refs of a push are not counted: each is
+answered for, up to 1 MB of answers.
+Left out of the bundle: `.git*` in any folder (`.gitignore`, `.gitkeep`, `.github/`),
+and `.DS_Store`.
 Refused: symbolic links and submodules, which point outside what is being published;
-a name a bundle cannot hold; and a file that looks like it holds secrets (`.env`,
-`*.pem`, `id_rsa` and the like), as everything published can be read by anyone.
+a name a bundle cannot hold; and what holds secrets, as everything published can be
+read by anyone (below).
+
+**Secrets.** The same for a push and for a bundle sent to `POST /api/apps`,
+`POST /api/apps/{slug}/versions` or a remix (`Secrets` in `lib/bundle.php`), each
+refusal naming the file and what to do:
+
+- a backup of edit keys, as the site's "Download backup" writes it: by its name
+  (`softn-edit-keys*.json`) and, under any name, by the `"format": "softn-edit-keys"`
+  it begins with. Saved into a project and committed, it was published, and every
+  app it named could be taken by anyone;
+- any file that holds a key that came with the request, the edit key or the admin
+  key, as its own characters (in either case, or as UTF-16);
+- any file that holds the edit key of any app in the directory, which need not be
+  the app being published: a list of one's keys pasted into a note has no marker
+  and none of the keys the request came with (below);
+- a file that is credentials by its name: `.env` and its kin (not `.env.example`),
+  `id_rsa` and the other SSH key names, `*.pem`, `*.key`, `*.ppk`, `*.p12`, `*.pfx`,
+  `*.jks`, `*.keystore`, `*.kdbx`, `.npmrc`, `.netrc`, `.pgpass`, `.pypirc`,
+  `.htpasswd`, `.git-credentials`, `.aws/credentials`;
+- a file that begins as a private key does (PEM's first line, or PuTTY's).
+
+Not seen: a key inside an archive in the bundle, or written some other way. A
+bundle already in the directory is not looked at again.
+
+**Any app's key.** A key is forty hex characters, so every run of exactly forty in
+a file, all in one case, is hashed as a key is (`Secrets::look`), and the digests
+are compared with the hashes the directory keeps once the catalogue is open
+(`Apps::refuseKeysOf`). A match refuses the bundle, naming the file and neither the
+key nor its app; nothing that may be a key is logged or kept. An unpublished app's
+key counts, as it still opens the app; a key that was replaced does not.
+
+A git commit id is the same forty characters, and a lock file or a list of
+checksums can hold tens of thousands, none of them a key. So the first 2,000 runs
+of a file are hashed, and 20,000 in a bundle (`MAX_KEY_LIKE_IN_FILE`,
+`MAX_KEY_LIKE`). Past either, the rest are not looked at and the files are
+published as they are: a key that someone pasted into a note is among the first
+few runs of its file, and one file cannot use up the bundle's share. What that
+costs, measured on PHP 8.4 with no debugger: 20,000 runs are 3 ms of hashing,
+640 KB held and 2 ms of lookups under the catalogue. Finding the runs is the larger
+cost and goes by the bundle's size, not by the caps: 45 ms more for a bundle of
+4,000 files and 31 MB that does not compress, 0.25 s for 127 MB of source text, and
+0.55 s for the worst there is, 127 MB of runs one character short of a key. It is
+done without a pattern, so it is the same with PCRE's JIT off, where a pattern
+took 4 s.
+
+*What the refusal tells.* Anyone can publish, so anyone can put strings in a
+bundle and learn from the refusal that one of them is the key of some app here:
+up to 20,000 strings a request, at the `publish` and `version` limits, and with one
+string a file, which string. It does not say which app. That is no help in
+guessing a key, which is 160 random bits. It is of use to someone who already
+holds a string that is a key and does not know it, such as a list of strings
+gathered from public code: before, each had to be tried against each app. Trying a
+key against one app (`X-Edit-Key` on a route that needs the owner) is not counted
+by any limit today, which is the nearer way in for a key found beside its app's
+name. Digests are compared and never keys, so how long the comparison takes says
+nothing of a key. A site that would rather not answer the question sets
+`"refuseAppKeys": false` in `data/config.json`, and is back to refusing only the
+keys a request came with.
 
 **Git LFS.** A file kept in LFS is a pointer in the commit, a few lines under 1 KB,
 and the file itself goes to an LFS store that this is not. Published, the pointer's
@@ -678,13 +776,14 @@ and the folders a walk has open on its way down. Each is measured against
 `memory_limit` before it is read: past it PHP ends the request with a fatal error,
 which git shows as a bare 500 and then "Everything up-to-date", so what would not
 fit is refused in the terminal. A delta's refusal ends with the line that sends the
-latest files alone, which sends no earlier copy for a delta to be made against. At
+latest files alone, which sends no earlier copy for a delta to be made against; a
+push that is those already is sent to the update page instead. At
 128 MB the largest delta git makes for a 50 MB file fits; at 64 MB it is refused.
 A folder can be 1 MB however little of it is read, so 40-odd nested ones are past
 48 MB. The search for an app's folder, when the top has no `manifest.json`, holds a
 path for each folder still to look in, so it skips a path past 4,096 bytes and looks
 in no more than 1,024 folders. An object past 50 MB is refused wherever it is in the
-history, with the same line.
+history, with the same line when there is a history for it to be in.
 Bytes kept stop at 256 MB and bytes gone through at 1 GB, which is what holds the
 time: an object sent twice is kept once, and one step of a delta counts as 32 bytes.
 Deltas waiting for a base stop at 16 MB, as they wait in memory. A tree can name
@@ -694,7 +793,7 @@ spool and every 32 MB after it, against `minFreeBytes`.
 
 The `version` window is counted before the body is read, for any push; git's 4-byte
 probe is not a push. The body and the pack are read outside the catalogue lock, which
-is taken only to record the version and held from then on, so a ref may be named only
+is taken only to record the version and held from then on, so main may be named only
 once in a push and the work is done at most one time. `no-thin` is offered and
 `ofs-delta` is not, so a delta names its base and that base is in the same pack.
 
@@ -720,7 +819,8 @@ With the line in the commands, git sends a length and every one of these works. 
 empty body gets a `remote:` line that says what to do, and a failed report, so no
 client takes it for a success. That holds while the route takes less than 64 MB,
 45.6 MB at the default `maxBundleBytes`: git then sends pieces only for a push too
-large anyway, and is told so, with the line that sends the latest files alone. A
+large anyway, and is told so, with the line that sends the latest files alone and
+what it means if those alone are too large. A
 `maxBundleBytes` past about 45 MB takes the route past 64 MB, and on these hosts a
 push between the two then reaches PHP empty; the 64M in the site's commands would have
 to rise with it. Clients other than the git command have no such

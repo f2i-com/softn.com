@@ -3,6 +3,7 @@
  * Publishing with `git push`: an app in the directory as a remote that takes pushes.
  *
  *     git remote add softn https://my-app@softn.com/api/git/my-app.git
+ *     git config --unset remote.softn.fetch
  *     git config remote.softn.push HEAD:refs/heads/main
  *     git push softn
  *
@@ -15,14 +16,27 @@
  * project's history and not in its last commit is never kept or shown. That is also why this takes pushes and does not
  * serve clones.
  *
+ * Of a pushed version one thing more is kept, beside the app: which commit it was, and that commit's tree (`pushed` in
+ * the app's record). With no refs to offer, git never sees that a push is not built on what is live, so a clone that
+ * never got the last version would put its old files back without a word; with the commit kept, such a push is still
+ * published, and told so.
+ *
  * Nothing here runs git, which a shared host may not have, so a pack is read here. A pack comes from whoever holds the
  * key, and is held to limits on its bytes, its objects and what they expand to, before anything is allocated.
  */
 declare(strict_types=1);
 
-/** A push turned away, with the reason to show the person. */
+/**
+ * A push turned away, with the reason to show the person. Much of what is too large is so for a project's history, and
+ * there is a way to push without it, which is no help to a push that came without it already: `$ifHistory` is what to
+ * add for a push that carried more than its last commit, and `$otherwise` for one that did not.
+ */
 final class GitRefused extends RuntimeException
 {
+    public function __construct(string $message, public readonly string $ifHistory = '', public readonly string $otherwise = '')
+    {
+        parent::__construct($message);
+    }
 }
 
 /**
@@ -57,8 +71,13 @@ final class GitPack
     private const COPY_SLICE = 1024 * 1024;
     private const SLICE = 16 * 1024;
     private const TYPES = [1 => 'commit', 2 => 'tree', 3 => 'blob', 4 => 'tag'];
-    /** Says what to do about a history too large to send. */
-    public const LATEST_ONLY = 'To send only its latest files: git push softn "$(git commit-tree "HEAD^{tree}" -m Publish):refs/heads/main"';
+    /**
+     * Says what to do about a history too large to send: push the commit's tree, which is its files and nothing of
+     * how they came to be. One command, the same in Command Prompt, PowerShell and a POSIX shell: inside the quotes
+     * none of them acts on `^` or the braces. It was `"$(git commit-tree "HEAD^{tree}" -m Publish):refs/heads/main"`,
+     * which Command Prompt cannot run, and which still works where it does run.
+     */
+    public const LATEST_ONLY = 'To send only its latest files: git push softn "HEAD^{tree}:refs/heads/main"';
 
     /** @var array<string, array{type: string, offset: int, size: int, depth: int}> */
     private array $objects = [];
@@ -96,7 +115,7 @@ final class GitPack
         if (strlen($head) !== 12 || !str_starts_with($head, 'PACK')) throw new GitRefused('This push did not carry a pack of objects.');
         ['version' => $version, 'count' => $count] = (array) unpack('Nversion/Ncount', substr($head, 4));
         if ($version !== 2 && $version !== 3) throw new GitRefused("This push's pack is version $version, which is not read here.");
-        if ($count > self::MAX_OBJECTS) throw new GitRefused("This push has $count objects, and the most taken is " . self::MAX_OBJECTS . '. ' . self::LATEST_ONLY);
+        if ($count > self::MAX_OBJECTS) throw new GitRefused("This push has $count objects, and the most taken is " . self::MAX_OBJECTS . '.', self::LATEST_ONLY);
 
         for ($i = 0; $i < $count; $i++) {
             [$type, $size] = $this->objectHeader();
@@ -114,7 +133,7 @@ final class GitPack
             // A delta is held whole, and a string that grows can be copied as it does, with the piece it grows by.
             // The last one goes first: it is made, or waiting where it is held.
             $delta = '';
-            $this->haveMemory(2 * $size + min($size, self::SLICE_EXPANDS));
+            $this->haveMemory(2 * $size + min($size, self::SLICE_EXPANDS), true);
             $this->inflate($size, static function (string $piece) use (&$delta): void { $delta .= $piece; });
             if (isset($this->objects[$base])) {
                 $this->settle($this->resolve($base, $delta));
@@ -143,27 +162,30 @@ final class GitPack
     private function work(int $bytes): void
     {
         $this->worked += $bytes;
-        if ($this->worked > self::MAX_WORK) throw new GitRefused('This push is too much to read: ' . Limits::human(self::MAX_WORK) . ' of objects and more. ' . self::LATEST_ONLY);
+        if ($this->worked > self::MAX_WORK) throw new GitRefused('This push is too much to read: ' . Limits::human(self::MAX_WORK) . ' of objects and more.', self::LATEST_ONLY);
     }
 
     /**
      * Refused here rather than by PHP: past memory_limit a request ends in a fatal error, which git shows as a bare
-     * 500 and then "Everything up-to-date". Only a delta is held in memory, with its base. The command this ends with
-     * sends no history, so no earlier copy of a file for a change to be made against.
+     * 500 and then "Everything up-to-date". Only a delta is held in memory, with its base (`$delta`). The command a
+     * delta's refusal ends with sends no history, so no earlier copy of a file for a change to be made against; a push
+     * that is one commit's files already can still hold two files alike, and is sent to the page that takes them whole.
      */
-    private function haveMemory(int $bytes, string $words = 'A file in this push comes as a change to another, and putting it together needs more memory than this server gives a request. ' . self::LATEST_ONLY): void
+    private function haveMemory(int $bytes, bool $delta = false): void
     {
         $limit = Limits::iniBytes('memory_limit');
-        if ($limit !== null && memory_get_usage(true) + $bytes + self::MEMORY_SPARE > $limit) throw new GitRefused($words);
+        if ($limit === null || memory_get_usage(true) + $bytes + self::MEMORY_SPARE <= $limit) return;
+        if (!$delta) throw new GitRefused('Reading this push needs more memory than this server gives a request.');
+        throw new GitRefused('A file in this push comes as a change to another, and putting it together needs more memory than this server gives a request.', self::LATEST_ONLY, 'The app\'s update page takes the same files as a bundle.');
     }
 
     /**
      * Every object counts, history included, and a large file is often one that was taken out of the project long
-     * ago: the command this ends with leaves it behind.
+     * ago: the command this ends with, for a push that has a history, leaves it behind.
      */
     private static function tooLarge(): GitRefused
     {
-        return new GitRefused('A file in this push is larger than ' . Limits::human(self::MAX_OBJECT) . ', the most a file of an app can be. It may be in an earlier commit and not in the latest. ' . self::LATEST_ONLY);
+        return new GitRefused('A file in this push is larger than ' . Limits::human(self::MAX_OBJECT) . ', the most a file of an app can be.', 'It may be in an earlier commit and not in the latest. ' . self::LATEST_ONLY);
     }
 
     public function type(string $id): ?string
@@ -189,9 +211,18 @@ final class GitPack
         if ($object['size'] === 0) return '';
         // Whatever is read whole is looked at first. A walk holds each folder open on its way down, and a folder can be
         // a megabyte however little of it is read.
-        $this->haveMemory($object['size'], 'Reading this push needs more memory than this server gives a request.');
+        $this->haveMemory($object['size']);
         fseek($this->spool, $object['offset']);
         return (string) fread($this->spool, $object['size']);
+    }
+
+    /** The start of an object, and no more of it: where a commit names its tree and its parents, whatever its size. */
+    public function head(string $id, int $bytes): string
+    {
+        $object = $this->objects[$id] ?? null;
+        if ($object === null || $object['size'] === 0) return '';
+        fseek($this->spool, $object['offset']);
+        return (string) fread($this->spool, min($bytes, $object['size']));
     }
 
     /** The spool is the largest thing a push leaves on the temp disk, and the bundle is made by now. */
@@ -255,7 +286,7 @@ final class GitPack
         if ($from['depth'] >= self::MAX_DEPTH) throw new GitRefused('This push builds its objects on too long a chain.');
         $this->work($from['size']);
         // The base, beside the delta that is held already. A step adds no more than a slice to that.
-        $this->haveMemory($from['size'] + self::COPY_SLICE);
+        $this->haveMemory($from['size'] + self::COPY_SLICE, true);
         $source = $this->data($base);
         $at = 0;
         if (self::deltaNumber($delta, $at) !== strlen($source)) throw new GitRefused("This push's pack is damaged.");
@@ -336,7 +367,7 @@ final class GitPack
     private function open(string $type, int $size): void
     {
         $this->written += $size;
-        if ($this->written > self::MAX_TOTAL) throw new GitRefused('This push expands to more than ' . Limits::human(self::MAX_TOTAL) . ', its history included. ' . self::LATEST_ONLY);
+        if ($this->written > self::MAX_TOTAL) throw new GitRefused('This push expands to more than ' . Limits::human(self::MAX_TOTAL) . '.', 'Its history is counted in that. ' . self::LATEST_ONLY);
         // A small pack can expand a long way, onto a disk the directory's own checks do not watch.
         if ($this->written >= $this->roomAt) {
             Config::requireRoom(self::ROOM_STEP, sys_get_temp_dir());
@@ -405,21 +436,40 @@ final class GitRemote
     /** The http.postBuffer the commands on the site set. */
     private const POST_BUFFER = 64 * 1024 * 1024;
     private const NOT_LFS = 'An app is published with its own files: take them out of LFS (git lfs migrate export, as the publishing guide shows), or publish from the app\'s update page.';
-    /** Files that hold someone's credentials: everything published can be read by anyone. */
-    private const SECRETS = ['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', '.git-credentials', '.npmrc', '.netrc', '.pgpass'];
+    /**
+     * The most bytes of answers for refs other than main. A push can name as many refs as its body has room for, and
+     * each is answered, as git reports a ref it hears nothing of as a failure of the remote. Past this the rest go
+     * unanswered, which is all that happens to them: main is published whatever else a push names.
+     */
+    private const MAX_REPORT = 1024 * 1024;
+    /** How much of a commit is read for its tree and its parents: some eighty parents, where two is a merge. */
+    private const COMMIT_HEAD = 4096;
+    /** The most commits of a push looked through for the version that is live. Past it, nothing is said. */
+    private const MAX_HISTORY = 10000;
 
     /** `GET /git/{slug}/info/refs`: what git asks first. */
     public static function advertise(Request $req, string $given): Response
     {
         $service = $req->query['service'] ?? null;
         if ($service === 'git-upload-pack') {
-            // Git says this to the person as it is: "remote error: …". A clone and a fetch ask the same, and a fetch is
-            // most often a branch that was set to pull from here, as git itself suggests for a push with no refspec.
-            return self::bytes('application/x-git-upload-pack-advertisement', self::pkt("# service=git-upload-pack\n") . '0000' . self::pkt("ERR This directory takes pushes, and does not serve clones, fetches or pulls. An app's source can be downloaded from its page. If git pull brought you here, your branch is set to pull from the directory, and git branch --unset-upstream stops that.\n"));
+            // Git says this to the person as it is: "remote error: …". A clone and a fetch ask the same. A fetch is
+            // most often a branch that was set to pull from here, as git itself suggests for a push with no refspec;
+            // or a project with no other remote, where git asks its only one whatever the branch is set to, and
+            // nothing a person can run changes that.
+            return self::bytes('application/x-git-upload-pack-advertisement', self::pkt("# service=git-upload-pack\n") . '0000' . self::pkt("ERR This directory takes pushes, and does not serve clones, fetches or pulls. An app's source can be downloaded from its page. If git pull brought you here and the project has another remote, your branch is set to pull from the directory, and git branch --unset-upstream stops that. If the directory is the project's only remote, git pull asks it whatever the branch is set to, and there is nothing here to pull.\n"));
         }
         if ($service !== 'git-receive-pack') throw new ApiError(404, 'Git speaks to this address with ?service=git-receive-pack.');
-        $slug = Apps::resolveSlug($given);
-        $refused = self::admit($req, $slug);
+        try {
+            $slug = Apps::resolveSlug($given);
+            $refused = self::admit($req, $slug);
+        } catch (ApiError $e) {
+            if ($e->status !== 404) throw $e;
+            // Git shows a 404 here as "repository not found" and none of its words. An answer it reads, with the
+            // reason in place of the refs, is shown as "remote error: …". A name that is not an app's is answered
+            // before any key is asked for, so git has none to keep for it; an app that takes no push is answered
+            // after its key was found good.
+            return self::bytes('application/x-git-receive-pack-advertisement', self::pkt("# service=git-receive-pack\n") . '0000' . self::pkt('ERR ' . self::notHere($e) . "\n"));
+        }
         if ($refused !== null) return $refused;
         return self::bytes('application/x-git-receive-pack-advertisement', self::pkt("# service=git-receive-pack\n") . '0000' . self::pkt(self::NO_ID . " capabilities^{}\0" . self::CAPABILITIES . "\n") . '0000');
     }
@@ -427,9 +477,16 @@ final class GitRemote
     /** `POST /git/{slug}/git-receive-pack`: the push. */
     public static function receive(Request $req, string $given): Response
     {
-        $slug = Apps::resolveSlug($given);
-        $refused = self::admit($req, $slug);
-        if ($refused !== null) return $refused;
+        try {
+            $slug = Apps::resolveSlug($given);
+            $refused = self::admit($req, $slug);
+            if ($refused !== null) return $refused;
+            // What is live as the push arrives, read while the catalogue is open: see `live`.
+            $live = self::live($slug);
+        } catch (ApiError $e) {
+            if ($e->status !== 404) throw $e;
+            return self::told(self::notHere($e));
+        }
         // The key is good, and everything from here takes as long as the push does: the catalogue is let go, as a
         // new version's upload is read outside it, and taken again to record the version.
         Catalog::release();
@@ -440,8 +497,7 @@ final class GitRemote
             $body = $req->bodyFile(Limits::bundleEnvelope(), 'This push');
         } catch (ApiError $e) {
             // Git shows the status of a failed request and none of its words, so this is said the way it does show.
-            // A push too large is mostly its history, which the latest files alone leave behind.
-            return self::told($e->status === 413 ? $e->getMessage() . ' ' . GitPack::LATEST_ONLY : $e->getMessage());
+            return self::told($e->status === 413 ? $e->getMessage() . ' ' . self::latestIfHistory() : $e->getMessage());
         } catch (Throwable $e) {
             return self::told(self::trouble($e));
         }
@@ -456,7 +512,7 @@ final class GitRemote
             // by a push with nothing in it. Do not cure this with proxy-sendcl: see "The host" in the README.
             if ($size === 0) return self::told(self::notHandedTheBody());
             rewind($in);
-            return self::answer($req, $slug, $in, $size);
+            return self::answer($req, $slug, $in, $size, $live);
         } finally {
             fclose($in);
         }
@@ -470,8 +526,53 @@ final class GitRemote
     private static function notHandedTheBody(): string
     {
         $words = 'This server could not read a push sent in pieces, which is how git sends one larger than its http.postBuffer. Run this once in the project and push again: git config http.postBuffer 64M. Some git tools always send pieces, and cannot publish to this server: use git, or the app\'s update page.';
-        if (Limits::bundleEnvelope() < self::POST_BUFFER) $words .= ' If http.postBuffer is set already, this push is past 64 MB, more than the directory takes. ' . GitPack::LATEST_ONLY;
+        if (Limits::bundleEnvelope() < self::POST_BUFFER) $words .= ' If http.postBuffer is set already, this push is past 64 MB, more than the directory takes. ' . self::latestIfHistory();
         return $words;
+    }
+
+    /**
+     * What to say of a push too large to be read at all. Nothing of it was looked at, so whether its history is what
+     * makes it large is not known here: the way to send the latest files alone is given for the case where it helps,
+     * and the other case is said too, or a person whose latest files are the trouble is sent round in a circle.
+     */
+    private static function latestIfHistory(): string
+    {
+        return 'If the project\'s history is what makes it that large, this sends its latest files alone: git push softn "HEAD^{tree}:refs/heads/main". If the latest files alone are that large, the app is more than the directory takes, which is ' . Limits::human(Limits::bundle()) . ' as a bundle.';
+    }
+
+    /**
+     * Why there is nothing here to push to, in words git shows: an address that names no app, or an app that plays
+     * on its own site. Nothing of the address is repeated, as it goes to a terminal.
+     */
+    private static function notHere(ApiError $e): string
+    {
+        if (str_starts_with($e->getMessage(), 'This app plays on its own site')) return 'This app plays on its own site, so the directory holds no bundle of it for a push to replace.';
+        return 'No app is published under that name. Check the name in the remote\'s address, or publish the app\'s first version on the Publish page, which gives the commands with its name in them.';
+    }
+
+    /**
+     * The version that is live as a push arrives: its number, its bundle's digest and file, when it was published,
+     * and, if it was pushed, the commit it was and that commit's tree (`pushed`, which Apps::addVersion writes beside
+     * the app). Read while the catalogue is open, before the push is: what follows is done outside it, and compares
+     * the push with this. It is looked at again, under the catalogue, before anything is said of it.
+     *
+     * @return array{version: int, sha256: string, created: int, file: string, pushed: array{commit: string, tree: string}|null}
+     */
+    private static function live(string $slug): array
+    {
+        $latest = Apps::version($slug);
+        $record = Apps::row($slug, true)['pushed'] ?? null;
+        $pushed = null;
+        // For this version and this bundle, or it is of a version since replaced by an upload, or by hand.
+        if (is_array($record) && ($record['version'] ?? null) === (int) $latest['version'] && ($record['sha256'] ?? null) === $latest['sha256'] && self::isId($record['tree'] ?? null)) {
+            $pushed = ['commit' => self::isId($record['commit'] ?? null) ? $record['commit'] : '', 'tree' => $record['tree']];
+        }
+        return ['version' => (int) $latest['version'], 'sha256' => (string) $latest['sha256'], 'created' => (int) ($latest['created_at'] ?? 0), 'file' => Catalog::path($slug) . '/' . basename((string) $latest['file']), 'pushed' => $pushed];
+    }
+
+    private static function isId(mixed $value): bool
+    {
+        return is_string($value) && preg_match('/^[0-9a-f]{40}$/D', $value) === 1;
     }
 
     /**
@@ -505,35 +606,47 @@ final class GitRemote
         return $asked;
     }
 
-    /** @param resource $in */
-    private static function answer(Request $req, string $slug, $in, int $size): Response
+    /**
+     * Main is published whatever else the push names, and every other ref is answered for without being read.
+     *
+     * A tag is answered `ok`: git sends tags along by itself (`push.followTags`, which `npm version` users set, and
+     * with no refs offered here it sends every one of them each time), and a tag turned away made git end in failure
+     * for a version that was published, which a CI job reads as the publish failing. So a tag never fails a push and
+     * never stops one, and a line says that tags are not kept. Another branch is still turned away, with what to run:
+     * that is a person asking for something that did not happen.
+     *
+     * @param resource $in
+     * @param array{version: int, sha256: string, created: int, file: string, pushed: array{commit: string, tree: string}|null} $live
+     */
+    private static function answer(Request $req, string $slug, $in, int $size, array $live): Response
     {
         try {
-            [$commands, $capabilities] = self::commands($in);
+            ['main' => $main, 'report' => $others, 'kinds' => $kinds, 'unanswered' => $unanswered, 'capabilities' => $capabilities] = self::commands($in);
         } catch (ApiError $e) {
             return self::told($e->getMessage());
         }
         $start = (int) ftell($in);
         $said = [];
-        $statuses = [];
-        foreach ($commands as $command) {
-            $ref = $command['ref'];
+        $report = self::pkt("unpack ok\n");
+        if ($main !== null) {
             try {
-                if ($ref !== self::BRANCH) throw new GitRefused(str_starts_with($ref, 'refs/heads/') ? 'Only main is published. Push your branch to it: git push softn HEAD:refs/heads/main' : 'Only main is published. Tags and other refs are not kept.');
-                if ($command['new'] === self::NO_ID) throw new GitRefused('A push does not delete an app. Unpublish it from its page.');
-                $said[] = self::publish($req, $slug, $in, $start, $size, $command['new']);
-                $statuses[] = "ok $ref\n";
+                if ($main === self::NO_ID) throw new GitRefused('A push does not delete an app. Unpublish it from its page.');
+                array_push($said, ...self::publish($req, $slug, $in, $start, $size, $main, $live));
+                $report .= self::pkt('ok ' . self::BRANCH . "\n");
             } catch (GitRefused | ApiError $e) {
                 $said[] = $e->getMessage();
-                $statuses[] = "ng $ref not published\n";
+                $report .= self::pkt('ng ' . self::BRANCH . " not published\n");
             } catch (Throwable $e) {
                 $said[] = self::trouble($e);
-                $statuses[] = "ng $ref not published\n";
+                $report .= self::pkt('ng ' . self::BRANCH . " not published\n");
             }
         }
-        $report = self::pkt("unpack ok\n");
-        foreach ($statuses as $status) $report .= self::pkt($status);
-        $report .= '0000';
+        // Each said once, however many refs it is about.
+        if (isset($kinds['tag'])) $said[] = $main !== null ? 'Tags are not kept: the directory keeps an app\'s versions, and nothing else of its project.' : 'Nothing was published: tags are not kept, and only a push to main makes a version. To publish the commit you are on: git push softn HEAD:refs/heads/main';
+        if (isset($kinds['branch'])) $said[] = $main !== null ? 'Only main is published: the other branches in this push are not kept.' : 'Only main is published. Push your branch to it: git push softn HEAD:refs/heads/main';
+        if (isset($kinds['other'])) $said[] = 'Only main is published. Other refs are not kept.';
+        if ($unanswered > 0) $said[] = "This push names more refs than the directory answers for, so git will say that $unanswered of them were not reported. None of those is kept either.";
+        $report .= $others . '0000';
         if (!in_array('side-band-64k', $capabilities, true)) return self::bytes('application/x-git-receive-pack-result', $report);
         $out = '';
         foreach ($said as $words) $out .= self::say($words);
@@ -575,69 +688,173 @@ final class GitRemote
     /**
      * The commit, as a bundle, as a new version: room, the bundle's checks and then the catalogue, in the order the
      * versions route has them. This takes the catalogue and holds it to the end of the request, so nothing slow can
-     * follow it, which is why `commands` lets a ref be named only once.
+     * follow it, which is why `commands` lets main be named only once. What reads the push, or the bundle of the
+     * version that is live, is done before the catalogue is taken, against what `live` read when the push arrived.
      *
      * @param resource $in
-     * @return string what to tell the person
+     * @param array{version: int, sha256: string, created: int, file: string, pushed: array{commit: string, tree: string}|null} $live
+     * @return list<string> what to tell the person, a line each
      */
-    private static function publish(Request $req, string $given, $in, int $start, int $size, string $commit): string
+    private static function publish(Request $req, string $given, $in, int $start, int $size, string $tip, array $live): array
     {
         $pack = new GitPack($in, $start, $size);
+        $holds = null;
         try {
-            $pack->read();
-            [$tree, $subject] = self::commit($pack, $commit);
-            self::requireManifest($pack, $tree);
-            $files = [];
-            $walked = 0;
-            self::walk($pack, $tree, '', 0, $files, $walked);
-            $bundle = self::bundle($pack, $files);
+            try {
+                $pack->read();
+                [$tree, $subject, $commit] = self::commit($pack, $tip);
+                self::requireManifest($pack, $tree);
+                $files = [];
+                $walked = 0;
+                self::walk($pack, $tree, '', 0, $files, $walked);
+                $bundle = self::bundle($pack, $files);
+                if ($live['pushed'] !== null) $holds = self::holdsLive($pack, $tip, $live['pushed']);
+            } catch (GitRefused $e) {
+                if ($e->ifHistory === '' && $e->otherwise === '') throw $e;
+                // The way to push without a history is said to a push that came with one.
+                $more = self::sentHistory($pack, $tip) ? $e->ifHistory : $e->otherwise;
+                throw $more === '' ? new GitRefused($e->getMessage()) : new GitRefused($e->getMessage() . ' ' . $more);
+            }
         } finally {
             $pack->close();
         }
         // The index of every object and the name of every file are let go: inspect makes its own of the names.
         unset($pack, $files);
         Config::requireRoom((int) filesize($bundle));
-        $info = Bundle::inspect($bundle);
+        try {
+            // With the key the push came with: a file that holds it, a backup of keys, a private key under any name.
+            $info = Bundle::inspect($bundle, new Secrets(['edit' => $req->basicPassword()]));
+        } catch (SecretFound $e) {
+            throw new GitRefused($e->words('commit'));
+        }
+        // Whether these are the files of the version that is live, zipped another way, as when that version came
+        // from the Publish page: its bundle is not the one made here, file for file though it is. Compared before the
+        // catalogue is taken, as it reads both; what it found counts only if that version is still the latest then.
+        $same = $info['sha256'] !== $live['sha256'] && Bundle::sameFiles($bundle, $live['file']);
         $slug = Apps::resolveSlug($given);
         // A key replaced while the push was on its way is no longer good.
         if (!Apps::keyOpens($slug, (string) $req->basicPassword())) throw new GitRefused("This app's edit key has changed.");
         Apps::requireBundle($slug);
         $page = (Pages::origin() ?? Cors::requestOrigin() ?? '') . '/app/' . rawurlencode($slug);
         $latest = Apps::version($slug);
-        if ($latest['sha256'] === $info['sha256']) return "Already published as version {$latest['version']}: $page";
-        $app = Apps::addVersion($slug, $bundle, $subject, false, $info);
+        // What was live when the push arrived is live still: nobody published while this was read.
+        $still = self::live($slug) === $live;
+        if ($latest['sha256'] === $info['sha256'] || ($same && $still)) return ["Already published as version {$latest['version']}: $page"];
+        $app = Apps::addVersion($slug, $bundle, $subject, false, $info, ['commit' => $commit, 'tree' => $tree]);
         $words = "Published version {$app['version']}: $page";
         $dropped = $app['droppedVersions'] ?? [];
         // Not "the oldest": version 1 is older, and stays. And no number: one goes a version, so an app over a limit the
         // operator lowered keeps more than it says until it is down to it (Apps::addVersion). As the site says it.
         if ($dropped !== []) $words .= ". To make room, version {$dropped[0]} was removed: an app keeps its first version and its latest ones.";
-        return $words;
+        $lines = [$words];
+        // Published all the same, as the directory keeps no history to refuse it by; and said, as git could not say it.
+        if ($holds === false && $still) $lines[] = "Version {$app['version']} does not contain version {$live['version']}, which was live until now (published " . gmdate('j F Y \a\t H:i', $live['created']) . " UTC): that version's commit is not in the history this push sent. If it was pushed from another computer, or by someone else, its changes are not in version {$app['version']}. To keep them, bring them into this project and push again.";
+        return $lines;
     }
 
     /**
-     * What was asked for, from the pkt-lines before the pack.
+     * Whether a pushed commit is built on the version that is live: that version's commit is in its history, or a
+     * commit there has the same tree, which is the same files whatever became of the commit (a message reworded, a
+     * history squashed, the files pushed once without their history).
+     *
+     * True or false only when it can be told. Null for a push with no history to look through, which is its last
+     * commit alone or a tree, and for one whose history stops short of its start, as a shallow clone's does: nothing
+     * is said of those. Each commit is read once, and only its start, so this is held to the pack's own limits.
+     *
+     * @param array{commit: string, tree: string} $live
+     */
+    private static function holdsLive(GitPack $pack, string $tip, array $live): ?bool
+    {
+        if ($pack->type($tip) !== 'commit') return null;
+        $whole = true;
+        $seen = [$tip => true];
+        $queue = [$tip];
+        while ($queue !== []) {
+            $id = (string) array_pop($queue);
+            [$tree, $parents, $cut] = self::parents($pack, $id);
+            if ($id === $tip && $parents === []) return null;
+            if ($id === $live['commit'] || $tree === $live['tree']) return true;
+            if ($cut) $whole = false;
+            foreach ($parents as $parent) {
+                // A parent that was not sent is where a shallow clone's history stops. Only commits that are here are
+                // remembered, so what is held is no more than the commits looked through, whatever a commit names.
+                if ($pack->type($parent) !== 'commit') $whole = false;
+                elseif (!isset($seen[$parent])) {
+                    if (count($seen) >= self::MAX_HISTORY) {
+                        $whole = false;
+                        continue;
+                    }
+                    $seen[$parent] = true;
+                    $queue[] = $parent;
+                }
+            }
+        }
+        return $whole ? false : null;
+    }
+
+    /**
+     * Whether a push carried more than its last commit, so that pushing the latest files alone would send less. A
+     * push refused before its commit was read is taken to have: that is what most pushes are.
+     */
+    private static function sentHistory(GitPack $pack, string $tip): bool
+    {
+        $type = $pack->type($tip);
+        if ($type === null) return true;
+        if ($type !== 'commit') return false;
+        foreach (self::parents($pack, $tip)[1] as $parent) if ($pack->type($parent) === 'commit') return true;
+        return false;
+    }
+
+    /**
+     * A commit's tree and its parents, from its first lines, and whether the parents may go on past what was read.
+     *
+     * @return array{0: string, 1: list<string>, 2: bool}
+     */
+    private static function parents(GitPack $pack, string $id): array
+    {
+        $text = $pack->head($id, self::COMMIT_HEAD);
+        if (!preg_match('/\Atree ([0-9a-f]{40})\n((?:parent [0-9a-f]{40}\n)*)/', $text, $m)) return ['', [], true];
+        $parents = $m[2] === '' ? [] : array_map(static fn(string $line): string => substr($line, 7, 40), str_split($m[2], 48));
+        return [$m[1], $parents, $pack->size($id) > self::COMMIT_HEAD && strlen($m[0]) > self::COMMIT_HEAD - 48];
+    }
+
+    /**
+     * What was asked for, from the pkt-lines before the pack: the commit to publish, if main is named, and the
+     * answers for every other ref, made as the lines are read. A push can name as many refs as its body has room
+     * for, so none of them is held: what is kept is the answers, to a limit, and which kinds of ref there were.
+     * Main is named once, so the work of a push is never done twice.
      *
      * @param resource $in
-     * @return array{0: list<array{new: string, ref: string}>, 1: list<string>}
+     * @return array{main: string|null, report: string, kinds: array<string, true>, unanswered: int, capabilities: list<string>}
      */
     private static function commands($in): array
     {
-        $commands = [];
+        $main = null;
+        $report = '';
+        $kinds = [];
+        $unanswered = 0;
         $capabilities = [];
         while (($line = self::readPkt($in)) !== null) {
             // A shallow clone says where its history stops. Only the commit pushed is read, so nothing hangs on it.
             if (str_starts_with($line, 'shallow ')) continue;
-            if (count($commands) >= 16) throw new ApiError(400, 'That push names too many refs, and only main is published. Push that alone: git push softn HEAD:refs/heads/main');
             $nul = strpos($line, "\0");
             if ($nul !== false) {
                 $capabilities = array_values(array_filter(explode(' ', trim(substr($line, $nul + 1)))));
                 $line = substr($line, 0, $nul);
             }
             if (!preg_match('#^[0-9a-f]{40} ([0-9a-f]{40}) (refs/\S+)\n?$#D', $line, $m)) throw new ApiError(400, 'That is not a push git would send.');
-            if (isset($commands[$m[2]])) throw new ApiError(400, 'That is not a push git would send.');
-            $commands[$m[2]] = ['new' => $m[1], 'ref' => $m[2]];
+            if ($m[2] === self::BRANCH) {
+                if ($main !== null) throw new ApiError(400, 'That is not a push git would send.');
+                $main = $m[1];
+                continue;
+            }
+            $kind = str_starts_with($m[2], 'refs/tags/') ? 'tag' : (str_starts_with($m[2], 'refs/heads/') ? 'branch' : 'other');
+            $kinds[$kind] = true;
+            $status = self::pkt($kind === 'tag' ? "ok {$m[2]}\n" : "ng {$m[2]} not published\n");
+            if (strlen($report) + strlen($status) > self::MAX_REPORT) $unanswered++;
+            else $report .= $status;
         }
-        return [array_values($commands), $capabilities];
+        return ['main' => $main, 'report' => $report, 'kinds' => $kinds, 'unanswered' => $unanswered, 'capabilities' => $capabilities];
     }
 
     /**
@@ -656,14 +873,20 @@ final class GitRemote
     }
 
     /**
-     * The commit's tree, and the subject of its message as git shows it: the first paragraph, on one line, in UTF-8
-     * from the encoding the commit names, if it names one.
+     * The commit's tree, the subject of its message as git shows it (the first paragraph, on one line, in UTF-8 from
+     * the encoding the commit names, if it names one), and its id.
      *
-     * @return array{0: string, 1: string}
+     * A tree pushed as it is, with no commit, is its own files and has no message and no commit id: that is what
+     * `git push softn "HEAD^{tree}:refs/heads/main"` sends, the latest files of a project and none of its history,
+     * and `"HEAD:app:refs/heads/main"` for an app in a folder. A git server would not put a tree on a branch; here
+     * a branch is only the name of what to publish.
+     *
+     * @return array{0: string, 1: string, 2: string}
      */
     private static function commit(GitPack $pack, string $id): array
     {
-        if ($pack->type($id) !== 'commit') throw new GitRefused('Only a branch of commits is published.');
+        if ($pack->type($id) === 'tree') return [$id, '', ''];
+        if ($pack->type($id) !== 'commit') throw new GitRefused('Only a commit, or the folder of one, is published.');
         $text = $pack->data($id);
         if (!preg_match('/^tree ([0-9a-f]{40})\n/', $text, $m)) throw new GitRefused('This push has a commit that cannot be read.');
         $blank = strpos($text, "\n\n");
@@ -680,7 +903,7 @@ final class GitRemote
                 // An encoding PHP does not know: Text::clean makes what is not UTF-8 safe.
             }
         }
-        return [$m[1], trim((string) preg_replace('/[ \t]*\n[ \t]*/', ' ', $paragraph))];
+        return [$m[1], trim((string) preg_replace('/[ \t]*\n[ \t]*/', ' ', $paragraph)), $id];
     }
 
     /**
@@ -699,7 +922,9 @@ final class GitRemote
             if (++$walked > self::MAX_WALKED) throw new GitRefused('This project has more than ' . self::MAX_WALKED . ' files and folders.');
             $path = $prefix . $name;
             if (strlen($path) > self::MAX_PATH) throw new GitRefused('This project has a file with a path of more than ' . self::MAX_PATH . ' bytes.');
-            if ($name === '.DS_Store' || ($prefix === '' && str_starts_with($name, '.git'))) continue;
+            // In any folder, as `.gitignore` and `.gitkeep` are kept in any, and the guide's own `git archive` line leaves
+            // them out of the first bundle in every one.
+            if ($name === '.DS_Store' || str_starts_with($name, '.git')) continue;
             // An empty name is asked about here: in a folder its path ends in "/", which unsafeName takes for a folder.
             if ($name === '' || !mb_check_encoding($path, 'UTF-8') || str_contains($name, '/') || str_contains($name, '\\') || Bundle::unsafeName($path)) throw new GitRefused("This project has a file with a name a bundle cannot hold: $path");
             if (self::isFolder($mode)) {
@@ -709,7 +934,9 @@ final class GitRemote
             if ($mode === '120000') throw new GitRefused("$path is a symbolic link. A published app holds its files, so replace it with the file.");
             if ($mode === '160000') throw new GitRefused("$path is a submodule. A published app holds its files, so copy them in.");
             if ($mode !== '100644' && $mode !== '100755' && $mode !== '100664') throw new GitRefused("$path is not a file a bundle can hold.");
-            if (self::looksSecret($name)) throw new GitRefused("$path looks like it holds secrets, and everything published is public. Take it out of the commit, with git rm --cached if you need to keep the file.");
+            // By its name, here, where the path is known and nothing has been zipped yet. What a file holds is looked at
+            // when the bundle is read (Bundle::inspect, with Secrets): the same look an upload gets.
+            if (($kind = Secrets::named($path)) !== null) throw new GitRefused((new SecretFound($path, $kind))->words('commit'));
             if ($pack->type($object) !== 'blob') throw new GitRefused("This push is missing $path. Pushing the whole branch from a full clone puts it right.");
             if (self::lfsPointer($pack, $object)) throw new GitRefused("$path is kept in Git LFS, so git sends a pointer to it and not the file. " . self::NOT_LFS);
             if (count($files) >= Bundle::MAX_ENTRIES) throw new GitRefused('This project has more than ' . Bundle::MAX_ENTRIES . ' files.');
@@ -755,12 +982,14 @@ final class GitRemote
         $folders = self::appFolders($pack, $tree);
         if ($folders === []) throw new GitRefused('This commit has no manifest.json in its top folder, which is where an app has it.');
         $words = 'This commit has no manifest.json in its top folder, and ' . implode(', ', array_map(static fn($f) => "$f/", array_slice($folders, 0, 3))) . (count($folders) > 1 ? ' have one.' : ' has one.');
-        // A folder's name goes into a command to be pasted, inside double quotes, so only a plain one: no $, `, \, " or
-        // ! that a shell acts on there, and nothing a terminal shows otherwise than it is.
+        // A folder's name goes into a command to be pasted, inside double quotes, so only a plain one: no $, `, \, ",
+        // %, ^ or ! that a shell acts on there, and nothing a terminal shows otherwise than it is.
         $folder = $folders[0];
         if (!preg_match('#^[A-Za-z0-9_][A-Za-z0-9._ -]*(/[A-Za-z0-9_][A-Za-z0-9._ -]*)*$#D', $folder)) throw new GitRefused("$words Publish that folder on its own.");
         if (count($folders) > 1) $words .= ' Each app is its own remote, with its own key.';
-        $line = "$words To publish $folder/ alone: git push softn \"\$(git commit-tree \"HEAD:$folder\" -m Publish):refs/heads/main\"";
+        // The folder's tree, pushed as it is: git reads the last colon as the one before the branch. It runs the same
+        // in Command Prompt, PowerShell and a POSIX shell, which the `$(git commit-tree …)` it replaces did not.
+        $line = "$words To publish $folder/ alone: git push softn \"HEAD:$folder:refs/heads/main\"";
         // Past what the terminal is given, the line would be cut, and a command cut short does not run.
         if (strlen($line) > self::LINE) throw new GitRefused("$words Publish that folder on its own.");
         throw new GitRefused($line);
@@ -790,7 +1019,7 @@ final class GitRemote
                     if (strlen($prefix) + strlen($name) > self::MAX_PATH) continue;
                     if ($prefix !== '' && $name === 'manifest.json' && !self::isFolder($mode)) $found[rtrim($prefix, '/')] = true;
                     if (!self::isFolder($mode) || isset($seen[$object]) || $pack->type($object) !== 'tree' || $pack->size($object) > self::MAX_TREE) continue;
-                    if ($prefix === '' && str_starts_with($name, '.git')) continue;
+                    if (str_starts_with($name, '.git')) continue;
                     if (count($seen) > self::MAX_SEARCHED) continue;
                     $seen[$object] = true;
                     $next[] = [$object, "$prefix$name/"];
@@ -815,13 +1044,6 @@ final class GitRemote
         if ($size < 64 || $size >= 1024) return false;
         $text = $pack->data($id);
         return (str_starts_with($text, "version https://git-lfs.github.com/spec/v1\n") || str_starts_with($text, "version https://hawser.github.com/spec/v1\n")) && str_contains($text, "\noid ");
-    }
-
-    private static function looksSecret(string $name): bool
-    {
-        $name = strtolower($name);
-        if ($name === '.env' || (str_starts_with($name, '.env.') && !preg_match('/\.(example|sample|template|dist)$/D', $name))) return true;
-        return in_array($name, self::SECRETS, true) || preg_match('/\.(pem|p12|pfx)$/D', $name) === 1;
     }
 
     /**

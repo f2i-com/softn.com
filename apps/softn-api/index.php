@@ -265,6 +265,19 @@ function requested_digest(Request $req): ?string
 }
 
 /**
+ * The keys that came with a request, for the look a bundle someone is
+ * publishing gets (Bundle::inspectUpload): a file in it that holds one of
+ * them would be public with the rest. Read before either is known to be
+ * good: a key that opens nothing here may be another app's.
+ *
+ * @return array<string, string|null>
+ */
+function presented_keys(Request $req): array
+{
+    return ['edit' => $req->credential('x-edit-key', 'editKey'), 'admin' => $req->credential('x-admin-key', 'adminKey')];
+}
+
+/**
  * What a remix sent with no bundle starts from: its parent's latest bundle,
  * copied to a file of the request's own and checked before the catalogue is
  * taken, as an uploaded one is. [path, what Bundle::inspect said], or null
@@ -456,7 +469,8 @@ function handle(string $handler, array $args, Request $req): Response
             // The bundle is checked before the parent is looked up: finding
             // the parent takes the catalogue lock, and the check reads every
             // file in the bundle, which held every other request meanwhile.
-            $info = Bundle::inspect($file);
+            // A file that holds secrets is refused, as a push refuses it.
+            $info = Bundle::inspectUpload($file, presented_keys($req));
             $parent = $req->field('parent');
             $parentSlug = is_string($parent) && $parent !== '' ? Apps::resolveParent($parent) : null;
             $result = Apps::create($file, [
@@ -609,7 +623,9 @@ function handle(string $handler, array $args, Request $req): Response
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
             Config::requireRoom((int) @filesize($file));
-            $info = Bundle::inspect($file);
+            // With the key it came with: a bundle that holds its own app's
+            // edit key would hand the app to whoever reads the source.
+            $info = Bundle::inspectUpload($file, presented_keys($req));
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
             // A linked app takes no bundle: remove play_url from its app.json first.
@@ -652,7 +668,7 @@ function handle(string $handler, array $args, Request $req): Response
             $image = $req->imageUpload();
             // And checked before it, as on the publish route; with no bundle
             // sent, the parent's is copied and checked instead (remix_source).
-            $info = $file === null ? null : Bundle::inspect($file);
+            $info = $file === null ? null : Bundle::inspectUpload($file, presented_keys($req));
             $source = $file === null ? remix_source($args[0]) : null;
             $parentSlug = Apps::resolveSlug($args[0]);
             $parent = Apps::requireBundle($parentSlug);

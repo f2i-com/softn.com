@@ -387,6 +387,7 @@ final class Apps
         $primary = self::color($opts['primary'] ?? null) ?? self::color($info['manifest']['config']['theme']['primary'] ?? null);
 
         Catalog::boot();
+        self::refuseKeysOf($info, 'bundle');
         // A seed names its own slug: the id the site already uses for that demo.
         $wanted = is_string($opts['slug'] ?? null) && $opts['slug'] !== '' ? self::slugify($opts['slug']) : self::slugify($name);
         $slug = self::uniqueSlug($wanted, $source === 'seed');
@@ -489,6 +490,45 @@ final class Apps
     }
 
     /**
+     * Refuse a bundle that holds the edit key of any app in the directory,
+     * this one or another: published, the key is public, and whoever reads
+     * it holds that app. A list of keys pasted into a note has nothing else
+     * to know it by. `$info` is what Bundle::inspect said of a bundle someone
+     * is publishing: among the rest, the SHA-256 of every run in it shaped
+     * like a key (`keyLike`), by file, which is what the directory keeps of
+     * a key. A bundle the directory reads for itself has none, and passes.
+     *
+     * Under the catalogue, which is where the hashes are: a lookup for each
+     * digest, of which a bundle has at most Secrets::MAX_KEY_LIKE, and one
+     * pass over the apps, made only when there is a digest to look up.
+     *
+     * The refusal names the file and not the key or its app. It does tell
+     * whoever sent the bundle that some run in that file is a key of an app
+     * here, which they could not learn before without trying the run
+     * against each app. A key cannot be guessed, 160 random bits, so that is
+     * of use only to someone who holds the key already and does not know
+     * what it is: see README, Secrets, which is also where the setting that
+     * turns this off is. Digests are compared, never keys, so how long a
+     * comparison takes says nothing of a key.
+     *
+     * @param array<string, mixed> $info
+     * @param string $from 'commit' for a push, 'bundle' for an upload: how the refusal is worded
+     */
+    private static function refuseKeysOf(array $info, string $from): void {
+        $found=is_array($info['keyLike']??null)?$info['keyLike']:[];
+        // A site that would rather not tell anyone that a string is some app's key: "refuseAppKeys": false.
+        if($found===[]||Config::get('refuseAppKeys',true)!==true)return;
+        $kept=[];
+        foreach(Catalog::all() as $row){$hash=$row['edit_key_hash']??null;if(is_string($hash)&&strlen($hash)===64&&ctype_xdigit($hash))$kept[(string)hex2bin($hash)]=true;}
+        if($kept===[])return;
+        foreach($found as $path=>$digests){
+            for($at=0,$end=strlen((string)$digests);$at<$end;$at+=32){
+                if(isset($kept[substr((string)$digests,$at,32)]))throw new ApiError(400,(new SecretFound((string)$path,'other-key'))->words($from));
+            }
+        }
+    }
+
+    /**
      * A new version. The operator's `trusted` goes with the old one unless
      * the operator is the one uploading (`$byAdmin`): trust is their word
      * about the bundle they looked at, and a publisher's next upload — new
@@ -507,11 +547,22 @@ final class Apps
      * `$info` is what Bundle::inspect said of the bundle, asked before the
      * catalogue was taken, as for create().
      *
+     * `$pushed` is given for a version made by `git push`: the commit it was
+     * and that commit's tree. It is kept beside the app (`pushed`, with the
+     * version's number and its bundle's digest, so it is known to be of that
+     * version and no other), and is how the next push is told that it is not
+     * built on this one (GitRemote::publish). A version made any other way
+     * takes it away: nothing is known of where its files came from. It is
+     * the app's and not the version's because discovery writes a version's
+     * record afresh from the bundle on disk, with the fields it knows.
+     *
      * @param array<string, mixed>|null $info
+     * @param array{commit: string, tree: string}|null $pushed
      * @return array<string, mixed>
      */
-    public static function addVersion(string $slug, string $bundlePath, ?string $notes, bool $byAdmin = false, ?array $info = null): array {
+    public static function addVersion(string $slug, string $bundlePath, ?string $notes, bool $byAdmin = false, ?array $info = null, ?array $pushed = null): array {
         $row=self::row($slug,true);$info??=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);$before=$doc;
+        self::refuseKeysOf($info,$pushed!==null?'commit':'bundle');
         $next=(int)$row['latest_version']+1;
         // What goes to make room. An app counts its versions and not their numbers, which carry on from the
         // latest, so a limit reached is a window that moves and not the end of the app. Version 1 stays: the
@@ -544,6 +595,8 @@ final class Apps
             // version without storage does not erase.
             $remembered=in_array('storage',$info['capabilities'],true)?$info['storagePolicies']:$promised;
             if($remembered!==null)$doc['app']['storage_promised']=$remembered;
+            if($pushed!==null)$doc['app']['pushed']=['version'=>$next,'sha256'=>$info['sha256'],'commit'=>$pushed['commit'],'tree'=>$pushed['tree']];
+            else unset($doc['app']['pushed']);
             $untrusted=!$byAdmin && array_key_exists('trusted',$doc['app']);
             if($untrusted)unset($doc['app']['trusted']);
             Catalog::put($slug,$doc);
