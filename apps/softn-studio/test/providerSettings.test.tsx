@@ -399,6 +399,9 @@ describe('the dashboard asks for a provider first', () => {
     expect(needsProviderSetup({ hosted: false, providerCount: 0, setupSkipped: true })).toBe(false);
     expect(needsProviderSetup({ hosted: false, providerCount: 1, setupSkipped: false })).toBe(false);
     expect(needsProviderSetup({ hosted: true, providerCount: 0, setupSkipped: false })).toBe(false);
+    // Someone with projects in this browser is past a first visit: theirs were listed under the step, dimmed and dead.
+    expect(needsProviderSetup({ hosted: false, providerCount: 0, setupSkipped: false, projectCount: 0 })).toBe(true);
+    expect(needsProviderSetup({ hosted: false, providerCount: 0, setupSkipped: false, projectCount: 2 })).toBe(false);
   });
 
   it('shows the setup before everything else, and locks the rest until it is done or skipped', () => {

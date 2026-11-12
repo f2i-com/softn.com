@@ -130,6 +130,12 @@ const App: React.FC = () => {
   // renamed or moved in Files was not chosen, and the panel stays (lib/shownFile.ts).
   useFileChosen(() => setMobilePanel((panel) => (panel === 'files' || panel === 'pages' ? 'canvas' : panel)));
   const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
+  /**
+   * How many projects the recent list named when the page opened. The list
+   * above is filled once project storage has answered; this is known at
+   * once, so Home does not open on the provider step and then drop it.
+   */
+  const [listedAtOpen] = useState(() => loadRecentProjects().length);
   /** The project store did not answer when the list was last made: said on the dashboard, with Try again. */
   const [storeSilent, setStoreSilent] = useState(false);
   const autosaveRef = useRef<AutosaveController | null>(null);
@@ -600,7 +606,7 @@ const App: React.FC = () => {
             storeSilent={storeSilent}
             onRetryStore={handleRetryStore}
             ai={isHostedEditor() ? undefined : {
-              gate: needsProviderSetup({ hosted: false, providerCount, setupSkipped }),
+              gate: needsProviderSetup({ hosted: false, providerCount, setupSkipped, projectCount: Math.max(recentProjects.length, listedAtOpen) }),
               onSkip: () => useAIStore.getState().setSetupSkipped(true),
             }}
           />

@@ -26,9 +26,15 @@ export function useAIReadiness(): AIReadiness {
  * Whether the dashboard asks for a provider before anything else: no
  * provider yet, the person has not chosen to go without, and this is not a
  * hosted editor (whose AI is its host's).
+ *
+ * Nor is it asked of someone who has projects here. The step locks the rest
+ * of the page, and theirs were under it: a project opened from a link or
+ * imported from a file, then listed on Home dimmed and dead until they found
+ * "Explore examples without AI". That is no first visit; the line under the
+ * headline still offers to connect a provider.
  */
-export function needsProviderSetup(options: { hosted: boolean; providerCount: number; setupSkipped: boolean }): boolean {
-  return !options.hosted && options.providerCount === 0 && !options.setupSkipped;
+export function needsProviderSetup(options: { hosted: boolean; providerCount: number; setupSkipped: boolean; projectCount?: number }): boolean {
+  return !options.hosted && options.providerCount === 0 && !options.setupSkipped && (options.projectCount ?? 0) === 0;
 }
 
 /** Open the setup for whatever the AI is missing. */
