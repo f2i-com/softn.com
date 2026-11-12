@@ -1130,6 +1130,10 @@
             {
               "type": "paragraph",
               "text": "Start a project with New, reopen a bundle with Open (Ctrl+O), or open Fieldnotes from the homepage. A visual change is a change to editable source, not a step away from it."
+            },
+            {
+              "type": "paragraph",
+              "text": "Builder shows as many panels beside the canvas as the window has room for: all of them from 1660 pixels wide, Properties and one other from 1234, and one at a time below that. Under 900 pixels, on a phone or a small tablet, the canvas keeps the screen and Components, Properties, Hierarchy, Files and Logic open as sheets from a bar at the bottom: tap a component to add it, and move the selected element with Move up and Move down."
             }
           ]
         },
@@ -1204,6 +1208,8 @@
                 "A `.py` file needs a Python module name: letters, digits and underscores. Reserved module names are refused, with the reason: `softn`, `torch`, `json`, `math` and anything starting `__softn`.",
                 "Two `.py` files with the same name in different folders are refused, because Python imports by module name.",
                 "Moving a file or renaming a folder rewrites every `<logic src>` that pointed at it.",
+                "Add a picture or file, in Files, puts a file of yours in the app, and Image and Avatar offer Add… beside their list of the app’s pictures. One file can be 50 MB at most. A picture can be replaced in place, keeping its name.",
+                "Renaming a picture or file rewrites every quoted path to it in the pages and the logic, `asset(\"…\")` included, as one Undo step. Deleting one names the pages that use it first.",
                 "A logic file created without an extension gets the project’s: `.py` or `.logic`."
               ]
             }
@@ -1255,6 +1261,10 @@
             {
               "type": "paragraph",
               "text": "Use Design where it offers a clear control, and Code for complex behaviour and structures that do not round-trip through the canvas. After either, run the same user flow again."
+            },
+            {
+              "type": "paragraph",
+              "text": "SmartStats, SmartCards and SmartList are drawn on the canvas as themselves when their rows are written on the page, as the Dashboard starter writes them."
             }
           ]
         },
@@ -1264,7 +1274,11 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Live Preview runs the app at Desktop (1440×900), Tablet (768×1024) or Mobile (390×844). It composes the app the way the runtime does, so a problem Run would refuse, such as an undeclared `import torch`, shows here first; for that one, Preview offers Enable torch."
+              "text": "The Preview view runs the app at Desktop (1440×900), Tablet (768×1024) or Mobile (390×844). It composes the app the way the runtime does, so a problem Run would refuse, such as an undeclared `import torch`, shows here first; for that one, Preview offers Enable torch."
+            },
+            {
+              "type": "paragraph",
+              "text": "Live preview, at the end of the row of file tabs in Design, runs the app beside the canvas and follows each change a moment after you make it. The app is not started again for a change to a page or its styles: what you typed into it, and where you were in it, stay. A change to its logic starts it again with its variables carried over."
             },
             {
               "type": "paragraph",
@@ -1390,7 +1404,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Before any code is written, the Blueprint review shows the planned pages, data model, risks and assumptions. Approve blueprint, add a note and revise the plan, or go back with Revise brief. One complete loop is easier to review than many unfinished screens."
+              "text": "Before any code is written, the Blueprint review shows the planned pages, data model, risks and assumptions. Approve blueprint, add a note and revise the plan, or go back with Revise brief. A line that adds or removes pages, such as “add a page for watering” or “remove the settings page”, changes the plan at once; any other line is kept as a note and sent to the AI at the start of every run. One complete loop is easier to review than many unfinished screens."
             }
           ]
         },
@@ -1436,6 +1450,10 @@
             {
               "type": "paragraph",
               "text": "The validator runs the same composer whenever the files or the blueprint change. While it reports a refusal, Run and Publish are disabled (“Fix what the validator found first”); Export bundle stays available, so you can take the files elsewhere to fix them. It also rejects a `.py` file under `server/`: server logic runs as JavaScript on every backend host."
+            },
+            {
+              "type": "paragraph",
+              "text": "The preview follows the files as they are written, by the AI or by you, without starting the app again: words and styles change with what the app held kept, and a new page appears in its navigation. A change to the logic starts it again with its variables carried over. A file that does not work yet leaves the last version that worked on screen, with a line saying what is wrong with the newest."
             }
           ]
         },
@@ -1497,12 +1515,37 @@
           ]
         },
         {
+          "id": "manage-files",
+          "title": "Manage the files yourself",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Files is a file manager you can use without the AI. Right-click a file or folder, or use the “more” button on its row or the menu key, for New file, New folder, Add files, Rename (F2), Duplicate, Copy, Cut, Paste, Download, Copy path and Delete; drag a file onto a folder to move it. Add files with the button, by dropping them on the panel or by pasting: a copied picture arrives as `pasted-picture.png`."
+            },
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Nothing is overwritten: a second `logo.png` becomes `logo-2.png`.",
+                "One file can be 50 MB at most; an app, 200 MB and 10,000 files.",
+                "Renaming or moving a file rewrites what refers to it in the same step, the manifest’s main page included. `manifest.json` and `permission.json` keep their names and places.",
+                "Each action is one named step in History, and Undo takes it back. Opening or importing a project is not a step, so Undo straight after it removes nothing.",
+                "While the AI is working, the panel does not write: its actions wait for the run to end or be stopped."
+              ]
+            }
+          ]
+        },
+        {
           "id": "continue-editing",
           "title": "Keep editing after generation",
           "blocks": [
             {
               "type": "paragraph",
               "text": "Refine the result in Studio or open the export in Builder. The useful outcome is an app whose behaviour you understand and whose source you can change, not a prompt you can never reproduce."
+            },
+            {
+              "type": "paragraph",
+              "text": "Open in Builder, on the project bar (the project menu on a phone), saves the project and opens it in the visual Builder in the same tab, under “From Studio” and the project’s name. Back to Studio brings the files you changed into the same project as one History step; a file changed on both sides is asked about. It is offered where Studio and Builder are served from one site, and not inside FormLogic."
             },
             {
               "type": "paragraph",
@@ -1578,6 +1621,30 @@
           ]
         },
         {
+          "id": "edit-while-it-runs",
+          "title": "Edit an app while it runs",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Edit, on the bar over a running app (in the ⋯ menu on a phone), opens its source beside it. What you change shows in the app after a short pause, with no refresh; a change to its logic starts it again with its variables carried over. A change that does not work yet is not shown: the last version that worked keeps running, and the editor says what is wrong and where."
+            },
+            {
+              "type": "paragraph",
+              "text": "Pick, then press an element, to see the lines that drew it and change its words and plain attributes in a small form. Handlers, bindings, conditions and anything the app works out are listed and left to the source. Undo, Redo and Restart are beside it, and the editor’s menu has Download the edited app, Publish it, Add a file and Discard my changes."
+            },
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "An app from the directory or a link is never changed: your first change makes your own copy in your library, named “(my copy)”, and that is what you edit and run from then on.",
+                "An app you opened from a file, or made in Studio or Builder, is edited as itself. Your changes are kept with it in this browser and are there after a reload; Discard my changes returns it to how it was opened.",
+                "A change to what an app asks permission for opens it again, and it asks you.",
+                "The app cannot open the editor, read it or tell that it is open, and there is no Edit where the runtime is embedded in another page."
+              ]
+            }
+          ]
+        },
+        {
           "id": "saved-library",
           "title": "Understand the browser library",
           "blocks": [
@@ -1600,6 +1667,10 @@
             {
               "type": "paragraph",
               "text": "A capability needs support and permission from the host. The browser can also ask for its own consent for camera or microphone access. A desktop build may offer native storage or integrations an ordinary browser cannot."
+            },
+            {
+              "type": "paragraph",
+              "text": "Allow takes effect in the running app: it is not started again, and what you had typed stays. A call the app made while the question was up is kept, with nothing of it done, and made once you allow; Not now refuses it at once. The bar says beforehand in the few cases where allowing does start the app again, with its variables carried over."
             },
             {
               "type": "paragraph",
@@ -2790,6 +2861,10 @@
             {
               "type": "paragraph",
               "text": "`_init()` runs once when the app loads, in either language. Use XDB for records: a counter or selected tab is not a database record. Decide which state should restart and which should be restored."
+            },
+            {
+              "type": "paragraph",
+              "text": "A permission allowed after the app opened takes effect in the running app, and `_init()` does not run again for it. Define `_onPermissionChange()` to do then what start-up could not: it is called when the app is allowed something more. An app that was refused something earlier and defines no `_onPermissionChange()` is started again instead, with its variables carried over and `_init()` run again, and so is any app a permission is taken away from. `_init()` also runs again when an editor’s preview takes a change to the logic, and not for a change to a page or its styles."
             }
           ]
         },
@@ -4995,7 +5070,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "In prompt mode the app is interactive straight away while a compact bar above it lists the requested access, with expandable details, Allow and Not now. The bar takes its own space rather than covering the app. Dismissing it leaves access disabled and keeps a Review permissions control available without restarting. Allowing updates the runtime’s permission configuration; scripts may reinitialise so startup features can retry."
+              "text": "In prompt mode the app is interactive straight away while a compact bar above it lists the requested access, with expandable details, Allow and Not now. The bar takes its own space rather than covering the app. Dismissing it leaves access disabled and keeps a Review permissions control available without restarting. Allow takes effect in the running app without starting it again: a call that was waiting for the answer is made, and the app’s `_onPermissionChange()`, where it defines one, is called so start-up features can retry. An app that was refused something earlier and defines none is started again with its variables carried over, and the bar says so beforehand."
             },
             {
               "type": "paragraph",

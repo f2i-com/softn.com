@@ -144,6 +144,94 @@ refuses such a release until its checks follow; pin `SOFTN_RELEASE` to an
 earlier release meanwhile. `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
 archive locally (`--allow-dirty` for a trial from an uncommitted tree).
 
+## A newer version of an app, in the frame it runs in (unreleased)
+
+A parent that had a newer version of a running app's files had one way to
+show it: a new frame, in which the app starts from nothing. It can now hand
+the files to the frame the app is in, and the frame changes as little of the
+running app as it must (core's live app, `docs/engineering/LIVE_APPS.md`; the
+frame's side is `apps/formlogic-host/src/update.ts`). It is an addition:
+`nativeProtocol` and `storageProtocol` are what they were, and a parent that
+never sends an update sees nothing different.
+
+- The frame says it can: `formlogic:ready` carries `update: 1`.
+- Once the frame has posted `shown`, the parent may post on the app's port
+  `{ type: 'formlogic:update', id, client, assets? }`:
+  - `client`: the app's text files as `init` carries them, path to text. All
+    of them, not the ones that changed.
+  - `assets`: its media as `init` carries it, path to base64, again the whole
+    set. Left out (or `null`), the media is as the parent last sent it, in
+    `init` or an update, which is the thing to do when it has not changed:
+    every file sent is read whole. Media sent with a version that was kept
+    back is not lost; it comes with the next version that leaves its media
+    out. `{}` is an app with no media.
+  - `id`: the parent's own, a number or text of 1 to 64 characters. It comes
+    back on the answer and is read as nothing else (it may be a number one of
+    the frame's `call` messages has).
+- The frame answers each update once, on the port, with
+  `{ type: 'updated', id, outcome, changed?, reason?, carried?, problem? }`:
+  - `updated`: drawn again where the app stood, with its variables, timers
+    and open page as they were. `changed` lists what differed: the renderer's
+    `page` and `styles`, and the frame's own `media` (its media is not what it
+    was) and `theme` (the manifest's `config.theme.mode`).
+  - `restarted`: it started again, and `_init()` ran again. Most often its
+    logic differed (`changed` has `logic`), in a file the page names or one
+    the logic imports. `reason` says why in words for a person, and `carried`
+    whether its variables were carried into the new start.
+  - `kept`: the version has a problem, said in `problem`, and the last
+    version that worked is still on screen and running, on its own files and
+    media. A page or logic that does not parse, or will not start, is kept
+    back by the renderer, which also says so in a line over the app. A
+    manifest that is not JSON or names no main page, and files that do not
+    compose (a page that is missing, Python and JavaScript mixed), are kept
+    back before that and said in the answer alone. A new frame could not open
+    such a version either and would show only its error, which is why these
+    answer `kept` and not `reopen`.
+  - `unchanged`: nothing differed.
+  - `reopen`: this frame cannot take the version, `reason` says why, and the
+    parent makes a new frame for it, as it did for every change before.
+- What answers `reopen`:
+  - the manifest names another `main`;
+  - what the app asks permission for changed (`permission.json`, compared as
+    JSON, so the same request written out again is no change; or the
+    manifest's older `permissions` block): the parent settles a grant before
+    an app opens;
+  - the languages its logic is written in changed (a client file ending `.py`
+    came or went), or the Python packages it asks for
+    (`config.python.packages`): a frame's engine is chosen and configured
+    once, for the app it opened;
+  - there is no app to update: the frame has not posted `shown` yet, it
+    reported an `error` with `phase: 'load'`, or it has ended;
+  - the message is not one the frame takes: no usable `id` (answered with
+    `id: null`), a `client` that is not an object of text, an `assets` that
+    is not an object, or more than a frame takes where it stands (4,000 text
+    files and 32 MiB of characters, 4,000 media files and 128 MiB of media,
+    32 updates waiting). `init` holds a parent to none of these, so the new
+    frame takes what the update could not.
+- Everything else of the manifest is taken where the app stands: its list of
+  logic files is composed like the pages, the side it declares is drawn, and
+  what the frame never read (a name, a version, a window size) changes
+  nothing. The frame answers for what it reads. What the parent decides on
+  its own side from the files (the engine it offers, the grant, a native
+  backend) is the parent's to notice, and it needs no answer from the frame
+  to make a new one.
+- Stored data is never touched. The app's seed records (`manifest.files.xdb`)
+  were added once, before it first drew, and an update adds none: a `.xdb`
+  file it adds or changes is read when the app is next opened in a new frame.
+- The logic's imports are answered from the files of the version that is
+  running, and the page's `asset()` from that version's media. Media is
+  served as `data:` URLs, so nothing is held open for a file an update
+  replaced. Logic that kept an asset's address in a variable holds the old
+  one until it starts again.
+- Updates are taken one at a time, in the order they came. Those that arrive
+  while one is being taken are gathered: the newest files are the ones taken
+  (with the media last sent among them), and every `id` gets an answer, each
+  saying what became of that newest version.
+- `reason` and `problem` are one line of at most 300 characters, never a
+  stack. An update the port could not deserialise names no `id` and is not
+  answered, and nothing is answered after `formlogic:dispose`, so a parent
+  keeps a deadline of its own.
+
 ## The editor bridge's AI requests
 
 The hosted editors talk to FormLogic over the channel in

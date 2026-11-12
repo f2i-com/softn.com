@@ -23,6 +23,14 @@
  *
  * Focus restoration also checks that the app clears its inert shell before
  * the dialog hands focus back to the opener.
+ *
+ * A message in the status bar is the one thing outside the dialog that Tab
+ * may stop at: the bar is kept out of the inert page so a message shown while
+ * a dialog is open can be read and answered, and its buttons are stops of the
+ * dialog's round, after its last control and before its first
+ * (components/feedback/ToastContainer.tsx). Opening the demo leaves such a
+ * message ("Opened …"), so the round here is the dialog's controls and that
+ * message's buttons; what is never reached is the page behind.
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { watchConsole } from '../helpers/console';
@@ -33,15 +41,21 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /** Where focus is, described so a failure names the element. */
-async function focused(page: Page): Promise<{ inDialog: boolean; tag: string; label: string; index: number; count: number }> {
+async function focused(page: Page): Promise<{ inDialog: boolean; inMessage: boolean; behind: boolean; tag: string; label: string; index: number; count: number }> {
   return page.evaluate((selector) => {
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     const active = document.activeElement as HTMLElement | null;
     const items = dialog
       ? Array.from(dialog.querySelectorAll<HTMLElement>(selector)).filter((el) => !el.hidden && el.style.display !== 'none' && el.getAttribute('aria-hidden') !== 'true')
       : [];
+    const inDialog = Boolean(dialog && active && dialog.contains(active));
+    // A message's own buttons, in the status bar (see the note at the top).
+    const inMessage = Boolean(active && active.closest('.bl-status-msg'));
     return {
-      inDialog: Boolean(dialog && active && dialog.contains(active)),
+      inDialog,
+      inMessage,
+      // Anywhere else is the page behind the dialog, which nothing may reach.
+      behind: !inDialog && !inMessage,
       tag: active?.tagName.toLowerCase() ?? 'none',
       label: active?.getAttribute('aria-label') ?? active?.textContent?.trim().slice(0, 40) ?? '',
       index: active ? items.indexOf(active) : -1,
@@ -74,24 +88,35 @@ test.describe('the Export dialog', () => {
     expect(at.count, 'the dialog has controls to move between').toBeGreaterThan(1);
     expect(at.index, 'the first control has focus').toBe(0);
 
+    /** Press `key` until the focus is in the dialog again: past a message's buttons, never onto the page behind. */
+    const backIntoDialog = async (key: 'Tab' | 'Shift+Tab'): Promise<Awaited<ReturnType<typeof focused>>> => {
+      for (let i = 0; i < 8; i++) {
+        await page.keyboard.press(key);
+        const now = await focused(page);
+        expect(now.behind, `${key} reached the page behind the dialog (now on ${now.tag} "${now.label}")`).toBe(false);
+        if (now.inDialog) return now;
+      }
+      throw new Error(`${key} did not come back into the dialog`);
+    };
+
     // Shift+Tab from the first wraps to the last.
-    await page.keyboard.press('Shift+Tab');
-    at = await focused(page);
-    expect(at.inDialog, `Shift+Tab from the first control stays inside (now on ${at.tag} "${at.label}")`).toBe(true);
+    at = await backIntoDialog('Shift+Tab');
     expect(at.index).toBe(at.count - 1);
 
     // Tab from the last wraps to the first.
-    await page.keyboard.press('Tab');
-    at = await focused(page);
-    expect(at.inDialog).toBe(true);
+    at = await backIntoDialog('Tab');
     expect(at.index).toBe(0);
 
-    // A long run of Tabs — more than the dialog has controls — never leaves it.
+    // A long run of Tabs — more than the dialog and a message have controls — never reaches the page behind,
+    // and is in the dialog for most of it: the round is the dialog's.
+    let inDialog = 0;
     for (let i = 0; i < 25; i++) {
       await page.keyboard.press('Tab');
       at = await focused(page);
-      expect(at.inDialog, `Tab ${i + 1} left the dialog for ${at.tag} "${at.label}"`).toBe(true);
+      expect(at.behind, `Tab ${i + 1} left the dialog for ${at.tag} "${at.label}"`).toBe(false);
+      if (at.inDialog) inDialog++;
     }
+    expect(inDialog, 'most of a long run of Tabs is spent in the dialog').toBeGreaterThan(12);
     // And the page behind is inert to the pointer and the tab order alike.
     await expect(page.locator('[inert]').first()).toBeAttached();
 

@@ -18,7 +18,7 @@ test('a first visit to Studio asks to connect an AI provider, and can be skipped
     await page.goto('/studio/');
     const heading = page.getByRole('heading', { name: 'Connect an AI provider.', exact: true });
     await expect(heading).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByText('Just looking? The examples run without any AI.')).toBeVisible();
+    await expect(page.getByText('No key yet? The examples open and run without any AI.')).toBeVisible();
 
     await page.getByRole('button', { name: 'Explore examples without AI', exact: true }).click();
     await expect(heading).toHaveCount(0);
