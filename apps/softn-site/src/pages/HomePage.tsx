@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type Category } from '../lib/api';
-import { AppGrid, Featured, FeaturedSkeleton } from '../components/directory/AppCard';
+import { AppGrid, Featured, FeaturedSkeleton, shelfApps } from '../components/directory/AppCard';
 import { useFeaturedShelf } from '../components/directory/featured';
 import { Arrow } from '../components/glyphs';
 import { CategoriesNotice, CategoryChips } from '../components/directory/Controls';
 import { LearnDocs } from '../components/LearnDocs';
-import { LandingNav } from '../components/Nav';
 import { StartWays } from '../components/home/StartWays';
 import { HowItWorks } from '../components/home/HowItWorks';
 import { WhyDifferent } from '../components/home/WhyDifferent';
@@ -20,15 +19,21 @@ const LISTS: Array<{ id: string; name: string }> = [
   { id: 'remixed', name: 'Most remixed' },
 ];
 
-/** How many of the directory's apps the front page shows: two rows of three. */
-const GALLERY_SIZE = 6;
+/** How many of the directory's apps the front page lists under its shelf: three rows of four on a laptop. */
+const GALLERY_SIZE = 12;
+/** The most the shelf shows, which the list leaves out; asked for on top, so the list is still full without them. */
+const SHELF_SIZE = 5;
 
 /**
- * The apps first: the hero is the directory's featured shelf, under one line of what SoftN is and the two things a
- * visitor came to do — find an app, make one. Then the rest of the directory, the ways to start, the four steps from
- * playing an app to publishing one, what makes it different, a page of markup, the guides and the questions people ask.
+ * The apps first: the hero is the directory's featured shelf, under one line of what SoftN is and the things a
+ * visitor came to do — find an app, make one, see how it works. Then the rest of the directory, the ways to start, the
+ * four steps from playing an app to publishing one, what makes it different, a page of markup, the guides and the
+ * questions people ask.
  * The tools' names (Studio, Builder, the runtime) are in the product bar, and introduced in the page where each is the
  * next step. The language, the engine's pipeline and the component list are in the guides.
+ *
+ * The list under the shelf is "more apps": it leaves out the ones the shelf is already showing, which were its first
+ * four rows on every visit, and it waits for the shelf so that it does not draw them and then take them away.
  *
  * Nothing runs here: an app's bundle is only fetched when someone presses Play, which opens it in the runtime.
  *
@@ -63,7 +68,7 @@ export function HomePage({
     setListError(null);
     setListLoading(true);
     setApps([]);
-    listApps({ sort, perPage: GALLERY_SIZE }, ac.signal)
+    listApps({ sort, perPage: GALLERY_SIZE + SHELF_SIZE }, ac.signal)
       .then((r) => {
         if (ac.signal.aborted) return;
         setApps(r.items);
@@ -78,9 +83,16 @@ export function HomePage({
     return () => ac.abort();
   }, [sort, listAttempt]);
 
+  // The apps the shelf is showing, which the list leaves out. A directory too
+  // small to have three more keeps its list whole: a list of one app under a
+  // shelf of five would read as a directory with one app in it.
+  const onShelf = new Set((featured ? shelfApps(featured) : []).map((a) => a.slug));
+  const rest = apps.filter((a) => !onShelf.has(a.slug));
+  const gallery = (rest.length >= 3 ? rest : apps).slice(0, GALLERY_SIZE);
+  const galleryLoading = listLoading || (featured === null && !listError);
+
   return (
     <>
-      <LandingNav />
       <header className="hero hero-apps" id="top">
         <div className="wrap hero-inner">
           <div className="hero-apps-head">
@@ -102,6 +114,9 @@ export function HomePage({
               <a className="cta cta-large" href="#create">
                 Create an app
                 <Arrow />
+              </a>
+              <a className="hero-more" href="#how">
+                How it works
               </a>
             </div>
           </div>
@@ -129,7 +144,6 @@ export function HomePage({
           <div className="band-head band-head-row">
             <div>
               <h2 className="band-title">More apps to play</h2>
-              <p className="band-sub">Play one in your browser, open its source, or remix it into your own.</p>
             </div>
             {/* Plain pressed buttons: these filter a list, and the tab pattern
                 they used to claim comes with keyboard and panel semantics they
@@ -142,15 +156,23 @@ export function HomePage({
               ))}
             </div>
           </div>
-          <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} />
+          {/* One failure, one notice: with the list down too, its own notice says so and its Retry asks for both. */}
+          <CategoriesNotice error={listError ? null : categoriesError} onRetry={onRetryCategories} />
           {listError ? (
             <div className="notice" role="status">
               <strong>This list could not be loaded.</strong> {listError}{' '}
-              <button type="button" className="cta cta-small" onClick={() => setListAttempt((n) => n + 1)}>
+              <button
+                type="button"
+                className="cta cta-small"
+                onClick={() => {
+                  setListAttempt((n) => n + 1);
+                  if (categoriesError) onRetryCategories();
+                }}
+              >
                 Retry
               </button>
             </div>
-          ) : !listLoading && apps.length === 0 ? (
+          ) : !galleryLoading && gallery.length === 0 ? (
             <div className="notice" role="status">
               {total === 0 ? (
                 <>
@@ -162,7 +184,7 @@ export function HomePage({
               )}
             </div>
           ) : (
-            <AppGrid apps={apps} categories={categories} skeleton={listLoading ? GALLERY_SIZE : 0} loading={listLoading} />
+            <AppGrid apps={galleryLoading ? [] : gallery} categories={categories} skeleton={galleryLoading ? GALLERY_SIZE : 0} loading={galleryLoading} short />
           )}
           {categories.length > 0 && (
             <div className="hero-pills">

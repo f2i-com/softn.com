@@ -11,7 +11,7 @@ import { HTML_GUIDE_HREF } from '../../lib/guides';
  */
 export function StartWays(): React.ReactElement {
   return (
-    <Reveal as="section" className="band band-start" id="create">
+    <Reveal as="section" className="band band-split band-start" id="create">
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">Create an app</p>

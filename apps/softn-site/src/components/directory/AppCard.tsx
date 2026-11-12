@@ -69,11 +69,22 @@ function PlayLink({ app, className, children }: { app: AppCardData; className: s
 }
 
 /**
- * One app, as a card. The name is the link to the app's page and stretches
- * over the whole card; the "play" pill over the picture is a second link,
- * straight into the runtime, because the first thing most visitors want to
- * do with an app is run it. The meta row says what a visitor decides on:
- * how it is rated, how much it is played, whether it has been remixed.
+ * One app, as a row of the list: its picture small at the left, then its name,
+ * what it does and who made it, and Play at the right. The name is the link to
+ * the app's page and stretches over the whole row; Play is a second link,
+ * straight into the runtime, because the first thing most visitors want to do
+ * with an app is run it, and it is on the row all the time: it used to be a
+ * pill that appeared over the picture under a mouse, so a visitor who had not
+ * hovered saw a wall of pictures and no way to run one.
+ *
+ * A row and not a card with a picture across its top: a phone showed two apps
+ * a screen and the directory's twenty-three were eleven screens long; a laptop
+ * showed eight. Rows show a screenful at once, and the app's own page has the
+ * picture large.
+ *
+ * The line under the description says what a visitor decides on: who made it,
+ * what kind of app it is, how it is rated and how much it is played. A count
+ * of nothing is not shown.
  */
 export function AppCard({ app, category }: { app: AppCardData; category?: Category }): React.ReactElement {
   const official = app.source === 'seed';
@@ -81,46 +92,40 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
     <article className="app-card">
       <div className="app-card-media">
         <Thumb app={app} />
-        <PlayLink app={app} className="app-card-play">
-          <PlayGlyph size={12} />
-          Play
-        </PlayLink>
-        {category && (
-          <span className="app-card-cat" title={category.name}>
-            {category.emoji} {category.name}
-          </span>
-        )}
       </div>
       <div className="app-card-body">
-        <div className="app-card-head">
-          <a className="app-card-link app-card-name" href={app.urls.page}>
-            {app.name}
-          </a>
-          {official && (
-            <span className="app-card-official" title="Ships with the site">
-              SoftN
-            </span>
-          )}
-        </div>
-        <span className="app-card-author">
-          {app.author}
-          {app.parent && <span className="app-card-remix"> · remix of {app.parent.name}</span>}
-        </span>
+        <a className="app-card-link app-card-name" href={app.urls.page}>
+          {app.name}
+        </a>
         <p className="app-card-desc">{app.description || 'No description yet.'}</p>
         <div className="app-card-meta">
+          {/* The mint tag marks an app that ships with the site. Where its
+              author is SoftN too, the tag is the byline: the row said
+              "SoftN" twice, once in each colour. */}
+          <span className="app-card-stat app-card-author">
+            {!(official && app.author === 'SoftN') && <>{app.author} </>}
+            {official && (
+              <span className="app-card-official" title="Ships with the site">
+                SoftN
+              </span>
+            )}
+          </span>
+          {app.parent && <span className="app-card-stat app-card-remix">remix of {app.parent.name}</span>}
+          {category && (
+            <span className="app-card-stat app-card-cat">
+              {category.emoji} {category.name}
+            </span>
+          )}
           {app.rating.count > 0 && (
             <span className="app-card-stat app-card-rating">
               <Stars average={app.rating.average} count={app.rating.count} size={12} showCount={false} />
               {app.rating.average.toFixed(1)}
             </span>
           )}
-          <span className="app-card-stat" title={runsLabel(app.runs)}>
-            <PlayGlyph size={12} />
-            {formatCount(app.runs)}
-          </span>
+          {app.runs > 0 && <span className="app-card-stat">{runsLabel(app.runs)}</span>}
           {app.remixes > 0 && (
-            <span className="app-card-stat" title={`${app.remixes} remixes`}>
-              ⑂ {formatCount(app.remixes)}
+            <span className="app-card-stat">
+              {formatCount(app.remixes)} {app.remixes === 1 ? 'remix' : 'remixes'}
             </span>
           )}
           {app.external && (
@@ -137,37 +142,62 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
               no net
             </span>
           )}
-          {!app.external && app.execution === 'worker' && (
-            <span className="app-card-stat app-card-worker" title="Runs its script off the main thread">
-              ⚡
-            </span>
-          )}
         </div>
       </div>
+      {/* The word is drawn where there is room for it; a phone's row has the
+          glyph alone, and the link's name says the rest either way. */}
+      <PlayLink app={app} className="app-card-play">
+        <PlayGlyph size={12} />
+        <span className="app-card-play-label">Play</span>
+      </PlayLink>
     </article>
   );
 }
 
-export function AppGrid({ apps, categories, skeleton = 0, loading = false }: { apps: AppCardData[]; categories: Category[]; skeleton?: number; loading?: boolean }): React.ReactElement {
+export function AppGrid({
+  apps,
+  categories,
+  skeleton = 0,
+  loading = false,
+  short = false,
+}: {
+  apps: AppCardData[];
+  categories: Category[];
+  skeleton?: number;
+  loading?: boolean;
+  /** A sample of a list, not the list: a phone shows its first six rows. */
+  short?: boolean;
+}): React.ReactElement {
   const byId = new Map(categories.map((c) => [c.id, c]));
   return (
-    <div className={`app-grid ${loading && apps.length > 0 ? 'app-grid-loading' : ''}`} aria-busy={loading}>
+    <div className={`app-grid${short ? ' app-grid-short' : ''}${loading && apps.length > 0 ? ' app-grid-loading' : ''}`} aria-busy={loading}>
       {apps.map((app) => (
         <AppCard key={app.slug} app={app} category={byId.get(app.category)} />
       ))}
       {apps.length === 0 &&
         Array.from({ length: skeleton }, (_, i) => (
           <div key={`s${i}`} className="app-card app-card-skeleton" aria-hidden="true">
-            <div className="thumb" />
+            <div className="app-card-media">
+              <div className="thumb" />
+            </div>
             <div className="app-card-body">
               <span className="app-card-name">&nbsp;</span>
-              <span className="app-card-author">&nbsp;</span>
               <p className="app-card-desc">&nbsp;</p>
             </div>
           </div>
         ))}
     </div>
   );
+}
+
+/**
+ * The apps the mosaic below draws, of a ranked list: the lead and four small
+ * ones, or the lead and two when there are fewer than five. The front page
+ * asks so that the list under its shelf can leave these out.
+ */
+export function shelfApps(apps: AppCardData[]): AppCardData[] {
+  if (apps.length < 3) return [];
+  return apps.slice(0, apps.length - 1 >= 4 ? 5 : 3);
 }
 
 /**
@@ -205,10 +235,10 @@ export function FeaturedSkeleton(): React.ReactElement {
  * than three is not a shelf, and nothing is drawn.
  */
 export function Featured({ apps, categories, heading = 'Featured' }: { apps: AppCardData[]; categories: Category[]; heading?: React.ReactNode | null }): React.ReactElement | null {
-  if (apps.length < 3) return null;
+  const shown = shelfApps(apps);
+  if (shown.length === 0) return null;
   const byId = new Map(categories.map((c) => [c.id, c]));
-  const [lead, ...rest] = apps;
-  const small = rest.slice(0, rest.length >= 4 ? 4 : 2);
+  const [lead, ...small] = shown;
   const leadCategory = byId.get(lead.category);
   return (
     <section className="featured" aria-labelledby={heading ? 'featured-title' : undefined} aria-label={heading ? undefined : 'Featured apps'}>

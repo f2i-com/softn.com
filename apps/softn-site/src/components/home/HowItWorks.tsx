@@ -59,7 +59,7 @@ const STEPS: Step[] = [
  */
 export function HowItWorks(): React.ReactElement {
   return (
-    <Reveal as="section" className="band band-how" id="how">
+    <Reveal as="section" className="band band-split band-how" id="how">
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">How it works</p>

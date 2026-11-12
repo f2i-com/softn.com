@@ -94,6 +94,10 @@ describe('app listing lifecycle', () => {
     getApp.mockRejectedValueOnce(new ApiError(404, 'No app is published under that name.'));
     await render('no-such-app');
     expect(container.querySelector('h1')?.textContent).toBe('No app is published under that name.');
+    // The line under the heading says what to do; it used to be the directory's own words, the heading again.
+    const under = container.querySelector('h1 + p')?.textContent ?? '';
+    expect(under).not.toContain('No app is published under that name');
+    expect(under).toContain('in the directory');
     expect(document.title).toBe('App not found — SoftN');
     expect(document.querySelector<HTMLMetaElement>('meta[name="robots"]')?.content).toBe('noindex');
     expect(document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href).not.toContain('no-such-app');

@@ -83,7 +83,7 @@ const FAQ: Answer[] = [
 
 export function HomeFaq(): React.ReactElement {
   return (
-    <Reveal as="section" className="band band-faq" id="faq">
+    <Reveal as="section" className="band band-split band-faq" id="faq">
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">Questions</p>

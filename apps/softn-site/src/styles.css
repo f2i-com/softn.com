@@ -92,16 +92,36 @@ main:focus-visible {
 
 /* ── Shared shells ─────────────────────────────────────────────── */
 
+/* Every page starts at the left, one gutter in, under the product bar's mark,
+   and uses the window's width: it was a 1220px column in the middle of the
+   screen, which put the page 110px to the right of the mark on a laptop and
+   350px on a wide monitor. The same frame as Studio's home and the runtime's.
+   Text keeps its own measure (.band-head, .faq-list and the like); grids take
+   the room. Past 1920px the page stops growing and stays at the left. */
 .wrap {
   width: 100%;
-  max-width: var(--measure);
-  margin: 0 auto;
+  max-width: 120rem;
   padding-inline: var(--gutter);
 }
 
 .band {
   border-top: 1px solid var(--line-soft);
-  padding-block: clamp(4rem, 9vw, 7.5rem);
+  padding-block: clamp(2.25rem, 4.5vw, 3.75rem);
+}
+
+/* A section whose heading sits beside what it introduces once there is room,
+   the way a label sits beside its field: the page is half as long on a
+   laptop, and nothing is centred under a headline. One column below that. */
+@media (min-width: 1100px) {
+  .band-split > .wrap {
+    display: grid;
+    grid-template-columns: minmax(15rem, 21rem) minmax(0, 1fr);
+    gap: 1.5rem clamp(2rem, 4vw, 4rem);
+    align-items: start;
+  }
+  .band-split .band-head {
+    margin-bottom: 0;
+  }
 }
 
 .eyebrow {
@@ -116,23 +136,23 @@ main:focus-visible {
 .band-head {
   display: flex;
   flex-direction: column;
-  gap: 0.875rem;
-  margin-bottom: clamp(2.25rem, 4vw, 3.5rem);
+  gap: 0.625rem;
+  margin-bottom: clamp(1.25rem, 2.4vw, 1.75rem);
   max-width: 46rem;
 }
 
 .band-title {
   font-family: var(--display);
   font-weight: 700;
-  font-size: clamp(1.875rem, 3.6vw, 2.875rem);
-  line-height: 1.04;
-  letter-spacing: -0.032em;
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
   font-variation-settings: 'wdth' 100, 'opsz' 32;
 }
 
 .band-sub {
   color: var(--dim);
-  font-size: 1.0625rem;
+  font-size: 0.9375rem;
   max-width: 42rem;
 }
 
@@ -188,8 +208,8 @@ main:focus-visible {
 
 .hero {
   position: relative;
-  padding-top: clamp(3rem, 7vw, 5.5rem);
-  padding-bottom: clamp(3rem, 6vw, 5rem);
+  padding-top: clamp(1.25rem, 2.6vw, 2rem);
+  padding-bottom: clamp(2rem, 4vw, 3rem);
   overflow: hidden;
 }
 
@@ -203,8 +223,7 @@ main:focus-visible {
   content: '';
   position: absolute;
   inset: 0;
-  max-width: var(--measure);
-  margin-inline: auto;
+  max-width: 120rem;
   background-image: repeating-linear-gradient(
     to right,
     var(--rule) 0 1px,
@@ -255,77 +274,76 @@ main:focus-visible {
   margin-top: 2rem;
 }
 
-/* The front page's hero is the apps: what SoftN is and the two things a visitor
-   came to do, over the directory's featured shelf. On a phone the words come
-   first, then the two actions, then the shelf. */
-.hero-apps { padding-bottom: clamp(2.5rem, 5vw, 4rem); }
+/* The front page's hero is the apps: one line of what SoftN is and the things a
+   visitor came to do, then the directory's featured shelf, all of it in the
+   first screen of a laptop and, on a phone, down to the lead app's Play. The
+   headline is a line, not a poster: at the size it was (62px, two lines, under
+   88px of padding and a second bar of links) the shelf began 540px down and a
+   phone showed one Play button at its very bottom edge. */
+.hero-apps { padding-bottom: clamp(1.5rem, 3vw, 2.25rem); }
 .hero-apps-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 1.5rem 3rem;
-  flex-wrap: wrap;
-  margin-bottom: clamp(1.75rem, 3.5vw, 2.75rem);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0 2.5rem;
+  margin-bottom: clamp(1rem, 2vw, 1.5rem);
 }
+/* The headline has the row to itself, so it is one line on a laptop; the
+   sentence under it shares its row with the actions. */
+.hero-apps .hero-copy { display: contents; }
+.hero-apps .hero-copy > .eyebrow,
+.hero-apps .hero-title { grid-column: 1 / -1; }
 .hero-apps .hero-title {
-  font-size: clamp(2.25rem, 4.3vw, 3.875rem);
-  line-height: 1.02;
-  max-width: 21ch;
+  font-size: clamp(1.75rem, 3.1vw, 2.75rem);
+  line-height: 1.04;
+  letter-spacing: -0.04em;
+  margin-top: 0.5rem;
+  max-width: none;
+  text-wrap: balance;
 }
-.hero-apps .hero-lede { font-size: 1.0625rem; max-width: 36rem; }
-.hero-apps .hero-cta { margin-top: 0; }
+.hero-apps .hero-lede { margin-top: 0.625rem; font-size: 1rem; line-height: 1.5; max-width: 52rem; }
+.hero-apps .hero-cta { margin-top: 0.625rem; align-items: center; }
+@media (max-width: 900px) {
+  .hero-apps-head { grid-template-columns: minmax(0, 1fr); }
+  .hero-apps .hero-cta { margin-top: 0.875rem; }
+}
 .hero-apps .hero-shelf { margin: 0; }
-.cta-large { min-height: 48px; padding: 0.8125rem 1.375rem; font-size: 1rem; font-weight: 600; }
+.cta-large { min-height: 44px; padding: 0.6875rem 1.25rem; font-size: 0.9375rem; font-weight: 600; }
+/* The third place the hero leads to, after the two buttons: the four steps.
+   A link, so the row reads as two things to do and one thing to read. */
+.hero-more {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding-inline: 0.5rem;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 4px;
+  white-space: nowrap;
+}
+.hero-more:hover { color: var(--paper); }
 .hero-facts {
   display: flex;
   flex-wrap: wrap;
   list-style: none;
-  gap: 0.5rem 1.5rem;
-  margin-top: 1.5rem;
+  gap: 0.375rem 1.5rem;
+  margin-top: 1rem;
   color: var(--dim);
   font-size: 0.8125rem;
 }
 .hero-facts li::before { content: '✓'; margin-right: 0.375rem; color: var(--mint); }
 @media (max-width: 560px) {
-  .hero-apps .hero-cta { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .hero-apps .hero-lede { font-size: 0.9375rem; }
+  .hero-apps .hero-cta { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; width: 100%; }
   .hero-apps .hero-cta .cta { justify-content: center; padding-inline: 0.75rem; }
+  /* Under the two buttons, a finger tall, at the left where the page starts. */
+  .hero-more { grid-column: 1 / -1; justify-self: start; padding-inline: 0; }
+  .hero-apps-head { margin-bottom: 0.5rem; }
 }
-@media (max-width: 380px) {
+@media (max-width: 340px) {
   .hero-apps .hero-cta { grid-template-columns: 1fr; }
-}
-
-/* The front page's sub-header (Nav.tsx LandingNav): its own places, under the
-   product bar every page has, and held under it as the page scrolls. On a phone,
-   where the bar is two rows already, it stays at the top of the page. */
-.landing-nav {
-  position: sticky;
-  top: var(--bar-height, 3rem);
-  z-index: 40;
-  background: var(--nav-bg);
-  backdrop-filter: blur(14px) saturate(140%);
-  border-bottom: 1px solid var(--line-soft);
-}
-.landing-nav-inner {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem 1.75rem;
-  min-height: 2.5rem;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.landing-nav a {
-  padding-block: 0.625rem;
-  color: var(--dim);
-  font-size: 0.875rem;
-  white-space: nowrap;
-  transition: color 160ms var(--ease);
-}
-.landing-nav a:hover,
-.landing-nav a:focus-visible { color: var(--paper); }
-html:has(.landing-nav) { scroll-padding-top: 7rem; }
-@media (max-width: 720px) {
-  .landing-nav { position: static; }
-  .landing-nav-inner { justify-content: space-between; gap: 0.75rem; }
 }
 
 .cta {
@@ -972,7 +990,7 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   border-style: dashed;
 }
 .hero-pills {
-  margin-bottom: 1.5rem;
+  margin-top: 1rem;
 }
 /* A heading with a control beside it. It is a .band-head too, so it has to
    undo two things that class sets: the column direction — which, with
@@ -1023,31 +1041,68 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   color: var(--paper);
   background: var(--ink-3);
 }
+/* The list of apps: rows, in as many columns as the window has room for (one
+   on a phone, three on a laptop, four or five on a wide monitor). */
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 1rem;
-  margin-top: 1.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  gap: 0.5rem 0.75rem;
+  margin-top: 1rem;
 }
-/* The card is an article; its name is the link and stretches over the card
-   (.app-card-link below), so the card is the box it stretches over. */
+/* A row is an article; its name is the link and stretches over the row
+   (.app-card-link below), so the row is the box it stretches over. Picture,
+   words, Play: the middle track starts at nothing, so a long name cannot push
+   Play off the row. */
 .app-card {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.5rem 0.75rem 0.5rem 0.5rem;
   background: var(--ink-2);
   border: 1px solid var(--line-soft);
-  border-radius: 14px;
-  overflow: hidden;
+  border-radius: 12px;
   transition:
-    transform 220ms var(--ease),
-    border-color 220ms var(--ease),
-    box-shadow 220ms var(--ease);
+    border-color 180ms var(--ease),
+    background 180ms var(--ease);
 }
 .app-card:hover {
-  transform: translateY(-3px);
-  border-color: var(--line);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
+  border-color: var(--line-strong);
+  background: var(--ink-3);
+}
+.app-card .thumb {
+  border-radius: 7px;
+}
+.app-card .thumb-letter span {
+  font-size: 1.625rem;
+  text-shadow: none;
+}
+.app-card .thumb-icon img {
+  width: 46%;
+}
+@media (max-width: 480px) {
+  .app-card {
+    grid-template-columns: 5.25rem minmax(0, 1fr) auto;
+    gap: 0.625rem;
+    padding-right: 0.5rem;
+  }
+  /* A round button the size of a finger: the word took the room the row's
+     last fact needed. */
+  .app-card-play {
+    width: 2.75rem;
+    min-height: 2.75rem;
+    padding: 0;
+  }
+  .app-card-play-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 .thumb {
   aspect-ratio: 16 / 10;
@@ -1073,62 +1128,64 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.35));
 }
 .app-card-body {
-  padding: 0.9rem 1rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  flex: 1;
+  gap: 0.125rem;
+  min-width: 0;
 }
-.app-card-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
+/* One line each for the name and the line of facts, two for the description:
+   every row is the same height, so the columns of a wide window line up. */
 .app-card-name {
   font-family: var(--display);
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 0.9375rem;
+  line-height: 1.3;
   letter-spacing: -0.01em;
-  overflow-wrap: anywhere;
-}
-.app-card-cat {
-  font-size: 0.9rem;
-  flex-shrink: 0;
-}
-.app-card-author {
-  font-size: 0.8rem;
-  color: var(--dim);
-}
-.app-card-remix {
-  color: var(--dimmer);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .app-card-desc {
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
   color: var(--dim);
-  line-height: 1.45;
+  line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin-top: 0.15rem;
 }
+/* One line of facts. A fact the row has no room for goes to a second line,
+   which is not shown, so the line ends on a whole fact and not on half of
+   one. */
 .app-card-meta {
-  margin-top: auto;
-  padding-top: 0.6rem;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.6rem;
-  font-family: var(--mono);
-  font-size: 0.7rem;
+  gap: 0.5rem 0.625rem;
+  max-height: 1.25rem;
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
   color: var(--dimmer);
+  white-space: nowrap;
+  overflow: hidden;
 }
 .app-card-stat {
   display: inline-flex;
-  gap: 0.2rem;
+  align-items: center;
+  gap: 0.3rem;
+  flex: none;
 }
-.app-card-worker {
-  color: var(--mint);
+/* Who made it gives way first when the line is too long for the row, down to
+   the width of the mint tag and no further. A block, so its text is what the
+   ellipsis cuts. */
+.app-card-author {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 2.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--dim);
 }
 .app-card-skeleton {
   pointer-events: none;
@@ -1187,9 +1244,9 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   margin-left: 0.5rem;
 }
 .band-foot {
-  margin-top: 1.5rem;
+  margin-top: 1rem;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .notice {
   background: var(--ink-2);
@@ -1303,19 +1360,24 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   }
 }
 
-/* The three inner pages share a frame. */
+/* The three inner pages share a frame: the page's name, small, at the left
+   under the bar's mark, and the page itself straight under that. */
 .directory,
 .app-page,
 .publish {
-  padding: 2.5rem 0 4rem;
+  padding: 1.25rem 0 3rem;
 }
 .page-title {
   font-family: var(--display);
   font-weight: 800;
-  font-size: clamp(1.75rem, 4vw, 2.75rem);
+  font-size: clamp(1.5rem, 2.6vw, 2rem);
   letter-spacing: -0.03em;
-  line-height: 1.05;
+  line-height: 1.1;
   margin-bottom: 0.5rem;
+}
+/* An app's own name is the one thing on its page that is a headline. */
+.app-title {
+  font-size: clamp(1.75rem, 3.4vw, 2.5rem);
 }
 .page-title em {
   font-style: normal;
@@ -1391,14 +1453,15 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   padding: 0 0.3rem;
   align-self: center;
 }
+/* Nothing to show, or nothing here: said at the left, where the page starts
+   and where the thing that is missing would have been. */
 .empty {
-  text-align: center;
-  padding: 3rem 1rem;
+  padding: 1.5rem 0 2rem;
   color: var(--dim);
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  align-items: center;
+  gap: 0.75rem;
+  align-items: flex-start;
 }
 .muted {
   color: var(--dim);
@@ -1436,9 +1499,11 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
 .crumbs a:hover {
   color: var(--paper);
 }
+/* The picture keeps a size a screenshot reads at, and no more than its share
+   of a narrow window; the words take the rest. */
 .app-head {
   display: grid;
-  grid-template-columns: minmax(280px, 5fr) minmax(0, 7fr);
+  grid-template-columns: minmax(280px, min(32rem, 42%)) minmax(0, 1fr);
   gap: 2rem;
   align-items: start;
 }
@@ -1545,10 +1610,17 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
 }
 .app-columns {
   display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(280px, 4fr);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, min(26rem, 36%));
   gap: 2rem;
-  margin-top: 2.5rem;
+  margin-top: 1.75rem;
   align-items: start;
+}
+/* What is read and what is typed keep a line a reader can follow, however
+   wide the window. */
+.app-main > .app-section:not(#source),
+.app-main > .tags,
+.app-main > .comments {
+  max-width: 52rem;
 }
 .app-section {
   margin-bottom: 2rem;
@@ -1897,14 +1969,42 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
 }
 
 /* Publish */
+/* A page that is a form or a message: a line a reader can follow, at the
+   left like every other page (it was 820px in the middle of the window). */
 .wrap-narrow {
-  max-width: 820px;
+  max-width: calc(46rem + var(--gutter) * 2);
+}
+/* The publish page: the form, and beside it once there is room the apps this
+   browser can update and the way to publish from a script. One column, in
+   that order, on anything narrower. */
+.publish-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2.5rem;
+}
+.publish-main,
+.publish-side {
+  min-width: 0;
+  max-width: 46rem;
+}
+.publish-side > * + * {
+  margin-top: 2rem;
+}
+.publish-side > :first-child {
+  margin-top: 0;
+}
+@media (min-width: 1100px) {
+  .publish-layout {
+    grid-template-columns: minmax(0, 46rem) minmax(18rem, 1fr);
+    gap: 2rem clamp(2rem, 5vw, 5rem);
+    align-items: start;
+  }
 }
 .publish-form {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  margin-top: 1.5rem;
+  margin-top: 1.25rem;
 }
 .dropzone {
   border: 2px dashed var(--line);
@@ -2133,57 +2233,37 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
    and the update flow. Same two accents, same rule. */
 .app-card-media {
   position: relative;
+  min-width: 0;
 }
+/* Play: on the row all the time, at its right end, where a thumb or a mouse
+   finds it without looking for it. Paper on ink when it is pointed at, as the
+   page's primary buttons are. */
 .app-card-play {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%) scale(0.92);
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  background: rgba(16, 19, 23, 0.86);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 2.25rem;
+  padding: 0 0.875rem;
+  border: 1px solid var(--line-strong);
   border-radius: 999px;
-  padding: 0.45rem 0.9rem;
-  font-size: 0.8rem;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.8125rem;
   font-weight: 600;
-  opacity: 0;
-  backdrop-filter: blur(6px);
+  white-space: nowrap;
   transition:
-    opacity 160ms var(--ease),
-    transform 160ms var(--ease);
-  pointer-events: none;
-}
-.app-card:hover .app-card-play,
-.app-card:focus-visible .app-card-play {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-.app-card-cat {
-  position: absolute;
-  left: 0.6rem;
-  bottom: 0.6rem;
-  font-family: var(--mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.03em;
-  color: #fff;
-  background: rgba(16, 19, 23, 0.72);
-  border-radius: 6px;
-  padding: 0.2rem 0.5rem;
-  backdrop-filter: blur(6px);
+    background 160ms var(--ease),
+    border-color 160ms var(--ease),
+    color 160ms var(--ease);
 }
 .app-card-official {
   font-family: var(--mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--mint);
-  border: 1px solid var(--mint-edge);
-  border-radius: 5px;
-  padding: 0.1rem 0.4rem;
-  flex-shrink: 0;
 }
 .app-card-rating {
   align-items: center;
@@ -2191,9 +2271,11 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
 }
 .app-card-safe {
   color: var(--dimmer);
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
   border-radius: 5px;
   padding: 0 0.35rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
 }
 .app-card:focus-visible {
   outline: 2px solid var(--mint);
@@ -2203,11 +2285,11 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   opacity: 0.55;
   transition: opacity 160ms var(--ease);
 }
-.thumb-image img {
-  transition: transform 400ms var(--ease);
-}
-.app-card:hover .thumb-image img {
-  transform: scale(1.03);
+/* The front page's list shows what fills a phone's screen, not all twelve. */
+@media (max-width: 600px) {
+  .app-grid-short > .app-card:nth-child(n + 7) {
+    display: none;
+  }
 }
 
 /* Capability pills */
@@ -2233,7 +2315,12 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   letter-spacing: -0.02em;
 }
 .empty .app-actions {
-  justify-content: center;
+  justify-content: flex-start;
+}
+/* What happened, in the page's own ink: it took the dim colour of the lines
+   under it and read as the less important of the two. */
+.empty .page-title {
+  color: var(--paper);
 }
 
 /* App page */
@@ -2437,21 +2524,22 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 1.25rem 2.5rem;
+  gap: 0.75rem 2.5rem;
   flex-wrap: wrap;
-  margin-bottom: 2rem;
+  margin-bottom: 0.875rem;
 }
 .directory-intro {
-  max-width: 34rem;
+  flex: 1 1 22rem;
+  min-width: 0;
 }
 .directory-intro .page-title {
   margin-bottom: 0;
 }
 .directory-lede {
-  margin-top: 0.625rem;
+  margin-top: 0.25rem;
   color: var(--dim);
-  font-size: 0.9375rem;
-  line-height: 1.55;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 .directory-lede a {
   color: var(--paper);
@@ -2473,20 +2561,31 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   flex: 1 1 240px;
   min-width: 0;
 }
+/* What the list under it is showing, how many, and in what order: one line. */
 .directory-section-head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem 1rem;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
   flex-wrap: wrap;
-  margin-bottom: 0.875rem;
+  margin-top: 0.875rem;
+}
+.directory-section-head .sort {
+  margin-left: auto;
+}
+.directory-section-head .sort select {
+  padding-block: 0.375rem;
+}
+@media (pointer: coarse) {
+  .directory-section-head .sort select {
+    min-height: 44px;
+  }
 }
 .directory-section-title {
   font-family: var(--display);
   font-weight: 700;
-  font-size: 1.375rem;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  font-size: 1.0625rem;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
   overflow-wrap: anywhere;
 }
 .directory-section-note,
@@ -2496,7 +2595,7 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   margin: 0;
 }
 .directory-all {
-  margin-top: 2.75rem;
+  margin-top: 0;
 }
 .directory-filters {
   display: flex;
@@ -2508,31 +2607,35 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
 .directory-filters .pills-caps {
   margin-top: 0;
 }
-.directory-categories-mobile {
+.directory-categories-mobile,
+.directory-caps-mobile {
   display: none;
 }
+/* A phone has the two filters as two fields on one row: the category pills
+   were a field already, and what an app can reach was four pills in two rows. */
 @media (max-width: 600px) {
-  .directory-categories-desktop {
+  .directory-categories-desktop,
+  .directory-caps-desktop {
     display: none;
   }
-  .directory-categories-mobile {
-    display: flex;
-    width: 100%;
+  .directory-filters {
+    flex-wrap: nowrap;
+    gap: 0.5rem;
   }
-  .directory-categories-mobile select {
-    flex: 1;
+  .directory-categories-mobile,
+  .directory-caps-mobile {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.125rem;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .directory-categories-mobile select,
+  .directory-caps-mobile select {
+    width: 100%;
     min-width: 0;
     min-height: 44px;
-  }
-  .directory-filters .pill-cap {
-    min-height: 44px;
-    justify-content: center;
-    text-align: center;
-  }
-  .directory-filters .pills-caps {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: 100%;
   }
 }
 .directory-active-filters {
@@ -2612,22 +2715,22 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
 }
 .app-card-play {
   z-index: 2;
-  pointer-events: auto;
   text-decoration: none;
 }
 .app-card-play:hover {
-  background: rgba(16, 19, 23, 0.96);
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
 }
 .app-card-play:focus-visible {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
   outline: 2px solid var(--mint);
   outline-offset: 2px;
 }
-@media (hover: none) {
+/* A finger's width and height on a touch screen. */
+@media (pointer: coarse) {
   .app-card-play {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    min-width: 2.75rem;
+    min-height: 2.75rem;
   }
 }
 
@@ -2874,6 +2977,51 @@ html:has(.landing-nav) { scroll-padding-top: 7rem; }
   font-size: 0.8125rem;
   padding: 0.375rem 0.75rem;
   vertical-align: middle;
+}
+/* A finger's height, on a touch screen, for the controls of the directory's
+   pages that were sized for a cursor: Search and Retry at 35px, the sort tabs
+   and the category pills at 34px, a tag at 28px, "See all" at 18px, the
+   shelf's small Play at 32px. Keyed on the pointer, not the width, as the
+   block above is. A stack of pills gains a few pixels a row; nothing else on
+   the page moves. */
+@media (pointer: coarse) {
+  .cta,
+  .search-go,
+  .tab,
+  .pill,
+  .tag,
+  .page-link,
+  .featured-play,
+  .featured-about,
+  .sort select,
+  .field select {
+    min-height: 44px;
+  }
+  .notice .cta-small,
+  .section-more,
+  .link-btn,
+  .directory-clear-filters {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .tab,
+  .tag,
+  .search-go {
+    display: inline-flex;
+    align-items: center;
+  }
+  .featured-play-small {
+    min-height: 44px;
+    padding-inline: 0.875rem;
+  }
+  .star-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
 }
 /* The remembered shelf's provenance: the directory is not answering and
    this is the last shelf this browser saw. */

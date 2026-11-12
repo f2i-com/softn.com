@@ -6,7 +6,7 @@ import { ZIPP_URL } from '../../lib/appUrls';
 /** What sets SoftN apart, in four points, two by two, each with the guide that backs it. */
 export function WhyDifferent(): React.ReactElement {
   return (
-    <Reveal as="section" className="band band-why" id="why">
+    <Reveal as="section" className="band band-split band-why" id="why">
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">What makes SoftN different</p>

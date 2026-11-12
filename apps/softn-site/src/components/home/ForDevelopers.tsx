@@ -17,7 +17,7 @@ const LINKS: Array<{ href: string; label: string; detail: string; external?: boo
 /** For developers: a page written as HTML with SoftN in it, and where to read more. */
 export function ForDevelopers(): React.ReactElement {
   return (
-    <Reveal as="section" className="band band-dev" id="developers">
+    <Reveal as="section" className="band band-split band-dev" id="developers">
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">For developers</p>

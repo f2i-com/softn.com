@@ -558,10 +558,16 @@ export function NewAppPage({
     );
   }
 
+  // The form at the left, where the page starts; the apps this browser can
+  // update and the way to publish from a script beside it once there is room,
+  // and under it on a phone. They were all one 820px column in the middle of
+  // the window, with "Your apps" a screen and a half below the heading.
   return (
     <main className="publish">
-      <div className="wrap wrap-narrow">
-        <p className="eyebrow">{parent ? 'Publish a remix' : 'Publish'}</p>
+      <div className="wrap publish-layout">
+        <div className="publish-main">
+        {/* "Publish" over "Put an app in the directory" said the page's name twice; a remix's line says something the title does not. */}
+        {parent && <p className="eyebrow">Publish a remix</p>}
         <h1 className="page-title">{parent ? `Your take on ${parent.name}` : 'Put an app in the directory'}</h1>
         <p className="band-sub">
           A <code>.softn</code> bundle from <a href={STUDIO_HREF}>Studio</a>, <a href={BUILDER_HREF}>Builder</a> or your own editor — or several at
@@ -705,7 +711,9 @@ export function NewAppPage({
             </button>
           </div>
         </form>
+        </div>
 
+        <aside className="publish-side" aria-label="Your apps and publishing from a script">
         <YourApps />
 
         <section className="publish-api">
@@ -724,6 +732,7 @@ export function NewAppPage({
 # The reply carries the page URL and the edit key. Full route list: ${typeof window !== 'undefined' ? window.location.origin : ''}/api`}</code>
           </pre>
         </section>
+        </aside>
       </div>
     </main>
   );

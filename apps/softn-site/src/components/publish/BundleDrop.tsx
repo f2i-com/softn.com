@@ -82,7 +82,8 @@ export function BundleDrop({ item, onFiles }: { item: SelectionItem | null; onFi
             <path d="M12 16V4m0 0-4 4m4-4 4 4" />
             <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
           </svg>
-          <strong>Drop .softn files here</strong> or click to choose — one, several, or a whole folder dropped at once
+          {/* "or click to choose" on a phone, where nothing is dropped and nothing is clicked. */}
+          <strong>Drop .softn files here</strong> or choose them: one, several, or a whole folder dropped at once
         </>
       )}
     </div>

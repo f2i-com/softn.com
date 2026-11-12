@@ -294,7 +294,10 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
           <div className="empty">
             <p className="eyebrow">{error.status === 404 ? 'Not here' : 'Something went wrong'}</p>
             <h1 className="page-title">{error.status === 404 ? 'No app is published under that name.' : 'Could not load this app.'}</h1>
-            <p className="muted">{error.message}</p>
+            {/* The directory's own words for a 404 are the heading above, so the line under it says what to do instead of saying it twice. */}
+            <p className="muted">
+              {error.status === 404 ? 'The address may be mistyped, or the app may have been unpublished. Every app that is published is in the directory.' : error.message}
+            </p>
             <p>
               {error.status !== 404 && <button type="button" className="cta cta-primary" onClick={() => setAttempt((n) => n + 1)}>Retry loading app</button>}{' '}
               <a className="cta cta-primary" href="/apps">
