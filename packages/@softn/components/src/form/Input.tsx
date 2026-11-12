@@ -9,6 +9,7 @@
 import React, { useState, useCallback } from 'react';
 import { choice } from '../utils/choice';
 import { describedBy, domAttributes } from '../utils/domAttributes';
+import { withAuthorStyle } from '../utils/authorBorder';
 
 export interface InputProps {
   /** Input id (generated when omitted) */
@@ -396,7 +397,7 @@ export function Input({
   const hasLeftElement = leftElement || showSearchIcon;
   const hasRightElement = rightElement || showClearButton;
 
-  const computedStyle: React.CSSProperties = {
+  const computedStyle: React.CSSProperties = withAuthorStyle({
     width: '100%',
     height: sizeStyle.height,
     padding: sizeStyle.padding,
@@ -423,8 +424,7 @@ export function Input({
     boxShadow: getBoxShadow(),
     cursor: disabled ? 'not-allowed' : undefined,
     opacity: disabled ? 0.6 : 1,
-    ...style,
-  };
+  }, style);
 
   const labelStyle: React.CSSProperties = {
     display: 'block',

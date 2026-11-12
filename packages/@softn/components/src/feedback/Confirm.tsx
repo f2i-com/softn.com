@@ -17,6 +17,7 @@ import React from 'react';
 import { Modal } from './Modal';
 import { Button } from '../form/Button';
 import { named } from '../utils/choice';
+import { mayTakeKeyboard } from '../utils/hostKeyboard';
 
 export interface ConfirmProps {
   /** Whether the question is being asked */
@@ -97,7 +98,9 @@ export function Confirm({
   // a callback that changed each render would take the focus back every
   // time the page drew again.
   const focusSafeAnswer = React.useCallback((answers: HTMLDivElement | null) => {
-    answers?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    // Not from under a person typing in the host's own field (utils/hostKeyboard.ts).
+    if (!answers || !mayTakeKeyboard(answers)) return;
+    answers.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
   }, []);
 
   return (

@@ -8,6 +8,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { choice } from '../utils/choice';
 import { describedBy, domAttributes } from '../utils/domAttributes';
+import { withAuthorStyle } from '../utils/authorBorder';
 
 export interface TextAreaProps {
   /** Textarea id (generated when omitted) */
@@ -193,7 +194,7 @@ export function TextArea({
     return '0 1px 2px rgba(0, 0, 0, 0.05)';
   };
 
-  const computedStyle: React.CSSProperties = {
+  const computedStyle: React.CSSProperties = withAuthorStyle({
     padding: sizeStyle.padding,
     fontSize: sizeStyle.fontSize,
     borderWidth: '1px',
@@ -222,8 +223,7 @@ export function TextArea({
     minHeight: minHeight,
     maxHeight: maxHeight,
     overflow: autoResize && maxHeight ? 'auto' : undefined,
-    ...style,
-  };
+  }, style);
 
   const labelStyle: React.CSSProperties = {
     display: 'block',

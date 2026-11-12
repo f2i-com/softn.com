@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useRef, type RefObject } from 'react';
+import { drawnByApp, isHostsOwn, keyIsHosts, mayTakeKeyboard } from '../utils/hostKeyboard';
 
 const layers: Array<{
   id: symbol;
@@ -143,12 +144,19 @@ export function useModalLayer(
     const entry = { id: layer, ref, restoreTo: previouslyFocused };
     layers.push(entry);
     const root = ref.current;
-    if (root && !root.contains(document.activeElement)) root.focus();
+    // Read now: when the layer closes its element may already be off the page.
+    const appsOwn = drawnByApp(root);
+    // An app's dialog does not take the keyboard from the host: it opens,
+    // and the person comes to it when they choose (utils/hostKeyboard.ts).
+    if (root && !root.contains(document.activeElement) && mayTakeKeyboard(root)) root.focus();
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isTop(layer) || e.defaultPrevented) return;
       const container = ref.current;
       if (!container) return;
+      // Nor a key pressed in the host's own field: Tab there is the host's
+      // next control, and Escape there is not this dialog's to close on.
+      if (keyIsHosts(container, e.target)) return;
 
       if (e.key === 'Escape') {
         const onEscape = onEscapeRef.current;
@@ -202,7 +210,9 @@ export function useModalLayer(
         }
         return;
       }
-      if (restoreTo && restoreTo.isConnected && typeof restoreTo.focus === 'function') {
+      // Back to where the focus was, unless the person is in something of
+      // the host's now: the focus is theirs to keep there.
+      if (restoreTo && restoreTo.isConnected && typeof restoreTo.focus === 'function' && !(appsOwn && isHostsOwn(document.activeElement))) {
         restoreTo.focus();
       }
     };
