@@ -22,6 +22,10 @@ import { Deferred } from './components/Deferred';
 import { openImportedInStores } from './lib/importedProject';
 import { confirmLeaveDraft } from './lib/handEdit';
 import { beginReplacingProject } from './lib/replaceProject';
+import { stopRunToLeave } from './lib/leaveRun';
+import { describeReturn, readBuilderReturn, takeBuilderReturn, useBuilderReturnNotice, type BuilderReturn } from './lib/builderFlip';
+import { withoutFlip } from './lib/flipHandoff';
+import { useFileChosen } from './lib/shownFile';
 import { useProjectCheck } from './lib/projectCheck';
 import { openExampleInStores, type ExampleProject } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
@@ -122,20 +126,17 @@ const App: React.FC = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>('canvas');
   // On a phone the canvas and the panels take turns: a file or page chosen in Files or Pages is
-  // shown, as choosing one on a desktop shows it beside the panel.
-  const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
-  const shownPath = useRef(activeFilePath);
-  useEffect(() => {
-    if (activeFilePath === shownPath.current) return;
-    shownPath.current = activeFilePath;
-    if (activeFilePath) setMobilePanel((panel) => (panel === 'files' || panel === 'pages' ? 'canvas' : panel));
-  }, [activeFilePath]);
+  // shown, as choosing one on a desktop shows it beside the panel. A file that is showing and is
+  // renamed or moved in Files was not chosen, and the panel stays (lib/shownFile.ts).
+  useFileChosen(() => setMobilePanel((panel) => (panel === 'files' || panel === 'pages' ? 'canvas' : panel)));
   const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
   /** The project store did not answer when the list was last made: said on the dashboard, with Try again. */
   const [storeSilent, setStoreSilent] = useState(false);
   const autosaveRef = useRef<AutosaveController | null>(null);
   /** The `?open=` link read once on first mount; `undefined` until read. */
   const openLinkRef = useRef<ReturnType<typeof readOpenLink> | undefined>(undefined);
+  /** What the Builder sent this page back with, read once on first mount; null once taken, or when there is none. */
+  const builderReturnRef = useRef<BuilderReturn | null | undefined>(undefined);
 
   // Responsive detection
   useEffect(() => {
@@ -242,7 +243,9 @@ const App: React.FC = () => {
   const handleBackToDashboard = useCallback(() => {
     // Home closes the editor on a file being edited by hand: a draft not saved is asked about.
     if (!confirmLeaveDraft()) return;
-    abortAgentTurn();
+    // A run that is working is asked about too, and stopped as Stop stops it: Home used to
+    // discard it without a word (lib/leaveRun.ts). The project stays the one in memory.
+    if (!stopRunToLeave()) return;
     void (autosaveRef.current?.flush() ?? Promise.resolve()).then(() => refreshRecent());
     setView('dashboard');
   }, [refreshRecent]);
@@ -380,6 +383,7 @@ const App: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
     if (isHostedEditor()) { setIsHydrated(true); return () => { releaseWorkspace(); abortAgentTurn(); }; }
+    if (builderReturnRef.current === undefined) builderReturnRef.current = readBuilderReturn(window.location.search);
     if (openLinkRef.current === undefined) {
       openLinkRef.current = readOpenLink(window.location.search, window.location.origin);
       if (openLinkRef.current) {
@@ -441,6 +445,33 @@ const App: React.FC = () => {
     };
   }, [isHydrated]);
 
+  /**
+   * Coming back from the Builder (lib/builderFlip.ts). The address says which
+   * project, and names what the Builder staged when it changed something. It
+   * is taken once the project is restored and the autosave above is running,
+   * so that what is brought in is a change it saves; the address keeps what
+   * the Builder put there until the changes are saved, so a reload before
+   * that takes them again.
+   */
+  useEffect(() => {
+    if (!isHydrated || isHostedEditor()) return;
+    const back = builderReturnRef.current;
+    if (!back) return;
+    builderReturnRef.current = null;
+    void takeBuilderReturn(back, {
+      openProject: (id) => openProjectById(id),
+      importBundle: (bytes, name) => handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.softn`, { type: 'application/zip' })),
+    }).then((outcome) => {
+      const said = describeReturn(outcome);
+      useWorkspaceStore.getState().addConsoleOutput(said);
+      useBuilderReturnNotice.getState().say(outcome);
+      // Brought in and not yet saved: left in the address for the reload that would need it.
+      if (outcome.kind !== 'applied' || outcome.saved) window.history.replaceState(window.history.state, '', window.location.pathname + withoutFlip(window.location.search) + window.location.hash);
+      if (hasProjectContent()) setView('editor');
+      void refreshRecent();
+    });
+  }, [isHydrated, refreshRecent]);
+
   // The check: the validator when files or the blueprint change, the engine on the logic a
   // moment later (lib/projectCheck.ts).
   useProjectCheck(isHydrated);
@@ -485,7 +516,11 @@ const App: React.FC = () => {
   }, [refreshRecent]);
 
   const handleDeleteProject = useCallback(async (id: string): Promise<DashboardOutcome> => {
+    // The project in memory may have a run stopped, paused or waiting, kept for Continue
+    // (Home no longer ends it): deleted, the project takes its runs with it.
+    const inMemory = useWorkspaceStore.getState().projectId === id;
     const outcome = await deleteProject(id);
+    if (outcome.ok && inMemory) abortAgentTurn();
     void refreshRecent();
     return outcome;
   }, [refreshRecent]);
@@ -577,11 +612,14 @@ const App: React.FC = () => {
 
   // Brief wizard (inline, full-page) — wrapped in theme vars
   if (view === 'brief') {
+    // Opened from a plan's "Revise brief": the plan is there and not approved (a new app has
+    // none yet). The way back from it is to that plan, not to the home page.
+    const revising = Boolean(blueprint) && !blueprintApproved;
     return (
       <div style={styles.root}>
         {bar}
         <div style={styles.fill}>
-          <Deferred><BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} /></Deferred>
+          <Deferred><BriefWizard revising={revising} onBack={revising ? () => setView('editor') : handleBackToDashboard} onSubmit={() => setView('editor')} /></Deferred>
         </div>
         {setupDialog}
       </div>
@@ -604,7 +642,10 @@ const App: React.FC = () => {
     return (
       <div style={styles.mobileRoot}>
         <SkipToMain />
-        {bar}
+        {/* A phone's editor is the work and its own controls. The site's bar is not drawn over
+            it: on a phone that bar is two rows, 90 pixels of a screen the preview needs, and it
+            leads away from a project that is open. It is one press away, on the home page the
+            arrow below goes to; the theme it switches is in Settings, under General. */}
         {/* Compact mobile top bar */}
         <div style={styles.mobileTopBar}>
           <div style={styles.mobileTopLeft}>
@@ -627,7 +668,7 @@ const App: React.FC = () => {
         <div style={styles.mobileContent} id={MAIN_ID} tabIndex={-1} aria-label="Work area">
           {mobilePanel === 'chat' && (
             <div style={styles.mobilePanel}>
-              <AIChat />
+              <AIChat onOpenSettings={() => setMobilePanel('settings')} />
             </div>
           )}
           {mobilePanel === 'canvas' && (
@@ -660,7 +701,8 @@ const App: React.FC = () => {
         </div>
         {/* Every panel the desktop's rail has, so a phone can reach every file, and undo any
             change from History: the bar used to offer the chat, the preview and the settings. */}
-        <div style={styles.mobileNav} role="group" aria-label="Panels">
+        {/* The class is what tells the notices' dock that these tabs are under it (styles/studio.css, .st-pwa-dock). */}
+        <div className="st-mobile-nav" style={styles.mobileNav} role="group" aria-label="Panels">
           {MOBILE_TABS.map((tab) => (
             <button
               key={tab.id}
@@ -778,8 +820,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    height: 44,
-    padding: '0 12px',
+    // Room for buttons a finger can press (44px), which the bar's own 44 left none around.
+    height: 52,
+    padding: '0 8px 0 4px',
+    gap: 8,
     borderBottom: '1px solid var(--studio-border)',
     background: 'var(--studio-bg-elevated)',
     flexShrink: 0,
@@ -787,12 +831,13 @@ const styles: Record<string, React.CSSProperties> = {
   mobileTopLeft: {
     display: 'flex',
     alignItems: 'center',
-    gap: 4,
+    gap: 2,
+    minWidth: 0,
     overflow: 'hidden',
   },
   mobileBackBtn: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',

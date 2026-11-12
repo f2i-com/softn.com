@@ -3,6 +3,8 @@ import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Icon } from '../common/Icon';
 import { HandoffReady } from '../common/HandoffReady';
+import { BuilderReturnNotice } from '../common/BuilderReturnNotice';
+import { useBuilderReturnNotice } from '../../lib/builderFlip';
 import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
 import { useProjectActions } from '../common/ProjectActions';
@@ -29,6 +31,8 @@ export function MobileProjectMenu(): React.ReactElement {
   const actions = useProjectActions();
   const hosted = isHostedEditor();
   const saveLabel = useHostedSaveLabel() ?? 'Review changes';
+  // What coming back from the Builder brought in, said under the bar as Run's link is.
+  const { notice: returned, dismiss: dismissReturned } = useBuilderReturnNotice();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -71,7 +75,7 @@ export function MobileProjectMenu(): React.ReactElement {
     items[next].focus();
   };
 
-  const item = (label: string, icon: 'play' | 'upload' | 'export', enabled: boolean, title: string, onSelect: () => void) => (
+  const item = (label: string, icon: 'play' | 'upload' | 'export' | 'layout', enabled: boolean, title: string, onSelect: () => void) => (
     <button
       type="button"
       role="menuitem"
@@ -121,12 +125,25 @@ export function MobileProjectMenu(): React.ReactElement {
               {item('Publish', 'upload', actions.canPublish, actions.describe('publish', 'Stage the bundle for the directory’s publish page'), actions.publish)}
             </>}
           {item('Export bundle', 'export', actions.canExport, actions.canExport ? 'Download the project as a .softn file' : 'No files to export', actions.exportBundle)}
+          {/* The way across to the visual editor, where there is one beside this Studio (lib/builderFlip.ts). */}
+          {actions.builderOffered && item(
+            actions.openingBuilder ? 'Opening…' : 'Open in Builder',
+            'layout',
+            actions.canOpenInBuilder,
+            actions.openingBuilder ? 'Saving the project and opening the Builder' : actions.hasFiles ? 'Change this project by hand in the visual editor' : 'No files to open in the Builder',
+            actions.openInBuilder,
+          )}
         </div>
       )}
       {(actions.ready || actions.error) && (
         <div style={styles.readyDock}>
           {actions.error ? <ProjectActionError message={actions.error} onDismiss={actions.dismissError} />
             : actions.ready && <HandoffReady ready={actions.ready} onDone={actions.dismissReady} compact />}
+        </div>
+      )}
+      {returned && !actions.ready && !actions.error && (
+        <div style={styles.readyDock}>
+          <BuilderReturnNotice text={returned.text} failed={returned.failed} onDismiss={dismissReturned} />
         </div>
       )}
     </div>
@@ -140,8 +157,8 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
   },
   trigger: {
-    width: 36,
-    height: 36,
+    width: 44,
+    height: 44,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',

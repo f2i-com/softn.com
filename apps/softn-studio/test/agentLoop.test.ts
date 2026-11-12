@@ -21,6 +21,7 @@ import {
 import { executeTool } from '../src/lib/agent/executeTool';
 import { parseTextToolCalls } from '../src/lib/agent/protocol';
 import type { SuppliedFiles } from '../src/lib/changeset';
+import { generateBlueprintFromBrief } from '../src/lib/studioProject';
 import { useAIStore } from '../src/stores/aiStore';
 import { useVFSStore } from '../src/stores/vfsStore';
 import { useWorkspaceStore } from '../src/stores/workspaceStore';
@@ -103,6 +104,23 @@ describe('building a new app (Anthropic tool_use)', () => {
     expect(JSON.stringify(provider.bodies[0].messages)).toContain('The project was just scaffolded from the brief');
     expect(JSON.stringify(provider.bodies[0].system)).not.toContain('scaffolded');
     expect(useWorkspaceStore.getState().leftPanel).toBe('ai');
+  });
+
+  // What the person types under "Revise the plan" is kept with the plan's assumptions, and the
+  // build was sent the plan without them: it never saw a note.
+  it('sends the build the notes the person added to the plan, and none of the plan’s own lines', async () => {
+    const brief = { appName: 'Habits', description: 'Track daily habits', target: 'web' as const, pages: ['Today'], collections: [], authNeeded: false, style: 'clean' as const, referenceImages: [] };
+    const blueprint = generateBlueprintFromBrief(brief);
+    useWorkspaceStore.getState().setBrief(brief);
+    useWorkspaceStore.getState().setBlueprint({ ...blueprint, assumptions: [...blueprint.assumptions, 'Revision note: Today lists habits newest first', 'Revision note: Week starts on Monday'] });
+    const provider = fakeProvider('anthropic', [{ calls: [{ name: 'finish', input: { summary: 'Built.' } }] }]);
+    expect(buildFromBrief()).toBe(true);
+    await vi.waitFor(() => expect(lastRun().run.status).toBe('finished'));
+    const sent = (provider.bodies[0].messages as Array<{ content: unknown }>).map((m) => (typeof m.content === 'string' ? m.content : (m.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('\n'))).join('\n');
+    expect(sent).toContain('## The person’s notes on the plan');
+    expect(sent).toContain('- Today lists habits newest first\n- Week starts on Monday');
+    expect(sent).not.toContain('Revision note:');
+    expect(sent).not.toContain(blueprint.assumptions[0]);
   });
 
   it('uses the architect model for the first request of a new app and the builder model after', async () => {

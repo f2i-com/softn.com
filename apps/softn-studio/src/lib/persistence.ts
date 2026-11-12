@@ -127,7 +127,12 @@ export interface PersistedFile {
   content: string | Uint8Array;
 }
 
-/** The chat of one project. Providers are not here: see `GlobalSettings`. */
+/**
+ * The chat of one project. Providers are not here: see `GlobalSettings`.
+ * The three counts are written as zero and not taken up on opening: a
+ * session's runs and tokens are counted in the tab (projectSession.ts,
+ * collectProjectRecord). They stay in the record's shape for an older Studio.
+ */
 export interface PersistedSession {
   messages: ChatMessage[];
   iterationsUsed: number;

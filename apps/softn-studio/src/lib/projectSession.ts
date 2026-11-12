@@ -284,9 +284,15 @@ export function collectProjectRecord(rev: number, now = Date.now()): ProjectReco
     files,
     session: {
       messages: ai.messages,
-      iterationsUsed: ai.iterationsUsed,
-      tokensUsed: ai.tokensUsed,
-      filesChanged: ai.filesChanged,
+      // The runs and tokens counted against the session's limits are this tab's, for as long as
+      // the project is open in it: they are not the project's, and are not saved with it. They
+      // were, so a project came back with yesterday's count, and one that had had its runs was
+      // refused another "this session" on the day it was opened. The three fields stay, at zero,
+      // for an older Studio (a cached service worker, say) opening this record: its reader
+      // requires them.
+      iterationsUsed: 0,
+      tokensUsed: 0,
+      filesChanged: 0,
     },
     undo: persistJournal(useVFSStore.getState().journal),
   };
@@ -329,9 +335,11 @@ export function applyProjectRecord(record: ProjectRecord): void {
       messages: record.session.messages,
       draftMessage: '',
       lastFailure: null,
-      iterationsUsed: record.session.iterationsUsed,
-      tokensUsed: record.session.tokensUsed,
-      filesChanged: record.session.filesChanged,
+      // Opening a project begins a session: what a record written by an older Studio counts
+      // is not taken up (see collectProjectRecord).
+      iterationsUsed: 0,
+      tokensUsed: 0,
+      filesChanged: 0,
       agentState: 'idle',
       currentStep: '',
     });
@@ -355,7 +363,8 @@ const byPath = (files: readonly PersistedFile[]) => new Map(files.map((file) => 
  * changes. A part is brought in only when this tab still holds what the save
  * collected for it; one the person changed while the save was in flight is
  * left as it is, and the next save meets both changes. Answers what was
- * brought in. The undo data and the counters are always brought in.
+ * brought in. The undo data is always brought in. The session's counts of runs
+ * and tokens are not: they are each tab's own.
  */
 function bringIn(collected: ProjectRecord, merge: MergeOutcome): MergeParts {
   const merged = merge.record;
@@ -417,13 +426,8 @@ function bringIn(collected: ProjectRecord, merge: MergeOutcome): MergeParts {
       const keep = new Map([...messages, ...added].map((m) => [m.id, m]));
       messages = orderChat([messages, merged.session.messages], keep);
     }
-    const spent = (key: 'iterationsUsed' | 'tokensUsed' | 'filesChanged') => Math.max(0, ai[key] + merged.session[key] - collected.session[key]);
-    useAIStore.setState({
-      messages: messages.length > 200 ? messages.slice(-200) : messages,
-      iterationsUsed: spent('iterationsUsed'),
-      tokensUsed: spent('tokensUsed'),
-      filesChanged: spent('filesChanged'),
-    });
+    // The session's counts stay this tab's own: what another tab spent is that tab's session.
+    useAIStore.setState({ messages: messages.length > 200 ? messages.slice(-200) : messages });
 
     // Undo data: the other tab's new entries are added and the ones it used up go. One both
     // have stays as this tab has it.
@@ -953,14 +957,8 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
           useWorkspaceStore.getState().addConsoleOutput(`Provider settings were not saved: ${written.message}`);
         }
       }
-      if (
-        state.messages !== previous.messages ||
-        state.iterationsUsed !== previous.iterationsUsed ||
-        state.tokensUsed !== previous.tokensUsed ||
-        state.filesChanged !== previous.filesChanged
-      ) {
-        onProjectChange();
-      }
+      // The chat is the project's. The session's counts are not (collectProjectRecord).
+      if (state.messages !== previous.messages) onProjectChange();
     }),
   ];
 

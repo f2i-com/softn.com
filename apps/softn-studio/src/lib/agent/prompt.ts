@@ -13,7 +13,7 @@
 
 import { useVFSStore } from '../../stores/vfsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { projectLogicLanguage, projectPythonPackages } from '../studioProject';
+import { projectLogicLanguage, projectPythonPackages, revisionNotes } from '../studioProject';
 import { describeTree } from './executeTool';
 import { buildGuide, projectHasBackend } from './guide';
 import { componentIndexText, docIndexText } from './knowledge';
@@ -68,8 +68,9 @@ export function buildAgentSystemPrompt(protocol: ToolProtocol): string {
 }
 
 /**
- * The project as the run finds it — the brief, the blueprint, what kind of
- * run this is, manifest.json and the file tree — as the text of the run's
+ * The project as the run finds it — the brief, the blueprint, the notes the
+ * person added to it, what kind of run this is, manifest.json and the file
+ * tree — as the text of the run's
  * first message. Kept out of the system prompt because it changes from run
  * to run; within a run it is written once and never rewritten, so it is part
  * of the cached prefix too.
@@ -98,6 +99,16 @@ export function buildProjectContext(kind: 'build' | 'edit' = 'edit', previewRepo
 - Style: ${ws.blueprint.style}`
     : '';
 
+  // What the person typed under "Revise the plan" when they reviewed it. The notes were kept
+  // with the plan's assumptions, which are not sent, so the build never saw them.
+  const notes = revisionNotes(ws.blueprint);
+  const planNotes =
+    notes.length > 0
+      ? `## The person’s notes on the plan
+They added these when they reviewed the plan. Build to them: where a note and the brief differ, the note is the later word, and a request in the chat is later still.
+${notes.map((note) => `- ${note}`).join('\n')}`
+      : '';
+
   const manifestFile = files.get('manifest.json');
   const manifest =
     manifestFile && typeof manifestFile.content === 'string' && manifestFile.content.length < 4000
@@ -122,6 +133,7 @@ The project was just scaffolded from the brief: the files below are a starting p
     '# The project at the start of this run',
     brief,
     blueprint,
+    planNotes,
     build,
     manifest,
     `## Project files (list_files shows them now)\n${describeTree(files)}`,

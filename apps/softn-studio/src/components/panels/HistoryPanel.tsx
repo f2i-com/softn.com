@@ -5,7 +5,7 @@ import type { VFSEvent } from '../../types/studio';
 
 /**
  * One row of the timeline: an undo unit. A single edit is a unit of one
- * event; an AI turn or an import is a unit of many, under one
+ * event; an AI turn is a unit of many, under one
  * transactionId. The panel used to list events, so an AI turn that touched
  * three files was three rows, and "Undo Last" — which already undid the
  * whole unit — looked as if it would undo one of them.
@@ -48,14 +48,24 @@ export function groupHistory(history: VFSEvent[]): HistoryUnit[] {
 
 const SINGLE: Record<VFSEvent['type'], string> = { create: 'Created', update: 'Edited', patch: 'Edited', delete: 'Deleted' };
 
-/** What a unit was: "AI turn", "Import", or the one edit it holds. */
+/**
+ * What a unit was: "AI turn", "Added", "Edit", or the one edit it holds. Opening a project (an
+ * example, an import, a saved one) is not a unit: it is where the history starts.
+ */
 export function describeUnit(unit: HistoryUnit): { title: string; detail: string } {
   const paths = [...new Set(unit.events.map((e) => e.path))];
+  // What the person did in the Files panel says what it was: "Renamed logo.png to brand.png",
+  // not "Edit · 2 files" for the delete and the create a rename is made of.
+  const label = unit.events[0].label;
+  if (label) {
+    const named = paths.slice(0, 3).join(', ');
+    return { title: label, detail: `${named}${paths.length > 3 ? `, +${paths.length - 3} more` : ''}` };
+  }
   if (unit.events.length === 1) {
     return { title: `${unit.source === 'ai' ? 'AI · ' : ''}${SINGLE[unit.events[0].type] ?? unit.events[0].type}`, detail: paths[0] };
   }
   const allCreates = unit.events.every((e) => e.type === 'create');
-  const title = unit.source === 'ai' ? 'AI turn' : allCreates ? 'Import' : 'Edit';
+  const title = unit.source === 'ai' ? 'AI turn' : allCreates ? 'Added' : 'Edit';
   const shown = paths.slice(0, 3).join(', ');
   const more = paths.length > 3 ? `, +${paths.length - 3} more` : '';
   return { title: `${title} · ${paths.length} file${paths.length === 1 ? '' : 's'}`, detail: `${shown}${more}` };
@@ -96,7 +106,8 @@ export const HistoryPanel: React.FC = () => {
         <div className="st-panel-empty">
           <Icon name="clock" size={22} />
           <strong>{redo ? 'Everything here was undone' : 'No changes yet'}</strong>
-          <span>{redo ? 'Redo puts it back, one unit at a time, until the next change is made.' : 'Every edit, import and AI turn is kept here, so any of them can be undone.'}</span>
+          {/* Opening a project is not a change to it, so a project just opened has nothing to undo. */}
+          <span>{redo ? 'Redo puts it back, one unit at a time, until the next change is made.' : 'Each edit and each AI turn from here on is kept here, so any of them can be undone.'}</span>
         </div>
       </div>
     );
@@ -105,7 +116,7 @@ export const HistoryPanel: React.FC = () => {
   return (
     <div className="st-history">
       <div className="st-history-actions">
-        <button type="button" className="st-btn st-btn-sm" onClick={() => { setNotice(null); undoLast(); }} title="Undo the most recent unit: an edit, an import or a whole AI turn">
+        <button type="button" className="st-btn st-btn-sm" onClick={() => { setNotice(null); undoLast(); }} title="Undo the most recent unit: an edit or a whole AI turn">
           <Icon name="undo" size={14} />
           Undo last
         </button>

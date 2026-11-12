@@ -16,8 +16,9 @@
  *     is still in the tab that wrote it and that tab says it is not saved, or
  *     it was written over by a tab that had it (an edit made on top of it, a
  *     deletion of it, or the person choosing the other version of it);
- *   - every chat message said in any tab is in storage and in every tab, and
- *     what the tabs spent adds up.
+ *   - every chat message said in any tab is in storage and in every tab;
+ *   - what a tab spent this session is that tab's count and no other's, and
+ *     storage holds none of it (a session's count is not the project's).
  *
  * Each tab is its own copy of the modules, as a page loads them, over the one
  * (fake) IndexedDB and the one BroadcastChannel.
@@ -146,7 +147,7 @@ async function scenario(seed: number): Promise<void> {
   /** `path\ncontent` of file versions, and names, that a tab wrote over while holding them. */
   const writtenOver = new Set<string>();
   const messages: string[] = [];
-  let spent = 0;
+  const spent = open.map(() => 0);
 
   for (let step = 0; step < STEPS; step++) {
     const t = Math.floor(random() * open.length);
@@ -183,7 +184,7 @@ async function scenario(seed: number): Promise<void> {
     } else if (roll < 0.6) {
       const tokens = 1 + Math.floor(random() * 500);
       tab.stores.useAIStore.setState({ tokensUsed: tab.stores.useAIStore.getState().tokensUsed + tokens });
-      spent += tokens;
+      spent[t] += tokens;
       said(`tab ${t} spends ${tokens}`);
     } else if (roll < 0.78) {
       await tab.autosave!.flush();
@@ -253,11 +254,11 @@ async function scenario(seed: number): Promise<void> {
     }
     const here = new Set(tab.stores.useAIStore.getState().messages.map((message) => message.id));
     for (const id of messages) if (!here.has(id)) problems.push(`tab ${t} does not hold “${id}”`);
-    if (tab.stores.useAIStore.getState().tokensUsed !== spent) problems.push(`tab ${t} counts ${tab.stores.useAIStore.getState().tokensUsed} tokens spent, of ${spent}`);
+    if (tab.stores.useAIStore.getState().tokensUsed !== spent[t]) problems.push(`tab ${t} counts ${tab.stores.useAIStore.getState().tokensUsed} tokens spent this session, of its ${spent[t]}`);
   }
   const storedMessages = new Set(stored.session.messages.map((message) => message.id));
   for (const id of messages) if (!storedMessages.has(id)) problems.push(`storage does not hold “${id}”`);
-  if (stored.session.tokensUsed !== spent) problems.push(`storage counts ${stored.session.tokensUsed} tokens spent, of ${spent}`);
+  if (stored.session.tokensUsed !== 0) problems.push(`storage counts ${stored.session.tokensUsed} tokens spent, and a session’s count is not saved with the project`);
 
   for (const write of writes) {
     const tab = open[write.tab];

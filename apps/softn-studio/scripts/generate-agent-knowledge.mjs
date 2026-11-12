@@ -62,7 +62,10 @@ export const PURPOSES = {
   Camera: 'Live camera view that can capture a photo or video (needs the camera permission).',
   Card: 'A bordered or elevated panel, with an optional title and subtitle.',
   Center: 'Centres its children horizontally and vertically.',
-  Checkbox: 'A checkbox with a label; bind with :bind or :checked.',
+  // `:checked` is not a binding: like any `:` property but `:bind`, it only shows the value
+  // (the renderer writes back for `:bind` alone). Said here as one, it was what a model wrote,
+  // and the box it made could not be ticked.
+  Checkbox: 'A checkbox with a label; :bind={name} holds true or false. checked={x} only shows x.',
   CodeEditor: 'An editor for source code with syntax highlighting.',
   Collapse: 'Shows or hides its children with an animation.',
   ColorPicker: 'Choose a colour, with optional presets.',
@@ -142,7 +145,7 @@ export const PURPOSES = {
   Stack: 'Lays children out in a row or column with a gap: the everyday layout.',
   Stat: 'One figure with its label and how it moved: a dashboard tile fed from state.',
   Steps: 'Where someone is in a sequence: done, current and upcoming steps; with @change the steps are buttons.',
-  Switch: 'An on/off toggle with a label.',
+  Switch: 'An on/off toggle with a label; :bind={name} holds true or false.',
   Table: 'A table from columns [{ key, header }] and data rows.',
   Tabs: 'Tabs from [{ key, label }]; @change receives the key.',
   Tag: 'A small label, optionally removable.',

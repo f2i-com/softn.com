@@ -36,6 +36,21 @@ describe('the generated knowledge', () => {
     for (const name of registered) expect(text).toContain(`- ${name}:`);
   });
 
+  // The renderer writes back for `:bind` alone: any other `:name` property only shows a value
+  // (@softn/core, renderer/render.tsx). Checkbox's line said "bind with :bind or :checked", and
+  // a box written with :checked cannot be ticked.
+  it('calls no `:` property but :bind a way to bind', async () => {
+    for (const entry of COMPONENT_INDEX) {
+      const others = [...entry.purpose.matchAll(/:([a-zA-Z][\w-]*)/g)].map((m) => m[1]).filter((name) => name !== 'bind');
+      expect(others, `${entry.name}: ${entry.purpose}`).toEqual([]);
+    }
+    const purpose = (name: string) => COMPONENT_INDEX.find((c) => c.name === name)!.purpose;
+    expect(purpose('Checkbox')).toContain(':bind={name} holds true or false');
+    expect(purpose('Checkbox')).toContain('checked={x} only shows x');
+    expect(purpose('Switch')).toContain(':bind={name} holds true or false');
+    expect((await lookupComponents(['Checkbox'])).text).not.toContain(':checked');
+  });
+
   it('lookup_components answers every component with its props, enums and events', async () => {
     for (const component of manifest.components) {
       const { ok, text } = await lookupComponents([component.name]);
@@ -62,7 +77,7 @@ describe('the generated knowledge', () => {
     expect(text).toContain('- BarChartSeries = { name: string; data: BarDataPoint[]; color?: string }');
     expect(text).toContain('- BarDataPoint = { label: string; value: number; color?: string }');
     expect(text).toMatch(/- DataPoint = \{ x: number \| string; y: number/);
-    expect(text).toMatch(/- SelectOption = \{ value: string; label: string/);
+    expect(text).toMatch(/- SelectOption = \{ value: string \| number; label: string/);
     // Markup inside a {…} value does not parse, so a node-typed field is shown as a string.
     const tabs = (await lookupComponents(['Tabs', 'Accordion'])).text;
     expect(tabs).toContain('- AccordionItem = { key: string; header: string; content: string; disabled?: boolean }');

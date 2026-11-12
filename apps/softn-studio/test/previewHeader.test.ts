@@ -35,9 +35,27 @@ describe('the preview header’s file name', () => {
     expect(file['min-width']).toMatch(/rem$/);
   });
 
-  it('is shown without its folder, and without the device switch beside it, where the frame is narrow', () => {
+  // The device switch used to go whole in a narrow frame, to leave the name its room: with a
+  // panel open beside the preview there was then no way to choose a width. Its words go now and
+  // its three pictures stay, and no rule of the header's takes a control away.
+  it('is shown without its folder where the frame is narrow, beside a device switch that keeps its three choices', () => {
     expect(rule('.st-preview-chrome').container).toBe('preview-header / inline-size');
-    const narrow = /@container preview-header \(max-width: [\d.]+rem\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
-    expect(narrow).toMatch(/\.st-preview-chrome \.st-device-switch,\s*\.st-preview-file \.dir \{\s*display: none;/);
+    const queries = [...css.matchAll(/@container preview-header \(max-width: [\d.]+rem\) \{([\s\S]*?)\n\}/g)].map((match) => match[1]);
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries[0]).toMatch(/\.st-preview-chrome \.st-device-switch \.st-switch-label,\s*\.st-preview-file \.dir \{\s*display: none;/);
+    // What a narrow header hides is words (a label, the folder), never a switch or a button.
+    for (const query of queries) {
+      for (const [, selectors, body] of query.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+        if (!/display:\s*none/.test(body)) continue;
+        for (const selector of selectors.split(',').map((s) => s.trim())) {
+          expect(selector, 'hidden in a narrow header').toMatch(/\.st-switch-label$|\.dir$/);
+        }
+      }
+    }
+  });
+
+  it('goes over its controls, on a row of its own, before any of them is cut', () => {
+    const rules = [...css.matchAll(/(^|\n)\.st-preview-chrome \{([^}]*)\}/g)].map((match) => match[2]).join('\n');
+    expect(rules).toMatch(/flex-wrap:\s*wrap/);
   });
 });

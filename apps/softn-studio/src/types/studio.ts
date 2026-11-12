@@ -110,6 +110,8 @@ export type AIFailureKind =
   | 'truncated'
   | 'refused'
   | 'empty'
+  /** The run stopped itself: the same failure kept coming back, or it called the app done over errors. */
+  | 'stuck'
   /** The provider needs setting up first — typically a model to be chosen. */
   | 'setup';
 
@@ -118,6 +120,13 @@ export interface AIFailure {
   message: string;
   /** For a rate limit: how long the provider asked us to wait. */
   retryAfterMs?: number;
+  /**
+   * Which of Studio's own controls mends it, when one does: the AI setup (no
+   * provider, or no model chosen), the provider's own key and address, or the
+   * limits in Settings. Absent where the thing to do is wait and ask again.
+   * The chat offers that control under the run (lib/agent/failureNextStep.ts).
+   */
+  fix?: 'setup' | 'provider' | 'limits';
   at: number;
 }
 
@@ -152,6 +161,12 @@ export interface VFSEvent {
    * Undo, redo, revert and pruning act on whole units.
    */
   transactionId?: string;
+  /**
+   * What the unit was, in the person's words, when whoever made it said: "Renamed logo.png to
+   * brand.png", "Added 3 files". The same on every event of the unit; the History panel shows
+   * it in place of "Created" or "Edit · 4 files". Absent for an edit and for an AI turn.
+   */
+  label?: string;
   /** The file as it was before this event — bytes and metadata — for an exact restore. Absent for a create. */
   previous?: VFSFile;
   /** On the redo stack only: the file as it was after this event, for an exact redo. Absent for a delete. */

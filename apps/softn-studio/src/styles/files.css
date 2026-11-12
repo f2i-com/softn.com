@@ -1,0 +1,580 @@
+/*
+ * The Files panel as a file manager: its bar, its rows, its menu, and what it
+ * says after each action. The tree's base (.st-tree, .st-tree-item,
+ * .st-tree-name, .st-tree-tag) is in editor.css with the other panels; this
+ * sheet is what the panel needs now that its rows are more than a list.
+ *
+ * The colours follow studio.css: coral for the language (a page, logic, data),
+ * the ink inverted for what is selected, and nothing in mint, which is kept for
+ * something running. The notice that the AI is working uses it for that reason.
+ */
+
+.st-files {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── The bar: what can be added ─────────────────────────────────── */
+
+.st-files-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.5rem 0.375rem 0.5rem 0.625rem;
+  flex-shrink: 0;
+}
+
+.st-files-bar .st-btn {
+  gap: 0.4375rem;
+  padding: 0 0.6875rem 0 0.5625rem;
+  margin-right: auto;
+}
+
+/* The bar's small buttons, and a row's "more". */
+.st-files-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--studio-radius-sm);
+  background: transparent;
+  color: var(--studio-text-muted);
+  cursor: pointer;
+  transition:
+    background 120ms var(--ease),
+    color 120ms var(--ease);
+}
+
+.st-files-tool:hover:not([aria-disabled='true']),
+.st-files-tool[aria-expanded='true'] {
+  background: var(--studio-surface-hover);
+  color: var(--studio-text);
+}
+
+.st-files-tool[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── While the AI is working ────────────────────────────────────── */
+
+.st-files-busy {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0.625rem 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-live-soft);
+  color: var(--studio-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  flex-shrink: 0;
+}
+
+.st-files-busy::before {
+  content: '';
+  width: 0.4375rem;
+  height: 0.4375rem;
+  margin-top: 0.3125rem;
+  border-radius: 50%;
+  background: var(--studio-live);
+  flex-shrink: 0;
+}
+
+.st-files-busy strong {
+  color: var(--studio-text);
+  font-weight: 600;
+}
+
+/* ── The tree ───────────────────────────────────────────────────── */
+
+.st-files .st-tree {
+  padding: 0.125rem 0.375rem 0.75rem;
+  outline-offset: -2px;
+}
+
+/* Files from the computer held over the panel, bound for where they belong by kind. */
+.st-files .st-tree[data-drop='true'] {
+  background: var(--studio-accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--studio-text-dim);
+  border-radius: var(--studio-radius-sm);
+}
+
+.st-files .st-tree-item {
+  position: relative;
+  min-height: 1.75rem;
+  padding-right: 0.25rem;
+  outline-offset: -2px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The row the keyboard is on, and the last one chosen. */
+.st-files .st-tree-item[aria-selected='true'] {
+  background: var(--studio-surface-hover);
+}
+
+/* The file on the canvas: a bar at the row's edge, so it reads without colour. */
+.st-files .st-tree-item[aria-current='true'] {
+  background: var(--studio-bg-muted);
+}
+
+.st-files .st-tree-item[aria-current='true']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.375rem;
+  bottom: 0.375rem;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--studio-text);
+}
+
+/* What was cut, until it is pasted. */
+.st-files .st-tree-item[data-cut='true'] > :not(.st-tree-more) {
+  opacity: 0.45;
+}
+
+/* The folder a drag would land in. */
+.st-files .st-tree-item[data-drop='true'] {
+  background: var(--studio-accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--studio-text);
+  color: var(--studio-text);
+}
+
+.st-tree-twist {
+  display: inline-flex;
+  width: 0.75rem;
+  flex-shrink: 0;
+  color: var(--studio-text-dim);
+  transition: transform 120ms var(--ease);
+}
+
+.st-tree-item[aria-expanded='true'] > .st-tree-twist {
+  transform: rotate(90deg);
+}
+
+.st-tree-kind {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--studio-text-dim);
+}
+
+/* The language's own files, in its colour: a page, logic, data. */
+.st-tree-kind[data-language='true'] {
+  color: var(--studio-code);
+}
+
+.st-tree-item[aria-expanded] > .st-tree-kind {
+  color: var(--studio-text-muted);
+}
+
+.st-tree-thumb {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  border-radius: 3px;
+  object-fit: cover;
+  background: var(--studio-inset);
+  box-shadow: 0 0 0 1px var(--studio-border-subtle);
+}
+
+/* A count or a size beside a name. It gives way to "more" where there is no room for both. */
+.st-tree-meta {
+  flex-shrink: 0;
+  font-family: var(--studio-mono);
+  font-size: 0.65625rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--studio-text-dim);
+  white-space: nowrap;
+}
+
+.st-tree-more {
+  width: 1.5rem;
+  height: 1.5rem;
+  opacity: 0;
+}
+
+.st-tree-item:hover > .st-tree-more,
+.st-tree-item:focus-visible > .st-tree-more,
+.st-tree-item[aria-selected='true'] > .st-tree-more,
+.st-tree-more:focus-visible,
+.st-tree-more[aria-expanded='true'] {
+  opacity: 1;
+}
+
+/* The box a name is typed in, where the name was. */
+.st-tree-input {
+  flex: 1;
+  min-width: 0;
+  height: 1.375rem;
+  padding: 0 0.3125rem;
+  border: 1px solid var(--studio-border-strong);
+  border-radius: 4px;
+  background: var(--studio-bg);
+  color: var(--studio-text);
+  font: inherit;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.st-tree-input[aria-invalid='true'] {
+  border-color: var(--studio-error);
+}
+
+/* Under the box: the name the file will have, or why it cannot have that one. */
+.st-tree-hint {
+  margin: 0.125rem 0.25rem 0.25rem;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--studio-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.st-tree-hint[data-tone='refused'] {
+  color: var(--studio-error);
+}
+
+.st-tree-hint:empty {
+  display: none;
+}
+
+/* ── What was done, or why it was not ───────────────────────────── */
+
+.st-files-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0.5rem 0.5rem;
+  padding: 0.5rem 0.375rem 0.5rem 0.625rem;
+  border: 1px solid var(--studio-border-subtle);
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-surface);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--studio-text-muted);
+  /* A length, not a share of the panel: a share is of a box that is itself sized by this one. */
+  max-height: 11rem;
+  overflow-y: auto;
+}
+
+/* The live region the notice is said in: it keeps its height when the tree is long. */
+.st-files-said {
+  flex-shrink: 0;
+}
+
+.st-files-notice[data-tone='caution'] {
+  border-color: transparent;
+  background: var(--studio-warning-soft);
+}
+
+.st-files-notice[data-tone='refused'] {
+  border-color: transparent;
+  background: var(--studio-error-soft);
+}
+
+.st-files-notice-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.st-files-notice-text strong {
+  display: block;
+  color: var(--studio-text);
+  font-weight: 600;
+}
+
+.st-files-notice-text span {
+  display: block;
+  margin-top: 0.1875rem;
+}
+
+/* A reason or a hint: a sentence to read, in the text's own colour and weight. */
+.st-files-notice-text span.lead {
+  margin-top: 0;
+  color: var(--studio-text);
+}
+
+.st-files-notice .st-btn {
+  min-height: 1.625rem;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+  gap: 0.3125rem;
+  flex-shrink: 0;
+}
+
+.st-files-notice .st-files-tool {
+  width: 1.625rem;
+  height: 1.625rem;
+}
+
+/* More than one sentence: the words take the panel's width, and Undo goes under them. */
+.st-files-notice[data-long='true'] {
+  flex-wrap: wrap;
+  row-gap: 0.375rem;
+}
+
+.st-files-notice[data-long='true'] .st-files-notice-text {
+  flex-basis: 100%;
+}
+
+.st-files-notice[data-long='true'] > .st-files-notice-text + * {
+  margin-left: auto;
+}
+
+/* ── What the bundle holds ──────────────────────────────────────── */
+
+.st-files-foot {
+  margin: 0;
+  padding: 0.5rem 1rem 0.625rem;
+  border-top: 1px solid var(--studio-border-subtle);
+  font-size: 0.71875rem;
+  line-height: 1.45;
+  color: var(--studio-text-dim);
+  flex-shrink: 0;
+}
+
+.st-files-foot .num {
+  font-variant-numeric: tabular-nums;
+  color: var(--studio-text-muted);
+}
+
+/* ── No files yet ───────────────────────────────────────────────── */
+
+.st-files-empty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 1.5rem 1.25rem;
+  text-align: center;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--studio-text-dim);
+}
+
+.st-files-empty[data-drop='true'] {
+  background: var(--studio-accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--studio-text-dim);
+}
+
+.st-files-empty strong {
+  margin-top: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--studio-text-muted);
+}
+
+.st-files-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0.625rem 0 0.25rem;
+}
+
+/* ── The menu ───────────────────────────────────────────────────── */
+
+.st-fmenu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 13.75rem;
+  max-width: calc(100vw - 1rem);
+  max-height: calc(100vh - 1rem);
+  max-height: calc(100dvh - 1rem);
+  overflow-y: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius);
+  background: var(--studio-panel-strong);
+  box-shadow: var(--studio-shadow-pop);
+  font-family: var(--studio-body);
+}
+
+.st-fmenu-title {
+  margin: 0;
+  padding: 0.375rem 0.625rem 0.3125rem;
+  font-family: var(--studio-mono);
+  font-size: 0.6875rem;
+  color: var(--studio-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-fmenu-note {
+  margin: 0 0.25rem 0.25rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: 4px;
+  background: var(--studio-live-soft);
+  font-size: 0.71875rem;
+  line-height: 1.4;
+  color: var(--studio-text-muted);
+  max-width: 15rem;
+}
+
+.st-fmenu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  min-height: 1.875rem;
+  padding: 0 0.625rem;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--studio-text);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.st-fmenu-item > svg {
+  color: var(--studio-text-dim);
+}
+
+.st-fmenu-item:hover:not([aria-disabled='true']),
+.st-fmenu-item:focus-visible:not([aria-disabled='true']) {
+  background: var(--studio-surface-hover);
+}
+
+.st-fmenu-item:focus-visible {
+  outline: 2px solid var(--studio-focus);
+  outline-offset: -2px;
+}
+
+.st-fmenu-item[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.st-fmenu-item[data-danger='true'],
+.st-fmenu-item[data-danger='true'] > svg {
+  color: var(--studio-error);
+}
+
+.st-fmenu-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.st-fmenu-key {
+  flex-shrink: 0;
+  margin-left: 1rem;
+  font-family: var(--studio-mono);
+  font-size: 0.6875rem;
+  color: var(--studio-text-dim);
+}
+
+.st-fmenu-sep {
+  height: 1px;
+  margin: 0.25rem 0.375rem;
+  background: var(--studio-border-subtle);
+}
+
+/* ── A question before something is deleted ─────────────────────── */
+
+.st-files-ask-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  background: var(--studio-overlay);
+}
+
+.st-files-ask {
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 0.875rem 1rem 1rem;
+  border-top: 1px solid var(--studio-border);
+  background: var(--studio-panel-strong);
+  box-shadow: var(--studio-shadow-pop);
+}
+
+.st-files-ask h3 {
+  margin: 0 0 0.375rem;
+  font-family: var(--studio-display);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--studio-text);
+  overflow-wrap: anywhere;
+}
+
+.st-files-ask p {
+  margin: 0 0 0.4375rem;
+  font-size: 0.78125rem;
+  line-height: 1.5;
+  color: var(--studio-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.st-files-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* ── On a touch screen: a finger's height, and "more" always there ── */
+
+@media (pointer: coarse) {
+  .st-files-tool {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+  .st-files-notice .st-files-tool {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+  .st-files-notice .st-btn {
+    min-height: 2.75rem;
+    padding: 0 0.75rem;
+  }
+  .st-files .st-tree-item {
+    min-height: 2.75rem;
+    padding-right: 0;
+    font-size: 0.875rem;
+  }
+  .st-tree-more {
+    width: 2.75rem;
+    height: 2.75rem;
+    opacity: 1;
+  }
+  .st-tree-thumb {
+    width: 1.375rem;
+    height: 1.375rem;
+  }
+  .st-tree-input {
+    height: 2.125rem;
+    font-size: 1rem;
+  }
+  .st-fmenu {
+    min-width: 15rem;
+  }
+  .st-fmenu-item {
+    min-height: 2.75rem;
+    font-size: 0.9375rem;
+  }
+  .st-fmenu-key {
+    display: none;
+  }
+}

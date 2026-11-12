@@ -4,11 +4,13 @@ import React from 'react';
 import { Mark } from '@softn/brand';
 import { Icon } from '../common/Icon';
 import { HandoffReady } from '../common/HandoffReady';
+import { BuilderReturnNotice } from '../common/BuilderReturnNotice';
 import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
 import { ProjectNameControl } from '../common/ProjectName';
 import { useProjectActions } from '../common/ProjectActions';
 import { AIStatusPill } from '../ai/AIStatusPill';
+import { useBuilderReturnNotice } from '../../lib/builderFlip';
 
 interface TopBarProps {
   onBackToDashboard?: () => void;
@@ -26,6 +28,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
   const hosted = isHostedEditor();
   // The host's own name for saving back to it, so the two buttons agree.
   const saveLabel = useHostedSaveLabel() ?? 'Review changes';
+  // What coming back from the Builder brought in, said once and until it is dismissed.
+  const { notice: returned, dismiss: dismissReturned } = useBuilderReturnNotice();
 
   return (
     <>
@@ -54,6 +58,21 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
             It stays on screen in every state, and carries Export bundle when
             a save has failed. */}
         <SaveStatusIndicator />
+        {/* The way across to the visual editor, with the project: this tab goes there, and Back to
+            Studio there brings the changes into this project as one step. Only where there is a
+            Builder beside this Studio (lib/builderFlip.ts). */}
+        {actions.builderOffered && <button
+          type="button"
+          onClick={actions.openInBuilder}
+          disabled={!actions.canOpenInBuilder}
+          aria-busy={actions.openingBuilder}
+          className="st-btn st-btn-sm st-topbar-across"
+          data-action="open-in-builder"
+          title={hasFiles ? 'Open in Builder: change this project by hand in the visual editor, and bring the changes back with Back to Studio' : 'No files to open in the Builder'}
+        >
+          <Icon name="layout" size={15} />
+          <span>{actions.openingBuilder ? 'Opening…' : 'Open in Builder'}</span>
+        </button>}
         {/* The theme switch is in the product bar above, shared with every
             other SoftN app; a second one here would be a second opinion. */}
         <button
@@ -100,6 +119,11 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
       <div className="st-topbar-notice">
         {actions.error ? <ProjectActionError message={actions.error} onDismiss={actions.dismissError} />
           : ready && <HandoffReady ready={ready} onDone={actions.dismissReady} compact />}
+      </div>
+    )}
+    {returned && !ready && !actions.error && (
+      <div className="st-topbar-notice">
+        <BuilderReturnNotice text={returned.text} failed={returned.failed} onDismiss={dismissReturned} />
       </div>
     )}
     </>

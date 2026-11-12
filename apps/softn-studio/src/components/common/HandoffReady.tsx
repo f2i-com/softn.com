@@ -66,7 +66,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '6px 10px',
     borderRadius: 8,
     background: 'var(--studio-accent)',
-    color: '#fff',
+    // The accent is near-white in the dark theme: white text on it could not be read.
+    color: 'var(--studio-on-accent)',
     fontWeight: 700,
     textDecoration: 'none',
     fontSize: 12,

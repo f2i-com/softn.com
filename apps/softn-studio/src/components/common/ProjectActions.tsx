@@ -1,13 +1,16 @@
 import { isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { exportAsBundle } from '../../lib/exportBundle';
 import { prepareHandoff, type HandoffDestination, type ReadyHandoff } from '../../lib/handoff';
+import { builderOffered, flipNavigation, prepareBuilderVisit } from '../../lib/builderFlip';
 
 /**
  * The project's three ways out — Run, Publish, Export bundle — as one hook,
  * so the desktop bar and the mobile menu are the same actions with the same
- * rules rather than two copies that drift.
+ * rules rather than two copies that drift. And its way across: Open in
+ * Builder, which takes this tab to the visual editor with the project and
+ * is offered only where that editor is beside this one (lib/builderFlip.ts).
  *
  * The vocabulary is shared across SoftN: *Preview* is the canvas, *Run* is
  * the bundle in the runtime, *Save project* is this browser's storage,
@@ -39,9 +42,16 @@ export interface ProjectActions {
   canRun: boolean;
   canPublish: boolean;
   canExport: boolean;
+  /** Whether there is a Builder to open the project in: false inside FormLogic and where the two are not on one origin. */
+  builderOffered: boolean;
+  /** Not held back by the check: a page that does not parse may be what the person is going there to mend. */
+  canOpenInBuilder: boolean;
+  /** The project is being saved and staged, and this tab is about to leave for the Builder. */
+  openingBuilder: boolean;
   run(): void;
   publish(): void;
   exportBundle(): void;
+  openInBuilder(): void;
   dismissReady(): void;
   dismissError(): void;
   /** The title for a Run/Publish control in its current state. */
@@ -155,6 +165,45 @@ export function useProjectActions(): ProjectActions {
     [files, hasFiles, projectName, refused, scope],
   );
 
+  /**
+   * Save the project, stage it for the Builder and take this tab there. A
+   * person who would rather stay (a draft not saved, a run they will not
+   * stop) is left where they are; anything else that keeps the project here
+   * is said where Run's failures are.
+   */
+  const [openingBuilder, setOpeningBuilder] = useState(false);
+  const leaving = useRef(false);
+  const openInBuilder = useCallback(async () => {
+    if (!hasFiles || leaving.current) return;
+    leaving.current = true;
+    setOpeningBuilder(true);
+    const log = useWorkspaceStore.getState().addConsoleOutput;
+    const stay = (message?: string) => {
+      leaving.current = false;
+      setOpeningBuilder(false);
+      if (message === undefined) return;
+      setState((current) => ({ ...current, ready: null, error: message }));
+      log(message);
+    };
+    try {
+      const visit = await prepareBuilderVisit();
+      if (visit.ok) flipNavigation.go(visit.url);
+      else stay(visit.stayed ? undefined : visit.message);
+    } catch (err: unknown) {
+      stay(`Could not open the project in the Builder: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [hasFiles]);
+  // The browser's Back from the Builder can show this page as it was left, mid-way out: it is here again.
+  useEffect(() => {
+    const shown = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      leaving.current = false;
+      setOpeningBuilder(false);
+    };
+    window.addEventListener('pageshow', shown);
+    return () => window.removeEventListener('pageshow', shown);
+  }, []);
+
   const describe = useCallback(
     (to: HandoffDestination, idle: string) => (preparing === to
       ? 'Preparing the bundle…'
@@ -176,6 +225,10 @@ export function useProjectActions(): ProjectActions {
     canRun: hasFiles && !refused && preparing === null,
     canPublish: hasFiles && !refused && preparing === null,
     canExport: hasFiles,
+    builderOffered: builderOffered(),
+    canOpenInBuilder: hasFiles && !openingBuilder,
+    openingBuilder,
+    openInBuilder: () => void openInBuilder(),
     run: () => void handOff('runtime'),
     publish: () => void handOff('publish'),
     exportBundle: () => {

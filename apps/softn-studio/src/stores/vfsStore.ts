@@ -43,18 +43,27 @@ interface VFSState {
 
   /** Create a file. Throws if the path exists: an overwrite is an update, and is recorded as one. */
   createFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
-  /** Create many files as one undo unit — an import is one thing that happened, not hundreds. */
+  /** Create many files as one undo unit. A project being opened is placed with openFiles instead. */
   batchCreateFiles(entries: Array<{ path: string; content: string | Uint8Array }>, source?: 'user' | 'ai'): void;
   /** Restore a saved project without recording it as work the user just did. */
   hydrateFiles(entries: Array<{ path: string; content: string | Uint8Array }>): void;
+  /**
+   * Place the files of a project that is being opened (an example, an import)
+   * in place of whatever is there. Each path is checked as a create is, and
+   * nothing is placed when one is refused; nothing is recorded, because
+   * opening a project is not something that was done to it.
+   */
+  openFiles(entries: Array<{ path: string; content: string | Uint8Array }>): void;
   /** Replace a file's content. Throws if the path does not exist: there is no before-image to keep. */
   updateFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
   deleteFile(path: string, source?: 'user' | 'ai'): void;
   /**
    * Apply records as one unit under one id: every record is checked first,
-   * and an invalid one means nothing is written. Returns the id.
+   * and an invalid one means nothing is written. Returns the id. `label` is
+   * what the unit was, in the person's words ("Renamed logo.png to brand.png"),
+   * for the History panel to show.
    */
-  applyTransaction(records: VFSChangeRecord[], source?: 'user' | 'ai', transactionId?: string): string;
+  applyTransaction(records: VFSChangeRecord[], source?: 'user' | 'ai', transactionId?: string, label?: string): string;
   /**
    * Put back what one transaction changed, wherever it sits in the history,
    * provided nothing later touched the same files. Not redoable.
@@ -211,6 +220,11 @@ function undoTailUnit(files: Map<string, VFSFile>, history: VFSEvent[], floor: M
  * the first problem. A create must be a canonical project path that is not
  * another spelling of a file already there: the store is the last place a
  * path is checked before it exists, so it checks.
+ *
+ * A file the same transaction deleted earlier is no longer there to collide
+ * with: a rename is a delete and a create in one unit, and one that changes
+ * only the case of a name (Logo.png to logo.png) was refused as "the same
+ * file as Logo.png", the very file the unit was taking away.
  */
 function checkRecords(files: Map<string, VFSFile>, records: VFSChangeRecord[]): void {
   const seen = new Set<string>();
@@ -219,12 +233,14 @@ function checkRecords(files: Map<string, VFSFile>, records: VFSChangeRecord[]): 
   // held the page for 38 seconds.
   let fileKeys: Map<string, string> | null = null;
   const recordKeys = new Map<string, string>();
+  /** The paths this transaction has deleted so far. */
+  const gone = new Set<string>();
   for (const record of records) {
     if (seen.has(record.path)) throw new Error(`Transaction names ${record.path} more than once`);
     seen.add(record.path);
     const key = canonicalKey(record.path);
     const earlier = recordKeys.get(key);
-    if (earlier === undefined) recordKeys.set(key, record.path);
+    if (earlier === undefined && record.op !== 'delete') recordKeys.set(key, record.path);
     const exists = files.has(record.path);
     if (record.op === 'create') {
       if (exists) throw new Error(`createFile: ${record.path} already exists`);
@@ -241,13 +257,16 @@ function checkRecords(files: Map<string, VFSFile>, records: VFSChangeRecord[]): 
       }
       // The file being created is not there yet, and an earlier record of the
       // same spelling was refused above, so any match is another spelling.
-      const alias = fileKeys.get(key) ?? earlier ?? null;
+      const held = fileKeys.get(key);
+      const alias = (held !== undefined && !gone.has(held) ? held : undefined) ?? earlier ?? null;
       if (alias !== null) throw new Error(`createFile: ${record.path} is the same file as ${alias} on a case-insensitive disk`);
     } else if (record.op === 'update') {
       if (!exists) throw new Error(`updateFile: no such file ${record.path}`);
       if (record.content === undefined) throw new Error(`updateFile: ${record.path} has no content`);
     } else if (!exists) {
       throw new Error(`deleteFile: no such file ${record.path}`);
+    } else {
+      gone.add(record.path);
     }
   }
 }
@@ -289,6 +308,15 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     });
   },
 
+  openFiles(entries) {
+    // An example and an import were placed with batchCreateFiles, so the project a person had
+    // just opened stood in the History panel as one unit of their own work: "Undo last" took
+    // all of its files away and the canvas said "No app yet". The paths still come from
+    // outside, so they are checked as creates into an empty project are.
+    checkRecords(new Map(), entries.map(({ path, content }) => ({ op: 'create' as const, path, content })));
+    get().hydrateFiles(entries);
+  },
+
   batchCreateFiles(entries, source = 'user') {
     get().applyTransaction(
       entries.map(({ path, content }) => ({ op: 'create' as const, path, content })),
@@ -306,7 +334,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     get().applyTransaction([{ op: 'delete', path }], source);
   },
 
-  applyTransaction(records, source = 'user', transactionId) {
+  applyTransaction(records, source = 'user', transactionId, label) {
     const id = transactionId ?? newTransactionId();
     checkRecords(get().files, records);
     set((s) => {
@@ -315,6 +343,8 @@ export const useVFSStore = create<VFSState>((set, get) => ({
       const now = Date.now();
       const events: VFSEvent[] = [];
       const undo: UndoEntry | null = source === 'ai' ? { id, at: now, changes: [] } : null;
+      // What the unit was, on each of its events, so it is still said after an undo and a redo.
+      const named = label ? { label } : {};
       for (const record of records) {
         const existing = files.get(record.path);
         undo?.changes.push({
@@ -330,6 +360,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
             timestamp: now,
             source,
             transactionId: id,
+            ...named,
             previous: snapshotFile(existing!),
             previousContent: snapshotContent(existing!.content),
           });
@@ -346,13 +377,14 @@ export const useVFSStore = create<VFSState>((set, get) => ({
         });
         events.push(
           record.op === 'create'
-            ? { type: 'create', path: record.path, timestamp: now, source, transactionId: id }
+            ? { type: 'create', path: record.path, timestamp: now, source, transactionId: id, ...named }
             : {
                 type: 'update',
                 path: record.path,
                 timestamp: now,
                 source,
                 transactionId: id,
+                ...named,
                 previous: snapshotFile(existing!),
                 previousContent: snapshotContent(existing!.content),
               },

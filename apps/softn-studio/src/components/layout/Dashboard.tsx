@@ -133,8 +133,9 @@ function initial(name: string): string {
 }
 
 /**
- * Studio's front door: what it is for, the one thing to press first, and
- * everything that already exists — recent projects and the bundled examples.
+ * Studio's front door: one line for what it is for and the two ways to start,
+ * then everything that already exists — the person's recent projects, first and
+ * at the left, and the bundled examples beside them.
  *
  * Recent projects are a list of real buttons.
  *
@@ -311,114 +312,124 @@ export const Dashboard: React.FC<DashboardProps> = ({
           OpenAI or Anthropic key. It takes a minute, and you can change it later in Settings.
         </p>
       </div>
-      <div className="st-onboard-card">
-        <ProviderSetup />
-      </div>
+      {/* The way in without a key comes before the setup, in the page and in the tab order. It
+          came after the card: beside it on a wide screen, but on a phone under the whole form,
+          a screen and more down, so a newcomer with no key met a form and no way round it. */}
       <div className="st-onboard-skip">
-        <span>Just looking? The examples run without any AI.</span>
+        <span>No key yet? The examples open and run without any AI.</span>
         <button type="button" className="st-btn st-btn-sm" onClick={ai!.onSkip}>
           Explore examples without AI
         </button>
       </div>
+      <div className="st-onboard-card">
+        <ProviderSetup />
+      </div>
+    </section>
+  );
+
+  const examplesSection = onOpenExample && examples.length > 0 && (
+    <section aria-labelledby="studio-examples-heading" className="st-home-examples">
+      <div className="st-section-head">
+        <h2 id="studio-examples-heading" className="st-section-title">Start from an example</h2>
+        <span className="st-section-note">No key needed</span>
+      </div>
+      <ul className="st-examples">
+        {examples.map((example) => {
+          const language = exampleLanguage(example);
+          const excerpt = exampleExcerpt(example);
+          const title = example.name.replace(/\s*\(example\)\s*$/i, '');
+          return (
+            <li key={example.id}>
+              <button
+                type="button"
+                className="st-example"
+                onClick={() => onOpenExample(example)}
+                aria-label={`Open the ${language} example: ${title}`}
+              >
+                <span className="st-example-head">
+                  <span className="st-example-title">{title}</span>
+                  <span className="st-example-lang">{language}</span>
+                </span>
+                <span className="st-example-desc">{example.description}</span>
+                {excerpt && (
+                  <code className="st-code" aria-hidden="true">
+                    <span className="st-code-file">{excerpt.path}</span>
+                    {excerpt.lines.map((line, i) => (
+                      <React.Fragment key={i}>
+                        {highlight(line)}
+                        {i < excerpt.lines.length - 1 ? '\n' : null}
+                      </React.Fragment>
+                    ))}
+                  </code>
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 
   return (
     <div className="st-home" ref={homeRef}>
-      <div className="st-home-inner" data-has-recent={recentProjects.length > 0}>
+      <div className="st-home-inner">
         {onboarding}
         {/* Everything else is still on the page, so it is not a wall — but
             nothing in it can be started until the step above is done or
             skipped, and it says so rather than failing later. */}
         <div ref={lockedRef} className={gated ? 'st-home-locked' : undefined}>
-        {/* The product bar above carries the mark and the theme switch;
-            this page starts with what Studio is for. */}
-        <div className="st-home-top">
-          <section className="st-hero" aria-labelledby="studio-home-title">
-            <h1 id="studio-home-title" className="st-hero-title">Describe an app. Studio builds it.</h1>
-            <p className="st-hero-lede">
-              Tell the AI what the app is for. Studio writes its pages, in HTML with SoftN components, its logic and its data,
-              shows it running as it goes, and exports a <code>.softn</code> bundle you can run or publish.
-            </p>
-            <div className="st-hero-actions">
-              <button ref={startRef} type="button" className="st-btn st-btn-primary st-btn-lg" onClick={() => onNewProject()}>
-                <Icon name="sparkles" size={16} />
-                Start a new app
-              </button>
-              <button
-                type="button"
-                className="st-btn st-btn-lg"
-                onClick={() => fileInputRef.current?.click()}
-                aria-busy={importing || undefined}
-                data-drag={isDragOver || undefined}
-                onDrop={handleDrop}
-                onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-                onDragLeave={() => setIsDragOver(false)}
-              >
-                <Icon name="upload" size={16} />
-                {importing ? 'Opening project…' : 'Import a bundle'}
-              </button>
-              <span className="st-hero-hint">.softn, .zip or .json. You can also drop the file on Import.</span>
-            </div>
-
+        {/* One line for what Studio is for and the two ways to start, then the work. The product
+            bar above carries the mark and the theme switch. */}
+        <header className="st-home-head">
+          <div className="st-home-intro">
+            <h1 id="studio-home-title" className="st-home-title">Describe an app. Studio builds it.</h1>
+            {/* Said to someone who has made nothing here yet; a person with projects has read it. */}
+            {recentProjects.length === 0 && (
+              <p className="st-home-lede">
+                Say what the app is for. The AI writes its pages, its logic and its data, shows it running as it goes,
+                and exports a <code>.softn</code> bundle you can run or publish.
+              </p>
+            )}
+          </div>
+          <div className="st-home-actions">
+            <button ref={startRef} type="button" className="st-btn st-btn-primary" onClick={() => onNewProject()}>
+              <Icon name="sparkles" size={16} />
+              Start a new app
+            </button>
+            <button
+              type="button"
+              className="st-btn"
+              onClick={() => fileInputRef.current?.click()}
+              aria-busy={importing || undefined}
+              data-drag={isDragOver || undefined}
+              onDrop={handleDrop}
+              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+              onDragLeave={() => setIsDragOver(false)}
+              title="Open a .softn bundle, a .zip archive or a .json project file. You can also drop the file here."
+            >
+              <Icon name="upload" size={16} />
+              {importing ? 'Opening project…' : 'Import a bundle'}
+            </button>
+            <span className="st-home-hint">.softn, .zip or .json. You can also drop the file on Import.</span>
             {ai && !gated && (
               <div className="st-home-ai">
                 <span>{aiReady ? 'The AI uses' : 'The AI is not connected yet.'}</span>
                 <AIStatusPill />
               </div>
             )}
+          </div>
 
-            <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'}>
-              {notice && <p className="st-notice" data-kind={notice.kind}>{notice.text}</p>}
-            </div>
-          </section>
+          <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'}>
+            {notice && <p className="st-notice" data-kind={notice.kind}>{notice.text}</p>}
+          </div>
+        </header>
 
-          {onOpenExample && examples.length > 0 && (
-            <section aria-labelledby="studio-examples-heading" className="st-home-examples">
-              <div className="st-section-head">
-                <h2 id="studio-examples-heading" className="st-section-title">Start from an example</h2>
-                <span className="st-section-note">No key needed</span>
-              </div>
-              <ul className="st-examples">
-                {examples.map((example) => {
-                  const language = exampleLanguage(example);
-                  const excerpt = exampleExcerpt(example);
-                  const title = example.name.replace(/\s*\(example\)\s*$/i, '');
-                  return (
-                    <li key={example.id}>
-                      <button
-                        type="button"
-                        className="st-example"
-                        onClick={() => onOpenExample(example)}
-                        aria-label={`Open the ${language} example: ${title}`}
-                      >
-                        <span className="st-example-head">
-                          <span className="st-example-title">{title}</span>
-                          <span className="st-example-lang">{language}</span>
-                        </span>
-                        <span className="st-example-desc">{example.description}</span>
-                        {excerpt && (
-                          <code className="st-code" aria-hidden="true">
-                            <span className="st-code-file">{excerpt.path}</span>
-                            {excerpt.lines.map((line, i) => (
-                              <React.Fragment key={i}>
-                                {highlight(line)}
-                                {i < excerpt.lines.length - 1 ? '\n' : null}
-                              </React.Fragment>
-                            ))}
-                          </code>
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          )}
-        </div>
-
-        <div className="st-home-recent">
-          <section aria-labelledby="studio-recent-heading">
+        {/* The work: the person's own projects first and at the left, where the eye starts, and
+            the examples beside them. The page used to open on a headline that filled the screen,
+            with the projects under it, below the fold on a laptop; on a phone they came after
+            both examples. */}
+        <div className="st-home-grid">
+          <section className="st-home-recent" aria-labelledby="studio-recent-heading">
             <div className="st-section-head">
               <h2 id="studio-recent-heading" className="st-section-title">Recent projects</h2>
               {recentProjects.length > 0 && <span className="st-section-note">Kept in this browser</span>}
@@ -605,15 +616,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
             )}
           </section>
 
+          {examplesSection}
         </div>
-
-        {/* A real sequence, so it is numbered; kept small and last, because
-            nothing in it can be pressed. */}
-        <ol className="st-steps" aria-label="How Studio works">
-          <li><strong>Describe</strong>Say what the app is for; the AI plans its pages and data.</li>
-          <li><strong>Preview</strong>Watch it render as files are written, and click through it.</li>
-          <li><strong>Export bundle</strong>Download a .softn file, then Run or Publish it.</li>
-        </ol>
 
         </div>
 

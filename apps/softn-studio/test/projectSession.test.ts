@@ -519,6 +519,62 @@ describe('reopening projects by id', () => {
     expect(useVFSStore.getState().files.get('ui/main.ui')?.content).toBe('<Text>second</Text>');
   });
 
+  // The runs and tokens counted against the limits are a session's: this tab's work on the
+  // project it has open. They were saved with the project and taken up when it was opened, so
+  // a project that had had its runs came back at the limit and was refused another "this
+  // session" on the day it was opened.
+  it('saves a project without what the session has used, and opens it with nothing counted', async () => {
+    const id = beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('Alpha');
+    useVFSStore.getState().createFile('ui/main.ui', '<Text>A</Text>');
+    useAIStore.getState().addMessage({ id: 'said', role: 'user', content: 'Said', timestamp: 1 });
+    useAIStore.setState({ iterationsUsed: 15, tokensUsed: 1_900_000, filesChanged: 4 });
+    const autosave = startProjectAutosave({ debounceMs: 10 });
+    expect(await autosave.flush()).toEqual({ ok: true });
+    autosave.stop();
+
+    // The fields are there, at zero: an older Studio's reader requires them.
+    const stored = await loadProjectRecord(id);
+    expect(stored?.session.messages.map((m) => m.id)).toEqual(['said']);
+    expect(stored?.session).toMatchObject({ iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 });
+    // While the project stays open, the session's count stands.
+    expect(useAIStore.getState()).toMatchObject({ iterationsUsed: 15, tokensUsed: 1_900_000, filesChanged: 4 });
+
+    // Opened again in this tab, with the count of the session before still in the store.
+    expect(await openProjectById(id)).toEqual({ ok: true });
+    expect(useAIStore.getState().messages.map((m) => m.id)).toEqual(['said']);
+    expect(useAIStore.getState()).toMatchObject({ iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 });
+  });
+
+  it('does not take up the count in a record an older Studio saved', async () => {
+    const id = await makeProject('Alpha', '<Text>A</Text>');
+    const saved = (await loadProjectRecord(id))!;
+    const older: ProjectRecord = { ...saved, revision: saved.revision + 1, session: { messages: [], iterationsUsed: 15, tokensUsed: 2_000_000, filesChanged: 9 } };
+    expect(await saveProjectRecord(older)).toEqual({ ok: true });
+
+    simulateReload();
+    expect((await restoreSession()).restored).toBe(true);
+    expect(useWorkspaceStore.getState().projectId).toBe(id);
+    expect(useAIStore.getState()).toMatchObject({ iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 });
+  });
+
+  it('a change to what the session has used is not a change to the project', async () => {
+    const save = vi.fn(async (_record: ProjectRecord): Promise<SaveResult> => ({ ok: true }));
+    beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('Alpha');
+    const autosave = startProjectAutosave({ save, debounceMs: 10 });
+    await autosave.flush();
+    const revision = currentRevision();
+    useAIStore.getState().incrementIteration();
+    useAIStore.getState().addTokens(1200);
+    useAIStore.getState().incrementFilesChanged();
+    useAIStore.getState().resetBudget();
+    expect(currentRevision()).toBe(revision);
+    await autosave.flush();
+    expect(save).toHaveBeenCalledTimes(1);
+    autosave.stop();
+  });
+
   it('opening an id with no record says so and leaves the current project alone', async () => {
     await makeProject('Alpha', '<Text>A</Text>');
     const opened = await openProjectById('nothing-here');

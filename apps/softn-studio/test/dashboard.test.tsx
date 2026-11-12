@@ -13,6 +13,8 @@
  * so and does not open; a failed open lands in a live region.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -103,6 +105,27 @@ describe('Dashboard recent projects', () => {
     act(() => skip.click());
     expect(named('Explore examples without AI')).toBeUndefined();
     expect(document.activeElement).toBe(named('Start a new app'));
+  });
+
+  // On a phone the way in without a key was under the whole setup form, about 1000px down a
+  // screen 844 tall: a newcomer with no key met a form first. It is before the form now, in
+  // the page and in the tab order, and in one column the stylesheet places it there too.
+  it('offers the way in without a key before the setup form', () => {
+    mount({ recentProjects: [], ai: { gate: true, onSkip: () => {} } });
+    const onboard = container.querySelector('.st-onboard')!;
+    expect([...onboard.children].map((child) => child.className)).toEqual(['st-onboard-intro', 'st-onboard-skip', 'st-onboard-card']);
+    const buttons = [...onboard.querySelectorAll('button')];
+    expect(buttons[0].textContent?.trim()).toBe('Explore examples without AI');
+    expect(buttons.length).toBeGreaterThan(1);
+
+    const css = readFileSync(resolve(process.cwd(), 'src/styles/ai-setup.css'), 'utf8').replace(/\r\n/g, '\n').replace(/\/\*[\s\S]*?\*\//g, '');
+    const narrow = css.slice(css.indexOf('@media (max-width: 960px) {\n  .st-onboard {'));
+    expect(narrow.slice(0, narrow.indexOf('}'))).toMatch(/grid-template-areas:\s*'intro'\s*'skip'\s*'card'/);
+    // The one-column rule for the line has to come after the rule it changes, or it never applies.
+    const base = css.lastIndexOf('\n.st-onboard-skip {');
+    const narrowSkip = css.lastIndexOf('@media (max-width: 960px) {\n  .st-onboard-skip {');
+    expect(base).toBeGreaterThan(-1);
+    expect(narrowSkip).toBeGreaterThan(base);
   });
 
   it('leaves the keyboard alone on a visit that never had the AI step', () => {

@@ -31,6 +31,7 @@ export const BottomDrawer: React.FC = () => {
         <button
           type="button"
           onClick={toggleBottomDrawer}
+          className="st-tap"
           style={s.collapsedBtn}
           aria-label="Log"
           aria-expanded={false}
@@ -54,11 +55,12 @@ export const BottomDrawer: React.FC = () => {
         </div>
         <div style={s.headerRight}>
           {logCount > 0 && (
-            <button type="button" onClick={clearConsole} style={s.clearBtn}>Clear</button>
+            <button type="button" onClick={clearConsole} className="st-tap" style={s.clearBtn}>Clear</button>
           )}
           <button
             type="button"
             onClick={toggleBottomDrawer}
+            className="st-tap"
             style={s.closeBtn}
             title="Minimize"
             aria-label="Minimize the log"
@@ -108,7 +110,8 @@ export const BottomDrawer: React.FC = () => {
 
 const s: Record<string, React.CSSProperties> = {
   collapsed: {
-    height: 32,
+    // At least this: on a touch screen the toggle is a finger's height, and the bar holds it.
+    minHeight: 32,
     borderTop: '1px solid var(--studio-border)',
     background: 'var(--studio-bg)',
     display: 'flex',

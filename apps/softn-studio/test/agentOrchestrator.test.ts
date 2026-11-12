@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { abortAgentTurn, checkWrite, runAgentTurn } from '../src/lib/agentOrchestrator';
 import { continueAgentRun } from '../src/lib/agent/runAgent';
+import { applyProjectRecord, collectProjectRecord } from '../src/lib/projectSession';
 import { useAIStore } from '../src/stores/aiStore';
 import { useVFSStore } from '../src/stores/vfsStore';
 import { useWorkspaceStore } from '../src/stores/workspaceStore';
@@ -269,6 +270,34 @@ describe('each write as a transaction', () => {
     expect(lastRun().run.reason).toMatch(/budget/i);
     expect(useAIStore.getState().lastFailure?.kind).toBe('budget');
     expect(useAIStore.getState().agentState).toBe('idle');
+  });
+
+  // The limit on runs is the session's. The count was saved with the project, so a project that
+  // had had its runs came back at the limit and was refused a run "this session" before its first.
+  it('refuses a run once the session has had its runs, saying where that is changed, and runs again in the project opened afresh', async () => {
+    useWorkspaceStore.setState({ projectId: 'p', projectName: 'Tasks' });
+    useAIStore.setState({ maxIterations: 2, iterationsUsed: 2 });
+    const provider = fakeProvider('openai', [{ calls: [{ name: 'finish', input: { summary: 'Done.' } }] }]);
+    await runAgentTurn();
+    expect(provider.count()).toBe(0);
+    expect(lastMessage().content).toBe('This session has had its 2 AI runs. In Settings, under Budget limits, raise Max runs or reset what is used, then send again.');
+
+    // Saved and opened again, as a reload or the list of projects does.
+    applyProjectRecord(collectProjectRecord(1)!);
+    say('Build it');
+    await runAgentTurn();
+    expect(provider.count()).toBe(1);
+    expect(lastRun().run.status).toBe('finished');
+    expect(useAIStore.getState().iterationsUsed).toBe(1);
+  });
+
+  it('says where the session’s token budget is changed when it is used up', async () => {
+    useAIStore.setState({ tokenBudget: 1000, tokensUsed: 1000 });
+    const provider = fakeProvider('openai', []);
+    await runAgentTurn();
+    expect(provider.count()).toBe(0);
+    expect(lastMessage().content).toBe('This session has used its token budget of 1,000. In Settings, under Budget limits, raise the token budget or reset what is used, then send again.');
+    expect(useAIStore.getState().lastFailure?.kind).toBe('budget');
   });
 
   it('keeps what an earlier step wrote when a later request fails, and says how to go on', async () => {

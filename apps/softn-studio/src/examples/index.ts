@@ -28,14 +28,15 @@ export const DEFAULT_EXAMPLE: ExampleProject = READING_LIST;
 
 /**
  * Put an example into the stores as a new project, the way an import is
- * put there: one transaction of creates, then the blueprint inferred from
- * the files, so the pages panel, the validator and the actions see the
- * same project an imported bundle would give them. The caller owns the
+ * put there: its files placed as the project that was opened (nothing to
+ * undo: opening is not an edit), then the blueprint inferred from the
+ * files, so the pages panel, the validator and the actions see the same
+ * project an imported bundle would give them. The caller owns the
  * workspace-claim and the checkpoint that precede replacing a project.
  */
 export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE): string {
   const projectId = resetProjectSessionForImport();
-  useVFSStore.getState().batchCreateFiles(example.files, 'user');
+  useVFSStore.getState().openFiles(example.files);
 
   const ws = useWorkspaceStore.getState();
   ws.setProjectName(example.name);

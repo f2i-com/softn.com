@@ -4,6 +4,48 @@ import { Icon } from '../common/Icon';
 import { findPageFile, getBundleEntryPath } from '../../lib/studioProject';
 import { confirmShowing } from '../../lib/handEdit';
 
+/** One row of the panel: a page, with the file it is in when it has one. */
+export interface PageRow {
+  key: string;
+  /** The page's name in the plan, or the file's name for a page the plan does not list. */
+  name: string;
+  /** The page's file, or null for a page the plan lists and nothing has written yet. */
+  path: string | null;
+  /** The plan's page, or null for a file the plan does not list. */
+  pageId: string | null;
+  route?: string;
+}
+
+const PAGE_FILE = /\.(ui|html?|tsx|jsx)$/;
+
+/**
+ * The app's pages as one list: the plan's pages in the plan's order, each with its file, then
+ * the page files the plan does not list. The panel used to show the plan's pages and then,
+ * under "All pages", every page file, so each page of an app Studio made was listed twice,
+ * once by name and once by file. The entry page has its own card above the list and is not
+ * repeated in it, unless the plan lists it as a page.
+ */
+export function pageRows(
+  files: ReadonlyMap<string, unknown>,
+  planPages: readonly { id: string; name: string; route?: string }[],
+  entry: string | null,
+): PageRow[] {
+  const rows: PageRow[] = [];
+  const listed = new Set<string>();
+  planPages.forEach((page, index) => {
+    const found = findPageFile(files, planPages, index);
+    // Two plan pages cannot share a file (their slugs differ); the guard keeps the keys unique anyway.
+    const path = found && !listed.has(found) ? found : null;
+    if (path) listed.add(path);
+    rows.push({ key: `page:${page.id}`, name: page.name, path, pageId: page.id, route: page.route });
+  });
+  for (const path of files.keys()) {
+    if (!PAGE_FILE.test(path) || listed.has(path) || path === entry) continue;
+    rows.push({ key: `file:${path}`, name: path.split('/').pop() ?? path, path, pageId: null });
+  }
+  return rows;
+}
+
 export const PagesPanel: React.FC = () => {
   const { blueprint, activePageId, activeFilePath, setActivePage, setActiveFilePath: putOnCanvas } = useWorkspaceStore();
   // Another file takes the canvas from the one being edited by hand: a draft that is not
@@ -15,18 +57,11 @@ export const PagesPanel: React.FC = () => {
   };
   const { files } = useVFSStore();
 
-  const blueprintPages = blueprint?.pages ?? [];
-
-  // Also find .ui files in VFS as pages
-  const uiFiles = Array.from(files.keys()).filter(
-    (p) => p.endsWith('.ui') || p.endsWith('.html') || p.endsWith('.htm') || p.endsWith('.tsx') || p.endsWith('.jsx')
-  );
-
-  const hasBlueprint = blueprintPages.length > 0;
-  const hasVFSPages = uiFiles.length > 0;
-  const isEmpty = !hasBlueprint && !hasVFSPages;
-
   const bundleEntry = getBundleEntryPath(files);
+  const rows = pageRows(files, blueprint?.pages ?? [], bundleEntry);
+  const isEmpty = rows.length === 0 && !bundleEntry;
+  // What the canvas shows: the file that was put on it, else the entry page.
+  const shown = activeFilePath ?? bundleEntry;
 
   return (
     <div style={styles.container}>
@@ -40,7 +75,7 @@ export const PagesPanel: React.FC = () => {
         <>
           <div style={styles.pageList}>
             {bundleEntry && (
-              <div style={styles.viewerCard}>
+              <div style={{ ...styles.viewerCard, ...(shown === bundleEntry ? styles.viewerCardActive : {}) }} data-shown={shown === bundleEntry || undefined}>
                 <div>
                   <div style={styles.viewerTitle}>Entry page</div>
                   <div style={styles.viewerPath}>{bundleEntry}</div>
@@ -52,6 +87,7 @@ export const PagesPanel: React.FC = () => {
                   onClick={() => {
                     setActiveFilePath(bundleEntry);
                   }}
+                  className="st-tap"
                   style={styles.viewerButton}
                   aria-label={`Preview the entry page, ${bundleEntry}`}
                 >
@@ -59,77 +95,36 @@ export const PagesPanel: React.FC = () => {
                 </button>
               </div>
             )}
-            {/* Blueprint pages */}
-            {blueprintPages.map((page, index) => (
-              <button
-                key={page.id}
-                onClick={() => {
-                  const resolved = findPageFile(files, blueprintPages, index);
-                  if (resolved && !setActiveFilePath(resolved)) return;
-                  setActivePage(page.id);
-                }}
-                style={{
-                  ...styles.pageItem,
-                  ...(activePageId === page.id ? styles.pageItemActive : {}),
-                }}
-              >
-                <Icon name="file" size={14} />
-                <span style={styles.pageName}>{page.name}</span>
-                {page.route && (
-                  <span style={styles.pageRoute}>{page.route}</span>
-                )}
-              </button>
-            ))}
-            {/* VFS .ui files (when no blueprint, or as supplement) */}
-            {hasVFSPages && !hasBlueprint && (
-              <>
-                {uiFiles.map((path) => {
-                  const name = path.split('/').pop() ?? path;
-                  return (
+            {/* One list: each page once, by its name in the plan where it has one, with its file. */}
+            <ul style={styles.rows} aria-label="Pages">
+              {rows.map((row) => {
+                // The row that is lit is the one whose file the canvas shows; a page nothing has
+                // written yet is lit when it is the page chosen.
+                const active = row.path ? shown === row.path : activePageId === row.pageId && !activeFilePath;
+                return (
+                  <li key={row.key}>
                     <button
-                      key={path}
+                      type="button"
                       onClick={() => {
-                        setActiveFilePath(path);
+                        if (row.path && !setActiveFilePath(row.path)) return;
+                        if (row.pageId) setActivePage(row.pageId);
                       }}
+                      className="st-tap"
+                      aria-current={active ? 'page' : undefined}
+                      title={row.path ? (row.route ? `${row.path}, shown at ${row.route}` : row.path) : 'In the plan. Nothing has written this page yet.'}
                       style={{
                         ...styles.pageItem,
-                        ...(activeFilePath === path ? styles.pageItemActive : {}),
+                        ...(active ? styles.pageItemActive : {}),
                       }}
                     >
                       <Icon name="file" size={14} />
-                      <span style={styles.pageName}>{name}</span>
-                      <span style={styles.pageRoute}>{path}</span>
+                      <span style={styles.pageName}>{row.name}</span>
+                      <span style={styles.pageRoute}>{row.path ?? 'Not written yet'}</span>
                     </button>
-                  );
-                })}
-              </>
-            )}
-            {hasVFSPages && hasBlueprint && (
-              <>
-                <div style={styles.sectionDivider}>
-                  <span style={styles.sectionLabel}>All pages</span>
-                </div>
-                {uiFiles.map((path) => {
-                  const name = path.split('/').pop() ?? path;
-                  return (
-                    <button
-                      key={path}
-                      onClick={() => {
-                        setActiveFilePath(path);
-                      }}
-                      style={{
-                        ...styles.pageItem,
-                        ...(activeFilePath === path ? styles.pageItemActive : {}),
-                      }}
-                    >
-                      <Icon name="file" size={14} />
-                      <span style={styles.pageName}>{name}</span>
-                      <span style={styles.pageRoute}>{path}</span>
-                    </button>
-                  );
-                })}
-              </>
-            )}
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         </>
       )}
@@ -239,12 +234,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'var(--studio-mono)',
     flexShrink: 0,
   },
-  sectionDivider: {
-    padding: '10px 10px 4px',
+  rows: {
+    listStyle: 'none',
+    margin: 0,
+    padding: 0,
   },
-  sectionLabel: {
-    fontSize: 12,
-    fontWeight: 500,
-    color: 'var(--studio-text-dim)',
+  /** The entry page is what the canvas shows. */
+  viewerCardActive: {
+    border: '1px solid var(--studio-border-strong)',
   },
 };

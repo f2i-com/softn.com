@@ -66,6 +66,11 @@ interface AIState {
   // Agent state
   agentState: AgentState;
   currentStep: string;
+  /**
+   * Runs started this session. A session is this tab's work on the project
+   * it has open: the count (and `tokensUsed`, `filesChanged`) starts from
+   * zero when a project is opened or begun, and is not saved with it.
+   */
   iterationsUsed: number;
   maxIterations: number;
   tokensUsed: number;

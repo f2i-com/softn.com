@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { hostedAiLabel, isHostedEditor, requestHostedAI, subscribeHostedAiLabel } from '@softn/editor-shared/hostedEditor';
-import { useAIStore } from '../../stores';
+import { setTheme } from '@softn/brand';
+import { useAIStore, useWorkspaceStore } from '../../stores';
 import { MAX_ITERATIONS_BOUNDS, TOKEN_BUDGET_BOUNDS, MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS, MAX_STEPS_BOUNDS, RUN_TOKEN_BUDGET_BOUNDS } from '../../stores/aiStore';
 import { testProvider } from '../../lib/aiProvider';
 import { Icon } from '../common/Icon';
@@ -248,6 +249,13 @@ export const SettingsPanel: React.FC = () => {
   } = useAIStore();
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('ai');
   const active = providers.find((p) => p.id === activeProviderId) ?? null;
+  // The theme the page is painted in (App.tsx keeps it in step with the switch in the product bar).
+  const theme = useWorkspaceStore((s) => s.themePreview);
+  const chooseTheme = (next: 'light' | 'dark') => {
+    // Remembered and painted for every SoftN page (the brand's own switch does the same).
+    setTheme(next);
+    useWorkspaceStore.getState().setThemePreview(next);
+  };
   // A tablist as the pattern has it: each tab names the panel it controls and the panel is named
   // by its tab, only the selected tab is a tab stop, and the arrow keys, Home and End move between
   // tabs and select them. The panel had no name and the arrows did nothing.
@@ -476,7 +484,7 @@ export const SettingsPanel: React.FC = () => {
                 </div>
                 <div className="st-limit-row">
                   <div className="st-limit-text">
-                    <span className="st-limit-label">Used</span>
+                    <span className="st-limit-label">Used this session</span>
                     <span className="st-limit-hint">{iterationsUsed} {iterationsUsed === 1 ? 'run' : 'runs'}, {tokensUsed.toLocaleString()} tokens</span>
                   </div>
                   <button type="button" className="st-btn st-btn-sm" onClick={() => resetBudget()}>
@@ -486,6 +494,7 @@ export const SettingsPanel: React.FC = () => {
               </div>
               <p className="st-settings-note">
                 Changes apply when you leave a field or press Enter; Escape cancels an unfinished edit.
+                A session is your work on one project in this tab: what is used starts again from zero when a project is opened or the page is reloaded, and is not saved with the project.
                 The token budget is a guardrail, not a billing cap: Studio counts what the provider reports and refuses a request the remainder cannot cover. The provider bills what it bills.
               </p>
             </section>
@@ -523,11 +532,30 @@ export const SettingsPanel: React.FC = () => {
             bar mean, and what the keyboard does. */}
         {settingsTab === 'general' && (
           <>
-            <section className="st-settings-section">
-              <h3 className="st-settings-heading">Theme</h3>
-              <p className="st-settings-note">
-                Studio follows the light and dark switch in the bar at the top of the page, shared with the rest of SoftN. There is no separate Studio theme.
-              </p>
+            <section className="st-settings-section" aria-labelledby="studio-theme-heading">
+              <h3 id="studio-theme-heading" className="st-settings-heading">Theme</h3>
+              {/* The choice itself, where this used to say only where to find it: the switch is in
+                  the bar at the top of the page, which a phone's editor does not draw. A hosted
+                  editor has no choice of its own: its host sets the theme. */}
+              {isHostedEditor() ? (
+                <p className="st-settings-note">Studio follows the light or dark theme of the site it is opened in.</p>
+              ) : (
+                <>
+                  <div className="st-view-switch st-theme-switch" role="group" aria-labelledby="studio-theme-heading">
+                    <button type="button" aria-pressed={theme === 'light'} onClick={() => chooseTheme('light')}>
+                      <Icon name="sun" size={13} />
+                      Light
+                    </button>
+                    <button type="button" aria-pressed={theme === 'dark'} onClick={() => chooseTheme('dark')}>
+                      <Icon name="moon" size={13} />
+                      Dark
+                    </button>
+                  </div>
+                  <p className="st-settings-note">
+                    The same choice as the switch in the bar at the top of SoftN’s pages, shared with the rest of SoftN. There is no separate Studio theme.
+                  </p>
+                </>
+              )}
             </section>
             <section className="st-settings-section">
               <h3 className="st-settings-heading">Saving and the bar</h3>

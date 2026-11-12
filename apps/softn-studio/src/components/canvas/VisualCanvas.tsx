@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useAIStore, useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { declarePythonPackage, getBundleEntryPath, MAIN_PAGE_PATH, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
-import { createEphemeralXDBScope, SoftNWithXDB, type SoftNRendererProps, type XDBService } from '@softn/core';
+import { createEphemeralXDBScope, SoftNWithXDB, type AppUpdateResult, type SoftNRendererProps, type XDBService } from '@softn/core';
 import type { DevicePreset, ValidationError, VFSFile } from '../../types/studio';
 import { PreviewError } from './PreviewError';
 import { PAGE_PARSE, pageAndImports, pageParseProblems } from '../../lib/pageDiagnostics';
@@ -28,6 +28,7 @@ import {
   forgetPreviewScriptStorage,
   sweepPersistedPreviewStores,
 } from '../../lib/previewProject';
+import { onPreviewRestart } from '../../lib/previewRestart';
 
 /**
  * The files the preview renders. While an agent run is writing, a burst of
@@ -99,8 +100,15 @@ export const DEVICE_WIDTHS: Record<DevicePreset, number> = {
 };
 
 const DEVICE_LABELS: Record<DevicePreset, string> = { desktop: 'Desktop', tablet: 'Tablet', mobile: 'Phone' };
+const DEVICE_ICONS: Record<DevicePreset, 'desktop' | 'tablet' | 'mobile'> = { desktop: 'desktop', tablet: 'tablet', mobile: 'mobile' };
 
-/** Desktop | Tablet | Phone: the width the page is previewed at, kept with the project. */
+/**
+ * Desktop | Tablet | Phone: the width the page is previewed at, kept with the project.
+ *
+ * Each choice is a picture and its word. Where the header has no room for the words they go and
+ * the pictures stay (styles/editor.css, the `preview-header` container): the whole switch used
+ * to go there, so with a panel open beside the preview there was no way to choose a width.
+ */
 export function DeviceSwitch({ preset, onChange }: { preset: DevicePreset; onChange: (preset: DevicePreset) => void }): React.ReactElement {
   return (
     <div className="st-view-switch st-device-switch" role="group" aria-label="Preview width">
@@ -109,10 +117,13 @@ export function DeviceSwitch({ preset, onChange }: { preset: DevicePreset; onCha
           key={id}
           type="button"
           aria-pressed={preset === id}
+          // Its name wherever its word is not drawn.
+          aria-label={DEVICE_LABELS[id]}
           title={`${DEVICE_LABELS[id]}: ${DEVICE_WIDTHS[id]} px wide`}
           onClick={() => onChange(id)}
         >
-          {DEVICE_LABELS[id]}
+          <Icon name={DEVICE_ICONS[id]} size={13} />
+          <span className="st-switch-label">{DEVICE_LABELS[id]}</span>
         </button>
       ))}
     </div>
@@ -166,13 +177,15 @@ function filesKey(files: Map<string, VFSFile>, include: (path: string) => boolea
 export function ViewSwitch({ mode, onChange }: { mode: CanvasViewMode; onChange: (mode: CanvasViewMode) => void }): React.ReactElement {
   return (
     <div className="st-view-switch" role="group" aria-label="Show the file as">
-      <button type="button" aria-pressed={mode === 'preview'} onClick={() => onChange('preview')}>
+      {/* The words give way to the pictures in a header with no room for both, as the device
+          switch's do; each button keeps its name. */}
+      <button type="button" aria-pressed={mode === 'preview'} aria-label="Preview" title="Preview: the page as it runs" onClick={() => onChange('preview')}>
         <Icon name="eye" size={13} />
-        Preview
+        <span className="st-switch-label">Preview</span>
       </button>
-      <button type="button" aria-pressed={mode === 'code'} onClick={() => onChange('code')}>
+      <button type="button" aria-pressed={mode === 'code'} aria-label="Code" title="Code: the file’s source" onClick={() => onChange('code')}>
         <Icon name="code" size={13} />
-        Code
+        <span className="st-switch-label">Code</span>
       </button>
     </div>
   );
@@ -186,6 +199,7 @@ interface VisualCanvasProps {
 
 interface StablePreviewSurfaceProps {
   expanded: boolean;
+  /** A phone's layout. The surface draws its bar there as anywhere else (it used to hide it); the frame's shape is the caller's, in `frameStyle`. */
   isMobile: boolean;
   label: string;
   frameStyle: React.CSSProperties;
@@ -201,7 +215,6 @@ interface StablePreviewSurfaceProps {
  */
 export function StablePreviewSurface({
   expanded,
-  isMobile,
   label,
   frameStyle,
   chrome,
@@ -257,12 +270,16 @@ export function StablePreviewSurface({
       aria-label={expanded ? `${label} expanded preview` : undefined}
       onKeyDown={trapDialogFocus}
     >
+      {/* The preview's own bar, on a phone as well: it was hidden there, and with it Refresh,
+          Reset data and Expand, which a phone then had no way to reach. Its words give way to
+          pictures by the room it has (styles/editor.css). */}
       <div
+        className="st-preview-bar"
         style={{
           ...styles.previewChrome,
-          ...(isMobile || expanded ? { display: 'none' } : {}),
+          ...(expanded ? { display: 'none' } : {}),
         }}
-        aria-hidden={isMobile || expanded || undefined}
+        aria-hidden={expanded || undefined}
       >
         {chrome}
       </div>
@@ -311,6 +328,9 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   const files = useSettledFiles(liveFiles, agentWriting ? 600 : 0);
   const [activeVFSFile, setActiveVFSFile] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Whoever replaces the project's files whole asks for the app to be started again
+  // (lib/previewRestart.ts): the running app would keep the state of the files it began with.
+  useEffect(() => onPreviewRestart(() => setRefreshKey((k) => k + 1)), []);
   const [isExpandedPreview, setIsExpandedPreview] = useState(false);
   const [viewMode, setViewModeState] = useState<CanvasViewMode>(readCanvasViewMode);
   const setViewMode = useCallback((mode: CanvasViewMode) => {
@@ -550,8 +570,28 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     const source = stripTemplateComments(composition.source);
     return { ok: true as const, composition, source };
   }, [isSoftNUIFile, activeVFSFile, previewFileContent, files]);
-  const softNSource = preview?.ok ? preview.source : null;
-  const composition = preview?.ok ? preview.composition : null;
+  // A project that cannot be composed for a moment (a file half written, an
+  // include of a page not saved yet) does not take the running app off the
+  // canvas: the last composition that worked stays, for the same page and the
+  // same start, and the note above it says what is wrong with the newest.
+  // Only while the manifest is what it was: a change to what the app needs to
+  // run (a Python package it no longer declares) is not a file half written,
+  // and is said in the app's place, with its fix, as it always was.
+  const manifestFile = files.get('manifest.json')?.content;
+  const manifestText = typeof manifestFile === 'string' ? manifestFile : null;
+  const lastComposed = useRef<{ file: string | null; start: number; manifest: string | null; preview: Extract<NonNullable<typeof preview>, { ok: true }> } | null>(null);
+  if (preview?.ok) lastComposed.current = { file: activeVFSFile, start: refreshKey, manifest: manifestText, preview };
+  const heldPreview =
+    preview &&
+    !preview.ok &&
+    lastComposed.current?.file === activeVFSFile &&
+    lastComposed.current.start === refreshKey &&
+    lastComposed.current.manifest === manifestText
+      ? lastComposed.current.preview
+      : null;
+  const shownPreview = preview?.ok ? preview : heldPreview;
+  const softNSource = shownPreview ? shownPreview.source : null;
+  const composition = shownPreview ? shownPreview.composition : null;
   const logicKey = useMemo(() => filesKey(files, isLogicPath), [files]);
   const latestImportResolver = composition?.importResolver;
   const importResolver = useMemo(
@@ -560,6 +600,15 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     [logicKey, activeVFSFile, latestImportResolver === undefined]
   );
   const compositionError = preview && !preview.ok ? preview.error : null;
+  // What became of the last change to the running app, as its renderer said
+  // (core's AppUpdateResult): shown while it is news, which is a version kept
+  // back for a problem, and a start that could not keep the app's variables.
+  const [previewUpdate, setPreviewUpdate] = useState<{ file: string | null; result: AppUpdateResult } | null>(null);
+  const notePreviewUpdate = useCallback(
+    (result: AppUpdateResult) => setPreviewUpdate({ file: activeVFSFile, result }),
+    [activeVFSFile]
+  );
+  const updateNews = previewUpdate && previewUpdate.file === activeVFSFile ? previewUpdate.result : null;
   // One refusal has a one-edit fix: a .py file importing a package
   // manifest.json does not declare. The fix is offered where the refusal is
   // shown, and made through the VFS so it is one undoable change.
@@ -749,7 +798,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
       return codeView;
     }
 
-    if (isSoftNUIFile && compositionError) {
+    if (isSoftNUIFile && compositionError && !heldPreview) {
       return (
         <div style={styles.previewContent}>
           <div className="st-state-panel" role="alert">
@@ -875,6 +924,22 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           </div>
         </div>
       ) : null;
+      // What became of the newest change, when it is news: kept back for a
+      // problem (the app on the canvas is the last version that worked), or
+      // started again without what it held.
+      const heldProblem = heldPreview ? compositionError : updateNews?.outcome === 'kept' ? (updateNews.problem ?? null) : null;
+      const updateNote = heldProblem ? (
+        <div role="status" style={styles.capabilityNote} data-preview-update="kept">
+          The newest change has a problem, so this is the last version that worked. {heldProblem}
+        </div>
+      ) : updateNews?.outcome === 'restarted' && updateNews.carried === false && updateNews.reason ? (
+        <div role="status" style={styles.capabilityNote} data-preview-update="restarted">
+          The app was started again. {updateNews.reason}{' '}
+          <button type="button" className="st-btn st-btn-sm" onClick={() => setPreviewUpdate(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null;
       // In Code the running app stays mounted, hidden, so switching back
       // finds it as it was rather than restarted.
       const rendererStyle = showCode ? { ...styles.rendererWrap, display: 'none' } : styles.rendererWrap;
@@ -886,12 +951,14 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           <div style={rendererStyle}>
           {stopNotice}
           {capabilityNote}
+          {updateNote}
           {/* The app's own box: a side the project declares is written here, under Studio's notices and not on them. */}
           <div data-softn-theme-box={PREVIEW_THEME_BOX} style={styles.themeBox}>
           <ThemeProviderComponent followHost followSystem declaredMode={declaredThemeMode(manifest)} box={PREVIEW_THEME_BOX}>
             {previewStore && (
               <PreviewComponent
-                key={`${activeVFSFile}\u0000${refreshKey}\u0000${previewAllowed ? 'allowed' : 'withheld'}`}
+                key={`${activeVFSFile}\u0000${refreshKey}`}
+                onUpdate={notePreviewUpdate}
                 source={softNSource}
                 functions={rendererFunctions}
                 assetResolver={resolveAssetUrl}
@@ -919,9 +986,11 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
           <div style={rendererStyle}>
           {stopNotice}
           {capabilityNote}
+          {updateNote}
           {previewStore && (
             <PreviewComponent
-              key={`${activeVFSFile}\u0000${refreshKey}\u0000${previewAllowed ? 'allowed' : 'withheld'}`}
+              key={`${activeVFSFile}\u0000${refreshKey}`}
+              onUpdate={notePreviewUpdate}
               source={softNSource}
               functions={rendererFunctions}
               assetResolver={resolveAssetUrl}
@@ -1031,7 +1100,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                   {stoppedBecause && !showCode && <span className="st-preview-stopped" title={stoppedBecause}>Stopped</span>}
                 </div>
                 <div style={styles.chromeRight}>
-                {(isSoftNUIFile || isHtmlFile) && !showCode && <DeviceSwitch preset={devicePreset} onChange={setDevicePreset} />}
+                {/* A phone draws the page at its own width, whichever is chosen: no switch there. */}
+                {(isSoftNUIFile || isHtmlFile) && !showCode && !isMobile && <DeviceSwitch preset={devicePreset} onChange={setDevicePreset} />}
                 {canSwitchView && <ViewSwitch mode={viewMode} onChange={setViewMode} />}
                 <div className="st-preview-tools" role="toolbar" aria-label="Preview controls">
                   {[
@@ -1061,12 +1131,6 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               style={!isMobile && !isExpandedPreview && devicePreset !== 'desktop' ? { ...styles.surfaceColumn, ...styles.deviceColumn, width: previewWidth } : styles.surfaceColumn}
               data-device={devicePreset}
             >
-              {/* The frame's header is hidden on a phone, so the switch comes with the content there. */}
-              {isMobile && canSwitchView && (
-                <div className="st-view-switch-bar">
-                  <ViewSwitch mode={viewMode} onChange={setViewMode} />
-                </div>
-              )}
               {renderPreviewContent()}
             </div>
           </StablePreviewSurface>
@@ -1227,10 +1291,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--studio-bg-elevated)',
   },
   previewChrome: {
-    height: 42,
+    // At least this tall: on a touch screen its buttons are a finger's height, which is more.
+    minHeight: 42,
     display: 'flex',
     alignItems: 'center',
-    padding: '0 6px 0 14px',
+    // A little above and below, for when the bar's controls go onto a row of their own.
+    padding: '3px 6px 3px 14px',
     background: 'var(--studio-bg-elevated)',
     borderBottom: '1px solid var(--studio-border)',
     flexShrink: 0,

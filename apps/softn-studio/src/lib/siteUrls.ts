@@ -6,7 +6,7 @@
 
 import { resolveSiteUrls } from '@softn/brand';
 
-export const { RUNTIME_URL, SITE_URL, PUBLISH_URL } = resolveSiteUrls({
+export const { RUNTIME_URL, SITE_URL, PUBLISH_URL, BUILDER_URL } = resolveSiteUrls({
   dev: import.meta.env.DEV,
   baseUrl: import.meta.env.BASE_URL,
   env: import.meta.env,

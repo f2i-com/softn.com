@@ -5,15 +5,20 @@ import { runAgentTurn } from '../../lib/agentOrchestrator';
 import { buildFromBrief } from '../../lib/agent/buildFromBrief';
 import { activeAgentRunId, answerAgentQuestion, isRunLive, revertChatTurn, stopAgentRun, turnRevertState } from '../../lib/agent/runAgent';
 import { isReadableRun, RunTimeline } from './RunTimeline';
+import { FailureNextStep } from './FailureNextStep';
+import { sessionUse } from '../../lib/agent/sessionUse';
 import type { ChatMessage } from '../../types/studio';
 import { AIStatusPill, openSetupFor, useAIReadiness } from './AIStatusPill';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
-export const AIChat: React.FC = () => {
+export const AIChat: React.FC<{
+  /** Show the settings where they are not a panel that takes the chat's place (a phone's tab). */
+  onOpenSettings?: () => void;
+}> = ({ onOpenSettings }) => {
   const {
     messages, agentState, addMessage,
-    tokensUsed, iterationsUsed, maxIterations,
+    tokensUsed, iterationsUsed, maxIterations, tokenBudget,
     currentStep,
     draftMessage: input, setDraftMessage: setInput,
   } = useAIStore();
@@ -111,6 +116,8 @@ export const AIChat: React.FC = () => {
   /** The card that says what the AI is missing is showing (a hosted editor's AI is its host's: no card). */
   const needsSetup = !hasProvider && !isHostedEditor();
   const openSettings = () => openSetupFor(readiness);
+  /** What the session has used of its limits, or null while it has used nothing. */
+  const use = sessionUse({ iterationsUsed, maxIterations, tokensUsed, tokenBudget });
 
   const sendSuggestedPrompt = (text: string) => {
     if (agentState !== 'idle') return;
@@ -140,31 +147,28 @@ export const AIChat: React.FC = () => {
 
   return (
     <div style={styles.container}>
-      {/* Provider info bar */}
-      <div style={styles.providerBar}>
-        {/* Missing a provider or a model, the card below says so and has
-            the button; the pill would be a second copy of it. */}
-        {hasProvider && (
-          <div style={styles.providerBadge}>
-            <AIStatusPill />
-          </div>
-        )}
-        <div style={styles.statsRow}>
-          <span style={styles.stat}>{iterationsUsed}/{maxIterations} runs</span>
-          <span style={styles.statDivider} />
-          <span style={styles.stat}>{tokensUsed.toLocaleString()} tokens</span>
+      {/* One line: which model answers, and what the session has used of its limits. It was
+          three rows above every conversation: "0/15 runs | 0 tokens" before anything had run,
+          and two pills ("Plan ready", "2 pages") that said what the Pages panel and the greeting
+          below already say. With nothing to say (no provider, nothing used) there is no line. */}
+      {(hasProvider || use) && (
+        <div style={styles.providerBar} data-chat-header>
+          {/* Missing a provider or a model, the card below says so and has
+              the button; the pill would be a second copy of it. */}
+          {hasProvider && <AIStatusPill />}
+          {/* The session's counts (stores/aiStore.ts): they start again when a project is opened.
+              Quiet while there is room, and in the warning colour when the limit is close. */}
+          {use && (
+            <span
+              style={{ ...styles.use, ...(use.level === 'near' ? styles.useNear : use.level === 'spent' ? styles.useSpent : {}) }}
+              data-level={use.level}
+              title="AI runs and tokens used this session. The limits are in Settings, under Budget limits."
+            >
+              {use.text}
+            </span>
+          )}
         </div>
-        {brief && (
-          <div style={styles.estimateRow}>
-            {/* What there is, counted from it: this said "Blueprint ready" of a brief with no
-                plan yet, and "1 page targets" (the brief's own list, or 1) beside a plan of three. */}
-            <span style={styles.estimatePill}>{blueprint ? 'Plan ready' : 'Brief ready'}</span>
-            {blueprint && (
-              <span style={styles.estimatePill}>{blueprint.pages.length} page{blueprint.pages.length === 1 ? '' : 's'}</span>
-            )}
-          </div>
-        )}
-      </div>
+      )}
 
       {/* What the AI is missing, and the one button that fixes it. */}
       {/* A hosted editor's AI is its host's; there is no setup to open. */}
@@ -245,6 +249,7 @@ export const AIChat: React.FC = () => {
                   <button
                     key={s}
                     onClick={() => sendSuggestedPrompt(s)}
+                    className="st-tap"
                     style={styles.suggestionBtn}
                   >
                     {s}
@@ -255,7 +260,7 @@ export const AIChat: React.FC = () => {
             {blueprint && messages.length === 0 && (
               <div style={styles.suggestions}>
                 {brief && (
-                  <button onClick={buildTheBrief} style={styles.suggestionBtn}>
+                  <button onClick={buildTheBrief} className="st-tap" style={styles.suggestionBtn}>
                     {buildOffer}
                   </button>
                 )}
@@ -266,6 +271,7 @@ export const AIChat: React.FC = () => {
                   <button
                     key={s}
                     onClick={() => sendSuggestedPrompt(s)}
+                    className="st-tap"
                     style={styles.suggestionBtn}
                   >
                     {s}
@@ -397,6 +403,9 @@ export const AIChat: React.FC = () => {
         )}
       </div>
 
+      {/* After a run that did not finish: what to do next, and the control to do it with. */}
+      <FailureNextStep onOpenSettings={onOpenSettings} />
+
       {/* Input */}
       <div style={styles.inputArea}>
         <textarea
@@ -413,6 +422,7 @@ export const AIChat: React.FC = () => {
         {agentState === 'building' ? (
           <button
             onClick={() => stopAgentRun()}
+            className="st-tap"
             aria-label="Stop the agent"
             title="Stop the agent; what it already wrote stays"
             style={{ ...styles.sendBtn, background: 'var(--studio-error)' }}
@@ -422,6 +432,7 @@ export const AIChat: React.FC = () => {
         ) : (
           <button
             onClick={handleSend}
+            className="st-tap"
             aria-label="Send message"
             title="Send message"
             disabled={!input.trim() || agentState !== 'idle'}
@@ -454,44 +465,30 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
   },
   providerBar: {
-    padding: '10px 14px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: '4px 10px',
+    padding: '8px 14px',
     borderBottom: '1px solid var(--studio-border)',
     flexShrink: 0,
   },
-  providerBadge: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-  statsRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-  },
-  estimateRow: {
-    display: 'flex',
-    gap: 6,
-    flexWrap: 'wrap',
-    marginTop: 8,
-  },
-  estimatePill: {
-    padding: '3px 8px',
-    borderRadius: 6,
-    border: '1px solid var(--studio-border)',
-    color: 'var(--studio-text-muted)',
+  /** The session's use: small and dim, at the line's far end. */
+  use: {
+    marginLeft: 'auto',
     fontSize: 11.5,
+    lineHeight: 1.4,
+    color: 'var(--studio-text-dim)',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  useNear: {
+    color: 'var(--studio-warning)',
     fontWeight: 500,
   },
-  stat: {
-    fontFamily: 'var(--studio-mono)',
-    fontSize: 10,
-    color: 'var(--studio-text-muted)',
-  },
-  statDivider: {
-    width: 1,
-    height: 10,
-    background: 'var(--studio-border)',
+  useSpent: {
+    color: 'var(--studio-error)',
+    fontWeight: 500,
   },
   setupWrap: {
     padding: '12px 14px 0',

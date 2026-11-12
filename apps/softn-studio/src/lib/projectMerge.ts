@@ -218,8 +218,10 @@ export function mergeProjectRecords(base: ProjectRecord, mine: ProjectRecord, th
     else journal.value.delete(key);
   }
 
-  // What each tab spent since the base, added up.
-  const counter = (key: 'iterationsUsed' | 'tokensUsed' | 'filesChanged') =>
+  // What each tab spent since the base, added up. Only an older Studio writes these and reads
+  // them back: this one counts a session's runs and tokens in the tab, writes zeros and takes
+  // none up (projectSession.ts, collectProjectRecord), so for two tabs of it this is zero.
+  const counter =(key: 'iterationsUsed' | 'tokensUsed' | 'filesChanged') =>
     Math.max(0, mine.session[key] + theirs.session[key] - base.session[key]);
 
   const workspace: PersistedWorkspace = { ...mine.workspace };

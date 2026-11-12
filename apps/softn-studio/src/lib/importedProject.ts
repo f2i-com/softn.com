@@ -17,9 +17,11 @@ function manifestName(batch: ProjectImportEntry[]): string | null {
 }
 
 /**
- * Put a decoded import into the stores as a new project: one transaction of
- * creates, then the brief and the plan inferred from the files, and the chat
- * open on a message that says what was imported. The caller owns the
+ * Put a decoded import into the stores as a new project: its files placed as
+ * the project that was opened (checked as creates are, and with nothing to
+ * undo: the History panel's "Undo last" used to take the whole import away),
+ * then the brief and the plan inferred from the files, and the chat open on
+ * a message that says what was imported. The caller owns the
  * workspace claim and the checkpoint that precede replacing a project, and
  * calls this only once the whole import has been decoded, so a file that
  * cannot be read leaves the project that was open as it was.
@@ -31,7 +33,7 @@ export function openImportedInStores(fileName: string, imported: ProjectImportEn
   // whatever was inside: a second download of Counter Club opened as "Counter Club (1)".
   const importedProjectName = opener.name?.trim() || manifestName(imported) || fileName.replace(/\.(softn|zip|json)$/i, '');
   const batch = asProject(imported, importedProjectName);
-  useVFSStore.getState().batchCreateFiles(batch, 'user');
+  useVFSStore.getState().openFiles(batch);
 
   const importedWorkspace = useWorkspaceStore.getState();
   const importedVFS = useVFSStore.getState();

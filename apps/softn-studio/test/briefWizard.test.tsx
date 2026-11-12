@@ -16,7 +16,7 @@
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BriefWizard } from '../src/components/brief/BriefWizard';
 import { generateBlueprintFromBrief, scaffoldProjectFiles } from '../src/lib/studioProject';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../src/stores';
@@ -105,6 +105,93 @@ describe('the brief wizard', () => {
       act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
       expect(added(), kind).toEqual(['予約一覧']);
       expect(input.value).toBe('');
+    }
+  });
+
+  // The field's own example is a list with commas ("Dashboard, Settings, Profile"): typed that
+  // way it made one page of that name. And a name typed and left in its field, the Add button
+  // not pressed, was dropped when the plan was generated, with nothing said.
+  it('takes several names typed with commas as several, and a name left in its field as added', () => {
+    useWorkspaceStore.setState({ brief: BRIEF });
+    act(() => root.render(<BriefWizard onBack={() => {}} onSubmit={() => {}} />));
+    act(() => button('Next').click());
+    const type = (id: string, value: string) => {
+      const input = host.querySelector<HTMLInputElement>(`#${id}`)!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      act(() => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    };
+    const added = (kind: string) => [...host.querySelectorAll(`button[aria-label^="Remove ${kind} "]`)].map((b) => b.getAttribute('aria-label')!.slice(`Remove ${kind} `.length));
+
+    type('brief-pages', 'Dashboard, Settings ,, dashboard');
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Add page"]')!.click());
+    expect(added('page')).toEqual(['Dashboard', 'Settings']);
+
+    // Left in the fields, and on to the next step and Generate.
+    type('brief-pages', 'Profile');
+    type('brief-collections', 'Tasks, Users');
+    act(() => button('Next').click());
+    act(() => button('Generate').click());
+    const { brief, blueprint } = useWorkspaceStore.getState();
+    expect(brief!.pages).toEqual(['Dashboard', 'Settings', 'Profile']);
+    expect(brief!.collections).toEqual(['Tasks', 'Users']);
+    expect(blueprint!.pages.map((page) => page.name)).toEqual(['Dashboard', 'Settings', 'Profile']);
+    expect(blueprint!.collections.map((collection) => collection.name)).toEqual(['Tasks', 'Users']);
+  });
+
+  // Escape, Home and Cancel each threw away a brief that had been typed, and asked nothing.
+  it('asks before leaving a brief that has been typed, and leaves an untouched one at once', () => {
+    const onBack = vi.fn();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      act(() => root.render(<BriefWizard onBack={onBack} onSubmit={() => {}} />));
+      const escape = () => act(() => { document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+      const name = host.querySelector<HTMLInputElement>('#brief-app-name')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      act(() => { setter.call(name, 'Garden notes'); name.dispatchEvent(new Event('input', { bubbles: true })); });
+
+      escape();
+      expect(confirm).toHaveBeenCalledWith('Leave this brief? What you entered here is not kept.');
+      expect(onBack).not.toHaveBeenCalled();
+      expect(host.querySelector<HTMLInputElement>('#brief-app-name')!.value).toBe('Garden notes');
+
+      confirm.mockReturnValue(true);
+      act(() => button('Cancel').click());
+      expect(onBack).toHaveBeenCalledTimes(1);
+
+      // Put back as it opened, there is nothing to lose and nothing is asked.
+      confirm.mockClear();
+      act(() => { setter.call(name, ''); name.dispatchEvent(new Event('input', { bubbles: true })); });
+      act(() => button('Home').click());
+      expect(confirm).not.toHaveBeenCalled();
+      expect(onBack).toHaveBeenCalledTimes(2);
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  // Opened from a plan's "Revise brief", the wizard was titled "New app" and its way back was
+  // "Home", which is where it went: away from the plan being reviewed.
+  it('says when it is revising a plan’s brief, and names its way back for the plan', () => {
+    useWorkspaceStore.setState({ brief: BRIEF });
+    const onBack = vi.fn();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      act(() => root.render(<BriefWizard revising onBack={onBack} onSubmit={() => {}} />));
+      expect(host.querySelector('#brief-wizard-title')!.textContent).toBe('Revise the brief');
+      expect(button('Home')).toBeUndefined();
+      act(() => button('Plan').click());
+      expect(confirm).not.toHaveBeenCalled();
+      expect(onBack).toHaveBeenCalledTimes(1);
+
+      // A change to the brief is asked about, in words that say where the way back goes.
+      const name = host.querySelector<HTMLInputElement>('#brief-app-name')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      act(() => { setter.call(name, 'Counter Club 2'); name.dispatchEvent(new Event('input', { bubbles: true })); });
+      act(() => button('Plan').click());
+      expect(confirm).toHaveBeenCalledWith('Go back to the plan? The changes you made to the brief here are not kept.');
+      expect(onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      confirm.mockRestore();
     }
   });
 

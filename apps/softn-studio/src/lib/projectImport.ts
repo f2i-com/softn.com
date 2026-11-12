@@ -28,9 +28,19 @@ const SOURCE_TEXT = /\.(svg|ts|tsx|jsx|yaml|yml|toml)$/i;
  * bytes are: what the write tool wrote as text comes back as text, and a
  * binary file of an unknown kind stays the bytes it is. See fileKinds.ts.
  */
-function isTextEntry(path: string, content: Uint8Array): boolean {
-  if (SOURCE_TEXT.test(path) || !classifyAsset(path).binary) return true;
+export function isTextEntry(path: string, content: Uint8Array): boolean {
+  if (namedAsText(path)) return true;
   return !keptAsBytes(path) && readsAsText(content);
+}
+
+/**
+ * Whether a file's name alone says it is text: a page, logic, JSON, a
+ * stylesheet, an SVG. The Files panel asks it of a file a person adds
+ * (lib/fileRules.ts), so what is added is kept the way the same file would be
+ * if it came in with a bundle.
+ */
+export function namedAsText(path: string): boolean {
+  return SOURCE_TEXT.test(path) || !classifyAsset(path).binary;
 }
 
 /**

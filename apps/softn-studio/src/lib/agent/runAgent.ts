@@ -277,24 +277,37 @@ function openingTurns(): AgentTurn[] {
 function describeFailure(err: unknown): AIFailure {
   const at = Date.now();
   if (err instanceof AIProviderError) {
+    // `fix` is the control that mends it (types/studio.ts, AIFailure): the chat offers it.
     switch (err.kind) {
       case 'timeout':
-        return { kind: 'timeout', message: `${err.message} A slower provider may need a longer request timeout (Settings).`, at };
+        return { kind: 'timeout', message: `${err.message} A slower provider may need a longer request timeout (Settings).`, fix: 'limits', at };
       case 'rate-limited':
         return { kind: 'rate-limited', message: err.message, retryAfterMs: err.retryAfterMs, at };
       case 'network':
-        return { kind: 'network', message: err.message, at };
+        return { kind: 'network', message: err.message, fix: 'provider', at };
       case 'invalid-response':
-        return { kind: 'invalid-response', message: err.message, at };
+        return { kind: 'invalid-response', message: err.message, fix: 'provider', at };
       case 'cancelled':
         return { kind: 'cancelled', message: err.message, at };
       case 'no-model':
-        return { kind: 'setup', message: err.message, at };
+        return { kind: 'setup', message: err.message, fix: 'setup', at };
       default:
-        return { kind: 'provider', message: `${err.message}${providerAdvice(err)}`, at };
+        return { kind: 'provider', message: `${err.message}${providerAdvice(err)}`, ...providerFix(err), at };
     }
   }
   return { kind: 'provider', message: err instanceof Error ? err.message : String(err), at };
+}
+
+/**
+ * The control that mends a provider's HTTP failure: Max output tokens for a
+ * refused output limit; the provider's own key and address for a key it did
+ * not accept, an address nothing answers at, or an error that names neither;
+ * none for a server that failed by itself, where the thing to do is ask again.
+ */
+function providerFix(err: AIProviderError): Pick<AIFailure, 'fix'> {
+  if (isOutputLimitRejection(err)) return { fix: 'limits' };
+  if (err.status !== undefined && (kindForStatus(err.status) === 'server' || kindForStatus(err.status) === 'rate-limited')) return {};
+  return { fix: 'provider' };
 }
 
 /**
@@ -406,23 +419,33 @@ export async function startAgentRun(options: StartOptions = {}): Promise<void> {
       ai.providers.length > 0
         ? 'Select an AI provider in Settings before generating.'
         : 'No AI provider is connected yet. Connect one — a local model, an OpenAI key or an Anthropic key — to start generating.',
-      { kind: 'setup', message: 'Connect an AI provider to start generating.', at: Date.now() },
+      { kind: 'setup', message: 'Connect an AI provider to start generating.', fix: 'setup', at: Date.now() },
     );
     return;
   }
   if (!resolveModel(provider, ai.modelProfile.builder)) {
     const message = `${provider.name} has no model chosen yet. Choose one of its models in AI setup, then send again.`;
-    say(message, { kind: 'setup', message, at: Date.now() });
+    say(message, { kind: 'setup', message, fix: 'setup', at: Date.now() });
     return;
   }
+  // The session is this tab's work on the project since it was opened: the counts are kept in
+  // the tab and start again with the project (projectSession.ts, collectProjectRecord).
   if (ai.iterationsUsed >= ai.maxIterations) {
-    say(`Iteration limit reached (${ai.maxIterations} runs this session). Reset the budget in Settings to continue.`);
+    // A limit reached, as the token budget below is: it used to leave no failure behind, so
+    // nothing but the sentence itself said where the limit is.
+    say(`This session has had its ${ai.maxIterations} AI ${ai.maxIterations === 1 ? 'run' : 'runs'}. In Settings, under Budget limits, raise Max runs or reset what is used, then send again.`, {
+      kind: 'budget',
+      message: 'The session has had all its AI runs.',
+      fix: 'limits',
+      at: Date.now(),
+    });
     return;
   }
   if (ai.tokensUsed >= ai.tokenBudget) {
-    say(`Token budget exhausted (${ai.tokenBudget.toLocaleString()} tokens this session). Reset the budget in Settings to continue.`, {
+    say(`This session has used its token budget of ${ai.tokenBudget.toLocaleString()}. In Settings, under Budget limits, raise the token budget or reset what is used, then send again.`, {
       kind: 'budget',
       message: 'The session token budget is used up.',
+      fix: 'limits',
       at: Date.now(),
     });
     return;
@@ -614,6 +637,8 @@ export async function continueAgentRun(runId: string): Promise<void> {
   ctl.sameToolErrors = 0;
   ctl.truncations = 0;
   const wasPaused = run.status === 'paused';
+  // Why it stopped is answered by going on: the chat's offer to mend it goes with it.
+  useAIStore.getState().setLastFailure(null);
   setStatus(ctl, 'running');
   // A paused request is sent again as it was; a stopped or limited run is told it was resumed,
   // and one whose files were put back in the meantime is told that, or it would carry on as
@@ -710,11 +735,23 @@ function controllerStopped(ctl: RunController): boolean {
 // The loop
 // ---------------------------------------------------------------------------
 
-function end(ctl: RunController, status: 'finished' | 'failed', reason: string | undefined, summary?: string): void {
+/**
+ * End a run. A run that failed leaves why behind for the chat (`lastFailure`):
+ * as the run's own stop (it kept failing the same way, or called the app done
+ * over errors) unless `failure` says otherwise, as a limit it reached or a
+ * reply the model cut short does. A provider's failure is recorded by the
+ * caller, in its own words. (Every failed run was recorded as the provider's,
+ * a run that had only used up its own steps among them.) With `null` nothing
+ * is left behind: the run's own words are all there is to say.
+ */
+function end(ctl: RunController, status: 'finished' | 'failed', reason: string | undefined, summary?: string, failure: Pick<AIFailure, 'kind' | 'fix'> | null = { kind: 'stuck' }): void {
   setStatus(ctl, status, reason, summary !== undefined ? { summary } : {});
-  if (status === 'failed' && reason) useAIStore.getState().setLastFailure({ kind: 'provider', message: reason, at: Date.now() });
+  if (status === 'failed' && reason && failure) useAIStore.getState().setLastFailure({ ...failure, message: reason, at: Date.now() });
   ctl.abort = null;
 }
+
+/** A run stopped by a limit set in Settings. */
+const A_LIMIT: Pick<AIFailure, 'kind' | 'fix'> = { kind: 'budget', fix: 'limits' };
 
 function contextSize(ctl: RunController, system: string): number {
   return estimateTokens(system) + estimateTokens(JSON.stringify(encodeText(ctl.turns)));
@@ -1188,7 +1225,7 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
   // Not "Finished": what the run did is in this tab only. The summary is kept with the run, and
   // said in the reason, which is what a stopped run shows.
   if (summary !== undefined && unsavedAtFinish !== null) {
-    end(ctl, 'failed', `The agent finished, but the project is not saved: ${unsavedAtFinish} What the run changed is in this tab only. The agent's summary: ${summary}`, summary);
+    end(ctl, 'failed', `The agent finished, but the project is not saved: ${unsavedAtFinish} What the run changed is in this tab only. The agent's summary: ${summary}`, summary, null);
     return true;
   }
   if (summary !== undefined) {
@@ -1227,7 +1264,7 @@ async function drive(ctl: RunController): Promise<void> {
     const ai = useAIStore.getState();
 
     if (run.steps >= run.maxSteps) {
-      end(ctl, 'failed', `The run reached its limit of ${run.maxSteps} steps. Continue to give it another ${ai.agentSettings.maxSteps}, or raise the limit in Settings.`);
+      end(ctl, 'failed', `The run reached its limit of ${run.maxSteps} steps. Continue to give it another ${ai.agentSettings.maxSteps}, or raise the limit in Settings.`, undefined, A_LIMIT);
       return;
     }
 
@@ -1246,13 +1283,12 @@ async function drive(ctl: RunController): Promise<void> {
     const estimate = requestEstimate(ctl, contextSize(ctl, system)) + outputAllowance(ctl.provider, model);
     const spent = runEffective(run.tokens);
     if (spent + estimate > run.tokenBudget) {
-      end(ctl, 'failed', `The run's token budget would be exceeded: ${spent.toLocaleString()} of ${run.tokenBudget.toLocaleString()} tokens used, and the next request needs about ${estimate.toLocaleString()}. Continue to allow another ${ai.agentSettings.runTokenBudget.toLocaleString()}, or raise the per-run budget in Settings.`);
+      end(ctl, 'failed', `The run's token budget would be exceeded: ${spent.toLocaleString()} of ${run.tokenBudget.toLocaleString()} tokens used, and the next request needs about ${estimate.toLocaleString()}. Continue to allow another ${ai.agentSettings.runTokenBudget.toLocaleString()}, or raise the per-run budget in Settings.`, undefined, A_LIMIT);
       return;
     }
     if (ai.tokensUsed + estimate > ai.tokenBudget) {
       const message = `The session's token budget would be exceeded: ${ai.tokensUsed.toLocaleString()} of ${ai.tokenBudget.toLocaleString()} used, and the next request needs about ${estimate.toLocaleString()}. The budget is a local guardrail, not a billing cap: raise or reset it in Settings, then Continue.`;
-      end(ctl, 'failed', message);
-      ai.setLastFailure({ kind: 'budget', message, at: Date.now() });
+      end(ctl, 'failed', message, undefined, A_LIMIT);
       return;
     }
 
@@ -1330,7 +1366,7 @@ async function drive(ctl: RunController): Promise<void> {
     }
 
     if (reply.status === 'refused') {
-      end(ctl, 'failed', 'The model declined this request.');
+      end(ctl, 'failed', 'The model declined this request.', undefined, { kind: 'refused' });
       return;
     }
     if (reply.status === 'truncated') {
@@ -1347,7 +1383,7 @@ async function drive(ctl: RunController): Promise<void> {
         const remedy = allowance < ai.maxOutputTokens
           ?'That is the most this model allows in one reply: ask for a smaller change, or choose a model that allows longer replies in AI setup.'
           : 'Raise Max output tokens in Settings → Agent runs, or ask for a smaller change.';
-        end(ctl, 'failed', `The model's reply was cut off at the output limit (${allowance.toLocaleString()} tokens) again after it was asked to keep its reasoning short and split the work. ${remedy}`);
+        end(ctl, 'failed', `The model's reply was cut off at the output limit (${allowance.toLocaleString()} tokens) again after it was asked to keep its reasoning short and split the work. ${remedy}`, undefined, { kind: 'truncated', fix: allowance < ai.maxOutputTokens ? 'provider' : 'limits' });
         return;
       }
       ctl.turns.push({
@@ -1382,7 +1418,7 @@ async function drive(ctl: RunController): Promise<void> {
       }
       // A build that wrote nothing and never called finish did not build anything, whatever its text says.
       if (ctl.kind === 'build' && (record(ctl)?.transactions.length ?? 0) === 0) {
-        end(ctl, 'failed', 'The model stopped without building anything: it answered in text and never called the tools that write files. Smaller models often cannot drive tool calls. Continue to let it try again, or choose a larger model in AI setup.');
+        end(ctl, 'failed', 'The model stopped without building anything: it answered in text and never called the tools that write files. Smaller models often cannot drive tool calls. Continue to let it try again, or choose a larger model in AI setup.', undefined, { kind: 'empty', fix: 'provider' });
         return;
       }
       end(ctl, 'finished', undefined, reply.text.trim() || 'The agent stopped without a summary.');

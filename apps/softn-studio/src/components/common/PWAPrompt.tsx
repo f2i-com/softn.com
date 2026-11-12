@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRegisterSW } from 'virtual:softn-pwa/react';
+import { useNoticeSlot } from './NoticeSlot';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -104,14 +106,20 @@ export const PWAPrompt: React.FC = () => {
     await installEvent.userChoice;
   }, [installEvent]);
 
+  // A screen with its controls along the bottom gives the notices a place in its own flow
+  // (NoticeSlot); elsewhere they float in a corner.
+  const slot = useNoticeSlot();
+
   const notice = offlineFailure
     ? { text: `Studio could not be installed for offline use: ${offlineFailure.replace(/[.\s]+$/, '')}. It still works while you are online; reload to try again.`, dismiss: () => setOfflineFailure(null) }
     : offlineReady
       ? { text: 'Studio is ready to work offline.', dismiss: () => setOfflineReady(false) }
       : null;
 
-  return (
-    <div style={styles.dock}>
+  const dock = (
+    // Where the dock sits is in styles/studio.css (.st-pwa-dock): it depends on what is under it.
+    // In a page that has given it a place of its own, it stands there, in the page's flow.
+    <div className={slot ? 'st-pwa-dock st-pwa-dock-inline' : 'st-pwa-dock'}>
       {/* Always in the page, so a screen reader hears what is put in it. */}
       <div role="status" aria-live="polite">
         {notice && (
@@ -130,12 +138,13 @@ export const PWAPrompt: React.FC = () => {
         </div>
       )}
       {installEvent && (
-        <button onClick={handleInstall} style={{ ...styles.card, ...styles.installButton }}>
+        <button onClick={handleInstall} className="st-pwa-install" style={{ ...styles.card, ...styles.installButton }}>
           Install
         </button>
       )}
     </div>
   );
+  return slot ? createPortal(dock, slot) : dock;
 };
 
 // This is mounted beside App, not inside it (main.tsx). The --studio-* tokens it
@@ -144,16 +153,6 @@ export const PWAPrompt: React.FC = () => {
 // of the palette that went stale (they still held the old sky-blue accent after
 // Studio moved to coral); no colour is spelled out here now.
 const styles: Record<string, React.CSSProperties> = {
-  dock: {
-    position: 'fixed',
-    right: 16,
-    bottom: 48,
-    zIndex: 1000,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-    gap: 8,
-  },
   card: {
     display: 'flex',
     alignItems: 'center',

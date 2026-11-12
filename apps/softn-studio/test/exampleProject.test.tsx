@@ -64,8 +64,10 @@ describe('the bundled example', () => {
     expect(files.size).toBe(DEFAULT_EXAMPLE.files.length);
     expect(files.has('manifest.json')).toBe(true);
     expect(files.has('permission.json')).toBe(true);
-    // One import unit in the history, not one create per file.
-    expect(new Set(useVFSStore.getState().history.map((e) => e.transactionId)).size).toBe(1);
+    // Opening it is not something done to it: nothing in the history, so "Undo last" cannot
+    // take the project away (it was one unit of the person's own creates, and did).
+    expect(useVFSStore.getState().history).toEqual([]);
+    expect(useVFSStore.getState().undoStack).toEqual([]);
 
     const errors = validateProject(files, ws.blueprint);
     expect(errors.filter((e) => e.level === 'error')).toEqual([]);

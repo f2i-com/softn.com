@@ -16,6 +16,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HistoryPanel, describeUnit, groupHistory } from '../src/components/panels/HistoryPanel';
 import { useVFSStore } from '../src/stores/vfsStore';
+import { openExampleInStores } from '../src/examples';
+import { openImportedInStores } from '../src/lib/importedProject';
 
 const store = () => useVFSStore.getState();
 
@@ -161,7 +163,7 @@ describe('HistoryPanel', () => {
     expect(store().readFile('logic/main.logic')).toBe('let x = 1');
   });
 
-  it('describes an import of many files as one import', () => {
+  it('describes many files added in one step as one unit', () => {
     store().batchCreateFiles([
       { path: 'a.ui', content: 'a' },
       { path: 'b.ui', content: 'b' },
@@ -169,6 +171,78 @@ describe('HistoryPanel', () => {
       { path: 'd.ui', content: 'd' },
     ]);
     const [unit] = groupHistory(store().history);
-    expect(describeUnit(unit)).toEqual({ title: 'Import · 4 files', detail: 'a.ui, b.ui, c.ui, +1 more' });
+    expect(describeUnit(unit)).toEqual({ title: 'Added · 4 files', detail: 'a.ui, b.ui, c.ui, +1 more' });
+  });
+
+  // What a person does in the Files panel is named in their words. A rename is a delete and
+  // a create under one id, and was listed as "Edit · 2 files".
+  it('shows a unit that says what it was under that name, with the files it touched', () => {
+    store().createFile('assets/logo.png', new Uint8Array([1]));
+    act(() => {
+      store().applyTransaction(
+        [{ op: 'delete', path: 'assets/logo.png' }, { op: 'create', path: 'assets/brand.png', content: new Uint8Array([1]) }],
+        'user',
+        'rename-1',
+        'Renamed logo.png to brand.png',
+      );
+    });
+    mount();
+    const renamed = rows()[0];
+    expect(renamed.querySelector('.st-history-title')!.textContent).toBe('Renamed logo.png to brand.png');
+    expect(renamed.querySelector('.st-history-detail')!.textContent).toBe('assets/logo.png, assets/brand.png');
+    expect(renamed.querySelector('button')!.getAttribute('aria-label')).toMatch(/^Revert Renamed logo\.png to brand\.png: /);
+    // And it is one unit to Undo last.
+    const undo = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Undo last')!;
+    act(() => undo.click());
+    expect(store().files.has('assets/logo.png')).toBe(true);
+    expect(store().files.has('assets/brand.png')).toBe(false);
+  });
+
+  // Opening a project is not something a person did to it. An example and an import were
+  // placed as one unit of the person's own creates, so on a project opened a moment ago
+  // "Undo last" removed every file, and the canvas said "No app yet".
+  describe('a project that was just opened', () => {
+    const named = (name: string) => Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === name);
+
+    it('an example has nothing to undo, and its first edit is the only unit', () => {
+      const example = openExampleInStores();
+      expect(example).toBeTruthy();
+      const opened = store().files.size;
+      expect(opened).toBeGreaterThan(0);
+      expect(store().history).toEqual([]);
+      expect(store().undoStack).toEqual([]);
+      mount();
+      expect(named('Undo last')).toBeUndefined();
+      expect(named('Redo')).toBeUndefined();
+      expect(container.textContent).toContain('No changes yet');
+      expect(container.textContent).not.toMatch(/import/i);
+
+      act(() => store().updateFile('manifest.json', '{"name":"Changed"}'));
+      expect(rows()).toHaveLength(1);
+      act(() => named('Undo last')!.click());
+      // The edit is taken back; the project that was opened is all still there.
+      expect(store().files.size).toBe(opened);
+      expect(store().readFile('manifest.json')).not.toBe('{"name":"Changed"}');
+      expect(named('Undo last')).toBeUndefined();
+    });
+
+    it('an import has nothing to undo either', () => {
+      openImportedInStores('club.softn', [
+        { path: 'manifest.json', content: '{"name":"Club","version":"1.0.0","main":"ui/main.ui"}' },
+        { path: 'ui/main.ui', content: '<App><Text>Club</Text></App>' },
+      ]);
+      expect(store().files.has('ui/main.ui')).toBe(true);
+      expect(store().history).toEqual([]);
+      mount();
+      expect(named('Undo last')).toBeUndefined();
+      store().undoLast();
+      expect(store().files.has('ui/main.ui')).toBe(true);
+    });
+
+    it('still refuses a path that is not a project path, and places nothing', () => {
+      expect(() => store().openFiles([{ path: 'ui/main.ui', content: '<App/>' }, { path: '../outside.txt', content: 'x' }])).toThrow(/not a project path/);
+      expect(() => store().openFiles([{ path: 'a/b.ui', content: '1' }, { path: 'A/B.ui', content: '2' }])).toThrow(/same file/);
+      expect(store().files.size).toBe(0);
+    });
   });
 });

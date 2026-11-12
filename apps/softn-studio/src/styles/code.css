@@ -238,15 +238,6 @@
   color: var(--studio-on-accent);
 }
 
-.st-view-switch-bar {
-  display: flex;
-  justify-content: flex-end;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--studio-border-subtle);
-  background: var(--studio-bg-elevated);
-  flex-shrink: 0;
-}
-
 /* ── Media ─────────────────────────────────────────────────────── */
 
 .st-media {

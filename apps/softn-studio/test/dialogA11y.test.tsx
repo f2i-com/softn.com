@@ -11,7 +11,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BriefWizard } from '../src/components/brief/BriefWizard';
 import { BlueprintReview } from '../src/components/blueprint/BlueprintReview';
-import { generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles } from '../src/lib/studioProject';
+import { generateBlueprintFromBrief, generateTaskGraph, revisionNotes, scaffoldProjectFiles } from '../src/lib/studioProject';
+import { buildProjectContext } from '../src/lib/agent/prompt';
 import { useVFSStore, useWorkspaceStore } from '../src/stores';
 import type { Blueprint, ProjectBrief } from '../src/types/studio';
 
@@ -225,6 +226,67 @@ describe('BlueprintReview', () => {
     note('The home page lists notes newest first');
     expect(useWorkspaceStore.getState().blueprint!.assumptions.at(-1)).toBe('Revision note: The home page lists notes newest first');
     expect(useWorkspaceStore.getState().blueprint!.pages).toHaveLength(3);
+  });
+
+  // A note that is not a page was kept with the plan's assumptions "for the build to read",
+  // and the agent was sent the plan without them.
+  it('keeps a note as the person’s, once, and the agent is sent it with the project', () => {
+    generated(['Home']);
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    expect(buildProjectContext('build')).not.toMatch(/notes on the plan/);
+    note('The home page lists notes newest first');
+    note('Tighten auth');
+    note('The home page lists notes newest first');
+    const blueprint = useWorkspaceStore.getState().blueprint!;
+    expect(revisionNotes(blueprint)).toEqual(['The home page lists notes newest first', 'Tighten auth']);
+    expect(new Set(blueprint.assumptions).size).toBe(blueprint.assumptions.length);
+    const context = buildProjectContext('build');
+    expect(context).toContain('## The person’s notes on the plan');
+    expect(context).toContain('- The home page lists notes newest first\n- Tighten auth');
+    // The plan's own lines are Studio's, not the person's.
+    expect(context).not.toMatch(/Review authentication flow|starting layout/);
+    // An edit run is sent them too: they are part of the plan it is sent.
+    expect(buildProjectContext('edit')).toContain('- Tighten auth');
+  });
+
+  // A note read "Revision note: …" among the plan's assumptions, and could not be taken back.
+  it('lists the person’s notes as theirs, apart from the plan’s assumptions, and takes one back', () => {
+    generated(['Home']);
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    note('The home page lists notes newest first');
+    note('Use big buttons');
+    const list = host.querySelector('ul[aria-label="Your notes"]')!;
+    expect([...list.querySelectorAll('li > span')].map((s) => s.textContent)).toEqual(['The home page lists notes newest first', 'Use big buttons']);
+    const dialogText = host.querySelector('[role="dialog"]')!.textContent!;
+    expect(dialogText).not.toContain('Revision note:');
+    // The plan's own assumptions are still listed.
+    expect(dialogText).toContain(generateBlueprintFromBrief(useWorkspaceStore.getState().brief!).assumptions[0]);
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove the note: The home page lists notes newest first"]')!.click());
+    expect(revisionNotes(useWorkspaceStore.getState().blueprint)).toEqual(['Use big buttons']);
+    expect(buildProjectContext('build')).not.toContain('newest first');
+    // The focus stays in the dialog, on a button (the field would bring a phone's keyboard up).
+    expect(document.activeElement?.id).toBe('blueprint-revision-apply');
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove the note: Use big buttons"]')!.click());
+    expect(host.querySelector('ul[aria-label="Your notes"]')).toBeNull();
+    expect(buildProjectContext('build')).not.toMatch(/notes on the plan/);
+  });
+
+  // Revise brief makes the plan again from the brief. The notes on the plan it replaced went
+  // with it, and nothing said so.
+  it('keeps the person’s notes on the plan when the brief is revised and the plan made again', () => {
+    generated(['Home']);
+    act(() => root.render(<BlueprintReview onApprove={() => {}} onReviseBrief={() => {}} />));
+    note('The home page lists notes newest first');
+    act(() => root.render(<BriefWizard onBack={() => {}} onSubmit={() => {}} />));
+    const press = (name: string) => act(() => [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === name)!.click());
+    press('Next');
+    press('Next');
+    press('Generate');
+    const blueprint = useWorkspaceStore.getState().blueprint!;
+    expect(revisionNotes(blueprint)).toEqual(['The home page lists notes newest first']);
+    expect(new Set(blueprint.assumptions).size).toBe(blueprint.assumptions.length);
+    expect(buildProjectContext('build')).toContain('- The home page lists notes newest first');
   });
 
   it('leaves the files alone once they are not the scaffold Generate wrote', () => {

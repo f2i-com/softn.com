@@ -66,6 +66,26 @@
   max-width: min(40rem, 100%);
 }
 
+/* Open in Builder in a small window: it keeps its drawing and gives up its words, which are still
+   its name to a screen reader and in its title. With them the bar was wider than an 800 pixel
+   window and Run was off the edge; the bar's other buttons are the project's ways out and keep theirs. */
+@media (max-width: 960px) {
+  .st-topbar-across > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* And with one more button in it, the room the bar is short of comes off the project's name,
+     which is cut with an ellipsis, before any of it comes off the buttons, which are not. */
+  .st-topbar-right:has(.st-topbar-across) {
+    flex-shrink: 0;
+  }
+}
+
 .st-home-btn {
   display: inline-flex;
   align-items: center;
@@ -281,6 +301,17 @@
   width: 23.75rem;
 }
 
+/* A small window: the open panel takes less of it. At 768 pixels the chat was
+   half the window, and the preview beside it 290. */
+@media (max-width: 1023px) {
+  .st-panel {
+    width: 16.25rem;
+  }
+  .st-panel[data-panel='ai'] {
+    width: 20rem;
+  }
+}
+
 .st-panel-head {
   display: flex;
   align-items: center;
@@ -444,14 +475,60 @@
   padding: 0 0.5rem;
 }
 
-/* In a narrow frame the row says the file by its own name and whether it is running: the
-   device switch and the folder go (the name's title has the whole path), where they used to
-   stay and push the name out, and the preview's own buttons off the end of the row. (Scoped to
-   the header, so code.css's `.st-view-switch`, loaded later, does not put the switch back.) */
-@container preview-header (max-width: 40rem) {
-  .st-preview-chrome .st-device-switch,
+/* The words in the header give way by the room it has, and no control goes with them.
+   The name and whether the page is running come first; then the three widths, Preview and
+   Code, and the preview's own buttons.
+
+   In a narrow frame the widths are their pictures and the file is its own name (its title has
+   the whole path). The whole switch used to go here: with a panel open beside the preview, or
+   in a window under 1100 pixels, there was no way to choose a width. (Scoped to the header, so
+   code.css's `.st-view-switch`, loaded later, does not put the words back.) */
+@container preview-header (max-width: 44rem) {
+  .st-preview-chrome .st-device-switch .st-switch-label,
   .st-preview-file .dir {
     display: none;
+  }
+}
+
+/* Narrower still, Preview and Code are their pictures too, and "Running" is its dot (a page
+   that has stopped keeps its word: that one needs reading). */
+@container preview-header (max-width: 31rem) {
+  .st-preview-chrome .st-view-switch .st-switch-label {
+    display: none;
+  }
+  .st-preview-chrome .st-live {
+    font-size: 0;
+    gap: 0;
+  }
+}
+
+/* And where even the pictures do not fit beside the name, they go under it, on a row of their
+   own: the header is two rows before it is a control short. */
+.st-preview-chrome {
+  flex-wrap: wrap;
+  row-gap: 0.25rem;
+}
+
+.st-preview-where {
+  flex: 1 1 5rem;
+}
+
+.st-preview-chrome > :last-child {
+  margin-left: auto;
+}
+
+@container preview-header (max-width: 20rem) {
+  .st-preview-chrome .st-view-switch button {
+    padding: 0 0.4375rem;
+  }
+}
+
+/* On a touch screen every one of them is a finger's height and width. */
+@media (pointer: coarse) {
+  .st-preview-chrome .st-view-switch button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+    justify-content: center;
   }
 }
 
@@ -1104,12 +1181,21 @@ button.st-status-item[aria-expanded='true'] {
   background: var(--studio-bg);
 }
 
+/* A limit is its name with its field beside it, and under both, across the
+   whole row, what it does. The explanation used to share the first line with
+   the field: in a panel 300px wide that left it a column of about 110, and
+   one limit's two sentences ran to fifteen lines beside a single number.
+   (`.st-limit-text` holds the name and the explanation; here they are placed
+   as the row's own, so the field can stand between them.) */
 .st-limit-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'label field'
+    'hint hint';
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+  gap: 0.25rem 0.75rem;
+  padding: 0.5rem 0.5rem 0.5625rem 0.75rem;
 }
 
 .st-limit-row + .st-limit-row {
@@ -1117,21 +1203,28 @@ button.st-status-item[aria-expanded='true'] {
 }
 
 .st-limit-text {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
+  display: contents;
 }
 
 .st-limit-label {
+  grid-area: label;
+  min-width: 0;
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--studio-text);
 }
 
 .st-limit-hint {
-  font-size: 0.6875rem;
+  grid-area: hint;
+  min-width: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
   color: var(--studio-text-dim);
+}
+
+.st-limit-row > :not(.st-limit-text) {
+  grid-area: field;
+  justify-self: end;
 }
 
 .st-input.st-limit-input {
@@ -1256,6 +1349,53 @@ button.st-status-item[aria-expanded='true'] {
   min-height: 1.75rem;
   padding: 0 0.5rem;
   font-size: 0.75rem;
+}
+
+/* ── After a run that did not finish ──────────────────────────────
+   What happened, what to do, and the control to do it with, above the box a
+   message is typed in (components/ai/FailureNextStep.tsx). In the flow of the
+   chat: it takes room from the conversation and covers nothing. */
+
+.st-next-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.375rem 0.5rem;
+  flex-shrink: 0;
+  margin: 0 0.625rem 0.5rem;
+  padding: 0.5rem 0.375rem 0.5rem 0.625rem;
+  border: 1px solid var(--studio-warning);
+  border-radius: var(--studio-radius);
+  background: var(--studio-warning-soft);
+}
+
+.st-next-step-mark {
+  display: flex;
+  padding-top: 0.125rem;
+  color: var(--studio-warning);
+}
+
+.st-next-step-text {
+  flex: 1 1 11rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--studio-text-muted);
+}
+
+.st-next-step-text strong {
+  font-weight: 600;
+  color: var(--studio-text);
+}
+
+.st-next-step-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: auto;
 }
 
 /* ── Agent run timeline ────────────────────────────────────────────
@@ -1833,4 +1973,38 @@ button.st-status-item[aria-expanded='true'] {
 
 .st-limit-row label.st-limit-text {
   cursor: pointer;
+}
+
+/* On a touch screen the rows and tabs of the panels are a finger's height: a
+   file in the tree was 30px, a settings tab 36, the project's name 26. */
+@media (pointer: coarse) {
+  .st-tree-item,
+  .st-tab,
+  .st-project-name-btn,
+  .st-btn.st-history-revert,
+  .st-view-switch.st-theme-switch button {
+    min-height: 2.75rem;
+  }
+  .st-view-switch.st-theme-switch button {
+    min-width: 4.5rem;
+    justify-content: center;
+  }
+}
+
+/* The theme's two choices in Settings, under General. */
+.st-theme-switch {
+  width: fit-content;
+  margin-bottom: 0.625rem;
+}
+
+/* On a touch screen: a field a finger's height, and a box that can be hit. */
+@media (pointer: coarse) {
+  .st-input.st-limit-input {
+    min-height: 2.75rem;
+  }
+  .st-limit-check {
+    width: 1.5rem;
+    height: 1.5rem;
+    margin: 0.625rem;
+  }
 }

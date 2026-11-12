@@ -270,6 +270,58 @@ describe('imports and transactions are single undo units', () => {
 });
 
 /**
+ * What a person does in the Files panel is one unit under a name in plain
+ * words. A rename is a delete and a create in that one unit; the History
+ * panel had only "Edit · 2 files" to call it.
+ */
+describe('a unit that says what it was', () => {
+  const rename = (from: string, to: string, label: string) =>
+    store().applyTransaction([{ op: 'delete', path: from }, { op: 'create', path: to, content: store().readFile(from)! }], 'user', undefined, label);
+
+  it('carries its name on every event, and keeps it through an undo and a redo', () => {
+    store().createFile('assets/logo.png', new Uint8Array([1, 2, 3]));
+    const id = rename('assets/logo.png', 'assets/brand.png', 'Renamed logo.png to brand.png');
+    const unit = store().history.filter((e) => e.transactionId === id);
+    expect(unit.map((e) => [e.type, e.label])).toEqual([['delete', 'Renamed logo.png to brand.png'], ['create', 'Renamed logo.png to brand.png']]);
+    store().undoLast();
+    expect(store().readFile('assets/logo.png')).toEqual(new Uint8Array([1, 2, 3]));
+    expect(store().files.has('assets/brand.png')).toBe(false);
+    store().redoLast();
+    expect(store().readFile('assets/brand.png')).toEqual(new Uint8Array([1, 2, 3]));
+    expect(store().files.has('assets/logo.png')).toBe(false);
+    expect(store().history.filter((e) => e.transactionId === id).every((e) => e.label === 'Renamed logo.png to brand.png')).toBe(true);
+  });
+
+  it('is absent from a unit nobody named', () => {
+    store().createFile('a.txt', 'a');
+    store().applyTransaction([{ op: 'update', path: 'a.txt', content: 'b' }], 'ai', 'turn');
+    expect(store().history.every((e) => e.label === undefined)).toBe(true);
+  });
+
+  // The store refused this as "the same file as Logo.png on a case-insensitive disk": the very
+  // file the unit was taking away.
+  it('a rename that changes only the case of a name is not a clash with the file being renamed', () => {
+    store().createFile('assets/Logo.png', new Uint8Array([1]));
+    rename('assets/Logo.png', 'assets/logo.png', 'Renamed Logo.png to logo.png');
+    expect([...store().files.keys()]).toEqual(['assets/logo.png']);
+    store().undoLast();
+    expect([...store().files.keys()]).toEqual(['assets/Logo.png']);
+  });
+
+  it('still refuses another spelling of a file the unit leaves in place, whatever it deletes', () => {
+    store().createFile('assets/Logo.png', new Uint8Array([1]));
+    store().createFile('assets/other.png', new Uint8Array([2]));
+    // The create comes before the delete: for a moment there would be two.
+    expect(() => store().applyTransaction([{ op: 'create', path: 'assets/logo.png', content: 'x' }, { op: 'delete', path: 'assets/Logo.png' }])).toThrow(/same file/);
+    // The delete is of another file: Logo.png is still there.
+    expect(() => store().applyTransaction([{ op: 'delete', path: 'assets/other.png' }, { op: 'create', path: 'assets/logo.png', content: 'x' }])).toThrow(/same file/);
+    // An update leaves the file there too.
+    expect(() => store().applyTransaction([{ op: 'update', path: 'assets/Logo.png', content: new Uint8Array([3]) }, { op: 'create', path: 'assets/LOGO.png', content: 'x' }])).toThrow(/same file/);
+    expect([...store().files.keys()].sort()).toEqual(['assets/Logo.png', 'assets/other.png']);
+  });
+});
+
+/**
  * A file's version must never repeat within a session, even across a
  * delete and a re-create. It used to: the version was `existing + 1`, and
  * a deleted file has no `existing`, so a re-created file started at v1

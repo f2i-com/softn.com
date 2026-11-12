@@ -690,6 +690,14 @@
   color: var(--studio-text);
 }
 
+/* The pill is a button wherever it is not a hosted editor's label: a finger's
+   height on a touch screen, as the buttons beside it are. */
+@media (pointer: coarse) {
+  button.st-ai-pill {
+    min-height: 2.75rem;
+  }
+}
+
 .st-ai-pill svg {
   flex-shrink: 0;
 }
@@ -758,7 +766,7 @@
 
 .st-onboard {
   display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr);
+  grid-template-columns: minmax(16rem, 24rem) minmax(0, 60rem);
   grid-template-areas:
     'intro card'
     'skip card';
@@ -779,50 +787,49 @@
   grid-area: skip;
 }
 
-/* One column: the step straight after the words that explain it, and the
-   way to skip it after that. */
+/* One column: the words that explain the step, the way round it on one line
+   with its button, then the step. The way round it was last, under the whole
+   form: on a phone that is more than a screen down. */
 @media (max-width: 960px) {
   .st-onboard {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       'intro'
-      'card'
-      'skip';
+      'skip'
+      'card';
     grid-template-rows: none;
-    row-gap: 1.5rem;
-  }
-  .st-onboard-skip {
-    margin-top: 0;
+    row-gap: 1rem;
   }
 }
 
 .st-onboard-eyebrow {
   display: block;
-  margin-bottom: 0.875rem;
+  margin-bottom: 0.375rem;
   font-family: var(--studio-mono);
   font-size: 0.75rem;
   color: var(--studio-text-dim);
 }
 
+/* A heading the size of the page's own, not a headline: the step it names is
+   beside it, and on a phone under it, on the first screen. */
 .st-onboard-title {
   font-family: var(--studio-display);
-  font-weight: 800;
-  font-size: clamp(2rem, 4.2vw, 3rem);
-  line-height: 1;
-  letter-spacing: -0.045em;
-  text-wrap: balance;
+  font-weight: 700;
+  font-size: 1.375rem;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
 }
 
 .st-onboard-lede {
-  margin-top: 1rem;
-  font-size: 1rem;
-  line-height: 1.6;
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.55;
   color: var(--studio-text-muted);
 }
 
 .st-onboard-skip {
-  margin-top: 1.5rem;
-  padding-top: 1.25rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
   border-top: 1px solid var(--studio-border-subtle);
   display: flex;
   flex-direction: column;
@@ -831,6 +838,22 @@
   font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--studio-text-dim);
+}
+
+/* In one column the way round the step is a line of its own between the
+   words and the form (written after the rule above, which it has to outrank:
+   placed before it, its margin never applied). */
+@media (max-width: 960px) {
+  .st-onboard-skip {
+    margin-top: 0;
+    padding-top: 0.75rem;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 0.75rem;
+    color: var(--studio-text-muted);
+  }
 }
 
 .st-onboard-card {
@@ -844,7 +867,9 @@
 
 /* What is behind the step: visible, so the page is not a wall, but inert. */
 .st-home-locked {
-  margin-top: clamp(2.5rem, 5vw, 3.5rem);
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--studio-border-subtle);
   opacity: 0.4;
   filter: saturate(0.6);
   user-select: none;

@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useVFSStore, useWorkspaceStore } from '../../stores';
-import { generateBlueprintFromBrief, generateTaskGraph, pageFileCandidates, pageSlugs, scaffoldProjectFiles } from '../../lib/studioProject';
+import { REVISION_NOTE_PREFIX, generateBlueprintFromBrief, generateTaskGraph, isRevisionNote, pageFileCandidates, pageSlugs, revisionNotes, scaffoldProjectFiles } from '../../lib/studioProject';
+import { planRequest } from '../../lib/planRequest';
+import { restartPreview } from '../../lib/previewRestart';
 import { Icon } from '../common/Icon';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import { useAIReadiness } from '../ai/AIStatusPill';
@@ -20,29 +22,11 @@ const hover = (rest: string, over: string) => ({
 
 const noop = () => {};
 
-/** Words that say "a page" rather than name one: "add another page", "add a new page". */
-const UNNAMED = /^(?:a|an|another|one|one more|more|new|extra|second|third|other)$/i;
+/** A note about how people sign in: by its usual names, where it used to be the word "auth" alone. */
+const ABOUT_SIGN_IN = /auth|sign[\s-]?(?:in|up)|log[\s-]?in|password/i;
 
-/**
- * The page a note asks to add, or null when it asks for something else: "Add a settings page"
- * is Settings, "add a page called Team stats" is Team Stats, and "add another page", which names
- * none, is the next numbered page. `count` is how many pages the plan has.
- */
-function requestedPageName(note: string, count: number): string | null {
-  const text = note.trim().replace(/[.!]+$/, '');
-  const titled = (raw: string): string | null => {
-    const name = raw.replace(/^["'“‘]|["'”’]$/g, '').replace(/[^\p{L}\p{N}\s&'-]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
-    if (!name || UNNAMED.test(name)) return null;
-    return name.split(' ').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-  };
-  // "add a page called X", "add a screen named X", "add a page for X"
-  const called = /^(?:please\s+)?(?:add|include|create|make)\s+(?:a|an|another|one more|a new)?\s*(?:page|screen|view)\s+(?:called|named|for|titled)\s+(.+)$/i.exec(text);
-  if (called) return titled(called[1]) ?? `Page ${count + 1}`;
-  // "add a settings page", "add another page", "add an about screen"
-  const before = /^(?:please\s+)?(?:add|include|create|make)\s+(?:(?:a|an|another|one more|a new|new)\s+)?(.*?)\s*(?:page|screen|view)$/i.exec(text);
-  if (before) return titled(before[1]) ?? `Page ${count + 1}`;
-  return null;
-}
+/** The line a note about sign-in puts among the plan's assumptions, for as long as such a note is there. */
+export const SIGN_IN_REVIEW_LINE = 'Review authentication flow requirements before export.';
 
 /**
  * Where the keyboard goes when the plan is approved: to the AI's message box, where the run the
@@ -65,7 +49,6 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
   const {
     blueprint,
     brief,
-    taskGraph,
     setBrief,
     setBlueprint,
     setTaskGraph,
@@ -73,6 +56,8 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
     addConsoleOutput,
   } = useWorkspaceStore();
   const [revisionInput, setRevisionInput] = useState('');
+  /** What the last line typed under "Revise the plan" did, said under the field. */
+  const [said, setSaid] = useState<string | null>(null);
   // With the AI ready, approving hands the plan to the agent to build.
   const aiReady = useAIReadiness().state === 'ready';
   // A modal over the editor: keyboard stays inside; Escape is "Revise brief"
@@ -88,79 +73,132 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
     setTimeout(focusEditorIfLost, 0);
   }, []);
 
-  const summaryStats = useMemo(() => {
-    if (!blueprint) return [];
-    return [
-      { label: 'Pages', value: blueprint.pages.length },
-      { label: 'Collections', value: blueprint.collections.length },
-      { label: 'Tasks', value: taskGraph.length },
-    ];
-  }, [blueprint, taskGraph.length]);
-
   if (!blueprint || !brief) return null;
 
   const pageFiles = pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0]);
 
+  /** The plan with `pages` as its pages: in the brief the build is asked for, and, while the
+      project is still the scaffold Generate wrote, in the files as well. */
+  const planPages = (pages: string[]) => {
+    const nextBrief = { ...brief, pages };
+    const planned = generateBlueprintFromBrief(nextBrief);
+    const next = { ...blueprint, pages: planned.pages, navigation: planned.navigation };
+    const vfs = useVFSStore.getState();
+    // Written again only while every file is the one Generate wrote (builder/ holds Studio's
+    // notes, which change with each note): anything else is the person's or the AI's work.
+    const scaffold = scaffoldProjectFiles(brief, blueprint).filter((file) => !file.path.startsWith('builder/'));
+    const current = [...vfs.files.keys()].filter((path) => !path.startsWith('builder/'));
+    const pristine = scaffold.length === current.length && scaffold.every((file) => vfs.readFile(file.path) === file.content);
+    setBrief(nextBrief);
+    setBlueprint(next);
+    setTaskGraph(generateTaskGraph(next));
+    if (pristine) {
+      vfs.reset();
+      vfs.hydrateFiles(scaffoldProjectFiles(nextBrief, next));
+      // The app behind this dialog is running the scaffold that was just replaced, and keeps
+      // its state across an edit: its nav went on listing the pages it started with.
+      restartPreview();
+    }
+    // The page that was chosen may be one that has just gone.
+    const ws = useWorkspaceStore.getState();
+    if (!next.pages.some((page) => page.id === ws.activePageId)) ws.setActivePage(next.pages[0]?.id ?? null);
+  };
+
   /**
-   * A note that asks for a page ("Add a settings page", "add another page") adds it: to the
-   * plan, to the brief the build is asked for, and, while the project is still the scaffold
-   * Generate wrote, to the files as well. It was filed under Risks as "User requested
-   * revision", and the plan still said one page. Any other note is kept with the assumptions,
-   * for the build to read.
+   * A line that asks for pages ("Add a settings page", "add a page for plants and a page for
+   * notes") adds them, and one that asks for pages to go ("Remove the watering page") removes
+   * them: in the plan, in the brief the build is asked for, and, while the project is still the
+   * scaffold Generate wrote, in the files as well (lib/planRequest.ts reads the line). The first
+   * was filed under Risks once, and the second was kept as a note while the plan went on listing
+   * the page. Any other line is kept with the assumptions, marked as the person's, and the agent
+   * is sent it with the plan (revisionNotes in lib/studioProject.ts, read by agent/prompt.ts).
+   * What happened is said under the field: it used to go to the log, which the dialog covers.
    */
   const applyRevisionHint = () => {
     const text = revisionInput.trim();
     if (!text) return;
 
     const existing = blueprint.pages.map((page) => page.name);
-    const requested = requestedPageName(text, existing.length);
-    if (requested && existing.some((name) => name.toLowerCase() === requested.toLowerCase())) {
-      addConsoleOutput(`[Architect] The plan already has a page called ${requested}.`);
-      setRevisionInput('');
-      return;
-    }
-    if (requested) {
-      const nextBrief = { ...brief, pages: [...existing, requested] };
-      const planned = generateBlueprintFromBrief(nextBrief);
-      const next = { ...blueprint, pages: planned.pages, navigation: planned.navigation };
-      const vfs = useVFSStore.getState();
-      // Written again only while every file is the one Generate wrote (builder/ holds Studio's
-      // notes, which change with each note): anything else is the person's or the AI's work.
-      const scaffold = scaffoldProjectFiles(brief, blueprint).filter((file) => !file.path.startsWith('builder/'));
-      const current = [...vfs.files.keys()].filter((path) => !path.startsWith('builder/'));
-      const pristine = scaffold.length === current.length && scaffold.every((file) => vfs.readFile(file.path) === file.content);
-      setBrief(nextBrief);
-      setBlueprint(next);
-      setTaskGraph(generateTaskGraph(next));
-      if (pristine) {
-        vfs.reset();
-        vfs.hydrateFiles(scaffoldProjectFiles(nextBrief, next));
+    const request = planRequest(text, existing);
+    const all = (names: string[]) => (names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+    const counted = (count: number) => `The plan has ${count} page${count === 1 ? '' : 's'}.`;
+
+    if (request.kind === 'add') {
+      const has = request.already.length > 0 ? `The plan already has ${request.already.length === 1 ? 'a page' : 'pages'} called ${all(request.already)}.` : '';
+      if (request.names.length === 0) {
+        addConsoleOutput(`[Architect] ${has}`);
+        setSaid(has);
+        setRevisionInput('');
+        return;
       }
-      addConsoleOutput(`[Architect] Blueprint revised: added the page ${requested}.`);
+      planPages([...existing, ...request.names]);
+      const added = request.names.length === 1 ? `Added the page ${request.names[0]}.` : `Added ${request.names.length} pages: ${all(request.names)}.`;
+      addConsoleOutput(`[Architect] Blueprint revised: ${added}`);
+      setSaid([added, has, counted(existing.length + request.names.length)].filter(Boolean).join(' '));
       setRevisionInput('');
       return;
     }
 
-    const next = { ...blueprint };
-    if (/auth/i.test(text)) {
-      next.assumptions = [...next.assumptions, 'Review authentication flow requirements before export.'];
+    if (request.kind === 'remove') {
+      const left = existing.filter((name) => !request.names.includes(name));
+      if (left.length === 0) {
+        // The line stays in the field: nothing was done with it.
+        setSaid(`A plan needs at least one page, so ${all(request.names)} ${request.names.length === 1 ? 'stays' : 'stay'}. Add the page you want first.`);
+        return;
+      }
+      planPages(left);
+      const removed = request.names.length === 1 ? `Removed the page ${request.names[0]}.` : `Removed ${request.names.length} pages: ${all(request.names)}.`;
+      addConsoleOutput(`[Architect] Blueprint revised: ${removed}`);
+      setSaid(`${removed} ${counted(left.length)}`);
+      setRevisionInput('');
+      return;
     }
-    next.assumptions = [...next.assumptions, `Revision note: ${text}`];
+
+    // Said once: a line is the key of its row, and the same note twice is one instruction.
+    const lines = [...(ABOUT_SIGN_IN.test(text) ? [SIGN_IN_REVIEW_LINE] : []), `${REVISION_NOTE_PREFIX}${text}`];
+    const next = { ...blueprint, assumptions: [...blueprint.assumptions, ...lines.filter((line) => !blueprint.assumptions.includes(line))] };
 
     setBlueprint(next);
     addConsoleOutput(`[Architect] Blueprint revised: ${text}`);
+    // What a note is, said when one is made: it changes nothing above, and the AI reads it.
+    setSaid('Kept as a note. The plan above is as it was: the AI reads your notes when it builds.');
     setRevisionInput('');
   };
+
+  /** Take a note back: one typed wrong, or one the brief now says, stayed on the plan for good. */
+  const removeNote = (note: string) => {
+    const line = `${REVISION_NOTE_PREFIX}${note}`;
+    // The line a note about sign-in brought with it goes when the last such note does. It
+    // stayed: a note taken back left "Review authentication flow requirements" on a plan that
+    // no longer said anything about signing in.
+    const left = revisionNotes(blueprint).filter((other) => other !== note);
+    const signInStillNoted = left.some((other) => ABOUT_SIGN_IN.test(other));
+    setBlueprint({
+      ...blueprint,
+      assumptions: blueprint.assumptions.filter((assumption) => assumption !== line && (signInStillNoted || assumption !== SIGN_IN_REVIEW_LINE)),
+    });
+    addConsoleOutput(`[Architect] Blueprint revised: removed the note “${note}”.`);
+    setSaid(null);
+    // The button pressed goes with its row, and the focus would fall to the page behind the
+    // dialog. It goes to the button beside the field: not the field, which on a phone would
+    // bring the keyboard up over the plan.
+    document.getElementById('blueprint-revision-apply')?.focus();
+  };
+
+  // The person's notes are shown as theirs, where they are typed, and not among the plan's own
+  // assumptions, where each read "Revision note: …".
+  const notes = revisionNotes(blueprint);
+  const assumptions = blueprint.assumptions.filter((line) => !isRevisionNote(line));
 
   const rule = (isLast: boolean): React.CSSProperties =>
     (isLast ? { borderBottom: 'none', paddingBottom: 0 } : {});
 
   return (
-    <div style={styles.overlay}>
+    <div className="st-plan-overlay" style={styles.overlay}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="blueprint-review-title" tabIndex={-1} style={styles.modal}>
         {/* The plan scrolls; the two actions under it do not. The sheet used to scroll whole with
             Approve as its last line, a screen and a half down on a phone. */}
-        <div style={styles.body}>
+        <div className="st-plan-body" style={styles.body}>
         <div style={styles.header}>
           <div>
             <span style={styles.eyebrow}>Review the plan</span>
@@ -190,18 +228,16 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
           </div>
         </div>
 
-        <div style={styles.statGrid}>
-          {summaryStats.map((stat) => (
-            <div key={stat.label} style={styles.statCard}>
-              <span style={styles.statLabel}>{stat.label}</span>
-              <strong style={styles.statValue}>{stat.value}</strong>
-            </div>
-          ))}
-        </div>
-
-        <div style={styles.contentGrid}>
+        {/* The plan starts with its pages. Three tiles stood above it, each a count the section
+            under it shows by itself (and "Tasks", a count of Studio's own steps, which is nothing
+            the person asked for): on a phone they took the first screen. Each section's count is
+            beside its name now. The grid is in styles/studio.css (.st-plan-grid). */}
+        <div className="st-plan-grid">
           <section style={styles.sectionCard}>
-            <span style={styles.sectionKicker}>Pages</span>
+            <div style={styles.sectionHead}>
+              <span style={styles.sectionKicker}>Pages</span>
+              <strong style={styles.sectionCount}>{blueprint.pages.length}</strong>
+            </div>
             {blueprint.pages.map((page, index) => (
               <div key={page.id} style={{ ...styles.listRow, ...rule(index === blueprint.pages.length - 1) }}>
                 <div style={{ minWidth: 0 }}>
@@ -217,7 +253,10 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
           </section>
 
           <section style={styles.sectionCard}>
-            <span style={styles.sectionKicker}>Data model</span>
+            <div style={styles.sectionHead}>
+              <span style={styles.sectionKicker}>Data model</span>
+              <strong style={styles.sectionCount}>{blueprint.collections.length}</strong>
+            </div>
             {blueprint.collections.length > 0 ? blueprint.collections.map((collection, index) => (
               <div key={collection.id} style={{ ...styles.listRow, ...rule(index === blueprint.collections.length - 1) }}>
                 <div style={{ minWidth: 0 }}>
@@ -232,16 +271,20 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
           </section>
 
           <section style={styles.sectionCard}>
-            <span style={styles.sectionKicker}>Risks</span>
+            <div style={styles.sectionHead}>
+              <span style={styles.sectionKicker}>Risks</span>
+            </div>
             {blueprint.risks.map((risk, index) => (
               <div key={risk} style={{ ...styles.noteRow, ...rule(index === blueprint.risks.length - 1) }}>{risk}</div>
             ))}
           </section>
 
           <section style={styles.sectionCard}>
-            <span style={styles.sectionKicker}>Assumptions</span>
-            {blueprint.assumptions.map((assumption, index) => (
-              <div key={assumption} style={{ ...styles.noteRow, ...rule(index === blueprint.assumptions.length - 1) }}>{assumption}</div>
+            <div style={styles.sectionHead}>
+              <span style={styles.sectionKicker}>Assumptions</span>
+            </div>
+            {assumptions.map((assumption, index) => (
+              <div key={assumption} style={{ ...styles.noteRow, ...rule(index === assumptions.length - 1) }}>{assumption}</div>
             ))}
           </section>
         </div>
@@ -251,6 +294,12 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
             <Icon name="edit" size={14} color="var(--studio-accent)" />
             <span id="blueprint-revision-title" style={styles.revisionTitle}>Revise the plan</span>
           </div>
+          {/* What a line here does, and what it does not. The field said "note a revision for the
+              next pass", and nothing said where a note went; then it said a note was kept, and
+              not that a note changes nothing in the plan above it. */}
+          <p id="blueprint-revision-hint" style={styles.revisionHint}>
+            Ask to add or remove pages and the plan changes at once. Anything else you write is kept as a note: it changes nothing above, and the AI is given your notes with the plan when it builds.
+          </p>
           <div style={styles.revisionRow}>
             <input
               id="blueprint-revision-note"
@@ -258,18 +307,44 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               onChange={(event) => setRevisionInput(event.target.value)}
               // Not the Enter that confirms an input method's candidate: that added the half-typed note.
               onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) applyRevisionHint(); }}
-              placeholder="Add another page, tighten auth, or note a revision for the next pass..."
+              // Short enough to be read whole in a phone's field (about 33 characters at 390px).
+              placeholder="Add or remove a page, or a note"
               aria-labelledby="blueprint-revision-title"
+              aria-describedby="blueprint-revision-hint"
               style={styles.revisionInput}
             />
+            {/* "Apply note" of a line that may add or remove a page instead. */}
             <button
+              id="blueprint-revision-apply"
               onClick={applyRevisionHint}
+              className="st-plan-tap"
               style={styles.secondaryButton}
               {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
             >
-              Apply note
+              Apply
             </button>
           </div>
+          {/* Always in the page, so what it comes to hold is read out. */}
+          <p id="blueprint-revision-said" role="status" aria-live="polite" style={said ? styles.revisionSaid : styles.revisionSaidEmpty}>{said}</p>
+          {notes.length > 0 && (
+            <ul aria-label="Your notes" style={styles.noteList}>
+              {notes.map((note) => (
+                <li key={note} style={styles.noteItem}>
+                  <span style={styles.noteText}>{note}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeNote(note)}
+                    aria-label={`Remove the note: ${note}`}
+                    className="st-plan-tap"
+                    style={styles.noteRemove}
+                    {...hover('transparent', 'var(--studio-surface-hover)')}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         </div>
 
@@ -286,6 +361,7 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
                 onApprove();
               }
             }}
+            className="st-plan-tap"
             style={styles.secondaryButton}
             {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
           >
@@ -297,6 +373,7 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               addConsoleOutput('[Architect] Blueprint approved.');
               onApprove();
             }}
+            className="st-plan-tap"
             style={styles.primaryButton}
           >
             {aiReady ? 'Approve and build' : 'Approve blueprint'}
@@ -326,7 +403,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    // (Its padding is in styles/studio.css, .st-plan-overlay: less of it on a phone.)
     // Above the product bar (z-index 50), as the AI setup's scrim is. Below it, the bar covered
     // whatever part of the plan reached the top of the window: on a phone, where the plan is
     // taller than the screen, that was its heading.
@@ -334,7 +411,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   // Same sheet the wizard hands off from: elevated ground, hairline, one radius.
   modal: {
-    width: 'min(1100px, 100%)',
+    width: 'min(1240px, 100%)',
     maxHeight: '100%',
     display: 'flex',
     flexDirection: 'column',
@@ -354,77 +431,40 @@ const styles: Record<string, React.CSSProperties> = {
     flex: '1 1 auto',
     minHeight: 0,
     overflowY: 'auto',
-    padding: '28px 28px 20px',
+    // (Its padding is in styles/studio.css, .st-plan-body.)
   },
   header: {
     display: 'flex',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 16,
-    marginBottom: 22,
+    marginBottom: 14,
   },
   eyebrow: {
     ...eyebrow,
     display: 'block',
     color: 'var(--studio-text-dim)',
-    marginBottom: 8,
+    marginBottom: 2,
   },
+  // The app's name, at the size of a heading in the editor behind it: it was 32px.
   title: {
     margin: 0,
     fontFamily: 'var(--studio-display)',
-    fontSize: 32,
+    fontSize: 22,
     fontWeight: 700,
-    letterSpacing: '-0.035em',
-    lineHeight: 1.05,
+    letterSpacing: '-0.03em',
+    lineHeight: 1.15,
     color: 'var(--studio-text)',
   },
   subtitle: {
-    margin: '10px 0 0',
+    margin: '6px 0 0',
     color: 'var(--studio-text-muted)',
-    fontSize: 14,
+    fontSize: 13,
     lineHeight: 1.5,
   },
-  statGrid: {
-    display: 'grid',
-    // Three counts side by side at any width: at 140 each they stacked on a phone and took
-    // half the screen before the plan began.
-    gridTemplateColumns: 'repeat(auto-fit, minmax(84px, 1fr))',
-    gap: 12,
-    marginBottom: 14,
-  },
-  statCard: {
-    padding: '14px 16px',
-    borderRadius: 12,
-    background: 'var(--studio-bg-muted)',
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: 'var(--studio-border)',
-  },
-  statLabel: {
-    ...eyebrow,
-    display: 'block',
-    color: 'var(--studio-text-dim)',
-    marginBottom: 8,
-  },
-  // Counts get size and the display face rather than colour.
-  statValue: {
-    display: 'block',
-    fontFamily: 'var(--studio-display)',
-    color: 'var(--studio-text)',
-    fontSize: 30,
-    fontWeight: 700,
-    letterSpacing: '-0.04em',
-    lineHeight: 1,
-  },
-  contentGrid: {
-    display: 'grid',
-    // auto-fit, so the pair becomes a stack on a phone rather than two columns
-    // roughly 130px wide. Every other grid in this sheet already does this.
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-    gap: 12,
-  },
   sectionCard: {
-    padding: '14px 16px 4px',
+    minWidth: 0,
+    padding: '12px 14px 4px',
     borderRadius: 12,
     background: 'var(--studio-bg-muted)',
     borderWidth: 1,
@@ -433,21 +473,32 @@ const styles: Record<string, React.CSSProperties> = {
   },
   // Four coral kickers turned the panel into a stripe of accent; section names
   // are not SoftN, so they get the eyebrow treatment in dim instead.
-  sectionKicker: {
-    ...eyebrow,
-    display: 'block',
-    color: 'var(--studio-text-dim)',
-    paddingBottom: 10,
+  sectionHead: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 8,
+    paddingBottom: 8,
     marginBottom: 2,
     borderBottom: '1px solid var(--studio-border)',
+  },
+  sectionKicker: {
+    ...eyebrow,
+    color: 'var(--studio-text-dim)',
+  },
+  /** How many pages, how many collections: beside the section's name. */
+  sectionCount: {
+    ...eyebrow,
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 12,
+    color: 'var(--studio-text)',
   },
   listRow: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    paddingTop: 11,
-    paddingBottom: 11,
+    paddingTop: 8,
+    paddingBottom: 8,
     borderBottom: '1px solid var(--studio-border-subtle)',
   },
   rowTitle: {
@@ -473,9 +524,9 @@ const styles: Record<string, React.CSSProperties> = {
   noteRow: {
     color: 'var(--studio-text)',
     fontSize: 13,
-    lineHeight: 1.6,
-    paddingTop: 10,
-    paddingBottom: 10,
+    lineHeight: 1.5,
+    paddingTop: 8,
+    paddingBottom: 8,
     borderBottom: '1px solid var(--studio-border-subtle)',
   },
   emptyCard: {
@@ -502,12 +553,64 @@ const styles: Record<string, React.CSSProperties> = {
     ...eyebrow,
     color: 'var(--studio-text-dim)',
   },
+  revisionHint: {
+    margin: '0 0 12px',
+    color: 'var(--studio-text-muted)',
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  // The button goes under the field where the two do not fit side by side: on a phone the field
+  // was left about 140px, and showed "Add another page," of what it asks for.
   revisionRow: {
     display: 'flex',
+    flexWrap: 'wrap',
     gap: 10,
   },
+  /** What the last line did: the text's own colour, one step quieter than the plan. */
+  revisionSaid: {
+    margin: '10px 0 0',
+    color: 'var(--studio-text)',
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  revisionSaidEmpty: {
+    margin: 0,
+  },
+  noteList: {
+    listStyle: 'none',
+    margin: '12px 0 0',
+    padding: 0,
+  },
+  noteItem: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: '9px 0',
+    borderTop: '1px solid var(--studio-border-subtle)',
+  },
+  noteText: {
+    minWidth: 0,
+    color: 'var(--studio-text)',
+    fontSize: 13,
+    lineHeight: 1.6,
+    overflowWrap: 'anywhere',
+  },
+  noteRemove: {
+    flexShrink: 0,
+    padding: '3px 10px',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
+    background: 'transparent',
+    color: 'var(--studio-text-muted)',
+    fontSize: 12,
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+  },
   revisionInput: {
-    flex: 1,
+    flex: '1 1 220px',
     minWidth: 0,
     padding: '11px 14px',
     borderRadius: 10,
@@ -529,7 +632,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
     gap: 10,
     flexShrink: 0,
-    padding: '14px 28px',
+    padding: '12px 22px',
     borderTop: '1px solid var(--studio-border)',
     background: 'var(--studio-bg-elevated)',
   },

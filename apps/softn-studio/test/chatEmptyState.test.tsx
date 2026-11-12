@@ -15,6 +15,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AIChat } from '../src/components/ai/AIChat';
 import { buildFromBrief } from '../src/lib/agent/buildFromBrief';
+import { sessionUse } from '../src/lib/agent/sessionUse';
 import { runAgentTurn } from '../src/lib/agentOrchestrator';
 import { generateBlueprintFromBrief } from '../src/lib/studioProject';
 import { useAIStore, useWorkspaceStore } from '../src/stores';
@@ -66,23 +67,54 @@ describe('the chat of a project laid out from a brief, before anything is said',
     expect(runAgentTurn).not.toHaveBeenCalled();
   });
 
-  // The bar said "Blueprint ready" and "1 page targets": the brief's own page list, or 1 when
-  // it named none, beside a plan that had three pages.
-  it('says what the plan holds, counted from the plan', () => {
-    const pills = () => [...container.querySelectorAll('span')].map((s) => s.textContent).filter((t) => /ready|page/i.test(t ?? ''));
+  // The header was three rows above every conversation: "0/15 runs | 0 tokens" of a session in
+  // which nothing had run, and two pills ("Plan ready", "2 pages"; before that "Blueprint
+  // ready" and "1 page targets") that repeated the Pages panel and the greeting. It is one
+  // line now, there only when it has something to say.
+  const header = () => container.querySelector('[data-chat-header]');
+  const READY = { providers: [{ id: 'local', type: 'custom' as const, name: 'Local', apiKey: '', modelId: 'test' }], activeProviderId: 'local' };
+
+  it('has no header at all with no provider and nothing used: the setup card is the top', () => {
     act(() => root.render(<AIChat />));
-    expect(pills()).toEqual(['Plan ready', '1 page']);
-    const three = { ...BRIEF, pages: ['Home', 'Scores', 'About'] };
-    act(() => useWorkspaceStore.setState({ brief: three, blueprint: generateBlueprintFromBrief(three) }));
-    expect(pills()).toEqual(['Plan ready', '3 pages']);
-    expect(container.textContent).not.toMatch(/page targets/);
+    expect(header()).toBeNull();
+    expect(container.textContent).not.toMatch(/Plan ready|Brief ready|\d+ pages?\b|0 tokens|runs/);
+    expect(container.firstElementChild?.firstElementChild?.querySelector('[aria-label="AI setup"]')).not.toBeNull();
   });
 
-  it('with a brief and no plan yet, says the brief is ready and counts no pages', () => {
-    useWorkspaceStore.setState({ blueprint: null });
+  it('with a provider and nothing used, names the model and counts nothing', () => {
+    useAIStore.setState(READY);
     act(() => root.render(<AIChat />));
-    const pills = [...container.querySelectorAll('span')].map((s) => s.textContent).filter((t) => /ready|page/i.test(t ?? ''));
-    expect(pills).toEqual(['Brief ready']);
+    expect(header()!.querySelector('.st-ai-pill')).not.toBeNull();
+    expect(header()!.querySelector('[data-level]')).toBeNull();
+    expect(header()!.textContent).not.toMatch(/runs|tokens|ready|page/i);
+  });
+
+  it('says what the session has used once it has used something, quietly while there is room', () => {
+    useAIStore.setState({ ...READY, iterationsUsed: 3, maxIterations: 15, tokensUsed: 12340, tokenBudget: 500000 });
+    act(() => root.render(<AIChat />));
+    const use = header()!.querySelector('[data-level]')!;
+    expect(use.getAttribute('data-level')).toBe('quiet');
+    expect(use.textContent).toBe(`3 of 15 runs · ${(12340).toLocaleString()} tokens`);
+    expect(use.getAttribute('title')).toMatch(/Settings, under Budget limits/);
+  });
+
+  it('speaks up when the limit is close, and when it is reached, with or without a provider', () => {
+    useAIStore.setState({ ...READY, iterationsUsed: 13, maxIterations: 15, tokensUsed: 1000, tokenBudget: 500000 });
+    act(() => root.render(<AIChat />));
+    expect(header()!.querySelector('[data-level="near"]')!.textContent).toBe('2 runs left of 15');
+    act(() => useAIStore.setState({ iterationsUsed: 15 }));
+    expect(header()!.querySelector('[data-level="spent"]')!.textContent).toBe('No runs left: 15 of 15 used');
+    act(() => useAIStore.setState({ providers: [], activeProviderId: null }));
+    expect(header()!.querySelector('[data-level="spent"]')).not.toBeNull();
+  });
+
+  it('counts the tokens against their budget too', () => {
+    expect(sessionUse({ iterationsUsed: 0, maxIterations: 15, tokensUsed: 0, tokenBudget: 1000 })).toBeNull();
+    expect(sessionUse({ iterationsUsed: 1, maxIterations: 15, tokensUsed: 850, tokenBudget: 1000 })).toEqual({ text: '85% of the token budget used', level: 'near' });
+    expect(sessionUse({ iterationsUsed: 1, maxIterations: 15, tokensUsed: 1000, tokenBudget: 1000 })?.level).toBe('spent');
+    // A small limit: close means the last run.
+    expect(sessionUse({ iterationsUsed: 1, maxIterations: 3, tokensUsed: 10, tokenBudget: 1000 })).toEqual({ text: '1 of 3 runs · 10 tokens', level: 'quiet' });
+    expect(sessionUse({ iterationsUsed: 2, maxIterations: 3, tokensUsed: 10, tokenBudget: 1000 })).toEqual({ text: '1 run left of 3', level: 'near' });
   });
 
   it('clears the offer from the box, where an earlier press without a provider left it, once it starts the build', () => {

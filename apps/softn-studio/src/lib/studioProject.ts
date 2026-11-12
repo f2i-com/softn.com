@@ -210,6 +210,38 @@ export function generateBlueprintFromBrief(brief: ProjectBrief): Blueprint {
   };
 }
 
+/** How a note the person typed under "Revise the plan" is kept, among the plan's assumptions. */
+export const REVISION_NOTE_PREFIX = 'Revision note: ';
+
+/**
+ * The notes the person added to the plan when reviewing it, in the order they
+ * were added, as they typed them. They are the person's instructions for the
+ * build, and the agent is sent them (agent/prompt.ts): kept with the
+ * assumptions and sent nowhere, they were shown on the plan and never read.
+ */
+export function revisionNotes(blueprint: Pick<Blueprint, 'assumptions'> | null | undefined): string[] {
+  return (blueprint?.assumptions ?? [])
+    .filter((line) => line.startsWith(REVISION_NOTE_PREFIX))
+    .map((line) => line.slice(REVISION_NOTE_PREFIX.length).trim())
+    .filter(Boolean);
+}
+
+/** Whether a line of a plan's assumptions is a note the person added, not one of the plan's own. */
+export function isRevisionNote(line: string): boolean {
+  return line.startsWith(REVISION_NOTE_PREFIX);
+}
+
+/**
+ * `next` with the person's notes from the plan it replaces. Revise brief makes
+ * the plan again from the brief, and the notes typed on the plan before were
+ * dropped with it: nothing said so, and the build was asked for less than the
+ * person had asked for.
+ */
+export function withRevisionNotesOf(next: Blueprint, previous: Pick<Blueprint, 'assumptions'> | null | undefined): Blueprint {
+  const notes = (previous?.assumptions ?? []).filter((line) => isRevisionNote(line) && !next.assumptions.includes(line));
+  return notes.length > 0 ? { ...next, assumptions: [...next.assumptions, ...notes] } : next;
+}
+
 export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
   return [
     {

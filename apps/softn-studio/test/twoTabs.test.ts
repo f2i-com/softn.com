@@ -213,7 +213,10 @@ describe('two tabs on one project', () => {
     useEditStore.getState().close();
   });
 
-  it('keeps both tabs’ chat messages, in the order they were said, and adds up what each spent', async () => {
+  // What a session has used is counted in its tab and is not the project's. It was saved with
+  // the project and added up across tabs, so a project came back with every earlier day's count
+  // and was refused another run "this session" when it was opened.
+  it('keeps both tabs’ chat messages, in the order they were said, and each tab’s own count of what it spent', async () => {
     const id = await savedProject();
     await otherTabSaves(id, (record) => ({
       ...record,
@@ -224,9 +227,8 @@ describe('two tabs on one project', () => {
     expect(await autosave!.flush()).toEqual({ ok: true });
     const stored = await loadProjectRecord(id);
     expect(stored?.session.messages.map((m) => m.id)).toEqual(['theirs', 'mine']);
-    expect(stored?.session.tokensUsed).toBe(800);
     expect(useAIStore.getState().messages.map((m) => m.id)).toEqual(['theirs', 'mine']);
-    expect(useAIStore.getState().tokensUsed).toBe(800);
+    expect(useAIStore.getState().tokensUsed).toBe(300);
   });
 
   // The other tab's message, said after its clock was put back, was put among the oldest when it

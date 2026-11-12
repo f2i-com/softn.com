@@ -315,7 +315,7 @@ describe('leaving a draft that is not saved', () => {
 
     useWorkspaceStore.getState().setActiveFilePath('ui/main.ui');
     act(() => root.render(<FilesPanel />));
-    const other = [...container.querySelectorAll('button')].find((b) => b.getAttribute('title') === 'logic/main.logic')!;
+    const other = container.querySelector<HTMLElement>('[role="treeitem"][data-path="logic/main.logic"]')!;
     act(() => other.click());
     expect(asked).toHaveLength(2);
     expect(useWorkspaceStore.getState().activeFilePath).toBe('ui/main.ui');
@@ -334,7 +334,7 @@ describe('leaving a draft that is not saved', () => {
     beginHandEdit('ui/main.ui');
     useEditStore.getState().change('<App />');
     act(() => root.render(<FilesPanel />));
-    const same = [...container.querySelectorAll('button')].find((b) => b.getAttribute('title') === 'ui/main.ui')!;
+    const same = container.querySelector<HTMLElement>('[role="treeitem"][data-path="ui/main.ui"]')!;
     act(() => same.click());
     expect(asked).toEqual([]);
     expect(draft()?.text).toBe('<App />');

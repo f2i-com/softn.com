@@ -3,13 +3,21 @@ import { useWorkspaceStore, useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import type { LogicLanguage, ProjectBrief, RuntimeTarget, VisualStyle } from '../../types/studio';
-import { accentFor, generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles, themeFor } from '../../lib/studioProject';
+import { accentFor, generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles, themeFor, withRevisionNotesOf } from '../../lib/studioProject';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { AIStatusPill, openSetupFor, useAIReadiness } from '../ai/AIStatusPill';
+import { NoticeSlot } from '../common/NoticeSlot';
 
 interface BriefWizardProps {
+  /** Leave without generating: to the home page, or to the plan when `revising`. */
   onBack: () => void;
   onSubmit?: () => void;
+  /**
+   * The brief is that of a plan sent back for revision (the plan's "Revise brief"). The wizard
+   * says so, and its way back is named for the plan: it was titled "New app" and its way back
+   * "Home", which is where it went, away from the plan the person was reviewing.
+   */
+  revising?: boolean;
 }
 
 type Step = 'basics' | 'structure' | 'style';
@@ -18,6 +26,9 @@ const STEPS: { id: Step; label: string; num: string }[] = [
   { id: 'structure', label: 'Structure', num: '2' },
   { id: 'style', label: 'Style', num: '3' },
 ];
+
+/** From this width the brief is one page, its three parts side by side; under it, three steps. */
+const WIDE_MIN = 1100;
 
 /*
  * Focus is drawn by one rule in styles/studio.css — the same ring as the
@@ -50,7 +61,24 @@ const APP_THEME_LOOK: Record<'light' | 'dark', { ground: string; ink: string; ed
 const addsOnEnter = (e: React.KeyboardEvent): boolean =>
   e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229;
 
-export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) => {
+/**
+ * The names in what was typed into a page or collection field: one, or several with commas
+ * between them, as the field's own example is written ("Dashboard, Settings, Profile"). Typed
+ * that way it was one page, called "Dashboard, Settings, Profile".
+ */
+const typedNames = (value: string): string[] =>
+  value.split(/[,，、]+/).map((name) => name.replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+/** `list` with `names` added, each once whatever its capitals. */
+const withNames = (list: string[], names: string[]): string[] => {
+  const next = [...list];
+  for (const name of names) {
+    if (!next.some((have) => have.toLowerCase() === name.toLowerCase())) next.push(name);
+  }
+  return next;
+};
+
+export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revising = false }) => {
   const { setBrief, setProjectName, setMode, setBlueprint, setTaskGraph, setActivePage, addConsoleOutput, brief: existingBrief } = useWorkspaceStore();
   const { providers, activeProviderId, setActiveProvider } = useAIStore();
   const setupOpen = useAIStore((st) => st.setupDialog !== null);
@@ -83,11 +111,31 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   const [collInput, setCollInput] = useState('');
   const [showProviderDropdown, setShowProviderDropdown] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  // A window wide enough for the whole brief: its three parts are shown together, side by side,
+  // and there are no steps to go through. Each step was a card 620px wide in the middle of the
+  // screen, the last of them one row of five swatches.
+  const [wide, setWide] = useState(() => typeof window !== 'undefined' && window.innerWidth >= WIDE_MIN);
+
+  // What the wizard opened with. Once something here differs from it, leaving asks first:
+  // Escape, Home and Cancel each threw away a brief that had been typed, without a word, and
+  // Escape is also what puts away a browser's list of suggestions under a field.
+  const opened = useRef(JSON.stringify(brief));
+  const entered = JSON.stringify(brief) !== opened.current || pageInput.trim() !== '' || collInput.trim() !== '';
+  const leave = () => {
+    const question = revising
+      ? 'Go back to the plan? The changes you made to the brief here are not kept.'
+      : 'Leave this brief? What you entered here is not kept.';
+    if (entered && !window.confirm(question)) return;
+    onBack();
+  };
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768);
+    const check = () => {
+      setIsMobile(window.innerWidth < 768);
+      setWide(window.innerWidth >= WIDE_MIN);
+    };
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
@@ -102,9 +150,27 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
     updateBrief((b) => ({ ...b, [key]: value }));
 
   const addTag = (field: 'pages' | 'collections', value: string) => {
-    const v = value.trim();
-    if (!v) return;
-    updateBrief((b) => ({ ...b, [field]: [...b[field], v] }));
+    const names = typedNames(value);
+    if (names.length === 0) return;
+    updateBrief((b) => ({ ...b, [field]: withNames(b[field], names) }));
+  };
+
+  /**
+   * The brief with what is typed in the two name fields and not added yet. Next and Generate
+   * take it as added: a name typed and left in its field (the Add button not pressed) was
+   * dropped without a word, and the plan came back without the page.
+   */
+  const withTyped = useCallback(
+    (b: ProjectBrief): ProjectBrief => ({ ...b, pages: withNames(b.pages, typedNames(pageInput)), collections: withNames(b.collections, typedNames(collInput)) }),
+    [pageInput, collInput],
+  );
+  const goToStep = (next: Step) => {
+    if (pageInput.trim() || collInput.trim()) {
+      updateBrief(withTyped);
+      setPageInput('');
+      setCollInput('');
+    }
+    setStep(next);
   };
 
   const removeTag = (field: 'pages' | 'collections', idx: number) => {
@@ -114,13 +180,18 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   const canSubmit = brief.appName.trim() && brief.description.trim();
   const usesTorch = brief.pythonPackages?.includes('torch') ?? false;
   const stepIdx = STEPS.findIndex((s) => s.id === step);
-  const isLast = stepIdx === STEPS.length - 1;
+  // One page has no step before it and none after: its way back leaves, and its button generates.
+  const isFirst = wide || stepIdx === 0;
+  const isLast = wide || stepIdx === STEPS.length - 1;
 
   const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
-    const blueprint = generateBlueprintFromBrief(brief);
+    const final = withTyped(brief);
+    // Made again from a brief sent back for revision, the plan keeps the notes the person had
+    // put on the one it replaces (a new app has no plan yet, and so none).
+    const blueprint = withRevisionNotesOf(generateBlueprintFromBrief(final), useWorkspaceStore.getState().blueprint);
     const tasks = generateTaskGraph(blueprint);
-    const starterFiles = scaffoldProjectFiles(brief, blueprint);
+    const starterFiles = scaffoldProjectFiles(final, blueprint);
 
     // The scaffold is where the project starts, not something the AI did to it: the files are
     // placed, as a restored project's are, and the history begins empty. Recorded as an AI
@@ -128,28 +199,28 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
     // take back a run, took the whole project with it.
     resetVFS();
     hydrateFiles(starterFiles);
-    setProjectName(brief.appName);
-    setBrief(brief);
+    setProjectName(final.appName);
+    setBrief(final);
     setBlueprint(blueprint);
     setTaskGraph(tasks);
     setActivePage(blueprint.pages[0]?.id ?? null);
     setMode('structure');
-    addConsoleOutput(`[Architect] Blueprint generated for ${brief.appName}`);
+    addConsoleOutput(`[Architect] Blueprint generated for ${final.appName}`);
     addConsoleOutput(`[Builder] Scaffolded ${starterFiles.length} starter file(s)`);
     onSubmit?.();
-  }, [brief, canSubmit, resetVFS, hydrateFiles, setProjectName, setBrief, setBlueprint, setTaskGraph, setActivePage, setMode, addConsoleOutput, onSubmit]);
+  }, [brief, withTyped, canSubmit, resetVFS, hydrateFiles, setProjectName, setBrief, setBlueprint, setTaskGraph, setActivePage, setMode, addConsoleOutput, onSubmit]);
 
   const handleNext = () => {
     if (isLast) {
       handleSubmit();
     } else {
-      setStep(STEPS[stepIdx + 1].id);
+      goToStep(STEPS[stepIdx + 1].id);
     }
   };
 
   const handlePrev = () => {
-    if (stepIdx > 0) setStep(STEPS[stepIdx - 1].id);
-    else onBack();
+    if (!isFirst) goToStep(STEPS[stepIdx - 1].id);
+    else leave();
   };
 
   const activeProvider = providers.find((p) => p.id === activeProviderId);
@@ -188,12 +259,15 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   ];
 
   const m = isMobile;
+  // A part's heading: the size of a section's on one page, a little larger where it is the
+  // step's only heading. (It was 30px, over a form whose labels are 13.)
+  const titleSize = wide ? 18 : m ? 21 : 24;
 
   // The wizard covers the editor: it is a dialog, owns the keyboard while it
-  // is up (Tab stays inside, Escape is Home), and says so to assistive tech.
+  // is up (Tab stays inside, Escape is the way back), and says so to assistive tech.
   // While the AI setup is open over the wizard, the setup owns the keyboard:
   // Escape closes it, not the wizard (which would throw the brief away).
-  const dialogRef = useModalFocus(!setupOpen, onBack, 'textarea, input[type="text"]');
+  const dialogRef = useModalFocus(!setupOpen, leave, 'textarea, input[type="text"]');
 
   const renderCheck = (size = 18) => (
     <span style={{ ...s.selectedBadge, width: size, height: size }}>
@@ -207,16 +281,19 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
       <div style={{ ...s.header, padding: m ? '0 12px' : '0 20px' }}>
         <button
           onClick={handlePrev}
+          className="st-brief-tap"
           style={s.backBtn}
+          // A phone shows the arrow alone: the button had no name there.
+          aria-label={m ? (!isFirst ? 'Back' : revising ? 'Back to the plan' : 'Home') : undefined}
           {...hover('transparent', 'var(--studio-surface)')}
         >
           <Icon name="chevron-left" size={18} />
-          {!m && <span>{stepIdx === 0 ? 'Home' : 'Back'}</span>}
+          {!m && <span>{!isFirst ? 'Back' : revising ? 'Plan' : 'Home'}</span>}
         </button>
 
         <div style={s.headerCenter}>
           <Icon name="sparkles" size={14} color="var(--studio-accent)" />
-          <span id="brief-wizard-title" style={s.headerTitle}>New app</span>
+          <span id="brief-wizard-title" style={s.headerTitle}>{revising ? 'Revise the brief' : 'New app'}</span>
         </div>
 
         {/* The AI: with no provider, the pill that opens the setup; with
@@ -227,6 +304,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
         <div style={s.aiWrap}>
           <button
             onClick={() => setShowProviderDropdown(!showProviderDropdown)}
+            className="st-brief-tap"
             style={s.aiBadge}
             aria-haspopup="menu"
             aria-expanded={showProviderDropdown}
@@ -283,8 +361,8 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
         )}
       </div>
 
-      {/* Step indicator — the wizard's only progress display */}
-      <div style={{ ...s.stepper, padding: m ? '0 12px' : '0 20px' }}>
+      {/* Step indicator — the wizard's only progress display. One page has no steps to show. */}
+      {!wide && <div style={{ ...s.stepper, padding: m ? '0 12px' : '0 20px' }}>
         <div style={s.stepTrack}>
           {STEPS.map((st, i) => {
             const active = i === stepIdx;
@@ -298,7 +376,8 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                   }} />
                 )}
                 <button
-                  onClick={() => setStep(st.id)}
+                  onClick={() => goToStep(st.id)}
+                  className="st-brief-tap"
                   aria-current={active ? 'step' : undefined}
                   style={{
                     ...s.stepBtn,
@@ -327,17 +406,20 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
           })}
         </div>
 
-      </div>
+      </div>}
 
-      {/* Form content — the sheet is centred in whatever height is left over */}
-      <div ref={scrollRef} style={{ ...s.scroll, padding: m ? '18px 12px' : '32px 24px' }}>
-        <div style={{ ...s.sheet, padding: m ? '22px 18px 26px' : '34px 36px 38px', maxWidth: m ? '100%' : 620 }}>
+      {/* The brief. It starts at the left, under the header, and uses the width: in a wide window
+          its three parts stand side by side (styles/studio.css, .st-brief-parts); in a narrower
+          one they are the three steps, one at a time. The sheet used to be centred in whatever
+          room was left over, 620px of it. */}
+      <div ref={scrollRef} style={{ ...s.scroll, padding: m ? '14px 12px' : '20px 24px' }}>
+        <div className="st-brief-parts" data-wide={wide || undefined}>
 
           {/* ---- Step 1: Basics ---- */}
-          {step === 'basics' && (
-            <>
+          {(wide || step === 'basics') && (
+            <section className="st-brief-part" data-part="basics" aria-labelledby="brief-part-basics">
               <div style={s.stepHeader}>
-                <h2 style={{ ...s.stepTitle, fontSize: m ? 24 : 30 }}>What are you building?</h2>
+                <h2 id="brief-part-basics" style={{ ...s.stepTitle, fontSize: titleSize }}>What are you building?</h2>
                 <p style={s.stepSub}>Give your app a name and describe what it does.</p>
               </div>
 
@@ -362,7 +444,8 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                   value={brief.description}
                   onChange={(e) => set('description', e.target.value)}
                   placeholder="A task management app with categories, due dates, and priority levels. Users can drag tasks between columns like a kanban board."
-                  rows={5}
+                  // One page shows all three parts on a laptop screen with a line less here.
+                  rows={wide ? 4 : 5}
                 />
               </div>
 
@@ -407,14 +490,14 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                   })}
                 </div>
               </div>
-            </>
+            </section>
           )}
 
           {/* ---- Step 2: Structure ---- */}
-          {step === 'structure' && (
-            <>
+          {(wide || step === 'structure') && (
+            <section className="st-brief-part" data-part="structure" aria-labelledby="brief-part-structure">
               <div style={s.stepHeader}>
-                <h2 style={{ ...s.stepTitle, fontSize: m ? 24 : 30 }}>App structure</h2>
+                <h2 id="brief-part-structure" style={{ ...s.stepTitle, fontSize: titleSize }}>App structure</h2>
                 <p style={s.stepSub}>Define the pages and data your app needs. All optional.</p>
               </div>
 
@@ -428,11 +511,13 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                     onChange={(e) => setPageInput(e.target.value)}
                     onKeyDown={(e) => { if (addsOnEnter(e)) { addTag('pages', pageInput); setPageInput(''); } }}
                     placeholder="e.g., Dashboard, Settings, Profile..."
-                    autoFocus
+                    // The step opens on its first field; on one page that is the app's name.
+                    autoFocus={!wide}
                   />
                   {/* Named for what it adds: the step had two buttons called "Add". */}
                   <button
                     type="button"
+                    className="st-brief-tap"
                     style={s.tagAddBtn}
                     aria-label="Add page"
                     onClick={() => { addTag('pages', pageInput); setPageInput(''); }}
@@ -448,6 +533,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                         {p}
                         <button
                           onClick={() => removeTag('pages', i)}
+                          className="st-brief-tap"
                           style={s.tagX}
                           aria-label={`Remove page ${p}`}
                         >
@@ -472,6 +558,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                   />
                   <button
                     type="button"
+                    className="st-brief-tap"
                     style={s.tagAddBtn}
                     aria-label="Add collection"
                     onClick={() => { addTag('collections', collInput); setCollInput(''); }}
@@ -487,6 +574,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                         {c}
                         <button
                           onClick={() => removeTag('collections', i)}
+                          className="st-brief-tap"
                           style={s.tagX}
                           aria-label={`Remove collection ${c}`}
                         >
@@ -608,18 +696,18 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                   </button>
                 )}
               </div>
-            </>
+            </section>
           )}
 
           {/* ---- Step 3: Style ---- */}
-          {step === 'style' && (
-            <>
+          {(wide || step === 'style') && (
+            <section className="st-brief-part" data-part="style" aria-labelledby="brief-part-style">
               <div style={s.stepHeader}>
-                <h2 style={{ ...s.stepTitle, fontSize: m ? 24 : 30 }}>Visual style</h2>
+                <h2 id="brief-part-style" style={{ ...s.stepTitle, fontSize: titleSize }}>Visual style</h2>
                 <p style={s.stepSub}>Pick the look and feel. You can refine it later.</p>
               </div>
 
-              <div style={s.field}>
+              <div style={{ ...s.field, marginBottom: 0 }}>
                 <div id="brief-style-label" style={s.label}>Style preset</div>
                 <div
                   role="group"
@@ -686,20 +774,25 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                 vision-capable request shape per provider and a size budget.
                 Until that exists, the wizard does not ask.
               */}
-            </>
+            </section>
           )}
         </div>
       </div>
+
+      {/* Where the service worker's notices are drawn while the brief is up: in the page, above
+          the bar of actions, where they cover nothing (components/common/NoticeSlot.tsx). */}
+      <NoticeSlot />
 
       {/* Bottom bar */}
       <div style={{ ...s.bottomBar, padding: m ? '10px 16px 12px' : '14px 24px', flexWrap: m ? 'wrap' : 'nowrap', rowGap: 8 }}>
         <button
           onClick={handlePrev}
+          className="st-brief-tap"
           style={s.bottomBack}
           {...hover('transparent', 'var(--studio-surface)')}
         >
           <Icon name="chevron-left" size={16} />
-          {stepIdx === 0 ? 'Cancel' : 'Back'}
+          {isFirst ? 'Cancel' : 'Back'}
         </button>
 
         {/* Beside the button it explains, on every width. This was once
@@ -728,7 +821,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                 : 'Ready. Without an AI provider, Generate lays out the pages and the AI waits.'}
           </span>
           {canSubmit && !hosted && readiness.state !== 'ready' && (
-            <button type="button" className="st-link-btn" onClick={() => openSetupFor(readiness)}>
+            <button type="button" className="st-link-btn st-brief-tap" onClick={() => openSetupFor(readiness)}>
               {readiness.state === 'no-model' ? 'Choose a model' : 'Connect a provider'}
             </button>
           )}
@@ -736,6 +829,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
 
         <button
           onClick={handleNext}
+          className="st-brief-tap"
           disabled={isLast && !canSubmit}
           style={{
             ...s.bottomNext,
@@ -1000,24 +1094,11 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
   },
-  // margin:auto centres a short step in the leftover height and collapses to
-  // zero once the step is taller than the viewport, so tall steps still scroll
-  // from their top edge instead of being clipped.
-  sheet: {
-    margin: 'auto',
-    width: '100%',
-    flexShrink: 0,
-    background: 'var(--studio-bg-elevated)',
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: 'var(--studio-border)',
-    borderRadius: 14,
-    boxShadow: 'var(--studio-shadow)',
-  },
+  // (The parts of the brief are laid out in styles/studio.css, under .st-brief-parts.)
 
   // Step header
   stepHeader: {
-    marginBottom: 26,
+    marginBottom: 18,
   },
   stepTitle: {
     fontFamily: 'var(--studio-display)',
@@ -1028,15 +1109,15 @@ const s: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text)',
   },
   stepSub: {
-    fontSize: 14,
+    fontSize: 13,
     color: 'var(--studio-text-muted)',
-    margin: '10px 0 0',
+    margin: '5px 0 0',
     lineHeight: 1.5,
   },
 
   // Fields
   field: {
-    marginBottom: 24,
+    marginBottom: 18,
   },
   label: {
     ...eyebrow,
