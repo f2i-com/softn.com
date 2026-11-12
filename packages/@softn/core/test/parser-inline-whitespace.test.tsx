@@ -79,6 +79,55 @@ describe('whitespace after an element, on a line of text', () => {
   });
 });
 
+/**
+ * And the space right after an opening tag, which was skipped like the
+ * whitespace before any token:
+ *
+ *     <Text>Total<b> 12</b></Text>                              "Total12"
+ *     {tonnes}<small> t</small>                                 "40t"
+ *     <span>3</span>
+ *     <span className="sr-only"> need attention</span>          "3need attention"
+ *
+ * The last two are lines of real apps, whose authors wrote the space inside
+ * the tag because the line break between two tags is layout. HTML keeps that
+ * space, and the guide says a space between a tag and a word on a line is a
+ * space on the page. Before words or an expression on the same line it is
+ * now kept, as one space; a line break after the tag is layout as before.
+ */
+describe('a space after an opening tag, on a line of text', () => {
+  it('belongs to the words that follow it', () => {
+    expect(childrenOf('<p>Total<b> 12</b></p>')).toEqual(['"Total"', '<b>']);
+    expect(childrenOf('<b> 12</b>')).toEqual(['" 12"']);
+    expect(childrenOf('<b>    12</b>')).toEqual(['" 12"']);
+    expect(childrenOf('<b>\t12 </b>')).toEqual(['" 12 "']);
+    expect(childrenOf('<p> hello</p>')).toEqual(['" hello"']);
+    expect(childrenOf('<Badge> new</Badge>')).toEqual(['" new"']);
+  });
+
+  it('is one space before an expression', () => {
+    expect(childrenOf('<small> {unit}</small>')).toEqual(['" "', '{}']);
+    expect(childrenOf('<small>   {unit} left</small>')).toEqual(['" "', '{}', '" left"']);
+  });
+
+  it('is nothing where the source has none', () => {
+    expect(childrenOf('<b>12</b>')).toEqual(['"12"']);
+    expect(childrenOf('<small>{unit}</small>')).toEqual(['{}']);
+  });
+
+  it('is drawn', () => {
+    expect(html('<p>{tonnes}<small> t</small></p>', { tonnes: 40 })).toBe('<p>40<small> t</small></p>');
+    expect(html('<p><span>{count}</span>\n<span className="sr-only"> need attention</span></p>', { count: 3 })).toBe(
+      '<p><span>3</span><span class="sr-only"> need attention</span></p>'
+    );
+    expect(html('<p>Shop details<span> and photos</span></p>')).toBe('<p>Shop details<span> and photos</span></p>');
+  });
+
+  it('is left as written where text keeps its whitespace anyway', () => {
+    expect(childrenOf('<pre>  two\n    four</pre>')).toEqual(['"  two\\n    four"']);
+    expect(childrenOf('<textarea> x</textarea>')).toEqual(['" x"']);
+  });
+});
+
 describe('whitespace that is layout', () => {
   it('a line break between two tags is no node', () => {
     expect(childrenOf('<div>\n  <b>a</b>\n  <i>b</i>\n\n  <u>c</u>\n</div>')).toEqual(['<b>', '<i>', '<u>']);
@@ -86,11 +135,24 @@ describe('whitespace that is layout', () => {
     expect(childrenOf('<div>{a}\n<b>b</b>\n{c}</div>')).toEqual(['{}', '<b>', '{}']);
   });
 
-  it('the edges of what a tag holds are trimmed as they were', () => {
-    expect(childrenOf('<p> hello</p>')).toEqual(['"hello"']);
+  it('space alone at the edges of what a tag holds is trimmed as it was', () => {
     expect(childrenOf('<p>   <b>a</b>   </p>')).toEqual(['<b>']);
     expect(childrenOf('<p><b>a</b> </p>')).toEqual(['<b>']);
     expect(childrenOf('<p>{a} </p>')).toEqual(['{}']);
+    expect(childrenOf('<p> </p>')).toEqual([]);
+  });
+
+  it('a line break after an opening tag is no space before the words under it', () => {
+    expect(childrenOf('<p>\n  hello\n</p>')).toEqual(['"hello "']);
+    expect(childrenOf('<p> \n  hello</p>')).toEqual(['"hello"']);
+    expect(childrenOf('<p>\n  {a}\n</p>')).toEqual(['{}']);
+  });
+
+  it('a space after an opening tag before a tag, a block or a comment is skipped as it was', () => {
+    expect(childrenOf('<tr> <td>a</td></tr>')).toEqual(['<td>']);
+    expect(childrenOf('<div> #if (ok)\n<i>b</i>\n#end</div>')).toEqual(['IfBlock']);
+    expect(childrenOf('<div> // why\n<i>b</i></div>')).toEqual(['<i>']);
+    expect(childrenOf('<div> <!-- why --> <i>b</i></div>')).toEqual(['<i>']);
   });
 
   it('a comment after an element takes no space with it', () => {

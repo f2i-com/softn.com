@@ -1,6 +1,7 @@
 import type { AppPermissions } from '../bundle/types';
 import { extractEventProps } from './event-props';
 import { sanitizeArgs } from './vm-args';
+import { withOutcome, type CallOutcome } from './failed-calls';
 import { appHears, setAppElement, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 import { isWorkerPlaceholderId } from './script-worker-bridges';
@@ -9,7 +10,9 @@ import { debug } from './debug';
 type ImportResolver = (path: string) => Promise<string | null>;
 import type {
   BundleFileProvider,
+  CarriedOut,
   CodeBlock,
+  ConsentStatus,
   DBNamespace,
   HostCallExecutor,
   NetFetchHandler,
@@ -20,6 +23,8 @@ import type {
   ScriptRuntimeHandle,
   ScriptRuntimeOptions,
 } from './script-runtime';
+import { ConsentPendingError } from './host-calls/permissions';
+import type { CarriedState } from './state-carry';
 import {
   buildExternalValuesPreamble,
   createDBNamespace,
@@ -112,6 +117,10 @@ export interface WorkerRuntimeOptions {
   onPersistenceFailure?: (failure: { operation: string; key: string; error: Error }) => void;
   /** See ScriptRuntimeOptions.onScriptFailure. An engine that stops here is `onFatal`'s. */
   onScriptFailure?: ScriptRuntimeOptions['onScriptFailure'];
+  /** The variables of the logic this one replaces; see ScriptRuntimeOptions.carried. */
+  carried?: CarriedState;
+  /** See ScriptRuntimeOptions.onConsentChange. */
+  onConsentChange?: () => void;
 }
 
 /** Host calls resolved per chain before it is judged a runaway. */
@@ -157,8 +166,14 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private context: ScriptContext;
   private importResolver?: ImportResolver;
   private permissions?: AppPermissions;
-  /** The bundle's `permission.json` as granted; a grant replaces the runtime. */
+  /** The bundle's `permission.json` as granted now; a grant replaces it (setPermissionConfig). */
   private permissionConfig: PermissionConfig | null = null;
+  /** The variables of the logic this one replaces, sent with the script (state-carry.ts). */
+  private carried: CarriedState | null = null;
+  /** The variables have been taken for the logic that replaces this one: nothing more is sent. */
+  private frozen = false;
+  /** What the page held of each variable it has just begun to read, until its own copy catches up. */
+  private staleAtObserve = new Map<string, unknown>();
   private appId?: string;
   private logicBasePath?: string;
   private nextId = 1;
@@ -300,16 +315,25 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // permission check, no shared-room key derivation, and an adapter on the
     // default database rather than this app's. Routing it through the same
     // namespace the main-thread runtime uses gives it the same three things.
-    const permissionConfig = options?.permissionConfig ?? null;
-    this.permissionConfig = permissionConfig;
-    this.dbNamespace = createDBNamespace(() => permissionConfig, appId);
+    this.permissionConfig = options?.permissionConfig ?? null;
+    this.carried = options?.carried ?? null;
+    // Read as it is now: a grant replaces the config (setPermissionConfig).
+    this.dbNamespace = createDBNamespace(() => this.permissionConfig, appId);
+    // A room asked for before the person has answered is refused there and
+    // then: counted, as on the main thread, so that allowing later starts
+    // the app again and it asks once more.
+    const startSync = this.dbNamespace.startSync;
+    this.dbNamespace.startSync = (room, requested) => {
+      if (this.permissionConfig?.consentPending) this.hostExecutor.noteConsentRefusal();
+      startSync(room, requested);
+    };
     this.hostExecutor = createHostCallExecutor(
       context,
       permissions,
       appId,
       importResolver,
       logicBasePath,
-      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall, netFetchHandler: options?.netFetchHandler, onAlert: options?.onAlert, assetResolver: options?.assetResolver },
+      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall, netFetchHandler: options?.netFetchHandler, onAlert: options?.onAlert, assetResolver: options?.assetResolver, onConsentChange: options?.onConsentChange },
       options?.bundleFileProvider,
       options?.externalFunctions
     );
@@ -797,6 +821,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private call<T = unknown>(type: 'resolve_host_call', payload: WorkerPayloadMap['resolve_host_call']): Promise<T>;
   private call<T = unknown>(type: 'dispatch_event', payload: WorkerPayloadMap['dispatch_event']): Promise<T>;
   private call<T = unknown>(type: 'update_context', payload: WorkerPayloadMap['update_context']): Promise<T>;
+  private call<T = unknown>(type: 'observe' | 'carry_out', payload: Record<string, unknown>): Promise<T>;
   private call<T = unknown>(type: string, payload: unknown): Promise<T> {
     if (this.terminated) {
       return Promise.reject(new Error(`worker_terminated:${type}`));
@@ -848,10 +873,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       computedNames: string[];
       dbMutations: DBMutation[];
       lsMutations: LSMutation[];
+      logicText?: string;
+      carried?: ScriptLoadResult['carried'];
     }>('init', {
       script,
       permissions: this.permissions,
       accel: this.accelGranted,
+      ...(this.carried ? { carried: this.carried } : {}),
       appId: this.appId,
       logicBasePath: this.logicBasePath,
       // Imports are placed when there is a resolver to ask, as on the main thread.
@@ -868,6 +896,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       savedSyncRoom: this.getSavedSyncRoom(),
     });
 
+    this.carried = null;
     Object.assign(this.context.state, res.state || {});
     // Track initial worker state for diffing in updateContext
     this.lastKnownWorkerState = { ...(res.state || {}) };
@@ -876,7 +905,16 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // caller's to merge, so it is not re-applied here.
     void this.applyEntry({ ...res, state: {} });
 
-    const makeAsyncFn = (name: string) => async (...args: unknown[]) => {
+    // How each call went is kept beside its promise, which resolves either
+    // way: a handler that waits for the call asks (failed-calls.ts).
+    const makeAsyncFn = (name: string) => (...args: unknown[]) => {
+      const outcome: CallOutcome = { failed: false };
+      return withOutcome(callInWorker(name, args, outcome), outcome);
+    };
+    const callInWorker = async (name: string, args: unknown[], outcome: CallOutcome) => {
+      // Its variables have been taken for the logic that replaces it: what a
+      // call changed now would be lost.
+      if (this.frozen) return undefined;
       // As the main thread's engine is given them (vm-args.ts), at any depth:
       // reduced at the top alone, `{ value: 1, done: fn }` or `[event]` could
       // not be cloned, and the function never ran in the worker.
@@ -898,11 +936,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         if (this.terminated) return undefined;
         console.error(`[SoftN] Error executing function ${name}:`, err instanceof Error ? err.message : String(err));
         this.reportFailure(name, err);
+        outcome.failed = true;
         return undefined;
       }
       if (out.failure !== undefined) {
         console.error(`[SoftN] Error executing function ${name}:`, out.failure);
         this.reportFailure(name, out.failure);
+        outcome.failed = true;
       }
       const elapsed = performance.now() - t0;
       this.perfCallCount++;
@@ -941,7 +981,64 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       functions: asyncFns,
       syncFunctions: syncFns,
       computed,
+      ...(typeof res.logicText === 'string' ? { logicText: res.logicText } : {}),
+      ...(res.carried ? { carried: res.carried } : {}),
     };
+  }
+
+  // ==========================================================================
+  // A grant, a page drawn from new markup, and the logic that replaces this
+  // ==========================================================================
+
+  /**
+   * Replace the permission config. The host calls are run on this thread and
+   * read it as they are asked, so a grant is honoured from the next call on
+   * and a call kept for the answer goes through. The accelerator is the one
+   * thing a grant cannot give a running worker: its engine's authority was
+   * fixed when it compiled the script, and the host starts the app again.
+   */
+  setPermissionConfig(config: PermissionConfig | null): void {
+    this.permissionConfig = config;
+    this.hostExecutor.setPermissionConfig(config);
+  }
+
+  consentStatus(): ConsentStatus {
+    return this.hostExecutor.consentStatus();
+  }
+
+  /** See ScriptRuntimeHandle.carryOut. What was sent before this is answered before it. */
+  async carryOut(): Promise<CarriedOut> {
+    if (this.disposed || this.terminated) return { ok: false, why: 'its logic had stopped' };
+    this.frozen = true;
+    try {
+      return await this.call<CarriedOut>('carry_out', {});
+    } catch (error) {
+      return { ok: false, why: `its variables could not be read (${error instanceof Error ? error.message : String(error)})` };
+    }
+  }
+
+  /** See ScriptRuntimeHandle.observe. */
+  observe(names: { observedStateNames?: ReadonlySet<string>; drawnNames?: ReadonlySet<string> }): void {
+    if (this.disposed || this.frozen) return;
+    this.observedStateNames = names.observedStateNames ?? null;
+    this.drawnNames = names.drawnNames ?? null;
+    this.call<{ state: Record<string, unknown> }>('observe', {
+      observedStateNames: this.observedStateNames ? [...this.observedStateNames] : null,
+      drawnNames: this.drawnNames ? [...this.drawnNames] : null,
+    })
+      .then(({ state }) => {
+        if (this.disposed || !state) return;
+        const changes: Record<string, unknown> = {};
+        for (const [name, value] of Object.entries(state)) {
+          if (name in this.lastKnownWorkerState) continue;
+          const held = (this.context.state as Record<string, unknown>)[name];
+          if (held !== value) this.staleAtObserve.set(name, held);
+          changes[name] = value;
+        }
+        this.lastKnownWorkerState = { ...state };
+        this.applyState(changes);
+      })
+      .catch((error) => console.error('[SoftN] Error telling the logic what the new page reads:', error));
   }
 
   /**
@@ -988,7 +1085,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    * is not ended by the limit on one chain of host calls.
    */
   private timerDue(callId: number): void {
-    if (this.disposed) return;
+    if (this.disposed || this.frozen) return;
     this.call<EntryResult>('resolve_host_call', { callId, result: null, ...this.storagePayload() })
       .then((out) => {
         if (out.failure !== undefined) {
@@ -1010,6 +1107,23 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   }
 
   updateContext(newState: Record<string, unknown>): void {
+    // Nothing more is sent to a worker whose variables have been taken.
+    if (this.frozen) return;
+    // The page's copy of a variable it has only just begun to read is the
+    // one from when the script loaded, until what `observe` handed it lands:
+    // sent as a write, it would put the starting value over the live one.
+    if (this.staleAtObserve.size > 0) {
+      let kept: Record<string, unknown> | null = null;
+      for (const [key, stale] of this.staleAtObserve) {
+        if (!(key in newState)) continue;
+        if (newState[key] === this.lastKnownWorkerState[key]) this.staleAtObserve.delete(key);
+        else if (newState[key] === stale) {
+          kept ??= { ...newState };
+          delete kept[key];
+        } else this.staleAtObserve.delete(key);
+      }
+      if (kept) newState = kept;
+    }
     Object.assign(this.context.state, newState);
     // Only send keys that differ from what the worker already has.
     // This avoids the expensive postMessage round-trip when state changes
@@ -1106,10 +1220,24 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       try {
         result = await this.hostExecutor.executeHostCall(call);
       } catch (err) {
+        // What the permission bar is asking for right now is kept until the
+        // person answers, and answered then on its own (as on the main
+        // thread): the calls queued behind it are not kept with it.
+        if (err instanceof ConsentPendingError && err.waiting && !this.disposed) {
+          void this.hostExecutor.executeHostCallWhenAllowed(call).then(
+            (answer) => this.answerHostCall(call, answer),
+            (refusal) => {
+              console.warn(`[SoftN] ${call.kind} failed: ${String(refusal)}`);
+              return this.answerHostCall(call, { error: String(refusal) });
+            }
+          );
+          continue;
+        }
+        if (err instanceof ConsentPendingError) this.hostExecutor.noteConsentRefusal();
         result = { error: String(err) };
         console.warn(`[SoftN] ${call.kind} failed: ${String(err)}`);
       }
-      if (this.disposed) return;
+      if (this.disposed || this.frozen) return;
       let next: EntryResult;
       try {
         // With the database as it is now, as every other entry has it: a
@@ -1133,6 +1261,22 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }
   }
 
+  /** Hand the script the result of a call that was kept for the person's answer, as a chain of its own. */
+  private async answerHostCall(call: PendingHostCall, result: unknown): Promise<void> {
+    if (this.disposed || this.frozen) return;
+    try {
+      const next = await this.call<EntryResult>('resolve_host_call', { callId: call.id, result, ...this.storagePayload() });
+      if (next.failure !== undefined) {
+        console.error('[SoftN] Error resolving host callback:', next.failure);
+        this.reportFailure('a callback', next.failure);
+      }
+      await this.applyEntry(next);
+    } catch (err) {
+      console.error('[SoftN] Error resolving host callback:', err);
+      this.reportFailure('a callback', err);
+    }
+  }
+
   /**
    * A DOM listener for every event type the script has registered through
    * the engine's `window.addEventListener`, forwarding what a handler can use
@@ -1147,7 +1291,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       if (this.bridgedEventTypes.has(eventType)) continue;
       this.bridgedEventTypes.add(eventType);
       const dispatch = (props: Record<string, unknown>) => {
-        if (this.disposed) return;
+        if (this.disposed || this.frozen) return;
         this.call<EntryResult>('dispatch_event', {
           eventType,
           event: props,

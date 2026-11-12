@@ -72,7 +72,7 @@ describe('assignment in an arrow body', () => {
     expect(element.children.some((c) => c.type === 'Text' && c.content === 'Add')).toBe(true);
   });
 
-  it('parses the documented `(e) => name = e.target.value`', () => {
+  it('parses `(e) => name = e.target.value` whole', () => {
     const { doc, element, handler } = handlerOf('<Input @change={(e) => name = e.target.value} />');
     expect(handler.type).toBe('ArrowFunctionExpression');
     if (handler.type !== 'ArrowFunctionExpression') return;
@@ -90,7 +90,12 @@ describe('assignment in an arrow body', () => {
     });
     expect(element.selfClosing).toBe(true);
     expect(element.props).toEqual([]);
-    expect(doc.diagnostics ?? []).toEqual([]);
+    // Read whole, with nothing wrong in how it is written. What it does is
+    // another matter: `@change` hands the arrow the value, not the event, and
+    // the parser now says so (handler-event-idiom.test.ts).
+    expect(errors(doc)).toEqual([]);
+    expect((doc.diagnostics ?? []).map((diagnostic) => diagnostic.severity)).toEqual(['warning']);
+    expect(doc.diagnostics?.[0].message).toContain('is handed the new value itself, not the event');
   });
 
   it.each([

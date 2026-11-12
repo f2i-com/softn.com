@@ -21,7 +21,7 @@ import type {
 } from '../parser/ast';
 import { EVENT_MODIFIERS, patternNames } from '../parser/ast';
 import { VOID_ELEMENTS } from '../parser/html';
-import type { SoftNRenderContext, SoftNProps } from '../types';
+import type { EditMarks, SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent, type DeclaredPropKinds } from './registry';
 import { cssPropertyName, inlineStyleObject } from './inline-style';
 import { isCallbackProp } from '../runtime/drawn-functions';
@@ -38,6 +38,7 @@ import {
 import type { DocumentShellView } from '../document-shell/host';
 import {
   followPageLinks,
+  isTextEntryType,
   keepFieldEditable,
   keepFormOnPage,
   showBundleFiles,
@@ -60,16 +61,20 @@ import {
   withholdRemoteStyleUrls,
 } from './prop-safety';
 import { isDevelopment } from './development';
+import { parseStatePath } from '../runtime/state-path';
 import {
   BLOCKED_MEMBER_KEYS,
   beginDrawing,
   endDrawing,
   evaluateExpression,
   getExpressionPath,
+  localsToReadAgain,
+  ownLocals,
   patternSuffixes,
-  reportUnplacedWrite,
+  reportUnwritten,
   takeApart,
   writableListPath,
+  writeStatePath,
 } from './evaluate';
 
 export { evaluateExpression };
@@ -81,7 +86,10 @@ export { evaluateExpression };
  * entire document tree.
  */
 class ComponentErrorBoundary extends React.Component<
-  React.PropsWithChildren<{ tag: string; failure?: { caught: boolean } }>,
+  // `mark`: the node the component was drawn from, while a host is editing
+  // the app (types' EditMarks). Kept here, where nothing on the page and
+  // nothing the component is given can read it.
+  React.PropsWithChildren<{ tag: string; failure?: { caught: boolean }; mark?: ElementNode }>,
   { error: Error | null }
 > {
   state: { error: Error | null } = { error: null };
@@ -162,11 +170,46 @@ function changedValue(event: unknown): unknown {
 function boundValue(event: unknown): unknown {
   const target = eventTarget(event);
   if (!target || !('value' in target)) return event;
+  // `<select multiple>`: every value chosen. Its `value` is the first of
+  // them alone, which was written over the list the variable held.
+  if (target.multiple === true && isListLike(target.selectedOptions)) {
+    return Array.from(target.selectedOptions, (option) => String((option as { value?: unknown } | null)?.value ?? ''));
+  }
   const value = target.value;
-  if (target.type !== 'number' || typeof value !== 'string') return value;
+  // A slider holds a number as a number field does: `volume + 10` was "5010".
+  if ((target.type !== 'number' && target.type !== 'range') || typeof value !== 'string') return value;
   if (value.trim() === '') return '';
   const number = Number(value);
   return Number.isFinite(number) ? number : '';
+}
+
+/** Whether `value` is laid out as a list is: a `<select>`'s `selectedOptions`. */
+function isListLike(value: unknown): value is ArrayLike<unknown> {
+  return value !== null && typeof value === 'object' && typeof (value as { length?: unknown }).length === 'number';
+}
+
+/**
+ * The browser's own event behind what a handler was given: the one React
+ * wrapped, or the event itself. `undefined` for plain data.
+ */
+function browserEvent(given: unknown): unknown {
+  if (given === null || typeof given !== 'object') return undefined;
+  const native = (given as { nativeEvent?: unknown }).nativeEvent;
+  if (native !== null && typeof native === 'object') return native;
+  return typeof Event !== 'undefined' && given instanceof Event ? given : undefined;
+}
+
+/**
+ * Whether an event came from a field React reports a change of on the
+ * `input` event itself: a text-like `<input>` or a `<textarea>`. A checkbox
+ * changes on its click and a `<select>` on `change`, each an event of its own.
+ */
+function fromTypedField(event: unknown): boolean {
+  const target = eventTarget(event);
+  if (!target || typeof target.tagName !== 'string') return false;
+  const tag = target.tagName.toUpperCase();
+  if (tag === 'TEXTAREA') return true;
+  return tag === 'INPUT' && isTextEntryType(typeof target.type === 'string' ? target.type : 'text');
 }
 
 /** The `target` of something shaped like a DOM event, or `undefined` when it
@@ -607,12 +650,17 @@ const HTML_BOOLEAN_ATTRIBUTES = new Set([
 /**
  * Get a unified context for event handlers and callbacks.
  * Cached on the context object to avoid re-creating per element (~100+ elements per render).
+ *
+ * The functions in it answer a promise where the page's own answer at once,
+ * so an expression evaluated in it waits for a call whose value it needs:
+ * `@click={save(currentDraft())}` calls `save` with the draft, not with the
+ * promise of one (`waitsForCalls`, and `waited` in evaluate.ts).
  */
 const _callbackCtxCache = new WeakMap<SoftNRenderContext, SoftNRenderContext>();
 function createCallbackContext(context: SoftNRenderContext): SoftNRenderContext {
   let cached = _callbackCtxCache.get(context);
   if (cached) return cached;
-  cached = { ...context, functions: callbackFunctions(context) };
+  cached = { ...context, functions: callbackFunctions(context), waitsForCalls: true };
   _callbackCtxCache.set(context, cached);
   return cached;
 }
@@ -740,18 +788,21 @@ function classText(value: unknown, depth = 0): string {
 const SELECT_TO_TAGS: ReadonlySet<string> = new Set(['SmartGrid']);
 
 /**
- * Write `value` at `path` as a page writes state: through the handler a
- * parent gave for it (`on<Root>Change`, or `onUpdate`), not at all where the
- * root is a read-only prop, or into the app's own state.
+ * Write `value` at `path` as a page writes state: through the handler the
+ * host gave for it (`on<Root>Change`, or `onUpdate`), not at all where the
+ * root is a read-only prop, or into the app's own state. True when it was
+ * the app's state that was written.
  */
-function writeStateAt(path: string, value: unknown, context: SoftNRenderContext): void {
+function writeStateAt(path: string, value: unknown, context: SoftNRenderContext): boolean {
   const rootVar = path.split('.')[0].split('[')[0]; // Handle array access
   // Look for an external handler first (on[VarName]Change or onUpdate)
   // This allows parent components to manage state externally
-  const updateHandler = context.functions[`on${capitalize(rootVar)}Change`] || context.functions['onUpdate'];
-  if (typeof updateHandler === 'function') {
+  const updateHandler = hostWriteHandler(rootVar, context);
+  if (updateHandler) {
     updateHandler(path, value);
-  } else if (rootVar in context.props) {
+    return false;
+  }
+  if (rootVar in context.props) {
     // Props are read-only and no handler was provided
     if (isDevelopment) {
       console.warn(
@@ -759,10 +810,34 @@ function writeStateAt(path: string, value: unknown, context: SoftNRenderContext)
           `Define an on${capitalize(rootVar)}Change or onUpdate handler to propagate changes.`
       );
     }
-  } else {
-    // It's internal state - update directly
-    context.setState(path, value);
+    return false;
   }
+  // It's internal state - update directly
+  context.setState(path, value);
+  return true;
+}
+
+/**
+ * The function the host gave to be told of a write to `rootVar` in place of
+ * the write: `on<RootVar>Change`, or else `onUpdate`, called with the path
+ * and the value.
+ *
+ * Only a function the host gave. `functions` also holds the app's own logic
+ * functions, and one of those named `onQueryChange`, written for
+ * `@change={onQueryChange}`, was taken for the host's: it was called with
+ * the path where the write should have been made, `query` never changed and
+ * the field stayed empty. An app function called `onUpdate` did that to
+ * every binding on the page. A host that mixes the app's functions into
+ * `functions` says which are its own (`hostFunctions`); with nothing said,
+ * `functions` is all the host's, as in a context made by hand.
+ */
+function hostWriteHandler(rootVar: string, context: SoftNRenderContext): ((path: string, value: unknown) => void) | undefined {
+  const given = context.hostFunctions ?? context.functions;
+  for (const name of [`on${capitalize(rootVar)}Change`, 'onUpdate']) {
+    const handler = given[name];
+    if (typeof handler === 'function') return handler;
+  }
+  return undefined;
 }
 
 /**
@@ -791,7 +866,22 @@ const BOUND_STATE: Record<string, { prop: string; flag?: boolean; writes: Array<
   Tabs: { prop: 'activeKey', writes: [['onChange']] },
   Pagination: { prop: 'currentPage', writes: [['onPageChange']] },
   Accordion: { prop: 'openKeys', writes: [['onChange']] },
+  // Shown while the variable is true; it hides itself when its time is up
+  // or it is dismissed, and says so through `onClose`, which writes false,
+  // so it shows again the next time the variable becomes true.
+  Toast: { prop: 'isVisible', flag: true, writes: [['onClose', false]] },
+  // The files chosen: `onSelect` hands over the list, and an empty one when
+  // the person takes them back.
+  FileChooser: { prop: 'value', writes: [['onSelect']] },
 };
+
+/** Whether an element writes state itself: it has a `:bind`, or is a grid with `selectTo`. */
+function writesState(node: ElementNode): boolean {
+  for (const binding of node.bindings) if (binding.name === 'bind') return true;
+  if (!SELECT_TO_TAGS.has(node.tag)) return false;
+  for (const prop of node.props) if (prop.name === 'selectTo') return true;
+  return false;
+}
 
 /**
  * Render an element node
@@ -901,10 +991,41 @@ function renderElement(
   // Build props
   const props: SoftNProps = { key };
 
-  // The unified context for callbacks, made when the element has one.
+  // The unified context for callbacks, made when the element has one. An
+  // element that writes state (`:bind`, a grid's `selectTo`) has one of its
+  // own, so that what it writes can be shown to its handlers (`writeState`).
   let madeCallbackContext: SoftNRenderContext | undefined;
   const callbackContext = (): SoftNRenderContext =>
-    (madeCallbackContext ??= createCallbackContext(context));
+    (madeCallbackContext ??= writesState(node)
+      ? { ...createCallbackContext(context), locals: ownLocals(context.locals) }
+      : createCallbackContext(context));
+
+  // Write state for this element, and let the handlers written beside the
+  // binding see it.
+  //
+  // `<select :bind={category} @change={load(category)}>` called `load` with
+  // the category from before the choice: the write is React's to make when
+  // it next draws, and a handler reads the state that was drawn. So what the
+  // element has written is laid over that state for its own handlers, the
+  // logic is told now rather than when the page is drawn (a function the
+  // handler calls may read the variable itself), and a name a loop bound to
+  // the row written is read again. The write itself is made once, by
+  // `writeStateAt`.
+  let writtenState: Record<string, unknown> | undefined;
+  let readAgain: Array<(state: Record<string, unknown>) => void> | undefined;
+  const writeState = (path: string, value: unknown): void => {
+    if (!writeStateAt(path, value, context) || !madeCallbackContext) return;
+    writtenState ??= { ...context.state };
+    const parts = parseStatePath(path);
+    writeStatePath(writtenState, parts, value);
+    if (parts.length > 0) context.shareState?.({ [parts[0]]: writtenState[parts[0]] });
+    madeCallbackContext.state = writtenState;
+    readAgain ??= localsToReadAgain(madeCallbackContext.locals, context.state);
+    for (const read of readAgain) read(writtenState);
+  };
+  // What the binding does on a field's `input` event, where the field has
+  // a handler for it; see the events below.
+  let writeOnInput: ((event: unknown) => void) | undefined;
 
   // Static and dynamic props
   // `class:active={cond}` adds "active" to the class list when the condition
@@ -1095,10 +1216,12 @@ function renderElement(
     const writeBound = (newValue: unknown): void => {
       const path = getExpressionPath(binding.expression, context);
       if (!path) {
-        reportUnplacedWrite(binding.expression, context.locals);
+        // Said, whatever the reason: a field that takes typing and keeps
+        // none of it has nothing else to say why.
+        reportUnwritten(binding.expression, context);
         return;
       }
-      writeStateAt(path, newValue, context);
+      writeState(path, newValue);
     };
 
     // A callback the binding installs runs before one the page gave under
@@ -1134,11 +1257,15 @@ function renderElement(
         props.checked = value !== undefined && value !== null && String(value) === String(props.value);
       } else if (isCheckable) {
         props.checked = value === true;
+      } else if (FinalComponent === 'select' && props.multiple) {
+        // A `<select multiple>` holds a list: what the variable holds, as
+        // one. React refuses anything else for it, and chose nothing.
+        props.value = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
       } else {
         props.value = value ?? '';
       }
       // Handle both native elements (pass event) and custom components (pass value directly)
-      installBound('onChange', (eventOrValue: unknown) => {
+      const writeChange = (eventOrValue: unknown): void => {
         // Determine the new value:
         // - If it's an event object with target.value (native elements), use that
         // - Otherwise, treat the argument as the value directly (custom components like Select)
@@ -1154,11 +1281,30 @@ function renderElement(
           newValue = target ? Boolean(target.checked) : Boolean(eventOrValue);
         } else {
           // A native event's value, or the value a custom component such
-          // as Select passed directly; a number field's as a number.
+          // as Select passed directly; a number field's as a number, and a
+          // `<select multiple>`'s as the list chosen.
           newValue = boundValue(eventOrValue);
         }
         writeBound(newValue);
+      };
+      // The browser's event the binding has written for on its way through
+      // `onInput`, so that `onChange`, for the same event, does not write again.
+      let writtenOnInput: unknown;
+      installBound('onChange', (eventOrValue: unknown) => {
+        if (writtenOnInput !== undefined && browserEvent(eventOrValue) === writtenOnInput) {
+          writtenOnInput = undefined;
+          return;
+        }
+        writeChange(eventOrValue);
       });
+      if (!isCheckable) {
+        writeOnInput = (event: unknown) => {
+          const native = browserEvent(event);
+          if (native === undefined || !fromTypedField(event)) return;
+          writtenOnInput = native;
+          writeChange(event);
+        };
+      }
     } else {
       props[binding.name] = value;
     }
@@ -1175,7 +1321,7 @@ function renderElement(
     delete props.selectTo;
     const given = props.onSelect;
     props.onSelect = (row: unknown, ...rest: unknown[]) => {
-      writeStateAt(path, row, context);
+      writeState(path, row);
       return typeof given === 'function' ? (given as (...a: unknown[]) => unknown)(row, ...rest) : undefined;
     };
   }
@@ -1272,6 +1418,20 @@ function renderElement(
         return undefined;
       };
     }
+  }
+
+  // `<input :bind={q} @input={() => load(q)} />`: React calls `onInput`
+  // before `onChange`, which is where the binding writes, so the handler ran
+  // before the binding had written at all and was a keystroke behind. A
+  // field's binding writes on the `input` event itself when a handler is
+  // written for it, first, and leaves that event's `onChange` alone.
+  if (writeOnInput && typeof props.onInput === 'function') {
+    const authored = props.onInput as EventHandler;
+    const write = writeOnInput;
+    props.onInput = (...args: unknown[]) => {
+      write(args[0]);
+      return authored(...args);
+    };
   }
 
   if (typeof FinalComponent === 'string') {
@@ -1384,11 +1544,15 @@ function renderElement(
   const before = active ? recall(active, key as string, node, 'element') : undefined;
   const settled = active ? settleProps(props, before) : undefined;
   const drawn = childless ? NO_CHILDREN : (children as React.ReactNode[]);
+  // While a host edits the app, which node drew each element is noted for it
+  // (types' EditMarks); an element made before that, or after, is made again.
+  const marks = context.editMarks;
   if (
     active &&
     settled &&
     before &&
     before.component === FinalComponent &&
+    before.marks === marks &&
     !before.failure?.caught &&
     before.props &&
     sameProps(before.props, props, settled.styleUnchanged) &&
@@ -1402,16 +1566,25 @@ function renderElement(
   // a list they drew the same, with a warning that the value could not be
   // read from them.
   const optionText = FinalComponent === 'option' && !childless ? textOf(children as React.ReactNode[]) : undefined;
+  // An HTML element is noted through its ref, which is no part of the props
+  // compared above or kept below. One the page gave a `ref` of its own keeps
+  // it, and is not noted.
+  const given = marks && typeof FinalComponent === 'string' && !('ref' in props) ? { ...props, ref: markRef(marks, node) } : props;
   const element = childless
-    ? React.createElement(FinalComponent, props)
-    : React.createElement(FinalComponent, props, optionText ?? children);
+    ? React.createElement(FinalComponent, given)
+    : React.createElement(FinalComponent, given, optionText ?? children);
 
   // Wrap registered (non-HTML) components in a per-component error boundary
   // so a single component crash doesn't take down the entire document
   const failure = active && typeof FinalComponent !== 'string' ? { caught: false } : undefined;
   const result =
     typeof FinalComponent !== 'string'
-      ? React.createElement(ComponentErrorBoundary, { key, tag: node.tag, failure }, element)
+      ? React.createElement(
+          ComponentErrorBoundary,
+          // A component is noted on the boundary around it: what it draws is its own.
+          marks ? { key, tag: node.tag, failure, mark: node } : { key, tag: node.tag, failure },
+          element
+        )
       : element;
 
   if (active && settled) {
@@ -1425,9 +1598,26 @@ function renderElement(
       handlers: settled.handlers,
       style: settled.style,
       failure,
+      marks,
     });
   }
   return result;
+}
+
+/**
+ * The ref that notes an HTML element as drawn from `node`, for a host that is
+ * editing the app. One for each place in the source, so React is handed the
+ * same function at each drawing and calls it only when the element is made.
+ */
+function markRef(marks: EditMarks, node: ElementNode): (element: unknown) => void {
+  let ref = marks.refs.get(node.loc);
+  if (!ref) {
+    ref = (element) => {
+      if (element !== null && typeof element === 'object') marks.drawn.set(element, node);
+    };
+    marks.refs.set(node.loc, ref);
+  }
+  return ref;
 }
 
 const NO_CHILDREN: readonly React.ReactNode[] = [];
@@ -1839,6 +2029,21 @@ function loopPassContext(
 }
 
 /**
+ * What `key={…}` comes to for one row, as text; `fallback` when working it
+ * out, or making text of it, throws (see `evaluateStructural`).
+ */
+function writtenKey(expr: Expression, context: SoftNRenderContext, fallback: string): string {
+  try {
+    return String(evaluateExpression(expr, context));
+  } catch (error) {
+    if (isDevelopment) {
+      console.error(`[SoftN] #each key threw; using ${JSON.stringify(fallback)}:`, error);
+    }
+    return fallback;
+  }
+}
+
+/**
  * Render an each block
  */
 function renderEachBlock(
@@ -1884,9 +2089,14 @@ function renderEachBlock(
     // React warned about duplicate children, and component state attached to
     // whichever row happened to be matched — so editing one row's input moved
     // the text to another when the list reordered.
-    const itemKey = node.keyExpression
-      ? String(evaluateExpression(node.keyExpression, iterContext))
-      : (iterContext.each?.key ?? String(index));
+    //
+    // A key that cannot be worked out for a row (`key={JSON.parse(row.meta).id}`
+    // with one bad row, a key that is no text) is the row's index, or its
+    // own key in a record, and is reported as a condition or an iterable
+    // that throws is. It was the one structural expression that still threw
+    // out of the renderer, and the whole page went with the one row.
+    const indexKey = iterContext.each?.key ?? String(index);
+    const itemKey = node.keyExpression ? writtenKey(node.keyExpression, iterContext, indexKey) : indexKey;
     if (node.keyExpression && iterContext.each) iterContext.each.key = itemKey;
 
     const rowKey = `${key}-item-${itemKey}`;

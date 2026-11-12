@@ -16,18 +16,19 @@
  */
 
 import React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parse } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
 import type { SoftNProps, SoftNRenderContext } from '../src/types';
+import { click, drawPage, removeDrawnPages } from './helpers/drawn-page';
 
 /** What the component under each tag was last given. */
 const given: Record<string, SoftNProps> = {};
 
 function registry(): ComponentRegistry {
   const r = new ComponentRegistry();
-  for (const tag of ['Modal', 'Drawer', 'Confirm', 'Popover', 'Tooltip', 'Tabs', 'Pagination', 'Accordion', 'Sidebar', 'Collapse', 'Input']) {
+  for (const tag of ['Modal', 'Drawer', 'Confirm', 'Popover', 'Tooltip', 'Tabs', 'Pagination', 'Accordion', 'Sidebar', 'Collapse', 'Toast', 'FileChooser', 'Input']) {
     r.register(tag, (props: SoftNProps) => {
       given[tag] = props;
       return null;
@@ -111,6 +112,21 @@ describe('something that is open or shut', () => {
     draw('<Collapse :bind={more} />', { more: true });
     expect(given.Collapse.isOpen).toBe(true);
   });
+
+  it('<Toast :bind> is shown while the variable is true, and its closing writes false', () => {
+    const setState = draw('<Toast :bind={saved} message="Saved" />', { saved: true });
+    expect(given.Toast.isVisible).toBe(true);
+    expect(given.Toast).not.toHaveProperty('value');
+    expect(given.Toast).not.toHaveProperty('onChange');
+    // Its time is up, or it was dismissed: the toast says so with nothing.
+    call('Toast', 'onClose');
+    expect(setState).toHaveBeenCalledWith('saved', false);
+
+    draw('<Toast :bind={saved} message="Saved" />', { saved: false });
+    expect(given.Toast.isVisible).toBe(false);
+    draw('<Toast :bind={saved} message="Saved" />', {});
+    expect(given.Toast.isVisible).toBe(false);
+  });
 });
 
 describe('something that holds which one', () => {
@@ -149,6 +165,83 @@ describe('something that holds which one', () => {
     const setState = draw(doc, state);
     call('Modal', 'onClose');
     expect(setState).toHaveBeenCalledWith('panels[1].open', false);
+  });
+
+  it('<FileChooser :bind> shows the files the variable holds and writes the files chosen', () => {
+    const first = { name: 'a.txt', size: 1, type: 'text/plain', ref: 'r1' };
+    const second = { name: 'b.txt', size: 2, type: 'text/plain', ref: 'r2' };
+    const files = [first];
+    const setState = draw('<FileChooser :bind={files} multiple />', { files });
+    expect(given.FileChooser.value).toBe(files);
+    expect(given.FileChooser).not.toHaveProperty('onChange');
+    call('FileChooser', 'onSelect', [first, second]);
+    expect(setState).toHaveBeenLastCalledWith('files', [first, second]);
+    // The person takes them back: the chooser hands over what is left, none.
+    call('FileChooser', 'onSelect', []);
+    expect(setState).toHaveBeenLastCalledWith('files', []);
+
+    // A variable not set yet gives no list, and the chooser shows its own.
+    draw('<FileChooser :bind={files} />', {});
+    expect(given.FileChooser.value).toBeUndefined();
+  });
+});
+
+describe('a toast and a file chooser bound on a page that is drawn again', () => {
+  afterEach(removeDrawnPages);
+
+  // Stand-ins with the props the components take: `isVisible` and `onClose`;
+  // `value` and `onSelect`.
+  const standIns = (r: ComponentRegistry) => {
+    r.register('Toast', ({ isVisible, onClose, message }: { isVisible?: boolean; onClose?: () => void; message?: string }) =>
+      isVisible ? (
+        <div role="status">
+          {message}
+          <button type="button" id="dismiss" onClick={() => onClose?.()}>
+            dismiss
+          </button>
+        </div>
+      ) : null
+    );
+    type Info = { name: string; ref: string };
+    r.register('FileChooser', ({ value, onSelect }: { value?: Info[] | null; onSelect?: (files: Info[]) => void }) => (
+      <div>
+        <button type="button" id="choose" onClick={() => onSelect?.([{ name: 'a.txt', ref: 'r1' }, { name: 'b.txt', ref: 'r2' }])}>
+          choose
+        </button>
+        <button type="button" id="remove" onClick={() => onSelect?.([])}>
+          remove
+        </button>
+        <span id="chosen">{(value ?? []).map((info) => info.name).join(',')}</span>
+      </div>
+    ));
+  };
+
+  it('a Toast hides itself, writes false, and shows again the next time the variable is true', () => {
+    const { writes, state, all, one } = drawPage('<button id="save" @click={saved = true}>save</button><Toast :bind={saved} message="Saved" />', { saved: false }, {
+      register: standIns,
+    });
+    expect(all('[role=status]')).toHaveLength(0);
+    click(one('#save'));
+    expect(all('[role=status]')).toHaveLength(1);
+    click(one('#dismiss'));
+    expect(state().saved).toBe(false);
+    expect(all('[role=status]')).toHaveLength(0);
+    click(one('#save'));
+    expect(all('[role=status]')).toHaveLength(1);
+    expect(writes).toEqual([['saved', true], ['saved', false], ['saved', true]]);
+  });
+
+  it('a FileChooser keeps the chosen files in the variable, and none once they are removed', () => {
+    const { state, text, one } = drawPage('<FileChooser :bind={files} multiple /><p>{files.length}</p>', { files: [] }, { register: standIns });
+    expect(text('#chosen')).toBe('');
+    click(one('#choose'));
+    expect(state().files).toEqual([{ name: 'a.txt', ref: 'r1' }, { name: 'b.txt', ref: 'r2' }]);
+    expect(text('#chosen')).toBe('a.txt,b.txt');
+    expect(text('p')).toBe('2');
+    click(one('#remove'));
+    expect(state().files).toEqual([]);
+    expect(text('#chosen')).toBe('');
+    expect(text('p')).toBe('0');
   });
 });
 

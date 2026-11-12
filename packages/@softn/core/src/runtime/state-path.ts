@@ -15,6 +15,13 @@
  * `todos[0].title` is `['todos', '0', 'title']` and `map["a b"]` is
  * `['map', 'a b']`. A numeric segment is left as a string; callers decide
  * whether the container at that point is an array.
+ *
+ * A key in double quotes is read to its closing quote, with a backslash
+ * taking the character after it as written: `answers["it]em"]` is the key
+ * `it]em`, and `m["say \"hi\""]` the key `say "hi"`. The renderer writes
+ * every text key this way (`pathStep` in renderer/evaluate.ts). Read to the
+ * first `]`, a key holding one was split there and the write went to a key
+ * the app never had. An empty key in quotes, `m[""]`, is the key `''`.
  */
 export function parseStatePath(path: string): string[] {
   const parts: string[] = [];
@@ -37,6 +44,12 @@ export function parseStatePath(path: string): string[] {
 
     if (ch === '[') {
       flush();
+      const escaped = quotedKey(path, i + 1);
+      if (escaped) {
+        parts.push(escaped.key);
+        i = escaped.end; // the ']'
+        continue;
+      }
       let key = '';
       let j = i + 1;
       while (j < path.length && path[j] !== ']') {
@@ -60,4 +73,24 @@ export function parseStatePath(path: string): string[] {
 
   flush();
   return parts;
+}
+
+/**
+ * The key written in double quotes from `from` (just past a `[`), and where
+ * its `]` is; or null when what is there is not such a key, closed and
+ * followed by `]`, and is read the older way.
+ */
+function quotedKey(path: string, from: number): { key: string; end: number } | null {
+  let i = from;
+  while (path[i] === ' ') i++;
+  if (path[i] !== '"') return null;
+  let key = '';
+  for (i++; i < path.length && path[i] !== '"'; i++) {
+    if (path[i] === '\\' && i + 1 < path.length) i++;
+    key += path[i];
+  }
+  if (path[i] !== '"') return null;
+  i++;
+  while (path[i] === ' ') i++;
+  return path[i] === ']' ? { key, end: i } : null;
 }

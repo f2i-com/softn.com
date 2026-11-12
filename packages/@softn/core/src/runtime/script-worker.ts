@@ -27,6 +27,7 @@ import { endLine, logicOrigin, placeEngineSyntaxError } from './logic-origin';
 import { BRIDGE_VARS } from './external-values';
 import { setEngineFaultSink } from './engine-output';
 import { readsOfDrawnFunctions } from './drawn-functions';
+import { carryIn, carryOut, markStart, type CarriedState, type StartMark, type StateSlots } from './state-carry';
 
 // Type-only import from script-runtime (no runtime dependency on DOM-heavy module)
 import type { CodeBlock } from './script-runtime';
@@ -52,6 +53,42 @@ let stateVarNames: string[] = [];
 let stateVarIndices: number[] = [];
 let functionNames: string[] = [];
 const workerState: Record<string, unknown> = {};
+/** Every state variable of the loaded script, mirrored or not, and how each stood at the start (state-carry.ts). */
+let carrySlots: StateSlots | null = null;
+let carryMark: StartMark | null = null;
+/** The logic as compiled, for working out again what a new page reads (`observe`). */
+let loadedCode = '';
+
+/**
+ * Which variables the page is mirrored: what it names, and what a function it
+ * could call while it is drawn may read (drawn-functions.ts). Unknown mirrors
+ * everything. Run as the script loads, and again for a page drawn from new
+ * markup; answers the mirrored variables' values as the engine holds them.
+ */
+function settleObservation(observedNames: unknown, drawnNames: unknown): Record<string, unknown> {
+  const adapter = wasmAdapter!;
+  let observed = Array.isArray(observedNames) ? new Set(observedNames as string[]) : null;
+  if (observed) {
+    const reads = readsOfDrawnFunctions({
+      code: loadedCode,
+      functionNames,
+      drawn: Array.isArray(drawnNames) ? new Set(drawnNames as string[]) : observed,
+    });
+    if (!reads.known) observed = null;
+    else for (const name of reads.names) observed.add(name);
+  }
+  stateVarNames = [];
+  for (const key of Object.keys(workerState)) delete workerState[key];
+  for (const [name, sym] of symbolMap!.entries()) {
+    if (BRIDGE_VARS.has(name) || sym.scope === 'function') continue;
+    if (!observed || observed.has(name)) {
+      stateVarNames.push(name);
+      workerState[name] = adapter.getGlobal(sym.index);
+    }
+  }
+  stateVarIndices = stateVarNames.map((name) => symbolMap!.get(name)!.index);
+  return { ...workerState };
+}
 
 // Engine-provided bindings are not script state, and they are the main
 // thread's list (external-values.ts): `host` is in the symbol map because the
@@ -325,35 +362,40 @@ self.onmessage = async (evt: MessageEvent) => {
       // VM-owned: never read out, never written back — the main-thread
       // runtime's partition, and the difference between mirroring 21 numbers a
       // call and a 2 MB cartridge.
-      const observedNames = payload.observedStateNames;
-      let observed = Array.isArray(observedNames) ? new Set(observedNames as string[]) : null;
       functionNames = [];
       for (const [name, sym] of symbolMap.entries()) {
         if (!BRIDGE_VARS.has(name) && sym.scope === 'function') functionNames.push(name);
       }
+
+      // The variables of the logic this one replaces, where it replaces one:
+      // marked first and then put in, as on the main thread (state-carry.ts),
+      // so the page is given its state with them in place.
+      const slots: StateSlots = { names: [], indices: [] };
+      for (const [name, sym] of symbolMap.entries()) {
+        if (BRIDGE_VARS.has(name) || sym.scope === 'function') continue;
+        slots.names.push(name);
+        slots.indices.push(sym.index);
+      }
+      carrySlots = slots;
+      carryMark = markStart(wasmAdapter, slots);
+      let carried: { names: string[] } | { refused: string } | undefined;
+      if (payload.carried) {
+        const into = carryIn(
+          wasmAdapter,
+          (name) => {
+            const at = slots.names.indexOf(name);
+            return at < 0 ? undefined : slots.indices[at];
+          },
+          payload.carried as CarriedState
+        );
+        carried = into.ok ? { names: into.carried } : { refused: into.why };
+      }
+
       // What a function the page could call while it is drawn may read is
       // observed too, as on the main thread (see drawn-functions.ts): the
       // function is how the page reads that state. Unknown mirrors everything.
-      if (observed) {
-        const drawnNames = payload.drawnNames;
-        const reads = readsOfDrawnFunctions({
-          code: externalPreamble + resolvedCode,
-          functionNames,
-          drawn: Array.isArray(drawnNames) ? new Set(drawnNames as string[]) : observed,
-        });
-        if (!reads.known) observed = null;
-        else for (const name of reads.names) observed.add(name);
-      }
-      stateVarNames = [];
-      stateVarIndices = [];
-      for (const [name, sym] of symbolMap.entries()) {
-        if (BRIDGE_VARS.has(name) || sym.scope === 'function') continue;
-        if (!observed || observed.has(name)) {
-          stateVarNames.push(name);
-          workerState[name] = wasmAdapter.getGlobal(sym.index);
-        }
-      }
-      stateVarIndices = stateVarNames.map(name => symbolMap!.get(name)!.index);
+      loadedCode = externalPreamble + resolvedCode;
+      const state = settleObservation(payload.observedStateNames, payload.drawnNames);
 
       // Top-level code ran inside initializeScript: whatever it queued or
       // registered comes back with the initial state.
@@ -364,12 +406,33 @@ self.onmessage = async (evt: MessageEvent) => {
         ok: true,
         result: {
           ...entry,
-          state: { ...workerState },
+          state,
           functionNames,
           syncFunctionNames: functionNames,
           computedNames: [],
+          logicText: resolvedCode,
+          ...(carried ? { carried } : {}),
         },
       });
+      return;
+    }
+
+    // The page is drawn from new markup: mirror what it names now, and hand
+    // it those variables as the engine holds them.
+    if (type === 'observe') {
+      if (!wasmAdapter || !symbolMap) throw new Error('runtime_not_initialized');
+      syncStateToVM();
+      const state = settleObservation(payload.observedStateNames, payload.drawnNames);
+      self.postMessage({ id, ok: true, result: { state } });
+      return;
+    }
+
+    // The app's variables, for the logic that replaces this one. What the
+    // page has sent and the engine has not been given yet goes in first.
+    if (type === 'carry_out') {
+      if (!wasmAdapter || !symbolMap || !carrySlots) throw new Error('runtime_not_initialized');
+      syncStateToVM();
+      self.postMessage({ id, ok: true, result: carryOut(wasmAdapter, carrySlots, carryMark) });
       return;
     }
 
@@ -444,6 +507,9 @@ self.onmessage = async (evt: MessageEvent) => {
       stateVarIndices = [];
       functionNames = [];
       mainStateDirty = false;
+      carrySlots = null;
+      carryMark = null;
+      loadedCode = '';
       for (const key of Object.keys(workerState)) delete workerState[key];
       self.postMessage({ id, ok: true, result: true });
       return;

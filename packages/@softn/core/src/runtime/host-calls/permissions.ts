@@ -28,6 +28,25 @@ export interface HostGate {
   pressedHere(): boolean;
 }
 
+/**
+ * A capability refused because the person has not answered the permission
+ * bar. `waiting` says the bar is asking for this very capability right now
+ * (`PermissionConfig.consentAsking`), so the call that needs it can be kept
+ * until they answer rather than refused: allowed, it then goes through
+ * without the person doing again what they did; put off with "Not now", it is
+ * refused in these same words.
+ */
+export class ConsentPendingError extends Error {
+  readonly capability: string;
+  readonly waiting: boolean;
+  constructor(message: string, capability: string, waiting: boolean) {
+    super(message);
+    this.name = 'ConsentPendingError';
+    this.capability = capability;
+    this.waiting = waiting;
+  }
+}
+
 /** Throws, saying why and what would allow it, unless `capability` is granted. */
 export function requirePermission(config: PermissionConfig | null, capability: string): void {
   if (!config) {
@@ -49,9 +68,11 @@ export function requirePermission(config: PermissionConfig | null, capability: s
     // bar. Deny like any other missing capability, but say why: the bundle
     // did declare this, so telling the author to declare it is a lie the
     // user cannot act on.
-    throw new Error(
+    throw new ConsentPendingError(
       `${capability} access not permitted yet: this app has asked for it and you have not allowed it. ` +
-        `Choose Allow in the permission bar at the top of the app to grant it.`
+        `Choose Allow in the permission bar at the top of the app to grant it.`,
+      capability,
+      Array.isArray(config.consentAsking) && config.consentAsking.includes(capability)
     );
   }
   // Permission config IS set — deny by default for any capability not

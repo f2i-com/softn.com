@@ -59,6 +59,8 @@ export interface ReuseEntry {
   text?: string;
   /** Set by the element's error boundary when the component threw; such an element is made again. */
   failure?: { caught: boolean };
+  /** The edit marks the element was made under (types' EditMarks), or none: one made under others is made again. */
+  marks?: object;
 }
 
 export type ReuseKind = 'text' | 'expression' | 'element' | 'branch' | 'row' | 'each' | 'empty' | 'slot';

@@ -461,8 +461,20 @@ export function SoftNWithXDB({
   const stableServerCollections = useStructurallyStableValue(serverCollections);
   const consentPending = stablePermissionConfig?.consentPending === true;
 
-  // Parse the document to get data block
-  const { document } = useSoftN(source);
+  // Parse the document to get data block: of the version on screen, which is
+  // the last one that worked and not always the newest (a newer one with a
+  // problem is kept back by the renderer, and one handed over through `app`
+  // never arrives as `source` at all). The renderer says which, as it draws.
+  const [shownSource, setShownSource] = useState<string | undefined>(undefined);
+  const onShownProp = props.onShown;
+  const noteShown = useCallback(
+    (revision: import('../runtime/live-app').AppRevision) => {
+      setShownSource(revision.source);
+      onShownProp?.(revision);
+    },
+    [onShownProp]
+  );
+  const { document } = useSoftN(shownSource ?? source);
 
   // Set up XDB data subscriptions based on data block (per-app isolation)
   const { data: xdbData, xdb } = useDataBlock(document, props.appId);
@@ -690,6 +702,7 @@ export function SoftNWithXDB({
     <SoftNRenderer
       {...props}
       source={source}
+      onShown={noteShown}
       initialData={mergedData}
       functions={mergedFunctions}
       // The instance the data block subscribed to, so the forms below write

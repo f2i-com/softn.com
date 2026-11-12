@@ -118,6 +118,14 @@ export class Lexer {
    * was skipped, and the words ran into the element before them.
    */
   private afterContentElement: boolean = false;
+  /**
+   * Whether the last token was the `>` of an opening tag in content. A space
+   * right after one, before words or an expression on the same line, is a
+   * space on the page as the others on that line are: `Total<b> 12</b>` and
+   * `<span className="count">3</span>` followed by `<span> need attention</span>`
+   * keep theirs. It was skipped, and the words ran into what came before.
+   */
+  private afterOpeningTag: boolean = false;
   /** Whether the tag being read began `</`, so its `>` ends an element. */
   private readingClosingTag: boolean = false;
   /** Whether the `>` just read ended a closing tag. */
@@ -235,6 +243,17 @@ export class Lexer {
       !this.inLogicBlock &&
       !this.inStyleBlock &&
       (token.type === TokenType.TAG_SELF_CLOSE || (token.type === TokenType.TAG_CLOSE && this.closedAnElement));
+    // Not where text is read its own way: the code of a script, logic or
+    // style block, a `<pre>`, or an element that holds raw text.
+    this.afterOpeningTag =
+      inContent &&
+      !this.inScriptBlock &&
+      !this.inLogicBlock &&
+      !this.inStyleBlock &&
+      this.preformatted === 0 &&
+      this.rawTextEnd === null &&
+      token.type === TokenType.TAG_CLOSE &&
+      !this.closedAnElement;
     return token;
   }
 
@@ -280,6 +299,10 @@ export class Lexer {
     if ((this.afterContentExpression || this.afterContentElement) && /\s/.test(this.ch)) {
       const inline = this.inlineWhitespace();
       if (inline) return inline;
+    }
+    if (this.afterOpeningTag && (this.ch === ' ' || this.ch === '\t')) {
+      const leading = this.leadingSpace();
+      if (leading) return leading;
     }
     this.skipWhitespace();
 
@@ -1252,6 +1275,11 @@ export class Lexer {
    * control-flow block, the end — is layout, skipped as before, so no
    * whitespace node appears between elements written one to a line. Returns
    * null to let the caller skip it.
+   *
+   * A `#` is a block only when it begins one (`hashStartsControlFlow`); any
+   * other is the first character of words. Every `#` was taken for a block
+   * here, so `Ticket {name} #{id}` was "Ticket Ada#12" and `<b>x</b> #1
+   * seller` was "x#1 seller".
    */
   private inlineWhitespace(): Token | null {
     let i = this.position;
@@ -1266,7 +1294,7 @@ export class Lexer {
       next !== '' &&
       !(next === '<' && this.ltOpensMarkup(i)) &&
       next !== '{' &&
-      next !== '#' &&
+      !(next === '#' && this.hashStartsControlFlow(i)) &&
       !(next === '/' && after === '/');
     if (startsText) return this.readTextContent();
     const opensTag = next === '<' && /[A-Za-z_$]/.test(after) && this.ltOpensMarkup(i);
@@ -1278,6 +1306,34 @@ export class Lexer {
       return createToken(TokenType.TEXT, ' ', startLine, startColumn, startPos, this.position);
     }
     return null;
+  }
+
+  /**
+   * Spaces right after an opening tag, read the way `inlineWhitespace` reads
+   * them after an element: before words on the same line they belong to the
+   * words (one leading space), and before an expression on the same line they
+   * are a single space. A line break after the tag is layout, as it always
+   * was, and so is a space before another tag, a block or a comment: those
+   * are skipped as before. Returns null to let the caller skip it.
+   */
+  private leadingSpace(): Token | null {
+    let i = this.position;
+    while (i < this.source.length && (this.source[i] === ' ' || this.source[i] === '\t')) i++;
+    const next = this.source[i] ?? '';
+    const after = this.source[i + 1] ?? '';
+    if (next === '' || next === '\n' || next === '\r') return null;
+    if (next === '{') {
+      const startLine = this.line;
+      const startColumn = this.column;
+      const startPos = this.position;
+      while (this.position < i) this.readChar();
+      return createToken(TokenType.TEXT, ' ', startLine, startColumn, startPos, this.position);
+    }
+    const startsText =
+      !(next === '<' && this.ltOpensMarkup(i)) &&
+      !(next === '#' && this.hashStartsControlFlow(i)) &&
+      !(next === '/' && after === '/');
+    return startsText ? this.readTextContent() : null;
   }
 
   /**
@@ -1644,7 +1700,7 @@ export class Lexer {
   }
 
   /**
-   * Does the `#` under the cursor open a control-flow block?
+   * Does the `#` under the cursor, or the one at `at`, open a control-flow block?
    *
    * Reads the whole word after it and requires an exact keyword. `#endpoint` is
    * text, not `#end` followed by "point" — the parser would have lexed
@@ -1652,8 +1708,8 @@ export class Lexer {
    * whole word only stops the lexer from changing mode for something that was
    * never going to parse as control flow.
    */
-  private hashStartsControlFlow(): boolean {
-    let i = this.readPosition;
+  private hashStartsControlFlow(at: number = this.position): boolean {
+    let i = at + 1;
     let word = '';
     while (i < this.source.length && /[A-Za-z]/.test(this.source[i])) {
       word += this.source[i];

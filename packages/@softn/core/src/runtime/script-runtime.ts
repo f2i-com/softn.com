@@ -32,6 +32,7 @@ import { endLine, logicOrigin } from './logic-origin';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
 import { sanitizeArgs } from './vm-args';
+import { withOutcome, type CallOutcome } from './failed-calls';
 import type { DocumentShell, ShellOp } from '../document-shell/host';
 import {
   SHELL_EVENT,
@@ -75,7 +76,9 @@ import {
   type ExternalPrimitive,
 } from './external-values';
 import { WindowBridge } from './window-bridge';
-import { requireNetHost, requirePermission, type HostGate } from './host-calls/permissions';
+import { ConsentPendingError, requireNetHost, requirePermission, type HostGate } from './host-calls/permissions';
+import { markStart } from './state-carry-mark';
+import type { CarriedState, StartMark, StateSlots } from './state-carry';
 import { AppNetwork } from './host-calls/network';
 import { AppAudio } from './host-calls/audio';
 import { AppMicrophone } from './host-calls/microphone';
@@ -88,7 +91,9 @@ import { debug } from './debug';
 import { failureText, runtimeLineFailure } from './engine-output';
 import type { RuntimeState } from '../types';
 import type {
+  CarriedOut,
   CodeBlock,
+  ConsentStatus,
   DocumentShellRequest,
   NetFetchHandler,
   PendingHostCall,
@@ -104,7 +109,9 @@ import type {
 
 // The runtime's types are in script-runtime-types.ts, and exported from here as they always were.
 export type {
+  CarriedOut,
   CodeBlock,
+  ConsentStatus,
   ConsoleModule,
   DocumentShellRequest,
   NavModule,
@@ -380,7 +387,17 @@ export class SoftNScriptRuntime {
     this.onScriptFailure = options?.onScriptFailure ?? null;
     this.onAlert = options?.onAlert ?? null;
     this.externalFunctions = externalFunctions ?? null;
+    this.carried = options?.carried ?? null;
+    this.onConsentChange = options?.onConsentChange ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
+    // A room asked for before the person has answered is refused there and
+    // then (the call is synchronous and cannot be kept): counted, so that
+    // allowing later starts the app again and it asks once more.
+    const startSync = this.db.startSync;
+    this.db.startSync = (room, requested) => {
+      if (this.permissionConfig?.consentPending) this.noteConsentRefusal();
+      startSync(room, requested);
+    };
     if (typeof importResolver === 'function') {
       this.importResolver = importResolver as (path: string) => Promise<string | null>;
     }
@@ -414,9 +431,76 @@ export class SoftNScriptRuntime {
     this.ai = new AppAI(gate, (path) => this.network.readBlob(path));
   }
 
-  /** Set the permission config for this runtime (from permission.json). */
-  setPermissionConfig(config: PermissionConfig): void {
+  /**
+   * Replace the permission config (from permission.json, as the person has
+   * allowed it). Every check reads it when asked, so this is all a grant or a
+   * withdrawal takes: calls kept for the answer are judged again now, each
+   * against the config as it has just become.
+   */
+  setPermissionConfig(config: PermissionConfig | null): void {
     this.permissionConfig = config;
+    const waiters = this.consentWaiters;
+    this.consentWaiters = [];
+    for (const wake of waiters) wake();
+  }
+
+  // ── Calls kept until the person answers the permission bar ──────────
+
+  /** The variables of the logic this one replaces, put in as the script loads (state-carry.ts). */
+  private carried: CarriedState | null = null;
+  private readonly onConsentChange: (() => void) | null;
+  /** Kept calls, by the capability each waits for. */
+  private waitingFor = new Map<string, number>();
+  /** Wakes each kept call when the config is replaced or the app closes. */
+  private consentWaiters: Array<() => void> = [];
+  /** Calls refused because the person had not allowed them. */
+  private consentRefused = 0;
+  /** The most calls kept at once: past it a call is refused, as it was before any were kept. */
+  private static readonly MAX_KEPT_CALLS = 32;
+
+  consentStatus(): ConsentStatus {
+    return { waiting: [...this.waitingFor.keys()], refused: this.consentRefused };
+  }
+
+  private noteConsentRefusal(): void {
+    this.consentRefused++;
+    if (this.consentRefused === 1) this.onConsentChange?.();
+  }
+
+  /**
+   * Run a host call, keeping it while the permission bar is asking for what
+   * it needs (`ConsentPendingError.waiting`). The check that says so is the
+   * first thing a handler does, so nothing of the call has happened when it
+   * is kept, and nothing happens until the config is replaced: allowed, the
+   * call is made once, as if only now; put off or closed, it is refused in
+   * the words it would have been.
+   */
+  private async executeHostCallWhenAllowed(call: PendingHostCall): Promise<unknown> {
+    for (;;) {
+      try {
+        return await this.executeHostCall(call);
+      } catch (error) {
+        if (!(error instanceof ConsentPendingError)) throw error;
+        let kept = 0;
+        for (const count of this.waitingFor.values()) kept += count;
+        if (!error.waiting || this.disposed || kept >= SoftNScriptRuntime.MAX_KEPT_CALLS) {
+          this.noteConsentRefusal();
+          throw error;
+        }
+        const capability = error.capability;
+        const first = !this.waitingFor.has(capability);
+        this.waitingFor.set(capability, (this.waitingFor.get(capability) ?? 0) + 1);
+        if (first) this.onConsentChange?.();
+        await new Promise<void>((resolve) => this.consentWaiters.push(resolve));
+        const left = (this.waitingFor.get(capability) ?? 1) - 1;
+        if (left > 0) this.waitingFor.set(capability, left);
+        else {
+          this.waitingFor.delete(capability);
+          this.onConsentChange?.();
+        }
+        if (this.disposed) throw new Error('The app has closed');
+      }
+    }
   }
 
   /**
@@ -581,6 +665,9 @@ export class SoftNScriptRuntime {
     // The logic as its author and the host wrote it, for reading what a
     // function names. Empty for Python, which is not read that way.
     let writtenCode = '';
+    // The same without what the host declares for it: what a host compares
+    // a new version of the logic with (ScriptLoadResult.logicText).
+    let logicText: string | undefined;
     this.computedSettle = null;
     this.computedBatch = null;
     this.computedStale = true;
@@ -645,6 +732,7 @@ export class SoftNScriptRuntime {
       computedPlan = planComputed(computedDecls);
       const computedPreamble = computedSource(computedDecls, computedPlan);
       writtenCode = extFnPreamble + resolvedCode;
+      logicText = resolvedCode;
 
       // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
       // window/navigator/db/localStorage/host itself) then SoftN's own, and
@@ -752,6 +840,52 @@ export class SoftNScriptRuntime {
     const stateVarNames: string[] = [];
     const settledNames = new Set(computedPlan.order.map((declaration) => declaration.name));
 
+    // 5c. The variables of the logic this one replaces, where it replaces
+    // one: marked first, so that what the new logic starts each variable
+    // with is what "moved since" is later measured from, then put in. The
+    // page is given its state, and `_init` is called, with them in place.
+    // (Not a Python app's: its engine has no way to look through them.)
+    let carriedResult: ScriptLoadResult['carried'];
+    this.carrySlots = null;
+    this.carryMark = null;
+    if (!this.pythonProject) {
+      const slots: StateSlots = { names: [], indices: [] };
+      for (const [name, sym] of symbolMap.entries()) {
+        if (sym.scope === 'function' || BRIDGE_VARS.has(name) || name.startsWith(COMPUTED_PREFIX)) continue;
+        if (this.documentShellOn && isShellName(name)) continue;
+        if (settledNames.has(name)) continue;
+        slots.names.push(name);
+        slots.indices.push(sym.index);
+      }
+      this.carrySlots = slots;
+      this.carryMark = markStart(this.vmEngine, slots);
+      if (this.carried) {
+        const state = this.carried;
+        this.carried = null;
+        // Fetched now, for the one start that needs it: most never do.
+        let carryIn: typeof import('./state-carry').carryIn;
+        try {
+          ({ carryIn } = await import('./state-carry'));
+        } catch (error) {
+          carryIn = () => ({ ok: false, why: `what carries them could not be loaded (${error instanceof Error ? error.message : String(error)})` });
+        }
+        if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
+        const into = carryIn(
+          this.vmEngine,
+          (name) => {
+            const at = slots.names.indexOf(name);
+            return at < 0 ? undefined : slots.indices[at];
+          },
+          state
+        );
+        carriedResult = into.ok ? { names: into.carried } : { refused: into.why };
+        if (into.ok && into.carried.length > 0) this.computedMayHaveMoved();
+      }
+    } else if (this.carried) {
+      this.carried = null;
+      carriedResult = { refused: 'its logic is Python, whose variables cannot be carried' };
+    }
+
     for (const [name, sym] of symbolMap.entries()) {
       // Skip bridge-injected variables
       if (BRIDGE_VARS.has(name)) continue;
@@ -793,18 +927,7 @@ export class SoftNScriptRuntime {
     // expression names is observed too — and where one reaches further,
     // through a function, there is no telling what it reads, and everything
     // is mirrored, as it is for a host that never asked for less.
-    if (this.observedStateNames && computedDecls.length > 0) {
-      if (readsThroughAFunction) {
-        this.observedStateNames = null;
-      } else {
-        const observed = new Set(this.observedStateNames);
-        for (const declaration of computedDecls) {
-          for (const name of namesReadBy(declaration.expression)) observed.add(name);
-        }
-        this.observedStateNames = observed;
-      }
-    }
-
+    //
     // A function the page calls while it is drawn is the other way a page
     // reads state: `<p>{label()}</p>` over `function label() { return "n is "
     // + n }` puts `n` on the screen, and no markup names it. `n` was kept in
@@ -819,31 +942,51 @@ export class SoftNScriptRuntime {
     // What only such a function reads is watched rather than copied (see
     // partitionStateVars): the page reads it through the function, from the
     // engine, and needs to know only that it moved.
-    let readOnlyWhenDrawn: ReadonlySet<string> = new Set();
-    if (this.observedStateNames) {
-      const reads = readsOfDrawnFunctions({
-        code: writtenCode,
-        functionNames,
-        drawn: this.drawnNames ?? this.observedStateNames,
-        python: this.pythonProject !== undefined,
-      });
-      if (!reads.known) {
-        debug(
-          `[SoftN] All state is mirrored: the page calls ${reads.functions.join(', ')} while it is drawn, and ${reads.why}.`
-        );
-        this.observedStateNames = null;
-      } else if (reads.names.size > 0) {
-        const observed = new Set(this.observedStateNames);
-        const added = new Set<string>();
-        for (const name of reads.names) {
-          if (!observed.has(name)) added.add(name);
-          observed.add(name);
+    //
+    // Worked out as the script loads, and again when the page is drawn from
+    // new markup (observe): `observed` is what the markup names and `drawn`
+    // what it could call while it is drawn, as the host gave them.
+    this.settleObservation = (observedGiven, drawnGiven) => {
+      this.observedStateNames = observedGiven;
+      this.drawnNames = drawnGiven;
+      if (this.observedStateNames && computedDecls.length > 0) {
+        if (readsThroughAFunction) {
+          this.observedStateNames = null;
+        } else {
+          const observed = new Set(this.observedStateNames);
+          for (const declaration of computedDecls) {
+            for (const name of namesReadBy(declaration.expression)) observed.add(name);
+          }
+          this.observedStateNames = observed;
         }
-        this.observedStateNames = observed;
-        readOnlyWhenDrawn = added;
       }
-    }
-    this.partitionStateVars(stateVarNames, symbolMap, readOnlyWhenDrawn);
+      let readOnlyWhenDrawn: ReadonlySet<string> = new Set();
+      if (this.observedStateNames) {
+        const reads = readsOfDrawnFunctions({
+          code: writtenCode,
+          functionNames,
+          drawn: this.drawnNames ?? this.observedStateNames,
+          python: this.pythonProject !== undefined,
+        });
+        if (!reads.known) {
+          debug(
+            `[SoftN] All state is mirrored: the page calls ${reads.functions.join(', ')} while it is drawn, and ${reads.why}.`
+          );
+          this.observedStateNames = null;
+        } else if (reads.names.size > 0) {
+          const observed = new Set(this.observedStateNames);
+          const added = new Set<string>();
+          for (const name of reads.names) {
+            if (!observed.has(name)) added.add(name);
+            observed.add(name);
+          }
+          this.observedStateNames = observed;
+          readOnlyWhenDrawn = added;
+        }
+      }
+      this.partitionStateVars(stateVarNames, symbolMap, readOnlyWhenDrawn);
+    };
+    this.settleObservation(this.observedStateNames, this.drawnNames);
     debug(
       `[SoftN] Script loaded: ${functionNames.length} functions, ${this.stateVarNames.length} state vars` +
         (this.vmOwnedStateNames.length
@@ -915,7 +1058,85 @@ export class SoftNScriptRuntime {
       functions,
       syncFunctions,
       computed,
+      ...(logicText !== undefined ? { logicText } : {}),
+      ...(carriedResult ? { carried: carriedResult } : {}),
     };
+  }
+
+  /** Every state variable of the loaded script, mirrored to the page or not (state-carry.ts). */
+  private carrySlots: StateSlots | null = null;
+  /** How those stood when the logic had just started. */
+  private carryMark: StartMark | null = null;
+  /** The variables have been taken for the logic that replaces this one: nothing may change them now. */
+  private frozen = false;
+  /** What the page held of each variable it has just begun to read, until its own copy catches up (updateContext). */
+  private staleAtObserve = new Map<string, unknown>();
+  /** Works the observation out again from what a page names; set as the script loads. */
+  private settleObservation: ((observed: ReadonlySet<string> | null, drawn: ReadonlySet<string> | null) => void) | null = null;
+
+  /**
+   * Take the app's variables out for the logic that replaces this one, and
+   * stop answering. What the page holds and the engine has not been given
+   * yet (text typed since the last call) goes in first, so it is among them.
+   * No script code runs here.
+   */
+  async carryOut(): Promise<CarriedOut> {
+    if (this.disposed || !this.vmEngine || this.vmEngine.terminated) {
+      return { ok: false, why: 'its logic had stopped' };
+    }
+    if (!this.carrySlots) return { ok: false, why: 'its logic is Python, whose variables cannot be carried' };
+    if (this.documentShellOn) return { ok: false, why: 'its code keeps the page in its document' };
+    // Fetched before anything is stopped: a host that cannot fetch it (an
+    // installed app with no network) starts the app again without them.
+    let carryOut: typeof import('./state-carry').carryOut;
+    try {
+      ({ carryOut } = await import('./state-carry'));
+    } catch (error) {
+      return { ok: false, why: `what carries them could not be loaded (${error instanceof Error ? error.message : String(error)})` };
+    }
+    await this.vmCallLock;
+    if (this.disposed || !this.vmEngine || this.vmEngine.terminated) {
+      return { ok: false, why: 'its logic had stopped' };
+    }
+    this.frozen = true;
+    try {
+      this.syncReactStateToVM();
+      return carryOut(this.vmEngine, this.carrySlots, this.carryMark);
+    } catch (error) {
+      return { ok: false, why: `its variables could not be read (${error instanceof Error ? error.message : String(error)})` };
+    }
+  }
+
+  /**
+   * The page is drawn from new markup: mirror what it names now. A variable
+   * it has begun to name is read out to it at once, as the engine holds it;
+   * the page's copy was the one from when the script loaded.
+   */
+  observe(names: { observedStateNames?: ReadonlySet<string>; drawnNames?: ReadonlySet<string> }): void {
+    if (this.disposed || this.frozen || !this.vmEngine || this.vmEngine.terminated || !this.settleObservation) return;
+    const before = new Set(this.stateVarNames);
+    const watchedBefore = this.watchedStateSet;
+    try {
+      this.settleObservation(names.observedStateNames ?? null, names.drawnNames ?? null);
+      // The digests are in step with the list that has just been replaced.
+      this.stateVarFingerprints = null;
+      this.syncCallCache.clear();
+      const fresh = this.stateVarNames.filter(
+        (name) => (!before.has(name) || watchedBefore.has(name)) && !this.watchedStateSet.has(name)
+      );
+      if (fresh.length === 0) return;
+      const values = this.vmEngine.getGlobalsBatch(fresh.map((name) => this.symbolMap!.get(name)!.index));
+      const changes: Record<string, unknown> = {};
+      fresh.forEach((name, i) => {
+        if (this.context.state[name] !== values[i]) this.staleAtObserve.set(name, this.context.state[name]);
+        this.context.state[name] = values[i];
+        changes[name] = values[i];
+      });
+      if (this.context.batchSetState) this.context.batchSetState(changes);
+      else for (const name of fresh) this.context.setState(name, changes[name]);
+    } catch (error) {
+      console.error('[SoftN] Error telling the logic what the new page reads:', error);
+    }
   }
 
   /** The look made after `loadScript`, until it runs; see the end of `loadScript`. */
@@ -928,7 +1149,7 @@ export class SoftNScriptRuntime {
    */
   private async runWhatTheTopLevelQueued(): Promise<void> {
     await this.vmCallLock;
-    if (this.disposed || !this.vmEngine || this.vmEngine.terminated) return;
+    if (this.disposed || this.frozen || !this.vmEngine || this.vmEngine.terminated) return;
     let release: (() => void) | undefined;
     this.vmCallLock = new Promise<void>((r) => {
       release = r;
@@ -1022,7 +1243,13 @@ export class SoftNScriptRuntime {
       // `currentTarget` on the main thread where the worker gave both. The
       // engine reads these records as they are.
       const crossing = sanitizeArgs(args);
-      return this.enterVM(name, droppable, () => this.vmEngine!.callFunction(name, crossing));
+      // How the call went is kept beside its promise, which resolves either
+      // way: a handler that waits for this call asks (failed-calls.ts).
+      const outcome: CallOutcome = { failed: false };
+      return withOutcome(
+        this.enterVM(name, droppable, () => this.vmEngine!.callFunction(name, crossing), outcome),
+        outcome
+      );
     };
   }
 
@@ -1030,9 +1257,16 @@ export class SoftNScriptRuntime {
    * Enter the engine the way a handler does, with `run` as what happens
    * inside: the page's state goes in first, what the script changed comes
    * back to the page after, and the host calls it queued are run. A function
-   * the page calls and a timer that comes due both enter this way.
+   * the page calls and a timer that comes due both enter this way. A failure
+   * is said here and the promise resolves all the same; `outcome`, when the
+   * caller keeps one, is told of it.
    */
-  private async enterVM(name: string, droppable: boolean, run: () => unknown): Promise<unknown> {
+  private async enterVM(
+    name: string,
+    droppable: boolean,
+    run: () => unknown,
+    outcome?: CallOutcome
+  ): Promise<unknown> {
     // Droppable calls (rapid-fire events) are dropped at the soft limit.
     // Critical calls (user interactions) are only dropped at the hard limit.
     const QUEUE_SOFT_LIMIT = 32;
@@ -1040,8 +1274,9 @@ export class SoftNScriptRuntime {
     // A runtime that has been torn down answers nothing. Without this, a
     // 30 Hz game loop keeps landing calls on the disposed engine — each one
     // an "engine is disposed" error in the console — until its renderer
-    // notices.
-    if (this.disposed) return undefined;
+    // notices. Nor does one whose variables have been taken for the logic
+    // that replaces it (carryOut): what a call changed now would be lost.
+    if (this.disposed || this.frozen) return undefined;
     if (this.vmEngine?.terminated) {
       this.reportStopped(name);
       return undefined;
@@ -1070,7 +1305,7 @@ export class SoftNScriptRuntime {
     // The wait for the lock is where a tear-down usually lands: the calls
     // queued behind the one that was running when the grant rebuilt the
     // runtime would otherwise each wake up and hit a corpse.
-    if (this.disposed) {
+    if (this.disposed || this.frozen) {
       this.vmCallQueueDepth--;
       release!();
       return undefined;
@@ -1107,6 +1342,7 @@ export class SoftNScriptRuntime {
     } catch (error) {
       console.error(`[SoftN] Error executing function ${name}:`, error);
       this.reportFailure(name, error);
+      if (outcome) outcome.failed = true;
       return undefined;
     } finally {
       // Resume XDB notifications — fires one 'refresh' per affected collection.
@@ -1383,7 +1619,7 @@ export class SoftNScriptRuntime {
    * and returned as nothing when it fails, as a listener's failure is.
    */
   private enterForDocument(name: string, args: unknown[]): unknown {
-    if (!this.vmEngine || this.disposed || this.vmEngine.terminated) return 0;
+    if (!this.vmEngine || this.disposed || this.frozen || this.vmEngine.terminated) return 0;
     this.syncReactStateToVM();
     this.windowBridge.toVM();
     this.settleComputedIfStale();
@@ -1799,6 +2035,23 @@ export class SoftNScriptRuntime {
    * Update the context with new state (called by SoftNRenderer when React state changes)
    */
   updateContext(newState: Partial<RuntimeState>): void {
+    // A variable the page has only just begun to read (observe) was handed
+    // to it as the engine holds it, and the page's own copy until that lands
+    // is the one from when the script loaded: taken as a write, it would put
+    // the starting value back over the live one.
+    if (this.staleAtObserve.size > 0) {
+      const incoming = newState as Record<string, unknown>;
+      let kept: Record<string, unknown> | null = null;
+      for (const [key, stale] of this.staleAtObserve) {
+        if (!(key in incoming)) continue;
+        if (incoming[key] === this.context.state[key]) this.staleAtObserve.delete(key);
+        else if (incoming[key] === stale) {
+          kept ??= { ...incoming };
+          delete kept[key];
+        } else this.staleAtObserve.delete(key);
+      }
+      if (kept) newState = kept as Partial<RuntimeState>;
+    }
     // Track which specific keys changed (e.g., from :bind input updates).
     // After syncVMStateToReact(), context.state and React componentState have
     // the same object references, so !== correctly detects external changes.
@@ -1824,7 +2077,7 @@ export class SoftNScriptRuntime {
   private dispatchWindowEvent(eventType: string, eventObj: Record<string, unknown>, isThrottled: boolean): void {
     // An engine a runaway listener stopped takes no more: each event was two
     // more errors, one of them uncaught out of the browser's own listener.
-    if (!this.vmEngine || this.vmEngine.terminated) return;
+    if (!this.vmEngine || this.vmEngine.terminated || this.frozen) return;
 
     // Sync React state → VM before dispatch
     this.syncReactStateToVM();
@@ -1898,6 +2151,10 @@ export class SoftNScriptRuntime {
     // each of its awaits, so a cleanup that lands mid-load stops the script
     // from being executed into an engine nobody will ever dispose.
     this.disposed = true;
+    // A call kept for the person's answer ends here, refused.
+    const waiters = this.consentWaiters;
+    this.consentWaiters = [];
+    for (const wake of waiters) wake();
 
     // The window's listeners, and the app's own `window.__…` values.
     this.windowBridge.dispose();
@@ -1990,6 +2247,14 @@ export class SoftNScriptRuntime {
         try {
           result = await this.executeHostCall(call);
         } catch (err) {
+          // What the permission bar is asking for right now is kept until the
+          // person answers, and answered then on its own: the calls queued
+          // behind it are not kept with it.
+          if (err instanceof ConsentPendingError && err.waiting && !this.disposed) {
+            void this.answerWhenAllowed(call);
+            continue;
+          }
+          if (err instanceof ConsentPendingError) this.noteConsentRefusal();
           result = { error: String(err) };
           // The callback gets `{error}`, and almost no bundle checks for it —
           // so a refused call is a call that quietly does nothing. That was
@@ -2022,11 +2287,11 @@ export class SoftNScriptRuntime {
         // unmount before it resolves, hit `drainPendingHostCalls()` on null in
         // a try/finally with no catch — an uncaught TypeError propagating out
         // through `createVMFunction`, which callers invoke without `.catch`.
-        if (!this.vmEngine) return;
+        if (!this.vmEngine || this.frozen) return;
 
         // Re-acquire the lock to resolve the callback in the VM
         await this.vmCallLock;
-        if (!this.vmEngine) return;
+        if (!this.vmEngine || this.frozen) return;
         let release: (() => void) | undefined;
         this.vmCallLock = new Promise<void>((r) => {
           release = r;
@@ -2069,6 +2334,44 @@ export class SoftNScriptRuntime {
   }
 
   /**
+   * A call kept for the person's answer (see executeHostCallWhenAllowed),
+   * answered when it comes: its result goes to the script's callback as any
+   * call's does, and what the callback queues is run in turn.
+   */
+  private async answerWhenAllowed(call: PendingHostCall): Promise<void> {
+    let result: unknown;
+    try {
+      result = await this.executeHostCallWhenAllowed(call);
+    } catch (err) {
+      result = { error: String(err) };
+      console.warn(`[SoftN] ${call.kind} failed: ${String(err)}`);
+    }
+    if (!this.vmEngine || this.disposed || this.frozen) return;
+    await this.vmCallLock;
+    if (!this.vmEngine || this.disposed || this.frozen || this.vmEngine.terminated) return;
+    let release: (() => void) | undefined;
+    this.vmCallLock = new Promise<void>((r) => {
+      release = r;
+    });
+    let queued: PendingHostCall[] = [];
+    try {
+      this.syncCallCache.clear();
+      this.syncReactStateToVM();
+      this.settleComputedIfStale();
+      this.vmEngine.resolveHostCallback(call.id, result);
+      this.computedMayHaveMoved();
+      this.syncVMStateToReact();
+      queued = this.vmEngine.drainPendingHostCalls();
+    } catch (err) {
+      console.error(`[SoftN] Error resolving host callback:`, err);
+      this.reportFailure('a callback', err);
+    } finally {
+      release!();
+    }
+    if (queued.length > 0) await this.processPendingHostCallsUnlocked(queued);
+  }
+
+  /**
    * Run one `host.call` on behalf of a script hosted elsewhere — the Web
    * Worker runtime's. The handlers need this thread (files, camera, mic,
    * audio, the network and its permission checks) and nothing of a VM, so an
@@ -2079,6 +2382,17 @@ export class SoftNScriptRuntime {
     // models were let go by cleanup(), and a call now would start them again.
     if (this.disposed) return Promise.resolve({ error: 'The app has closed' });
     return this.executeHostCall(call);
+  }
+
+  /** As {@link executeHostCallExternal}, for a call the permission bar is asking about: kept until answered. */
+  executeHostCallExternalWhenAllowed(call: PendingHostCall): Promise<unknown> {
+    if (this.disposed) return Promise.resolve({ error: 'The app has closed' });
+    return this.executeHostCallWhenAllowed(call);
+  }
+
+  /** A call made for a script hosted elsewhere was refused for want of the person's answer. */
+  noteExternalConsentRefusal(): void {
+    this.noteConsentRefusal();
   }
 
   /** The element the app is drawn in (see key-capture.ts `appHears`). */
@@ -2330,6 +2644,12 @@ export function createScriptRuntime(
 /** What the Web Worker runtime asks of the main thread; see `createHostCallExecutor`. */
 export interface HostCallExecutor {
   executeHostCall(call: PendingHostCall): Promise<unknown>;
+  /** The same, kept while the permission bar is asking for what the call needs. */
+  executeHostCallWhenAllowed(call: PendingHostCall): Promise<unknown>;
+  /** A call was refused because the person had not allowed it. */
+  noteConsentRefusal(): void;
+  setPermissionConfig(config: PermissionConfig | null): void;
+  consentStatus(): ConsentStatus;
   cleanup(): void;
   /** Whose captured keys and app element these are (key-capture.ts). */
   readonly owner: object;
@@ -2362,6 +2682,10 @@ export function createHostCallExecutor(
   );
   return {
     executeHostCall: (call) => runtime.executeHostCallExternal(call),
+    executeHostCallWhenAllowed: (call) => runtime.executeHostCallExternalWhenAllowed(call),
+    noteConsentRefusal: () => runtime.noteExternalConsentRefusal(),
+    setPermissionConfig: (config) => runtime.setPermissionConfig(config),
+    consentStatus: () => runtime.consentStatus(),
     cleanup: () => runtime.cleanup(),
     owner: runtime,
   };

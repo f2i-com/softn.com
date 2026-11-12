@@ -40,4 +40,7 @@ export type { LogicEngine, LogicEngineFactory, LogicEngineThreads, PythonProject
 export { preloadSyncRuntime } from './xdb-sync-preload';
 export { carryAppSync, forgetAppSync } from './sync-app-state';
 export { preloadAIRuntime } from './ai-runtime-preload';
+// A running app a host can hand a newer version of (`<SoftNRenderer app={…}>`).
+export { createLiveApp } from './live-app';
+export type { AppRevision, AppUpdatePart, AppUpdateResult, LiveApp, LiveAppOptions } from './live-app';
 export { debug, debugEnabled } from './debug';

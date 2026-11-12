@@ -41,7 +41,10 @@ import {
   createPersistentXDBModule,
   createMockNavModule,
   createConsoleModule,
+  type CarriedOut,
+  type CodeBlock,
   type ScriptContext,
+  type ScriptLoadResult,
   type ScriptRuntimeHandle,
   type ScriptRuntimeMode,
   type BundleFileProvider,
@@ -50,6 +53,18 @@ import {
   type PersistenceFailure,
   type ScriptFailure,
 } from '../runtime/script-runtime';
+import {
+  createLiveApp,
+  liveAppDriver,
+  sameRevision,
+  type AppRevision,
+  type AppUpdatePart,
+  type AppUpdateResult,
+  type LiveApp,
+} from '../runtime/live-app';
+import type { CarriedState } from '../runtime/state-carry';
+import { inlineLogicImports } from '../runtime/logic-imports';
+import { moduleSyntaxAsScript } from '../runtime/module-syntax';
 // The off-main-thread runtime, loaded behind a handle for an app that asks for
 // a worker; every other path routes calls through the main-thread VM. See the
 // note where `forceWorker` is decided.
@@ -113,6 +128,13 @@ let appsNamed = 0;
  * page is drawn with a placeholder where each still loading goes.
  */
 const FIRST_DRAW_WAIT_MS = 300;
+
+/**
+ * The longest an update waits for a start it asked for to finish, before it
+ * goes on to the next: a start that never answers (a worker that hangs)
+ * must not hold every later change.
+ */
+const START_WAIT_MS = 20_000;
 
 /**
  * A phase boundary on the performance timeline, where a profile can read it
@@ -453,6 +475,124 @@ export interface SoftNRendererProps {
    * two lookups that happen to agree. Defaults to the store for `appId`.
    */
   xdb?: XDBService;
+
+  /**
+   * The app as something a host can hand a newer version of while it is
+   * open, and ask what became of it (runtime/live-app.ts): `app.update(…)`
+   * answers updated in place, restarted and why, or kept the last version
+   * that worked and what is wrong with the newest. Without one, a change to
+   * `source` and the props beside it is treated the same way and answered
+   * through `onUpdate`.
+   */
+  app?: LiveApp;
+
+  /**
+   * What became of a change to the app while it was open: a newer version
+   * (from `app.update` or from these props), or a change to
+   * `permissionConfig`. Not called for the app's first start.
+   */
+  onUpdate?: (result: AppUpdateResult) => void;
+
+  /**
+   * The version of the app now on screen, each time it changes: the last one
+   * that worked, which is not the newest while the newest has a problem.
+   */
+  onShown?: (revision: AppRevision) => void;
+
+  /**
+   * How the app's `softn.*` calls stand with a permission bar that is not
+   * answered yet (`permissionConfig.consentPending`), for the host's bar to
+   * say: `waiting` names what calls are being kept for until the person
+   * answers, and `restartOnAllow` says allowing will start the app again
+   * (it has been refused something and gone on without it, or what it asked
+   * for can only be given to logic that is loaded afresh).
+   */
+  onConsentStatus?: (status: { waiting: string[]; restartOnAllow: boolean }) => void;
+}
+
+/** A running app, as the renderer knows it between a start and the next. */
+interface RunningApp {
+  /** Whose app it is: another id in the same renderer is another app, and nothing is carried to it. */
+  appId: string | undefined;
+  revision: AppRevision;
+  /** The logic as compiled, its imports placed; undefined for Python and for a page with no code. */
+  logicText: string | undefined;
+  hasCode: boolean;
+  forceWorker: boolean;
+  /** The page is drawn from its own document, which the code holds. */
+  shell: boolean;
+  python: boolean;
+  /** The script's variables, as the page was given them at the start. */
+  scriptStateNames: string[];
+  /** The start has finished: the script is loaded, or there is none. */
+  landed: boolean;
+  failed: boolean;
+}
+
+/** How the next start treats what the page and the engine held. */
+type StartMode =
+  /** As a first start: script state under what the page holds. */
+  | 'first'
+  /** The variables were carried into the new engine: the page takes the engine's. */
+  | 'carry'
+  /** Nothing is kept. */
+  | 'clean';
+
+/** What a start reports when it has finished, to whoever is waiting on it. */
+interface Landing {
+  ok: boolean;
+  error?: Error;
+  carried?: ScriptLoadResult['carried'];
+}
+
+/**
+ * Whether going from `from` to `to` can only give the app more. True of one
+ * case, on purpose: `from` withheld everything (the consent bar was up). Any
+ * other change may take something away, and is treated as taking it away.
+ */
+function onlyWidens(from: PermissionConfig | undefined, to: PermissionConfig | undefined): boolean {
+  if (from?.consentPending !== true) return false;
+  return Object.keys(from.permissions ?? {}).length === 0 && to !== undefined;
+}
+
+/** The logic of a page as it would be compiled, its imports placed, for comparing with the logic that is running. */
+async function resolveLogicText(code: string, revision: AppRevision): Promise<string> {
+  let resolved = moduleSyntaxAsScript(code);
+  if (typeof revision.importResolver !== 'function') return resolved;
+  const included = new Set<string>(revision.preIncludedLogicPaths ?? []);
+  if (revision.logicBasePath) included.add(revision.logicBasePath);
+  resolved = await inlineLogicImports(
+    resolved,
+    { resolver: revision.importResolver, included },
+    new Set(revision.logicBasePath ? [revision.logicBasePath] : []),
+    revision.logicBasePath
+  );
+  return resolved;
+}
+
+/** What is wrong with logic that does not parse, or null when it does (or when that cannot be told here). */
+async function logicSyntaxProblem(code: string): Promise<string | null> {
+  try {
+    const acorn = await import('acorn');
+    try {
+      acorn.parse(code, {
+        ecmaVersion: 'latest',
+        sourceType: 'script',
+        allowReturnOutsideFunction: true,
+        allowAwaitOutsideFunction: true,
+        allowHashBang: true,
+      });
+      return null;
+    } catch (fault) {
+      const at = fault as { message?: string; loc?: { line?: number } };
+      const line = at.loc?.line;
+      const written = line ? (code.split(/\r\n|\r|\n/)[line - 1] ?? '').trim() : '';
+      const said = String(at.message ?? 'it does not parse').replace(/ \(\d+:\d+\)$/, '');
+      return written ? `${said}, at: ${written.slice(0, 120)}` : said;
+    }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -567,6 +707,176 @@ function templateRequiresSyncCalls(nodes: TemplateNode[]): boolean {
   return false;
 }
 
+/** How a page is to be run: worked out from its document and what the host asked for. */
+interface RunPlan {
+  /** The page's script or logic block; one with no code for a page of browser handlers alone. */
+  codeBlock: CodeBlock | undefined;
+  /** The page has handlers written for a browser, run in its document. */
+  browserHandlers: boolean;
+  observedStateNames: ReadonlySet<string> | undefined;
+  drawnNames: ReadonlySet<string> | undefined;
+  effectiveMode: 'main' | 'worker' | 'hybrid-worker';
+  /** The script runs in a worker of its own. */
+  forceWorker: boolean;
+  spikeHook: boolean;
+  /** The page is drawn from its document from its first draw. */
+  earlyShell: boolean;
+}
+
+/**
+ * Decide how a page is run. Its own function so that a newer version of an
+ * open app can be planned beside the one that is running: a change that
+ * moves the script to another thread, or onto its document, is one the app
+ * has to be started again for.
+ */
+function planRun(
+  doc: SoftNDocument,
+  host: {
+    scriptExecutionMode: ScriptRuntimeMode;
+    executionPreference?: 'worker' | 'main';
+    python?: PythonProject;
+  }
+): RunPlan {
+  const { scriptExecutionMode, executionPreference, python: runtimePython } = host;
+  // Process script or logic block if present (only on first parse or source change)
+  // Support both <script> and <logic> tags - <logic> is the preferred new syntax
+  // A page with handlers written for a browser runs them in its document,
+  // with code of its own or none.
+  const browserHandlers = logicEngineIsSandboxed() && hasPageHandlers(doc.template);
+  const codeBlock = doc.script || doc.logic || (browserHandlers ? { type: 'LogicBlock' as const, code: '', loc: doc.loc } : undefined);
+
+  // Which state variables the markup can actually read. Derived here
+  // because this is where the parsed document lives; the runtime only
+  // ever sees the code block.
+  const observedStateNames = collectObservedStateNames(doc) ?? undefined;
+  // And which names it could call while it is drawn: a function among
+  // them reads state for the page, whether the markup names it or not.
+  const drawnNames = collectDrawnNames(doc) ?? undefined;
+  if (!codeBlock) {
+    return { codeBlock, browserHandlers, observedStateNames, drawnNames, effectiveMode: 'main', forceWorker: false, spikeHook: false, earlyShell: false };
+  }
+  const { effectiveMode, forceWorker, spikeHook } = (() => {
+    // Create script runtime (VM-based, no new Function())
+    let effectiveMode: 'main' | 'worker' | 'hybrid-worker' =
+      scriptExecutionMode === 'worker' ? 'worker' : 'main';
+    let requiresSyncMain = false;
+    let hasHostBridgeIncompat = false;
+    let hasHardIncompat = false;
+    if (scriptExecutionMode === 'worker') {
+      const templateNeedsSyncCalls = templateRequiresSyncCalls(doc.template || []);
+      const incompat = detectWorkerIncompatibilities(codeBlock.code || '');
+      hasHostBridgeIncompat = incompat.some(
+        (r) =>
+          r === 'uses db bridge (synchronous host access)' ||
+          r === 'uses window bridge/event APIs' ||
+          r === 'uses navigator bridge APIs' ||
+          r === 'uses localStorage bridge'
+      );
+      if (/\$:\s*/.test(codeBlock.code || '')) {
+        requiresSyncMain = true;
+        incompat.push('uses computed declarations ($:) requiring sync evaluation');
+      }
+      if (templateNeedsSyncCalls) {
+        requiresSyncMain = true;
+        incompat.push(
+          'template uses call expressions requiring synchronous script functions'
+        );
+      }
+      const hardIncompat = incompat.filter(
+        (r) =>
+          r !== 'uses db bridge (synchronous host access)' &&
+          r !== 'uses window bridge/event APIs' &&
+          r !== 'uses navigator bridge APIs' &&
+          r !== 'uses localStorage bridge' &&
+          r !== 'uses computed declarations ($:) requiring sync evaluation' &&
+          r !== 'template uses call expressions requiring synchronous script functions'
+      );
+      if (hardIncompat.length > 0) {
+        hasHardIncompat = true;
+        effectiveMode = 'main';
+        debug(
+          '[SoftN] Worker mode fallback to main-thread runtime:',
+          hardIncompat.join('; ')
+        );
+      } else if (requiresSyncMain || hasHostBridgeIncompat) {
+        effectiveMode = 'hybrid-worker';
+        debug('[SoftN] Worker hybrid mode enabled:', incompat.join('; '));
+      }
+    }
+
+    // Off-main-thread execution. The script runs in a dedicated worker and
+    // every script function the template binds returns a promise; what
+    // that buys is the main thread — an emulator that costs more than a
+    // display frame to advance no longer blocks the frame it is drawn in.
+    // The worker has the storage, `softn.*` and window-event bridges, so
+    // the only things that keep a script on this thread are the ones the
+    // hybrid mode exists for: computed `$:` declarations and call
+    // expressions in the template, both of which need an answer before
+    // the next line. A bundle asks with `config.execution: "worker"` in
+    // its manifest; a harness can ask with `?exec=worker` — read from the
+    // URL if the shell has not rewritten it yet, else from a global set
+    // before the app loaded. Functions the host injects into the script
+    // are handed over as the same snapshot of getter values the
+    // main-thread runtime compiles them into.
+    const execParam =
+      (typeof location !== 'undefined'
+        ? new URLSearchParams(location.search).get('exec')
+        : null) ??
+      ((globalThis as unknown as Record<string, unknown>).__softnExec as string | undefined) ??
+      null;
+    const wantsWorker =
+      scriptExecutionMode === 'worker' &&
+      (execParam === 'worker' || executionPreference === 'worker');
+    // `?exec=main` keeps the ordinary path but still installs the hook, so
+    // both sides of a measurement drive the script the same way.
+    const spikeHook = execParam !== null;
+    let forceWorker = false;
+    if (wantsWorker) {
+      if (hasHardIncompat || requiresSyncMain) {
+        debug(
+          '[SoftN] Worker execution requested but the script needs the main thread: synchronous evaluation'
+        );
+      } else {
+        forceWorker = true;
+        effectiveMode = 'worker';
+        debug(
+          `[SoftN] Worker execution ${execParam === 'worker' ? 'forced by ?exec=worker' : 'requested by the manifest'}`
+        );
+      }
+    }
+
+    // An engine that exists only on this thread overrides all of the
+    // above. The Worker runtime names the ZIPP adapter itself — a second
+    // engine is not reachable from it, and an engine built on the host
+    // document's own JavaScript could not run there anyway — so a bundle
+    // asking for a worker gets the main thread rather than the wrong
+    // engine. ZIPP says nothing, so this is inert for every host today.
+    if (logicEngineThreads() === 'main-only' && effectiveMode !== 'main') {
+      // Same family as the forceWorker advisory below: the script asked
+      // for a worker and is not getting one, and the host should know why.
+      console.warn(
+        '[SoftN] The configured logic engine runs on the main thread only, so worker execution was not used: no wall-clock interruption and no instance recycling.'
+      );
+      effectiveMode = 'main';
+      forceWorker = false;
+    }
+
+    // A Python app runs on this thread, whatever the bundle or a harness
+    // asked for. The Worker runtime names the ZIPP JavaScript adapter
+    // itself; there is no Python path in it at all, so a worker would
+    // refuse the app's own source. Silent because this is not a
+    // downgrade a host chose — it is the only thread the app can run on.
+    if (runtimePython && effectiveMode !== 'main') {
+      effectiveMode = 'main';
+      forceWorker = false;
+    }
+    return { effectiveMode, forceWorker, spikeHook };
+  })();
+  const earlyShell =
+    !forceWorker && !runtimePython && logicEngineIsSandboxed() && (usesDocument(codeBlock.code || '') || browserHandlers);
+  return { codeBlock, browserHandlers, observedStateNames, drawnNames, effectiveMode, forceWorker, spikeHook, earlyShell };
+}
+
 /**
  * A refused save, in words. The browser's own name for the cause is kept —
  * a person who searches for "QuotaExceededError" finds the answer — and the
@@ -617,8 +927,9 @@ function PersistenceNotice({
   /**
    * `alert`: what the page's `alert()` said, which the person answers.
    * `failure`: something in the app failed, which a host can tell from a save.
+   * `update`: a newer version of the open app could not be shown.
    */
-  kind?: 'persistence' | 'alert' | 'failure';
+  kind?: 'persistence' | 'alert' | 'failure' | 'update';
 }): React.ReactElement {
   const buttonStyle: React.CSSProperties = {
     border: '1px solid #fcd34d',
@@ -754,6 +1065,10 @@ export function SoftNRenderer({
   active = true,
   assetResolver,
   xdb: xdbProp,
+  app,
+  onUpdate,
+  onShown,
+  onConsentStatus,
 }: SoftNRendererProps): React.ReactElement | null {
   // One for the life of the mount: what the last drawing made, kept so the
   // next can hand React the same elements where nothing came out different.
@@ -765,6 +1080,68 @@ export function SoftNRenderer({
   const runtimePython = useStructurallyStableValue(python);
   const runtimePreIncludedLogicPaths = useStructurallyStableValue(preIncludedLogicPaths);
   const [resolvedSource, setResolvedSource] = useState<string | undefined>(source);
+
+  // The app as it is asked for and as it runs (runtime/live-app.ts). A newer
+  // version reaches this renderer through `app.update`, or through its own
+  // props, which are offered to the same object: either way it is compared
+  // with what is running and as little as must be is changed (see
+  // `reconcile` below). `aimRef` is the version the renderer is running or
+  // starting, and the permission config it has taken into account.
+  const [ownApp] = useState(() => createLiveApp());
+  const live = app ?? ownApp;
+  const driver = useMemo(() => liveAppDriver(live), [live]);
+  // The source as it is given in this draw, where it is given directly: the
+  // state above follows it a draw later, and a version must not be made of
+  // this draw's logic files and the last draw's page.
+  const givenSource = source !== undefined ? source : resolvedSource;
+  const propsRevision = useMemo<AppRevision | null>(
+    () =>
+      givenSource
+        ? {
+            source: givenSource,
+            importResolver,
+            logicBasePath,
+            preIncludedLogicPaths: runtimePreIncludedLogicPaths,
+            python: runtimePython,
+            parseProblem,
+          }
+        : null,
+    [givenSource, importResolver, logicBasePath, runtimePreIncludedLogicPaths, runtimePython, parseProblem]
+  );
+  const aimRef = useRef<{ revision: AppRevision | null; config: PermissionConfig | undefined } | null>(null);
+  if (aimRef.current === null) {
+    aimRef.current = { revision: (app ? driver.job().revision : null) ?? propsRevision, config: runtimePermissionConfig };
+  }
+  /** Counts the starts the renderer itself asks for; the start effect follows it. */
+  const [startCount, setStartCount] = useState(0);
+  /** How the next start treats what was held, and what it carries in; taken by the start effect. */
+  const startModeRef = useRef<{ mode: StartMode; carried: CarriedState | null; quietFailure: boolean }>({
+    mode: 'first',
+    carried: null,
+    quietFailure: false,
+  });
+  const runningRef = useRef<RunningApp | null>(null);
+  /** Whoever is waiting for the start in progress to finish. */
+  const landingRef = useRef<((landing: Landing) => void) | null>(null);
+  /** The page's element is made anew after a clean start, as after "Reload". */
+  const [pageEpoch, setPageEpoch] = useState(0);
+  /** What is wrong with the newest version, while the last one that worked is still showing. */
+  const [heldProblem, setHeldProblem] = useState<string | null>(null);
+  /** Where the page on screen does not parse, as its own version said. */
+  const [shownParseProblem, setShownParseProblem] = useState<string | undefined>(parseProblem);
+  const configRef = useRef(runtimePermissionConfig);
+  configRef.current = runtimePermissionConfig;
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+  const onShownRef = useRef(onShown);
+  onShownRef.current = onShown;
+  const onConsentStatusRef = useRef(onConsentStatus);
+  onConsentStatusRef.current = onConsentStatus;
+  const hostAsksRef = useRef({ scriptExecutionMode, executionPreference });
+  hostAsksRef.current = { scriptExecutionMode, executionPreference };
+  const appIdRef = useRef(appId);
+  appIdRef.current = appId;
+
   const [state, setState] = useState<RendererState>({
     document: null,
     loading: !!url,
@@ -1017,8 +1394,9 @@ export function SoftNRenderer({
    * Start a stopped app again, here. Not `location.reload()`: that is the host's
    * whole page, which in SoftN Web is every other app running beside this one,
    * and in a frame is a document that waits for its parent to start it, once.
-   * The effect below makes a new engine as it does for a grant; unlike a grant,
-   * this is a fresh start, so what the page held goes as a reload's would.
+   * The effect below makes a new engine, and this is a fresh start: what the
+   * page held goes as a reload's would. (A grant needs neither: the running
+   * app is handed its new config. See `reconcile`.)
    */
   const restartApp = useCallback(() => {
     setState((prev) => ({ ...prev, componentState: initialStateRef.current, scriptFunctions: {}, scriptSyncFunctions: {}, scriptComputed: {} }));
@@ -1066,6 +1444,373 @@ export function SoftNRenderer({
     appViewRef.current?.setShown(active);
   }, [active]);
 
+  // ── A newer version of the open app, or a change to what it is allowed ──
+
+  const documentRef = useRef(state.document);
+  documentRef.current = state.document;
+  const scriptFunctionsRef = useRef(state.scriptFunctions);
+  scriptFunctionsRef.current = state.scriptFunctions;
+
+  /**
+   * Tell the host how the app's calls stand with an unanswered permission
+   * bar, when that has changed. Later, not now: a runtime says so from
+   * inside a call, and a host answers by setting state.
+   */
+  const lastConsentSaid = useRef('{"waiting":[],"restartOnAllow":false}');
+  /** Whether a call was being kept for the person's answer when the config last changed. */
+  const keptAtGrantRef = useRef(false);
+  /** The running logic has stopped for good (see the start effect's `onScriptFailure`). */
+  const engineStoppedRef = useRef(false);
+  /** The renderer was given another app's id, and that app's files have not been looked at yet. */
+  const otherAppRef = useRef(false);
+  const reportConsent = useCallback(() => {
+    queueMicrotask(() => {
+      const tell = onConsentStatusRef.current;
+      if (!tell || !mountedRef.current) return;
+      const config = configRef.current;
+      const run = runningRef.current;
+      const pending = config?.consentPending === true;
+      const status = scriptRuntimeRef.current?.consentStatus?.() ?? { waiting: [], refused: 0 };
+      const listens = typeof scriptFunctionsRef.current['_onPermissionChange'] === 'function';
+      const restartOnAllow =
+        pending &&
+        run !== null &&
+        ((status.refused > 0 && !listens && status.waiting.length === 0) ||
+          (run.forceWorker && (config?.consentAsking ?? []).includes('accel')) ||
+          // Logic from another site, left out while the network is withheld.
+          /\/\* import not found: https?:/.test(run.logicText ?? ''));
+      const next = { waiting: pending ? [...status.waiting].sort() : [], restartOnAllow };
+      const said = JSON.stringify(next);
+      if (said === lastConsentSaid.current) return;
+      lastConsentSaid.current = said;
+      tell(next);
+    });
+  }, []);
+
+  /**
+   * Start the app (again), as `aimRef` has it. Answers when the start has
+   * finished: the script loaded or failed to, or there was none. A start
+   * that never finishes (a worker that does not answer) is not waited on
+   * for ever.
+   */
+  const startApp = useCallback((mode: StartMode, carried: CarriedState | null, quietFailure = false): Promise<Landing> => {
+    landingRef.current?.({ ok: true });
+    const landed = new Promise<Landing>((resolve) => {
+      landingRef.current = resolve;
+    });
+    startModeRef.current = { mode, carried, quietFailure };
+    setStartCount((count) => count + 1);
+    return Promise.race([landed, new Promise<Landing>((resolve) => setTimeout(() => resolve({ ok: true }), START_WAIT_MS))]);
+  }, []);
+
+  /**
+   * Bring the running app to `job.revision` and `config`, changing as little
+   * as must be. Null when a newer version arrived while this one was being
+   * looked at: the caller starts over with the newest.
+   *
+   * The order is: find out whether the newest version can be shown at all
+   * (a page that does not parse, logic that does not, keep the last one that
+   * worked); then whether the logic changed, by comparing it as it would be
+   * compiled; then either hand the running app the new page, or take its
+   * variables out and start the new logic with them.
+   */
+  const reconcile = useCallback(
+    async (
+      job: { version: number; revision: AppRevision | null; restarts: number },
+      config: PermissionConfig | undefined,
+      restartAsked: boolean
+    ): Promise<AppUpdateResult | null> => {
+      const aim = aimRef.current!;
+      const next = job.revision ?? aim.revision;
+      const run = runningRef.current;
+      const changed: AppUpdatePart[] = [];
+      const configChanged = aim.config !== config;
+      const revisionChanged = !sameRevision(aim.revision, next);
+      if (!restartAsked && !configChanged && !revisionChanged) return { outcome: 'unchanged', changed };
+      const superseded = () => driver.job().version !== job.version || !mountedRef.current;
+      const kept = (problem: string): AppUpdateResult => {
+        setHeldProblem(problem);
+        return { outcome: 'kept', changed: [], problem };
+      };
+
+      // Another app in this renderer's place (its id changed): the start
+      // effect is starting it, as it always has for a new id, and the
+      // variables of the app that was here are not carried into its engine.
+      if (run && run.appId !== appIdRef.current) {
+        aimRef.current = { revision: next, config };
+        // And a clean start when it comes with other files: what the page
+        // held was the other app's (its title, its list of pages), and
+        // under this one it showed as this one's.
+        if (revisionChanged) startModeRef.current = { mode: 'clean', carried: null, quietFailure: false };
+        otherAppRef.current = false;
+        setHeldProblem(null);
+        return { outcome: 'restarted', changed, reason: 'Another app was opened in its place.', carried: false };
+      }
+
+      // Allowed while the app is still starting: the runtime has the config
+      // already (below), and the start goes on.
+      if (run && !run.landed && !run.failed && !restartAsked && !revisionChanged && onlyWidens(aim.config, config)) {
+        aimRef.current = { revision: aim.revision, config };
+        return { outcome: 'updated', changed: ['permissions'] };
+      }
+
+      // A clean run, because a person asked for one: of the newest version,
+      // problem or not, which is then said as a first start says it.
+      if (restartAsked || !next || !run || !run.landed || run.failed) {
+        aimRef.current = { revision: next, config };
+        setHeldProblem(null);
+        // The files of another app, arriving a moment after its id (a
+        // renderer is told the id in one draw and the source in the next):
+        // clean, as above.
+        const otherApp = otherAppRef.current && revisionChanged;
+        otherAppRef.current = false;
+        const landing = await startApp(restartAsked || otherApp ? 'clean' : 'first', null);
+        return {
+          outcome: 'restarted',
+          changed,
+          reason: restartAsked ? 'It was started again, as asked.' : 'It had not started yet.',
+          carried: false,
+          ...(landing.ok ? {} : { problem: landing.error?.message }),
+        };
+      }
+
+      // 1. The newest version: can it be shown, and what of it changed?
+      const shownDoc = documentRef.current;
+      let nextDoc: SoftNDocument | null = null;
+      let plan: RunPlan | null = null;
+      let logicChanged = false;
+      if (revisionChanged) {
+        try {
+          nextDoc = parseCached(next.source);
+        } catch (error) {
+          return kept(next.parseProblem ?? (error instanceof Error ? error.message : String(error)));
+        }
+        const parseError = nextDoc.diagnostics?.find((diagnostic) => diagnostic.severity === 'error');
+        if (parseError) {
+          return kept(next.parseProblem ?? `line ${parseError.loc.line}, column ${parseError.loc.column}: ${parseError.message}`);
+        }
+        plan = planRun(nextDoc, { ...hostAsksRef.current, python: next.python });
+        const python = next.python !== undefined;
+        if (python || run.python) {
+          logicChanged =
+            python !== run.python ||
+            Boolean(plan.codeBlock) !== run.hasCode ||
+            JSON.stringify(next.python ?? null) !== JSON.stringify(run.revision.python ?? null);
+        } else if (!plan.codeBlock) {
+          logicChanged = run.hasCode;
+        } else {
+          const logicText = await resolveLogicText(plan.codeBlock.code || '', next);
+          if (superseded()) return null;
+          logicChanged = !run.hasCode || logicText !== run.logicText;
+          if (logicChanged) {
+            const problem = await logicSyntaxProblem(logicText);
+            if (superseded()) return null;
+            if (problem) return kept(`Its logic does not parse: ${problem}`);
+          }
+        }
+      }
+      const pageChanged = nextDoc !== null && nextDoc !== shownDoc;
+      const stylesChanged = pageChanged && nextDoc!.style?.content !== shownDoc?.style?.content;
+      // Everything of the page but its code and its styles: the markup, the
+      // title, the data it binds.
+      // Without where each node was written: an edit to the logic above the
+      // markup moves every line of it and changes none.
+      const drawnPart = ({ script: _script, logic: _logic, style: _style, ...rest }: SoftNDocument): string =>
+        JSON.stringify(rest, (key, value: unknown) => (key === 'loc' ? undefined : value));
+      const markupChanged = pageChanged && (!shownDoc || drawnPart(nextDoc!) !== drawnPart(shownDoc));
+      if (logicChanged) changed.push('logic');
+      if (markupChanged) changed.push('page');
+      if (stylesChanged) changed.push('styles');
+
+      // 2. What it is allowed. A grant is honoured where the app stands (the
+      // runtime was handed the config as it changed); it needs a new start
+      // only when the app was refused something and went on without it, or
+      // asked for the one thing a running worker cannot be given.
+      let narrowed = false;
+      let grantRestart = false;
+      if (configChanged) {
+        changed.push('permissions');
+        if (!onlyWidens(aim.config, config)) narrowed = true;
+        else if (config?.consentPending !== true) {
+          const status = scriptRuntimeRef.current?.consentStatus?.() ?? { waiting: [], refused: 0 };
+          const listens = typeof scriptFunctionsRef.current['_onPermissionChange'] === 'function';
+          // Not while a call was being kept for this answer: it is going
+          // through now, and a new start would drop it.
+          grantRestart =
+            (status.refused > 0 && !listens && !keptAtGrantRef.current) ||
+            (run.forceWorker && config?.permissions?.accel?.enabled === true);
+        }
+      }
+
+      const nextShell = plan ? plan.earlyShell || plan.browserHandlers : run.shell;
+      const engineMoved = plan !== null && (plan.forceWorker !== run.forceWorker || nextShell !== run.shell);
+      // Logic that has stopped (a call ran until the engine cut it off)
+      // answers nothing: a new page over it would be a dead one.
+      const stopped = engineStoppedRef.current && revisionChanged;
+      const restart = logicChanged || engineMoved || narrowed || grantRestart || stopped || (run.shell && pageChanged);
+
+      if (!restart) {
+        // 3a. Where it stands: the page is drawn again from the new markup,
+        // with the state the app has, by the logic that is running.
+        aimRef.current = { revision: next, config };
+        if (pageChanged && nextDoc && plan) {
+          const registry = getDefaultRegistry();
+          const firstScreen = collectFirstScreenTags(nextDoc);
+          void registry.preload(firstScreen);
+          if (nextDoc.style?.content && !scopeCss) void loadScopeCss();
+          const firstDraw = registry.firstDrawLoads(firstScreen);
+          if (firstDraw) {
+            await Promise.race([firstDraw, new Promise((resolve) => setTimeout(resolve, FIRST_DRAW_WAIT_MS))]);
+            if (!mountedRef.current) return null;
+          }
+          captureScrollAndFocus();
+          scriptRuntimeRef.current?.observe?.({ observedStateNames: plan.observedStateNames, drawnNames: plan.drawnNames });
+          run.revision = next;
+          driver.show(next);
+          onShownRef.current?.(next);
+          setShownParseProblem(next.parseProblem);
+          const drawn = nextDoc;
+          setState((prev) => ({ ...prev, document: drawn, error: null }));
+          onLoadRef.current?.(drawn);
+        } else {
+          run.revision = next;
+          driver.show(next);
+        }
+        if (configChanged && config?.consentPending !== true) {
+          // An app that listens is told, and does again what it was refused.
+          const told = scriptFunctionsRef.current['_onPermissionChange'];
+          if (typeof told === 'function') void Promise.resolve(told()).catch((error: unknown) => console.error('[SoftN] _onPermissionChange error:', error));
+        }
+        setHeldProblem(null);
+        reportConsent();
+        return { outcome: changed.length > 0 ? 'updated' : 'unchanged', changed };
+      }
+
+      // 3b. A new start. The variables are taken out first, where they can
+      // be; the old logic answers nothing from then on, and is let go by the
+      // start that follows.
+      const runtime = scriptRuntimeRef.current;
+      const nextHasCode = plan ? Boolean(plan.codeBlock) : run.hasCode;
+      let out: CarriedOut;
+      if (run.python || next.python !== undefined) out = { ok: false, why: 'its logic is Python, whose variables cannot be carried' };
+      else if (run.shell || nextShell) out = { ok: false, why: 'its code keeps the page in its document' };
+      else if (!run.hasCode || !nextHasCode) out = { ok: false, why: 'there is no logic to carry them between' };
+      else if (!runtime?.carryOut) out = { ok: false, why: 'this runtime cannot carry them' };
+      else out = await runtime.carryOut();
+      if (!mountedRef.current) return null;
+      // Logic that changed and cannot take the old variables starts clean:
+      // old state under new logic is an app half old and half new. The same
+      // logic, started again for a permission, keeps what the page held.
+      const mode: StartMode = out.ok ? 'carry' : logicChanged ? 'clean' : 'first';
+      const lastGood = aim.revision;
+      aimRef.current = { revision: next, config };
+      const landing = await startApp(mode, out.ok ? out.state : null, revisionChanged && lastGood !== null);
+      if (!mountedRef.current) return null;
+      if (!landing.ok && revisionChanged && lastGood) {
+        // The newest version would not start. Back to the last one that
+        // worked, with the variables that were taken out of it.
+        const problem = landing.error?.message ?? 'It would not start.';
+        aimRef.current = { revision: lastGood, config };
+        await startApp(out.ok ? 'carry' : 'first', out.ok ? out.state : null);
+        return kept(problem);
+      }
+      setHeldProblem(null);
+      const carriedIn = landing.carried;
+      const carried = mode === 'carry' && carriedIn !== undefined && 'names' in carriedIn;
+      const cleanBecause = !out.ok ? out.why : carriedIn && 'refused' in carriedIn ? carriedIn.refused : '';
+      const why = logicChanged
+        ? 'Its logic changed.'
+        : narrowed
+          ? 'A permission was taken away.'
+          : grantRestart
+            ? 'What was allowed needs its logic started again.'
+            : stopped
+              ? 'Its logic had stopped.'
+              : 'The page changed in a way that needs its logic started again.';
+      return {
+        outcome: 'restarted',
+        changed,
+        reason: carried
+          ? `${why} Its variables were carried over, and its start-up ran again.`
+          : `${why} It was started ${logicChanged ? 'clean' : 'again'}${cleanBecause ? `: ${cleanBecause}` : ''}.`,
+        carried,
+      };
+    },
+    [driver, startApp, captureScrollAndFocus, reportConsent]
+  );
+
+  /** One at a time, the newest last: what is asked for while one is dealt with waits, and the newest of it is taken. */
+  const busyRef = useRef(false);
+  const consideredRestartsRef = useRef<number | null>(null);
+  const process = useCallback(async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    try {
+      for (;;) {
+        if (!mountedRef.current) return;
+        const job = driver.job();
+        const config = configRef.current;
+        if (consideredRestartsRef.current === null) consideredRestartsRef.current = job.restarts;
+        const restartAsked = job.restarts !== consideredRestartsRef.current;
+        let result: AppUpdateResult | null;
+        try {
+          result = await reconcile(job, config, restartAsked);
+        } catch (error) {
+          console.error('[SoftN] Error updating the open app:', error);
+          result = { outcome: 'kept', changed: [], problem: error instanceof Error ? error.message : String(error) };
+        }
+        if (!mountedRef.current) return;
+        if (result === null) continue;
+        consideredRestartsRef.current = job.restarts;
+        driver.settle(job.version, result);
+        if (result.outcome !== 'unchanged') onUpdateRef.current?.(result);
+        const latest = driver.job();
+        if (latest.version === job.version && latest.restarts === job.restarts && configRef.current === config) return;
+      }
+    } finally {
+      busyRef.current = false;
+    }
+  }, [driver, reconcile]);
+
+  useEffect(() => {
+    const kick = () => void process();
+    const stop = driver.subscribe(kick);
+    kick();
+    return stop;
+  }, [driver, process]);
+  // Nobody is left waiting on an app that has closed.
+  useEffect(
+    () => () => {
+      landingRef.current?.({ ok: true });
+      landingRef.current = null;
+      queueMicrotask(() => {
+        if (!mountedRef.current) driver.settle(Number.MAX_SAFE_INTEGER, { outcome: 'kept', changed: [], problem: 'The app was closed.' });
+      });
+    },
+    [driver]
+  );
+  // What the app is allowed reaches its runtime as it changes, in the same
+  // turn: every check reads it when asked, so a grant is honoured from the
+  // next call and a withdrawal refuses from the next call. Whether the app
+  // also has to be started again is decided after (reconcile).
+  //
+  // The props are also one way a newer version of the app arrives
+  // (`app.update` is the other), and it is offered here, in the same turn
+  // and after the config: a grant that comes with the logic it lets in (a
+  // resolver that now answers from the network) is looked at as one change.
+  const configGivenRef = useRef(runtimePermissionConfig);
+  useLayoutEffect(() => {
+    if (configGivenRef.current !== runtimePermissionConfig) {
+      configGivenRef.current = runtimePermissionConfig;
+      const runtime = scriptRuntimeRef.current;
+      keptAtGrantRef.current = (runtime?.consentStatus?.().waiting.length ?? 0) > 0;
+      runtime?.setPermissionConfig?.(runtimePermissionConfig ?? null);
+      reportConsent();
+    }
+    if (propsRevision) driver.offer(propsRevision);
+    void process();
+  }, [driver, propsRevision, runtimePermissionConfig, process, reportConsent]);
+
   // Parse source when provided directly
   useEffect(() => {
     // Per-invocation stale flag — prevents React Strict Mode double-mount from
@@ -1075,13 +1820,55 @@ export function SoftNRenderer({
     setPersistenceNotice(null);
     setScriptNotice(null);
     failuresSeen.current = { at: 0, dismissed: new Set(), stopped: false, saves: new Set() };
+    engineStoppedRef.current = false;
     const onScriptFailure = (failure: ScriptFailure) => {
-      if (!stale) showScriptFailure(failure);
+      if (stale) return;
+      // Known whether or not this host has its failures said on the page: a
+      // newer version handed to an app whose logic has stopped starts it again.
+      if (failure.stopped) engineStoppedRef.current = true;
+      showScriptFailure(failure);
     };
     const onPersistenceFailure = (failure: PersistenceFailure) => {
       if (!stale && mountedRef.current) showPersistenceFailure(failure);
     };
 
+    // What is started is the version the renderer is aiming at (aimRef): the
+    // one from its props at first, and after that whatever `reconcile` set
+    // before it asked for this start. How the start treats what the page and
+    // the old engine held is said once, by whoever asked, and taken here.
+    const revision = aimRef.current!.revision;
+    const { mode: startMode, carried: startCarried, quietFailure } = startModeRef.current;
+    startModeRef.current = { mode: 'first', carried: null, quietFailure: false };
+    const previousScriptNames = runningRef.current?.scriptStateNames ?? [];
+    // Another app's id: its files may follow in the next draw (reconcile).
+    if (runningRef.current && runningRef.current.appId !== appId) otherAppRef.current = true;
+    const running: RunningApp | null = revision
+      ? { appId, revision, logicText: undefined, hasCode: false, forceWorker: false, shell: false, python: revision.python !== undefined, scriptStateNames: [], landed: false, failed: false }
+      : null;
+    runningRef.current = running;
+    /** Tell whoever asked for this start that it has finished. */
+    const land = (landing: Landing) => {
+      if (stale) return;
+      if (running) {
+        running.landed = true;
+        running.failed = !landing.ok;
+      }
+      const waiting = landingRef.current;
+      landingRef.current = null;
+      waiting?.(landing);
+      otherAppRef.current = false;
+      reportConsent();
+    };
+    const resolvedSource = revision?.source;
+    const importResolver = revision?.importResolver;
+    const logicBasePath = revision?.logicBasePath;
+    const runtimePreIncludedLogicPaths = revision?.preIncludedLogicPaths as string[] | undefined;
+    const runtimePython = revision?.python;
+    // Read as it is now, not as it was when this version was aimed at: a
+    // permission taken away while a start was being decided is not given.
+    const runtimePermissionConfig = configRef.current;
+
+    if (!resolvedSource) land({ ok: true });
     if (resolvedSource) {
       // Capture scroll/focus before re-parsing for hot reload
       captureScrollAndFocus();
@@ -1133,20 +1920,15 @@ export function SoftNRenderer({
           }
         }
 
-        // Process script or logic block if present (only on first parse or source change)
-        // Support both <script> and <logic> tags - <logic> is the preferred new syntax
-        // A page with handlers written for a browser runs them in its document,
-        // with code of its own or none.
-        const browserHandlers = logicEngineIsSandboxed() && hasPageHandlers(doc.template);
-        const codeBlock = doc.script || doc.logic || (browserHandlers ? { type: 'LogicBlock' as const, code: '', loc: doc.loc } : undefined);
-
-        // Which state variables the markup can actually read. Derived here
-        // because this is where the parsed document lives; the runtime only
-        // ever sees the code block.
-        const observedStateNames = collectObservedStateNames(doc) ?? undefined;
-        // And which names it could call while it is drawn: a function among
-        // them reads state for the page, whether the markup names it or not.
-        const drawnNames = collectDrawnNames(doc) ?? undefined;
+        // The script or logic block, which thread it runs on, and what of its
+        // state the page reads: worked out from the document alone (planRun).
+        const plan = planRun(doc, { scriptExecutionMode, executionPreference, python: runtimePython });
+        const { browserHandlers, codeBlock, observedStateNames, drawnNames } = plan;
+        if (running) {
+          running.hasCode = Boolean(codeBlock);
+          running.forceWorker = plan.forceWorker;
+          running.shell = plan.earlyShell || plan.browserHandlers;
+        }
 
         // Set when the page is to be drawn from its document from the start.
         let earlyShell: Promise<void> | null = null;
@@ -1264,127 +2046,15 @@ export function SoftNRenderer({
             console: createConsoleModule(),
           };
 
-          // Create script runtime (VM-based, no new Function())
-          let effectiveMode: 'main' | 'worker' | 'hybrid-worker' =
-            scriptExecutionMode === 'worker' ? 'worker' : 'main';
-          let requiresSyncMain = false;
-          let hasHostBridgeIncompat = false;
-          let hasHardIncompat = false;
-          if (scriptExecutionMode === 'worker') {
-            const templateNeedsSyncCalls = templateRequiresSyncCalls(doc.template || []);
-            const incompat = detectWorkerIncompatibilities(codeBlock.code || '');
-            hasHostBridgeIncompat = incompat.some(
-              (r) =>
-                r === 'uses db bridge (synchronous host access)' ||
-                r === 'uses window bridge/event APIs' ||
-                r === 'uses navigator bridge APIs' ||
-                r === 'uses localStorage bridge'
-            );
-            if (/\$:\s*/.test(codeBlock.code || '')) {
-              requiresSyncMain = true;
-              incompat.push('uses computed declarations ($:) requiring sync evaluation');
-            }
-            if (templateNeedsSyncCalls) {
-              requiresSyncMain = true;
-              incompat.push(
-                'template uses call expressions requiring synchronous script functions'
-              );
-            }
-            const hardIncompat = incompat.filter(
-              (r) =>
-                r !== 'uses db bridge (synchronous host access)' &&
-                r !== 'uses window bridge/event APIs' &&
-                r !== 'uses navigator bridge APIs' &&
-                r !== 'uses localStorage bridge' &&
-                r !== 'uses computed declarations ($:) requiring sync evaluation' &&
-                r !== 'template uses call expressions requiring synchronous script functions'
-            );
-            if (hardIncompat.length > 0) {
-              hasHardIncompat = true;
-              effectiveMode = 'main';
-              debug(
-                '[SoftN] Worker mode fallback to main-thread runtime:',
-                hardIncompat.join('; ')
-              );
-            } else if (requiresSyncMain || hasHostBridgeIncompat) {
-              effectiveMode = 'hybrid-worker';
-              debug('[SoftN] Worker hybrid mode enabled:', incompat.join('; '));
-            }
-          }
-
-          // Off-main-thread execution. The script runs in a dedicated worker and
-          // every script function the template binds returns a promise; what
-          // that buys is the main thread — an emulator that costs more than a
-          // display frame to advance no longer blocks the frame it is drawn in.
-          // The worker has the storage, `softn.*` and window-event bridges, so
-          // the only things that keep a script on this thread are the ones the
-          // hybrid mode exists for: computed `$:` declarations and call
-          // expressions in the template, both of which need an answer before
-          // the next line. A bundle asks with `config.execution: "worker"` in
-          // its manifest; a harness can ask with `?exec=worker` — read from the
-          // URL if the shell has not rewritten it yet, else from a global set
-          // before the app loaded. Functions the host injects into the script
-          // are handed over as the same snapshot of getter values the
-          // main-thread runtime compiles them into.
-          const execParam =
-            (typeof location !== 'undefined'
-              ? new URLSearchParams(location.search).get('exec')
-              : null) ??
-            ((globalThis as unknown as Record<string, unknown>).__softnExec as string | undefined) ??
-            null;
-          const wantsWorker =
-            scriptExecutionMode === 'worker' &&
-            (execParam === 'worker' || executionPreference === 'worker');
-          // `?exec=main` keeps the ordinary path but still installs the hook, so
-          // both sides of a measurement drive the script the same way.
-          const spikeHook = execParam !== null;
-          let forceWorker = false;
-          if (wantsWorker) {
-            if (hasHardIncompat || requiresSyncMain) {
-              debug(
-                '[SoftN] Worker execution requested but the script needs the main thread: synchronous evaluation'
-              );
-            } else {
-              forceWorker = true;
-              effectiveMode = 'worker';
-              debug(
-                `[SoftN] Worker execution ${execParam === 'worker' ? 'forced by ?exec=worker' : 'requested by the manifest'}`
-              );
-            }
-          }
-
-          // An engine that exists only on this thread overrides all of the
-          // above. The Worker runtime names the ZIPP adapter itself — a second
-          // engine is not reachable from it, and an engine built on the host
-          // document's own JavaScript could not run there anyway — so a bundle
-          // asking for a worker gets the main thread rather than the wrong
-          // engine. ZIPP says nothing, so this is inert for every host today.
-          if (logicEngineThreads() === 'main-only' && effectiveMode !== 'main') {
-            // Same family as the forceWorker advisory below: the script asked
-            // for a worker and is not getting one, and the host should know why.
-            console.warn(
-              '[SoftN] The configured logic engine runs on the main thread only, so worker execution was not used: no wall-clock interruption and no instance recycling.'
-            );
-            effectiveMode = 'main';
-            forceWorker = false;
-          }
-
-          // A Python app runs on this thread, whatever the bundle or a harness
-          // asked for. The Worker runtime names the ZIPP JavaScript adapter
-          // itself; there is no Python path in it at all, so a worker would
-          // refuse the app's own source. Silent because this is not a
-          // downgrade a host chose — it is the only thread the app can run on.
-          if (runtimePython && effectiveMode !== 'main') {
-            effectiveMode = 'main';
-            forceWorker = false;
-          }
+          // Which thread the script runs on, and how (planRun, above).
+          const { effectiveMode, forceWorker, spikeHook } = plan;
 
           // A page whose own code asks for the document is drawn from it from
           // its first draw. Drawn plainly first and from the document once the
           // code had loaded, every element on it was drawn twice, and what was
           // typed in between was lost. (Code an import brings in is found as
           // it compiles, and such a page changes over then.)
-          if (!forceWorker && !runtimePython && logicEngineIsSandboxed() && (usesDocument(codeBlock.code || '') || browserHandlers)) {
+          if (plan.earlyShell) {
             earlyShell = shellRequest.create().then(
               (made) => {
                 if (!stale && mountedRef.current) setDocumentShell(made);
@@ -1428,31 +2098,19 @@ export function SoftNRenderer({
                 observedStateNames,
                 drawnNames,
                 onPersistenceFailure,
+                carried: startCarried ?? undefined,
+                onConsentChange: reportConsent,
               },
               bundleFileProvider,
               runtimeFunctions
             );
-            runtime = {
-              loadScript: async (script) => {
-                const mainRes = await mainRuntime.loadScript(script);
-                return {
-                  state: mainRes.state,
-                  functions: mainRes.functions,
-                  syncFunctions: mainRes.syncFunctions,
-                  computed: mainRes.computed,
-                };
-              },
-              updateContext: (newState) => {
-                mainRuntime.updateContext(newState);
-              },
-              cleanup: () => {
-                mainRuntime.cleanup();
-              },
-              // Without it the app's element was never named (key-capture.ts),
-              // and its window listeners heard every key and click aimed at
-              // the page outside an editable field, the host's own included.
-              setAppRoot: (element) => mainRuntime.setAppRoot?.(element),
-            };
+            // The runtime's own handle, whole. It was a copy of four of its
+            // methods, and one left out was a thing the app could not do:
+            // without `setAppRoot` the app's element was never named
+            // (key-capture.ts), and its window listeners heard every key and
+            // click aimed at the page outside an editable field, the host's
+            // own included.
+            runtime = mainRuntime;
           } else if (effectiveMode === 'worker' && forceWorker) {
             runtime = createWorkerScriptRuntimeLazily(
               formLogicContext,
@@ -1483,6 +2141,7 @@ export function SoftNRenderer({
                 // that keeps its own list, has the card as before.
                 onFatal: (err) => {
                   if (stale || !mountedRef.current) return;
+                  engineStoppedRef.current = true;
                   const failure = err instanceof Error ? err : new Error(String(err));
                   if (scriptLanded && failureNoticesRef.current) {
                     const silent = failure.message.startsWith('worker_hard_deadline');
@@ -1493,6 +2152,8 @@ export function SoftNRenderer({
                   onErrorRef.current?.(failure);
                 },
                 onPersistenceFailure,
+                carried: startCarried ?? undefined,
+                onConsentChange: reportConsent,
               }
             );
           } else if (effectiveMode === 'worker') {
@@ -1535,23 +2196,14 @@ export function SoftNRenderer({
                 observedStateNames,
                 drawnNames,
                 onPersistenceFailure,
+                carried: startCarried ?? undefined,
+                onConsentChange: reportConsent,
               },
               bundleFileProvider,
               runtimeFunctions
             );
-            runtime = {
-              loadScript: async (script) => {
-                return mainRuntime.loadScript(script);
-              },
-              updateContext: (newState) => {
-                mainRuntime.updateContext(newState);
-              },
-              cleanup: () => {
-                mainRuntime.cleanup();
-              },
-              // As in the hybrid handle above: SoftN Web's default mode.
-              setAppRoot: (element) => mainRuntime.setAppRoot?.(element),
-            };
+            // As in the hybrid mode above: SoftN Web's default mode.
+            runtime = mainRuntime;
           } else {
             runtime = createScriptRuntime(
               formLogicContext,
@@ -1575,6 +2227,8 @@ export function SoftNRenderer({
                 observedStateNames,
                 drawnNames,
                 onPersistenceFailure,
+                carried: startCarried ?? undefined,
+                onConsentChange: reportConsent,
               },
               bundleFileProvider,
               runtimeFunctions
@@ -1629,16 +2283,44 @@ export function SoftNRenderer({
               if (madeShell?.active) {
                 setDocumentShell(madeShell);
                 setShellActive(true);
+                if (running) running.shell = true;
               }
+              if (running) {
+                running.logicText = result.logicText;
+                running.scriptStateNames = Object.keys(result.state);
+              }
+
+              // What the page holds from here on, by how this start was asked
+              // for. A start with the variables carried in takes the engine's
+              // own for every script variable (carried, or the new logic's
+              // starting value) and keeps what only the page held. A clean
+              // start, and one whose variables the new logic would not take,
+              // keeps nothing. Any other is a first start: script state under
+              // what the page holds.
+              const refused = result.carried !== undefined && 'refused' in result.carried;
+              const clean = startMode === 'clean' || (startMode === 'carry' && (refused || result.carried === undefined));
+              const carriedIn = startMode === 'carry' && !clean;
+              if (clean) setPageEpoch((epoch) => epoch + 1);
 
               // Merge script state into componentState and set functions
               scriptLanded = true;
               setState((prev) => {
-                // Script state provides defaults; prev.componentState (from initialState) wins
-                const mergedState =
-                  Object.keys(result.state).length > 0
-                    ? { ...result.state, ...prev.componentState }
-                    : prev.componentState;
+                let mergedState: Record<string, unknown>;
+                if (clean) {
+                  mergedState = { ...result.state, ...initialStateRef.current };
+                } else if (carriedIn) {
+                  const held = { ...prev.componentState };
+                  for (const name of previousScriptNames) {
+                    if (!(name in result.state)) delete held[name];
+                  }
+                  mergedState = { ...held, ...result.state };
+                } else {
+                  // Script state provides defaults; prev.componentState (from initialState) wins
+                  mergedState =
+                    Object.keys(result.state).length > 0
+                      ? { ...result.state, ...prev.componentState }
+                      : prev.componentState;
+                }
 
                 return {
                   ...prev,
@@ -1648,6 +2330,8 @@ export function SoftNRenderer({
                   scriptComputed: result.computed,
                 };
               });
+
+              land({ ok: true, carried: result.carried });
 
               // Call _init() convention — apps can define _init() for one-time setup
               // Must use async version (result.functions) so state changes propagate
@@ -1719,6 +2403,11 @@ export function SoftNRenderer({
               if (stale || !mountedRef.current) return;
               console.error('[SoftN] Error loading script:', err);
               const scriptError = err instanceof Error ? err : new Error(String(err));
+              land({ ok: false, error: scriptError });
+              // A newer version that would not start, with a version that
+              // worked to go back to: whoever asked goes back to it and says
+              // what was wrong, and the page is not replaced by the error.
+              if (quietFailure) return;
               if (browserHandlers || usesDocument(codeBlock.code || '')) {
                 // Code written for a browser: as in a browser, the page stays,
                 // and only its script stopped. The page is drawn as written,
@@ -1748,6 +2437,14 @@ export function SoftNRenderer({
           // A first draw that waited may come after the script: its functions
           // stay, and the stand-ins are only for a draw that comes first.
           const waiting = Boolean(codeBlock) && !scriptLanded;
+          // This version is on screen: said before the page is drawn from it,
+          // in the same turn, so that what a host draws beside it (the data
+          // its `<data>` block binds) changes with it.
+          if (revision) {
+            driver.show(revision);
+            onShownRef.current?.(revision);
+            setShownParseProblem(revision.parseProblem);
+          }
           setState((prev) => ({
             ...prev,
             document: doc,
@@ -1756,8 +2453,12 @@ export function SoftNRenderer({
             scriptFunctions: waiting ? standIns : prev.scriptFunctions,
             scriptSyncFunctions: waiting ? {} : prev.scriptSyncFunctions,
             scriptComputed: waiting ? {} : prev.scriptComputed,
+            // A page with no code has nothing of a script's to keep.
+            ...(codeBlock ? {} : startMode === 'clean' ? { componentState: initialStateRef.current } : {}),
           }));
           onLoadRef.current?.(doc);
+          // A page with no code has started once it is drawn.
+          if (!codeBlock) land({ ok: true });
         };
         // Started now, so the page is hidden for as little as can be.
         if (doc.style?.content && !scopeCss) void loadScopeCss();
@@ -1786,6 +2487,7 @@ export function SoftNRenderer({
         }
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
+        land({ ok: false, error });
         setState((prev) => ({
           ...prev,
           document: null,
@@ -1823,11 +2525,14 @@ export function SoftNRenderer({
     appId,
     bundleFileProvider,
     captureScrollAndFocus,
-    importResolver,
-    logicBasePath,
-    resolvedSource,
+    // The version of the app and what it is allowed are not here: a change
+    // to either is looked at first (reconcile, above), which hands the
+    // running app what it can take where it stands and asks for a start,
+    // through this count, only when one is needed.
+    startCount,
+    driver,
+    reportConsent,
     resumeSavedSyncRoom,
-    runtimePermissionConfig,
     storageEndpoint,
     backendCall,
     netFetchHandler,
@@ -1837,9 +2542,7 @@ export function SoftNRenderer({
     showPersistenceFailure,
     readAsset,
     restarts,
-    runtimePython,
     runtimePermissions,
-    runtimePreIncludedLogicPaths,
     runtimeFunctions,
     scriptExecutionMode,
     // Chooses worker or main thread alongside scriptExecutionMode, so a change
@@ -2142,6 +2845,9 @@ export function SoftNRenderer({
       },
       functions: stableSyncFunctions,
       asyncFunctions: stableAsyncFunctions,
+      // Which of those the host gave: a write is handed to the host's
+      // `on<Name>Change` or `onUpdate`, never to a logic function of that name.
+      hostFunctions: functions,
       scriptLoaded,
       consentPending: runtimePermissionConfig?.consentPending === true,
       // What the markup may fetch, judged by the bundle's own declaration. A
@@ -2165,6 +2871,7 @@ export function SoftNRenderer({
     computedValues,
     stableSyncFunctions,
     stableAsyncFunctions,
+    functions,
     scriptLoaded,
     state.scriptComputed,
     runtimePermissionConfig,
@@ -2346,8 +3053,17 @@ export function SoftNRenderer({
       {parseError && (
         <PersistenceNotice
           kind="failure"
-          message={`This page has a mistake, so it may not be drawn as written: ${parseProblem ?? `line ${parseError.loc.line}, column ${parseError.loc.column}: ${parseError.message}`}`}
+          message={`This page has a mistake, so it may not be drawn as written: ${shownParseProblem ?? `line ${parseError.loc.line}, column ${parseError.loc.column}: ${parseError.message}`}`}
           onDismiss={() => setParseNoticeGone(state.document)}
+        />
+      )}
+      {/* A newer version of the open app that cannot be shown: the last one
+          that worked stays, and this says what is wrong with the newest. */}
+      {failureNotices && heldProblem !== null && (
+        <PersistenceNotice
+          kind="update"
+          message={`The newest change has a problem, so the last version that worked is still showing. ${heldProblem}`}
+          onDismiss={() => setHeldProblem(null)}
         />
       )}
       {scriptNotice !== null && (
@@ -2374,7 +3090,7 @@ export function SoftNRenderer({
       <div
         {...root}
         ref={attachContainer}
-        key={`softn-container-${stateKey}-${restarts}`}
+        key={`softn-container-${stateKey}-${restarts}-${pageEpoch}`}
         data-softn-page={stateKey}
         // Not seen without its style block, for the moment it takes to load
         // what keeps that block to the app. (A load that failed shows the

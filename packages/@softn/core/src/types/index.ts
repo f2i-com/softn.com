@@ -97,6 +97,27 @@ export interface SoftNRenderContext {
   // Async functions from script block (for event handlers - track state changes)
   asyncFunctions: Record<string, (...args: unknown[]) => unknown>;
 
+  /**
+   * The functions the host itself gave, where `functions` also holds the
+   * app's own logic functions and the built-in helpers. A write a page makes
+   * with `:bind` is handed to `on<Name>Change(path, value)`, or else
+   * `onUpdate(path, value)`, in place of the write, only when that function
+   * is one of these: an app's own function of that name is the app's, and is
+   * never taken for the host's. Left out, `functions` is taken to be all the
+   * host's, which it is in a context made by hand.
+   */
+  hostFunctions?: Record<string, (...args: unknown[]) => unknown>;
+
+  /**
+   * This is the context a handler runs in (`@click={…}`, an `on…` prop):
+   * `functions` holds `asyncFunctions`, whose logic functions answer a
+   * promise, so a call written where its value is needed,
+   * `save(currentDraft())`, is waited for before what needs it goes on (see
+   * renderer/evaluate.ts). Without it nothing waits, which is how a page is
+   * drawn. The renderer makes these; a host does not set it.
+   */
+  waitsForCalls?: boolean;
+
   // Whether the script block has finished loading (suppresses function-not-found warnings during init)
   scriptLoaded?: boolean;
 
@@ -167,8 +188,31 @@ export interface SoftNRenderContext {
    */
   renderCache?: import('../renderer/reuse').SoftNRenderCache;
 
+  /**
+   * Set by a host that is editing the app while it runs: the renderer notes,
+   * here and nowhere on the page, which node of the document each element was
+   * drawn from. Absent, nothing is noted and nothing is paid. See EditMarks.
+   */
+  editMarks?: EditMarks;
+
   // Slot content passed from parent component
   slots?: SlotContent;
+}
+
+/**
+ * Where a host that edits a running app finds what drew an element: made with
+ * `createEditMarks()` (`@softn/core/edit`) and read with `drawnFrom`.
+ *
+ * The notes are kept here, in the host's memory, by the element itself.
+ * Nothing is written on the page: no attribute, no class, no wrapper, so the
+ * page a host edits is the page it would be otherwise, to its styles, to its
+ * code and to anything that reads it.
+ */
+export interface EditMarks {
+  /** @internal The document node an HTML element was drawn from, by the element. */
+  readonly drawn: WeakMap<object, import('../parser/ast').ElementNode>;
+  /** @internal The function that notes an element, by its node's place, so React is given the same one each drawing. */
+  readonly refs: WeakMap<object, (element: unknown) => void>;
 }
 
 /**

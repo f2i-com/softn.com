@@ -281,6 +281,60 @@ function relocate(node: unknown, loc: SourceLocation): void {
   }
 }
 
+/** Where an event says what it happened to, and what a handler reads off a field there. */
+const EVENT_TARGETS: ReadonlySet<string> = new Set(['target', 'currentTarget']);
+const FIELD_VALUES: ReadonlySet<string> = new Set(['value', 'checked']);
+
+/**
+ * The first place under `node` that reads a field's value off an event, as
+ * it is written (`e.target.value`), or null. `event` is the name the event
+ * goes by, and `targets` the names its `target` was taken apart into
+ * (`({ target }) => target.value`). An arrow inside that binds one of the
+ * names again is talking about something else.
+ */
+function eventFieldRead(node: unknown, event: string | undefined, targets: ReadonlySet<string>): string | null {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = eventFieldRead(item, event, targets);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (node === null || typeof node !== 'object') return null;
+  const expr = node as Expression;
+  if (expr.type === 'ArrowFunctionExpression') {
+    const still = expr.params.includes(event ?? '') ? undefined : event;
+    const stillTargets = new Set([...targets].filter((name) => !expr.params.includes(name)));
+    if (still === undefined && stillTargets.size === 0) return null;
+    return eventFieldRead([expr.body, expr.statements, expr.returns], still, stillTargets);
+  }
+  if (
+    expr.type === 'MemberExpression' &&
+    !expr.computed &&
+    expr.property.type === 'Identifier' &&
+    FIELD_VALUES.has(expr.property.name)
+  ) {
+    const from = expr.object;
+    if (from.type === 'Identifier' && targets.has(from.name)) return `${from.name}.${expr.property.name}`;
+    if (
+      from.type === 'MemberExpression' &&
+      !from.computed &&
+      from.property.type === 'Identifier' &&
+      EVENT_TARGETS.has(from.property.name) &&
+      from.object.type === 'Identifier' &&
+      from.object.name === event
+    ) {
+      return `${event}.${from.property.name}.${expr.property.name}`;
+    }
+  }
+  for (const [key, value] of Object.entries(expr)) {
+    if (key === 'loc') continue;
+    const found = eventFieldRead(value, event, targets);
+    if (found) return found;
+  }
+  return null;
+}
+
 /**
  * A page's `<style>` blocks as one stylesheet: the rules of each, in the
  * order the blocks are written, at the place the first one stands.
@@ -1425,6 +1479,7 @@ export class Parser {
 
     this.normalizeAttributeNames(element);
     this.takeHandlerAttributes(element);
+    this.noteEventsReadAsValues(element);
 
     // `<br>`, `<img …>` and `<input …>` end where their tag ends, as in HTML.
     element.selfClosing =
@@ -1548,6 +1603,53 @@ export class Parser {
     }
     for (const event of element.events) event.name = callbackName(event.name, html);
     for (const binding of element.bindings) binding.name = callbackName(binding.name, html);
+  }
+
+  /**
+   * `@input={(e) => q = e.target.value}`: how other frameworks write it, and
+   * here it clears `q` at every keystroke. A handler written in braces for
+   * `@input` or `@change` is handed the field's new value, not the event (the
+   * renderer's `wrapEventHandler`), so `e` is the text and `e.target` is
+   * nothing. Nothing said so; the page is read as written, and this says it.
+   * A handler in quotes is handed the event, and so is every other event's.
+   */
+  private noteEventsReadAsValues(element: ElementNode): void {
+    for (const event of element.events) {
+      if (event.name !== 'change' && event.name !== 'input') continue;
+      const handler = event.handler;
+      if (event.quoted || handler.type !== 'ArrowFunctionExpression') continue;
+      const first: ParamPattern | undefined = handler.patterns
+        ? handler.patterns[0]
+        : handler.params.length > 0
+          ? { pattern: { type: 'NamePattern', name: handler.params[0] } }
+          : undefined;
+      if (!first || first.rest) continue;
+      const pattern = first.pattern;
+      const targets = new Set<string>();
+      if (pattern.type === 'ObjectPattern') {
+        for (const property of pattern.properties) {
+          if (EVENT_TARGETS.has(property.key) && property.value.pattern.type === 'NamePattern') {
+            targets.add(property.value.pattern.name);
+          }
+        }
+      }
+      const name = pattern.type === 'NamePattern' ? pattern.name : undefined;
+      if (name === undefined && targets.size === 0) continue;
+      const read = eventFieldRead([handler.body, handler.statements, handler.returns], name, targets);
+      if (!read) continue;
+      const written = `@${event.name}={(${patternText(pattern)}) => …}`;
+      const instead = read.endsWith('.checked')
+        ? `For a checkbox, keep it in a variable with :bind={…}, or write the handler in quotes, @${event.name}="…", which is handed the event as "event"`
+        : `Use the parameter as the value, @${event.name}={(value) => …}, or keep the field in a variable with :bind={…}. ` +
+          `A handler written in quotes, @${event.name}="…", is handed the event as "event"`;
+      this.diagnostics.push({
+        message:
+          `${written} reads ${read}, but a handler written in braces for @input or @change ` +
+          `is handed the new value itself, not the event, so ${read} is nothing there. ${instead}`,
+        severity: 'warning',
+        loc: event.loc,
+      });
+    }
   }
 
   /**
@@ -4002,7 +4104,11 @@ export class Parser {
       const at = token.start + match.index;
       const lineStart = this.source.lastIndexOf('\n', at - 1) + 1;
       if (this.source.slice(lineStart, at).trim() !== '') continue;
-      const line = token.line + (this.source.slice(token.start, at).match(/\n/g)?.length ?? 0);
+      // Counted from the top of the page, not from the token: words that
+      // begin with the line break before them (as words after an element
+      // do) are placed by the lexer on the line the break leads to, and
+      // counting on from there named the line after the one it is on.
+      const line = (this.source.slice(0, at).match(/\n/g)?.length ?? 0) + 1;
       this.diagnostics.push({
         message: `"${match[0]}" is not a SoftN block, so it is shown as words: write #elseif (or #else if)`,
         severity: 'warning',
@@ -4308,7 +4414,16 @@ export function parse(source: string): SoftNDocument {
 // 15 An HTML handler that reaches for the browser (`document`, `alert()`,
 //    `location`) stays the attribute, for the page's document to run, as
 //    `<body onload>` does, on a `<div>` marked `data-softn-body`.
-export const PARSER_VERSION = 15;
+// 16: A space right after an opening tag, before words or an expression on
+//    the same line, is kept as one space, as HTML keeps it and as a space
+//    after an element or an expression already was: `Total<b> 12</b>` is
+//    "Total 12" where it was "Total12". A line break after the tag, and a
+//    space before another tag, a block or a comment, are layout as before.
+// 17: A space before a `#` that begins no block is kept, after an
+//    expression, an element or an opening tag: `Ticket {name} #{id}` is
+//    "Ticket Ada #12" where it was "Ticket Ada#12". Before a `#` that begins
+//    a block (`#if`, `#each`, `#else`, `#end`…) it is layout as before.
+export const PARSER_VERSION = 17;
 
 /** Whether `expr`, read from the token `first`, is an `||` or `&&` not written in parentheses. */
 function isBareLogical(expr: Expression, first: Token): boolean {

@@ -10,6 +10,7 @@ import type { RuntimeState, XDBRecord } from '../types';
 import type { DocumentShell } from '../document-shell/host';
 import type { PythonProject } from './vm-adapter';
 import type { AIPermissionConfig, GpuPermissionConfig } from './ai-manager';
+import type { CarriedState } from './state-carry';
 
 /**
  * Type alias for code blocks - either ScriptBlock or LogicBlock
@@ -216,6 +217,14 @@ export interface ScriptRuntimeOptions {
    * it carries the host's name and holds the whole tab.
    */
   onAlert?: (message: string) => void;
+  /**
+   * The variables of the logic this one replaces, to start with
+   * (state-carry.ts): put in after the new logic's top level has run and
+   * before the page is given its state or `_init` is called.
+   */
+  carried?: CarriedState;
+  /** Told when {@link ScriptRuntimeHandle.consentStatus} would answer differently. */
+  onConsentChange?: () => void;
 }
 
 /**
@@ -268,7 +277,21 @@ export interface ScriptLoadResult {
   functions: Record<string, (...args: unknown[]) => Promise<unknown>>;
   syncFunctions: Record<string, (...args: unknown[]) => unknown>;
   computed: Record<string, () => unknown>;
+  /**
+   * The logic as it was compiled, its imports placed: what a host compares a
+   * new version's with, to tell whether the logic changed. Absent for Python.
+   */
+  logicText?: string;
+  /**
+   * What became of `ScriptRuntimeOptions.carried`: the variables that took
+   * their carried values, or why none did (the engine then stands as a clean
+   * start). Absent when nothing was handed over.
+   */
+  carried?: { names: string[] } | { refused: string };
 }
+
+/** What a runtime answers when asked for its variables, to carry into the next (state-carry.ts). */
+export type CarriedOut = { ok: true; state: CarriedState; names: string[] } | { ok: false; why: string };
 
 export interface ScriptRuntimeHandle {
   loadScript: (script: CodeBlock) => Promise<ScriptLoadResult>;
@@ -276,6 +299,26 @@ export interface ScriptRuntimeHandle {
   cleanup: () => void;
   /** The element the app is drawn in: its window listeners hear what is aimed there. */
   setAppRoot?: (element: Element | null) => void;
+  /**
+   * Replace the permission config the running app is held to. Every check
+   * reads it as it is asked, so a grant is honoured from the next call on, a
+   * call kept for the answer goes through, and a withdrawal refuses at once.
+   */
+  setPermissionConfig?: (config: PermissionConfig | null) => void;
+  /** How the app's calls stand with an unanswered permission bar. */
+  consentStatus?: () => ConsentStatus;
+  /**
+   * Take the app's variables out, to start its next logic with, and stop
+   * answering: nothing may change them after they are taken. The runtime is
+   * cleaned up next.
+   */
+  carryOut?: () => Promise<CarriedOut>;
+  /**
+   * The page was drawn from new markup: which state it can read
+   * (`observedStateNames`) and what it could call while drawn (`drawnNames`)
+   * are told again, so a variable the new markup names is mirrored to it.
+   */
+  observe?: (names: { observedStateNames?: ReadonlySet<string>; drawnNames?: ReadonlySet<string> }) => void;
 }
 
 /**
@@ -335,6 +378,31 @@ export interface PermissionConfig {
    * exactly that, aimed at a user who has simply not clicked Allow.
    */
   consentPending?: boolean;
+  /**
+   * With `consentPending`: the capabilities the person is being asked for
+   * right now, by a bar that is on screen and can be answered. A `softn.*`
+   * call that needs one of them is kept until they answer, and then goes
+   * through or is refused, so that what they pressed is done once they allow
+   * it. Nothing runs while it is kept. A host that leaves this out, or takes
+   * a name out of it ("Not now"), has such calls refused at once, as before.
+   */
+  consentAsking?: readonly string[];
+}
+
+/**
+ * How an app's `softn.*` calls stand with a permission bar that has not been
+ * answered: what the host's bar can say, and what allowing will do.
+ */
+export interface ConsentStatus {
+  /** The capabilities calls are being kept for, until the person answers. */
+  waiting: string[];
+  /**
+   * How many calls were refused because the person had not allowed them. An
+   * app that has been refused has gone on without what it asked for; it is
+   * started again when the permission is given, unless it listens for that
+   * itself (`_onPermissionChange`).
+   */
+  refused: number;
 }
 
 /** Pending host call from the VM (mirrors Rust PendingHostCall) */

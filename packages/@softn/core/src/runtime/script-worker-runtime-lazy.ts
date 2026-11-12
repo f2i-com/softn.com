@@ -16,6 +16,9 @@ export function createWorkerScriptRuntimeLazily(...args: Parameters<typeof creat
   let cleanedUp = false;
   const updates: Parameters<ScriptRuntimeHandle['updateContext']>[0][] = [];
   let appRoot: Element | null | undefined;
+  // A grant given before the runtime has loaded: it starts under the config
+  // it was made with, so the newer one is handed on as soon as it is there.
+  let config: Parameters<NonNullable<ScriptRuntimeHandle['setPermissionConfig']>>[0] | undefined;
   const ready = import('./script-worker-runtime').then(({ createWorkerScriptRuntime: create }) => {
     const runtime = create(...args);
     made = runtime;
@@ -23,6 +26,7 @@ export function createWorkerScriptRuntimeLazily(...args: Parameters<typeof creat
       runtime.cleanup();
       return runtime;
     }
+    if (config !== undefined) runtime.setPermissionConfig?.(config);
     for (const update of updates.splice(0)) runtime.updateContext(update);
     if (appRoot !== undefined) runtime.setAppRoot?.(appRoot);
     return runtime;
@@ -43,5 +47,12 @@ export function createWorkerScriptRuntimeLazily(...args: Parameters<typeof creat
       appRoot = element;
       made?.setAppRoot?.(element);
     },
+    setPermissionConfig: (next) => {
+      config = next;
+      made?.setPermissionConfig?.(next);
+    },
+    consentStatus: () => made?.consentStatus?.() ?? { waiting: [], refused: 0 },
+    carryOut: async () => (made?.carryOut ? made.carryOut() : { ok: false, why: 'its logic had not started' }),
+    observe: (names) => made?.observe?.(names),
   };
 }

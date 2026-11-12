@@ -218,7 +218,9 @@ describe('blocks written inside the page', () => {
 
 describe('text that keeps its whitespace', () => {
   it('is the text of a <pre>, as written, less the line break after the tag', () => {
-    expect(html('<pre>\n  a\n   b</pre><p>  c\n  d</p>')).toBe('<pre>  a\n   b</pre><p>c d</p>');
+    // Outside a <pre> a run of whitespace is one space, the one after the
+    // opening tag included, as HTML keeps it (a browser draws none there).
+    expect(html('<pre>\n  a\n   b</pre><p>  c\n  d</p>')).toBe('<pre>  a\n   b</pre><p> c d</p>');
     expect(html('<pre><code>if (a) {"{"}\n  go()\n}</code></pre>')).toBe('<pre><code>if (a) {\n  go()\n}</code></pre>');
   });
 

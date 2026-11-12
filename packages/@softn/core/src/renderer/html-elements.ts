@@ -107,6 +107,11 @@ const TEXT_ENTRY_TYPES: ReadonlySet<string> = new Set([
   'range',
 ]);
 
+/** Whether `type` is an `<input type>` a person types a value into. */
+export function isTextEntryType(type: string): boolean {
+  return TEXT_ENTRY_TYPES.has(type.toLowerCase());
+}
+
 /**
  * A field given a starting value in its markup, `<input value="Ada">` or
  * `<input type="checkbox" checked>`, starts with it and can be changed, as
