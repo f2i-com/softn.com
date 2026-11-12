@@ -8,8 +8,9 @@
  * and a person alike, rather than the site's front page with a 200.
  *
  * The bar is the same element on every surface, with the same six products on
- * the site as in the runtime, Studio and Builder. The front page adds a
- * sub-header of its own places (Explore apps, Create, How it works) under it.
+ * the site as in the runtime, Studio and Builder, and it is the only bar a page
+ * has: the front page's own places (all the apps, making one, how it works)
+ * are the hero's actions, not a second row of links under the bar.
  * At a phone's 390 px every link must be on screen at once — the bar may
  * scroll sideways as a fallback, but at this width nothing should be hidden off
  * its edge, and the page itself must not scroll sideways.
@@ -26,10 +27,11 @@ const PRODUCTS = [
   { label: 'Docs', href: '/docs/' },
 ] as const;
 
+/** The front page's own places: the hero's two buttons and the link beside them. */
 const LANDING = [
-  { label: 'Explore apps', href: '/apps' },
-  { label: 'Create', href: '#create' },
-  { label: 'How it works', href: '#how' },
+  { label: /^Explore all apps/, href: '/apps' },
+  { label: /^Create an app/, href: '#create' },
+  { label: /^How it works$/, href: '#how' },
 ] as const;
 
 test('/docs/ serves a guide, and a guide that does not exist is a 404', async ({ page }) => {
@@ -84,30 +86,30 @@ test.describe('at 390 px', () => {
   });
   }
 
-  test('on the front page, its own places are under the bar, whole, and on no other page', async ({ page }, testInfo) => {
+  test('on the front page, one bar, and the hero\'s own actions and the first app\'s Play are in the first screen', async ({ page }, testInfo) => {
     const log = watchConsole(page, testInfo);
     try {
       await page.goto('/');
-      const sub = page.getByRole('navigation', { name: 'On this page', exact: true });
-      await expect(sub).toBeVisible({ timeout: 30_000 });
-      const links = sub.getByRole('link');
-      await expect(links).toHaveCount(LANDING.length);
-      for (const [i, place] of LANDING.entries()) {
-        await expect(links.nth(i)).toHaveText(place.label);
-        await expect(links.nth(i)).toHaveAttribute('href', place.href);
-        await expect(links.nth(i)).toBeInViewport({ ratio: 1 });
+      const bar = page.getByRole('navigation', { name: 'SoftN', exact: true });
+      await expect(bar.first()).toBeVisible({ timeout: 30_000 });
+      await expect(bar).toHaveCount(1);
+      // The second row of links the front page had under the bar is gone, here and everywhere.
+      await expect(page.getByRole('navigation', { name: 'On this page', exact: true })).toHaveCount(0);
+      const hero = page.locator('#top');
+      for (const place of LANDING) {
+        const link = hero.getByRole('link', { name: place.label });
+        await expect(link).toHaveAttribute('href', place.href);
+        await expect(link).toBeInViewport({ ratio: 1 });
       }
-      const bar = page.getByRole('navigation', { name: 'SoftN', exact: true }).first();
-      const barBottom = await bar.evaluate((el) => el.getBoundingClientRect().bottom);
-      const subTop = await sub.evaluate((el) => el.getBoundingClientRect().top);
-      expect(subTop).toBeGreaterThanOrEqual(barBottom - 1);
+      // A way to try an app without scrolling: the shelf's lead, and its Play, whole.
+      await expect(hero.getByRole('link', { name: /^Play / }).first()).toBeInViewport({ ratio: 1, timeout: 30_000 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       await page.goto('/apps');
       await expect(page.getByRole('navigation', { name: 'SoftN', exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await expect(page.getByRole('navigation', { name: 'On this page', exact: true })).toHaveCount(0);
       expect(log.uncaught).toEqual([]);
     } finally {
-      await log.attach('landing-sub-header-390');
+      await log.attach('landing-first-screen-390');
     }
   });
 });

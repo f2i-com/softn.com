@@ -1324,7 +1324,7 @@
         "title": "SoftN Studio | SoftN Docs",
         "description": "SoftN Studio for AI-assisted app creation: provider presets, the brief, JavaScript or Python logic, torch, the blueprint review, preview, the validator and export."
       },
-      "updatedAt": "2026-10-21",
+      "updatedAt": "2026-11-12",
       "sourceIds": [
         "softn-studio-source",
         "softn-languages",
@@ -1376,7 +1376,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The brief has three steps, Basics, Structure and Style, and ends with Generate. Structure is where you choose the Logic language: JavaScript (`main.js`), the default, or Python (`main.py`). The whole app uses one language. With Python selected, Uses machine learning `torch` adds torch to `manifest.json`."
+              "text": "The brief has three parts, Basics, Structure and Style, and ends with Generate: in a window 1100 pixels wide or more they are one page, side by side, and in a narrower one they are three steps. Structure is where you choose the Logic language: JavaScript (`main.js`), the default, or Python (`main.py`). The whole app uses one language. With Python selected, Uses machine learning `torch` adds torch to `manifest.json`."
             },
             {
               "type": "paragraph",
@@ -1842,7 +1842,7 @@
         "title": "The SoftN UI language | SoftN Docs",
         "description": "SoftN .ui syntax: components, expression props, what an expression may contain, event handlers and modifiers, two-way binding, class: and style: directives, conditionals, loops, and one page placed inside another."
       },
-      "updatedAt": "2026-10-27",
+      "updatedAt": "2026-11-12",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -1954,7 +1954,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Text is read the way HTML reads it. Within a line of words, a space between a word, a tag and an expression is a space on the page, and a run of spaces is one; the line breaks and indentation between tags written one to a line are layout and draw nothing. Entities such as `&amp;`, `&lt;`, `&quot;` and `&nbsp;` are read in text and in a quoted value alike, so `&quot;` writes the double quote a value is closed by. Inside braces the text is JavaScript, where a quote in a string is written `\\\"`."
+              "text": "Text is read the way HTML reads it. Within a line of words, a space between a word, a tag and an expression is a space on the page, and a run of spaces is one; the line breaks and indentation between tags written one to a line are layout and draw nothing. A space before a `#` that begins no block is kept: `Ticket {name} #{id}`. Entities such as `&amp;`, `&lt;`, `&quot;` and `&nbsp;` are read in text and in a quoted value alike, so `&quot;` writes the double quote a value is closed by. Inside braces the text is JavaScript, where a quote in a string is written `\\\"`."
             }
           ]
         },
@@ -2020,7 +2020,7 @@
             },
             {
               "type": "paragraph",
-              "text": "A variable can have any name JavaScript allows, including words markup also uses, such as `data`, `style`, `from` and `end`. A `function` expression, `async` and `await`, regular expression literals and a comma between two expressions are not read: the parser reports them, and the place for them is a logic function the expression calls. The bitwise operators and shifts (`&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`) are read as in JavaScript, and `Intl` formats numbers and dates: `{new Intl.NumberFormat(\"en-US\", { style: \"currency\", currency: \"USD\" }).format(total)}`. An assignment or `++` changes state when a handler runs it. Written in the body of the page, as in `{count++}`, it would run every time the page is drawn, so there it is worth its value and changes nothing."
+              "text": "A variable can have any name JavaScript allows, including words markup also uses, such as `data`, `style`, `from` and `end`. A `function` expression, `async` and `await`, regular expression literals and a comma between two expressions are not read: the parser reports them, and the place for them is a logic function the expression calls. The bitwise operators and shifts (`&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`) are read as in JavaScript, and `Intl` formats numbers and dates: `{new Intl.NumberFormat(\"en-US\", { style: \"currency\", currency: \"USD\" }).format(total)}`. An assignment or `++` changes state when a handler runs it. Written in the body of the page, as in `{count++}`, it would run every time the page is drawn, so there it is worth its value and changes nothing. In a handler, `items.push(x)`, `sort()`, `splice()` and the other methods that change the list they are called on change a list in state as an assignment does; where the page is drawn they work on a copy and state is unchanged."
             },
             {
               "type": "callout",
@@ -2042,7 +2042,7 @@
             },
             {
               "type": "paragraph",
-              "text": "`:bind` is two-way: what the person types is written back to the state variable. On a number field (`<input type=\"number\">` or `<Input type=\"number\">`) it writes a number while the field holds one, and `''` while it is empty or holds something that is not a number. Any other `:` property, such as `:value={x}`, only shows the value. `@click` and the other `@` events call a handler. A handler may have a block body, `@click={() => { count++; save() }}`: its statements run one after another, each an expression of the kind markup reads; `if`, `let` and loops belong in a logic function."
+              "text": "`:bind` is two-way: what the person types is written back to the state variable. On a number field (`<input type=\"number\">` or `<Input type=\"number\">`) it writes a number while the field holds one, and `''` while it is empty or holds something that is not a number. On `<input type=\"range\">` it gives a number, and on `<select multiple>` a list of the chosen values. Any other `:` property, such as `:value={x}`, only shows the value. A host that keeps a page’s state itself is handed the write in its place, through the `on<Name>Change(path, value)` or `onUpdate(path, value)` function it gave; a logic function of that name is an ordinary function, and `:bind` writes the variable as it always does. `@click` and the other `@` events call a handler. A handler may have a block body, `@click={() => { count++; save() }}`: its statements run one after another, each an expression of the kind markup reads; `if`, `let` and loops belong in a logic function. A logic call may be written where a handler needs its value, `@click={save(currentDraft())}`: it is waited for first, and if it fails the outer call is not made."
             },
             {
               "type": "code",
@@ -2052,11 +2052,11 @@
             },
             {
               "type": "paragraph",
-              "text": "`:bind` is also how a variable becomes a component’s own state when that state is not typed text. A `Modal`, `Drawer` or `Popover` is open while its variable is true and sets it false when the person closes it. A `Confirm` is shut by either answer, and `@confirm` still says which. `Tabs` holds the chosen tab’s key, `Pagination` the page, `Accordion` the keys of its open panels, and `Sidebar` whether it is collapsed. A handler written beside the binding, such as `@close`, runs as well, after the variable is written. A `DatePicker` holds the day as text, `\"2026-10-12\"`, and `null` once it is cleared; `Radio`, `Select` and `SegmentedControl` hold the chosen option’s own value, a number for a numbered option. A `Popover` with no `trigger` takes its first child as the trigger, so a button or an icon can open it: `<Popover :bind={open}><Button>Help</Button><Text>…</Text></Popover>`."
+              "text": "`:bind` is also how a variable becomes a component’s own state when that state is not typed text. A `Modal`, `Drawer` or `Popover` is open while its variable is true and sets it false when the person closes it. A `Confirm` is shut by either answer, and `@confirm` still says which. `Tabs` holds the chosen tab’s key, `Pagination` the page, `Accordion` the keys of its open panels, and `Sidebar` whether it is collapsed. `<Toast :bind={saved}>` shows while `saved` is true and writes false when it closes. `<FileChooser :bind={files}>` keeps the chosen files, and an empty list when they are removed. A handler written beside the binding, such as `@close`, runs as well, after the variable is written. A handler written beside `:bind` reads the value just bound, however it is written: `@change={load(category)}` beside `:bind={category}` loads the category just chosen. A `DatePicker` holds the day as text, `\"2026-10-12\"`, and `null` once it is cleared; `Radio`, `Select` and `SegmentedControl` hold the chosen option’s own value, a number for a numbered option. A `Popover` with no `trigger` takes its first child as the trigger, so a button or an icon can open it: `<Popover :bind={open}><Button>Help</Button><Text>…</Text></Popover>`."
             },
             {
               "type": "paragraph",
-              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event: its `target` and `currentTarget` are data, what the element holds (`value`, `checked`, `name`, `dataset`), and `preventDefault()` can be called and does nothing, because the logic runs apart from the page; a modifier cancels a default. An arrow that names a parameter, `@keydown={(e) => e.key === \"Enter\" && add()}`, is given the same summary, with `e.preventDefault()` and `e.stopPropagation()` that act on the event, and `e.target` and `e.currentTarget` as records of what the element holds (`value`, `checked`, `dataset`, its size); that is not the live event either, and it leads to no element, document or window. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
+              "text": "A handler bound by name receives an argument: for most events, a plain-data summary of the browser event, and for `@change` and `@input`, the new value. It is never the live DOM event: its `target` and `currentTarget` are data, what the element holds (`value`, `checked`, `name`, `dataset`), and `preventDefault()` can be called and does nothing, because the logic runs apart from the page; a modifier cancels a default. An arrow that names a parameter, `@keydown={(e) => e.key === \"Enter\" && add()}`, is given the same summary, with `e.preventDefault()` and `e.stopPropagation()` that act on the event, and `e.target` and `e.currentTarget` as records of what the element holds (`value`, `checked`, `dataset`, its size); that is not the live event either, and it leads to no element, document or window. On `@input` and `@change` a handler in braces is handed the new value, not the event, an arrow as well: `@input={(value) => search(value)}`; a handler in quotes, `@input=\"search(event.target.value)\"`, is handed `event`. Write an arrow, `@click={() => save()}`, to call a function without it; Python apps need that form for functions with no parameters."
             },
             {
               "type": "code",
@@ -2133,11 +2133,11 @@
             },
             {
               "type": "paragraph",
-              "text": "`#each` goes through a list, a `Set`, a `Map` (as `[key, value]` pairs), a record (its values, with the key as the second name: `#each (value, key in settings)`) and a whole number, which counts from 1. Text is not gone through letter by letter. A second name after the variable is the index, or the key for a record, and `key={…}` after the header tells the page which row is which when the list is reordered. `of` reads as `in` does, as JavaScript’s `for…of` writes it: `#each (task of tasks)`."
+              "text": "`#each` goes through a list, a `Set`, a `Map` (as `[key, value]` pairs), a record (its values, with the key as the second name: `#each (value, key in settings)`) and a whole number, which counts from 1. Text is not gone through letter by letter. A second name after the variable is the index, or the key for a record, and `key={…}` after the header tells the page which row is which when the list is reordered. A `key={…}` that cannot be worked out for a row falls back to the row’s index, and the console says so. `of` reads as `in` does, as JavaScript’s `for…of` writes it: `#each (task of tasks)`."
             },
             {
               "type": "paragraph",
-              "text": "Inside a loop over a list that is in the app’s state, `:bind={todo.done}` and an assignment such as `todo.done = true` write the row they are on. Where the list is worked out in the page, as in `#each (todo in todos.filter(t => !t.done))`, or is a collection’s records, the item has no place in state to write to: nothing is written and the console says so. Change such an item in a logic function, by its id."
+              "text": "Inside a loop over a list that is in the app’s state, `:bind={todo.done}` and an assignment such as `todo.done = true` write the row they are on. A `:bind` or an assignment may use any index: `answers[q.id]`, `todos[count - 1].done`. A write whose index is nothing is not made, and the console says so. Where the list is worked out in the page, as in `#each (todo in todos.filter(t => !t.done))`, or is a collection’s records, the item has no place in state to write to: nothing is written and the console says so. Change such an item in a logic function, by its id."
             }
           ]
         },
@@ -2841,7 +2841,7 @@
         "title": "SoftN component guide | SoftN Docs",
         "description": "Explore SoftN components for layouts, forms, tables, dashboards, charts, media, animation, editors and Three.js scenes."
       },
-      "updatedAt": "2026-10-21",
+      "updatedAt": "2026-11-12",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -2906,6 +2906,10 @@
             {
               "type": "paragraph",
               "text": "An `id` and any `data-…` or `aria-…` attribute written on a layout, text or button component (Box, Stack, Grid, Card, Container, Center, Text, Heading, Button, Badge, Tag, Icon, Image) is put on its element, so the page’s own `<style>` can find it: `<Box className=\"tool\" data-on={tool === \"wall\"}>` with `.tool[data-on=\"true\"] { … }`. Any other attribute a component does not know is dropped."
+            },
+            {
+              "type": "paragraph",
+              "text": "A `FileChooser` given `value` shows those files as chosen, and none for `[]`, so a page that keeps them can clear the chooser once they are sent; `disabled` turns it off, and nothing can be chosen, dropped or removed. Toasts shown at once at the same corner stack, the newest nearest the edge, and the older ones move back as the newer ones go."
             }
           ]
         },
@@ -3090,7 +3094,7 @@
         "title": "Forms, tables and dashboards | SoftN Docs",
         "description": "Build SoftN forms, tables and dashboards with XDB, SmartForm, SmartGrid and clear record workflows, validation and empty states."
       },
-      "updatedAt": "2026-10-21",
+      "updatedAt": "2026-11-12",
       "sourceIds": [
         "softn-readme"
       ],
@@ -3125,7 +3129,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Decide what happens after a save: clear the form, keep values for a similar next record, show a confirmation or return to a list. Test that the user can tell whether the operation succeeded."
+              "text": "Once a new record is saved, the form says “Saved” for a moment and starts again from its `data` and `defaults`, ready for the next record, so a second press does not save the same record twice. `afterSave=\"keep\"` leaves what was typed, for a similar next record, and `savedText` changes what the form says. A record being edited keeps its values. Use `@saved` for anything more: closing a dialog, or returning to a list."
             }
           ]
         },
@@ -3396,7 +3400,7 @@
         "title": "Assets, themes and responsive layouts | SoftN Docs",
         "description": "Manage SoftN assets, light and dark themes, and responsive layouts. Test exported bundles, narrow screens and fresh app instances."
       },
-      "updatedAt": "2026-10-21",
+      "updatedAt": "2026-11-12",
       "sourceIds": [
         "softn-readme",
         "softn-core-source",
@@ -3460,7 +3464,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Builder previews Desktop, Tablet and Mobile sizes, but responsive behaviour is still part of the layout you wrote. Switching size does not redesign an overflowing table or a navigation bar with too many items."
+              "text": "Builder previews Desktop, Tablet and Mobile sizes, but responsive behaviour is still part of the layout you wrote. Switching size does not redesign a row of buttons with too many items or a panel with a fixed width."
             },
             {
               "type": "list",
@@ -3482,6 +3486,10 @@
             {
               "type": "paragraph",
               "text": "A Grid with a plain `columns={3}` keeps three columns at every width, which is what a keypad or a game board needs. `collapseOnMobile` makes it one column below 768 pixels, a `columns` object names a count for each width, and `minColumnWidth` fits as many columns as have that much room. A horizontal Stack with `mobileVertical` becomes a column on a phone."
+            },
+            {
+              "type": "paragraph",
+              "text": "Some components change by themselves. At 768 pixels and under a `Sidebar` is a menu button, in a slim bar where the sidebar stood, that opens it over the page as a drawer; choosing a NavItem or a link in it closes it. `menuLabel` names the button, and the drawer it opens, for a screen reader, and is “Menu” when left out. An app that draws its own phone navigation gets no second one: an element with the `softn-mobile-only` class, or a menu button of its own (a control named “Menu” or “Open menu”), is taken for that, and `mobileMenu={false}` says so outright. At 640 pixels and under a `Table` too wide for its box draws each row as a card, as SmartGrid does: `mobileCards=\"never\"` keeps it a table that scrolls sideways, and `\"always\"` draws cards whatever its width. `Tabs` that do not fit scroll in their own row. Under a finger, controls that are compact for a mouse are 44 pixels tall."
             }
           ]
         },
@@ -5377,7 +5385,7 @@
         "title": "Publish and share a SoftN app | SoftN Docs",
         "description": "Publish or share a SoftN app. Understand project saves, bundle exports, directory publishing, app descriptions and release checks."
       },
-      "updatedAt": "2026-11-03",
+      "updatedAt": "2026-11-12",
       "sourceIds": [
         "softn-readme",
         "softn-bundle-format",
@@ -5475,29 +5483,33 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "An app in the directory takes `git push`. Publish its first version on the Publish page, which shows its edit key and these commands with the app’s name in them. If your project is already in git, `git archive --format=zip -o app.softn HEAD` makes that first bundle. The folder’s top level is the bundle’s: `manifest.json` is there. That bundle holds every committed file, `.gitignore` and `.github/` among them, and the Publish page does not look for secrets as a push does, so leave out what should not be public: `git archive --format=zip -o app.softn HEAD -- . \":(exclude,glob)**/.git*\" \":(exclude,glob)**/.git*/**\"` leaves out git’s own files and folders, in every folder."
+              "text": "An app in the directory takes `git push`. Publish its first version on the Publish page, which shows its edit key and these commands with the app’s name in them. If your project is already in git, `git archive --format=zip -o app.softn HEAD` makes that first bundle. The folder’s top level is the bundle’s: `manifest.json` is there. That bundle holds every committed file, `.gitignore` and `.github/` among them, which a push leaves out: `git archive --format=zip -o app.softn HEAD -- . \":(exclude,glob)**/.git*\" \":(exclude,glob)**/.git*/**\"` leaves out git’s own files and folders, in every folder. The Publish page refuses a file that looks like it holds secrets, as a push does."
             },
             {
               "type": "code",
               "language": "sh",
-              "code": "git remote add softn https://my-app@softn.com/api/git/my-app.git\ngit config remote.softn.push HEAD:refs/heads/main\ngit config remote.softn.skipFetchAll true\ngit config http.postBuffer 64M\ngit push softn",
-              "caption": "Run the first four once in a project. From then on, `git push softn` publishes the commit you are on, from any branch. When git asks for a password, give it the app’s edit key."
+              "code": "git remote add softn https://my-app@softn.com/api/git/my-app.git\ngit config --unset remote.softn.fetch\ngit config remote.softn.push HEAD:refs/heads/main\ngit config remote.softn.skipFetchAll true\ngit config http.postBuffer 64M\ngit push softn",
+              "caption": "Run the first five once in a project. From then on, `git push softn` publishes the commit you are on, from any branch. When git asks for a password, give it the app’s edit key. These lines run as they are in Command Prompt, PowerShell and Git Bash."
             },
             {
               "type": "list",
               "ordered": false,
               "items": [
-                "Each push to `main` is a new version, made of the files in that commit, with the commit’s subject as its notes. The same checks as the Publish page apply, and a refusal says why in the terminal. Pushing the same files again makes no new version.",
+                "Each push to `main` is a new version, made of the files in that commit, with the commit’s subject as its notes. The same checks as the Publish page apply, and a refusal says why in the terminal. Pushing the files the latest version already has makes no new version, whether that version was pushed or came from the Publish page.",
                 "Each app has its own key, generated by the directory. The app’s name in the address is what lets git keep each app’s key apart, where it keeps passwords. Leave the key itself out of the address: it would sit in plain text in the repository’s config.",
-                "Everything in the commit you push is public. A file that looks like it holds secrets, such as `.env` or a `.pem`, is refused. Links and submodules are refused too, as a published app holds its own files.",
-                "Earlier commits are not kept: the directory keeps the version and nothing of the history. For the same reason `git clone` is not offered. Download an app’s source from its page.",
-                "If the app is one folder of a larger repository, publish that folder alone: `git push softn \"$(git commit-tree \"HEAD:app\" -m Publish):refs/heads/main\"`, with the folder’s path in place of `app`. Its first bundle is `git archive --format=zip -o app.softn HEAD:app`. A push of the whole repository says which folder has a `manifest.json`.",
-                "To publish from CI, such as a GitHub Actions workflow, keep the key as a secret in an environment variable, here `SOFTN_EDIT_KEY`, and have git read it from there: `git -c credential.helper='!f() { echo \"password=$SOFTN_EDIT_KEY\"; }; f' -c http.postBuffer=64M push https://my-app@softn.com/api/git/my-app.git HEAD:refs/heads/main`. The key is then in no command line, address or config file. The shallow checkout CI makes is enough, and so is one of a single commit with no branch, which CI often makes.",
-                "A push sends the whole history, and one past 50,000 objects or 256 MB is refused. To send only the latest files, without changing your branch: `git push softn \"$(git commit-tree \"HEAD^{tree}\" -m Publish):refs/heads/main\"`.",
+                "Everything in the commit you push is public. A file that looks like it holds secrets, such as `.env`, a `.pem` or a `.key`, is refused. So is a backup of edit keys, under any name, and any file that holds the edit key of an app in the directory, this app’s or another’s: save the backup file, and any note of your keys, somewhere outside the project. The refusal names the file. If such a file was ever published, replace the key on the app’s update page. Links and submodules are refused too, as a published app holds its own files.",
+                "Git’s own files are left out of the version, in every folder: `.gitignore`, `.gitattributes`, `.gitkeep`, `.github/` and anything else whose name begins with `.git`.",
+                "Earlier commits are not kept: the directory keeps the version and nothing of the history. For the same reason `git clone` and `git pull` are not offered. Download an app’s source from its page. In a project whose only remote is the directory, `git pull` has nowhere else to ask, and there is nothing to pull.",
+                "Because it keeps no history, the directory cannot refuse a push that is not built on the version that is live, as a git server would. It publishes the push, and says so in the terminal when the live version’s commit is not in the history you pushed: changes someone else published, or you published from another computer, are then not in the new version. Bring them into your project and push again. A push that carries no history, such as a shallow clone’s, is not told this, and neither is a push after a version that came from the Publish page.",
+                "Tags are not kept. A push that sends tags along, as git does with `push.followTags`, publishes `main` all the same and says that the tags were not kept.",
+                "If the app is one folder of a larger repository, publish that folder alone: `git push softn \"HEAD:app:refs/heads/main\"`, with the folder’s path in place of `app`. Its first bundle is `git archive --format=zip -o app.softn HEAD:app`. A push of the whole repository says which folder has a `manifest.json`.",
+                "To publish from CI, such as a GitHub Actions workflow, keep the key as a secret in an environment variable, here `SOFTN_EDIT_KEY`, and have git read it from there. This one is written for the POSIX shell that CI runs: `git -c credential.helper='!f() { echo \"password=$SOFTN_EDIT_KEY\"; }; f' -c http.postBuffer=64M push https://my-app@softn.com/api/git/my-app.git HEAD:refs/heads/main`. The key is then in no command line, address or config file. The shallow checkout CI makes is enough, and so is one of a single commit with no branch, which CI often makes.",
+                "A push sends the whole history, and one past 50,000 objects or 256 MB is refused. To send only the latest files, without changing your branch: `git push softn \"HEAD^{tree}:refs/heads/main\"`. That pushes the files of the commit you are on with none of its history, so the version has no notes. It and the command for a folder run as they are in Command Prompt, PowerShell and Git Bash.",
                 "An app keeps its first version and its latest ones, 50 in all. Past that, each new version takes the place of the oldest after the first, and the push says which went.",
                 "This is for the `git` command, which is what most editors and desktop tools run. Tools built on another git library may not be able to publish a push of any size on some servers, and they are told so. The update page always works.",
                 "Files kept in Git LFS are not taken: git sends a pointer to each one, not the file, and a push that holds one is refused. Take the app’s files out of LFS with `git lfs migrate export --include=\"*.png\" --everything`, naming the files you track, and push again. That rewrites the commits that hold them, so a copy of the project elsewhere needs a forced push after it. Or publish from the update page.",
-                "If a key may have been seen, replace it on the app’s update page. The next push asks for the new one."
+                "If a key may have been seen, replace it on the app’s update page. The next push asks for the new one.",
+                "A project set up before `git config --unset remote.softn.fetch` was one of the lines above needs it run once. Without it, git itself refuses `git push --force-with-lease softn` as stale after the first push."
               ]
             }
           ]

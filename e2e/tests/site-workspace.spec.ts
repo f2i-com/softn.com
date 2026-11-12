@@ -25,10 +25,10 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
       // Nothing runs on the front page: no app is embedded in it.
       await expect(page.locator('iframe')).toHaveCount(0);
 
-      // The page's own places, under the product bar, and each one lands.
-      const sub = page.getByRole('navigation', { name: 'On this page', exact: true });
-      await expect(sub.getByRole('link')).toHaveText(['Explore apps', 'Create', 'How it works']);
-      await sub.getByRole('link', { name: 'How it works', exact: true }).click();
+      // The page's own places are the hero's: its two actions and the way to the four steps. There is
+      // one bar, with no second row of links under it (docs-and-bar.spec.ts holds a phone's first screen).
+      await expect(page.getByRole('navigation', { name: 'On this page', exact: true })).toHaveCount(0);
+      await hero.getByRole('link', { name: 'How it works', exact: true }).click();
       const how = page.locator('#how');
       await expect(how).toBeInViewport();
       const steps = how.locator('.how-step');

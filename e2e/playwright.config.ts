@@ -44,7 +44,7 @@ const baseURL = process.env.SOFTN_E2E_URL || `http://127.0.0.1:${port}`;
 const externalServer = Boolean(process.env.SOFTN_E2E_URL);
 const isCI = Boolean(process.env.CI);
 
-/** Studio, Builder and the runtime are desktop layouts; Builder shows a notice instead of the editor under 900px. */
+/** Studio, Builder and the runtime in their desktop layouts; under 900px the Builder is still the editor, with its panels opened as sheets over the canvas. */
 const desktop = { width: 1280, height: 800 };
 
 /**
@@ -61,8 +61,9 @@ const mobileSpecs = /\/(studio-mobile|site-workspace|runtime-directory)\.spec\.t
  * 200 % zoom, as a browser does it: the CSS viewport halves and the device
  * pixel ratio doubles, so a 1920×1080 monitor gives the page 960×540 CSS
  * pixels. 960 keeps the desktop layouts (Studio switches to its phone layout
- * under 768, Builder refuses under 900), which is the point — this is the
- * desktop editor with everything twice the size, not the phone editor.
+ * under 768, Builder opens its panels as sheets under 900), which is the
+ * point — this is the desktop editor with everything twice the size, not the
+ * phone editor.
  */
 const zoom200 = { viewport: { width: 960, height: 540 }, deviceScaleFactor: 2 };
 
