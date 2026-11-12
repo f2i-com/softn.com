@@ -39,9 +39,6 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
           <h2 className="softn-launcher-section-title" id="softn-explore-title">
             Explore apps
           </h2>
-          <p className="softn-explore-description">
-            From the SoftN directory, ready to open in your workspace.
-          </p>
         </div>
         <a className="softn-explore-link" href={DEFAULT_URLS.apps}>
           Browse all apps <span aria-hidden="true">↗</span>
@@ -107,40 +104,42 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
                     <a href={`/app/${slug}`}>{app.name}</a>
                   </h3>
                   <p>{typeof app.description === 'string' ? app.description : ''}</p>
-                  <div className="softn-explore-card-actions">
-                    {external ? (
-                      <a
-                        className="softn-explore-primary"
-                        href={external}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        aria-label={`Open ${app.name} in a new tab`}
-                      >
-                        Visit app <span aria-hidden="true">↗</span>
-                      </a>
-                    ) : bundle ? (
-                      // The visible word starts the name ("Run" in "Run
-                      // Blockfall"), so a voice user can say what they see
-                      // (WCAG 2.5.3); "Run app" was not in "Run Blockfall".
-                      <button
-                        type="button"
-                        className="softn-explore-primary"
-                        onClick={() => onOpen(bundle)}
-                        aria-label={`Run ${app.name}`}
-                      >
-                        Run <span aria-hidden="true">→</span>
-                      </button>
-                    ) : (
-                      <span className="softn-explore-description">View details to open</span>
-                    )}
+                </div>
+                {/* A row of the list: picture, words, and what to do at its
+                    right end, as the site's Apps page has it. */}
+                <div className="softn-explore-card-actions">
+                  {external ? (
                     <a
-                      className="softn-explore-link"
-                      href={`/app/${slug}`}
-                      aria-label={`About ${app.name}`}
+                      className="softn-explore-primary"
+                      href={external}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`Open ${app.name} in a new tab`}
                     >
-                      About
+                      Visit app <span aria-hidden="true">↗</span>
                     </a>
-                  </div>
+                  ) : bundle ? (
+                    // The visible word starts the name ("Run" in "Run
+                    // Blockfall"), so a voice user can say what they see
+                    // (WCAG 2.5.3); "Run app" was not in "Run Blockfall".
+                    <button
+                      type="button"
+                      className="softn-explore-primary"
+                      onClick={() => onOpen(bundle)}
+                      aria-label={`Run ${app.name}`}
+                    >
+                      Run <span aria-hidden="true">→</span>
+                    </button>
+                  ) : (
+                    <span className="softn-explore-description">View details to open</span>
+                  )}
+                  <a
+                    className="softn-explore-link softn-explore-about"
+                    href={`/app/${slug}`}
+                    aria-label={`About ${app.name}`}
+                  >
+                    About
+                  </a>
                 </div>
               </article>
             );

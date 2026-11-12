@@ -8,8 +8,8 @@
 
 import type { Dispatch, SetStateAction } from 'react';
 import { flushSync } from 'react-dom';
-import type { PermissionConfig, PythonProject } from '@softn/core';
-import { ManifestError, preloadRememberedFirstDraw, readManifest } from '@softn/core';
+import type { LiveApp, PermissionConfig, PythonProject } from '@softn/core';
+import { ManifestError, createLiveApp, preloadRememberedFirstDraw, readManifest } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import {
   createAssetResolver,
@@ -85,6 +85,12 @@ export interface OpenTab {
   textFiles?: ReadonlyMap<string, string>;
   /** Where its page does not parse, from the composer. */
   parseProblem?: string;
+  /**
+   * The running app as something to hand a newer version of while it is
+   * open (core's LiveApp; see lib/liveUpdate.ts). The fields above are what
+   * it started with, and what it was last handed.
+   */
+  live?: LiveApp;
   /** The manifest's `config.execution`: where the bundle asked its script to run. */
   execution?: 'worker' | 'main';
   /**
@@ -349,7 +355,11 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // `import` is network access just as surely as fetch() in app logic,
     // and it resolves during loadScript — before the bar has been on
     // screen long enough to read, let alone answer.
-    const runningConfig = hasGrant ? permissionConfig : withheldPermissions(permissionConfig);
+    //
+    // `asking`: the bar is up and can be answered, so what the app asks for
+    // meanwhile is kept for the answer (nothing of it happens before) and is
+    // done when the person allows it. "Not now" turns that off (`onAsking`).
+    const runningConfig = hasGrant ? permissionConfig : withheldPermissions(permissionConfig, { asking: true });
     const importResolver = createImportResolver(textFiles, runningConfig);
 
     // Unconditional, and before any consent: the app is about to run and
@@ -400,15 +410,15 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // measured: text typed into WarbleWire reverted to the bundle's default
     // and TheOffice went from LIVE back to PAUSED.
     //
-    // Handing the tab a new permissionConfig and a new importResolver is
-    // enough to rebuild everything that captured the withheld one. Both are
-    // dependencies of the renderer's script-load effect, so it tears the old
-    // VM down, builds a fresh runtime with the granted config — new import
-    // resolution, new AI and GPU managers — reloads the script and runs
-    // `_init()` again, now allowed. What it does not throw away is
-    // `componentState`: the renderer merges reloaded script state under it
-    // (`{...result.state, ...prev.componentState}`), so what the user did
-    // survives, including the page they are on.
+    // Handing the tab a new permissionConfig and a new importResolver is all
+    // it takes. The renderer hands the config to the running app, whose
+    // every `softn.*` check reads it when asked: what the app asked for
+    // while the bar was up goes through now, and nothing is started again
+    // (the engine, its timers and what only it held are as they were). It
+    // starts the app again, with its variables carried over, in the cases
+    // that need it: logic from another site that could not be read until
+    // now (the new resolver reads it), and an app that had been refused
+    // something and gone on without it.
     const onAllow = (): void => {
       // Recorded from the same list the check above reads, so the two
       // cannot drift. An earlier version enumerated four capabilities by
@@ -470,6 +480,16 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       else grantedResolver.dispose();
     };
 
+    // "Not now" and "Review permissions": the app is told whether there is
+    // a bar to answer. Put away, what it asks for is refused at once (and
+    // what was being kept for the answer is refused now); brought back, it
+    // is kept again. Only while the tab is unanswered: after Allow there is
+    // nothing to put away.
+    const onAsking = (asking: boolean): void => {
+      const config = withheldPermissions(permissionConfig, { asking });
+      host.setOpenTabs((prev) => prev.map((t) => (t.id === tabId && t.consent ? { ...t, permissionConfig: config } : t)));
+    };
+
     if (!isSecureAppOrigin(appOrigin)) {
       console.warn(
         `[SoftN Web] "${appName}" is identified without a secure context (no crypto.subtle); its data stays isolated but no grant will be remembered.`
@@ -490,7 +510,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       permissionConfig: runningConfig,
       consent: hasGrant
         ? undefined
-        : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, previous: previousBuild, onAllow },
+        : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, previous: previousBuild, onAllow, onAsking },
       importResolver,
       assetResolver: createAssetResolver(binaryFiles, textFiles),
       logicBasePath,
@@ -498,6 +518,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       python,
       textFiles,
       parseProblem,
+      live: existingTab?.live ?? createLiveApp(),
       execution: manifest.config?.execution,
       themeMode: manifest.config?.theme?.mode,
       ...server,

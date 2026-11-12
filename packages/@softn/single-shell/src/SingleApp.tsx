@@ -170,10 +170,17 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     app.config.permissionMode === 'preapproved' || !requested.length || hasSavedGrant(app.grantKey) ? 'allow' : 'pending'
   );
   const granted = answer === 'allow';
+  // Whether the bar is up to be answered, or put away with "Not now": while
+  // it is up, what the app asks for is kept for the answer, and done when the
+  // person allows it (runtime-shell's withheldPermissions).
+  const [asking, setAsking] = useState(true);
   const permissions = useMemo(
-    () => (granted ? app.declared : withheldPermissions(app.declared)),
-    [granted, app]
+    () => (granted ? app.declared : withheldPermissions(app.declared, { asking })),
+    [granted, asking, app]
   );
+  // What the app is waiting on the bar for, and whether allowing starts it
+  // again, as its renderer says: the bar says both before it is answered.
+  const [consentStatus, setConsentStatus] = useState<{ waiting: string[]; restartOnAllow: boolean }>({ waiting: [], restartOnAllow: false });
   const functions = useMemo(
     () => ({ asset: (value: unknown) => app.assets(String(value ?? '')) }),
     [app]
@@ -231,9 +238,11 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     observer.observe(element);
     return () => observer.disconnect();
   }, [answer, chromeHidden, framed]);
+  // Made again when access is granted, and not when the bar is put away or
+  // brought back: nothing from the network is read either way until then.
   const imports = useMemo(
-    () => createImportResolver(app.textFiles, permissions),
-    [app, permissions]
+    () => createImportResolver(app.textFiles, granted ? app.declared : withheldPermissions(app.declared)),
+    [app, granted]
   );
   useEffect(() => () => imports.dispose(), [imports]);
   const counted = useRef(false);
@@ -386,6 +395,9 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               capabilities={requested}
               appRootRef={content}
               onAllow={allow}
+              onAsking={setAsking}
+              waiting={consentStatus.waiting}
+              restartOnAllow={consentStatus.restartOnAllow}
             />
           )}
           {/* Nothing here says it is saving, so a record that is not kept is
@@ -414,6 +426,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               parseProblem={shown.parseProblem}
               executionPreference={app.execution}
               permissionConfig={permissions}
+              onConsentStatus={setConsentStatus}
               storageEndpoint={app.config.directory?.storage}
               onLoad={onLoad}
               loading={<Loading text={app.config.loadingText} />}

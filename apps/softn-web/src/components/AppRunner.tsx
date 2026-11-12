@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
-import { SoftNWithXDB, XDBStorageNotice, bundlePageAt, composePage, mainPage, type AppAssetResolver, type ComposedBundleSource, type PythonProject } from '@softn/core';
+import { SoftNWithXDB, XDBStorageNotice, bundlePageAt, composePage, mainPage, type AppAssetResolver, type AppUpdateResult, type ComposedBundleSource, type LiveApp, type PythonProject } from '@softn/core';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
@@ -8,6 +8,7 @@ import { ThemeProvider } from '@softn/components/theme';
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { LoadProgress } from '@softn/runtime-shell/LoadProgress';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
+import { SlowOpen } from './SlowOpen';
 import './AppRunner.css';
 
 interface AppRunnerProps {
@@ -54,11 +55,23 @@ interface AppRunnerProps {
   onPageChange?: (page: string) => void;
   /** Fires once the document has parsed and the app is on screen rather than its spinner. */
   onReady?: () => void;
+  /** Stop an open that is still waiting for its bundle: the button a long wait is given. */
+  onCancelOpen?: () => void;
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
   /** The app's storage endpoint in the directory it was opened from, if any. */
   storageEndpoint?: string;
+  /**
+   * The running app as something to hand a newer version of (core's
+   * `createLiveApp`): `live.update(revision)` changes the open app where it
+   * stands and answers what happened. The tab's own `source` is what it
+   * starts with. See lib/liveUpdate.ts for making a revision from a
+   * bundle's files.
+   */
+  live?: LiveApp;
+  /** What became of a newer version, or of a change to what the app is allowed. */
+  onUpdate?: (result: AppUpdateResult) => void;
 }
 
 interface ErrorBoundaryState {
@@ -144,8 +157,12 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, onCancelOpen, serverUrl, serverToken, serverCollections, storageEndpoint, live, onUpdate }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
+  // What the app is waiting on the permission bar for, and whether allowing
+  // will start it again, as its renderer says: the bar says both before it
+  // is answered.
+  const [consentStatus, setConsentStatus] = useState<{ waiting: string[]; restartOnAllow: boolean }>({ waiting: [], restartOnAllow: false });
   // Another page of the bundle, after a link to it (`<a href="about.html">`):
   // the app composed with that page as its main one and run afresh, with its
   // records as they were. Without this a link was an address the host page has
@@ -273,6 +290,10 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
             <div style={LOAD_PROGRESS_STYLE}>
               <LoadProgress />
             </div>
+            {/* And, when it has gone on long enough to wonder, that it is
+                still waiting and how to stop. Only where this tab is the one
+                on screen: every tab stays mounted. */}
+            {active && <SlowOpen onCancel={onCancelOpen} />}
           </Box>
         </ThemeProvider>
       </div>
@@ -306,7 +327,13 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
         // `previous` included: the comparison with the build opened before
         // this one was worked out by App and then dropped here, so an update
         // that added a capability read exactly like the request before it.
-        <PermissionBar {...consent} onHeightChange={handleBarHeight} appRootRef={hostRef} />
+        <PermissionBar
+          {...consent}
+          waiting={consentStatus.waiting}
+          restartOnAllow={consentStatus.restartOnAllow}
+          onHeightChange={handleBarHeight}
+          appRootRef={hostRef}
+        />
       )}
       {/* Nothing in this shell says it is saving, so a record that is not kept
           is the news: a browser that refuses site data, a full budget. Here,
@@ -348,6 +375,11 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
               parseProblem={shown.parseProblem}
               executionPreference={executionPreference}
               permissionConfig={permissionConfig}
+              onConsentStatus={setConsentStatus}
+              // Another page of the bundle is another app run afresh (the key
+              // above), and not a newer version of this one.
+              app={page ? undefined : live}
+              onUpdate={onUpdate}
               appId={runtimeAppId}
               // Every tab stays mounted; only this says which one is on screen.
               active={active}

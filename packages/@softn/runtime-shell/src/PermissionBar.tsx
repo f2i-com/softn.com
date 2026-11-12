@@ -51,6 +51,25 @@ export interface ConsentRequest {
    */
   previous?: PreviousBuild;
   onAllow: () => void;
+  /**
+   * The bar was put away with "Not now" (false) or brought back with
+   * "Review permissions" (true). For a host that runs the app with
+   * `withheldPermissions(declared, { asking: true })`: it hands the app the
+   * same config with `asking` as told here, so that what the app asks for
+   * while the bar is away is refused at once and not kept for an answer
+   * nobody is being asked for.
+   */
+  onAsking?: (asking: boolean) => void;
+  /**
+   * What the app has asked for and is being kept until the person answers
+   * (the renderer's `onConsentStatus`): the bar says the app is waiting.
+   */
+  waiting?: readonly string[];
+  /**
+   * Allowing will start the app again (the renderer's `onConsentStatus`):
+   * said beside the buttons, before it is pressed.
+   */
+  restartOnAllow?: boolean;
 }
 
 export interface PermissionBarProps extends ConsentRequest {
@@ -155,9 +174,10 @@ function isTextEntry(el: Element | null): el is HTMLInputElement | HTMLTextAreaE
  * Reading before `focus()` matters too, because focusing a text field can
  * collapse the selection to its end.
  *
- * False when there is nothing to restore or the element has gone: the grant
- * reloads the script against the granted config, so a field the bundle
- * renders conditionally may not survive it.
+ * False when there is nothing to restore or the element has gone. A grant
+ * is taken by the running app where it stands, so the field is usually
+ * there; an app that had been refused something is started again for it,
+ * and a field it draws conditionally may not survive that.
  */
 function restoreFocus(element: HTMLElement | null): boolean {
   if (!element || !element.isConnected) return false;
@@ -182,6 +202,9 @@ export function PermissionBar({
   capabilities,
   previous,
   onAllow,
+  onAsking,
+  waiting,
+  restartOnAllow,
   onHeightChange,
   appRootRef,
   wording,
@@ -278,6 +301,8 @@ export function PermissionBar({
     : previous.sameDeclaration
       ? `The same as v${previous.version}.`
       : `What it may reach has changed since v${previous.version}.`;
+  const waitingText =
+    waiting && waiting.length > 0 ? `It is waiting for your answer to use ${describe([...waiting], wording)}.` : '';
   const changeText = !change || !previous
     ? ''
     : change.added.length > 0
@@ -300,6 +325,7 @@ export function PermissionBar({
             onClick={() => {
               restoredRef.current = true;
               setCollapsed(false);
+              onAsking?.(true);
             }}
           >
             {SHIELD}
@@ -329,6 +355,12 @@ export function PermissionBar({
             )}
             {change && change.added.length === 0 && change.removed.length > 0 && <> No longer asks for {describe(change.removed, wording)}, as v{previous!.version} did.</>}
             {sameNames && unchangedText && <> {unchangedText}</>}
+            {/* The one time the app is waiting on the bar: it asked for
+                something the person has just had it do, and that is kept
+                until they answer. Said, or the press looks like it did
+                nothing. */}
+            {waitingText && <span data-softn-consent-waiting=""> {waitingText}</span>}
+            {restartOnAllow && <span data-softn-consent-restart=""> Allowing starts it again.</span>}
           </span>
           <span className="softn-consent-actions">
             <button
@@ -348,6 +380,9 @@ export function PermissionBar({
               onClick={() => {
                 restoredRef.current = false;
                 setCollapsed(true);
+                // What the app asked for and was kept for this answer is
+                // refused now, and so is what it asks for while the bar is away.
+                onAsking?.(false);
               }}
             >
               Not now

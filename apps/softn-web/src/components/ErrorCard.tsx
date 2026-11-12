@@ -1,5 +1,7 @@
 import React, { useEffect, useId, useRef } from 'react';
+import { DEFAULT_URLS } from '@softn/brand';
 import { describeFailure } from '@softn/runtime-shell/failure';
+import { failureActions } from '../lib/failureActions';
 
 /*
  * The runtime's own failure screen: an app would not open, a download failed,
@@ -73,12 +75,16 @@ const errorCardStyles = `
   }
   .softn-shell-error-actions { display: flex; flex-wrap: wrap; gap: 0.625rem; margin-top: 1.375rem; }
   .softn-shell-error-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-height: 2.5rem;
     padding: 0 1.125rem;
     border-radius: 8px;
     font: inherit;
     font-size: 0.875rem;
     font-weight: 600;
+    text-decoration: none;
     cursor: pointer;
     border: 1px solid var(--line-strong);
     background: transparent;
@@ -97,13 +103,24 @@ export function ErrorCard({
   error,
   onHome,
   onOpenFile,
+  onRetry,
+  backHref,
 }: {
   error: Error;
   onHome: () => void;
   /** Offered when the failure was the file itself. */
   onOpenFile?: () => void;
+  /** Ask for the app again, when it came from an address: offered for a download that failed or arrived damaged. */
+  onRetry?: () => void;
+  /** The page of this site that opened the app, when one did: the way back to it. */
+  backHref?: string;
 }): React.ReactElement {
   const view = describeFailure(error);
+  const offer = failureActions(error);
+  const retry = offer.retry && onRetry ? onRetry : undefined;
+  // One primary action: the one that may fix it, else the place to look, else the way out.
+  const primary = retry ? 'retry' : offer.browse ? 'browse' : 'back';
+  const btn = (kind: 'retry' | 'browse' | 'back'): string => `softn-shell-error-btn${primary === kind ? ' softn-shell-error-btn--primary' : ''}`;
   const titleId = useId();
   const titleRef = useRef<HTMLHeadingElement>(null);
 
@@ -132,10 +149,33 @@ export function ErrorCard({
         </div>
         {view.hint && <p className="softn-shell-error-hint">{view.hint}</p>}
         {view.detail && view.detail !== view.hint && <p className="softn-shell-error-detail">{view.detail}</p>}
+        {/* What the words above tell the person to do is a button here: try
+            again, look in the directory, go back to where they came from. The
+            card used to offer "Back to home" alone, under "check your
+            connection … then try again". */}
         <div className="softn-shell-error-actions">
-          <button type="button" className="softn-shell-error-btn softn-shell-error-btn--primary" onClick={onHome}>
-            Back to home
-          </button>
+          {retry && (
+            <button type="button" className={btn('retry')} onClick={retry}>
+              Try again
+            </button>
+          )}
+          {offer.browse && (
+            <a className={btn('browse')} href={DEFAULT_URLS.apps}>
+              Browse apps
+            </a>
+          )}
+          {backHref ? (
+            // Opened from a page of this site (an app's page in the
+            // directory): that page is the way out, not the runtime's home,
+            // which the person has not seen.
+            <a className={btn('back')} href={backHref}>
+              Go back
+            </a>
+          ) : (
+            <button type="button" className={btn('back')} onClick={onHome}>
+              Back to home
+            </button>
+          )}
           {view.offerAnotherFile && onOpenFile && (
             <button type="button" className="softn-shell-error-btn" onClick={onOpenFile}>
               Open another file

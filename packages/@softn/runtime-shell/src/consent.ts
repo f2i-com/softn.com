@@ -36,12 +36,22 @@ export function requestedCapabilities(config: PermissionConfig): string[] {
  *
  * `consentPending` only changes what a refusal says: "you have not allowed this
  * yet" rather than an instruction to edit a file the author already wrote.
+ *
+ * `asking` is for a host whose bar is on screen and can be answered, and
+ * which tells the runtime when it is put away (PermissionBar's `onAsking`):
+ * it names what the bar is asking for, and a `softn.*` call that needs one of
+ * those is then kept until the person answers instead of being refused, so
+ * that what they pressed is done when they allow it. Nothing is granted by
+ * it: the permissions are as empty as without it, and nothing of a kept call
+ * happens before the answer. Without it, or with it false after "Not now",
+ * every such call is refused at once, as it always was.
  */
-export function withheldPermissions(declared: PermissionConfig): PermissionConfig {
+export function withheldPermissions(declared: PermissionConfig, options: { asking?: boolean } = {}): PermissionConfig {
   return Object.freeze({
     app: declared.app,
     permissions: Object.freeze({}),
     consentPending: true,
+    ...(options.asking === true ? { consentAsking: Object.freeze(requestedCapabilities(declared)) } : {}),
   }) as PermissionConfig;
 }
 

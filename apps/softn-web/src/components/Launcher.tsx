@@ -184,6 +184,12 @@ export function Launcher({
             </div>
           </div>
 
+          {/* What is yours at the left, where the page starts, and the
+              directory's apps in a column beside it; with nothing of yours
+              yet, the directory's apps take the width. One column on a
+              phone, yours first. (Launcher.css) */}
+          <div className="softn-launcher-body" data-library={running.length > 0 || groups.length > 0 ? 'some' : 'none'}>
+          <div className="softn-launcher-mine">
           {running.length > 0 && (
             // Apps take the whole screen while they run, so this is the way back
             // to one that is still going — and the way to stop it without
@@ -410,7 +416,9 @@ export function Launcher({
               Open a <strong>.softn</strong> file or choose an app from <a href={directoryHref}>the directory</a>.
             </div>
           )}
+          </div>
           {onOpenUrl && <DirectoryShelf onOpen={onOpenUrl} />}
+          </div>
         </div>
       </div>
     </>

@@ -249,6 +249,8 @@ function App(): React.ReactElement {
   const [error, setError] = useState<Error | null>(null);
   const [loadingTabId, setLoadingTabId] = useState<string | null>(null);
   const [loadingFileName, setLoadingFileName] = useState('');
+  /** The last app asked for by address that has not opened: what "Try again" on the error card asks for again. */
+  const [urlOpen, setUrlOpen] = useState<{ value: string; initialPage?: string } | null>(null);
   // Nothing here queues consent any more. A permission request used to park
   // processBundleData on a promise the modal resolved, which is why it needed a
   // queue at all — two bundles asking at once could strand each other's load.
@@ -574,6 +576,9 @@ function App(): React.ReactElement {
         // processBundleData adopts it once the real name is known.
         const skeletonTabId = randomUUID();
         if (isForeground()) setError(null);
+        // What the error card's "Try again" asks for again, should this open
+        // fail: the address as it was given. Forgotten once the app is open.
+        if (isForeground()) setUrlOpen({ value, initialPage });
         setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '', directorySlug }]);
         if (isForeground()) setActiveTabId(skeletonTabId);
 
@@ -625,6 +630,7 @@ function App(): React.ReactElement {
           });
           if (opened) {
             setOpenTabs((prev) => prev.map((t) => (t.id === skeletonTabId && t.source ? { ...t, bundleUrl: url.href } : t)));
+            setUrlOpen((current) => (current?.value === value ? null : current));
           }
           // The run is counted when the app reports itself ready, not here:
           // see announceReady. Counting at this point said "the bundle
@@ -919,6 +925,9 @@ function App(): React.ReactElement {
       const closingTab = openTabsRef.current.find((tab) => tab.id === tabId);
       closingTab?.importResolver?.dispose();
       closingTab?.assetResolver?.dispose();
+      // An open that was stopped is not one to offer again on some later
+      // failure's card.
+      if (closingTab && !closingTab.source) setUrlOpen(null);
 
       setOpenTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === tabId);
@@ -1224,6 +1233,16 @@ function App(): React.ReactElement {
   const activeTab = isHome ? null : openTabs.find((t) => t.id === activeTabId) ?? null;
 
   /**
+   * Close in the bar over an app, and "Stop waiting" on one that is still
+   * opening. Opened from an app's page on the site: the way back there.
+   * Opened here: the runtime's home.
+   */
+  const closeAndLeave = (tabId: string): void => {
+    handleCloseTab(tabId, true);
+    if (backTo) window.location.assign(backTo);
+  };
+
+  /**
    * A skip link's press: focus where it points, made focusable for the
    * purpose if it is a heading, and scrolled into view. The address is left
    * alone; a fragment there would be read as a route.
@@ -1290,12 +1309,7 @@ function App(): React.ReactElement {
             tab={{ id: activeTab.id, name: activeTab.name, icon: activeTab.icon, directorySlug: activeTab.directorySlug }}
             onHome={() => handleSelectTab(null)}
             closeTitle={backTo ? 'Stop the app and return to the page that opened it' : undefined}
-            onClose={() => {
-              handleCloseTab(activeTab.id, true);
-              // Opened from an app's page on the site: Close is the way back
-              // there. Opened here: Close is the runtime's home.
-              if (backTo) window.location.assign(backTo);
-            }}
+            onClose={() => closeAndLeave(activeTab.id)}
             onHide={() => setChromeHidden(true)}
             fullscreenTarget={shellRef}
             onDownload={handleDownloadTab}
@@ -1335,9 +1349,23 @@ function App(): React.ReactElement {
               onHome={() => {
                 claimNavigation();
                 setError(null);
+                setUrlOpen(null);
                 setActiveTabId(null);
               }}
               onOpenFile={() => fileInputRef.current?.click()}
+              // An app asked for by address that did not open can be asked
+              // for again, and the page of this site that asked is the way
+              // back. A failure of anything else (an import, a download of a
+              // running app's bundle) has neither.
+              onRetry={
+                urlOpen
+                  ? () => {
+                      setError(null);
+                      void openFromUrl(urlOpen.value, claimNavigation(), urlOpen.initialPage);
+                    }
+                  : undefined
+              }
+              backHref={urlOpen && backTo ? backTo : undefined}
             />
           )}
 
@@ -1410,8 +1438,14 @@ function App(): React.ReactElement {
               themeMode={tab.themeMode}
               permissionConfig={tab.permissionConfig}
               consent={tab.consent}
+              // The running app, for a host that hands it a newer version of
+              // its files while it is open (lib/liveUpdate.ts).
+              live={tab.live}
               onPageChange={(page) => handlePageChange(tab.id, page)}
               onReady={() => announceReady(tab)}
+              // Stopping a long wait is Close: the download is aborted with
+              // the tab, and the way back is the one Close takes.
+              onCancelOpen={() => closeAndLeave(tab.id)}
               serverUrl={tab.serverUrl}
               serverToken={tab.serverToken}
               serverCollections={tab.serverCollections}
