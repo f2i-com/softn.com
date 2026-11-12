@@ -149,6 +149,7 @@ export function Launcher({
         type="file"
         accept=".json,application/json"
         style={{ display: 'none' }}
+        data-softn-host=""
         onChange={(e) => {
           const file = e.target.files?.[0];
           const target = importTargetRef.current;

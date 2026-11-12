@@ -90,6 +90,12 @@ const ON_DEMAND_RUNTIME = [
   'xdb-server-sync',
   'zipp_torch',
 ];
+// The editor for a running app (src/edit/), by the module each of its chunks
+// starts at: the pane a person opens with Edit, the store their changes are
+// kept in (read when an app they have edited opens), and the writer of an
+// edited bundle. None is in what the runtime starts with, and none is
+// precached: vite.config.ts leaves them out by these names.
+const LIVE_EDIT = ['EditPane', 'drafts', 'bundle'];
 // The inflate worker imports the archive reader from `@softn/core/bundle`,
 // core's own entry for it; through the barrel it measured 1.35 MB. Well
 // above the ~10 KB it is, well below what the barrel would make it.
@@ -190,6 +196,60 @@ describe.skipIf(!built)('softn-web build graph', () => {
     );
   });
 
+  it('keeps the editor for a running app out of the entry closure and out of the precache: it is fetched on Edit', () => {
+    const precached = precachedUrls();
+    const sizes: string[] = [];
+    for (const name of LIVE_EDIT) {
+      // By the name it is emitted under, which is the name the precache leaves out.
+      const found = Object.entries(manifest).filter(([, chunk]) => new RegExp(`/${name}-[^/]+\\.js$`).test(chunk.file));
+      expect(found.length, `no chunk is emitted as ${name}-*.js`).toBe(1);
+      const [key, chunk] = found[0];
+      expect(closure.has(key), `${name} is in the entry closure`).toBe(false);
+      // What the runtime starts with reaches it by import() or not at all.
+      for (const [from, starter] of closure) {
+        expect(starter.imports ?? [], `${from} imports ${name} statically`).not.toContain(key);
+      }
+      for (const file of [chunk.file, ...(chunk.css ?? [])]) {
+        expect(precached.has(file), `${file} is precached`).toBe(false);
+        // Kept by the worker once fetched, its stylesheet as well as its
+        // script: an import whose stylesheet does not arrive fails, so
+        // without it Edit opened offline only by the browser's own cache.
+        expect(keptOnceFetched(file), `${file} is not kept by the service worker once fetched`).toBe('CacheFirst');
+        sizes.push(`${file} (${sizeOf(file)} B)`);
+      }
+    }
+    // The editor's stylesheet is one of them: there is one, and the route that keeps it names nothing else.
+    const sheets = LIVE_EDIT.flatMap((name) => Object.values(manifest).filter((chunk) => new RegExp(`/${name}-[^/]+\\.js$`).test(chunk.file)).flatMap((chunk) => chunk.css ?? []));
+    expect(sheets.length, 'the editor has no stylesheet of its own').toBeGreaterThan(0);
+    expect(keptOnceFetched('assets/index-AbCd1234.css'), 'the shell’s stylesheet is the precache’s to answer for').toBeUndefined();
+    // Nothing of the editor's own is in what the runtime starts with: not its
+    // pane, not its session, not what changes an element's source, not its
+    // store, not the table of component props. Each is found by words only
+    // it has.
+    const EDITOR_WORDS = ['softn-edit-bar', 'Discard my changes', 'This makes your own copy', 'reads as you typed it', 'alertStyle'];
+    const started = closureFiles.map((file) => readFileSync(resolve(dist, file), 'utf8')).join('\n');
+    for (const only of [...EDITOR_WORDS, 'softn-web-edits']) {
+      expect(started.includes(only), `the entry closure carries the editor's "${only}"`).toBe(false);
+    }
+    // And the editor's chunk does carry them, so the words above are the right ones to look for.
+    const pane = Object.entries(manifest).find(([key]) => /src\/edit\/EditPane\.tsx$/.test(key))![1];
+    const paneClosure = [...staticClosure(manifest, [Object.keys(manifest).find((k) => /src\/edit\/EditPane\.tsx$/.test(k))!]).values()]
+      .filter((chunk) => !closureFiles.includes(chunk.file))
+      .map((chunk) => chunk.file);
+    const editor = paneClosure.map((file) => readFileSync(resolve(dist, file), 'utf8')).join('\n');
+    for (const only of EDITOR_WORDS) {
+      expect(editor.includes(only), `the editor's chunks have no "${only}"`).toBe(true);
+    }
+    // Nothing the pane needs beyond what the runtime starts with is precached
+    // either: a chunk it split off another's would be, under a name of no one's.
+    for (const file of paneClosure) expect(precached.has(file), `${file}, which only the editor needs, is precached`).toBe(false);
+    const editorBytes = paneClosure.reduce((sum, file) => sum + sizeOf(file), 0);
+    process.stdout.write(
+      `[build-graph] live-edit chunks (on Edit, not precached):\n  ${sizes.join('\n  ')}\n` +
+        `[build-graph] fetched on Edit beyond the entry closure: ${editorBytes} bytes over ${paneClosure.length} chunk(s) (${pane.file} and what only it needs)\n  ${paneClosure.map((file) => `${file} (${sizeOf(file)} B)`).join('\n  ')}\n`
+    );
+  });
+
   // The light groups that were in the shell until 2026-10-22 (controls,
   // feedback, data, display, navigation): fetched by the page that draws one,
   // so out of the entry closure, and precached with the shell, so an app that
@@ -246,6 +306,15 @@ describe.skipIf(!built)('softn-web build graph', () => {
         `[build-graph] Three addon chunks (dynamic from scene3d):\n  ${addons.join('\n  ')}\n`
     );
   });
+
+  /** How the built worker answers for a file it did not precache, once it has been fetched: the handler of its first runtime route that matches, or none. */
+  function keptOnceFetched(file: string): string | undefined {
+    const sw = readFileSync(resolve(dist, 'sw.js'), 'utf8');
+    const written = /^self\.__SOFTN_SW__=(\{.*\});$/m.exec(sw);
+    expect(written, 'sw.js has no route list').not.toBeNull();
+    const { routes } = JSON.parse(written![1]) as { routes: Array<{ pattern: string; flags: string; handler: string }> };
+    return routes.find((route) => new RegExp(route.pattern, route.flags).test(`/${file}`))?.handler;
+  }
 
   /** The URLs sw.js precaches, as scripts/build/pwa.mjs writes them ahead of the worker (one JSON line). */
   function precachedUrls(): Set<string> {

@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
-import { SoftNWithXDB, XDBStorageNotice, bundlePageAt, composePage, mainPage, type AppAssetResolver, type AppUpdateResult, type ComposedBundleSource, type LiveApp, type PythonProject } from '@softn/core';
+import { SoftNWithXDB, XDBStorageNotice, bundlePageAt, composePage, mainPage, type AppAssetResolver, type AppUpdateResult, type ComposedBundleSource, type EditMarks, type LiveApp, type PythonProject } from '@softn/core';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
 // bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
@@ -72,6 +72,14 @@ interface AppRunnerProps {
   live?: LiveApp;
   /** What became of a newer version, or of a change to what the app is allowed. */
   onUpdate?: (result: AppUpdateResult) => void;
+  /**
+   * Set while the runtime's editor is open on this app (src/edit/): the
+   * renderer notes in it which node drew each element. Nothing of it is on
+   * the page.
+   */
+  editMarks?: EditMarks;
+  /** Told which other page of the bundle a link has put on screen, or null for its main page. */
+  onShownPage?: (path: string | null) => void;
 }
 
 interface ErrorBoundaryState {
@@ -138,7 +146,7 @@ class RunnerErrorBoundary extends Component<
     if (this.state.error) {
       return (
         <>
-          <div className="softn-runner-error-wrap" role="alert">
+          <div className="softn-runner-error-wrap" role="alert" data-softn-host="">
             <RunnerErrorCard
               title="This app stopped working"
               hint="Something in the app failed while it was running. Try again; if it keeps happening, close it from the bar above and open it again, or tell its author."
@@ -157,7 +165,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, onCancelOpen, serverUrl, serverToken, serverCollections, storageEndpoint, live, onUpdate }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, onCancelOpen, serverUrl, serverToken, serverCollections, storageEndpoint, live, onUpdate, editMarks, onShownPage }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
   // What the app is waiting on the permission bar for, and whether allowing
   // will start it again, as its renderer says: the bar says both before it
@@ -192,6 +200,37 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
     },
     [page, textFiles]
   );
+  // The files changed under a page a link put on screen (the runtime's editor
+  // hands the tab a newer set): that page is composed from them again, and
+  // the renderer takes it as a newer version of what it is showing. A set
+  // the page cannot be composed from leaves the last one that could.
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  const composedFrom = useRef(textFiles);
+  useEffect(() => {
+    const showing = pageRef.current;
+    if (composedFrom.current === textFiles) return;
+    composedFrom.current = textFiles;
+    if (!showing || !textFiles) return;
+    try {
+      const composed = composePage(textFiles, showing.path);
+      setPage((current) => (current && current.path === showing.path ? { path: current.path, composed } : current));
+    } catch (problem) {
+      console.warn(`[SoftN] ${showing.path} cannot be shown as changed:`, problem instanceof Error ? problem.message : problem);
+    }
+  }, [textFiles]);
+  // An app opened afresh in this tab (the runtime's editor does that for a
+  // change the running app cannot take) opens at its main page, like any
+  // open: the page a link had put on screen was the run before's.
+  useEffect(() => {
+    if (!source) setPage(null);
+  }, [source]);
+  const shownPath = page?.path ?? null;
+  const onShownPageRef = useRef(onShownPage);
+  onShownPageRef.current = onShownPage;
+  useEffect(() => {
+    onShownPageRef.current?.(shownPath);
+  }, [shownPath]);
   const shown = page?.composed ?? { source, logicBasePath, preIncludedLogicPaths, python, parseProblem };
   // The name of the box this app is drawn in, for the provider to write a
   // declared side on. Every open app stays mounted in the one document, and
@@ -357,7 +396,10 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
         <RunnerErrorBoundary>
           <ThemeProvider followHost followSystem declaredMode={themeMode} box={themeBox}>
             <SoftNWithXDB
-              key={page?.path ?? ''}
+              // Another page is another run, and so is another identity: an
+              // app the person's first edit made their own copy of starts
+              // again as that copy, on its own saved data.
+              key={`${runtimeAppId}\n${page?.path ?? ''}`}
               source={shown.source}
               onLink={followLink}
               pagesOnly
@@ -380,6 +422,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
               // above), and not a newer version of this one.
               app={page ? undefined : live}
               onUpdate={onUpdate}
+              editMarks={editMarks}
               appId={runtimeAppId}
               // Every tab stays mounted; only this says which one is on screen.
               active={active}

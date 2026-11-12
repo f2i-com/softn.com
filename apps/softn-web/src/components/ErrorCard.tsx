@@ -132,7 +132,7 @@ export function ErrorCard({
   }, [error]);
 
   return (
-    <div className="softn-shell-error" role="alert" aria-labelledby={titleId}>
+    <div className="softn-shell-error" role="alert" aria-labelledby={titleId} data-softn-host="">
       <style dangerouslySetInnerHTML={{ __html: errorCardStyles }} />
       <div className="softn-shell-error-card">
         <div className="softn-shell-error-head">

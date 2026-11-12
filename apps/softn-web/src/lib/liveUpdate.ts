@@ -12,6 +12,7 @@
 
 import type { AppRevision, AppUpdateResult } from '@softn/core';
 import { createImportResolver, processBundle, type BundleManifest, type DisposableImportResolver } from '@softn/runtime-shell/bundleProcessor';
+import { declarationKey } from '@softn/runtime-shell/consent';
 import type { OpenTab } from './openBundle';
 
 /** What of a tab a newer version of its files replaces. */
@@ -25,8 +26,23 @@ export type OpenAppUpdate =
   /** The manifest or the permissions file changed: the bundle is opened afresh, and the person is asked again. */
   | { outcome: 'reopen'; changed: []; reason: string };
 
-/** The parts of a manifest that change nothing about how the app runs. */
-const COSMETIC = new Set(['name', 'description', 'version', 'author', 'pages', 'icon']);
+/** The parts of a manifest that change nothing about how the app runs (`copy`: the mark that makes a person's copy an app of its own). */
+const COSMETIC = new Set(['name', 'description', 'version', 'author', 'pages', 'icon', 'copy']);
+
+/**
+ * What a permissions file asks for, in a form that says the same for the
+ * same asks however they are written: key order and spacing are not a new
+ * ask, and an app is not opened again, and asked again, for them. The text
+ * itself where it cannot be read as one.
+ */
+function asksOf(text: string | undefined): string {
+  if (text === undefined) return '';
+  try {
+    return declarationKey(JSON.parse(text) as Parameters<typeof declarationKey>[0]);
+  } catch {
+    return text;
+  }
+}
 
 function runsBy(text: string | undefined): string {
   if (text === undefined) return '';
@@ -52,7 +68,7 @@ export function planOpenAppUpdate(
   if (runsBy(had?.get('manifest.json')) !== runsBy(files.get('manifest.json'))) {
     return { reopen: 'Its manifest changed, so it has to be opened again.' };
   }
-  if ((had?.get('permission.json') ?? '') !== (files.get('permission.json') ?? '')) {
+  if (asksOf(had?.get('permission.json')) !== asksOf(files.get('permission.json'))) {
     return { reopen: 'What it asks permission for changed, so it has to be opened again and allowed again.' };
   }
   let manifest: Pick<BundleManifest, 'main'> & Partial<BundleManifest>;

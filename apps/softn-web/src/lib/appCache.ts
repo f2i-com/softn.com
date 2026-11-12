@@ -31,7 +31,7 @@ export {
 } from './appCacheIdentity';
 
 export type { AppDataStore, DataTransferResult } from './appCacheStorage';
-export { appDataStores, copyAppData, hasStoredData, holdsNothingOfItsOwn, removeAppData, transferStorageKeys } from './appCacheStorage';
+export { appDataStores, copyAppData, forgetSyncNotes, hasStoredData, holdsNothingOfItsOwn, removeAppData, transferStorageKeys } from './appCacheStorage';
 
 export type { AppDataSnapshot, SnapshotRead } from './appCacheSnapshot';
 export {
@@ -57,6 +57,7 @@ export {
   isDirectorySlug,
   recordPermissionGrant,
   removeCachedApp,
+  renameCachedApp,
   setOfflineState,
   updateLastOpened,
 } from './appCacheRecords';

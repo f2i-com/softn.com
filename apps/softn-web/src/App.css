@@ -91,6 +91,13 @@
   border-color: var(--line-strong);
   background: var(--ink-2);
 }
+/* Over a running app, under the bar: a strip of the shell's own, edge to edge. */
+.softn-shell-notice--over-app {
+  flex: 0 0 auto;
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
 .softn-shell-notice-text { flex: 1 1 16rem; }
 .softn-shell-notice-action {
   min-height: 2rem;

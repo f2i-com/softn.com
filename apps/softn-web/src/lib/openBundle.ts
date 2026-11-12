@@ -8,7 +8,7 @@
 
 import type { Dispatch, SetStateAction } from 'react';
 import { flushSync } from 'react-dom';
-import type { LiveApp, PermissionConfig, PythonProject } from '@softn/core';
+import type { EditMarks, LiveApp, PermissionConfig, PythonProject } from '@softn/core';
 import { ManifestError, createLiveApp, preloadRememberedFirstDraw, readManifest } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import {
@@ -32,7 +32,7 @@ import { resolveServerConfig } from '@softn/runtime-shell/net';
 // The consent rule the desktop loader and the single-app shell share. The
 // grant itself is kept on the app's cache record (appCache), by origin, where
 // adoption and the secure-context rule already govern it.
-import { grantCovers, grantRecord } from '@softn/runtime-shell/consent';
+import { declarationKey, grantCovers, grantRecord } from '@softn/runtime-shell/consent';
 import type { ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import {
   cacheApp,
@@ -41,11 +41,13 @@ import {
   getCachedApps,
   isSecureAppOrigin,
   recordPermissionGrant,
+  renameCachedApp,
   updateLastOpened,
   type CachedApp,
 } from './appCache';
 import { findPlaceholder, findRunningTab } from './tabIdentity';
 import { describePreviousBuild, previousBuildFor, type PreviousBuild } from './consentDiff';
+import { hasDraft } from './editIndex';
 
 export interface OpenTab {
   id: string;
@@ -105,6 +107,25 @@ export interface OpenTab {
   directorySlug?: string;
   /** The address the bundle was fetched from, when it came from one. */
   bundleUrl?: string;
+  /**
+   * The person's own: opened from a file, handed over by Studio or the
+   * Builder, or a copy they made. Not one from the directory or a link, which
+   * the runtime's editor (src/edit/) never changes: a first edit of one makes
+   * a copy that is theirs.
+   */
+  mine?: boolean;
+  /** Running with changes the person made in the runtime's editor laid over the bundle's files. */
+  edited?: boolean;
+  /** Set while the runtime's editor is open on this app: which node drew each element (core's EditMarks). */
+  editMarks?: EditMarks;
+  /** Another page of the bundle a link has put on screen (AppRunner follows it), where it is not the main one. */
+  shownPage?: string;
+  /**
+   * The name its address is written with, where that is not `name`: the
+   * bundle's own, for an app the person renamed in the runtime's editor to a
+   * name another saved app is shown under (appUrl's tabAddress).
+   */
+  addressName?: string;
 }
 
 /** What an open needs of the runtime around it. */
@@ -122,6 +143,8 @@ export interface OpenBundleHost {
   hideOpening: (tabId: string) => void;
   /** The cache's records changed; Home lists them. */
   appsChanged: (apps: CachedApp[]) => void;
+  /** Something to tell the person about an open that went ahead: a line of the runtime's own, over the app. */
+  notify?: (text: string) => void;
   /** Make the app openable without a network, in the background. */
   installOffline: (
     tabId: string,
@@ -154,6 +177,14 @@ export interface OpenBundleRequest {
   placeholderId?: string;
   /** Whether this open is still the person's latest navigation, and so may take the screen. */
   isForeground?: () => boolean;
+  /** The bytes came by a link: someone else's app, as one from the directory is. */
+  fromLink?: boolean;
+  /**
+   * Open the bundle as it is, without what the person changed in it with the
+   * runtime's editor: what an open that failed with their changes falls back
+   * to, so that a change cannot leave an app that no longer opens.
+   */
+  plain?: boolean;
 }
 
 /**
@@ -194,6 +225,12 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
   // will never exist.
   let warmup: FirstScreenWarmup | undefined;
 
+  // Whether what the person changed in this app with the runtime's editor
+  // was laid over its files (below), and what the bundle asked permission
+  // for before it was.
+  let edited = false;
+  let ownAsk: string | undefined;
+
   // Whether the placeholder this load was given has since been closed.
   //
   // Asked again after every await below. The caller checks once, after
@@ -226,6 +263,39 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       mark('softn:zip:end');
     }
     const { textFiles, binaryFiles, archive } = zip;
+
+    // What the person changed in this app with the runtime's editor is laid
+    // over its files before anything reads them (edit/drafts.ts): the app
+    // keeps its identity, and with it its saved data, and opens as they left
+    // it. Only an app that is theirs has any, and only one that has some
+    // pays for the look: an app from the directory or a link is opened as it
+    // was published, whatever is saved here.
+    if (!directorySlug && !request.fromLink && !request.plain) {
+      const identity = await origin;
+      if (hasDraft(identity)) {
+        const saved = await getCachedAppByOrigin(identity);
+        if (saved && !saved.directorySlug && !saved.linked) {
+          // What the bundle itself asks permission for, before anything is
+          // laid over it: an answer recorded before answers were kept with
+          // their ask was given to exactly this (see `answered` below).
+          try {
+            ownAsk = declarationKey(extractPermissions(textFiles, readManifest<BundleManifest>(textFiles)) ?? { permissions: {} });
+          } catch {
+            ownAsk = undefined; // Not readable: the open below says why.
+          }
+          // What reads them is fetched now, and may not arrive (no network,
+          // or a deployment has replaced it under this page): the app opens
+          // all the same, as it was, and the person is told.
+          try {
+            edited = (await (await import('../edit/drafts')).layDraft(identity, textFiles)).laid;
+          } catch (problem) {
+            console.warn('[SoftN Web] The changes made to this app in the editor could not be read, and it is opened without them:', problem);
+            host.notify?.('This app is open without the changes you made to it in the editor: they could not be loaded just now. They are still saved; open it again when you are online.');
+          }
+        }
+      }
+      if (placeholderClosed()) return null;
+    }
 
     // The one manifest read every host shares (core's readManifest): a
     // manifest without `files` opens, as it always did in core, and what
@@ -322,8 +392,23 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // reading "this app wants to use nothing" trains people to press Allow
     // without reading — which is what the dialog was already doing wrong.
     // `granted[c] === true`, not truthy: the map comes off disk unchecked.
+    //
+    // And an answer covers what was asked when it was given, no other ask.
+    // The app's declaration can change under one identity: the person edits
+    // it in the runtime's editor, and their changes are laid over the bundle
+    // above (in this tab or another, before the answer or after). So the
+    // answer is kept with the declaration it answered, and holds only while
+    // that is the declaration being opened. An answer recorded before that
+    // was kept answered the bundle's own declaration (there were no changes
+    // to lay then): it holds whenever what is being opened asks exactly what
+    // the bundle itself asks, changes laid or not. So a changed heading does
+    // not ask again, and a change to what is asked does.
+    const declaration = declarationKey(permissionConfig);
+    const answered = cachedApp?.grantedFor === undefined ? !edited || ownAsk === declaration : cachedApp.grantedFor === declaration;
     const hasGrant =
-      requested.length === 0 || (Boolean(cachedApp?.permissionsPromptedAt) && grantCovers(granted, requested));
+      requested.length === 0 || (Boolean(cachedApp?.permissionsPromptedAt) && grantCovers(granted, requested) && answered);
+    // Theirs to change: not from the directory or a link, now or when it was saved.
+    const mine = !directorySlug && !request.fromLink && !cachedApp?.directorySlug && !cachedApp?.linked;
 
     // Load XDB data (per-app isolation)
     mark('softn:xdb-seed:start');
@@ -368,11 +453,20 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // remove them with. Origin dedup means opening it again is an update.
     // The record comes back for the offline install below, which is keyed
     // by it and writes its outcome onto it.
-    const cachedRecord = await cacheApp(data, manifest, icon, directorySlug, requested);
+    const cachedRecord = await cacheApp(data, manifest, icon, directorySlug, requested, request.fromLink);
 
     if (cachedAppId) {
       await updateLastOpened(cachedAppId);
     }
+
+    // An app the person renamed in the runtime's editor (its manifest's name,
+    // in the changes laid over it above) is shown under that name on Home,
+    // as its tab is; opened without those changes, under its bundle's own
+    // again. Its address is written with its bundle's own name, always: a
+    // name typed in the editor may be another app's, now or later, and the
+    // address has to go on meaning this app.
+    let addressName: string | undefined;
+    if (cachedRecord && (edited || cachedRecord.ownName !== undefined)) addressName = (await renameCachedApp(appOrigin, appName))?.ownName;
 
     // Refresh cached apps list
     const updatedApps = await getCachedApps();
@@ -425,14 +519,23 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       // hand and omitted ai, gpu and sync, so a grant for those was never
       // written down.
       const grantedPerms = grantRecord(requested);
+      // The tab as it is now, not as it was opened. The runtime's editor
+      // changes a tab under its bar: the first change to someone else's app
+      // makes the tab the person's own copy, with an identity of its own,
+      // and every change gives it newer files. So the answer is the copy's,
+      // not the app it was made from, and the app goes on reading the files
+      // it has now. (What the bar asks for is this open's: a change to that
+      // opens the app again, with a bar of its own.)
+      const now = host.tabs().find((t) => t.id === tabId);
       // Not awaited, and its failure does not block the grant. getDB
       // rejects outright in private browsing, and an Allow that does
       // nothing until a write succeeds is a button that looks broken to
       // exactly the users with the most reason to distrust it. The tab is
       // the authority for this run; IndexedDB is only the memory of it.
-      void recordPermissionGrant(appOrigin, grantedPerms);
+      // Kept with what was asked, which is all it answers.
+      void recordPermissionGrant(now?.appId ?? appOrigin, grantedPerms, declaration);
 
-      const grantedResolver = createImportResolver(textFiles, permissionConfig);
+      const grantedResolver = createImportResolver((now?.textFiles as Map<string, string> | undefined) ?? textFiles, permissionConfig);
       // The resolver being replaced is read out of the updater's own
       // `prev`, not out of the tabs as last rendered. Those are only
       // refreshed on render, so two activations in one frame both read the
@@ -523,6 +626,9 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       themeMode: manifest.config?.theme?.mode,
       ...server,
       directorySlug,
+      mine,
+      edited,
+      ...(addressName !== undefined ? { addressName } : {}),
     };
     host.setOpenTabs((prev) => {
       const idx = prev.findIndex((t) => t.id === tabId);
@@ -547,6 +653,12 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     return appName;
   } catch (err) {
     warmup?.abort();
+    if (edited && !request.plain) {
+      // With the person's changes laid over it the app does not open. It is
+      // opened as it was instead; their changes are still in the editor.
+      console.warn('[SoftN Web] The app did not open with the changes made in the editor, and is opened without them:', err);
+      return openBundle(host, { ...request, plain: true });
+    }
     console.error('[SoftN Web] Failed to load bundle:', err);
     if (isForeground()) host.setError(err instanceof Error ? err : new Error(String(err)));
     if (loadingOwner) host.hideOpening(loadingOwner);

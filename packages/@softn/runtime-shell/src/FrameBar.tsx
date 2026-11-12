@@ -22,6 +22,15 @@ interface FrameBarProps {
   /** Hands the running app's bundle back as a file. */
   onDownload?: (id: string) => void;
   /**
+   * Opens, or puts away, the host's editor for the running app. Given by a
+   * host that has one: "Edit" is then drawn beside the app's other actions,
+   * and in its menu, which is where a phone has it. A host that gives none
+   * draws the bar it always drew.
+   */
+  onEdit?: (id: string) => void;
+  /** The host's editor is open on this app: "Edit" reads as pressed, and the menu offers to stop. */
+  editing?: boolean;
+  /**
    * What Home is called and does. The runtime's bar goes back to the runtime
    * with the app still running; the site's play page has no runtime behind
    * it, so its Home is the directory and Close leaves for the app's page.
@@ -144,6 +153,7 @@ const frameBarStyles = `
      an accent: it was coral, the colour that means "the SoftN language". */
   .softn-frame-close { color: var(--paper); border-color: var(--line-strong); }
   .softn-frame-close:hover { border-color: var(--paper); background: var(--ink-3); }
+  .softn-frame-edit[aria-pressed="true"] { color: var(--paper); border-color: var(--paper); background: var(--ink-3); }
   .softn-frame-menu { position: relative; display: flex; align-items: center; }
   .softn-frame-menu-btn {
     width: 32px; height: 30px;
@@ -175,9 +185,17 @@ const frameBarStyles = `
     background: transparent; border: none; cursor: pointer; text-decoration: none;
     white-space: normal; line-height: 1.35;
   }
-  .softn-frame-menu-item:hover { background: var(--ink-3); }
+  /* Under the list, to outrank a page's own a:hover, which turned a link here theme blue. */
+  .softn-frame-menu-list .softn-frame-menu-item:hover,
+  .softn-frame-menu-list .softn-frame-menu-item:focus-visible {
+    background: var(--ink-3);
+    color: var(--paper);
+    text-decoration: none;
+    box-shadow: inset 2px 0 0 var(--mint);
+  }
   .softn-frame-menu-note { color: var(--dim); font-size: 0.75rem; padding: 6px 10px 8px; line-height: 1.4; }
   .softn-frame-menu-note a { color: var(--paper); text-decoration: underline; text-underline-offset: 2px; }
+  .softn-frame-menu .softn-frame-menu-note a:hover { color: var(--mint); text-decoration: underline; }
   .softn-frame-menu-note input { width: 100%; margin-top: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--paper); background: var(--ink); font: inherit; }
   .softn-frame-menu-sep { height: 1px; background: var(--line-soft); margin: 4px 6px; }
   .softn-frame-mobile-icon { display: none; }
@@ -197,6 +215,8 @@ const frameBarStyles = `
     .softn-frame-mobile-label { display: none; }
     .softn-frame-mobile-icon { display: inline-flex; }
     .softn-frame-actions { gap: 0.25rem; }
+    /* On a phone, Edit is in the app's menu. */
+    .softn-frame-btn.softn-frame-edit { display: none; }
   }
 `;
 
@@ -206,7 +226,17 @@ const frameBarStyles = `
  * came from the site's directory, go to its page, open it in Studio or
  * Builder, or copy the link that opens it anywhere.
  */
-function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) => void }): React.ReactElement {
+function AppMenu({
+  tab,
+  onDownload,
+  onEdit,
+  editing,
+}: {
+  tab: TabInfo;
+  onDownload?: (id: string) => void;
+  onEdit?: (id: string) => void;
+  editing?: boolean;
+}): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
@@ -305,6 +335,18 @@ function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) 
       </button>
       {open && (
         <div className="softn-frame-menu-list" role="menu" aria-label={`Actions for ${tab.name}`} onKeyDown={navigateMenu}>
+          {onEdit && (
+            <button
+              role="menuitem"
+              className="softn-frame-menu-item"
+              onClick={() => {
+                onEdit(tab.id);
+                setOpen(false);
+              }}
+            >
+              {editing ? 'Stop editing' : 'Edit this app while it runs'}
+            </button>
+          )}
           {onDownload && (
             <button
               role="menuitem"
@@ -361,6 +403,8 @@ export function FrameBar({
   onHide,
   fullscreenTarget,
   onDownload,
+  onEdit,
+  editing = false,
   homeLabel = 'runtime',
   homeTitle = 'Back to the runtime. The app keeps running.',
   closeTitle = 'Stop the app and go back to the runtime',
@@ -391,7 +435,9 @@ export function FrameBar({
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: frameBarStyles }} />
-      <div className="softn-frame-bar">
+      {/* data-softn-host: the bar is the runtime's own, so an app listening on
+          its window is told nothing of a press on it (core's appHears). */}
+      <div className="softn-frame-bar" data-softn-host="">
         <div className="softn-frame-left">
           {/* Named by what it shows, "SoftN runtime", so the words on screen
               are the words a voice user says (WCAG 2.5.3); what it does is
@@ -411,9 +457,21 @@ export function FrameBar({
           </span>
         </div>
         <span className="softn-frame-actions">
-          <AppMenu key={tab.id} tab={tab} onDownload={onDownload} />
+          <AppMenu key={tab.id} tab={tab} onDownload={onDownload} onEdit={onEdit} editing={editing} />
           {/* Each name is the label the button shows, which a narrow screen
               shortens or turns into an icon; the title says more. */}
+          {onEdit && (
+            <button
+              type="button"
+              className="softn-frame-btn softn-frame-edit"
+              onClick={() => onEdit(tab.id)}
+              aria-label="Edit"
+              aria-pressed={editing}
+              title={editing ? 'Put the editor away. The app stays as you edited it.' : 'Open this app’s source beside it, and change it while it runs'}
+            >
+              <span className="softn-frame-mobile-label">Edit</span>
+            </button>
+          )}
           <button type="button" className="softn-frame-btn" onClick={onHide} aria-label="Hide bar" title="Hide this bar and give the app the whole screen">
             <span className="softn-frame-mobile-label">Hide <span className="softn-frame-hide-label">bar</span></span><span className="softn-frame-mobile-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m6 15 6-6 6 6" /></svg></span>
           </button>
@@ -425,7 +483,7 @@ export function FrameBar({
           </button>
         </span>
       </div>
-      {fullscreenError && <div className="softn-frame-menu-note" role="status" style={{ position: 'absolute', top: '3rem', right: '0.75rem', maxWidth: 'min(320px, calc(100vw - 24px))', zIndex: 60, background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+      {fullscreenError && <div className="softn-frame-menu-note" role="status" data-softn-host="" style={{ position: 'absolute', top: '3rem', right: '0.75rem', maxWidth: 'min(320px, calc(100vw - 24px))', zIndex: 60, background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: '8px' }}>
         {fullscreenError} <button type="button" className="softn-frame-btn" onClick={() => setFullscreenError(null)} aria-label="Dismiss fullscreen message">×</button>
       </div>}
     </>

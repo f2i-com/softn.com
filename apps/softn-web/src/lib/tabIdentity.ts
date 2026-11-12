@@ -27,6 +27,8 @@ export interface TabLike {
   version?: string;
   /** The app's slug in the site's directory, when it was opened from there. */
   directorySlug?: string;
+  /** The name its address is written with, where that is not its own (appUrl's tabAddress). */
+  addressName?: string;
 }
 
 /** The tab already running these exact bytes, if any. */

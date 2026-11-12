@@ -20,6 +20,21 @@ export interface CachedApp {
   grantedPermissions?: Record<string, boolean>;
   permissionsPromptedAt?: number;
   /**
+   * What the app was asking for when the person allowed it: the whole
+   * declaration as one text (runtime-shell's `declarationKey`). An answer
+   * covers that ask and no other, so an app whose declaration has since
+   * changed (the person edited it in the runtime's editor) asks again.
+   * Absent on an answer recorded before this was kept: such an answer covers
+   * the bundle's own declaration, and nothing laid over it.
+   */
+  grantedFor?: string;
+  /**
+   * The name the bundle gives itself, kept while `name` is another: the
+   * person renamed the app in the runtime's editor (its manifest's name, in
+   * the changes kept beside it). Absent while the two are the same.
+   */
+  ownName?: string;
+  /**
    * What this app IS, as opposed to what it calls itself: a digest of the
    * bundle's bytes. Absent on records written before identity moved off the
    * manifest name; see findLegacyAdoption in ./appCacheAdoption. Sixteen hex
@@ -33,6 +48,12 @@ export interface CachedApp {
    * its server storage.
    */
   directorySlug?: string;
+  /**
+   * Opened from a link, at some point: someone else's app, like one from the
+   * directory. The runtime's editor never changes such an app; a person's
+   * first edit of one makes their own copy (src/edit/).
+   */
+  linked?: boolean;
   /**
    * What the bundle's permission.json asked for, as cached. Kept so an
    * update's consent bar can say what it asks for that the build before it

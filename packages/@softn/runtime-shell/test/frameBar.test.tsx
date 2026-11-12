@@ -108,6 +108,66 @@ describe('runtime frame controls', () => {
     expect(close.title).toBe('Stop the app and go back to its page');
   });
 
+  it('draws no Edit for a host that has no editor: the bar and its menu are what they were', () => {
+    act(() => root.render(<FrameBar {...props} />));
+    const labels = () => [...container.querySelectorAll<HTMLButtonElement>('.softn-frame-actions > button')].map((button) => button.getAttribute('aria-label'));
+    expect(labels()).toEqual(['Hide bar', 'Fullscreen', 'Close']);
+    expect(container.querySelector('.softn-frame-edit')).toBeNull();
+    act(() => menuButton().click());
+    const items = () => [...container.querySelectorAll<HTMLElement>('[role="menuitem"]')].map((item) => item.textContent);
+    expect(items()).toEqual([
+      'Download fieldnotes.softn',
+      'App page: comments, ratings, source',
+      'Edit in Studio',
+      'Edit in Builder',
+      'Publish a remix',
+      'Copy share link',
+    ]);
+  });
+
+  it('offers Edit beside the app\'s other actions and in its menu, and says when the editor is open', () => {
+    const onEdit = vi.fn();
+    act(() => root.render(<FrameBar {...props} onEdit={onEdit} />));
+    const edit = () => container.querySelector<HTMLButtonElement>('.softn-frame-edit')!;
+    expect([...container.querySelectorAll<HTMLButtonElement>('.softn-frame-actions > button')].map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Edit',
+      'Hide bar',
+      'Fullscreen',
+      'Close',
+    ]);
+    expect(edit().textContent).toBe('Edit');
+    expect(edit().getAttribute('aria-pressed')).toBe('false');
+    act(() => edit().click());
+    expect(onEdit).toHaveBeenCalledWith('one');
+
+    // In the menu too, first: it is where a phone has it.
+    act(() => menuButton().click());
+    const first = container.querySelector<HTMLElement>('[role="menuitem"]')!;
+    expect(first.textContent).toBe('Edit this app while it runs');
+    act(() => first.click());
+    expect(onEdit).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+
+    act(() => root.render(<FrameBar {...props} onEdit={onEdit} editing />));
+    expect(edit().getAttribute('aria-pressed')).toBe('true');
+    act(() => menuButton().click());
+    expect(container.querySelector<HTMLElement>('[role="menuitem"]')!.textContent).toBe('Stop editing');
+  });
+
+  it('colours a link in the menu under the pointer as it colours a button there, whatever the page says of links', () => {
+    act(() => root.render(<FrameBar {...props} />));
+    const css = container.ownerDocument.querySelector('style')?.textContent ?? '';
+    // A page's own `a:hover` (the app theme's link blue, underlined) is one
+    // class and one element strong; the menu's rule is written under its list,
+    // which outranks it, and says the colour and the underline itself.
+    const rule = /\.softn-frame-menu-list \.softn-frame-menu-item:hover,\s*\.softn-frame-menu-list \.softn-frame-menu-item:focus-visible\s*\{([^}]*)\}/.exec(css);
+    expect(rule, 'the menu has a hover rule under its list').not.toBeNull();
+    expect(rule![1]).toMatch(/color: var\(--paper\)/);
+    expect(rule![1]).toMatch(/background: var\(--ink-3\)/);
+    expect(rule![1]).toMatch(/text-decoration: none/);
+    expect(css).toMatch(/\.softn-frame-menu \.softn-frame-menu-note a:hover\s*\{[^}]*color: var\(--mint\)/);
+  });
+
   it('does not say an app it has no directory page for was opened from a file', () => {
     act(() => root.render(<FrameBar {...props} tab={{ id: 'x', name: 'Linked' }} />));
     act(() => menuButton().click());

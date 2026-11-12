@@ -223,6 +223,33 @@ export function copyAppData(fromOrigin: string, toOrigin: string): DataTransferR
   return transferAppData(fromOrigin, toOrigin, { move: false, overwrite: false });
 }
 
+/**
+ * The notes among XDB_NOTE that are sync's: the room a build is in, what it
+ * has queued to send, how far it has pulled, and the removals it has still
+ * to tell others of.
+ */
+const SYNC_NOTE = /^:(?:p2p-room|sync-queue|sync-pulled|sync-watched|sync-unheard|removals:[^:]+)$/;
+
+/**
+ * Forget where a build stood with sync, and keep its records.
+ *
+ * For a copy a person makes of someone else's app (the runtime's editor):
+ * their records come along, but the copy is no member of the original's room
+ * and has nothing of the original's to send. Left in place, the copied queue
+ * would be sent as the copy's the first time it synced.
+ */
+export function forgetSyncNotes(origin: string): void {
+  const prefix = `xdb:${origin}:`;
+  for (const key of keysWithPrefix(prefix)) {
+    if (!SYNC_NOTE.test(key.slice(prefix.length))) continue;
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Storage refused: the note stays, as it would have without this.
+    }
+  }
+}
+
 /** Whether a build has any stored state of its own, in either store, i.e. whether it has been used. */
 export function hasStoredData(origin: string | undefined): boolean {
   if (!origin) return false;

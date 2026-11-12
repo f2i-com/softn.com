@@ -89,10 +89,13 @@ function unescapeName(written: string): string {
  * called notes that named itself after another app put that app's address in
  * the bar, and a name no listing has gave whoever got the link "not found".
  * An app that came from a file has only its name, marked, so that it names
- * nothing in the directory and is looked for in this browser alone.
+ * nothing in the directory and is looked for in this browser alone. Where
+ * the tab says which name to write (`addressName`: the bundle's own, for an
+ * app the person renamed to a name another saved app has), that one is
+ * written, so that the address still means this app.
  */
-export function tabAddress(tab: { name: string; directorySlug?: string }): string {
-  return tab.directorySlug ?? `${SAVED_ONLY}${escapeName(tab.name)}`;
+export function tabAddress(tab: { name: string; directorySlug?: string; addressName?: string }): string {
+  return tab.directorySlug ?? `${SAVED_ONLY}${escapeName(tab.addressName ?? tab.name)}`;
 }
 
 /** The name in an address `tabAddress` marked as saved in this browser only, or null. */

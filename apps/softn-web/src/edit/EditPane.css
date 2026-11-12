@@ -1,0 +1,466 @@
+/*
+ * The editor for a running app (EditPane.tsx): beside the app on a wide
+ * screen, a sheet over the lower part of it on a narrow one. Drawn from the
+ * shell's own tokens, like the frame bar over it, so it follows the theme the
+ * runtime is in and not the app's.
+ *
+ * Nothing here may make the pane a containing block for fixed elements (no
+ * transform, filter or containment on .softn-edit): the sheet that takes a
+ * pick is fixed to the window from inside it.
+ */
+.softn-edit {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--softn-edit-width, clamp(22rem, 46%, 48rem));
+  max-width: calc(100% - 17.5rem);
+  min-width: 20rem;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink);
+  color: var(--paper);
+  border-left: 1px solid var(--line);
+  font-family: var(--body);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+.softn-edit[hidden] { display: none; }
+
+.softn-edit-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 9px;
+  z-index: 6;
+  cursor: col-resize;
+  touch-action: none;
+}
+.softn-edit-grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: transparent;
+  transition: background 160ms var(--ease);
+}
+.softn-edit-grip:hover::after,
+.softn-edit-grip:focus-visible::after { background: var(--mint); width: 2px; left: 3px; }
+.softn-edit-grip:focus-visible { outline: none; }
+
+.softn-edit-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2.6rem;
+  padding: 0.3rem 0.6rem;
+  background: var(--ink-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+.softn-edit-title {
+  font-family: var(--display);
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.softn-edit-actions,
+.softn-edit-flip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.softn-edit-btn {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0.3rem 0.55rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease);
+}
+.softn-edit-btn:hover:not(:disabled) { color: var(--paper); border-color: var(--dimmer); }
+.softn-edit-btn:focus-visible,
+.softn-edit-file:focus-visible,
+.softn-edit-menu-item:focus-visible,
+.softn-edit-pick-where:focus-visible,
+.softn-edit-file-remove:focus-visible,
+.softn-edit-field-remove:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+.softn-edit-btn:disabled { opacity: 0.45; cursor: default; }
+.softn-edit-btn[aria-pressed='true'] { color: var(--paper); border-color: var(--paper); background: var(--ink-3); }
+.softn-edit-close { font-size: 0.95rem; line-height: 1; padding: 0.25rem 0.5rem; color: var(--paper); border-color: var(--line-strong); }
+
+.softn-edit-menu { position: relative; display: inline-flex; }
+.softn-edit-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 15rem;
+  max-width: min(20rem, calc(100vw - 1rem));
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.softn-edit-menu-item {
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--paper);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.softn-edit-menu-item:hover:not(:disabled) { background: var(--ink-3); }
+.softn-edit-menu-item:disabled { color: var(--dimmer); cursor: default; }
+.softn-edit-menu-note { margin: 0; padding: 0.45rem 0.65rem 0.5rem; color: var(--dim); font-size: 0.74rem; border-top: 1px solid var(--line-soft); }
+
+.softn-edit-whose,
+.softn-edit-hint {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0.45rem 0.75rem;
+  color: var(--dim);
+  font-size: 0.76rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+.softn-edit-hint { color: var(--paper); background: var(--ink-3); }
+/* Something of the person's that is kept and not showing, with the one thing to do about it. */
+.softn-edit-whose--offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+  color: var(--paper);
+  background: var(--ink-3);
+}
+.softn-edit-whose--offer > span { flex: 1 1 14rem; }
+.softn-edit-whose--offer .softn-edit-btn { flex: 0 0 auto; color: var(--paper); border-color: var(--line-strong); }
+/* Read out, and not drawn: the words for what a mark shows the eye. */
+.softn-edit-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.softn-edit-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.softn-edit-files {
+  flex: 0 0 auto;
+  width: 11rem;
+  max-width: 34%;
+  overflow: auto;
+  padding: 0.4rem 0.35rem 1rem;
+  border-right: 1px solid var(--line-soft);
+  background: var(--ink-2);
+}
+.softn-edit-files-select { display: none; }
+.softn-edit-group { display: flex; flex-direction: column; margin-bottom: 0.55rem; }
+.softn-edit-group-name {
+  padding: 0.2rem 0.4rem;
+  color: var(--dimmer);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.softn-edit-file-row { display: flex; align-items: center; min-width: 0; }
+.softn-edit-file {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.24rem 0.4rem;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-align: left;
+  cursor: pointer;
+}
+.softn-edit-file:hover { background: var(--ink-3); }
+.softn-edit-file[aria-current='true'] { background: var(--ink-3); box-shadow: inset 2px 0 0 var(--mint); }
+.softn-edit-file--named { color: var(--dim); cursor: default; }
+.softn-edit-file--named:hover { background: transparent; }
+.softn-edit-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.softn-edit-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); }
+.softn-edit-dot--held { background: var(--coral); }
+.softn-edit-file-remove,
+.softn-edit-field-remove {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+}
+.softn-edit-file-remove:hover,
+.softn-edit-field-remove:hover { color: var(--paper); background: var(--ink-3); }
+
+.softn-edit-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.softn-edit-add {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--ink-2);
+}
+.softn-edit-add label { flex: 1 1 10rem; display: flex; flex-direction: column; gap: 0.2rem; color: var(--dim); font-size: 0.72rem; }
+.softn-edit-add-problem { flex: 1 1 100%; color: var(--coral); font-size: 0.74rem; }
+
+.softn-edit-code {
+  position: relative;
+  /* From nothing, not from its text's own height: what is beside it (the
+     picked element's fields) takes the room it needs first. */
+  flex: 1 1 0;
+  min-height: 6rem;
+  overflow: hidden;
+}
+/* The code editor is @softn/components' own, as the Builder draws it: the
+   language's marks in coral, strings and numbers in sand, names in the ink. */
+.softn-edit-codebox {
+  --font-mono: var(--mono);
+  --color-surface: var(--ink);
+  --color-text: var(--paper);
+  --color-text-muted: var(--dimmer);
+  --color-border: var(--line-soft);
+  --color-code-keyword: var(--coral);
+  --color-code-tag: var(--coral);
+  --color-code-mark: var(--coral);
+  --color-code-decorator: var(--coral);
+  --color-code-string: var(--sand);
+  --color-code-number: var(--sand);
+  --color-code-literal: var(--sand);
+  --color-code-regex: var(--sand);
+  --color-code-comment: var(--dim);
+  --color-code-attr: var(--dim);
+  --color-code-punct: var(--dim);
+  --color-code-function: var(--paper);
+  --color-code-property: var(--paper);
+  --color-code-type: var(--paper);
+  font-size: 13px !important;
+  line-height: 20px !important;
+}
+.softn-edit-codebox [data-softn-code-scroller] { height: 100%; }
+/* A file too long to edit here: said, and shown as plain text below. */
+.softn-edit-code:has(.softn-edit-plain) { display: flex; flex-direction: column; }
+.softn-edit-large {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  color: var(--paper);
+  background: var(--ink-3);
+  font-size: 0.76rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+.softn-edit-plain {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: 0;
+  padding: 0.75rem;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+.softn-edit-plain:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
+.softn-edit-code:focus-within { box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* The lines that drew a picked element, marked for a moment under the text. */
+.softn-edit-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--mint) 16%, transparent);
+  animation: softn-edit-band 1600ms var(--ease) both;
+}
+@keyframes softn-edit-band {
+  0%, 60% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.softn-edit-pick {
+  flex: 0 0 auto;
+  max-height: 46%;
+  overflow: auto;
+  padding: 0.5rem 0.7rem 0.7rem;
+  border-top: 1px solid var(--line);
+  background: var(--ink-2);
+}
+.softn-edit-pick-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+.softn-edit-pick-head strong { font-family: var(--mono); font-size: 0.78rem; }
+.softn-edit-pick-where {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.softn-edit-pick-where:hover { color: var(--paper); }
+.softn-edit-pick-note { margin: 0.3rem 0; color: var(--dim); font-size: 0.74rem; }
+.softn-edit-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.45rem 0.6rem; margin-top: 0.4rem; }
+/* A sentence among the fields has the row to itself: in one cell of the grid it stood beside a field as if it were one. */
+.softn-edit-pick-note--wide { grid-column: 1 / -1; margin: 0; }
+.softn-edit-field-row { display: flex; align-items: end; gap: 0.15rem; min-width: 0; }
+.softn-edit-field { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.18rem; color: var(--dim); font-family: var(--mono); font-size: 0.7rem; }
+.softn-edit-field--check { flex-direction: row; align-items: center; gap: 0.4rem; padding: 0.3rem 0; color: var(--paper); }
+.softn-edit-field-note { color: var(--coral); font-family: var(--body); font-size: 0.72rem; }
+.softn-edit input:not([type='checkbox']),
+.softn-edit select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.32rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+}
+.softn-edit input:focus-visible,
+.softn-edit select:focus-visible { outline: 2px solid var(--mint); outline-offset: 1px; }
+.softn-edit input[aria-invalid='true'] { border-color: var(--coral); }
+
+.softn-edit-status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 1.9rem;
+  padding: 0.3rem 0.75rem;
+  border-top: 1px solid var(--line-soft);
+  background: var(--ink-2);
+  color: var(--dim);
+  font-size: 0.76rem;
+}
+.softn-edit-status--ok { color: var(--paper); }
+.softn-edit-status--held { color: var(--coral); }
+.softn-edit-status .softn-edit-btn { flex: 0 0 auto; padding: 0.15rem 0.45rem; }
+/* A link drawn as one of the line's buttons, in the editor's ink and not a page's link blue. */
+.softn-edit .softn-edit-status a.softn-edit-btn,
+.softn-edit .softn-edit-status a.softn-edit-btn:hover { color: var(--paper); border-color: var(--line-strong); text-decoration: none; }
+
+/* What is drawn over the app while an element is picked: the runtime's own
+   sheet, fixed over the app's box (pickOverlay.ts places it each frame). */
+.softn-edit-sheet {
+  position: fixed;
+  z-index: 40;
+  display: none;
+  overflow: hidden;
+  pointer-events: none;
+}
+.softn-edit-sheet--picking { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.softn-edit-outline {
+  position: absolute;
+  display: none;
+  box-sizing: border-box;
+  pointer-events: none;
+  border-radius: 2px;
+}
+.softn-edit-outline--hover { border: 1px dashed var(--mint); background: color-mix(in srgb, var(--mint) 10%, transparent); }
+.softn-edit-outline--picked { border: 2px solid var(--mint); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35); }
+.softn-edit-outline-label {
+  position: absolute;
+  display: none;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  background: var(--mint);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  line-height: 1.5;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .softn-edit-btn { min-height: 2.25rem; min-width: 2.25rem; }
+  .softn-edit-file { padding: 0.5rem 0.4rem; }
+}
+
+/* A narrow screen: a sheet over the lower part of the app, folded to its bar
+   to see the whole app and brought back with "Editor". */
+@media (max-width: 760px) {
+  .softn-edit {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    height: 66%;
+    border-left: 0;
+    border-top: 1px solid var(--line-strong);
+    box-shadow: 0 -10px 28px rgb(0 0 0 / 0.3);
+  }
+  .softn-edit[data-folded] { height: auto; }
+  .softn-edit[data-folded] > :not(.softn-edit-bar):not(.softn-edit-status):not(.softn-edit-hint):not(.softn-edit-sheet) { display: none; }
+  .softn-edit-bar { padding: 0.3rem 0.5rem; gap: 0.3rem; }
+  .softn-edit-actions { gap: 0.2rem; }
+  .softn-edit-btn { padding: 0.3rem 0.45rem; }
+  .softn-edit-body { flex-direction: column; }
+  .softn-edit-files { display: none; }
+  .softn-edit-files-select {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--dim);
+    font-size: 0.72rem;
+  }
+  .softn-edit-whose { padding: 0.35rem 0.6rem; font-size: 0.72rem; }
+  .softn-edit-pick { max-height: 55%; }
+}

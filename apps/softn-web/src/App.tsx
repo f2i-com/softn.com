@@ -48,6 +48,38 @@ import { displayNameFor, findCachedAppTab, findTabForAddress } from './lib/tabId
 import { openBundle, type OpenBundleHost, type OpenBundleRequest, type OpenTab } from './lib/openBundle';
 import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress, tabLink } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl, directorySlugOf } from './lib/remoteBundle';
+import { forgetEdits } from './lib/editIndex';
+import { reopenTab } from './lib/reopenTab';
+import type { EditHost } from './edit/host';
+
+// The editor for a running app: its source beside it, changed while it runs.
+// Everything of it (the pane, the code editor, what traces an element to its
+// source, the store its changes are kept in) is fetched when a person presses
+// Edit and not before: none of it is in what the runtime starts with.
+const lazyEditPane = () => React.lazy(() => import('./edit/EditPane'));
+
+/**
+ * Round the editor, whose code is fetched when Edit is pressed. A fetch that
+ * fails (no network; a deployment replaced the file under this page) throws
+ * where the editor would be drawn: caught here, it puts the editor away and
+ * nothing else. Without it the whole runtime went, and every running app.
+ */
+class EditorBoundary extends React.Component<{ children: React.ReactNode; onFail: () => void }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error): void {
+    console.warn('[SoftN Web] The editor could not be loaded:', error);
+    this.props.onFail();
+  }
+
+  render(): React.ReactNode {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 // ── URL Routing Helpers ──────────────────────────────────────────
 
@@ -251,6 +283,12 @@ function App(): React.ReactElement {
   const [loadingFileName, setLoadingFileName] = useState('');
   /** The last app asked for by address that has not opened: what "Try again" on the error card asks for again. */
   const [urlOpen, setUrlOpen] = useState<{ value: string; initialPage?: string } | null>(null);
+  /**
+   * One line of the runtime's own over a running app: something that did not
+   * go as asked while the app itself goes on (its editor could not be
+   * loaded; it is open without the changes made to it).
+   */
+  const [appNotice, setAppNotice] = useState<string | null>(null);
   // Nothing here queues consent any more. A permission request used to park
   // processBundleData on a promise the modal resolved, which is why it needed a
   // queue at all — two bundles asking at once could strand each other's load.
@@ -479,6 +517,7 @@ function App(): React.ReactElement {
       },
       hideOpening: (tabId) => setLoadingTabId((current) => (current === tabId ? null : current)),
       appsChanged: setApps,
+      notify: setAppNotice,
       installOffline: beginOfflineInstall,
     }),
     [beginOfflineInstall]
@@ -627,6 +666,9 @@ function App(): React.ReactElement {
             directorySlug: slug,
             placeholderId: skeletonTabId,
             isForeground,
+            // Someone else's app, from the directory or a link: the runtime's
+            // editor does not change it (a first edit makes the person's copy).
+            fromLink: true,
           });
           if (opened) {
             setOpenTabs((prev) => prev.map((t) => (t.id === skeletonTabId && t.source ? { ...t, bundleUrl: url.href } : t)));
@@ -866,6 +908,9 @@ function App(): React.ReactElement {
     // record the rooms carried.
     if (going.origin) await forgetAppSync(going.origin);
     await removeCachedApp(id);
+    // And what the person changed in it with the editor, which is kept beside
+    // it: what runs, and what was typed and never shown.
+    if (going.origin) await forgetEdits(going.origin);
     if (dropped > 0) {
       debug(`[SoftN Web] Removed "${going?.name}" v${going?.version} and its ${dropped} saved keys.`);
     }
@@ -882,8 +927,11 @@ function App(): React.ReactElement {
     const tab = openTabsRef.current.find((t) => t.id === tabId);
     if (!tab || !tab.appId) return;
     try {
-      const bytes = tab.bundleData ?? (await getCachedAppByOrigin(tab.appId))?.bundleData;
-      if (!bytes) throw new Error('The bundle is no longer available. Open the original file and try again.');
+      const opened = tab.bundleData ?? (await getCachedAppByOrigin(tab.appId))?.bundleData;
+      if (!opened) throw new Error('The bundle is no longer available. Open the original file and try again.');
+      // An app running with the person's changes is handed back with them:
+      // what they take away is what they are running.
+      const bytes = tab.edited && tab.textFiles ? await (await import('./edit/bundle')).bundleWith(opened, tab.textFiles) : opened;
       const blob = new Blob([bytes as BlobPart], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -928,6 +976,8 @@ function App(): React.ReactElement {
       // An open that was stopped is not one to offer again on some later
       // failure's card.
       if (closingTab && !closingTab.source) setUrlOpen(null);
+      // The editor goes with the app it was open on.
+      setEditingTabId((current) => (current === tabId ? null : current));
 
       setOpenTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === tabId);
@@ -958,6 +1008,121 @@ function App(): React.ReactElement {
     setActiveTabId(id);
     setError(null);
   }, [claimNavigation]);
+
+  // ── Editing a running app (src/edit/) ─────────────────────────
+
+  /** The tab the editor is open on. It is drawn while that tab is the one on screen. */
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  /**
+   * The editor, fetched when it is first drawn. Made anew after a fetch that
+   * failed: a lazy component remembers its failure for good, and Edit
+   * pressed again once the network is back has to ask again.
+   */
+  const [EditPane, setEditPane] = useState(lazyEditPane);
+  const editorFailed = useCallback(() => {
+    setEditingTabId(null);
+    setEditPane(lazyEditPane);
+    // Some browsers remember a file that failed to arrive for as long as the
+    // page is open, so pressing Edit again may not be enough: said as it is.
+    setAppNotice('The editor could not be loaded just now, so it is put away. Your apps are running as they were. Press Edit again when you are online; if it still does not open, reload this page.');
+  }, []);
+
+  // Put away, the editor hands the keyboard back to what opened it: Edit on
+  // the bar, or the app's menu where a narrow screen has Edit in it. Only
+  // when the keyboard was in the editor: a person who has put it elsewhere
+  // keeps it there.
+  const editingBeforeRef = useRef<string | null>(null);
+  useEffect(() => {
+    const before = editingBeforeRef.current;
+    editingBeforeRef.current = editingTabId;
+    if (before === null || editingTabId !== null) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused.isConnected) return;
+    const shell = shellRef.current;
+    const edit = shell?.querySelector<HTMLElement>('.softn-frame-edit');
+    const target = edit && getComputedStyle(edit).display !== 'none' ? edit : shell?.querySelector<HTMLElement>('.softn-frame-menu-btn');
+    target?.focus({ preventScroll: true });
+  }, [editingTabId]);
+  /** Whoever is listening for what an app answered to a newer version of itself: the editor, for its status line. */
+  const appUpdateRef = useRef<Parameters<EditHost['onAppUpdate']>[0] | null>(null);
+  /** The editor's say in being put away from the bar: false where it has a question waiting on the person. */
+  const closeGuardRef = useRef<(() => boolean) | null>(null);
+  /** Edit on the bar: opens the editor on that tab, or puts away the one that is open on it, if the editor has nothing waiting. */
+  const editingNowRef = useRef<string | null>(null);
+  editingNowRef.current = editingTabId;
+  const toggleEditor = useCallback((id: string) => {
+    if (editingNowRef.current !== id) {
+      setEditingTabId(id);
+      return;
+    }
+    // Asked here, not inside the state's updater: the answer says something to the person.
+    if (closeGuardRef.current && !closeGuardRef.current()) return;
+    setEditingTabId(null);
+  }, []);
+
+  /**
+   * What the editor is given of this component: the tab it edits, as it is
+   * now; a way to write on that tab; and a way to open the app afresh from
+   * the person's library, in the same tab, for a change the running app
+   * cannot take (its manifest, what it asks permission for).
+   */
+  const editHost = useMemo<EditHost>(() => {
+    const replace = (tabId: string, make: (tab: OpenTab) => OpenTab): void => {
+      const change = (tabs: OpenTab[]) => tabs.map((t) => (t.id === tabId ? make(t) : t));
+      // The tab as it now is, for whatever asks next, ahead of the draw.
+      openTabsRef.current = change(openTabsRef.current);
+      setOpenTabs(change);
+    };
+    return {
+      tab: (tabId) => openTabsRef.current.find((t) => t.id === tabId),
+      patch: (tabId, fields) => {
+        // A tab that becomes the person's own copy of the app it showed, or
+        // whose app they renamed, takes its new address in place of the old
+        // one, not after it.
+        if ('appId' in fields || 'name' in fields || 'addressName' in fields) replaceNextUrlRef.current = true;
+        replace(tabId, (t) => ({ ...t, ...fields }));
+      },
+      reopen: async (tabId) => {
+        const tab = openTabsRef.current.find((t) => t.id === tabId);
+        const record = tab?.appId ? await getCachedAppByOrigin(tab.appId) : null;
+        if (!tab || !record) return false;
+        installAbortsRef.current.get(tabId)?.abort();
+        installAbortsRef.current.delete(tabId);
+        // What this open writes on the tabs is known here as it is written,
+        // ahead of the draw: whoever asked for it reads the tab it opened
+        // the moment it has, and not the empty one it replaced.
+        const eager: OpenBundleHost = {
+          ...bundleHost,
+          setOpenTabs: (update) => {
+            openTabsRef.current = typeof update === 'function' ? update(openTabsRef.current) : update;
+            setOpenTabs(update);
+          },
+        };
+        // The same tab, so the editor beside it stays beside it; and the same
+        // app: the directory's still, or the link's (lib/reopenTab.ts).
+        return reopenTab(eager, tab, record, {
+          initialPage: tabPagesRef.current[tabId] ?? tab.initialPage,
+          isForeground: () => activeTabIdRef.current === tabId,
+        });
+      },
+      close: () => setEditingTabId(null),
+      guardClose: (mayClose) => {
+        closeGuardRef.current = mayClose;
+        return () => {
+          if (closeGuardRef.current === mayClose) closeGuardRef.current = null;
+        };
+      },
+      libraryChanged: () => {
+        void getCachedApps().then(setApps);
+      },
+      onAppUpdate: (listener) => {
+        appUpdateRef.current = listener;
+        return () => {
+          if (appUpdateRef.current === listener) appUpdateRef.current = null;
+        };
+      },
+    };
+  }, [bundleHost]);
 
   /** File input change handler */
   const openLocalFile = useLocalBundleFile(handleOpenFile, setError);
@@ -1220,9 +1385,11 @@ function App(): React.ReactElement {
       if (homeRef.current) homeRef.current.scrollTop = 0;
     } else if (previous.tab === activeTabId && previous.hidden !== chromeHidden && previous.failed === failed) {
       // The bar was folded or brought back: to whichever replaced it.
+      // Hide bar, which undoes what was just done; not Edit, which stands
+      // before it and on a narrow screen is in the app's menu, not the bar.
       target = chromeHidden
         ? shell.querySelector<HTMLElement>('.softn-chrome-peek')
-        : shell.querySelector<HTMLElement>('.softn-frame-bar .softn-frame-btn');
+        : shell.querySelector<HTMLElement>('.softn-frame-bar .softn-frame-btn:not(.softn-frame-edit)');
     } else {
       target = Array.from(shell.querySelectorAll<HTMLElement>('[data-softn-tab]')).find((el) => el.dataset.softnTab === activeTabId) ?? null;
     }
@@ -1231,6 +1398,7 @@ function App(): React.ReactElement {
 
   const isHome = activeTabId === null;
   const activeTab = isHome ? null : openTabs.find((t) => t.id === activeTabId) ?? null;
+  const editingTab = editingTabId === null ? null : openTabs.find((t) => t.id === editingTabId) ?? null;
 
   /**
    * Close in the bar over an app, and "Stop waiting" on one that is still
@@ -1264,6 +1432,7 @@ function App(): React.ReactElement {
         accept=".softn"
         onChange={handleFileInputChange}
         style={{ display: 'none' }}
+        data-softn-host=""
       />
 
       <div
@@ -1294,6 +1463,10 @@ function App(): React.ReactElement {
           <button
             type="button"
             className="softn-chrome-peek"
+            // The runtime's own, drawn over the app's corner: an app that
+            // listens on its window is not told of a press on it (core's
+            // appHears refuses what is aimed at `data-softn-host`).
+            data-softn-host=""
             onClick={() => setChromeHidden(false)}
             title="Show the bar"
             aria-label={`${activeTab.name}: show the bar`}
@@ -1313,17 +1486,36 @@ function App(): React.ReactElement {
             onHide={() => setChromeHidden(true)}
             fullscreenTarget={shellRef}
             onDownload={handleDownloadTab}
+            // The runtime's own editor, opened by the person from the bar and
+            // by nothing else: no app, address or message opens it.
+            onEdit={toggleEditor}
+            editing={editingTabId === activeTab.id}
           />
         )}
 
+        {/* A line of the runtime's own over the app, when there is one to say. */}
+        {!embedded && !isHome && appNotice && (
+          <div className="softn-shell-notice softn-shell-notice--warning softn-shell-notice--over-app" role="status" data-softn-host="">
+            <span className="softn-shell-notice-text">{appNotice}</span>
+            <button type="button" className="softn-shell-notice-dismiss" onClick={() => setAppNotice(null)} aria-label="Dismiss">
+              &times;
+            </button>
+          </div>
+        )}
+
+        {/* The app, and beside it the editor when it is open on the app on
+            screen. The editor is a sibling of everything an app is drawn in:
+            outside the app's box, which the app cannot paint out of. */}
+        <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
         {/* Content area below tab bar */}
-        <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', position: 'relative' }}>
           {/* Loading indicator (for non-URL opens that don't have skeleton tabs) */}
           {loadingTabId && (
             <ThemeProvider followHost followSystem>
               <div
                 className="softn-shell-loading"
                 role="status"
+                data-softn-host=""
                 style={{
                   position: 'absolute',
                   inset: 0,
@@ -1441,6 +1633,14 @@ function App(): React.ReactElement {
               // The running app, for a host that hands it a newer version of
               // its files while it is open (lib/liveUpdate.ts).
               live={tab.live}
+              // For the editor, while it is open on this app: which node drew
+              // each element, what the app answered to a change, and which of
+              // its pages a link has put on screen.
+              editMarks={tab.editMarks}
+              onUpdate={(result) => appUpdateRef.current?.(tab.id, result)}
+              onShownPage={(path) => {
+                if ((tab.shownPage ?? null) !== path) editHost.patch(tab.id, { shownPage: path ?? undefined });
+              }}
               onPageChange={(page) => handlePageChange(tab.id, page)}
               onReady={() => announceReady(tab)}
               // Stopping a long wait is Close: the download is aborted with
@@ -1454,6 +1654,19 @@ function App(): React.ReactElement {
               }
             />
           ))}
+        </div>
+        {/* Kept while its app is open, and drawn while that app is the one on
+            screen: going Home and back does not lose what was being typed. */}
+        {!embedded && editingTab && (
+          // The editor's own code is fetched when it is first asked for, and
+          // may not arrive. That is the editor's loss alone: it is put away
+          // and the person is told, and every app goes on running.
+          <EditorBoundary key={editingTab.id} onFail={editorFailed}>
+            <React.Suspense fallback={null}>
+              <EditPane key={editingTab.id} tabId={editingTab.id} tab={editingTab} host={editHost} shown={activeTabId === editingTab.id && !error} />
+            </React.Suspense>
+          </EditorBoundary>
+        )}
         </div>
       </div>
     </DropZone>

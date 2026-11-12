@@ -11,6 +11,13 @@ import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '.
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
+/**
+ * The chunks of the editor for a running app, by the module each starts at
+ * (src/edit/): the pane itself, the store its changes are kept in, and the
+ * writer of an edited bundle. Each is reached by a dynamic import alone.
+ */
+const liveEditChunks = ['EditPane', 'drafts', 'bundle'];
+
 // What is fetched the first time a page needs it, the same for Studio and the
 // Builder: scripts/build/on-demand-chunks.mjs. test/build-graph.test.ts holds the
 // names to what the manifest actually contains.
@@ -106,10 +113,31 @@ export default defineConfig({
           '**/core-runtime/**',
           '**/demos/**',
           ...onDemandGlobIgnores,
+          // The editor for a running app (src/edit/), fetched when a person
+          // presses Edit, and what an app they have edited reads its changes
+          // with when it opens: kept by the runtime rule below once fetched,
+          // like a feature chunk. test/build-graph.test.ts holds these to
+          // what the build emits.
+          ...liveEditChunks.flatMap((name) => [`**/assets/${name}-*.js`, `**/assets/${name}-*.css`]),
         ],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
           ...onDemandRuntimeCaching,
+          {
+            // The editor's stylesheet (src/edit/EditPane.css): hashed like
+            // its script, fetched with it the first time Edit is pressed,
+            // and needed with it (a stylesheet that does not arrive fails
+            // the import that asked for it). The rule above keeps scripts
+            // alone, so without this one Edit opened offline only while the
+            // browser's own cache still had the file.
+            urlPattern: /\/assets\/EditPane-[^/?#]+\.css$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'softn-editor-styles',
+              expiration: { maxEntries: 4, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: 'CacheFirst',

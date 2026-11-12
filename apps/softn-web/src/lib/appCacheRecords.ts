@@ -65,7 +65,9 @@ export async function cacheApp(
   manifest: { name: string; version: string; description?: string },
   icon?: string,
   directorySlug?: string,
-  requestedCapabilities?: string[]
+  requestedCapabilities?: string[],
+  /** These bytes came by a link. Remembered once seen: see CachedApp.linked. */
+  linked?: boolean
 ): Promise<CachedApp | null> {
   // The manifest is the bundle's, read as it came: a description written as
   // `{ "en": "…" }` was stored as that and blanked Home when it was drawn.
@@ -112,6 +114,7 @@ export async function cacheApp(
         icon: icon ?? existing.icon,
         directorySlug: directorySlug ?? existing.directorySlug,
         requestedCapabilities: requestedCapabilities ?? existing.requestedCapabilities,
+        ...(linked || existing.linked ? { linked: true } : {}),
       };
       await store.put(updated);
       await tx.done;
@@ -140,6 +143,7 @@ export async function cacheApp(
       icon,
       directorySlug,
       requestedCapabilities,
+      ...(linked ? { linked: true } : {}),
     };
     await store.add(app);
     await tx.done;
@@ -209,8 +213,46 @@ export async function getCachedAppByAddress(address: string): Promise<CachedApp 
   const fromDirectory = apps.find((app) => app.directorySlug === address);
   if (fromDirectory) return fromDirectory;
   const name = savedOnlyName(address) ?? address;
-  const named = apps.filter((app) => app.name === name);
+  // By the name its bundle gives it, and by no other. An app the person
+  // renamed in the runtime's editor is shown under the new name, on its tab
+  // and on Home, and its address stays the one it had: a name typed in the
+  // editor can be any other app's, and an address found by it opened that
+  // app in this one's place, or this one in that app's.
+  const named = apps.filter((app) => (app.ownName ?? app.name) === name);
   return named.find((app) => !app.directorySlug) ?? (DIRECTORY_SLUG.test(address) ? null : (named[0] ?? null));
+}
+
+/**
+ * Show the saved app with this identity under `name`: the name its manifest
+ * has in the changes the person keeps beside it (the runtime's editor), or
+ * its bundle's own again once those are gone. The bundle's own name is kept
+ * on the record while the two differ, and is what the app's address is
+ * always written with and found by (getCachedAppByAddress). Answers the
+ * record as it now is; null when there is no such record.
+ */
+export async function renameCachedApp(origin: string, name: string): Promise<CachedApp | null> {
+  try {
+    const db = await getDB();
+    const tx = db.transaction('softn-apps', 'readwrite');
+    const store = tx.objectStore('softn-apps');
+    const app = await store.index('by-origin').get(origin);
+    if (!app) {
+      await tx.done;
+      return null;
+    }
+    const own = app.ownName ?? app.name;
+    if (app.name !== name) {
+      app.name = name;
+      if (name === own) delete app.ownName;
+      else app.ownName = own;
+      await store.put(app);
+    }
+    await tx.done;
+    return app;
+  } catch {
+    console.warn('[SoftN Web] Failed to rename the saved app:', origin);
+    return null;
+  }
 }
 
 /**
@@ -290,8 +332,13 @@ export async function setOfflineState(id: string, state: OfflineState): Promise<
  * insecure context). A grant is durable trust in exactly these bytes, and an
  * identity that other bytes could be made to share cannot carry it; the bar
  * asks again next session, which is the honest outcome.
+ *
+ * `declaration` is what the app was asking for when the person answered
+ * (runtime-shell's `declarationKey`): the answer is kept with it and covers
+ * that ask alone (CachedApp.grantedFor). Without one the answer is kept as an
+ * answer to the bundle's own declaration.
  */
-export async function recordPermissionGrant(origin: string, perms: Record<string, boolean>): Promise<boolean> {
+export async function recordPermissionGrant(origin: string, perms: Record<string, boolean>, declaration?: string): Promise<boolean> {
   if (!isSecureAppOrigin(origin)) {
     console.warn('[SoftN Web] Not remembering a grant for an app identified without a secure context; it will be asked again next time.');
     return false;
@@ -307,6 +354,8 @@ export async function recordPermissionGrant(origin: string, perms: Record<string
       // displaying the consent bar is written down, so dismissing it leaves no
       // trace that could later be mistaken for an answer.
       app.permissionsPromptedAt = Date.now();
+      if (declaration === undefined) delete app.grantedFor;
+      else app.grantedFor = declaration;
       await store.put(app);
     }
     await tx.done;
