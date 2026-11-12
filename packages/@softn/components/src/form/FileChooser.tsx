@@ -7,8 +7,9 @@
  * with UUID references for later retrieval.
  */
 
-import React, { useRef, useState, useCallback, useId } from 'react';
+import React, { useRef, useState, useCallback, useId, useMemo } from 'react';
 import { registerFileRef, useAppScope } from '@softn/core';
+import { TOUCH_MEDIA } from '../utils/media';
 
 // ---- Types ----
 
@@ -30,8 +31,16 @@ export interface FileChooserProps {
   label?: string;
   /** Display variant (default 'button') */
   variant?: 'button' | 'dropzone';
-  /** Called when files are selected */
+  /** Called when files are selected, and with what is left when one is removed */
   onSelect?: (files: FileInfo[]) => void;
+  /**
+   * The files shown as chosen, when the page keeps them: what `onSelect`
+   * handed it, and `[]` once they have been sent, which shows none. Left
+   * out, the chooser shows what was last chosen until it is removed.
+   */
+  value?: FileInfo[] | null;
+  /** Whether the chooser is turned off: nothing can be chosen, dropped or removed */
+  disabled?: boolean;
   /** Additional CSS class, on the component's root */
   className?: string;
   /** Inline styles, on the button or the drop zone (as before `className` existed) */
@@ -39,8 +48,10 @@ export interface FileChooserProps {
 }
 
 /**
- * Whether `file` is one `accept` admits. The picker enforces `accept` itself;
- * a drop does not, so a zone that said "Accepted: image/*" took a PDF.
+ * Whether `file` is one `accept` admits. A drop is not held to `accept` by
+ * the browser, so a zone that said "Accepted: image/*" took a PDF; and the
+ * picker only starts on it: its "All files" choice hands over anything, and
+ * a picked PDF went to the page as a dropped one no longer did.
  */
 function fileMatchesAccept(file: { name: string; type: string }, accept: string | undefined): boolean {
   if (!accept || !accept.trim()) return true;
@@ -55,6 +66,16 @@ function fileMatchesAccept(file: { name: string; type: string }, accept: string 
       if (token.endsWith('/*')) return type.startsWith(token.slice(0, -1));
       return type === token;
     });
+}
+
+/**
+ * The same for a file the picker handed over. A file whose type the browser
+ * does not know (it has none) is taken where `accept` names types: the
+ * picker offered it, and there is nothing to hold it to.
+ */
+function pickedFileMatchesAccept(file: { name: string; type: string }, accept: string | undefined): boolean {
+  if (fileMatchesAccept(file, accept)) return true;
+  return !file.type && (accept ?? '').split(',').some((token) => token.includes('/'));
 }
 
 function formatFileSize(bytes: number): string {
@@ -72,11 +93,20 @@ export function FileChooser({
   label = 'Choose File',
   variant = 'button',
   onSelect,
+  value,
+  disabled = false,
   className,
   style,
 }: FileChooserProps): React.ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [selectedFiles, setSelectedFiles] = useState<FileInfo[]>([]);
+  const [ownFiles, setOwnFiles] = useState<FileInfo[]>([]);
+  // What is shown as chosen is the page's to say when it gives `value`: the
+  // name of a file stayed on show after it had been sent, with no way for
+  // the page to take it down. (`null`, as an unset variable arrives, is none.)
+  const selectedFiles = useMemo(
+    () => (value === undefined ? ownFiles : Array.isArray(value) ? value.filter((info) => info && typeof info === 'object') : []),
+    [value, ownFiles]
+  );
   const [isDragOver, setIsDragOver] = useState(false);
   const [rejected, setRejected] = useState(0);
   const hintId = useId();
@@ -97,7 +127,7 @@ export function FileChooser({
           ref,
         };
       });
-      setSelectedFiles(infos);
+      setOwnFiles(infos);
       setRejected(0);
       onSelect?.(infos);
     },
@@ -107,23 +137,42 @@ export function FileChooser({
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       if (e.target.files && e.target.files.length > 0) {
-        processFiles(e.target.files);
+        // Held to `accept`, as a drop is (see pickedFileMatchesAccept).
+        const picked = Array.from(e.target.files);
+        const accepted = picked.filter((file) => pickedFileMatchesAccept(file, accept));
+        if (accepted.length > 0) processFiles(accepted);
+        setRejected(picked.length - accepted.length);
       }
       // Reset input value so the same file can be re-selected
       e.target.value = '';
     },
-    [processFiles]
+    [processFiles, accept]
   );
 
   const handleClick = useCallback(() => {
+    if (disabled) return;
     inputRef.current?.click();
-  }, []);
+  }, [disabled]);
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(true);
-  }, []);
+  /** Take a chosen file back: the page is handed what is left. */
+  const removeFile = useCallback(
+    (ref: string | null) => {
+      const left = ref === null ? [] : selectedFiles.filter((info) => info.ref !== ref);
+      setOwnFiles(left);
+      setRejected(0);
+      onSelect?.(left);
+    },
+    [selectedFiles, onSelect]
+  );
+
+  const handleDragOver = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!disabled) setIsDragOver(true);
+    },
+    [disabled]
+  );
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -139,6 +188,7 @@ export function FileChooser({
       e.preventDefault();
       e.stopPropagation();
       setIsDragOver(false);
+      if (disabled) return;
 
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         const dropped = Array.from(e.dataTransfer.files);
@@ -148,7 +198,7 @@ export function FileChooser({
         setRejected(dropped.length - accepted.length);
       }
     },
-    [accept, multiple, processFiles]
+    [accept, multiple, processFiles, disabled]
   );
 
   // Additional input attributes for directory mode
@@ -163,10 +213,53 @@ export function FileChooser({
       type="file"
       accept={accept}
       multiple={multiple}
+      disabled={disabled}
       onChange={handleChange}
       style={{ display: 'none' }}
       {...directoryAttrs}
     />
+  );
+
+  const rejectedNote =
+    rejected > 0 ? `${rejected} ${rejected === 1 ? 'file was' : 'files were'} not an accepted type` : '';
+
+  const removeButtonStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 'none',
+    width: '1.5rem',
+    height: '1.5rem',
+    padding: 0,
+    border: 'none',
+    borderRadius: '0.25rem',
+    background: 'none',
+    color: 'var(--color-text-muted, inherit)',
+    cursor: 'pointer',
+  };
+  const removeButton = (label: string, ref: string | null) => (
+    <button
+      type="button"
+      className="softn-file-remove"
+      style={removeButtonStyle}
+      aria-label={label}
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        removeFile(ref);
+      }}
+    >
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M4 4l6 6M10 4l-6 6" strokeLinecap="round" />
+      </svg>
+    </button>
+  );
+  // Under a finger the button is 44 pixels tall and a remove button takes a press 44 across.
+  const touchRules = (
+    <style>{`${TOUCH_MEDIA} {
+      .softn-file-button { min-height: 44px; }
+      .softn-file-remove { width: 44px !important; height: 44px !important; margin: -10px; }
+    }`}</style>
   );
 
   // ---- Button variant ----
@@ -182,7 +275,8 @@ export function FileChooser({
       color: 'var(--color-text, #e4e4e7)',
       fontSize: '0.875rem',
       fontWeight: 500,
-      cursor: 'pointer',
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? 0.6 : 1,
       transition: 'background-color 0.15s, border-color 0.15s',
       ...style,
     };
@@ -198,9 +292,9 @@ export function FileChooser({
     };
 
     return (
-      <div className={className} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+      <div className={className} style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', maxWidth: '100%' }}>
         {fileInput}
-        <button type="button" style={buttonStyle} onClick={handleClick}>
+        <button type="button" className="softn-file-button" style={buttonStyle} onClick={handleClick} disabled={disabled}>
           {/* Upload icon */}
           <svg
             aria-hidden="true"
@@ -228,6 +322,13 @@ export function FileChooser({
               ? selectedFiles[0].name
               : `${selectedFiles.length} files selected`}
         </span>
+        {selectedFiles.length > 0 &&
+          !disabled &&
+          removeButton(selectedFiles.length === 1 ? `Remove ${selectedFiles[0].name}` : `Remove ${selectedFiles.length} files`, null)}
+        <span role="status" style={{ fontSize: '0.75rem', color: 'var(--color-error-500, currentColor)' }}>
+          {rejectedNote}
+        </span>
+        {touchRules}
       </div>
     );
   }
@@ -245,7 +346,8 @@ export function FileChooser({
     backgroundColor: isDragOver
       ? 'rgba(99, 102, 241, 0.06)'
       : 'var(--color-surface, #1e1e2e)',
-    cursor: 'pointer',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.6 : 1,
     transition: 'border-color 0.15s, background-color 0.15s',
     textAlign: 'center',
     ...style,
@@ -296,7 +398,7 @@ export function FileChooser({
     background: 'none',
     font: 'inherit',
     fontWeight: 500,
-    cursor: 'pointer',
+    cursor: disabled ? 'not-allowed' : 'pointer',
     borderRadius: '0.25rem',
   };
 
@@ -341,6 +443,7 @@ export function FileChooser({
           type="button"
           style={labelButtonStyle}
           aria-describedby={hintId}
+          disabled={disabled}
           onClick={(e) => {
             e.stopPropagation();
             handleClick();
@@ -363,16 +466,14 @@ export function FileChooser({
         )}
 
         <div role="status" style={{ ...subtextStyle, color: 'var(--color-error-500, currentColor)' }}>
-          {rejected > 0
-            ? `${rejected} ${rejected === 1 ? 'file was' : 'files were'} not an accepted type`
-            : ''}
+          {rejectedNote}
         </div>
 
         {/* Selected files list */}
         {selectedFiles.length > 0 && (
           <div style={fileListStyle} onClick={(e) => e.stopPropagation()}>
-            {selectedFiles.map((file) => (
-              <div key={file.ref} style={fileItemStyle}>
+            {selectedFiles.map((file, index) => (
+              <div key={file.ref ?? index} style={fileItemStyle}>
                 <span
                   style={{
                     overflow: 'hidden',
@@ -383,14 +484,18 @@ export function FileChooser({
                 >
                   {file.name}
                 </span>
-                <span style={{ color: 'var(--color-text-muted, #a1a1aa)', fontSize: '0.75rem', flexShrink: 0 }}>
-                  {formatFileSize(file.size)}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                  <span style={{ color: 'var(--color-text-muted, #a1a1aa)', fontSize: '0.75rem' }}>
+                    {formatFileSize(Number(file.size) || 0)}
+                  </span>
+                  {!disabled && removeButton(`Remove ${file.name}`, file.ref)}
                 </span>
               </div>
             ))}
           </div>
         )}
       </div>
+      {touchRules}
     </div>
   );
 }

@@ -50,7 +50,7 @@ describe('Select given a plain list of strings', () => {
     // caller's array untouched. So the trigger showed the right label while
     // every row in the menu rendered `opt.label` of undefined — blank lines,
     // which look exactly like text the same colour as the background.
-    mount(<Select options={['quiet', 'standard', 'storm'] as never} defaultValue="standard" />);
+    mount(<Select options={['quiet', 'standard', 'storm']} defaultValue="standard" />);
     const trigger = container.querySelector('[role=combobox]') ?? container.firstElementChild;
     act(() => { (trigger as HTMLElement).click(); });
 
@@ -64,7 +64,7 @@ describe('Select given a plain list of strings', () => {
     // a useMemo on the render path — so this did not degrade, it replaced the
     // field with an error box permanently. SmartForm already accepts this shape.
     expect(() =>
-      mount(<Select label="Colour" options={['red', 'green'] as never} />)
+      mount(<Select label="Colour" options={['red', 'green']} />)
     ).not.toThrow();
   });
 

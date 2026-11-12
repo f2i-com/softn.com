@@ -8,6 +8,56 @@ import React from 'react';
 import { choice } from '../utils/choice';
 import { presentRows, recordRows } from '../utils/rows';
 import { sortOrder } from '../utils/sort';
+import { NARROW_QUERY, useMediaQuery } from '../utils/media';
+
+// Before paint in a browser, so a phone never shows a frame of the table
+// that is about to be cards.
+const useBeforePaint = typeof window !== 'undefined' ? React.useLayoutEffect : React.useEffect;
+
+/**
+ * A table drawn as cards, on a phone: every row a block of its own, its first
+ * cell the heading and each of the others beside its column's name. The rows
+ * and cells are the table's own, so what a column renders, a row's click and
+ * the keyboard are as they were; they keep their roles, and so are still a
+ * table to a screen reader. The header row is kept for the columns that
+ * sort, as a row of buttons, and otherwise only for a screen reader.
+ */
+const CARD_RULES = `
+  @media ${NARROW_QUERY} {
+    .softn-table-cards { overflow: visible !important; }
+    .softn-table-cards > table,
+    .softn-table-cards > table > tbody { display: block !important; width: 100% !important; border: none !important; }
+    .softn-table-cards > table > caption { display: block; }
+    .softn-table-cards > table > thead { display: block !important; }
+    .softn-table-cards > table > thead > tr { display: flex !important; flex-wrap: wrap; gap: 0.5rem; padding: 0 0 0.5rem; background: transparent !important; position: static !important; }
+    .softn-table-cards > table > thead > tr:not(:has(th[aria-sort])) { padding: 0; }
+    .softn-table-cards > table > thead > tr > th { display: block; padding: 0 !important; border: none !important; width: auto !important; font-size: 0.8125rem; }
+    .softn-table-cards > table > thead > tr > th:not([aria-sort]) {
+      position: absolute; width: 1px !important; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+    }
+    .softn-table-cards > table > thead > tr > th[aria-sort] > button {
+      min-height: 2.25rem; padding: 0 0.75rem !important; border: 1px solid var(--color-border, rgba(127, 127, 127, 0.3)) !important; border-radius: 9999px;
+    }
+    .softn-table-cards > table > tbody > tr {
+      display: flex !important; flex-wrap: wrap; align-items: baseline; gap: 0.375rem 1rem;
+      padding: 0.875rem 0.25rem; border-bottom: 1px solid var(--color-border, rgba(127, 127, 127, 0.3));
+    }
+    .softn-table-cards > table > tbody > tr:last-child { border-bottom: none; }
+    .softn-table-cards > table > tbody > tr > td {
+      display: flex !important; gap: 0.25rem; min-width: 0; padding: 0 !important; border: none !important;
+      width: auto !important; text-align: left !important; font-size: 0.8125rem; overflow-wrap: anywhere;
+    }
+    .softn-table-cards > table > tbody > tr > td[data-label]::before {
+      content: attr(data-label) ":"; flex: none; color: var(--color-text-muted, inherit); opacity: 0.85;
+    }
+    .softn-table-cards > table > tbody > tr > td:first-child { flex: 0 0 100%; font-size: 0.9375rem; font-weight: 600; }
+    .softn-table-cards > table > tbody > tr > td:first-child::before { content: none; }
+    .softn-table-cards > table > tbody > tr > td.softn-table-empty { display: block !important; flex: 1 1 100%; padding: 1.25rem 0 !important; text-align: center !important; font-weight: 400; }
+  }
+  @media ${NARROW_QUERY} and (pointer: coarse) {
+    .softn-table-cards > table > thead > tr > th[aria-sort] > button { min-height: 44px; }
+  }
+`;
 
 export interface Column<T> {
   /** Column key (maps to data property) */
@@ -69,6 +119,10 @@ function TableRow<T extends Record<string, unknown>>({
 
   return (
     <tr
+      // Said outright, as the cells' and the header row's are: drawn as a
+      // card on a phone, a row is no longer laid out as one, and a browser
+      // that goes by the layout would stop calling it a row.
+      role="row"
       style={getRowStyle(position, isHovered)}
       onClick={() => onRowClick?.(row, index)}
       onKeyDown={onRowClick ? handleRowKeyDown : undefined}
@@ -80,7 +134,13 @@ function TableRow<T extends Record<string, unknown>>({
       tabIndex={onRowClick ? 0 : undefined}
     >
       {columns.map((column) => (
-        <td key={column.key} style={getBodyCellStyle(column)} role="cell">
+        <td
+          key={column.key}
+          style={getBodyCellStyle(column)}
+          role="cell"
+          // The column's name, for the card a row is on a phone.
+          data-label={typeof column.header === 'string' && column.header !== '' ? column.header : undefined}
+        >
           {column.render
             ? column.render(row[column.key], row, index)
             : String(row[column.key] ?? '')}
@@ -122,6 +182,14 @@ export interface TableProps<T> {
   size?: 'sm' | 'md' | 'lg';
   /** Whether header is sticky */
   stickyHeader?: boolean;
+  /**
+   * On a phone (640 pixels wide and under), whether each row is drawn as a
+   * card: its first cell as the heading, the others beside their column's
+   * name. `auto` (the default) does so when the table is too wide for its
+   * box and would scroll sideways; `always` does so whatever its width;
+   * `never` leaves it a table that scrolls.
+   */
+  mobileCards?: 'auto' | 'always' | 'never';
   /** Whether rows are hoverable */
   hoverable?: boolean;
   /** Row click handler */
@@ -157,6 +225,7 @@ export function Table<T extends Record<string, unknown>>({
   variant = 'default',
   size = 'md',
   stickyHeader = false,
+  mobileCards = 'auto',
   hoverable = true,
   onRowClick,
   sortColumn,
@@ -173,6 +242,36 @@ export function Table<T extends Record<string, unknown>>({
   const given = presentRows<T>(rawData);
   const columns = recordRows<Column<T>>(rawColumns);
   const captionId = React.useId();
+
+  // Cards on a phone: asked for outright, or because the table, drawn as a
+  // table, is wider than its box. Measured as a table, before paint, and
+  // again when the box changes size or the columns change.
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  const columnKeys = columns.map((column) => column.key).join('\n');
+  const [tooWide, setTooWide] = React.useState<{ columns: string; wide: boolean }>({ columns: columnKeys, wide: false });
+  const measured = tooWide.columns === columnKeys && tooWide.wide;
+  const asCards = narrow && mobileCards !== 'never' && (mobileCards === 'always' || measured);
+  useBeforePaint(() => {
+    if (!narrow || mobileCards !== 'auto') return;
+    const box = boxRef.current;
+    if (!box) return;
+    // Once it is cards there is no table to measure; it stays cards until
+    // the screen is wide again or the columns change.
+    if (measured) return;
+    const measure = () => {
+      if (box.scrollWidth > box.clientWidth + 1) setTooWide({ columns: columnKeys, wide: true });
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [narrow, mobileCards, measured, columnKeys, given.length]);
+  // Wide again: the next time it is narrow, it is measured afresh.
+  React.useEffect(() => {
+    if (!narrow) setTooWide((was) => (was.wide ? { columns: was.columns, wide: false } : was));
+  }, [narrow]);
 
   // Without `onSort` the table sorts its rows itself: a sortable header was
   // a button that did nothing. It starts from the sort the page names, and
@@ -289,7 +388,8 @@ export function Table<T extends Record<string, unknown>>({
 
   return (
     <div
-      className={className}
+      ref={boxRef}
+      className={[asCards ? 'softn-table-cards' : '', className].filter(Boolean).join(' ') || undefined}
       style={containerStyle}
       role="region"
       aria-label={ariaLabel ?? (caption ? undefined : 'Data table')}
@@ -297,6 +397,7 @@ export function Table<T extends Record<string, unknown>>({
       // A scrolling region is focusable so its overflow can be scrolled from the keyboard.
       tabIndex={0}
     >
+      {asCards && <style>{CARD_RULES}</style>}
       <table style={tableStyle} role="table" aria-label={ariaLabel} aria-labelledby={ariaLabel || !caption ? undefined : captionId}>
         {caption && (
           <caption id={captionId} style={{ textAlign: 'left', padding: '0.5rem 0', color: 'var(--color-text, inherit)', fontWeight: 600 }}>
@@ -343,7 +444,7 @@ export function Table<T extends Record<string, unknown>>({
         <tbody role="rowgroup">
           {given.length === 0 ? (
             <tr role="row">
-              <td colSpan={columns.length} style={emptyStyle} role="cell">
+              <td colSpan={columns.length} className="softn-table-empty" style={emptyStyle} role="cell">
                 {emptyContent}
               </td>
             </tr>

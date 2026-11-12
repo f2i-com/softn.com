@@ -7,6 +7,7 @@
 import React, { useEffect, useCallback, useRef, useId } from 'react';
 import { lockBodyScroll } from './body-scroll-lock';
 import { useModalLayer } from './layer-stack';
+import { TOUCH_MEDIA } from '../utils/media';
 
 export interface DrawerProps {
   /** Whether the drawer is open */
@@ -171,6 +172,10 @@ export function Drawer({
         }
         .softn-drawer-close:active {
           transform: scale(0.9);
+        }
+        /* Under a finger the close button is 44 pixels; it was 32. */
+        ${TOUCH_MEDIA} {
+          .softn-drawer-close { width: 44px !important; height: 44px !important; margin: -6px; }
         }
         @keyframes softn-drawer-in-left {
           from { transform: translateX(-100%); }

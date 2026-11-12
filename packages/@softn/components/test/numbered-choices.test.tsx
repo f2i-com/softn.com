@@ -62,7 +62,7 @@ const radios = (container: HTMLElement) => Array.from(container.querySelectorAll
 
 describe('Select with numbers for values', () => {
   it('shows the label of the option whose value is the number in state', () => {
-    const { container } = mount(<Select options={[1, 2, 3] as never} value={2 as unknown as string} />);
+    const { container } = mount(<Select options={[1, 2, 3]} value={2} />);
     expect(trigger(container).textContent).toBe('2');
     click(trigger(container));
     const selected = Array.from(container.querySelectorAll('[role="option"]')).map((o) => o.getAttribute('aria-selected'));
@@ -70,12 +70,12 @@ describe('Select with numbers for values', () => {
   });
 
   it('shows the option chosen when the state holds the number as text', () => {
-    const { container } = mount(<Select options={PEOPLE as never} value="12" />);
+    const { container } = mount(<Select options={PEOPLE} value="12" />);
     expect(trigger(container).textContent).toBe('Grace');
   });
 
   it('can be searched when the options are numbered', () => {
-    const { container } = mount(<Select searchable options={PEOPLE as never} />);
+    const { container } = mount(<Select searchable options={PEOPLE} />);
     click(trigger(container));
     const search = container.querySelector<HTMLInputElement>('input[type="text"]')!;
     type(search, 'gr');
@@ -85,6 +85,7 @@ describe('Select with numbers for values', () => {
   });
 
   it('takes a typed letter on the trigger when a label is a number', () => {
+    // A label is text to the types; a page's records can hold a number there, so it goes in past them.
     const { container } = mount(<Select options={[{ value: 2024, label: 2024 }, { value: 2025, label: 2025 }] as never} />);
     trigger(container).focus();
     press(trigger(container), '2');
@@ -102,7 +103,7 @@ describe('Select with numbers for values', () => {
 
 describe('Radio with numbers for values', () => {
   it('checks the option that reads the same as the number in state', () => {
-    const { container } = mount(<Radio name="size" options={[1, 2, 3] as unknown as never} value={2 as unknown as string} />);
+    const { container } = mount(<Radio name="size" options={[1, 2, 3]} value={2} />);
     expect(radios(container).map((r) => r.checked)).toEqual([false, true, false]);
   });
 
@@ -151,7 +152,7 @@ describe('the value a choice hands back', () => {
 
   it('Radio tells its own onChange the value too, with the event after it', () => {
     const seen: unknown[] = [];
-    const { container } = mount(<Radio name="n" options={PEOPLE as never} onChange={(value) => seen.push(value)} />);
+    const { container } = mount(<Radio name="n" options={PEOPLE} onChange={(value) => seen.push(value)} />);
     check(radios(container)[0]);
     expect(seen).toEqual([7]);
   });
@@ -165,6 +166,11 @@ describe('the value a choice hands back', () => {
  * record out when a second was picked. Two options that do read alike (1 and
  * "1", or the same value twice) are still two options: the one picked is the
  * one handed back, and one of them is shown chosen.
+ *
+ * A value is text or a number to the types, which is what a page is told to
+ * give. A record or null for one is more than they name, and a page, which is
+ * not type-checked, can give it all the same: those go in `as never`, past
+ * the types, on purpose.
  */
 describe('values that read alike as text', () => {
   const ADA = { id: 1 };
@@ -192,7 +198,7 @@ describe('values that read alike as text', () => {
 
   it('Radio tells 1 from "1" when both are options', () => {
     const seen: unknown[] = [];
-    const { container } = mount(<Radio name="n" options={[1, '1'] as never} onChange={(value) => seen.push(value)} />);
+    const { container } = mount(<Radio name="n" options={[1, '1']} onChange={(value) => seen.push(value)} />);
     check(radios(container)[1]);
     expect(seen).toEqual(['1']);
     expect(radios(container).map((r) => r.checked)).toEqual([false, true]);
@@ -202,7 +208,7 @@ describe('values that read alike as text', () => {
   });
 
   it('Radio checks one option when the same value is given twice', () => {
-    const { container } = mount(<Radio name="n" options={['a', 'a', 'b'] as never} value="a" />);
+    const { container } = mount(<Radio name="n" options={['a', 'a', 'b']} value="a" />);
     expect(radios(container).map((r) => r.checked)).toEqual([true, false, false]);
   });
 
@@ -230,7 +236,7 @@ describe('values that read alike as text', () => {
   });
   it('Select shows one option chosen when 1 and "1" are both options', () => {
     for (const [value, expected] of [[1, ['true', 'false']], ['1', ['false', 'true']]] as const) {
-      const { container, unmount } = mount(<Select options={[1, '1'] as never} value={value as never} />);
+      const { container, unmount } = mount(<Select options={[1, '1']} value={value} />);
       click(trigger(container));
       expect(chosen(container), String(typeof value)).toEqual(expected);
       unmount();
@@ -238,14 +244,14 @@ describe('values that read alike as text', () => {
   });
 
   it('Select shows one option chosen when the same value is given twice', () => {
-    const { container } = mount(<Select options={['a', 'a', 'b'] as never} value="a" />);
+    const { container } = mount(<Select options={['a', 'a', 'b']} value="a" />);
     click(trigger(container));
     expect(chosen(container)).toEqual(['true', 'false', 'false']);
   });
 
   it('a multiple Select adds "1" to 1 when both are options, and takes out only the one picked again', () => {
     const seen: unknown[] = [];
-    const { container } = mount(<Select multiple options={[1, '1', 2] as never} defaultValue={[1] as never} onChange={(value) => seen.push(value)} />);
+    const { container } = mount(<Select multiple options={[1, '1', 2]} defaultValue={[1]} onChange={(value) => seen.push(value)} />);
     click(trigger(container));
     expect(chosen(container)).toEqual(['true', 'false', 'false']);
     click(Array.from(container.querySelectorAll('[role="option"]'))[1]);
@@ -258,7 +264,7 @@ describe('values that read alike as text', () => {
 
   it('a multiple Select still takes out a number held as text when its option is picked again', () => {
     const seen: unknown[] = [];
-    const { container } = mount(<Select multiple options={[1, 2] as never} value={['2'] as never} onChange={(value) => seen.push(value)} />);
+    const { container } = mount(<Select multiple options={[1, 2]} value={['2']} onChange={(value) => seen.push(value)} />);
     click(trigger(container));
     expect(chosen(container)).toEqual(['false', 'true']);
     click(Array.from(container.querySelectorAll('[role="option"]'))[1]);
@@ -283,10 +289,10 @@ describe('values that read alike as text', () => {
   });
 
   it('SegmentedControl tells 1 from "1", and still matches 2 to "2"', () => {
-    const { container, unmount } = mount(<SegmentedControl options={[1, '1'] as never} value="1" />);
+    const { container, unmount } = mount(<SegmentedControl options={[1, '1']} value="1" />);
     expect(segments(container)).toEqual(['false', 'true']);
     unmount();
-    const other = mount(<SegmentedControl options={[1, 2] as never} value="2" />);
+    const other = mount(<SegmentedControl options={[1, 2]} value="2" />);
     expect(segments(other.container)).toEqual(['false', 'true']);
   });
 });

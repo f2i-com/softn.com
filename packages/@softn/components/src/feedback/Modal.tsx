@@ -9,6 +9,7 @@
 import React, { useState, useEffect, useRef, useCallback, useId } from 'react';
 import { lockBodyScroll } from './body-scroll-lock';
 import { useModalLayer } from './layer-stack';
+import { TOUCH_MEDIA } from '../utils/media';
 
 export interface ModalProps {
   /** Whether the modal is open */
@@ -319,6 +320,8 @@ export function Modal({
         @media (prefers-reduced-motion: reduce) {
           .softn-modal-overlay, .softn-modal-dialog { transition: none !important; }
         }
+        /* Under a finger the close button is 44 pixels. */
+        ${TOUCH_MEDIA} { .softn-modal-close { min-width: 44px; min-height: 44px; } }
       `}</style>
       <div className="softn-modal-overlay" style={overlayStyle} onClick={handleOverlayClick}>
         <div

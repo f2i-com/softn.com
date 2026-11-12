@@ -11,6 +11,8 @@
 
 import React from 'react';
 import { cssLength } from '../utils/css-values';
+import { TOUCH_MEDIA } from '../utils/media';
+import { usePopupPlacement } from '../utils/popup';
 
 export interface MenuItem {
   /** Unique key */
@@ -82,7 +84,16 @@ export function Menu({
   const [activeIndex, setActiveIndex] = React.useState(-1);
   const menuRef = React.useRef<HTMLDivElement>(null);
   const triggerRef = React.useRef<HTMLElement | null>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
   const itemRefs = React.useRef<Array<HTMLButtonElement | null>>([]);
+  // The menu is placed on the screen against its trigger: on the side and
+  // at the edge `placement` names while it fits there, moved in from the
+  // screen's edge, and not cut by a dialog it is inside (utils/popup).
+  const listPlace = usePopupPlacement(isOpen, triggerRef, listRef, {
+    side: placement === 'top-start' || placement === 'top-end' ? 'top' : 'bottom',
+    align: placement === 'bottom-end' || placement === 'top-end' ? 'end' : 'start',
+    gap: 4,
+  });
   const baseId = React.useId();
   const menuId = `${baseId}-menu`;
   const triggerId = `${baseId}-trigger`;
@@ -211,6 +222,8 @@ export function Menu({
       zIndex: 1000,
       minWidth: cssLength(width),
       maxWidth: 'min(24rem, calc(100vw - 2rem))',
+      // Scrolls in itself when the screen is shorter than its items.
+      overflowY: 'auto',
       backgroundColor: 'var(--color-surface, #16161a)',
       borderRadius: '0.5rem',
       boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2)',
@@ -224,15 +237,15 @@ export function Menu({
 
     switch (placement) {
       case 'bottom-start':
-        return { ...base, top: '100%', left: 0, marginTop: '0.25rem' };
+        return { ...base, top: '100%', left: 0, marginTop: '0.25rem', ...listPlace };
       case 'bottom-end':
-        return { ...base, top: '100%', right: 0, marginTop: '0.25rem' };
+        return { ...base, top: '100%', right: 0, marginTop: '0.25rem', ...listPlace };
       case 'top-start':
-        return { ...base, bottom: '100%', left: 0, marginBottom: '0.25rem' };
+        return { ...base, bottom: '100%', left: 0, marginBottom: '0.25rem', ...listPlace };
       case 'top-end':
-        return { ...base, bottom: '100%', right: 0, marginBottom: '0.25rem' };
+        return { ...base, bottom: '100%', right: 0, marginBottom: '0.25rem', ...listPlace };
       default:
-        return base;
+        return { ...base, ...listPlace };
     }
   };
 
@@ -282,6 +295,7 @@ export function Menu({
         @media (prefers-reduced-motion: reduce) {
           .softn-menu-list { transition: none !important; }
         }
+        ${TOUCH_MEDIA} { .softn-menu-item { min-height: 44px; } }
       `}</style>
       {triggerIsInteractive ? (
         <span
@@ -312,6 +326,7 @@ export function Menu({
         </button>
       )}
       <div
+        ref={listRef}
         id={menuId}
         className="softn-menu-list"
         style={getMenuStyle()}

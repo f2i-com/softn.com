@@ -4407,7 +4407,25 @@
             "type": {
               "kind": "function"
             },
-            "doc": "Called when files are selected"
+            "doc": "Called when files are selected, and with what is left when one is removed"
+          },
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "FileInfo[] | null"
+            },
+            "doc": "The files shown as chosen, when the page keeps them: what `onSelect` handed it, and `[]` once they have been sent, which shows none. Left out, the chooser shows what was last chosen until it is removed."
+          },
+          {
+            "name": "disabled",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": false,
+            "doc": "Whether the chooser is turned off: nothing can be chosen, dropped or removed"
           },
           {
             "name": "className",
@@ -8061,24 +8079,26 @@
             "optional": false,
             "type": {
               "kind": "array",
-              "text": "RadioOption[]"
+              "text": "(RadioOption | string | number)[]"
             },
-            "doc": "Available options"
+            "doc": "Available options: { value, label, disabled? }, or a bare string or number, which is its own value and label"
           },
           {
             "name": "value",
             "optional": true,
             "type": {
-              "kind": "string"
+              "kind": "other",
+              "text": "string | number"
             },
             "defaultUnknown": true,
-            "doc": "Currently selected value"
+            "doc": "Currently selected value; 2 and \"2\" choose the same option"
           },
           {
             "name": "defaultValue",
             "optional": true,
             "type": {
-              "kind": "string"
+              "kind": "other",
+              "text": "string | number"
             },
             "doc": "Default selected value"
           },
@@ -8142,7 +8162,7 @@
             "type": {
               "kind": "function"
             },
-            "doc": "Change handler"
+            "doc": "Change handler: the chosen option's own value (a number for a numbered option), then the event"
           },
           {
             "name": "className",
@@ -9047,16 +9067,16 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "string | string[]"
+              "text": "string | number | (string | number)[]"
             },
-            "doc": "Current value (string for single, string[] for multi)"
+            "doc": "Current value: the chosen option's value, text or a number (a list of them for multi); 2 and \"2\" choose the same option"
           },
           {
             "name": "defaultValue",
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "string | string[]"
+              "text": "string | number | (string | number)[]"
             },
             "defaultUnknown": true,
             "doc": "Default value"
@@ -9069,7 +9089,7 @@
               "text": "SelectOptions"
             },
             "default": [],
-            "doc": "Options (flat or grouped)"
+            "doc": "Options (flat or grouped); an option is { value, label } or a bare string or number"
           },
           {
             "name": "placeholder",
@@ -9215,7 +9235,7 @@
             "type": {
               "kind": "function"
             },
-            "doc": "Change handler"
+            "doc": "Change handler: the chosen option's own value (a number for a numbered option), or the list of them for multi"
           },
           {
             "name": "onSearch",
@@ -9374,6 +9394,24 @@
             },
             "default": true,
             "doc": "Show toggle button"
+          },
+          {
+            "name": "mobileMenu",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": true,
+            "doc": "On a phone (768 pixels wide and under) the sidebar is a menu button that opens it as a drawer. `false` leaves it hidden there, for an app that draws its own phone navigation; an app with a `softn-mobile-only` element or a menu button of its own is taken to, without being told."
+          },
+          {
+            "name": "menuLabel",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "default": "Menu",
+            "doc": "The name of the menu button, and of the drawer it opens, for a screen reader"
           },
           {
             "name": "className",
@@ -10102,6 +10140,28 @@
               ]
             },
             "doc": "Mode: 'create' or 'edit' (auto-detected from recordId if not specified)"
+          },
+          {
+            "name": "afterSave",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "clear",
+                "keep"
+              ]
+            },
+            "default": "clear",
+            "doc": "What a form that saves to a `collection` does once a new record is saved. `clear` (the default) starts it again, from `data` and the defaults, ready for the next record; `keep` leaves what was typed. Either way it says \"Saved\" for a moment. A record being edited keeps its values."
+          },
+          {
+            "name": "savedText",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "default": "Saved",
+            "doc": "What the form says once a record is saved"
           }
         ]
       }
@@ -12052,6 +12112,20 @@
             "doc": "Whether header is sticky"
           },
           {
+            "name": "mobileCards",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "auto",
+                "always",
+                "never"
+              ]
+            },
+            "default": "auto",
+            "doc": "On a phone (640 pixels wide and under), whether each row is drawn as a card: its first cell as the heading, the others beside their column's name. `auto` (the default) does so when the table is too wide for its box and would scroll sideways; `always` does so whatever its width; `never` leaves it a table that scrolls."
+          },
+          {
             "name": "hoverable",
             "optional": true,
             "type": {
@@ -12163,7 +12237,6 @@
             "type": {
               "kind": "string"
             },
-            "defaultUnknown": true,
             "doc": "Active tab key"
           },
           {

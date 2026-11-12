@@ -166,8 +166,8 @@ export function NumberInput({
     commit(parsed);
   };
 
-  const onBlur = () => {
-    setFocused(false);
+  /** What is in the field becomes the number, settled into range: the field is done with. */
+  const settleDraft = () => {
     if (draft === null) return;
     const parsed = toNumber(draft);
     setDraft(null);
@@ -175,9 +175,22 @@ export function NumberInput({
     else if (parsed !== null) commit(settle(parsed));
   };
 
+  const onBlur = () => {
+    setFocused(false);
+    settleDraft();
+  };
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (disabled || readOnly) return;
     switch (event.key) {
+      case 'Enter':
+        // Enter in a form sends it, and what is sent is what the field
+        // shows. A number out of range is held back while it is typed and
+        // settled when the field is left, which Enter does not do: with a
+        // maximum of 10, "50" and Enter sent the number from before, 5, under
+        // a field that read 50. Not prevented: the form is still sent.
+        settleDraft();
+        break;
       case 'ArrowUp':
         event.preventDefault();
         stepBy(1);

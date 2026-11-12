@@ -76,6 +76,37 @@ function gridColumns<T>(given: unknown, data: T[]): DataGridColumn<T>[] {
   return keys.map((key) => ({ key, header: key }));
 }
 
+/** The narrowest a column's cells are drawn: its minimum, or its width when it is frozen and does not shrink. */
+function columnFloor(column: ColumnLayout): number | string {
+  // As a page writes them: a number, or text that is one, in pixels.
+  const least: number | string = numberOrText<number | string>(column.minWidth ?? 80);
+  if (!column.frozen) return least;
+  const width: number | string = numberOrText<number | string>(column.width ?? 150);
+  if (typeof width === 'number' && typeof least === 'number') return Math.max(width, least);
+  const length = (value: number | string) => (typeof value === 'number' ? `${value}px` : value);
+  return `max(${length(width)}, ${length(least)})`;
+}
+
+/**
+ * The narrowest a row is: its cells at their narrowest, side by side.
+ *
+ * A row was a flex box as wide as the grid's own box, and its cells stop
+ * shrinking at their minimum, so in a box too narrow for them (eight columns
+ * on a phone; five are enough) the cells ran out of the row that carries the
+ * background, the lines and the selection: scrolled sideways there was text
+ * on nothing, and the header's text over the rows' once scrolled down. Every
+ * row, the header's among them, is at least this wide.
+ */
+function rowFloor(floors: Array<number | string>): number | string {
+  let pixels = 0;
+  const lengths: string[] = [];
+  for (const floor of floors) {
+    if (typeof floor === 'number') pixels += Number.isFinite(floor) && floor > 0 ? floor : 0;
+    else if (floor.trim() !== '') lengths.push(floor);
+  }
+  return lengths.length === 0 ? pixels : `calc(${[`${pixels}px`, ...lengths].join(' + ')})`;
+}
+
 /** A field drawn in the grid: a column's filter, or a cell being edited. */
 const fieldStyle: React.CSSProperties = {
   width: '100%',
@@ -387,16 +418,30 @@ export function DataGrid<T = Row>({
     position: 'relative',
     height,
     overflow: 'auto',
+    // The rows drawn change as the grid scrolls, and the box that holds them
+    // moves down by as much. The browser's scroll anchoring took the first of
+    // those moves for content arriving above the reader and scrolled back by
+    // it: the first scroll of a grid, 130 pixels say, ended at 10.
+    overflowAnchor: 'none',
     border: bordered ? '1px solid var(--color-border, rgba(255, 255, 255, 0.08))' : 'none',
     borderRadius: '4px',
     ...style,
   };
+
+  // Every row is at least as wide as its cells at their narrowest (rowFloor),
+  // and so all of them are one width: the box's, or that.
+  const rowMinWidth = rowFloor([
+    ...(selectionMode === 'multiple' ? [40] : []),
+    ...columns.map(columnFloor),
+    ...(filterToggle ? [44] : []),
+  ]);
 
   const headerStyle: React.CSSProperties = {
     display: 'flex',
     backgroundColor: 'var(--color-gray-50, #1e1e23)',
     borderBottom: '2px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     minHeight: headerHeight,
+    minWidth: rowMinWidth,
   };
 
   const headerCellStyle = (column: ColumnLayout): React.CSSProperties => ({
@@ -427,6 +472,7 @@ export function DataGrid<T = Row>({
   const rowStyle = (index: number, isSelected: boolean): React.CSSProperties => ({
     display: 'flex',
     minHeight: rowHeight,
+    minWidth: rowMinWidth,
     backgroundColor: isSelected ? 'var(--color-primary-50, rgba(99, 102, 241, 0.1))' : striped && index % 2 === 1 ? 'var(--color-gray-50, #1e1e23)' : 'var(--color-surface, #16161a)',
     borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     transition: 'background-color 180ms cubic-bezier(0.16, 1, 0.3, 1)',
@@ -596,7 +642,7 @@ export function DataGrid<T = Row>({
         <div role="row"><div role="cell" style={{ padding: '2rem', textAlign: 'center', color: 'var(--color-text-muted, #a1a1aa)' }}>{emptyMessage}</div></div>
       ) : (
         <div role="rowgroup" style={{ position: 'relative', height: virtualized ? totalHeight : 'auto' }}>
-          <div style={{ position: 'absolute', top: offsetY, left: 0, right: 0 }}>
+          <div style={{ position: 'absolute', top: offsetY, left: 0, right: 0, minWidth: rowMinWidth }}>
             {visibleData.map((row, idx) => {
               // Where the row is drawn, and where it is in the page's list.
               const actualIndex = startIndex + idx;

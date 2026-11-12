@@ -26,7 +26,8 @@ describe('Radio as a controlled component', () => {
     // internal state unconditionally, and the resync effect only fires when
     // `value` itself *changes* — so 'b' stayed visually selected forever while
     // the app's state still said 'a'.
-    const seen: string[] = [];
+    // What Radio hands back is the option's own value: text here, a number for a numbered option.
+    const seen: (string | number)[] = [];
     const { container } = mount(
       <Radio name="t" options={OPTIONS} value="a" onChange={(v) => seen.push(v)} />
     );

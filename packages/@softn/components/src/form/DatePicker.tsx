@@ -9,6 +9,8 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { controlAttributes, describedBy } from '../utils/domAttributes';
+import { TOUCH_MEDIA } from '../utils/media';
+import { usePopupPlacement } from '../utils/popup';
 
 export interface DatePickerProps {
   /** Input id (generated when omitted) */
@@ -201,6 +203,7 @@ export function DatePicker({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const calendarRef = useRef<HTMLDivElement>(null);
   /** Set when focus should follow `focusedDate` into the grid on the next render. */
   const moveFocusToGrid = useRef(false);
 
@@ -209,6 +212,8 @@ export function DatePicker({
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
   const interactive = !disabled && !readOnly;
+  const fieldBoxRef = useRef<HTMLDivElement>(null);
+  const calendarPlace = usePopupPlacement(isOpen && interactive, fieldBoxRef, calendarRef, { gap: 4 });
 
   useEffect(() => {
     // When the parent supplies `value` it is the authority, including when it
@@ -404,7 +409,7 @@ export function DatePicker({
 
     // Empty cells for days before the first day
     for (let i = 0; i < firstDay; i++) {
-      cells.push(<div key={`empty-${i}`} role="gridcell" style={{ width: '2rem', height: '2rem' }} />);
+      cells.push(<div key={`empty-${i}`} role="gridcell" className="softn-date-blank" style={{ width: '2rem', height: '2rem' }} />);
     }
 
     // Days of the month
@@ -420,6 +425,7 @@ export function DatePicker({
           key={day}
           type="button"
           role="gridcell"
+          className="softn-date-day"
           tabIndex={isStop ? 0 : -1}
           aria-label={spokenDate(date)}
           aria-selected={isSelected}
@@ -459,7 +465,7 @@ export function DatePicker({
     // Trailing cells so the last week is a full row.
     while (cells.length % 7 !== 0) {
       cells.push(
-        <div key={`trail-${cells.length}`} role="gridcell" style={{ width: '2rem', height: '2rem' }} />
+        <div key={`trail-${cells.length}`} role="gridcell" className="softn-date-blank" style={{ width: '2rem', height: '2rem' }} />
       );
     }
 
@@ -487,8 +493,13 @@ export function DatePicker({
     ...style,
   };
 
+  // As wide as the field and no wider: the clear button is placed at this
+  // box's right end, and in a column that stretches its children it stood at
+  // the far side of the page from a 200-pixel field.
   const inputContainerStyle: React.CSSProperties = {
     position: 'relative',
+    display: fullWidth ? 'block' : 'inline-block',
+    verticalAlign: 'top',
     width: fullWidth ? '100%' : undefined,
   };
 
@@ -526,7 +537,15 @@ export function DatePicker({
     borderRadius: '0.5rem',
     boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)',
     zIndex: 50,
-    minWidth: '280px',
+    // Never wider than the screen has room for: 280 pixels from a field in
+    // a right-hand column ran off a phone.
+    minWidth: 'min(280px, calc(100vw - 16px))',
+    maxWidth: 'calc(100vw - 16px)',
+    boxSizing: 'border-box',
+    // Scrolls in itself when the screen is shorter than it (a phone on its side).
+    overflowY: 'auto',
+    // Placed on the screen against the field: see utils/popup.
+    ...calendarPlace,
   };
 
   const headerStyle: React.CSSProperties = {
@@ -587,11 +606,25 @@ export function DatePicker({
           )}
         </label>
       )}
-      <div style={inputContainerStyle}>
+      {/*
+        Under a finger: the field and everything in the calendar a finger
+        presses is 44 pixels tall, and a day is as wide as that while seven
+        of them fit across the screen. A mouse keeps the compact calendar.
+      */}
+      <style>{`${TOUCH_MEDIA} {
+        .softn-date-field { min-height: 44px; }
+        .softn-date-clear { right: 0 !important; min-width: 44px; min-height: 44px; }
+        .softn-date-calendar { padding: 8px !important; }
+        .softn-date-day, .softn-date-blank, .softn-date-weekday { width: min(44px, calc((100vw - 46px) / 7)) !important; }
+        .softn-date-day, .softn-date-blank { height: 44px !important; }
+        .softn-date-nav { min-width: 40px; min-height: 44px; }
+      }`}</style>
+      <div ref={fieldBoxRef} style={inputContainerStyle}>
         <input
           {...attributes}
           ref={inputRef}
           id={inputId}
+          className="softn-date-field"
           type="text"
           name={name}
           value={formatDateForDisplay(selectedDate, format)}
@@ -643,6 +676,7 @@ export function DatePicker({
         {selectedDate && interactive && (
           <button
             type="button"
+            className="softn-date-clear"
             onClick={handleClear}
             aria-label="Clear date"
             style={{
@@ -665,7 +699,9 @@ export function DatePicker({
 
       {isOpen && interactive && (
         <div
+          ref={calendarRef}
           id={dialogId}
+          className="softn-date-calendar"
           role="dialog"
           aria-modal="false"
           aria-labelledby={headingId}
@@ -676,6 +712,7 @@ export function DatePicker({
             <div style={{ display: 'flex', gap: '0.25rem' }}>
               <button
                 type="button"
+                className="softn-date-nav"
                 style={navButtonStyle}
                 onClick={() => navigateYear(-1)}
                 aria-label="Previous year"
@@ -684,6 +721,7 @@ export function DatePicker({
               </button>
               <button
                 type="button"
+                className="softn-date-nav"
                 style={navButtonStyle}
                 onClick={() => navigateMonth(-1)}
                 aria-label="Previous month"
@@ -697,6 +735,7 @@ export function DatePicker({
             <div style={{ display: 'flex', gap: '0.25rem' }}>
               <button
                 type="button"
+                className="softn-date-nav"
                 style={navButtonStyle}
                 onClick={() => navigateMonth(1)}
                 aria-label="Next month"
@@ -705,6 +744,7 @@ export function DatePicker({
               </button>
               <button
                 type="button"
+                className="softn-date-nav"
                 style={navButtonStyle}
                 onClick={() => navigateYear(1)}
                 aria-label="Next year"
@@ -726,6 +766,7 @@ export function DatePicker({
                 <div
                   key={day}
                   role="columnheader"
+                  className="softn-date-weekday"
                   aria-label={DAY_NAMES[index]}
                   style={{
                     width: '2rem',
@@ -753,6 +794,7 @@ export function DatePicker({
           >
             <button
               type="button"
+              className="softn-date-nav"
               onClick={() => handleDateSelect(today)}
               disabled={todayDisabled}
               style={{

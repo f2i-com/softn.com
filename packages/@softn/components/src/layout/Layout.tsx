@@ -15,7 +15,8 @@ const layoutStyles = `
     .softn-layout.softn-layout-horizontal {
       flex-direction: column !important;
     }
-    .softn-layout.softn-layout-horizontal > .softn-sidebar {
+    /* The Sidebar is a menu button and a drawer here (Sidebar.tsx); shut, it is not drawn. */
+    .softn-layout.softn-layout-horizontal > .softn-sidebar:not(.softn-sidebar-open) {
       display: none;
     }
   }

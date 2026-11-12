@@ -9,8 +9,8 @@ import { choice } from '../utils/choice';
 import { controlAttributes, describedBy } from '../utils/domAttributes';
 
 export interface RadioOption {
-  /** Option value */
-  value: string;
+  /** Option value, which choosing it hands back: text, or a number such as a record's id */
+  value: string | number;
   /** Display label */
   label: string;
   /** Whether this option is disabled */
@@ -20,12 +20,12 @@ export interface RadioOption {
 export interface RadioProps {
   /** Input name (required for grouping) */
   name: string;
-  /** Available options */
-  options: RadioOption[];
-  /** Currently selected value */
-  value?: string;
+  /** Available options: { value, label, disabled? }, or a bare string or number, which is its own value and label */
+  options: (RadioOption | string | number)[];
+  /** Currently selected value; 2 and "2" choose the same option */
+  value?: string | number;
   /** Default selected value */
-  defaultValue?: string;
+  defaultValue?: string | number;
   /** Layout direction */
   direction?: 'horizontal' | 'vertical';
   /** Whether the entire group is disabled */
@@ -36,8 +36,8 @@ export interface RadioProps {
   error?: boolean | string;
   /** Group label */
   label?: string;
-  /** Change handler */
-  onChange?: (value: string, event: React.ChangeEvent<HTMLInputElement>) => void;
+  /** Change handler: the chosen option's own value (a number for a numbered option), then the event */
+  onChange?: (value: string | number, event: React.ChangeEvent<HTMLInputElement>) => void;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */

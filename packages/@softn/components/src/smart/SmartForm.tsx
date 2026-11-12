@@ -8,8 +8,9 @@
  * <SmartForm fields="name, email:email, role:select" submit={handleSave} />
  */
 
-import React, { useState, useCallback, useMemo, useId, useRef, useLayoutEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useId, useRef, useLayoutEffect } from 'react';
 import { useAppXDB } from '@softn/core';
+import { TOUCH_MEDIA } from '../utils/media';
 
 export interface FieldConfig {
   /** Field name (required) */
@@ -38,8 +39,8 @@ export interface FieldConfig {
   max?: number;
   /** Regex pattern for validation */
   pattern?: string;
-  /** Options for select field */
-  options?: { value: string; label: string }[] | string[];
+  /** Options for select field: { value, label }, or a bare string, which is its own value */
+  options?: ({ value: string; label: string } | string)[];
   /** Default value */
   defaultValue?: unknown;
   /** Custom validation function */
@@ -98,7 +99,19 @@ export interface SmartFormProps {
   onSaved?: (record: unknown) => void;
   /** Mode: 'create' or 'edit' (auto-detected from recordId if not specified) */
   mode?: 'create' | 'edit';
+  /**
+   * What a form that saves to a `collection` does once a new record is saved.
+   * `clear` (the default) starts it again, from `data` and the defaults, ready
+   * for the next record; `keep` leaves what was typed. Either way it says
+   * "Saved" for a moment. A record being edited keeps its values.
+   */
+  afterSave?: 'clear' | 'keep';
+  /** What the form says once a record is saved */
+  savedText?: string;
 }
+
+/** How long the form says a record was saved. */
+const SAVED_NOTE_MS = 4000;
 
 // Utility to capitalize and humanize field names
 function humanize(str: string): string {
@@ -265,6 +278,8 @@ export function SmartForm({
   recordId,
   onSaved,
   mode: modeProp,
+  afterSave = 'clear',
+  savedText = 'Saved',
 }: SmartFormProps): React.ReactElement {
   const formId = useId();
   // Determine mode from recordId if not specified
@@ -334,6 +349,38 @@ export function SmartForm({
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // A record was saved: said for a moment, and until the next thing typed.
+  //
+  // A form that saves to a collection said nothing and kept what was typed.
+  // On the web the save is done within the press, so the button was never
+  // seen disabled either, and a second press, made because nothing seemed to
+  // have happened, saved the same record again.
+  const [savedNote, setSavedNote] = useState(false);
+  const savedNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideSavedNote = useCallback(() => {
+    if (savedNoteTimer.current !== null) clearTimeout(savedNoteTimer.current);
+    savedNoteTimer.current = null;
+    setSavedNote(false);
+  }, []);
+  const showSavedNote = useCallback(() => {
+    if (savedNoteTimer.current !== null) clearTimeout(savedNoteTimer.current);
+    setSavedNote(true);
+    savedNoteTimer.current = setTimeout(() => {
+      savedNoteTimer.current = null;
+      setSavedNote(false);
+    }, SAVED_NOTE_MS);
+  }, []);
+  useEffect(
+    () => () => {
+      if (savedNoteTimer.current !== null) clearTimeout(savedNoteTimer.current);
+    },
+    []
+  );
+  // What the form starts a record from, as the page gives it now: a save
+  // that took a while (the desktop's) starts the next record from the `data`
+  // of the moment it finished, not of the moment the button was pressed.
+  const freshForm = useRef(() => seedForm(initialData));
+  freshForm.current = () => seedForm(initialData);
   const submitInFlight = useRef(false);
   const submitScope = useMemo(
     () => ({ xdb, collection, recordId, mode }),
@@ -414,6 +461,8 @@ export function SmartForm({
         onChange?.(next);
         return next;
       });
+      // The next record is being written: the last one's "Saved" is done.
+      hideSavedNote();
 
       // Clear error on change
       if (errors[name]) {
@@ -424,7 +473,7 @@ export function SmartForm({
         });
       }
     },
-    [errors, onChange]
+    [errors, onChange, hideSavedNote]
   );
 
   // Handle field blur
@@ -452,6 +501,7 @@ export function SmartForm({
       const isCurrentSubmission = () => activeSubmitScope.current === submitScope;
       setIsSubmitting(true);
       setSubmitError(null);
+      hideSavedNote();
       try {
         // If collection is specified, use XDB for persistence
         if (collection) {
@@ -474,6 +524,16 @@ export function SmartForm({
           }
 
           if (!isCurrentSubmission()) return;
+          // The record is in the collection. A new one leaves the form ready
+          // for the next: started again from the page's `data` and the
+          // defaults, before the page hears of the save, so that a `data` the
+          // page changes in answer is what the form then shows. A record
+          // being edited keeps what it now holds.
+          if (mode !== 'edit' && afterSave !== 'keep') {
+            setFormData(freshForm.current());
+            setErrors({});
+            setTouched({});
+          }
           // Call onSaved callback if provided
           onSaved?.(savedRecord);
 
@@ -481,6 +541,7 @@ export function SmartForm({
           if (onSubmit && isCurrentSubmission()) {
             await onSubmit(formData);
           }
+          if (isCurrentSubmission()) showSavedNote();
         } else if (onSubmit) {
           // No collection specified, use custom submit handler
           await onSubmit(formData);
@@ -497,7 +558,7 @@ export function SmartForm({
         }
       }
     },
-    [formData, onSubmit, validateAll, collection, mode, recordId, onSaved, xdb, disabled, loading, submitScope]
+    [formData, onSubmit, validateAll, collection, mode, recordId, onSaved, xdb, disabled, loading, submitScope, afterSave, hideSavedNote, showSavedNote]
   );
 
   // Styles
@@ -596,6 +657,22 @@ export function SmartForm({
     opacity: disabled || isSubmitting ? 0.6 : 1,
   };
 
+  // In the theme's own green for text, which is the dark one on a light
+  // page and the light one on a dark page.
+  // With nothing to say it takes no place in the row: an empty box beside
+  // the buttons would still be given the row's gap, and push them over.
+  const savedNoteStyle: React.CSSProperties = savedNote
+    ? {
+        display: 'inline-flex',
+        alignItems: 'center',
+        alignSelf: 'center',
+        gap: '0.375rem',
+        fontSize: '0.875rem',
+        fontWeight: 500,
+        color: 'var(--color-success-700, var(--color-success-500, rgb(34, 197, 94)))',
+      }
+    : { position: 'absolute', width: 1, height: 1, overflow: 'hidden' };
+
   const secondaryButtonStyle: React.CSSProperties = {
     ...buttonStyle,
     background: 'var(--color-surface-hover, #1e1e23)',
@@ -627,6 +704,7 @@ export function SmartForm({
             onBlur={() => handleBlur(field)}
             placeholder={field.placeholder}
             disabled={isDisabled}
+            className="softn-smart-form-field"
             style={{ ...currentInputStyle, minHeight: '100px', resize: 'vertical' }}
           />
         );
@@ -643,6 +721,7 @@ export function SmartForm({
             onChange={(e) => handleChange(field.name, e.target.value)}
             onBlur={() => handleBlur(field)}
             disabled={isDisabled}
+            className="softn-smart-form-field"
             style={{ ...currentInputStyle, cursor: 'pointer' }}
           >
             <option value="">Select...</option>
@@ -658,6 +737,7 @@ export function SmartForm({
       case 'checkbox':
         return (
           <label
+            className="softn-smart-form-check"
             style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
           >
             <input
@@ -702,6 +782,7 @@ export function SmartForm({
             disabled={isDisabled}
             min={field.min}
             max={field.max}
+            className="softn-smart-form-field"
             style={currentInputStyle}
           />
         );
@@ -760,18 +841,38 @@ export function SmartForm({
         )}
         <div style={buttonGroupStyle}>
           {showCancel && onCancel && (
-            <button type="button" onClick={onCancel} style={secondaryButtonStyle}>
+            <button type="button" className="softn-smart-form-button" onClick={onCancel} style={secondaryButtonStyle}>
               {cancelText}
             </button>
           )}
-          <button type="submit" disabled={disabled || loading || isSubmitting} style={primaryButtonStyle}>
+          <button type="submit" className="softn-smart-form-button" disabled={disabled || loading || isSubmitting} style={primaryButtonStyle}>
             {(loading || isSubmitting) && <Spinner />}
             {submitText}
           </button>
+          {/* Always there, so that what it comes to say is read out when it says it. */}
+          <span role="status" style={savedNoteStyle}>
+            {savedNote && (
+              <>
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                {savedText}
+              </>
+            )}
+          </span>
         </div>
       </form>
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      {/*
+        Under a finger: a field's text at 16 pixels, since iOS zooms the whole
+        page in on a field whose text is smaller and does not zoom back out,
+        and fields and buttons 44 pixels tall. A mouse keeps the compact size.
+      */}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }
+        ${TOUCH_MEDIA} {
+          .softn-smart-form-field { font-size: 16px !important; min-height: 44px; }
+          .softn-smart-form-button, .softn-smart-form-check { min-height: 44px; }
+        }`}</style>
     </div>
   );
 }

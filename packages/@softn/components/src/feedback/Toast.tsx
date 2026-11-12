@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { choice } from '../utils/choice';
+import { useToastStack } from './toast-stack';
 
 export interface ToastProps {
   /** Toast variant */
@@ -271,12 +272,21 @@ export function Toast({
     onClose?.();
   }, [onClose]);
 
+  // Where it stands at its corner: clear of every toast shown there after it
+  // (toast-stack.ts). A position that is not one of the six is the usual one;
+  // it was a fixed box with no place at all.
+  const corner = Object.prototype.hasOwnProperty.call(positionStyles, position) ? position : 'top-right';
+  const containerRef = useRef<HTMLDivElement>(null);
+  const stackOffset = useToastStack(visible, corner, containerRef);
+
   if (!visible) return null;
 
   const containerStyle: React.CSSProperties = {
     position: 'fixed',
     zIndex: 1100,
-    ...positionStyles[position],
+    ...positionStyles[corner],
+    [corner.startsWith('bottom') ? 'bottom' : 'top']: stackOffset > 0 ? `calc(1rem + ${stackOffset}px)` : '1rem',
+    transition: 'top 200ms cubic-bezier(0.16, 1, 0.3, 1), bottom 200ms cubic-bezier(0.16, 1, 0.3, 1)',
   };
 
   const toastStyle: React.CSSProperties = {
@@ -360,7 +370,7 @@ export function Toast({
   };
 
   return (
-    <div style={containerStyle}>
+    <div ref={containerRef} className="softn-toast-place" style={containerStyle}>
       <style>
         {`
           @keyframes toast-slide-in {
@@ -380,8 +390,13 @@ export function Toast({
           .softn-toast-close:active {
             transform: scale(0.9);
           }
+          /* Under a finger the close button takes a press 44 pixels across, and no more room than it had. */
+          @media (pointer: coarse) {
+            .softn-toast-close { min-width: 44px; min-height: 44px; margin: -8px -8px -8px 0; }
+          }
           @media (prefers-reduced-motion: reduce) {
             .softn-toast { animation: none !important; transition: none !important; transform: none !important; }
+            .softn-toast-place { transition: none !important; }
           }
         `}
       </style>

@@ -8,6 +8,10 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { choice } from '../utils/choice';
 import { controlAttributes, givenLabel } from '../utils/domAttributes';
+import { TOUCH_MEDIA } from '../utils/media';
+
+/** How far a finger moves, in pixels, before it is a drag or a scroll and no longer a tap. */
+const TOUCH_SLOP = 6;
 
 export interface SliderProps {
   /** Current value */
@@ -114,6 +118,11 @@ export function Slider({
   const { control: attributes, styled } = controlAttributes(rest);
   const [internalValue, setInternalValue] = useState(defaultValue);
   const [isDragging, setIsDragging] = useState(false);
+  // A pointer is down on the slider and is being followed. For a mouse that
+  // is a drag from the first moment; a finger may be starting a scroll of the
+  // page instead, and is not a drag until it has moved along the slider.
+  const [isTracking, setIsTracking] = useState(false);
+  const pendingTouchRef = useRef<{ x: number; y: number } | null>(null);
   const [isHovering, setIsHovering] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const dragValueRef = useRef(defaultValue);
@@ -183,28 +192,49 @@ export function Slider({
     commit(value + delta);
   };
 
+  /** The value goes to where the pointer is, and the page is told. */
+  const moveTo = useCallback(
+    (clientX: number) => {
+      const newValue = getValueFromPosition(clientX);
+      dragValueRef.current = newValue;
+      if (controlledValue === undefined) {
+        setInternalValue(newValue);
+      }
+      onChange?.(newValue);
+    },
+    [getValueFromPosition, controlledValue, onChange]
+  );
+
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (disabled || e.button !== 0 || activePointerIdRef.current !== null) return;
-    e.preventDefault();
     activePointerIdRef.current = e.pointerId;
-    captureTargetRef.current = e.currentTarget;
+    // The track holds the pointer, as it did when it alone took the press.
+    const holder = trackRef.current ?? e.currentTarget;
+    captureTargetRef.current = holder;
     try {
-      e.currentTarget.setPointerCapture?.(e.pointerId);
+      holder.setPointerCapture?.(e.pointerId);
     } catch {
       // Pointer capture may be unavailable or already released by the browser.
     }
+    setIsTracking(true);
+    if (e.pointerType === 'touch') {
+      // A finger down on the slider may be the start of a scroll down the
+      // page, which the slider lets through (`touch-action: pan-y`): nothing
+      // changes until it is lifted where it landed (a tap) or has moved along
+      // the slider (a drag). A value set at once was a value changed by
+      // every scroll that happened to start here.
+      pendingTouchRef.current = { x: e.clientX, y: e.clientY };
+      dragValueRef.current = value;
+      return;
+    }
+    e.preventDefault();
     trackRef.current?.querySelector<HTMLElement>('[role="slider"]')?.focus();
     setIsDragging(true);
-    const newValue = getValueFromPosition(e.clientX);
-    dragValueRef.current = newValue;
-    if (controlledValue === undefined) {
-      setInternalValue(newValue);
-    }
-    onChange?.(newValue);
+    moveTo(e.clientX);
   };
 
   const finishPointer = useCallback(
-    (pointerId: number) => {
+    (pointerId: number, cancelled = false) => {
       if (pointerId !== activePointerIdRef.current) return;
       const track = captureTargetRef.current ?? trackRef.current;
       // Clear ownership before releasing capture because release can dispatch
@@ -218,10 +248,21 @@ export function Slider({
         // The browser may release capture before dispatching pointercancel.
       }
       captureTargetRef.current = null;
+      setIsTracking(false);
       setIsDragging(false);
+      const tap = pendingTouchRef.current;
+      pendingTouchRef.current = null;
+      if (tap) {
+        // The finger never dragged. Taken back by the browser, it was the
+        // page's scroll: nothing changed, and nothing ended. Lifted, it was a
+        // tap: the value goes to where it landed.
+        if (cancelled) return;
+        trackRef.current?.querySelector<HTMLElement>('[role="slider"]')?.focus({ preventScroll: true });
+        moveTo(tap.x);
+      }
       onChangeEnd?.(dragValueRef.current);
     },
-    [onChangeEnd]
+    [onChangeEnd, moveTo]
   );
 
   useEffect(
@@ -246,34 +287,41 @@ export function Slider({
   );
 
   useEffect(() => {
-    if (!isDragging) return;
+    if (!isTracking) return;
 
     const handlePointerMove = (e: PointerEvent) => {
       if (e.pointerId !== activePointerIdRef.current) return;
-      const newValue = getValueFromPosition(e.clientX);
-      dragValueRef.current = newValue;
-      if (controlledValue === undefined) {
-        setInternalValue(newValue);
+      const start = pendingTouchRef.current;
+      if (start) {
+        const along = Math.abs(e.clientX - start.x);
+        const across = Math.abs(e.clientY - start.y);
+        // Not far enough to say; or up or down the page, which is the
+        // browser's to scroll (it takes the pointer back when it does).
+        if (along < TOUCH_SLOP || across > along) return;
+        pendingTouchRef.current = null;
+        trackRef.current?.querySelector<HTMLElement>('[role="slider"]')?.focus({ preventScroll: true });
+        setIsDragging(true);
       }
-      onChange?.(newValue);
+      moveTo(e.clientX);
     };
 
-    const handlePointerFinish = (e: PointerEvent) => finishPointer(e.pointerId);
+    const handlePointerUp = (e: PointerEvent) => finishPointer(e.pointerId);
+    const handlePointerCancel = (e: PointerEvent) => finishPointer(e.pointerId, true);
 
     document.addEventListener('pointermove', handlePointerMove);
-    document.addEventListener('pointerup', handlePointerFinish);
-    document.addEventListener('pointercancel', handlePointerFinish);
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerCancel);
 
     return () => {
       document.removeEventListener('pointermove', handlePointerMove);
-      document.removeEventListener('pointerup', handlePointerFinish);
-      document.removeEventListener('pointercancel', handlePointerFinish);
+      document.removeEventListener('pointerup', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [isDragging, getValueFromPosition, onChange, controlledValue, finishPointer]);
+  }, [isTracking, moveTo, finishPointer]);
 
   useEffect(() => {
     if (disabled && activePointerIdRef.current !== null) {
-      finishPointer(activePointerIdRef.current);
+      finishPointer(activePointerIdRef.current, true);
     }
   }, [disabled, finishPointer]);
 
@@ -299,15 +347,38 @@ export function Slider({
     }
   }
 
+  // Room above for the value only when it is always shown. It was made
+  // while the slider was hovered or dragged and taken away after, so the page
+  // under a slider jumped 24 pixels down and back whenever the pointer
+  // crossed it, and the slider itself moved out from under the pointer.
+  // Shown in passing, the value is drawn over what is above, as a tooltip is.
   const containerStyle: React.CSSProperties = {
     position: 'relative',
     width: '100%',
-    paddingTop: showTooltipNow ? config.thumb + 8 : 0,
+    paddingTop: showTooltip && tooltipAlwaysVisible ? config.thumb + 8 : 0,
     paddingBottom: markItems.length > 0 ? 20 : 0,
     opacity: disabled ? 0.5 : 1,
     cursor: disabled ? 'not-allowed' : 'pointer',
-    touchAction: 'none',
     ...style,
+  };
+
+  // What takes a press. The track is 4 to 8 pixels tall, and was all that
+  // did. For a mouse the rail reaches as far above and below the track as the
+  // thumb and a little more, in room it gives back (the margins), so nothing
+  // on the page moves. Under a finger it is 44 pixels tall, in room of its
+  // own (the rule below). A finger moving up or down it scrolls the page;
+  // only along it is the slider's.
+  const reach = Math.max(0, Math.ceil((config.thumb + 8 - config.track) / 2));
+  const railStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    position: 'relative',
+    paddingTop: reach,
+    paddingBottom: reach,
+    marginTop: -reach,
+    marginBottom: -reach,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    touchAction: 'pan-y',
   };
 
   const trackStyle: React.CSSProperties = {
@@ -397,12 +468,17 @@ export function Slider({
       onMouseEnter={() => setIsHovering(true)}
       onMouseLeave={() => setIsHovering(false)}
     >
+      <style>{`${TOUCH_MEDIA} {
+        .softn-slider-rail { min-height: 44px; padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; }
+        .softn-slider-marks { margin-top: -10px !important; }
+      }`}</style>
       <div
-        ref={trackRef}
-        style={trackStyle}
+        className="softn-slider-rail"
+        style={railStyle}
         onPointerDown={handlePointerDown}
-        onLostPointerCapture={(event) => finishPointer(event.pointerId)}
+        onLostPointerCapture={(event) => finishPointer(event.pointerId, true)}
       >
+      <div ref={trackRef} style={trackStyle}>
         <div style={fillStyle} />
         {/* A registered form control that only listened for mousedown: no
             tabIndex, no role, no key handling, so a keyboard or screen-reader
@@ -429,8 +505,9 @@ export function Slider({
           </div>
         )}
       </div>
+      </div>
       {markItems.length > 0 && (
-        <div style={{ position: 'relative', marginTop: 8 }}>
+        <div className="softn-slider-marks" style={{ position: 'relative', marginTop: 8 }}>
           {markItems.map((mark, index) => {
             const markPercent = max > min ? ((mark.value - min) / (max - min)) * 100 : 0;
             return (

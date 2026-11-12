@@ -270,7 +270,10 @@ const globalStyles = `
 
   /* Responsive: Tablet (768px) */
   @media (max-width: 768px) {
-    .softn-sidebar {
+    /* No room for a column beside the page. The Sidebar draws a menu button
+       in its place and opens over the page as a drawer (layout/Sidebar.tsx);
+       only the open drawer is shown. */
+    .softn-sidebar:not(.softn-sidebar-open) {
       display: none !important;
     }
     .softn-app-sidebar {

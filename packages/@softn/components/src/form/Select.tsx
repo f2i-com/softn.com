@@ -8,9 +8,12 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, useId } from 'react';
 import { choice } from '../utils/choice';
 import { controlAttributes, describedBy } from '../utils/domAttributes';
+import { TOUCH_MEDIA } from '../utils/media';
+import { usePopupPlacement } from '../utils/popup';
 
 export interface SelectOption {
-  value: string;
+  /** What choosing the option hands back: text, or a number such as a record's id */
+  value: string | number;
   label: string;
   disabled?: boolean;
   icon?: React.ReactNode;
@@ -19,19 +22,29 @@ export interface SelectOption {
 
 export interface SelectOptionGroup {
   label: string;
-  options: SelectOption[];
+  /** The group's options, each written as in the list itself: { value, label } or bare */
+  options: (SelectOption | string | number)[];
 }
 
-export type SelectOptions = (SelectOption | SelectOptionGroup)[];
+/**
+ * A list of options: { value, label }, a group of them, or a bare string or
+ * number, which is its own value and label (`["low", "high"]`, `[1, 2, 3]`).
+ */
+export type SelectOptions = (SelectOption | SelectOptionGroup | string | number)[];
+
+/** A group once its options are all { value, label }: what the list is drawn from. */
+interface NormalisedGroup extends SelectOptionGroup {
+  options: SelectOption[];
+}
 
 export interface SelectProps {
   /** Input name */
   name?: string;
-  /** Current value (string for single, string[] for multi) */
-  value?: string | string[];
+  /** Current value: the chosen option's value, text or a number (a list of them for multi); 2 and "2" choose the same option */
+  value?: string | number | (string | number)[];
   /** Default value */
-  defaultValue?: string | string[];
-  /** Options (flat or grouped) */
+  defaultValue?: string | number | (string | number)[];
+  /** Options (flat or grouped); an option is { value, label } or a bare string or number */
   options?: SelectOptions;
   /** Placeholder text */
   placeholder?: string;
@@ -63,8 +76,8 @@ export interface SelectProps {
   noOptionsText?: string;
   /** Create option text (for creatable select) */
   createOptionText?: (query: string) => string;
-  /** Change handler */
-  onChange?: (value: string | string[]) => void;
+  /** Change handler: the chosen option's own value (a number for a numbered option), or the list of them for multi */
+  onChange?: (value: string | number | (string | number)[]) => void;
   /** Search handler (for async options) */
   onSearch?: (query: string) => void;
   /** Create handler */
@@ -85,12 +98,12 @@ export interface SelectProps {
 // and this is reached from a useMemo on the render path — so `options={['red',
 // 'green']}` did not degrade, it threw during render and threw again on every
 // retry, replacing the field with an error box for good.
-function isOptionGroup(option: SelectOption | SelectOptionGroup): option is SelectOptionGroup {
+function isOptionGroup<Group extends SelectOptionGroup>(option: SelectOption | Group): option is Group {
   return typeof option === 'object' && option !== null && 'options' in option;
 }
 
 /** A bare string is a perfectly reasonable option, and is what SmartForm already accepts. */
-function normaliseOption(option: SelectOption | SelectOptionGroup | string | number): SelectOption | SelectOptionGroup {
+function normaliseOption(option: SelectOptions[number]): SelectOption | NormalisedGroup {
   if (typeof option === 'object' && option !== null) {
     // A group's members can be bare strings too, and only the outer array was
     // ever being normalised.
@@ -102,7 +115,7 @@ function normaliseOption(option: SelectOption | SelectOptionGroup | string | num
   }
   // Its own value, so choosing `2` from `options={[1, 2, 3]}` hands back the
   // number, as Radio and SegmentedControl do; it is shown as text.
-  return { value: option as string, label: String(option) };
+  return { value: option, label: String(option) };
 }
 
 /** Text, a number or a yes/no: a value that says what it is when read as text. */
@@ -189,7 +202,7 @@ export function Select({
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const [internalValue, setInternalValue] = useState<string | string[]>(
+  const [internalValue, setInternalValue] = useState<string | number | (string | number)[]>(
     defaultValue ?? (multiple ? [] : '')
   );
 
@@ -199,6 +212,10 @@ export function Select({
   const triggerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  // The list is placed on the screen against the trigger: under it or, with
+  // no room there, over it, and not cut by a dialog it is inside (utils/popup).
+  const dropdownPlace = usePopupPlacement(isOpen, triggerRef, dropdownRef, { gap: 6, matchWidth: true, maxHeight: 300 });
   /** Typeahead: what has been typed on the trigger, and when. */
   const typeahead = useRef({ text: '', at: 0 });
 
@@ -249,7 +266,7 @@ export function Select({
           ? opt
           : null;
       })
-      .filter((opt): opt is SelectOption | SelectOptionGroup => opt !== null);
+      .filter((opt): opt is SelectOption | NormalisedGroup => opt !== null);
   }, [normalisedOptions, searchQuery]);
 
   const flatFilteredOptions = useMemo(() => flattenOptions(filteredOptions), [filteredOptions]);
@@ -310,7 +327,7 @@ export function Select({
       const optionValue = option.value;
       if (multiple) {
         const currentValues = Array.isArray(value) ? value : [];
-        let newValues: string[];
+        let newValues: (string | number)[];
 
         if (chosenOptions.has(option)) {
           // Out goes what chooses this option, and nothing that chooses another.
@@ -656,6 +673,7 @@ export function Select({
         key={`${index}-${String(option.value)}`}
         id={optionId(index)}
         role="option"
+        className="softn-select-option"
         aria-selected={isSelected}
         aria-disabled={isDisabled || undefined}
         data-highlighted={isHighlighted}
@@ -736,6 +754,7 @@ export function Select({
             0% { opacity: 0; transform: scale(0.95) translateY(-8px); }
             100% { opacity: 1; transform: scale(1) translateY(0); }
           }
+          ${TOUCH_MEDIA} { .softn-select-option { min-height: 44px; } }
         `}</style>
         {/*
           Pressing an option must not take focus off the trigger or the search
@@ -743,7 +762,8 @@ export function Select({
           and the Select would close before the click that selects landed.
         */}
         <div
-          style={dropdownStyle}
+          ref={dropdownRef}
+          style={{ ...dropdownStyle, ...dropdownPlace }}
           onMouseDown={(e) => {
             if (e.target !== inputRef.current) e.preventDefault();
           }}
@@ -893,9 +913,19 @@ export function Select({
       >
         {/* `value={choice}` is null until something is chosen: an empty field, not a null handed to React. */}
         <input type="hidden" name={name} value={Array.isArray(value) ? value.join(',') : (value ?? '')} />
+        {/*
+          Under a finger the trigger is 44 pixels tall, and the clear button,
+          drawn at 16, takes a press 44 across: mostly to its left, over the
+          end of the label, so that the arrow beside it still opens the list.
+        */}
+        <style>{`${TOUCH_MEDIA} {
+          .softn-select-trigger { min-height: 44px !important; }
+          .softn-select-clear { width: 44px !important; height: 44px !important; margin: -14px -4px -14px -24px; }
+        }`}</style>
         <div
           {...attributes}
           ref={triggerRef}
+          className="softn-select-trigger"
           tabIndex={disabled ? -1 : 0}
           style={triggerStyle}
           onClick={() => {
@@ -928,6 +958,7 @@ export function Select({
             {clearable && hasValue && !disabled && (
               <button
                 type="button"
+                className="softn-select-clear"
                 onClick={handleClear}
                 aria-label="Clear selection"
                 style={{

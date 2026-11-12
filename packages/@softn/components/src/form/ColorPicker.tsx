@@ -8,6 +8,8 @@ import React, { useState, useCallback, useRef, useEffect, useId } from 'react';
 import { cssPaint } from '../utils/egress';
 import { choice } from '../utils/choice';
 import { controlAttributes, givenLabel } from '../utils/domAttributes';
+import { TOUCH_MEDIA } from '../utils/media';
+import { usePopupPlacement } from '../utils/popup';
 
 export interface ColorPickerProps {
   /** Current color value (hex) */
@@ -77,13 +79,25 @@ function isValidHex(color: string): boolean {
 /** The colour a picker shows when it has none of its own. */
 const FALLBACK_COLOR = '#6366f1';
 
+/** What was given as the colour it is, `#RRGGBB`; null when it is not a hex colour. */
+function hexOf(given: unknown): string | null {
+  if (typeof given !== 'string') return null;
+  const hex = normalizeHex(given.trim());
+  return isValidHex(hex) ? hex : null;
+}
+
 /**
  * The colour to show for what the picker was given. `value={theme.accent}`
  * is null until the theme has loaded, and `null.startsWith` threw; what is
  * not a colour's text is the default one.
+ *
+ * So is text that is not a hex colour. `:bind` hands an unset variable in as
+ * "", which was shown as "#" over a swatch with no paint; and a colour's
+ * name, which the picker cannot show in its field or hand to the browser's
+ * own picker, was `red` shown as "#RREEDD".
  */
 function shownColor(given: unknown, fallback: unknown): string {
-  return normalizeHex(typeof given === 'string' ? given : typeof fallback === 'string' ? fallback : FALLBACK_COLOR);
+  return hexOf(given) ?? hexOf(fallback) ?? normalizeHex(FALLBACK_COLOR);
 }
 
 function normalizeHex(color: string): string {
@@ -122,6 +136,11 @@ export function ColorPicker({
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // The palette is placed on the screen against the button: moved in from
+  // the screen's edge, over the button when there is no room under it, and
+  // not cut by a dialog it is inside (utils/popup).
+  const panelPlace = usePopupPlacement(isOpen && !disabled, triggerRef, panelRef, { gap: 4 });
   const sizes = choice(sizeValues, size, 'md');
   const baseId = useId();
   const labelId = `${baseId}-label`;
@@ -260,7 +279,11 @@ export function ColorPicker({
     borderRadius: '0.5rem',
     boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)',
     zIndex: 50,
-    minWidth: '240px',
+    minWidth: 'min(240px, calc(100vw - 16px))',
+    maxWidth: 'calc(100vw - 16px)',
+    boxSizing: 'border-box',
+    overflowY: 'auto',
+    ...panelPlace,
   };
 
   const presetGridStyle: React.CSSProperties = {
@@ -338,6 +361,7 @@ export function ColorPicker({
         {...attributes}
         ref={triggerRef}
         type="button"
+        className="softn-color-trigger"
         style={triggerStyle}
         disabled={disabled}
         onClick={() => (isOpen ? close(false) : setIsOpen(true))}
@@ -376,8 +400,20 @@ export function ColorPicker({
       */}
       <input type="hidden" name={name} value={selectedColor} />
 
+      {/*
+        Under a finger: the button 44 pixels tall, a swatch as near 44 as
+        seven fit across the screen, and the fields 44 tall with text iOS
+        does not zoom the page for.
+      */}
+      <style>{`${TOUCH_MEDIA} {
+        .softn-color-trigger { min-height: 44px; }
+        .softn-color-swatch { width: min(44px, calc((100vw - 66px) / 7)) !important; height: min(44px, calc((100vw - 66px) / 7)) !important; }
+        .softn-color-field { min-height: 44px; font-size: 16px !important; }
+        .softn-color-native { width: 44px !important; height: 44px !important; }
+      }`}</style>
       {isOpen && !disabled && (
         <div
+          ref={panelRef}
           id={panelId}
           role="dialog"
           aria-label={label ? `${label} palette` : 'Colour palette'}
@@ -399,6 +435,7 @@ export function ColorPicker({
               <button
                 key={index}
                 type="button"
+                className="softn-color-swatch"
                 style={presetSwatchStyle(color)}
                 onClick={() => handleColorSelect(color)}
                 title={color}
@@ -414,6 +451,7 @@ export function ColorPicker({
               value={selectedColor}
               onChange={handleNativeChange}
               aria-label="Custom colour"
+              className="softn-color-native"
               style={{
                 width: '2rem',
                 height: '2rem',
@@ -429,6 +467,7 @@ export function ColorPicker({
               onChange={handleInputChange}
               onBlur={handleInputBlur}
               maxLength={7}
+              className="softn-color-field"
               style={hexInputStyle}
               placeholder="#RRGGBB"
               aria-label="Hex colour"
