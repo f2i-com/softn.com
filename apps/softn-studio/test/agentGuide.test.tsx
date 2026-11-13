@@ -19,7 +19,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerAllBuiltins } from '@softn/components';
 import { SoftNRenderer, composeBundleSource, configureZippWasmSource } from '@softn/core';
-import { buildGuide, JAVASCRIPT_APP_EXAMPLE, PRIVATE_BACKEND_SECTION, projectHasBackend, PYTHON_APP_EXAMPLE } from '../src/lib/agent/guide';
+import { buildGuide, gamesSection, JAVASCRIPT_APP_EXAMPLE, JAVASCRIPT_GAME_EXAMPLE, PRIVATE_BACKEND_SECTION, projectHasBackend, PYTHON_APP_EXAMPLE, PYTHON_GAME_EXAMPLE } from '../src/lib/agent/guide';
 import { COMPONENT_INDEX } from '../src/lib/agent/knowledge';
 import { buildAgentSystemPrompt } from '../src/lib/agent/prompt';
 import { buildPreviewXDBState, composePreviewProject } from '../src/lib/previewProject';
@@ -179,7 +179,8 @@ describe('every markup snippet in the guide', () => {
     ['Python', true],
   ])('%s: composes and renders without errors', async (_language, python) => {
     const guide = buildGuide({ python, torch: false, style: 'clean' });
-    const example = python ? PYTHON_APP_EXAMPLE : JAVASCRIPT_APP_EXAMPLE;
+    // The complete examples are run as written, with their own logic: the app above, the game below.
+    const example = (python ? PYTHON_APP_EXAMPLE : JAVASCRIPT_APP_EXAMPLE) + (python ? PYTHON_GAME_EXAMPLE : JAVASCRIPT_GAME_EXAMPLE);
     const snippets = blocks(guide, 'xml').filter((b) => !example.includes(b));
     expect(snippets.length).toBeGreaterThanOrEqual(2);
     const logicPath = python ? 'main.py' : 'main.js';
@@ -283,6 +284,132 @@ describe('what the guide says of timers', () => {
     expect(errors).toEqual([]);
     expect(text()).toContain('done');
   }, 30_000);
+});
+
+describe('what the guide says of games', () => {
+  // The guide had nothing on games: what a model wrote was a fixed step, key latches on the
+  // window, and preventDefault() in a listener where it does nothing.
+  it('says the loop and dt, the controls, the keys, the background, 2D drawing and the scene’s names', () => {
+    const js = gamesSection(false);
+    expect(js).toMatch(/`<Loop frame running=\{playing\} @tick=\{\(dt\) => step\(dt\)\} \/>`/);
+    expect(js).toMatch(/Multiply every speed by `dt`/);
+    expect(js).toMatch(/never assume a fixed step/);
+    expect(js).toMatch(/`<Controls :bind=\{pad\} keys=\{\{/);
+    expect(js).toContain('`pad.presses.fire` counts presses');
+    expect(js).toContain('`<DPad :bind={pad} />`');
+    expect(js).toMatch(/`e\.preventDefault\(\)` does nothing/);
+    expect(js).toContain('softn.input.captureKeys(');
+    expect(js).toMatch(/`_onHide\(\)`, if defined, runs when the app goes to the background/);
+    for (const name of ['softn.scene.yaw', 'softn.scene.pitch', 'softn.scene.locked', 'softn.scene.lock()', 'softn.scene.unlock()']) expect(js).toContain(`\`${name}\``);
+    expect(js).toMatch(/Logic is modern JavaScript/);
+    expect(js).toMatch(/Plain elements, or shapes in an `<svg>`, one for each record under `#each`/);
+    expect(js).toContain('read_docs("threejs-games")');
+    // It is in the guide a project is given, between the logic and the capabilities.
+    const guide = buildGuide({ python: false, torch: false, style: 'clean' });
+    expect(guide).toContain(js);
+    expect(guide.indexOf('## Games and interactive scenes')).toBeGreaterThan(guide.indexOf('## Logic (.js)'));
+    expect(guide.indexOf('## Games and interactive scenes')).toBeLessThan(guide.indexOf('## Capabilities'));
+  });
+
+  it('tells a Python project only what Python logic can reach', () => {
+    const py = gamesSection(true);
+    expect(py).toMatch(/`<Loop frame running=\{playing\} @tick=\{\(dt\) => step\(dt\)\} \/>`/);
+    expect(py).toContain('`pad.get("left")`');
+    expect(py).toMatch(/`_onHide\(\)`, if defined/);
+    // Not the window, nor the names behind it, nor JavaScript.
+    expect(py).not.toMatch(/window\.|softn\.scene|softn\.input|JavaScript/);
+    expect(buildGuide({ python: true, torch: false, style: 'clean' })).toContain(py);
+  });
+
+  /** The screen's frames, drawn when the test says: a `<Loop frame>` ticks on each. */
+  function ownTheFrames(): (ms: number) => Promise<void> {
+    let pending = new Map<number, (stamp: number) => void>();
+    let clock = 1000;
+    let next = 1;
+    vi.stubGlobal('requestAnimationFrame', (callback: (stamp: number) => void) => {
+      pending.set(next, callback);
+      return next++;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (handle: number) => {
+      pending.delete(handle);
+    });
+    return async (ms: number) => {
+      clock += ms;
+      const due = [...pending.values()];
+      pending = new Map();
+      await act(async () => {
+        for (const callback of due) callback(clock);
+        await new Promise((r) => setTimeout(r, 12));
+      });
+    };
+  }
+
+  async function key(type: 'keydown' | 'keyup', name: string): Promise<KeyboardEvent> {
+    const event = new KeyboardEvent(type, { key: name, code: name, bubbles: true, cancelable: true });
+    await act(async () => {
+      document.body.dispatchEvent(event);
+      await new Promise((r) => setTimeout(r, 12));
+    });
+    return event;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Play the guide's small game: start, steer under the first star, and catch it. */
+  async function play(files: Map<string, VFSFile>, appId: string): Promise<void> {
+    const frame = ownTheFrames();
+    const { errors, text } = await renderApp(files, appId);
+    expect(errors).toEqual([]);
+    expect(text()).toContain('Caught 0');
+    const ship = () => parseFloat((container!.querySelector('.ship') as HTMLElement).style.left);
+    expect(ship()).toBe(148);
+    // Not started: frames pass and nothing moves.
+    await frame(16);
+    await frame(16);
+    expect(container!.querySelectorAll('.star')).toHaveLength(0);
+
+    await act(async () => [...container!.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Start')!.click());
+    await settle();
+    await frame(16);
+    await frame(16);
+    // The first star is at 97 across; it falls 80 pixels a second.
+    expect(container!.querySelectorAll('.star')).toHaveLength(1);
+
+    // The left arrow moves the ship 200 pixels a second, and is kept from the page.
+    const left = await key('keydown', 'ArrowLeft');
+    expect(left.defaultPrevented).toBe(true);
+    for (let i = 0; i < 6; i++) await frame(50);
+    await key('keyup', 'ArrowLeft');
+    expect(ship()).toBeCloseTo(148 - 200 * 0.3, 0);
+    const stopped = ship();
+    await frame(50);
+    expect(ship()).toBe(stopped);
+
+    // Under the star when it comes down: caught.
+    for (let i = 0; i < 20 && text().includes('Caught 0'); i++) await frame(50);
+    expect(text()).toContain('Caught 1');
+    expect(errors).toEqual([]);
+  }
+
+  it('JavaScript: the small game composes, renders without errors, and is played', async () => {
+    const files = vfs({
+      'index.html': blocks(JAVASCRIPT_GAME_EXAMPLE, 'xml')[0],
+      'main.js': blocks(JAVASCRIPT_GAME_EXAMPLE, 'javascript')[0],
+      'manifest.json': JSON.stringify({ name: 'Stars', version: '1.0.0', main: 'index.html', files: { ui: ['index.html'], logic: ['main.js'] } }),
+    });
+    await play(files, 'StudioGuideGameJS');
+  }, 60_000);
+
+  it('Python: the same game, on the web-python engine', async () => {
+    const files = vfs({
+      'index.html': blocks(PYTHON_GAME_EXAMPLE, 'xml')[0],
+      'main.py': blocks(PYTHON_GAME_EXAMPLE, 'python')[0],
+      'manifest.json': JSON.stringify({ name: 'Stars', version: '1.0.0', main: 'index.html', files: { ui: ['index.html'], logic: ['main.py'] } }),
+    });
+    await play(files, 'StudioGuideGamePy');
+  }, 60_000);
 });
 
 describe('what the guide says of a handler with a block body', () => {

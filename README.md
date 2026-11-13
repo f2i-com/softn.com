@@ -22,7 +22,7 @@ The project is actively developed. The examples and runtime are usable today; ho
 
 | Capability                | What it gives you                                                                                                                                                              |
 | :------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Interfaces that adapt** | 105 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
+| **Interfaces that adapt** | 107 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
 | **An editable workspace** | A visual builder, schema editor, source editor and live desktop, tablet and mobile previews. Files the canvas cannot safely rewrite remain editable in Code view.              |
 | **AI-assisted creation**  | Studio turns a brief into an app using your configured OpenAI, Anthropic or custom provider. You can also write `.ui` and `.logic` directly.                                   |
 | **Logic and data**        | JavaScript-compatible `.logic` runs in the zipp Rust/WASM engine. XDB provides app-scoped local records, with synchronization and native storage where the host supports them. |
@@ -188,7 +188,7 @@ Capabilities such as network, microphone and synchronization require support and
                                     |
                                     v
                             Component Registry
-                           (105 built-in + custom)
+                           (107 built-in + custom)
 
 .logic Source
       |
@@ -333,7 +333,7 @@ leaves the event alone. Whatever `:bind` does on the same event always runs.
 
 ---
 
-## Component Library (105 Components)
+## Component Library (107 Components)
 
 | Category   | Count | Components                                                                                                                                      |
 | ---------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -343,7 +343,7 @@ leaves the event alone. Whatever `:bind` does on the same event always runs.
 | Feedback   | 7     | `Alert`, `Modal`, `Confirm`, `Toast`, `Drawer`, `Popover`, `EmptyState`                                                                         |
 | Data       | 7     | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination`, `Timeline`                                                                   |
 | Navigation | 5     | `Tabs`, `Breadcrumb`, `Menu`, `NavItem`, `Steps`                                                                                                |
-| Utility    | 12    | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `PixelCanvas`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `AudioStream`, `DPad`     |
+| Utility    | 13    | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `PixelCanvas`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `AudioStream`, `DPad`, `Controls` |
 | Charts     | 6     | `LineChart`, `BarChart`, `PieChart`, `AreaChart`, `RadarChart`, `GaugeChart`                                                                    |
 | Animation  | 9     | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `PanView`, `Sprite`, `TileMap`                           |
 | Editors    | 3     | `CodeEditor`, `MarkdownEditor`, `RichTextEditor`                                                                                                |
@@ -473,6 +473,20 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
   browser's default for them (scrolling, a page search) is cancelled before the handler runs,
   never in a text field, never for Ctrl with a character key (Ctrl+F, Ctrl+C) and never with the
   system modifier; Ctrl with an arrow or another named key is still captured
+- A key listener on the window hears a key after the browser has acted on it, so calling
+  `preventDefault()` on its record does nothing; the record's `defaultPrevented` says whether the
+  key was captured, and the runtime says so once in the console when a listener calls it for a key
+  that was not
+- `_init()` runs once when the app has loaded; `_onHide()` and `_onShow()`, where the logic defines
+  them, run when the app goes to the background (another app chosen in a host that keeps several
+  open, the browser's tab hidden) and when it comes back; an app that starts in the background is
+  told `_onHide()` once, after `_init()`
+- When 32 calls are waiting for the engine, a call from an event that goes on reporting is left out,
+  since the next one supersedes it: `@tick`, `@hover`, the pointer moving (`@pointermove`,
+  `@mousemove`, `@touchmove`), `@scroll`, `@wheel`, `@drag`, `@dragover`, `@timeupdate`, `@level`,
+  `@fps` and `@frame`. A call from any other event (a click, a key, a change, a submit) is never
+  left out, whatever its function is called
+- `requestAnimationFrame` hands its function the clock `performance.now()` reads
 
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
@@ -698,6 +712,62 @@ same way (video with sound needs `mic` too), and `<QRReader>` to `qr` or
 
 ---
 
+## Games
+
+A game is a page with a clock, and a record of what the player holds:
+
+```xml
+<Controls :bind={pad} keys={{ left: "ArrowLeft a", right: "ArrowRight d", fire: "Space" }} />
+<Loop frame running={playing} @tick={step} />
+<DPad :bind={pad} />
+```
+
+```javascript
+let pad = { presses: {} };
+let fired = 0;
+
+function step(dt) {
+  if (pad.left) x -= 220 * dt;
+  if (pad.right) x += 220 * dt;
+  if (pad.presses.fire > fired) {
+    fired = pad.presses.fire;
+    shoot();
+  }
+}
+
+function _onHide() {
+  playing = false;
+}
+```
+
+- `<Loop frame>` calls `@tick` once for each frame the screen draws, with `dt` the seconds since
+  the last call (never more than 0.2), not while the last call is still running, and not while
+  the app or the browser's tab is hidden; `maxFps` caps it. A call still running after two seconds
+  is left behind with one warning, so a step that waits on a request does not stop the game. Without
+  `frame` a Loop is a timer (`interval`), which goes on in the background unless it has
+  `pauseHidden`.
+- `<Controls>` draws nothing. It keeps the bound variable as a record: each action true while
+  anything holds it, and `presses`, which counts how often each has gone down. The keys it is given
+  are kept from the browser, so the page does not scroll; a key typed into a field, a key pressed
+  with Alt, and the browser's own chords are left alone; and everything is let go when the window
+  loses focus, when the app is hidden and when the component goes. A letter is the key that types
+  it, and on a keyboard of another alphabet the key where that letter usually is, so `w a s d` are
+  the same four keys in Russian or Greek. A connected gamepad's stick and d-pad hold `left`,
+  `right`, `up` and `down`, and its buttons the other actions in the order written (`gamepad` names
+  them, or turns it off). `@press` and `@release` say each change once.
+- `<DPad :bind={pad} />` writes its four directions into the same record, so touch, keys and a
+  gamepad are one thing to the game: an action is held while any of them holds it, and a press is
+  counted once.
+- `<Sprite>` takes a place (`x`, `y`), a mirror (`flipX`), the frames to play (`frames={[4, 5, 6]}`)
+  and `loop={false}`, which plays them once and calls `@end`.
+
+The guide to 3D scenes and games (`threejs-games` in `docs/content/softn-docs.json`) has five
+complete examples, kept in [`docs/examples/`](docs/examples) and played by the tests: a 2D game, a
+page with a 3D scene and readings pinned over its parts, a first-person game, a game seen from
+behind with a camera that follows, and a film made in Blender and played from the page's clock.
+
+---
+
 ## Pixels and PCM
 
 Two primitives for scripts that generate a signal rather than arrange widgets.
@@ -761,10 +831,17 @@ first-person game needs:
 - `type: "instanced"` objects draw thousands of identical meshes in one call:
   a flat `instances` array of positions, with an optional `palette` and a
   fourth number per instance to pick a colour from it.
-- `pointerLock` captures the mouse for mouse-look. The scene reports the view
-  through `window.__scene3dYaw` and `__scene3dPitch`, whether the lock is held
-  through `__scene3dLocked`, and a script asks for it by setting
-  `__scene3dWantLock`. `pitchLimit` clamps the look, `cameraSmoothing` eases
+- `pointerLock` captures the mouse for mouse-look. Logic reads the view as
+  `softn.scene.yaw` and `softn.scene.pitch` (and sets them to turn the
+  camera), reads whether the lock is held as `softn.scene.locked`, asks for
+  it with `softn.scene.lock()` from a click, and gives it back with
+  `softn.scene.unlock()`. These are the window's `__scene3dYaw`,
+  `__scene3dPitch`, `__scene3dLocked`, `__scene3dWantLock` and
+  `__scene3dReleaseLock`, which work as they did; logic that only reads one
+  sees its value without writing it first. `softn.input.keys` and
+  `softn.input.down("w")` read the keys a scene with `gameControls` holds
+  (`__softnKeys`). Logic in a worker (`config.execution: "worker"`) does not
+  see these values. `pitchLimit` clamps the look, `cameraSmoothing` eases
   it and `mouseLookSensitivity` scales it. On a touch screen a drag looks
   around instead.
 - `attach: "camera"` on an object or light keeps it in front of the player: a
@@ -772,6 +849,26 @@ first-person game needs:
 - `fill` sizes the canvas to its container, `maxPixelRatio` caps the render
   resolution on high-density screens, and `staticObjects` holds geometry that
   never changes so only the moving list is diffed each frame.
+
+And what a scene that should look real needs:
+
+- `environment={{ url: "assets/sky.hdr", background: true }}` lights the scene
+  from a panorama of its surroundings (`.hdr`, `.exr` or an ordinary picture),
+  which is also what its metal reflects.
+- `effects` adds `bloom`, `vignette` and `grain`, `depthOfField` (keep one
+  object or one distance sharp) and `ambientOcclusion` (the soft darkening
+  where surfaces meet). Edges stay smooth with effects on.
+- `parts` turns, moves or hides the named nodes of a model (a wheel, a hatch,
+  a turret) from the pose its file gives them.
+- `particleShape: "round"` or `"soft"` for dust, smoke, sparks and stars.
+
+A scene can also be made whole in Blender and played as Blender has it:
+`camera={{ from: "film" }}` looks through the file's own cameras and follows
+its cuts, `animation: { clip: "*", time }` runs its animation from the app's
+clock, `lights` on the model lets its lamps cast shadows, and
+`effects={{ depthOfField: "camera" }}` focuses as its cameras do.
+[`tools/blender/softn_export.py`](tools/blender/README.md) exports the scene
+with the cuts, lens changes and focus that a `.glb` alone does not hold.
 
 Blockscape, Dead Hours and Maze Escape 3D are built on these. F8 in any of
 them shows the engine's debug readout.

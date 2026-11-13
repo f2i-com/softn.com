@@ -75,7 +75,7 @@ its own `.d.ts` (`packages/@softn/components/tsup.config.ts`):
 | `@softn/components/media` | Camera, Microphone, AudioStream, QRCode, QRReader, with `@rc-component/qrcode` and `@yudiel/react-qr-scanner`. | ~186 KB in the host build, before the scanner's WASM decoder |
 | `@softn/components/animation` | AnimatedBox, AnimatedNumber, Marquee, Typewriter, Draggable, SortableList, PanView, Sprite, TileMap. | ~19 KB |
 | `@softn/components/pickers` | DatePicker, ColorPicker. | ~15 KB |
-| `@softn/components/games` | PixelGrid, PixelCanvas, DPad. | ~12 KB |
+| `@softn/components/games` | PixelGrid, PixelCanvas, DPad, Controls. | ~16 KB |
 
 The sizes come from bundling each source module with esbuild, minified, with
 react, `@softn/core`, three and the QR libraries external; the host-build

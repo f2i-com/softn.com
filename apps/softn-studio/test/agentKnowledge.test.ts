@@ -84,6 +84,108 @@ describe('the generated knowledge', () => {
     expect(tabs.split('Types the props use:').slice(1).join('')).not.toMatch(/ReactNode/);
   });
 
+  // A type was kept only if it fitted in 400 characters, with its comments taken out, and only
+  // from the component's own file. So for a 3D scene the model was told `objects?: Scene3DObject[]`
+  // and nothing of what an object, a light, a hit or the effects are.
+  it('spells out every type a prop or an event names, whole and with each field’s comment, from whichever file declares it', async () => {
+    const { text } = await lookupComponents(['Scene3D']);
+    const types = text.slice(text.indexOf('Types the props use:'), text.indexOf('Events (write'));
+    // An object is far longer than a line: a field to a line, each with what its comment says.
+    expect(types).toContain('- Scene3DObject = {');
+    expect(types).toMatch(/\n {4}id: string/);
+    expect(types).toMatch(/\n {4}animate\?: \{[^\n]*\} — [^\n]*radians per frame/);
+    expect(types).toMatch(/\n {4}instances\?: number\[\]/);
+    expect(types).toContain('- Scene3DLight = {');
+    // What a click hands its handler, which the manifest knows only as "a function".
+    expect(types).toContain('- Scene3DHit = ');
+    expect(text).toMatch(/- @click\(\w+: Scene3DHit\)/);
+    // The effects are declared in a file of their own and handed on by the scene's.
+    expect(types).toContain('- Scene3DEffects = ');
+    expect(types).toContain('- ModelAppearance = ');
+  });
+
+  it('reads the types from the sources by these rules', () => {
+    const sources: Record<string, string> = {
+      'src/demo/Stage.tsx': `
+        import { type Glow, type Hidden as Shown } from './glow';
+        export type { Glow } from './glow';
+        export * from './shapes';
+        /** One thing on the stage. */
+        export interface Prop {
+          /** Unique on the stage */
+          id: string;
+          // not a doc comment
+          kind: Shape;
+          /** Where it stands, in metres */
+          at?: { x: number; y: number };
+          ${Array.from({ length: 40 }, (_, i) => `/** Setting ${i} */\n          setting${i}?: number;`).join('\n          ')}
+          inner?: Inner;
+        }
+        interface Inner { deep?: Deeper }
+        interface Deeper { deeper?: Deepest }
+        interface Deepest { never: true }
+        export interface Touch { propId: string; glow: Glow }
+        export interface StageProps {
+          props?: Prop[];
+          shown?: Shown;
+          onTouch?: (touch: Touch) => void;
+          onPress?: (event: React.MouseEvent<HTMLDivElement>) => void;
+          onDone?: () => void;
+        }
+        export function Stage(_: StageProps) { return null; }`,
+      'src/demo/glow.ts': `
+        /** How a thing glows. */
+        export interface Glow {
+          /** From 0 to 1 */
+          strength?: number;
+        }
+        export type Hidden = 'yes' | 'no';`,
+      'src/demo/shapes.ts': `export type Shape = 'box' | 'ball';`,
+    };
+    const fn = { kind: 'function' };
+    const stage = {
+      components: [
+        {
+          name: 'Stack',
+          source: 'src/demo/Stage.tsx',
+          props: {
+            interface: 'StageProps',
+            members: [
+              { name: 'props', optional: true, type: { kind: 'array', text: 'Prop[]' } },
+              { name: 'shown', optional: true, type: { kind: 'other', text: 'Shown' } },
+              { name: 'onTouch', optional: true, type: fn },
+              { name: 'onPress', optional: true, type: fn },
+              { name: 'onDone', optional: true, type: fn },
+            ],
+          },
+        },
+      ],
+      registered: { essentials: ['Stack'] },
+    };
+    const built = buildKnowledge(JSON.stringify(stage), JSON.stringify({ pages: [] }), (path: string) => sources[path] ?? null) as Record<string, string>;
+    const reference = (JSON.parse(built['components.generated.ts'].slice(built['components.generated.ts'].indexOf('= {') + 2).replace(/;\s*$/, '')) as Record<string, string>).Stack;
+
+    // Longer than a line: every field, in order, none cut off, each with its doc comment and no other.
+    expect(reference).toContain('- Prop = {\n    // One thing on the stage.\n    id: string — Unique on the stage\n    kind: Shape\n    at?: { x: number; y: number } — Where it stands, in metres\n    setting0?: number — Setting 0');
+    expect(reference).toContain('    setting39?: number — Setting 39\n    inner?: Inner\n  }');
+    expect(reference).not.toContain('not a doc comment');
+    // A type an event hands over, and what that names in another file, with its comments under it.
+    expect(reference).toContain('- Touch = { propId: string; glow: Glow }');
+    expect(reference).toContain('- Glow = { strength?: number }\n  How a thing glows.\n  - strength: From 0 to 1');
+    // Brought in under another name, and through `export *`.
+    expect(reference).toContain("- Shown = 'yes' | 'no'");
+    expect(reference).toContain("- Shape = 'box' | 'ball'");
+    // Followed three deep from a prop and no further.
+    expect(reference).toContain('- Inner = { deep?: Deeper }');
+    expect(reference).toContain('- Deeper = { deeper?: Deepest }');
+    expect(reference).not.toContain('- Deepest');
+    // The props' own interface is not one of the types, and an event says what it hands over.
+    expect(reference).not.toContain('- StageProps');
+    expect(reference).toContain('- @touch(touch: Touch)');
+    expect(reference).toContain('- @press(event)');
+    expect(reference).toMatch(/- @done\n/);
+  });
+
   it('read_docs serves every guide and section by slug', async () => {
     const docs = JSON.parse(readFileSync(DOCS_PATH, 'utf8')) as { pages: Array<{ id: string; sections: Array<{ id: string; title: string }> }> };
     expect(DOC_INDEX.map((d) => d.slug)).toEqual(docs.pages.map((p) => p.id));

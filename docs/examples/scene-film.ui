@@ -1,0 +1,46 @@
+<logic>
+  // A film made in Blender and exported as one file. This page is its clock.
+  let time = 0          // seconds into the film
+  let length = 0        // how long it is: the file says, once it has loaded
+  let playing = false
+
+  // What the scene draws: the whole of Blender's scene, held at this second of its animation.
+  // Its own lamps light it and cast its shadows.
+  $: objects = [{
+    id: "film", type: "model", modelUrl: "assets/film.glb", castShadow: true, receiveShadow: true,
+    animation: { clip: "*", time: time },
+    lights: { castShadow: true, shadowCameraSize: 20 }
+  }]
+
+  // The scene says what it loaded. A file from SoftN's export script for Blender carries the
+  // film's record: how long it is, which camera from when, each camera's lens and focus.
+  function loaded(model) {
+    if (model.state === "loaded" && model.film) length = model.film.duration
+  }
+
+  // One frame of the screen: the film is that much further on.
+  function step(dt) {
+    time = Math.min(length, time + dt)
+    if (time >= length) playing = false
+  }
+
+  // Play and stop; at the end, from the start again.
+  function toggle() {
+    if (!playing && time >= length) time = 0
+    playing = !playing
+  }
+</logic>
+
+<App theme="dark">
+  <Stack direction="vertical" gap="md" padding="lg">
+    <Heading level={1}>First drive</Heading>
+    <div style="position: relative; height: 420px">
+      <Scene3D fill shadows objects={objects} camera={{ from: "film" }} environment={{ url: "assets/film.hdr" }} effects={{ depthOfField: "camera", ambientOcclusion: true }} toneMapping="agx" @modelState={loaded} />
+    </div>
+    <Stack direction="horizontal" gap="md">
+      <Button variant="primary" disabled={length === 0} @click={toggle}>{playing ? "Stop" : "Play"}</Button>
+      <Text>{time.toFixed(1)} of {length.toFixed(1)} seconds</Text>
+    </Stack>
+  </Stack>
+  <Loop frame running={playing} @tick={step} />
+</App>

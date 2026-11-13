@@ -1,0 +1,110 @@
+<logic>
+  // Dodge: slide left and right, and let the rocks go past.
+  let W = 320
+  let H = 440
+  let pad = { presses: {} }          // what the player holds; <Controls> and <DPad> keep it
+  let player = { x: 140, y: 400, w: 40, h: 16 }
+  let rocks = []
+  let score = 0
+  let best = 0
+  let playing = false
+  let paused = false
+  let over = false
+  let nextId = 1
+  let spawnIn = 0
+
+  function _init() {
+    best = Number(localStorage.getItem("dodge:best")) || 0
+  }
+
+  function start() {
+    if (!paused) {
+      rocks = []
+      score = 0
+      spawnIn = 0
+      player.x = (W - player.w) / 2
+    }
+    over = false
+    paused = false
+    playing = true
+  }
+
+  // Two boxes overlap when neither is wholly to one side of the other.
+  function overlaps(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  }
+
+  // One step of the game. dt is the seconds since the last step, so every
+  // speed is in pixels a second and the game runs the same on any screen.
+  function step(dt) {
+    const direction = (pad.right ? 1 : 0) - (pad.left ? 1 : 0)
+    player.x = Math.max(0, Math.min(W - player.w, player.x + direction * 240 * dt))
+
+    spawnIn -= dt
+    if (spawnIn <= 0) {
+      rocks.push({ id: nextId++, x: Math.random() * (W - 20), y: -20, w: 20, h: 20, speed: 120 + Math.random() * 140 })
+      spawnIn = 0.45
+    }
+    for (const rock of rocks) rock.y += rock.speed * dt
+
+    if (rocks.some(rock => overlaps(rock, player))) {
+      playing = false
+      over = true
+      if (score > best) {
+        best = score
+        localStorage.setItem("dodge:best", String(best))
+      }
+      return
+    }
+
+    const before = rocks.length
+    rocks = rocks.filter(rock => rock.y < H)
+    score += before - rocks.length
+  }
+
+  // <Controls> calls this once for each press of an action, by its name.
+  function pressed(action) {
+    if (action === "start" && !playing) start()
+  }
+
+  // The app went to the background: nobody can see the rocks coming.
+  function _onHide() {
+    if (playing) {
+      playing = false
+      paused = true
+    }
+  }
+</logic>
+
+<style>
+  /* `flex: none` keeps the field its full height on a short screen: the page scrolls, where the field was squeezed and the player cut off. */
+  .field { position: relative; flex: none; overflow: hidden; background: #0f172a; border-radius: 8px; }
+  .player { position: absolute; background: #38bdf8; border-radius: 4px; }
+  .rock { position: absolute; background: #f97316; border-radius: 50%; }
+  .banner { position: absolute; inset: 0; display: grid; place-items: center; color: #e2e8f0; font-weight: 600; }
+</style>
+
+<App theme="dark">
+  <Stack direction="vertical" gap="md" padding="lg" align="center" style="height: 100%; overflow: auto">
+    <Heading level={1}>Dodge</Heading>
+    <Text>Score {score} · Best {best}</Text>
+
+    <Controls :bind={pad} keys={{ left: "ArrowLeft a", right: "ArrowRight d", start: "Space Enter" }} @press={pressed} />
+    <Loop frame running={playing} @tick={step} />
+
+    <div class="field" style:width={W + "px"} style:height={H + "px"}>
+      <div class="player" style:left={player.x + "px"} style:top={player.y + "px"} style:width={player.w + "px"} style:height={player.h + "px"}></div>
+      #each (rock in rocks) key={rock.id}
+        <div class="rock" style:left={rock.x + "px"} style:top={rock.y + "px"} style:width={rock.w + "px"} style:height={rock.h + "px"}></div>
+      #end
+      #if (!playing)
+        <div class="banner">{over ? "Hit! Press Space to play again" : paused ? "Paused. Press Space to go on" : "Press Space to start"}</div>
+      #end
+    </div>
+
+    <Stack direction="horizontal" gap="md" align="center">
+      <DPad :bind={pad} buttonSize={48} />
+      <Button variant="primary" @click={start}>{over ? "Play again" : paused ? "Resume" : "Start"}</Button>
+    </Stack>
+  </Stack>
+</App>

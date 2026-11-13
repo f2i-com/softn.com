@@ -1,0 +1,122 @@
+<logic>
+  // Walk: look with the mouse, move with W A S D or the arrows, pick up the coins.
+  let pad = { presses: {} }
+  let me = { x: 0, z: -6 }
+  let coins = []
+  let found = 0
+  let playing = false
+  let held = false                  // whether the scene has held the pointer in this run
+  let camera = { position: { x: 0, y: 1.6, z: -6 }, fov: 70 }
+  let objects = []
+
+  // What never changes is kept apart from what moves, so it is sent to the scene once.
+  let scenery = [
+    { id: "ground", type: "plane", width: 40, height: 40, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, color: "#14532d" },
+    { id: "north", type: "box", width: 40, height: 3, depth: 0.5, position: { x: 0, y: 1.5, z: 20 }, color: "#57534e" },
+    { id: "south", type: "box", width: 40, height: 3, depth: 0.5, position: { x: 0, y: 1.5, z: -20 }, color: "#57534e" },
+    { id: "east", type: "box", width: 0.5, height: 3, depth: 40, position: { x: 20, y: 1.5, z: 0 }, color: "#57534e" },
+    { id: "west", type: "box", width: 0.5, height: 3, depth: 40, position: { x: -20, y: 1.5, z: 0 }, color: "#57534e" }
+  ]
+  let lights = [
+    { type: "hemisphere", intensity: 0.9, color: "#bfdbfe", groundColor: "#14532d" },
+    { type: "directional", intensity: 1, position: { x: 6, y: 10, z: 4 } }
+  ]
+
+  function scatter() {
+    coins = [
+      { id: "coin-1", x: -4, z: -2 },
+      { id: "coin-2", x: 3, z: 0 },
+      { id: "coin-3", x: -2, z: 4 },
+      { id: "coin-4", x: 5, z: 6 }
+    ]
+    found = 0
+    me = { x: 0, z: -6 }
+  }
+
+  // The lists the scene draws from, made again after each step.
+  function draw() {
+    camera = { position: { x: me.x, y: 1.6, z: me.z }, fov: 70 }
+    objects = coins.map(coin => ({
+      id: coin.id, type: "torus", radius: 0.35, tube: 0.1, color: "#fbbf24", emissive: "#f59e0b", emissiveIntensity: 0.4,
+      position: { x: coin.x, y: 1, z: coin.z },
+      animate: { rotateY: 0.05 }   // the scene spins it; logic does not
+    }))
+  }
+
+  function _init() {
+    scatter()
+    draw()
+  }
+
+  // From the Start button: a click is when a browser lets a page take the pointer.
+  function start() {
+    if (coins.length === 0) {
+      // A new game: the coins again, facing the way the first one began.
+      scatter()
+      softn.scene.yaw = 0
+      softn.scene.pitch = 0
+    }
+    softn.scene.lock()
+    held = false
+    playing = true
+    draw()
+  }
+
+  function step(dt) {
+    // Escape gives the pointer back. The scene says so, and the game waits.
+    if (softn.scene.locked) held = true
+    else if (held) {
+      playing = false
+      return
+    }
+
+    // On the ground the camera faces (sin yaw, cos yaw), and its right is (-cos yaw, sin yaw).
+    const yaw = softn.scene.yaw
+    const forward = (pad.forward ? 1 : 0) - (pad.back ? 1 : 0)
+    const right = (pad.right ? 1 : 0) - (pad.left ? 1 : 0)
+    me.x += (Math.sin(yaw) * forward - Math.cos(yaw) * right) * 4 * dt
+    me.z += (Math.cos(yaw) * forward + Math.sin(yaw) * right) * 4 * dt
+    me.x = Math.max(-19, Math.min(19, me.x))
+    me.z = Math.max(-19, Math.min(19, me.z))
+
+    // A coin is picked up when the player is within reach of it.
+    const before = coins.length
+    coins = coins.filter(coin => Math.hypot(coin.x - me.x, coin.z - me.z) > 0.9)
+    found += before - coins.length
+    if (coins.length === 0) {
+      playing = false
+      softn.scene.unlock()
+    }
+    draw()
+  }
+
+  function _onHide() {
+    if (playing) {
+      playing = false
+      softn.scene.unlock()
+    }
+  }
+</logic>
+
+<style>
+  .world { position: relative; height: 480px; }
+  .hud { position: absolute; top: 12px; left: 12px; color: #fef3c7; font-weight: 600; }
+  .menu { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); }
+</style>
+
+<App theme="dark">
+  <div class="world">
+    <Scene3D fill pointerLock sky="day" objects={objects} staticObjects={scenery} lights={lights} camera={camera} />
+    <div class="hud">{found} of 4 coins</div>
+    #if (!playing)
+      <div class="menu">
+        <Stack direction="vertical" gap="sm" align="center">
+          <Button variant="primary" @click={start}>{coins.length === 0 ? "Play again" : found > 0 ? "Go on" : "Start"}</Button>
+          <Text>Mouse to look, W A S D to walk, Esc to stop</Text>
+        </Stack>
+      </div>
+    #end
+  </div>
+  <Controls :bind={pad} enabled={playing} keys={{ forward: "w ArrowUp", back: "s ArrowDown", left: "a ArrowLeft", right: "d ArrowRight" }} />
+  <Loop frame running={playing} @tick={step} />
+</App>

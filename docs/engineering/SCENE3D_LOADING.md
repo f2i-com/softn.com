@@ -14,7 +14,10 @@ How `Scene3D` gets a model onto the screen: what it fetches, when, from where, w
 | STL model | `three/addons/loaders/STLLoader.js` | … to `stl` |
 | Orbit controls | `three/addons/controls/OrbitControls.js` | `orbitControls` is set (and mouse look is not) |
 | Studio lighting | `three/addons/environments/RoomEnvironment.js` | `environment="studio"` |
+| A panorama to light the scene | `three/addons/loaders/RGBELoader.js` for a `.hdr`, `three/addons/loaders/EXRLoader.js` for a `.exr` (an ordinary picture needs neither) | `environment={{ url }}` names such a file |
 | Bloom, vignette, grain | the five `three/addons/postprocessing/*` modules, together | any effect in `effects` is on |
+| Depth of field | `three/addons/postprocessing/BokehPass.js` | `effects.depthOfField` is on |
+| Ambient occlusion | `three/addons/postprocessing/GTAOPass.js` | `effects.ambientOcclusion` is on |
 | Skinned-mesh instancing | `three/addons/utils/SkeletonUtils.js` | a loaded model contains a `SkinnedMesh` |
 | Meshopt decoding | `three/addons/libs/meshopt_decoder.module.js` | a glTF declares `EXT_meshopt_compression` |
 
@@ -43,12 +46,22 @@ Three callbacks, each firing once per mount, each with a `performance.mark` of t
 `onModelState({ objectId, state, attempt, error? })` reports each model's load:
 
 - `pending` — a fetch has started, with `attempt` 1 for the first load of a URL.
-- `loaded` — the object is in the scene.
+- `loaded` — the object is in the scene. The state also says what is in the model: `clips`, `materials`, `meshes` and `morphs` (lists of names, up to 256 of each: what `animation.clip`, `appearance.colors`, `appearance.hiddenMeshes` and `appearance.morphs` address) and `size` and `center` (`{ x, y, z }`, the model's bounds as its file gives them, before the object's `scale`, `position` or `fit`). They are read from the template once (`model-info.ts`), not for each instance: the bounds visit every vertex. A mesh of several materials is listed by the name of its group as well as each part's; a node the file left unnamed is not listed.
 - `error` — it is not, and `error` says why. When the reason is a subresource the policy refused (below), the message names that URL and the reason; when the model needs a decoder this build does not ship, it says which.
 
 To try the same URL again, change the object's numeric `reload` field. Each change is a new fetch — the template cache forgets what it holds for the URL first — reported as `pending` with `attempt` one higher, then `loaded` or `error`. A change of URL or format starts the count at 1 again. An unchanged `reload` is not a retry.
 
 The stale-request rule is unchanged: a load whose object was removed, whose URL changed, or whose scene unmounted before it settled is discarded on arrival (its lease on the cache is released at once) and reports nothing.
+
+`fit: <number>` scales a model so its longest side is that many units, centred on the object's position and with its lowest point on the object's ground. A fitted model stands in a holder that carries the object's own `position`, `rotation` and `scale`, so the fit and those do not overwrite each other (`fit: 2, scale: 1.5` is three units long); a model with no `fit` takes the object's transform itself, as it always has. Giving or taking away `fit` after the model has loaded moves it into or out of the holder in place, with no new fetch and no new state.
+
+`animation.progress` (0 to 1) holds the named clip at that point instead of playing it: the action is paused and its time set, which three still draws. Take it away and the clip plays on from there. A held clip never reports `finished`.
+
+## Naming a file in the bundle from logic
+
+`asset()` is the page's: logic is not given it, and a game builds its objects in logic. A `modelUrl` or `textureUrl` with no scheme (`"assets/robot.glb"`) is therefore offered to the app's `AppAssetResolver` first (`utils/bundle-src.ts`), as `softn.audio.play` offers a sound's, and what the resolver answers with is what is loaded. A path the resolver does not know is left as written, so a deployment that serves its files beside the page still shows them. A URL with a scheme, a protocol-relative one and a fragment are never offered. Whatever comes back is judged by the permission policy exactly as a URL written in full is (rule 1 below), so a host whose resolver answers with an address on the network gives an app without `net` nothing. `Sprite src` and `TileMap src` had the same gap and take a bundle path the same way.
+
+An object whose URL was changed by this (or withheld by the policy) is a copy of the one the page handed over. The copy is remembered against the object for as long as the policy and the resolver stand, so scenery handed over unchanged (`staticObjects`, a group's children) is still the same object to the reconcile, and is not looked at again.
 
 ## Where a model's bytes may come from
 
@@ -90,6 +103,12 @@ Which effects are on decides which passes exist; their numbers are written into 
 ## Groups
 
 A group's children are reconciled by id. A child whose id persists is patched — transform, material properties, geometry when its dimensions changed, its own children when it is a group — and stays the same `Object3D`. A child whose id is gone is disposed; a new id is built. A child whose spec is the same object as last time is not looked at. Two children with one id: the first is taken and the rest are skipped, when the group is built and when it is reconciled alike, so the two never disagree about which node is the id's.
+
+A change to how a surface looks is written into the material the object has (`writeMaterial`), at the top level and in a group alike: colour, opacity, emissive, metalness, roughness, wireframe, flat shading, and `doubleSided`, `alphaTest`, `fog` and `bumpScale`, which were once read only when the material was made. Only a different texture (`texture`, `textureUrl`, its repeat, or the colour a painted texture is painted in) makes a new material, and the old one hands its shared texture back.
+
+A `model` child is loaded as a top-level model is (it was drawn as a one-unit box): through the same template cache, permission policy and resolver, with the same states, `reload`, clips, `appearance` and `fit`. Its node in the group is a holder that carries the child's transform; the model is added under it when it arrives. Its states and animation events carry `parentId`, the id of its group, since a child's id is only unique within its group. A model child present in the scene's first reconcile holds `onAssetsReady` as a top-level one does. The holder carries a release that `disposeObject3D` calls in place of disposing what is under it: the geometry and textures are the cache's, shared with every other instance. A `model` child with no URL to load (none given, or one the policy withheld) is still a box, as a top-level one is.
+
+`animate` works on a child at any depth. The render loop does not walk groups: each top-level group keeps a list of its animated children, found again when its children are reconciled, and a child that is patched while `animate` is turning it keeps the axes `animate` owns.
 
 ## Codecs
 

@@ -4,8 +4,10 @@
  *
  *   packages/@softn/components/component-manifest.json — every component, its
  *     props with their types, and which are registered as tags (and, from each
- *     component's own source file, the shape of a named type a prop takes,
- *     such as BarChart's BarChartSeries — without it a model can only guess);
+ *     component's source, the named types its props take, whole and with
+ *     each field's comment: BarChart's BarChartSeries, and what an object,
+ *     a light, a hit and the effects of a Scene3D are, from whichever file
+ *     of the package declares them — without them a model can only guess);
  *   docs/content/softn-docs.json — the published guides.
  *
  * It writes three modules under src/lib/agent/knowledge/:
@@ -34,8 +36,9 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO = resolve(here, '../../..');
@@ -71,12 +74,13 @@ export const PURPOSES = {
   ColorPicker: 'Choose a colour, with optional presets.',
   Confirm: 'Asks "are you sure?" before something is done: open={asking}, @confirm and @cancel. The app closes it by setting open.',
   Container: 'Centres content at a maximum width (sm to xl).',
+  Controls: 'What the player holds, as one record: :bind={pad} with keys={{ left: "ArrowLeft a", fire: "Space" }} gives pad.left and pad.presses.fire. Keeps those keys from the browser, reads a gamepad, draws nothing.',
   Content: 'The main content region of a Layout, optionally per route.',
   DataGrid: 'A large, virtualised data table with sorting and selection.',
   DatePicker: 'Choose a date.',
   DescriptionList: 'The facts about one record as labels and values: items={[{ label, value }]} or a record whose keys are the labels.',
   Divider: 'A horizontal or vertical rule, optionally labelled.',
-  DPad: 'An on-screen directional pad for games: press and release per direction.',
+  DPad: 'An on-screen directional pad for games: press and release per direction, or :bind={pad} to the record a Controls keeps.',
   Draggable: 'Makes its children draggable within bounds.',
   Drawer: 'A panel that slides in from an edge.',
   EmptyFolder: 'Preset empty state for an empty folder (helper; not a registered tag).',
@@ -99,7 +103,7 @@ export const PURPOSES = {
   LineChart: 'Line chart for one or more series.',
   List: 'A vertical list of ListItem rows.',
   ListItem: 'One row of a List, with leading and trailing content.',
-  Loop: 'Calls @tick on an interval while running: a game or animation clock.',
+  Loop: 'A game or animation clock: calls @tick with the seconds since the last call while running. With frame, once a screen frame and not while hidden; else every interval ms.',
   MarkdownEditor: 'Edit Markdown with a live preview.',
   Marquee: 'Scrolls its children continuously.',
   Menu: 'A dropdown menu of items from a trigger.',
@@ -121,6 +125,7 @@ export const PURPOSES = {
   Rating: 'A score out of a few stars, to read (readOnly) or to set; @change and :bind give the number.',
   RichTextEditor: 'Formatted text editing with a toolbar.',
   Scene3D: 'A Three.js 3D scene from a list of objects, lights and a camera.',
+  SceneAnchor: 'Page content pinned to an object or a place in a Scene3D (a name tag, a health bar, a card); written inside the Scene3D, it follows the object as it moves.',
   Section: 'A titled section of a page, with an optional action.',
   SegmentedControl: 'Choose one of a few options shown side by side; @change and :bind give the value.',
   Select: 'A dropdown to choose one option.',
@@ -141,7 +146,7 @@ export const PURPOSES = {
   Spacer: 'Empty space, fixed or flexible.',
   Spinner: 'A loading indicator.',
   Split: 'Two panes with a draggable divider.',
-  Sprite: 'Draws one frame of a sprite sheet: game characters.',
+  Sprite: 'Draws and animates the frames of a sprite sheet at x, y: game characters. frames, loop and @end play a run once.',
   Stack: 'Lays children out in a row or column with a gap: the everyday layout.',
   Stat: 'One figure with its label and how it moved: a dashboard tile fed from state.',
   Steps: 'Where someone is in a sequence: done, current and upcoming steps; with @change the steps are buttons.',
@@ -173,56 +178,160 @@ export function readComponentSource(source) {
   }
 }
 
-/** Every `export interface` / `export type` in a source file, as one-line text. */
-function declaredTypes(sourceText) {
-  const types = new Map();
-  const clean = sourceText.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-  const re = /export\s+(interface|type)\s+([A-Z]\w*)(?:<[^>{=]*>)?\s*(?:extends\s+[^{]+)?(=)?\s*/g;
-  let match;
-  while ((match = re.exec(clean)) !== null) {
-    const at = re.lastIndex;
-    let body = '';
-    if (match[1] === 'interface' || clean[at] === '{') {
-      if (clean[at] !== '{') continue;
-      let depth = 0;
-      let end = at;
-      for (; end < clean.length; end++) {
-        if (clean[end] === '{') depth++;
-        else if (clean[end] === '}' && --depth === 0) break;
-      }
-      body = clean.slice(at, end + 1);
-    } else {
-      const end = clean.indexOf(';', at);
-      body = clean.slice(at, end < 0 ? undefined : end);
+/** A shape no longer than this is written on one line, as it always was; a longer one a field to a line. */
+const ONE_LINE_SHAPE = 400;
+/** How far from a prop a type is followed: the prop's own type, what that names, and what those name. */
+const TYPE_DEPTH = 3;
+/** The most types one component's reference spells out. */
+const MAX_TYPES = 40;
+
+/** Text with its comments taken out and its white space closed up: a type's shape on one line. */
+function onOneLine(text) {
+  const clean = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  // Markup cannot go inside a {…} value, so to the model a React node is a string.
+  return clean.replace(/\s*\n\s*/g, ' ').replace(/;\s*}/g, ' }').replace(/\s+/g, ' ').replace(/\b(?:React\.)?ReactNode\b/g, 'string').trim();
+}
+
+/** A declaration's or a member's doc comment as one line, or ''. */
+function docText(node) {
+  const docs = node.jsDoc;
+  if (!docs || docs.length === 0) return '';
+  const text = ts.getTextOfJSDocComment(docs[docs.length - 1].comment);
+  return text ? text.replace(/\s+/g, ' ').trim() : '';
+}
+
+/**
+ * What a source file says of types: the ones it declares, each with its
+ * shape on one line, its own comment and its fields with theirs, and the
+ * ones it only brings in or hands on by name (`import { type X } from`,
+ * `export type { X } from`, `export * from`), with where each is from.
+ */
+function typesOf(sourceText, path) {
+  const source = ts.createSourceFile(path, sourceText, ts.ScriptTarget.Latest, true, path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const declared = new Map();
+  const from = new Map();
+  const stars = [];
+  const fieldsOf = (members) => {
+    const fields = [];
+    for (const member of members) {
+      if (!ts.isPropertySignature(member) && !ts.isMethodSignature(member)) continue;
+      const name = member.name.getText(source);
+      const written = onOneLine(member.getText(source)).replace(/[;,]\s*$/, '');
+      fields.push({ name, written, doc: docText(member) });
     }
-    // Markup cannot go inside a {…} value, so to the model a React node is a string.
-    const oneLine = body.replace(/\s*\n\s*/g, ' ').replace(/;\s*}/g, ' }').replace(/\s+/g, ' ').replace(/\b(?:React\.)?ReactNode\b/g, 'string').trim();
-    if (oneLine && oneLine.length <= 400) types.set(match[2], oneLine);
+    return fields;
+  };
+  for (const statement of source.statements) {
+    if (ts.isInterfaceDeclaration(statement)) {
+      const open = statement.members.pos - 1;
+      const shape = onOneLine(sourceText.slice(sourceText.lastIndexOf('{', open), statement.end));
+      declared.set(statement.name.text, { shape, doc: docText(statement), fields: fieldsOf(statement.members) });
+    } else if (ts.isTypeAliasDeclaration(statement)) {
+      const shape = onOneLine(statement.type.getText(source));
+      const fields = ts.isTypeLiteralNode(statement.type) ? fieldsOf(statement.type.members) : null;
+      declared.set(statement.name.text, { shape, doc: docText(statement), fields });
+    } else if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const module = statement.moduleSpecifier.text;
+      if (!module.startsWith('.')) continue;
+      const named = ts.isImportDeclaration(statement) ? statement.importClause?.namedBindings : statement.exportClause;
+      if (named && (ts.isNamedImports(named) || ts.isNamedExports(named))) {
+        for (const element of named.elements) from.set(element.name.text, { module, name: (element.propertyName ?? element.name).text });
+      } else if (ts.isExportDeclaration(statement) && !statement.exportClause) {
+        stars.push(module);
+      }
+    }
   }
-  return types;
+  return { declared, from, stars };
+}
+
+/**
+ * Finds a type by the name a file knows it under: declared there, or in the
+ * file it was brought in from, however many files on. `read` reads a file
+ * of the components package by its path from the package.
+ */
+function typeFinder(read) {
+  const files = new Map();
+  const load = (path) => {
+    if (!files.has(path)) {
+      const text = read(path);
+      files.set(path, text === null ? null : typesOf(text, path));
+    }
+    return files.get(path);
+  };
+  /** `module` as written in the file at `path`, as a file of the package: null when there is none. */
+  const resolve = (path, module) => {
+    const base = posix.normalize(posix.join(posix.dirname(path), module));
+    for (const candidate of [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) if (load(candidate)) return candidate;
+    return null;
+  };
+  const find = (path, name, hops = 0) => {
+    const file = load(path);
+    if (!file || hops > 6) return null;
+    const own = file.declared.get(name);
+    if (own) return own;
+    const brought = file.from.get(name);
+    if (brought) {
+      const other = resolve(path, brought.module);
+      return other ? find(other, brought.name, hops + 1) : null;
+    }
+    for (const module of file.stars) {
+      const other = resolve(path, module);
+      const found = other ? find(other, name, hops + 1) : null;
+      if (found) return found;
+    }
+    return null;
+  };
+  return find;
+}
+
+/** A type as the reference spells it out: `- Name = shape`, and what its comments say. */
+function typeLines(name, type) {
+  const said = (type.fields ?? []).filter((field) => field.doc);
+  if (type.shape.length <= ONE_LINE_SHAPE || !type.fields) {
+    const lines = [`- ${name} = ${type.shape}`];
+    if (type.doc) lines.push(`  ${type.doc}`);
+    for (const field of said) lines.push(`  - ${field.name}: ${field.doc}`);
+    return lines;
+  }
+  // Too long to read on one line: a field to a line, each with its comment.
+  const lines = [`- ${name} = {`];
+  if (type.doc) lines.push(`    // ${type.doc}`);
+  for (const field of type.fields) lines.push(`    ${field.written}${field.doc ? ` — ${field.doc}` : ''}`);
+  lines.push('  }');
+  return lines;
 }
 
 /**
  * The named types a component's props refer to, and the ones those refer
- * to, as `- Name = shape` lines; only types its own source file declares.
+ * to, spelled out with their comments: a model given `objects?: Scene3DObject[]`
+ * and nothing of what an object is can only guess. Every type a prop names
+ * is written in full, whatever its length, from the component's own source
+ * file or the file it brings the type in from; the types those name are
+ * followed {@link TYPE_DEPTH} deep.
  */
-function propTypeLines(component, members, readSource) {
-  const source = component.source ? readSource(component.source) : null;
-  if (!source) return [];
-  const declared = declaredTypes(source);
+function propTypeLines(component, members, find) {
+  if (!component.source) return [];
   const propsInterface = component.props?.interface;
-  const queue = [];
   const names = (text) => [...text.matchAll(/\b([A-Z]\w*)\b/g)].map((m) => m[1]);
-  for (const m of members) queue.push(...names(typeText(m.type)));
+  const queue = [];
+  for (const m of members) for (const name of names(typeText(m.type))) queue.push([name, 1]);
+  // And what its events hand over: the manifest says only that `onClick` is
+  // a function, and the source says it is given a Scene3DHit.
+  for (const field of (propsInterface ? find(component.source, propsInterface) : null)?.fields ?? []) {
+    for (const name of names(field.written)) queue.push([name, 1]);
+  }
   const seen = new Set();
   const lines = [];
-  while (queue.length > 0 && lines.length < 6) {
-    const name = queue.shift();
-    if (seen.has(name) || name === propsInterface || !declared.has(name)) continue;
+  let count = 0;
+  while (queue.length > 0 && count < MAX_TYPES) {
+    const [name, depth] = queue.shift();
+    if (seen.has(name) || name === propsInterface) continue;
     seen.add(name);
-    const shape = declared.get(name);
-    lines.push(`- ${name} = ${shape}`);
-    queue.push(...names(shape));
+    const type = find(component.source, name);
+    if (!type) continue;
+    count++;
+    lines.push(...typeLines(name, type));
+    if (depth < TYPE_DEPTH) for (const next of names(type.shape)) queue.push([next, depth + 1]);
   }
   return lines;
 }
@@ -300,6 +409,7 @@ export function buildKnowledge(manifestText, docsText, readSource = readComponen
 
   const index = [];
   const reference = {};
+  const findType = typeFinder(readSource);
   for (const component of [...manifest.components].sort((a, b) => a.name.localeCompare(b.name))) {
     const registered = category[component.name] !== undefined;
     index.push({ name: component.name, category: category[component.name] ?? 'helper', purpose: PURPOSES[component.name], registered });
@@ -318,14 +428,23 @@ export function buildKnowledge(manifestText, docsText, readSource = readComponen
     if (props.length > 0) {
       lines.push('Props (? = optional):');
       for (const m of props) lines.push(`- ${m.name}${m.optional ? '?' : ''}: ${typeText(m.type)}${m.doc ? ` — ${m.doc}` : ''}`);
-      const types = propTypeLines(component, props, readSource);
+      const types = propTypeLines(component, props, findType);
       if (types.length > 0) lines.push('Types the props use:', ...types);
     } else {
       lines.push('Props: none of its own.');
     }
     if (events.length > 0) {
       lines.push('Events (write @name={…}; the prop is onName):');
-      for (const m of events) lines.push(`- @${eventName(m.name)}${m.doc ? ` — ${m.doc}` : ''}`);
+      // What each hands its handler, as the component's source declares it.
+      const own = component.source && component.props?.interface ? findType(component.source, component.props.interface) : null;
+      // A browser's event reaches a handler as plain data, so its React type is left unsaid.
+      const given = new Map(
+        (own?.fields ?? []).map((field) => [field.name, (/^[^:]+:\s*(\([^]*\))\s*=>/.exec(field.written)?.[1] ?? '').replace(/:\s*React\.\w*Event(?:<[^>]*>)?/g, '')])
+      );
+      for (const m of events) {
+        const handed = given.get(m.name) ?? '';
+        lines.push(`- @${eventName(m.name)}${handed && handed !== '()' ? handed : ''}${m.doc ? ` — ${m.doc}` : ''}`);
+      }
     }
     lines.push(acceptsChildren ? 'Children: accepts child content.' : 'Children: none (configure it with props).');
     lines.push('Every component also takes style and className.');

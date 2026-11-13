@@ -12,7 +12,9 @@
  * test/agentGuide.test.tsx keeps it honest: every component it names exists
  * in the component manifest, and every example composes with the runtime's
  * composer and renders with the real renderer without errors — the Python one
- * on the real Python engine.
+ * on the real Python engine. The small game of the section on games is
+ * played there too, in both languages: started, steered with a key, and a
+ * star caught.
  *
  * A JavaScript project's guide says nothing about Python, and a Python
  * project's says nothing of JavaScript logic: each is taught the one language
@@ -39,9 +41,9 @@ This project's logic is **Python**. The runtime decides a logic file's language 
 - **No inline Python.** Never write logic inside a \`<script>\` or \`<logic>\` block. \`<script type="text/python">\` and \`<logic lang="python">\` are refused, because Python's indentation is the program and markup indentation is not reliable; an inline block without them is JavaScript.
 - **One language per app.** Do not create \`.js\` or \`.logic\` files or inline JavaScript logic. A bundle whose logic is partly each is refused.
 - **Each file is a module named after its file.** \`helpers.py\` is \`helpers\`: reach it with \`import helpers\` or \`from helpers import double\`. List helper modules in manifest.json's \`files.logic\` before the entry. A module name is letters, digits and underscores, not starting with a digit, and no two .py files may share one, even in different folders. Reserved, and refused as file names: ${PYTHON_RESERVED}.
-- **Every top-level name is state.** A module-level \`count = 0\` is state the template reads as \`{count}\`. A name starting with \`_\` is private and not exposed (except \`_init\`). State must be JSON data — \`dict\`, \`list\`, \`str\`, \`int\`, \`float\`, \`bool\`, \`None\`; a class instance is not offered as state. Keep it shallow.
+- **Every top-level name is state.** A module-level \`count = 0\` is state the template reads as \`{count}\`. A name starting with \`_\` is private and not exposed (except \`_init\`, \`_onHide\` and \`_onShow\`). State must be JSON data — \`dict\`, \`list\`, \`str\`, \`int\`, \`float\`, \`bool\`, \`None\`; a class instance is not offered as state. Keep it shallow.
 - **Handlers use \`global\`.** A function that assigns a module-level name must declare it \`global\`, or Python makes a local and the state never changes.
-- **Functions are the app's API.** Every top-level \`def\` can be called from the template — \`@click={() => add_task()}\`, \`@click={() => remove(item.id)}\`, \`{remaining()}\`. \`_init()\`, if defined, runs once after the app loads. A function called inside \`{…}\` must only read state: changes it makes there do not reach the page.
+- **Functions are the app's API.** Every top-level \`def\` can be called from the template — \`@click={() => add_task()}\`, \`@click={() => remove(item.id)}\`, \`{remaining()}\`. \`_init()\`, if defined, runs once after the app loads, and \`_onHide()\` and \`_onShow()\` when the app goes to the background and comes back. A function called inside \`{…}\` must only read state: changes it makes there do not reach the page.
 - **Call handlers with an arrow.** Never hand an event a function by name (\`@click={add_task}\`): it is called with the event as an argument, and a \`def\` with no parameter for it raises \`TypeError\`. Write \`@click={() => add_task()}\`, or give the \`def\` a parameter for the event.
 - **Templates are unchanged.** \`{…}\` and \`@event={…}\` are evaluated by the host with the syntax above. Keep them to reading state and calling your functions; compute anything more in a function.
 - **\`softn.*\` takes a callback.** \`import softn\`. Capabilities are asynchronous and hand their answer to a callback rather than returning it: \`softn.backend.call("save", {"id": 1}, on_saved)\`, \`softn.net.fetch(url, {"method": "GET"}, on_response)\`. Each has its Python name and its JavaScript one (\`softn.camera.capture_photo\` / \`softn.camera.capturePhoto\`). \`softn.on("keydown", handler)\` registers an event listener. Declare every capability in permission.json.
@@ -168,6 +170,136 @@ def remaining():
 \`\`\``;
 
 // ---------------------------------------------------------------------------
+// Games
+// ---------------------------------------------------------------------------
+
+/** The page of the small game the guide shows; its logic is one of the two below. */
+const gamePage = (entry: string) => `\`\`\`xml
+<script src="${entry}"></script>
+
+<App>
+  <Controls :bind={pad} keys={{ left: "ArrowLeft a", right: "ArrowRight d" }} />
+  <Loop frame running={playing} @tick={(dt) => step(dt)} />
+  <div style="position: relative; width: 320px; height: 120px; overflow: hidden">
+    <div class="ship" style="position: absolute; top: 90px; width: 24px; height: 12px; background: #38bdf8" style:left={x + "px"}></div>
+    #each (star in stars) key={star.id}
+      <div class="star" style="position: absolute; width: 4px; height: 4px; background: #fbbf24" style:left={star.x + "px"} style:top={star.y + "px"}></div>
+    #end
+  </div>
+  <Text>Caught {score}</Text>
+  <Button variant="primary" @click={() => start()}>Start</Button>
+</App>
+\`\`\``;
+
+/** A small complete game, JavaScript logic: what the games section teaches, in one page. test/agentGuide.test.tsx plays it. */
+export const JAVASCRIPT_GAME_EXAMPLE = `A small complete game. \`index.html\`:
+
+${gamePage('main.js')}
+
+\`main.js\`:
+
+\`\`\`javascript
+let pad = { presses: {} }
+let x = 148
+let stars = []
+let score = 0
+let playing = false
+let nextId = 1
+let wait = 0
+
+function start() {
+  stars = []
+  score = 0
+  playing = true
+}
+
+// dt is the seconds since the last frame, so every speed is per second.
+function step(dt) {
+  x = Math.max(0, Math.min(296, x + ((pad.right ? 1 : 0) - (pad.left ? 1 : 0)) * 200 * dt))
+  wait -= dt
+  if (wait <= 0) {
+    stars.push({ id: nextId, x: (nextId * 97) % 300, y: 0 })
+    nextId++
+    wait = 0.6
+  }
+  for (const star of stars) star.y += 80 * dt
+  const caught = stars.filter((star) => star.y > 84 && Math.abs(star.x - x - 10) < 16)
+  score += caught.length
+  stars = stars.filter((star) => star.y < 120 && !caught.includes(star))
+}
+
+function _onHide() {
+  playing = false
+}
+\`\`\``;
+
+/** The same game with Python logic. */
+export const PYTHON_GAME_EXAMPLE = `A small complete game. \`index.html\`:
+
+${gamePage('main.py')}
+
+\`main.py\`:
+
+\`\`\`python
+pad = {"presses": {}}
+x = 148
+stars = []
+score = 0
+playing = False
+_next_id = 1
+_wait = 0.0
+
+
+def start():
+    global stars, score, playing
+    stars = []
+    score = 0
+    playing = True
+
+
+def step(dt):
+    """dt is the seconds since the last frame, so every speed is per second."""
+    global x, stars, score, _next_id, _wait
+    move = (1 if pad.get("right") else 0) - (1 if pad.get("left") else 0)
+    x = max(0, min(296, x + move * 200 * dt))
+    _wait -= dt
+    if _wait <= 0:
+        stars = stars + [{"id": _next_id, "x": (_next_id * 97) % 300, "y": 0}]
+        _next_id += 1
+        _wait = 0.6
+    stars = [{"id": s["id"], "x": s["x"], "y": s["y"] + 80 * dt} for s in stars]
+    caught = [s["id"] for s in stars if s["y"] > 84 and abs(s["x"] - x - 10) < 16]
+    score += len(caught)
+    stars = [s for s in stars if s["y"] < 120 and s["id"] not in caught]
+
+
+def _onHide():
+    global playing
+    playing = False
+\`\`\``;
+
+/**
+ * "Games and interactive scenes": the loop and `dt`, what the player holds,
+ * keys kept from the browser, the background, drawing in 2D, and the names
+ * shared with a 3D scene. A Python project is told of what its logic can
+ * reach: not the window, and not `softn.scene`.
+ */
+export function gamesSection(python: boolean): string {
+  return `## Games and interactive scenes
+A game is a page: state in the logic, a loop that calls one function, and markup that draws the state. \`read_docs("threejs-games")\` has complete examples: a 2D game, a page with a 3D scene and a first-person game.
+
+- **The loop and \`dt\`.** \`<Loop frame running={playing} @tick={(dt) => step(dt)} />\` calls \`step\` once for each frame the screen draws, with \`dt\` the seconds since the last call, never two at once, and not while the app or the tab is hidden. Multiply every speed by \`dt\` (\`x += 220 * dt\`); never assume a fixed step or count ticks as time. \`maxFps={30}\` caps a heavy game. Without \`frame\` a Loop is a timer (\`interval\`, in milliseconds).
+- **What the player holds.** \`<Controls :bind={pad} keys={{ left: "ArrowLeft a", right: "ArrowRight d", fire: "Space" }} />\` keeps \`pad\` as a record: \`${python ? 'pad.get("left")' : 'pad.left'}\` is true while held and \`${python ? 'pad["presses"].get("fire", 0)' : 'pad.presses.fire'}\` counts presses, so a new press is a count higher than the one last seen. Start the variable as \`${python ? '{"presses": {}}' : '{ presses: {} }'}\`. It keeps exactly those keys from the browser (the page does not scroll), reads a gamepad, and lets go when the app is hidden. \`<DPad :bind={pad} />\` writes \`left\`, \`right\`, \`up\` and \`down\` into the same record for touch. \`@press={(name) => pressed(name)}\` runs once for each press.
+${python ? '' : `- **Keys heard on the window.** In \`window.addEventListener("keydown", onKey)\`, \`e.preventDefault()\` does nothing: the browser has already acted on the key. Name the keys the app wants to itself first, \`softn.input.captureKeys(["ArrowUp", " "])\`, or use \`<Controls>\`, which does it for the keys it is given.
+`}- **Drawing in 2D.** Plain elements, or shapes in an \`<svg>\`, one for each record under \`#each\` with a \`key\`, placed with \`style:left={r.x + "px"}\` and \`style:top\`, are enough for dozens of moving things. \`<Sprite>\` shows a sheet's frames at \`x\`, \`y\` (\`flipX\`, \`frames={[4, 5, 6]}\`, \`loop={false}\` with \`@end\`).
+- **3D.** \`<Scene3D objects={objects} lights={lights} camera={camera} />\` draws lists of records the logic keeps; \`lookup_components\` on Scene3D lists every field of an object, a light and a hit. Keep scenery that never changes in \`staticObjects\`. \`transition={34}\` eases movement between ticks; \`camera={{ follow: { target: "car", distance: 7, height: 3.5 } }}\` keeps the camera behind an object; \`<SceneAnchor object="car">…</SceneAnchor>\` written inside the scene pins markup (a name, a health bar) over an object; \`@miss\` is a click on nothing.${python ? '' : ' With `pointerLock`, logic reads `softn.scene.yaw`, `softn.scene.pitch` and `softn.scene.locked` (false once the player presses Escape), and calls `softn.scene.lock()` from a button\'s click and `softn.scene.unlock()` for a menu.'}
+- **The background.** \`_onHide()\`, if defined, runs when the app goes to the background (another app chosen, the tab hidden) and \`_onShow()\` when it is back: pause there.
+${python ? '' : `- **Logic is modern JavaScript.** Classes, spread, destructuring, \`for…of\`, arrow functions and typed arrays all work. In a game, changing a record in place (\`ship.x += 1\`, \`rocks.push(rock)\`) is seen by the page.
+`}
+${python ? PYTHON_GAME_EXAMPLE : JAVASCRIPT_GAME_EXAMPLE}`;
+}
+
+// ---------------------------------------------------------------------------
 // JavaScript material
 // ---------------------------------------------------------------------------
 
@@ -175,13 +307,13 @@ const JAVASCRIPT_LOGIC_SECTION = `## Logic (.js)
 
 Logic is JavaScript in a \`.js\` file, run by a sandboxed engine. Reference it from a page with \`<script src="main.js"></script>\` (relative to the page), or write a short \`<script>…</script>\` block inline. (\`.logic\` files and \`<logic src>\` are the same, in projects made before.) It is one script, not modules: every file's top-level names are the page's.
 
-- **Every top-level variable is state** the template reads by name; **every top-level function** can be called from the template. Assign to change state: \`count = count + 1\`, \`tasks = tasks.concat([task])\`, \`tasks = tasks.filter((t) => t.id !== id)\`. Reassign rather than mutate in place, so the change is seen.
-- **\`_init()\`**, if defined, runs once after the app loads. \`$: total = items.length\` declares a computed value the template reads as \`{total}\`.
+- **Every top-level variable is state** the template reads by name; **every top-level function** can be called from the template. Assign to change state: \`count = count + 1\`, \`tasks = tasks.concat([task])\`, \`tasks = tasks.filter((t) => t.id !== id)\`. A change made in place (\`tasks.push(task)\`, \`task.done = true\`) is seen by the page too.
+- **\`_init()\`**, if defined, runs once after the app loads; \`_onHide()\` and \`_onShow()\` when the app goes to the background and comes back. \`$: total = items.length\` declares a computed value the template reads as \`{total}\`.
 - **A function called inside \`{…}\` must only read state** (\`{remaining()}\`): changes it makes there do not reach the page. Change state from event handlers.
 - **Share code between files** with \`import "./helpers.js"\` or \`import { total } from "./helpers.js"\`, which places that file's code, or by listing the helper in manifest.json's \`files.logic\`. \`export\` before a declaration is allowed and changes nothing. An import that renames (\`{ a as b }\`), a default or namespace import, and a package import (\`from "lodash"\`) are not read. (\`<import { f } from="…" />\` in markup does nothing.)
 - **Prefer state.** The page shows state, and a handler changes state: write SoftN that way. Code written for a browser also works on a page's plain HTML (\`document.getElementById\`, \`querySelector\`, \`createElement\`, \`appendChild\`, \`textContent\`, \`innerHTML\`, \`classList\`, \`addEventListener\`, a field's \`value\`, \`DOMContentLoaded\`), for a person who asks for it or a page brought in from elsewhere. It cannot reach inside a component, a \`{…}\` value, \`#if\` or \`#each\`: SoftN draws those. Layout reads (\`offsetWidth\`, \`getBoundingClientRect()\`) are zero.
 - **Globals:** \`softn.*\` (capabilities — see below), \`db\` (XDB records), \`localStorage\` (kept per app), \`navigator.clipboard\`, \`window.addEventListener\` for keyboard and pointer events, \`console\`, and the browser's \`fetch\` (a promise; the hosts it may reach are those permission.json allows \`net\`), \`location\` (\`location.href = "about.html"\` goes to another page of the app; never another site), \`history\`, \`URL\`, \`URLSearchParams\`, \`btoa\`/\`atob\`, \`TextEncoder\`/\`TextDecoder\`, \`crypto.randomUUID()\`, \`structuredClone\`, \`AbortController\`, \`MutationObserver\`, \`matchMedia()\`, \`queueMicrotask\`, \`sessionStorage\` and \`alert()\` (shown in the app). \`fetch("data.json")\` reads the app's own file. There is no \`confirm()\` or \`prompt()\` (nothing can wait for an answer): ask with a \`<Confirm>\` or a field on the page.
-- **Timers:** \`setTimeout\`, \`setInterval\`, \`clearTimeout\` and \`clearInterval\` work in page logic: the callback runs like a handler and what it writes is drawn. Use them for a delay, a debounce or a countdown, and start one from a logic function (\`@click={() => startCountdown()}\`): markup cannot call them. For a game clock prefer \`<Loop interval={100} running={running} @tick={() => step()} />\`. Timers do not work in backend (server) logic. \`requestAnimationFrame\` waits about a frame (16 ms).
+- **Timers:** \`setTimeout\`, \`setInterval\`, \`clearTimeout\` and \`clearInterval\` work in page logic: the callback runs like a handler and what it writes is drawn. Use them for a delay, a debounce or a countdown, and start one from a logic function (\`@click={() => startCountdown()}\`): markup cannot call them. For a game clock prefer \`<Loop frame running={running} @tick={(dt) => step(dt)} />\` (see Games below), or \`<Loop interval={100} …>\` for a timer. Timers do not work in backend (server) logic. \`requestAnimationFrame\` waits about a frame (16 ms) and hands its function the time \`performance.now()\` reads.
 - **\`db\`** (XDB): \`db.query("tasks")\`, \`db.get("tasks", id)\`, \`db.create("tasks", { title: "x" })\`, \`db.update(id, { done: true })\`, \`db.delete(id)\`. Records come back as \`{ id, collection, data: { … }, created_at, updated_at }\`.
 - **Event data:** a logic function bound by name (\`@keydown={onKey}\`) or handed the event (\`onsubmit="send(event)"\`) receives it as plain data — \`{ type, key, code, shiftKey, … }\` or pointer coordinates, with \`target\` and \`currentTarget\` as what those elements hold (\`value\`, \`checked\`, \`name\`, \`dataset\`). \`e.preventDefault()\` can be called and does nothing: cancel with a modifier (\`@submit.prevent\`); a \`<form>\` with no \`action\` never leaves its page anyway.
 
@@ -432,6 +564,8 @@ A page is HTML with SoftN in it: lower-case tags are HTML elements (\`<div>\`, \
 ${python ? `${PYTHON_LOGIC_SECTION}
 ${torch ? `
 ${PYTHON_TORCH_SECTION}` : PYTHON_TORCH_UNDECLARED}` : JAVASCRIPT_LOGIC_SECTION}
+
+${gamesSection(python)}
 
 ## Capabilities (softn.*)
 \`softn.net.fetch\` (net), \`softn.camera.*\` (camera), \`softn.mic.*\` (mic), \`softn.files.*\` (files), \`softn.qr.*\` (qr), \`softn.ai.*\` (ai; \`softn.ai.gpu.*\` needs gpu), \`softn.storage.*\` (storage — server storage for a published app), \`db.startSync\` (sync). Each needs its capability in permission.json. \`softn.backend.call\`, \`softn.audio.*\` for bundle sounds and \`softn.input.captureKeys\` need none. The preview withholds them until the person presses Allow in preview above the app, so these calls fail there until then; Run opens the app in the runtime.

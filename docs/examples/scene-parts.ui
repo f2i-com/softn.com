@@ -1,0 +1,57 @@
+<logic>
+  // The parts of a small plant. Each is one record: what to draw, and what to say of it.
+  let parts = [
+    { id: "pump", name: "Pump", note: "1450 rpm", type: "cylinder", radius: 0.5, height: 1.2, color: "#3b82f6", position: { x: -2, y: 0.6, z: 0 } },
+    { id: "valve", name: "Valve", note: "Open 40%", type: "torus", radius: 0.5, color: "#f59e0b", position: { x: 0, y: 0.6, z: 0 }, animate: { rotateY: 0.01 } },
+    { id: "tank", name: "Tank", note: "62% full", type: "capsule", radius: 0.6, height: 2, color: "#10b981", position: { x: 2, y: 1, z: 0 } }
+  ]
+  // The ground is scenery, not a part: a click on it is a click on nothing.
+  let ground = { id: "ground", type: "plane", width: 12, height: 12, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, color: "#1f2937", pickable: false }
+  // The lights: a soft one from everywhere, and a sun.
+  let lights = [
+    { type: "ambient", intensity: 0.6 },
+    { type: "directional", intensity: 1.2, position: { x: 4, y: 8, z: 5 } }
+  ]
+  let selectedId = ""
+
+  $: selected = parts.find(part => part.id === selectedId)
+
+  // What the scene draws: every part, the chosen one lit from within and a little larger, and the ground.
+  $: objects = parts.map(part => ({
+    ...part,
+    emissive: part.id === selectedId ? part.color : "#000000",
+    emissiveIntensity: part.id === selectedId ? 0.6 : 0,
+    scale: part.id === selectedId ? 1.15 : 1
+  })).concat([ground])
+
+  // A click on a part says which one.
+  function pick(hit) {
+    selectedId = hit.objectId
+  }
+
+  // A click on nothing, and Close, put the reading away.
+  function close() {
+    selectedId = ""
+  }
+</logic>
+
+<App theme="dark">
+  <Stack direction="vertical" gap="md" padding="lg">
+    <Heading level={1}>Plant overview</Heading>
+    <Text>Drag to look around. Click a part for its reading.</Text>
+    <div style="position: relative; height: 420px">
+      <Scene3D fill orbitControls orbit={{ minDistance: 4, maxDistance: 14, maxPolar: 1.45 }} transition={250} objects={objects} lights={lights} camera={{ position: { x: 0, y: 3, z: 7 }, lookAt: { x: 0, y: 0.8, z: 0 } }} @click={pick} @miss={close}>
+        #if (selected)
+          <SceneAnchor object={selected.id} place="above" offset={{ y: 0.8 }}>
+            <Card title={selected.name}>
+              <Stack direction="vertical" gap="sm">
+                <Text>{selected.note}</Text>
+                <Button variant="ghost" size="sm" @click={close}>Close</Button>
+              </Stack>
+            </Card>
+          </SceneAnchor>
+        #end
+      </Scene3D>
+    </div>
+  </Stack>
+</App>
