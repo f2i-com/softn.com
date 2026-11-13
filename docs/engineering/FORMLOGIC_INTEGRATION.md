@@ -144,7 +144,7 @@ refuses such a release until its checks follow; pin `SOFTN_RELEASE` to an
 earlier release meanwhile. `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
 archive locally (`--allow-dirty` for a trial from an uncommitted tree).
 
-## A newer version of an app, in the frame it runs in (unreleased)
+## A newer version of an app, in the frame it runs in (from v0.0.39)
 
 A parent that had a newer version of a running app's files had one way to
 show it: a new frame, in which the app starts from nothing. It can now hand
@@ -232,7 +232,7 @@ never sends an update sees nothing different.
   answered, and nothing is answered after `formlogic:dispose`, so a parent
   keeps a deadline of its own.
 
-## Page links, and where the app is (unreleased)
+## Page links, and where the app is (from v0.0.40)
 
 A link to another page of the app (`<a href="about.html">`) was left to the
 browser, which took the frame to an address the parent has no such page at:
@@ -354,7 +354,7 @@ installs runs without an engine of its own:
   before this) leaves it to fetch the copy beside its chunk, which an archive
   from v0.0.35 does not carry. A host that cannot download the engine says so
   itself rather than connect an editor that has none.
-- With `glue: 1` beside `engine: 1` (unreleased, for v0.0.36), the editor runs
+- With `glue: 1` beside `engine: 1` (from v0.0.36), the editor runs
   the host's own ZIPP: the host sends its engine bytes and names that ZIPP's
   glue in the site's ZIPP folder (`zippGlue: { url, sha256 }`, the folder
   beside `/app-editors/`), whichever ZIPP the editor was built with. Core
@@ -363,7 +363,7 @@ installs runs without an engine of its own:
   (`ZIPP_GLUE_EXPORTS`). A glue named without engine bytes, outside the
   folder or without its digest is ignored, and the editor runs its own.
 
-### A host's own ZIPP (unreleased, for v0.0.36)
+### A host's own ZIPP (from v0.0.36)
 
 A FormLogic can run a ZIPP other than the one a SoftN release was built with,
 in the browser: the app frame and the editors take the engine bytes from the

@@ -6,7 +6,7 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.40
 
 - Upgrading from v0.0.39: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again. The FormLogic frame's `ready` gains `places: 1` (below); every other protocol number is v0.0.39's. This release is about games and 3D scenes. The runtime's entry is 917,823 bytes of its 1,000,000 cap (it was 909,872); the scene, the game components and their loaders are still fetched only by an app that uses them, and so are the four new pieces a scene may ask for (the readers of a `.hdr` and a `.exr` panorama, depth of field, ambient occlusion). What an app made before it could notice:
   - A `<Scene3D>` given no lights is lit (a soft ambient light and a sun) where it drew black. A scene that gives any light of its own is as it was.
