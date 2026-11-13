@@ -55,7 +55,8 @@ export const onDemandRuntimeChunks = [
 
 /**
  * The Three addons Scene3D reaches through its own import() — the model
- * loaders, the controls, the room environment, the post-processing set,
+ * loaders, the controls, the room environment, the readers of a panorama
+ * file, the post-processing set (bloom, depth of field, ambient occlusion),
  * SkeletonUtils and the Meshopt decoder (docs/engineering/SCENE3D_LOADING.md) — each a
  * chunk named after its module, plus the two modules the post-processing
  * chunks share between them (Pass, CopyShader), which Rolldown emits as
@@ -69,10 +70,14 @@ export const threeAddonChunks = [
   'STLLoader',
   'OrbitControls',
   'RoomEnvironment',
+  'RGBELoader',
+  'EXRLoader',
   'SkeletonUtils',
   'EffectComposer',
   'RenderPass',
   'UnrealBloomPass',
+  'BokehPass',
+  'GTAOPass',
   'OutputPass',
   'ShaderPass',
   'Pass',
