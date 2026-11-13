@@ -37,12 +37,26 @@
 
 import * as THREE from 'three';
 import { importSkeletonUtils, type ModelTemplate } from './model-loaders';
+import { describeModelSafely, type ModelContents } from './model-info';
+import { dropShadowMap } from './model-lights';
 
 /** What an object in a scene holds: its own clone, and a lease on the template. */
 export interface ModelInstance {
   object: THREE.Object3D;
   animations: THREE.AnimationClip[];
+  /**
+   * The names in the model and its bounds as the file gives them, read from
+   * the template once and shared by every instance of it.
+   */
+  info: ModelContents;
   key: string;
+  /**
+   * The template's own root: the model as its file has it, node for node
+   * the same shape as `object`, and never written to or placed in a scene.
+   * Where the rest pose of a node is read (model-parts.ts), since `object`
+   * may have been moved by a clip by the time it is asked for.
+   */
+  rest: THREE.Object3D;
   /** Give the instance back. Its materials and skeletons go; the template's geometry and textures stay. */
   release(): void;
 }
@@ -51,6 +65,8 @@ interface Entry {
   key: string;
   promise: Promise<ModelTemplate>;
   template: ModelTemplate | null;
+  /** What the template holds, read the first time an instance is cut from it. */
+  info: ModelContents | null;
   /** Instances alive plus acquires in flight. */
   refs: number;
   /** No longer in the map: invalidated or failed. Disposed when the last holder lets go. */
@@ -172,13 +188,76 @@ function releaseUploads(root: THREE.Object3D): void {
   });
 }
 
-/** An instance's own resources: its material clones and its skeletons, nothing shared. */
+/**
+ * An instance's own resources: its material clones, its skeletons and the
+ * maps its lights drew their shadows into; nothing shared. A model's lights
+ * are nodes of it, and a light that cast (by the object's `lights`, or its
+ * `castShadow`) holds a map on the graphics card that three frees only when
+ * told: each model removed, reloaded or given another file left its maps
+ * behind.
+ */
 function disposeInstance(root: THREE.Object3D): void {
   root.traverse((node) => {
     eachMaterial(node, (material) => material.dispose());
     const skinned = node as THREE.SkinnedMesh;
     if (skinned.isSkinnedMesh && skinned.skeleton) skinned.skeleton.dispose();
+    if ((node as THREE.Light).isLight) dropShadowMap(node);
   });
+}
+
+/** Each node of `source` with the node of `clone` that is its copy: the two are the same shape, node for node. */
+function pairNodes(source: THREE.Object3D, clone: THREE.Object3D, twins: Map<THREE.Object3D, THREE.Object3D>): void {
+  twins.set(source, clone);
+  for (let i = 0; i < source.children.length; i++) {
+    const child = clone.children[i];
+    if (child) pairNodes(source.children[i], child, twins);
+  }
+}
+
+/**
+ * Point each cloned light at its own target.
+ *
+ * A glTF's sun or spot shines along its own node: the loader gives it a
+ * target that is a child of the light, a step in front of it, so the light
+ * turns with its node. three's clone of such a light copies the child and
+ * then aims the light at a second copy of the target that is in no scene and
+ * never moves again. The clone then shone from wherever its object stood
+ * toward where the file's target had been: right only for a model left
+ * exactly where its file has it, and wrong as soon as the object is moved
+ * or turned or a clip moves the light. `source` and `clone` are the same
+ * shape, node for node.
+ *
+ * A light whose target is a node of the model (its own child, or any other
+ * node: some loaders put it beside the light) is aimed at the copy of that
+ * node. A light whose target is in no model at all is one the loader itself
+ * made by three's clone: a file that uses one light for several nodes (as
+ * Blender writes linked duplicates) is loaded with a clone on each node
+ * after the first, each already aimed at a target left behind. Such a light
+ * still carries the copy of its target under it, where the target was, and
+ * is aimed at that.
+ */
+function aimLightsAtTheirOwn(source: THREE.Object3D, clone: THREE.Object3D): void {
+  const twins = new Map<THREE.Object3D, THREE.Object3D>();
+  pairNodes(source, clone, twins);
+  for (const [from, to] of twins) {
+    const light = from as THREE.DirectionalLight;
+    if (!light.isLight || !light.target) continue;
+    const own = twins.get(light.target) ?? leftUnder(to, light.target);
+    if (own) (to as THREE.DirectionalLight).target = own;
+  }
+}
+
+/**
+ * The child of `light` that is the copy three's clone left of a target it
+ * then let go of: a bare node with nothing under it, where the target is
+ * (a target's place is measured from the light it was a child of).
+ */
+function leftUnder(light: THREE.Object3D, target: THREE.Object3D): THREE.Object3D | undefined {
+  if (target.parent) return undefined;
+  for (const child of light.children) {
+    if (child.type === 'Object3D' && child.children.length === 0 && child.position.distanceToSquared(target.position) < 1e-12) return child;
+  }
+  return undefined;
 }
 
 /**
@@ -189,10 +268,13 @@ function disposeInstance(root: THREE.Object3D): void {
  */
 async function instantiate(source: THREE.Object3D): Promise<THREE.Object3D> {
   let skinned = false;
+  let lit = false;
   source.traverse((node) => {
     if ((node as THREE.SkinnedMesh).isSkinnedMesh) skinned = true;
+    if ((node as THREE.Light).isLight) lit = true;
   });
   const clone = skinned ? (await importSkeletonUtils()).clone(source) : source.clone();
+  if (lit) aimLightsAtTheirOwn(source, clone);
   clone.traverse((node) => {
     const holder = node as THREE.Mesh;
     if (!holder.isMesh && !(node as THREE.Points).isPoints && !(node as THREE.Line).isLine) return;
@@ -232,6 +314,7 @@ export class ModelTemplateCache {
         key,
         promise: null as never,
         template: null,
+        info: null,
         refs: 0,
         dropped: false,
         keepIdle: options.keepIdle !== false,
@@ -256,8 +339,12 @@ export class ModelTemplateCache {
 
     let template: ModelTemplate;
     let object: THREE.Object3D;
+    let info: ModelContents;
     try {
       template = await entry.promise;
+      // Measured on the template, which is never placed in a scene, before
+      // the first instance is cut: a clone is the same file.
+      info = entry.info ??= describeModelSafely(template.object, template.animations, template.pieces);
       object = await instantiate(template.object);
     } catch (err) {
       this.releaseEntry(entry);
@@ -269,7 +356,9 @@ export class ModelTemplateCache {
     return {
       object,
       animations: template.animations,
+      info,
       key,
+      rest: template.object,
       release: () => {
         if (released) return;
         released = true;

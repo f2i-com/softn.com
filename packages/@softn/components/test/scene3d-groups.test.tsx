@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { createRoot, type Root } from 'react-dom/client';
 import { Scene3D, type Scene3DObject } from '../src/threed/Scene3D';
-import { stubFrames } from './scene3d-doubles';
+import { stubFrames, type FrameStub } from './scene3d-doubles';
 
 vi.mock('three', async (importOriginal) => {
   const actual = await importOriginal<typeof import('three')>();
@@ -19,13 +19,14 @@ vi.mock('three', async (importOriginal) => {
 
 let container: HTMLDivElement;
 let root: Root;
+let frames: FrameStub;
 
 beforeEach(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  stubFrames();
+  frames = stubFrames();
 });
 
 afterEach(() => {
@@ -104,7 +105,7 @@ describe('Scene3D group reconcile', () => {
     expect(nodeById('lamp')?.userData.__softnParentId).toBe('train');
   });
 
-  it('replaces a child whose type changed, and swaps geometry or material for a lesser change', () => {
+  it('replaces a child whose type changed, swaps geometry for a new size, and recolours the material it has', () => {
     act(() => root.render(<Scene3D objects={[train(0)]} />));
     const cab = nodeById('cab') as THREE.Mesh;
     const cabGeometry = cab.geometry;
@@ -117,11 +118,15 @@ describe('Scene3D group reconcile', () => {
     expect(cab.geometry).not.toBe(cabGeometry);
     expect(cab.material).toBe(cabMaterial);
 
+    // A new colour is written into the material: it used to be thrown away
+    // and another made.
+    const dispose = vi.spyOn(cabMaterial, 'dispose');
     const recoloured = train(0);
     recoloured.children![0] = { ...next.children![0], color: '#ff0000' };
     act(() => root.render(<Scene3D objects={[recoloured]} />));
     expect(nodeById('cab')).toBe(cab);
-    expect(cab.material).not.toBe(cabMaterial);
+    expect(cab.material).toBe(cabMaterial);
+    expect(dispose).not.toHaveBeenCalled();
     expect((cab.material as THREE.MeshStandardMaterial).color.getHexString()).toBe('ff0000');
 
     const retyped = train(0);
@@ -165,6 +170,94 @@ describe('Scene3D group reconcile', () => {
     expect(cab.position.x).toBe(9);
     act(() => root.render(<Scene3D objects={[{ ...shared, children: [...shared.children!] }]} />));
     expect(cab.position.x).toBe(9);
+  });
+});
+
+// `animate` was read off top-level objects only: a fan's blades, a turret on
+// a tank, a propeller, sat still inside their group.
+describe('`animate` on a group’s child', () => {
+  let now = 0;
+  beforeEach(() => {
+    now = 1000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  /** A frame, sixteen milliseconds on. */
+  const frame = () => {
+    now += 16;
+    act(() => frames.runFrame(now));
+  };
+
+  const fan = (blade: Partial<Scene3DObject> = {}, x = 0): Scene3DObject => ({
+    id: 'fan',
+    type: 'group',
+    position: { x, y: 0, z: 0 },
+    children: [
+      { id: 'blade', type: 'box', rotation: { x: 0, y: 0, z: 0 }, animate: { rotateY: 0.1 }, ...blade },
+      { id: 'post', type: 'cylinder' },
+      {
+        id: 'cage',
+        type: 'group',
+        children: [{ id: 'light', type: 'sphere', position: { x: 0, y: 2, z: 0 }, animate: { floatAmplitude: 1 } }],
+      },
+    ],
+  });
+
+  it('turns it and bobs it, at any depth, as it does a top-level object', () => {
+    act(() => root.render(<Scene3D objects={[fan(), { id: 'top', type: 'box', animate: { rotateY: 0.1 } }]} />));
+    frame();
+    const blade = nodeById('blade') as THREE.Object3D;
+    // 0.1 a frame at sixty frames a second, for one frame of sixteen milliseconds.
+    expect(blade.rotation.y).toBeCloseTo(0.096, 3);
+    expect(blade.rotation.y).toBeCloseTo((nodeById('top') as THREE.Object3D).rotation.y, 6);
+    expect((nodeById('post') as THREE.Object3D).rotation.y).toBe(0);
+    // A bob around where the child stands in its group.
+    expect((nodeById('light') as THREE.Object3D).position.y).toBeCloseTo(2 + Math.sin(0.016), 4);
+  });
+
+  it('keeps turning through an update of the group, and takes a new speed', () => {
+    act(() => root.render(<Scene3D objects={[fan()]} />));
+    frame();
+    frame();
+    const blade = nodeById('blade') as THREE.Object3D;
+    const turned = blade.rotation.y;
+    expect(turned).toBeGreaterThan(0.15);
+
+    // The group moved, every record new, as a tick of logic hands them over:
+    // the blade is not put back to where its spec says it starts.
+    act(() => root.render(<Scene3D objects={[fan({}, 3)]} />));
+    expect(nodeById('blade')).toBe(blade);
+    expect(blade.rotation.y).toBe(turned);
+    frame();
+    expect(blade.rotation.y).toBeGreaterThan(turned);
+
+    act(() => root.render(<Scene3D objects={[fan({ animate: { rotateY: -0.1 } }, 3)]} />));
+    const before = blade.rotation.y;
+    frame();
+    expect(blade.rotation.y).toBeLessThan(before);
+  });
+
+  it('stops when the child no longer asks, and is where its spec says again', () => {
+    act(() => root.render(<Scene3D objects={[fan()]} />));
+    frame();
+    const blade = nodeById('blade') as THREE.Object3D;
+    act(() => root.render(<Scene3D objects={[fan({ animate: undefined, rotation: { x: 0, y: 0.5, z: 0 } })]} />));
+    expect(blade.rotation.y).toBe(0.5);
+    frame();
+    expect(blade.rotation.y).toBe(0.5);
+  });
+
+  it('is not left turning a child that has gone', () => {
+    act(() => root.render(<Scene3D objects={[fan()]} />));
+    const blade = nodeById('blade') as THREE.Object3D;
+    const emptied = fan();
+    emptied.children = emptied.children!.filter((child) => child.id !== 'blade');
+    act(() => root.render(<Scene3D objects={[emptied]} />));
+    frame();
+    expect(blade.rotation.y).toBe(0);
+    expect(blade.parent).toBeNull();
   });
 });
 

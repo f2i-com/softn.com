@@ -51,6 +51,20 @@ export const importRoomEnvironment = cachedImport(
   () => import('three/addons/environments/RoomEnvironment.js')
 );
 export const importSkeletonUtils = cachedImport(() => import('three/addons/utils/SkeletonUtils.js'));
+/**
+ * The readers of a panorama a scene is lit by (`environment={{ url }}`):
+ * Radiance `.hdr` and OpenEXR `.exr`. Each is taken only by a scene whose
+ * environment is a file of that kind; an ordinary picture needs neither.
+ */
+export const importRGBELoader = cachedImport(() => import('three/addons/loaders/RGBELoader.js'));
+export const importEXRLoader = cachedImport(() => import('three/addons/loaders/EXRLoader.js'));
+/**
+ * Depth of field and ambient occlusion are a pass each, taken only by a scene
+ * that turns that effect on: the occlusion pass and its shaders are several
+ * times the size of the bloom pipeline.
+ */
+export const importBokehPass = cachedImport(() => import('three/addons/postprocessing/BokehPass.js'));
+export const importGTAOPass = cachedImport(() => import('three/addons/postprocessing/GTAOPass.js'));
 
 /**
  * The bloom pipeline is five modules that are only ever used together, so
@@ -72,7 +86,12 @@ export const importPostprocessing = cachedImport(async () => {
     ShaderPass: shader.ShaderPass,
   };
 });
-export type PostprocessingModules = Awaited<ReturnType<typeof importPostprocessing>>;
+export type PostprocessingModules = Awaited<ReturnType<typeof importPostprocessing>> & {
+  /** Present when the chain to build has depth of field. */
+  BokehPass?: Awaited<ReturnType<typeof importBokehPass>>['BokehPass'];
+  /** Present when the chain to build has ambient occlusion. */
+  GTAOPass?: Awaited<ReturnType<typeof importGTAOPass>>['GTAOPass'];
+};
 
 /**
  * Meshopt's decoder is self-contained JavaScript (its wasm is inlined), so
@@ -89,7 +108,8 @@ export const importMeshoptDecoder = cachedImport(async () => {
 
 /**
  * Fetch every part a scene can ask for — the four loaders, the controls, the
- * environment, SkeletonUtils, the bloom pipeline and the Meshopt decoder —
+ * environment and the two readers of a panorama, SkeletonUtils, the bloom
+ * pipeline, the depth of field and occlusion passes and the Meshopt decoder —
  * so a host's service worker holds them: an app installed for offline use
  * draws any scene offline, whatever its models turn out to be.
  */
@@ -101,8 +121,12 @@ export async function preloadScene3DAddons(): Promise<void> {
     importSTLLoader(),
     importOrbitControls(),
     importRoomEnvironment(),
+    importRGBELoader(),
+    importEXRLoader(),
     importSkeletonUtils(),
     importPostprocessing(),
+    importBokehPass(),
+    importGTAOPass(),
     importMeshoptDecoder(),
   ]);
 }
@@ -125,6 +149,14 @@ export function detectModelFormat(name: string): ModelFormat {
 export interface ModelTemplate {
   object: THREE.Object3D;
   animations: THREE.AnimationClip[];
+  /**
+   * For a glTF: the objects under `object` that are no node of the file. A
+   * mesh of several materials is loaded as one mesh for each, under the
+   * node that holds it; those are three's own, with names it made up, and
+   * are left out of the names reported as a model's `nodes`. Absent for a
+   * format that makes none, where every named object is a node of the file.
+   */
+  pieces?: ReadonlySet<THREE.Object3D>;
   /**
    * Built without some of its parts, which were refused (a texture on a
    * host the app may not reach, or asked for while the permission bar was
@@ -185,6 +217,24 @@ async function prepareGltfCodecs(loader: GLTFLoader, data: ArrayBuffer): Promise
   if (wants.has(GLTF_MESHOPT)) loader.setMeshoptDecoder(await importMeshoptDecoder());
 }
 
+/**
+ * The objects of a loaded glTF that the loader made for itself: it keeps a
+ * record of which node, or which piece of which mesh, each object came from,
+ * and one that came from no node is a piece. Undefined for a loader that
+ * keeps no such record.
+ */
+function meshPieces(gltf: GLTF): Set<THREE.Object3D> | undefined {
+  const from = (gltf as { parser?: { associations?: Map<unknown, { nodes?: number }> } }).parser?.associations;
+  if (!from || typeof from.get !== 'function') return undefined;
+  const pieces = new Set<THREE.Object3D>();
+  gltf.scene.traverse((node) => {
+    if (node === gltf.scene) return;
+    const source = from.get(node);
+    if (source && source.nodes === undefined) pieces.add(node);
+  });
+  return pieces;
+}
+
 function fetchModelBytes(url: string, manager: THREE.LoadingManager): Promise<ArrayBuffer> {
   const loader = new THREE.FileLoader(manager);
   loader.setResponseType('arraybuffer');
@@ -211,7 +261,7 @@ async function parseModel(
       const gltf = await new Promise<GLTF>((resolve, reject) =>
         loader.parse(data, resources.resourcePath, resolve, reject)
       );
-      return { object: gltf.scene, animations: gltf.animations ?? [] };
+      return { object: gltf.scene, animations: gltf.animations ?? [], pieces: meshPieces(gltf) };
     }
     case 'obj': {
       const [{ OBJLoader }, data] = await Promise.all([importOBJLoader(), bytes]);

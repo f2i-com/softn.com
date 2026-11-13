@@ -151,6 +151,7 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
   // 3D: Scene3D and, through it, Three.js, four model loaders and the
   // post-processing passes — the reason this file exists.
   Scene3D: fromFeature('scene3d', scene3d, 'Scene3D'),
+  SceneAnchor: fromFeature('scene3d', scene3d, 'SceneAnchor'),
 
   // Smart components (~60 KB minified)
   SmartGrid: fromFeature('smart', smart, 'SmartGrid'),
@@ -173,10 +174,11 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
   DatePicker: fromFeature('pickers', pickers, 'DatePicker'),
   ColorPicker: fromFeature('pickers', pickers, 'ColorPicker'),
 
-  // What games are drawn with (~12 KB minified)
+  // What games are drawn and played with (~16 KB minified)
   PixelGrid: fromFeature('games', games, 'PixelGrid'),
   PixelCanvas: fromFeature('games', games, 'PixelCanvas'),
   DPad: fromFeature('games', games, 'DPad'),
+  Controls: fromFeature('games', games, 'Controls'),
 };
 
 /**

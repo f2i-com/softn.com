@@ -3111,6 +3111,85 @@
       }
     },
     {
+      "name": "Controls",
+      "source": "src/utility/Controls.tsx",
+      "props": {
+        "interface": "ControlsProps",
+        "members": [
+          {
+            "name": "keys",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "Record<string, string | string[]>"
+            },
+            "doc": "The actions and the keys that hold each, by the action's name: `{ left: \"ArrowLeft a\", right: \"ArrowRight d\", fire: \"Space\" }`. A key is named as `KeyboardEvent.key` or `KeyboardEvent.code` gives it (`\"ArrowLeft\"`, `\"a\"`, `\"Space\"`, `\"Enter\"`, `\"ShiftLeft\"`), several separated by spaces or as a list; a letter is the same key with Shift held. A letter or a digit is the key that types it; on a keyboard that types other letters there (Russian, Greek) it is the key where that letter usually is, so `w a s d` are the same four keys. Only these keys are kept from the browser."
+          },
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "ControlsValue | null"
+            },
+            "doc": "The record of what is held. Write `:bind={pad}` over a variable that starts as `{ presses: {} }`: the component fills it in and keeps it. Bound to the same variable as a `<DPad>` or another `<Controls>`, an action is held while any of them holds it."
+          },
+          {
+            "name": "onChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called with the new record when an action is pressed or let go; `:bind` writes it to the variable."
+          },
+          {
+            "name": "onPress",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called once when a key or the gamepad puts an action down, with its name; not again while it is held, by these or by a `<DPad>` bound to the same variable."
+          },
+          {
+            "name": "onRelease",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called once when a key or the gamepad lets an action go and nothing else holds it, with its name."
+          },
+          {
+            "name": "gamepad",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "boolean | Record<string, number | number[]>"
+            },
+            "default": true,
+            "doc": "A connected gamepad's part (default true): its left stick and d-pad hold the actions named `left`, `right`, `up` and `down`, and buttons 0, 1, 2… (A, B, X, Y on the usual layout) hold the other actions in the order `keys` lists them. A record names the buttons instead, by action: `{ fire: 0, jump: [1, 2] }`. `false` reads no gamepad. What the gamepad held is let go when it is turned off, unplugged, or its buttons are named anew."
+          },
+          {
+            "name": "deadzone",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "default": 0.4,
+            "doc": "How far the stick is pushed, from 0 to 1, before it holds a direction (default 0.4). It lets go when the stick falls back under four fifths of that, so a stick resting at the edge is one press and not many."
+          },
+          {
+            "name": "enabled",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": true,
+            "doc": "Whether the controls are listening (default true). While false nothing is held and no key is kept from the browser: for a menu over the game, where the arrows should move through the page again."
+          }
+        ]
+      }
+    },
+    {
       "name": "CopyButton",
       "source": "src/form/CopyButton.tsx",
       "props": {
@@ -3805,7 +3884,7 @@
     {
       "name": "DPad",
       "source": "src/utility/DPad.tsx",
-      "doc": "An on-screen directional pad. Each direction is held, not clicked: `onPress` when a pointer or key goes down, `onRelease` when it comes up. A release is sent once per press — and also when the pointer is cancelled, leaves the button while pressed, the button loses focus, or the pad unmounts — so a character is never left walking. Enter and Space hold a focused direction like a pointer does.",
+      "doc": "An on-screen directional pad. Each direction is held, not clicked: `onPress` when a pointer or key goes down, `onRelease` when it comes up. A release is sent once per press — and also when the pointer is cancelled, leaves the button while pressed, the button loses focus, or the pad unmounts — so a character is never left walking. Enter and Space hold a focused direction like a pointer does. Bound with `:bind={pad}` it also keeps a record of what is held, the same one a `<Controls>` keeps for keys and a gamepad. In that record a direction is held while anything holds it: with the Left key still down, lifting the finger from the pad's Left leaves `pad.left` true.",
       "props": {
         "interface": "DPadProps",
         "members": [
@@ -3814,14 +3893,33 @@
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "Called when a direction goes down, with `\"up\"`, `\"down\"`, `\"left\"` or `\"right\"`"
           },
           {
             "name": "onRelease",
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "Called when a direction is let go, with the direction"
+          },
+          {
+            "name": "value",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "DPadValue | null"
+            },
+            "doc": "A record of what is held, the one a `<Controls>` keeps. Write `:bind={pad}`: `pad.left`, `pad.right`, `pad.up` and `pad.down` are true while that direction is held, and `pad.presses.left` counts its presses. Bound to the same variable as a `<Controls>`, touch and keys are one record to the game: a direction is held while a button here, a key or a gamepad holds it, and a press is counted once however many of them go down together."
+          },
+          {
+            "name": "onChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called with the new record when a direction is pressed or let go; `:bind` writes it to the variable."
           },
           {
             "name": "buttonSize",
@@ -3829,7 +3927,8 @@
             "type": {
               "kind": "number"
             },
-            "default": 56
+            "default": 56,
+            "doc": "The side of each button in pixels (default 56)"
           },
           {
             "name": "color",
@@ -3837,7 +3936,8 @@
             "type": {
               "kind": "string"
             },
-            "default": "rgba(127,127,127,0.3)"
+            "default": "rgba(127,127,127,0.3)",
+            "doc": "The buttons' colour (default a translucent grey that shows over light and dark alike)"
           },
           {
             "name": "visible",
@@ -3845,7 +3945,8 @@
             "type": {
               "kind": "boolean"
             },
-            "default": true
+            "default": true,
+            "doc": "Whether the pad is drawn (default true); hidden, whatever was held is let go"
           },
           {
             "name": "ariaLabel",
@@ -5977,7 +6078,7 @@
               "kind": "number"
             },
             "default": 1000,
-            "doc": "Interval in milliseconds (default 1000)"
+            "doc": "Milliseconds between ticks of the timer form (default 1000). Not read with `frame`, which follows the screen."
           },
           {
             "name": "running",
@@ -5986,7 +6087,33 @@
               "kind": "boolean"
             },
             "default": false,
-            "doc": "Whether the timer is running (default false)"
+            "doc": "Whether the loop is running (default false)"
+          },
+          {
+            "name": "frame",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": false,
+            "doc": "Tick once for each frame the screen draws (usually 60 a second, more on a fast display) instead of on a timer, and not at all while the app or the browser's tab is hidden. The first tick after it is shown again carries one frame's time, not the time it was away. Write movement as speed times `dt`, since the rate is the screen's: `x += 220 * dt`. On a screen or a page too slow to draw four frames a second, each frame still ticks, with the longest step (`dt` 0.2)."
+          },
+          {
+            "name": "maxFps",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "With `frame`, the most ticks in a second: `maxFps={30}` for logic that is too heavy to run on every frame. Left out, every frame ticks."
+          },
+          {
+            "name": "pauseHidden",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": false,
+            "doc": "For the timer form: stop ticking while the app or the browser's tab is hidden, and start again when it is shown (default false, so a timer that keeps time in the background still does). `frame` always stops there."
           },
           {
             "name": "onTick",
@@ -5994,7 +6121,7 @@
             "type": {
               "kind": "function"
             },
-            "doc": "Callback fired each interval, optionally receiving delta-time in seconds"
+            "doc": "Called on each tick with `dt`, the seconds since the last one (between 0.001 and 0.2). The next tick waits for this one to finish; with `frame` it waits two seconds at most, then goes on without it and says so once in the console. Do not wait on a request inside the step: start it, and read its result on a later tick."
           }
         ]
       }
@@ -8439,7 +8566,8 @@
             "type": {
               "kind": "number"
             },
-            "default": 800
+            "default": 800,
+            "doc": "How wide the scene is, in CSS pixels (default 800). It is never wider than the space it is given: in a narrower place, a phone, it shrinks to fit and keeps the shape `width` and `height` describe."
           },
           {
             "name": "height",
@@ -8447,7 +8575,8 @@
             "type": {
               "kind": "number"
             },
-            "default": 600
+            "default": 600,
+            "doc": "How tall the scene is at its full `width`, in CSS pixels (default 600)."
           },
           {
             "name": "fill",
@@ -8465,7 +8594,8 @@
               "kind": "array",
               "text": "Scene3DObject[]"
             },
-            "default": []
+            "default": [],
+            "doc": "What is in the scene: a list of records, each with an `id` and a `type`: a shape ('box', 'sphere', 'cylinder', 'capsule', 'prism', 'plane', 'torus', 'cone', 'ring', 'dodecahedron', 'icosahedron', 'octahedron'), or 'model', 'instanced', 'group' or 'particles'. An object whose id is still in the list is changed in place; one whose id has gone is removed. Every object takes `position` and `rotation` (`{ x, y, z }`, rotation in radians, applied in `rotationOrder`, 'XYZ' unless given), `scale`, `color`, `opacity`, `castShadow`, `receiveShadow`, `cursor` or `interactive` (the pointer shown over it), `pickable` (false lets a click through to what is behind; particles are picked only when it is true) and `animate` (`{ rotateY, floatAmplitude }`: a turn and a bob the scene keeps up by itself). In place of working out a rotation, `lookAt` (`{ x, y, z }`: a point the object's front, its +z, faces) or `align` (`{ x, y, z }`: a direction its long axis, its +y, lies along). `transition` (milliseconds) eases this object's changes in place of the scene's `transition`. A shape takes `width`, `height`, `depth` or `radius`, and `texture` (a painted one, by name) or `textureUrl`. A model takes `modelUrl` (a URL, or a path in the app's own bundle such as \"assets/robot.glb\"), `fit` (scale it so its longest side is that many units, standing on the ground), `animation` (`{ clip, loop, progress }`: `progress` from 0 to 1 holds the clip at that point, `time` holds it at that many seconds, and `clip: \"*\"` is every clip of the model at once), `lights` (the lights that are in the model's file: `false` for none of them, `{ intensity }` to dim them, `{ castShadow: true }` for shadows from its sun), `appearance` and `parts` (`{ Wheel_FL: { rotation: { x, y, z } }, Hatch: { visible: false } }`: a named node of the model turned, moved, scaled or hidden, measured from the pose its file gives it; rotation in radians about the part's own axes). An 'instanced' object takes `shape`, `instances` (a flat array, x, y, z a copy, and a `palette` index after them when `palette` is given) and, beside it, `instanceRotations` (one turn about the upright axis a copy, or three angles a copy) and `instanceScales` (one size a copy, or three). A group takes `children`, placed relative to it: a child may be of any type, a model included. A 'particles' cloud takes `particlePositions` (a flat array, x, y, z a particle), `particleSize` and `particleShape` ('square', the default; 'round', a disc with a clean edge; 'soft', a disc that fades out at its edge, for dust, smoke and sparks: these two are drawn see-through, after everything solid)."
           },
           {
             "name": "staticObjects",
@@ -8483,15 +8613,34 @@
               "kind": "array",
               "text": "Scene3DLight[]"
             },
-            "default": []
+            "doc": "The scene's lights, each `{ type, color, intensity, position, castShadow }` with `type` one of 'ambient', 'directional', 'point', 'spot' or 'hemisphere'. A directional light with `follow: 'camera'` goes with the camera, so its shadows cover the ground around the camera wherever that is; with `follow: 'view'` the box of its shadows is moved forward to cover what is in the picture (its middle `0.8 * shadowCameraSize` ahead of the camera). `shadowNormalBias` (scene units, none by default) takes the dark banding off smooth ground that a low light grazes. Left out altogether, the scene is lit so that what is in it can be seen: a soft ambient light and one sun, which casts shadows when `shadows` is on (not with an `environment`, 'studio' or a panorama, which lights the scene itself). An empty list, `lights={[]}`, is a scene with no light in it, and so is `lights={null}`: only leaving `lights` out asks for the two. A light's `castShadow`, `shadowMapSize`, `shadowBias`, `shadowNear` and `shadowFar`, and a directional light's `shadowCameraSize`, may change at any time."
           },
           {
             "name": "camera",
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "{ position?: { x: number; y: number; z: number }; lookAt?: { x: number; y: number; z: number }; fov?: number; }"
-            }
+              "text": "Scene3DCamera"
+            },
+            "doc": "The camera: `{ position, lookAt, fov, near, far, type, size, follow }`. `position` and `lookAt` are `{ x, y, z }`; `fov` is in degrees (60); `near` and `far` are the nearest and farthest it draws (0.1 and 1000). `type: 'orthographic'` is a camera with no perspective, for a plan or a board seen square on, showing `size` scene units from top to bottom (10). `follow: { target, distance, height, lookAhead }` keeps the camera `distance` behind and `height` above the object whose id is `target`, looking `lookAhead` in front of it, worked out on every frame from where the object is drawn: a chase camera with no arithmetic in the app. `from: \"film\"` looks through a camera that is in the model with that id (a scene exported from Blender has its cameras in it): the view is that camera on every frame, with its lens, and `name` says which of the model's cameras; left out, it is the one the file's own cuts name for the second its clip stands at. Each field may change at any time; one left out leaves the camera as it is."
+          },
+          {
+            "name": "transition",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "default": 0,
+            "doc": "Ease what changes instead of jumping to it, over this many milliseconds (default 0: off). When an object's `position`, `rotation` (or `lookAt`, `align`), `scale`, `color`, `opacity`, `emissive` or `emissiveIntensity` changes, the scene takes it there at a steady rate from where it is drawn now. A game that moves things thirty times a second draws them moving at the screen's rate with `transition={40}`; a figure that follows data glides with 400. An object's own `transition` is used in place of this one. Not eased: an object as it first appears, a move further than `jumpDistance`, anything while the app is hidden, the copies of an 'instanced' object (the object as a whole is), an object whose painted `texture` changes colour, and the height or the turn that `animate` is already moving. A turn goes the short way round."
+          },
+          {
+            "name": "jumpDistance",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "default": 4,
+            "doc": "How far is too far to ease, in scene units (default 4): a move longer than this in one update is a jump, for an object under `transition` and for a camera under `cameraSmoothing`, so a thing that is put somewhere else does not sweep across the view. 0 is no limit: everything is eased however far it goes."
           },
           {
             "name": "background",
@@ -8525,7 +8674,7 @@
               "kind": "other",
               "text": "boolean | { size?: number; divisions?: number; color?: string; centerColor?: string; position?: { x: number; y: number; z: number } }"
             },
-            "doc": "Ground / level editor helper grid."
+            "doc": "Ground / level editor helper grid. May be turned on, off or changed at any time."
           },
           {
             "name": "crosshair",
@@ -8543,7 +8692,7 @@
               "kind": "boolean"
             },
             "default": false,
-            "doc": "Built-in keyboard game controls listener (WASD, Arrows, Space, Shift) synced to window.__softnKeys."
+            "doc": "The scene keeps a record of which of W A S D, the arrows, Space and Shift are held, for logic to read as `softn.input.keys` or `softn.input.down(\"w\")` (the same record as `window.__softnKeys`). These keys are fixed and touch cannot press them: for keys of your own choosing, a gamepad and an on-screen pad as one record, use `<Controls>`."
           },
           {
             "name": "alpha",
@@ -8551,7 +8700,8 @@
             "type": {
               "kind": "boolean"
             },
-            "default": false
+            "default": false,
+            "doc": "A see-through canvas, with the page behind showing where nothing is drawn. Read when the scene is made: the drawing context cannot change it afterwards, so a change needs a new scene (an `if=` around it)."
           },
           {
             "name": "antialias",
@@ -8559,7 +8709,8 @@
             "type": {
               "kind": "boolean"
             },
-            "default": true
+            "default": true,
+            "doc": "Smooth edges (default true). Read when the scene is made: the drawing context cannot change it afterwards, so a change needs a new scene (an `if=` around it)."
           },
           {
             "name": "shadows",
@@ -8567,7 +8718,8 @@
             "type": {
               "kind": "boolean"
             },
-            "default": false
+            "default": false,
+            "doc": "Draw shadows: from lights with `castShadow`, by objects with `castShadow`, on objects with `receiveShadow`. May be turned on or off at any time, as a graphics setting is."
           },
           {
             "name": "fog",
@@ -8583,7 +8735,17 @@
             "type": {
               "kind": "boolean"
             },
-            "default": false
+            "default": false,
+            "doc": "Let the person turn the view by dragging, zoom with the wheel and pan, around `camera.lookAt`. May be turned on or off at any time: off, the camera stays where it was left. Ignored while `mouseLook` or `pointerLock` is on. `orbit` limits how far the person can take it, and `onCameraChange` says where they left it."
+          },
+          {
+            "name": "orbit",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "Scene3DOrbit"
+            },
+            "doc": "Limits on `orbitControls`: `{ minDistance, maxDistance, minPolar, maxPolar, pan, zoom }`. `minDistance` and `maxDistance` are how near and how far the camera may be from what it orbits, in scene units; `minPolar` and `maxPolar` how high and how low it may go, as angles from straight above in radians (`maxPolar: 1.5708` stops it at the ground); `pan: false` and `zoom: false` switch those off. May change at any time. With an orthographic camera the distances limit nothing: it is zoomed by its size."
           },
           {
             "name": "autoRotate",
@@ -8615,7 +8777,8 @@
             "type": {
               "kind": "boolean"
             },
-            "default": false
+            "default": false,
+            "doc": "Drag on the scene to look around from where the camera stands. May be turned on or off at any time; turned on, the view starts out facing `camera.lookAt`."
           },
           {
             "name": "mouseLookSensitivity",
@@ -8623,7 +8786,8 @@
             "type": {
               "kind": "number"
             },
-            "default": 0.003
+            "default": 0.003,
+            "doc": "How far the view turns for each pixel the mouse moves, in radians (default 0.003). May change at any time."
           },
           {
             "name": "pointerLock",
@@ -8632,7 +8796,7 @@
               "kind": "boolean"
             },
             "default": false,
-            "doc": "First-person mouse capture. A click on the canvas locks the pointer (the browser's Escape releases it); while locked, moving the mouse turns the camera and every button press is reported through `onClick` with what the centre of the screen is pointing at. Implies `mouseLook`."
+            "doc": "First-person mouse capture. A click on the canvas locks the pointer (the browser's Escape releases it); while locked, moving the mouse turns the camera and every button press is reported through `onClick` with what the centre of the screen is pointing at. Implies `mouseLook`. May be turned on or off at any time; turned off, a pointer it holds is given back."
           },
           {
             "name": "pitchLimit",
@@ -8641,7 +8805,7 @@
               "kind": "number"
             },
             "default": 0.8,
-            "doc": "How far the view may tilt, in radians (default 0.8 — about 45°)."
+            "doc": "How far the view may tilt, in radians (default 0.8 — about 45°). May change at any time."
           },
           {
             "name": "cameraSmoothing",
@@ -8650,7 +8814,7 @@
               "kind": "number"
             },
             "default": 0,
-            "doc": "Ease the camera toward each new `camera.position` instead of jumping to it, 0..1 per frame (0 = off). A game that moves its player thirty times a second reads as sixty when the render loop closes the gap between ticks; 0.35 keeps under a frame of lag."
+            "doc": "Ease the camera toward each new `camera.position` instead of jumping to it, 0..1 per frame (0 = off). A game that moves its player thirty times a second reads as sixty when the render loop closes the gap between ticks; 0.35 keeps under a frame of lag. A new `camera.lookAt` is eased the same way, so the view turns to it and does not snap, and so is a camera that follows (`camera.follow`). A move further than `jumpDistance` is not eased, nor is anything while the person steers with orbit controls: the camera is theirs then."
           },
           {
             "name": "maxPixelRatio",
@@ -8659,7 +8823,7 @@
               "kind": "number"
             },
             "default": 2,
-            "doc": "The most device pixels drawn per CSS pixel (default 2). A full-viewport game on a high-density screen pays four times the fill rate at 2; 1 or 1.25 keeps it fast with little visible cost."
+            "doc": "The most device pixels drawn per CSS pixel (default 2). A full-viewport game on a high-density screen pays four times the fill rate at 2; 1 or 1.25 keeps it fast with little visible cost. May change at any time, as a graphics setting does."
           },
           {
             "name": "toneMapping",
@@ -8682,14 +8846,15 @@
             "name": "environment",
             "optional": true,
             "type": {
-              "kind": "enum",
-              "options": [
+              "kind": "other",
+              "text": "'none' | 'studio' | Scene3DEnvironment",
+              "literals": [
                 "none",
                 "studio"
               ]
             },
             "default": "none",
-            "doc": "Optional built-in image-based studio lighting, generated on the GPU from a procedural room: no HDR download. The room generator itself is a small chunk fetched the first time a scene asks for it."
+            "doc": "Light from the scene's surroundings: 'none' (the default), 'studio', or a panorama of the app's own, `{ url, background, rotation, blur, backgroundIntensity, format }`. 'studio' is a room worked out on the GPU: no download but a small chunk, fetched the first time a scene asks for it. A panorama is a picture of everything around one point, twice as wide as it is tall: it lights the scene, and it is what metal and glossy things reflect. `url` is a Radiance `.hdr` or an OpenEXR `.exr` (real light values, which is what looks right) or a `.jpg`, `.png` or `.webp` (an ordinary picture, fainter and flatter light); a path with no scheme (`\"assets/sky.hdr\"`) is a file in the app's own bundle, as `modelUrl` is. `format` ('hdr', 'exr' or 'image') says the kind where the address's ending does not. `background: true` also shows the panorama behind everything (default false: the scene's `background` or `sky` stands), `blur` from 0 (sharp, the default) to 1 softens what is shown, and `backgroundIntensity` is how bright it is shown (default 1). `rotation` turns the panorama about the upright axis, in radians (default 0): lighting, reflections and background together. Every field may change at any time; another `url` is shown once it has loaded, the last one staying until then. A file that cannot be loaded is warned of once in the console and leaves the scene as it was; so is an `.hdr` or `.exr` larger than 8192 by 4096, or than the device can draw, or one that is not the picture its own header declares. With an orthographic camera the panorama lights the scene just the same but is not shown behind it (a view with no perspective has no panorama): the scene's `background` or `sky` stands. A scene with any environment but 'none' and no `lights` is lit by the environment alone."
           },
           {
             "name": "environmentIntensity",
@@ -8698,7 +8863,7 @@
               "kind": "number"
             },
             "default": 0.7,
-            "doc": "Studio lighting strength, clamped to 0..4. Default 0.7."
+            "doc": "How strongly the environment lights the scene, 'studio' or a panorama alike: a multiple from 0 to 4 (default 0.7)."
           },
           {
             "name": "toneMappingExposure",
@@ -8716,7 +8881,7 @@
               "kind": "other",
               "text": "Scene3DEffects"
             },
-            "doc": "Post-processing. Bloom makes emissive things glow; vignette darkens the corners (0..1); grain adds film noise (0..1). Any effect switches the frame to a composer with tone mapping applied at the end."
+            "doc": "Post-processing: `{ bloom, vignette, grain, depthOfField, ambientOcclusion }`, each left out for none. `bloom` (true, or `{ strength, radius, threshold }`, defaults 0.45, 0.4 and 0.85) makes bright and emissive things glow; `vignette` darkens the corners (0 to 1); `grain` adds film noise (0 to 1). `depthOfField` blurs what is nearer or further than one distance, as a lens does: `{ focusOn: \"rover\", aperture: 0.02, maxBlur: 0.012 }` keeps the object with that id sharp (a top-level object, a group's child or a model; the distance is worked out on every frame, so it stays sharp as the camera or the object moves, and while no object has that id nothing is blurred), and `{ focus: 4.5, aperture, maxBlur }` keeps a distance sharp, in scene units straight ahead of the camera. `aperture` is how quickly things go soft away from that distance (default 0.02; 0.002 keeps nearly everything sharp, 0.05 leaves a thin slice sharp); `maxBlur` is the most anything is blurred, as a fraction of the picture's width (default 0.012; 0.005 is gentle, 0.02 heavy). An orthographic camera is focused the same way, by distance from the camera. In place of `aperture` and `maxBlur`, `fstop` blurs as a lens of that f-number does: `{ focusOn: \"rover\", fstop: 2.8 }` (1.4 is wide open, 8 nearly all sharp; `sensorHeight` is the sensor's height in millimetres, 24 unless given). A lens's blur grows fast either side of the sharp distance and levels off far beyond it, and is more with a narrow field of view and a near subject; it needs a camera with perspective. `depthOfField: \"camera\"` is the focus of the model's camera the scene looks through (`camera={{ from }}`), as a file exported from Blender records it: the thing it is focused on, or the distance, and its f-number; a camera with no focus recorded blurs nothing. What is in focus keeps the detail on its surfaces; its outline against something far out of focus is softened by a few pixels, since the blur gathers what is around each pixel. See-through things and particles take the blur of what is behind them. It fills the whole picture: with `alpha`, the page no longer shows through. `ambientOcclusion` (true, or `{ radius, intensity }`) darkens softly where surfaces meet: a wheel on the ground, a bracket on a panel. `radius` is how far the darkening reaches, in scene units (default 0.5; it has faded out about half that far from the crease); `intensity` is how dark it is, from 0 to 3 (default 1, which takes about a fifth of the light from a crease; 2 takes about a third). It is the costly one: the scene's solid things are drawn a second time, and every pixel of the picture is then gone over twice, sixteen readings each time, a few times what bloom costs. On a fast desktop graphics card that is a millisecond or so a frame at 1600 by 900; a laptop's built-in graphics or a phone is many times slower, so there keep it for close views, or lower `maxPixelRatio`. See-through things and particles are left out of where the darkening is worked out, so they cast none and none is worked out on them; but it is laid over the finished picture, so glass or a particle in front of a crease is darkened where the crease behind it is. Any effect switches the frame to a chain of passes with tone mapping applied at the end; its edges are smoothed when `antialias` is on, as they are without effects. Each effect's numbers may change at any time without the chain being made again."
           },
           {
             "name": "onReady",
@@ -8724,7 +8889,7 @@
             "type": {
               "kind": "function"
             },
-            "doc": "Three milestones, in order. `onReady`: the renderer exists and has drawn a frame — the world may still be empty. `onAssetsReady`: every model the scene opened with has settled, loaded or failed (a failure is reported through `onModelState`; a model withheld by the permission policy is not counted, since it is not loading). `onFirstFrame`: the first frame drawn after that — the one a loading screen should wait for. Each fires once per mount."
+            "doc": "Three milestones, in order. `onReady`: the renderer exists and has drawn a frame — the world may still be empty. `onAssetsReady`: every model the scene opened with has settled, loaded or failed (a failure is reported through `onModelState`; a model withheld by the permission policy is not counted, since it is not loading), and so has the panorama of its `environment`, if it opened with one. `onFirstFrame`: the first frame drawn after that — the one a loading screen should wait for. Each fires once per mount."
           },
           {
             "name": "onAssetsReady",
@@ -8746,49 +8911,95 @@
             "type": {
               "kind": "function"
             },
-            "doc": "Each model's load as it happens: `pending` when a fetch starts, `loaded` or `error` (with the reason, naming a refused subresource when that is why) when it settles. `attempt` counts `reload`s of the same URL."
+            "doc": "Each model's load as it happens, as `{ objectId, state, attempt }`: `pending` when a fetch starts, `loaded` or `error` (with `error`, the reason, naming a refused subresource when that is why) when it settles. `attempt` counts `reload`s of the same URL. `loaded` also says what is in the model: `clips`, `materials`, `meshes` and `morphs` (lists of names, for `animation.clip` and `appearance`), `clipLengths` (seconds, one for each of `clips`), `nodes` (the names of its nodes, for `parts`), `cameras` and `lights` (the names of the cameras and lights the file has, for `camera={{ from, name }}` and the object's `lights`), `size` and `center` (`{ x, y, z }`, as the file gives them) and, for a file exported with SoftN's Blender script, `film` (how long it is, its cuts from camera to camera, each camera's lens and focus, its exposure and its panorama). A model in a group reports its group as `parentId`."
           },
           {
             "name": "onClick",
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "A click that landed on an object (a press and release without a drag, left button). The handler is given the hit: `objectId`, `rootObjectId` (the group, for a group's child), `instanceId` (for an instanced object), `point` and `normal` (`{ x, y, z }` in the world), `distance`, `screen` (`{ x, y }` in CSS pixels within the scene), `button`, `dragged` and `locked`. With `pointerLock`, every press is reported here while the pointer is locked, with `objectId` empty when it hit nothing."
+          },
+          {
+            "name": "onMiss",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "A click that landed on nothing: the way to deselect by clicking away. Given the same record as `onClick`, with `objectId` empty and `screen` where the click was. Not sent for the end of a drag, nor while the pointer is locked."
           },
           {
             "name": "onPointerDown",
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "A button went down on the scene; the hit is what it went down on (`objectId` empty for nothing)."
           },
           {
             "name": "onPointerMove",
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "The pointer moved with a button held: at most once a frame, with where it is by then and what is under it. `dragged` is true once it has moved more than a few pixels. The last place it moved to is always sent before `onPointerUp`."
           },
           {
             "name": "onPointerUp",
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "The button came up. `dragged` tells the end of an orbit or a drag (true) from a press that stayed put (false)."
           },
           {
             "name": "onHover",
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "The pointer moved over the scene with no button held: at most once a frame, with where it is now and what is under it (`objectId` empty for nothing). To react only when the object changes, use `onHoverChange`."
+          },
+          {
+            "name": "onHoverChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "What is under the pointer changed: to another object, to another copy of an instanced object, or to nothing (`objectId` empty), which is also sent when the pointer leaves the scene, and when the object under a pointer that has not moved is taken out of the scene. The event for a highlight or a tooltip: it is not sent while the pointer moves over one object."
           },
           {
             "name": "onAnimation",
             "optional": true,
             "type": {
               "kind": "function"
-            }
+            },
+            "doc": "A model's clip ended (`type: 'finished'`) or it has no clip of the name asked for (`'missing'`): `{ objectId, clip, type }`."
+          },
+          {
+            "name": "onCameraChange",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "The person finished turning, zooming or panning the view with orbit controls, and the camera has come to rest. Given `{ position, target }`, both `{ x, y, z }` (and `size` for an orthographic camera): keep them, and give them back as `camera.position` and `camera.lookAt` (and `camera.size`) to show the same view again."
+          },
+          {
+            "name": "onStats",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "A readout about once a second while the scene is drawn: `{ fps, drawCalls, triangles }`, the frames drawn per second and what the last frame took. For a counter while an app is being made, or for an app that lowers its own quality when it runs slowly. Nothing is counted unless this is bound."
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "`<SceneAnchor>` tags: page content pinned to places in the scene (a name over a figure, a card beside a part). Anything else written inside a `<Scene3D>` is not shown."
           },
           {
             "name": "style",
@@ -8803,6 +9014,90 @@
             "optional": true,
             "type": {
               "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SceneAnchor",
+      "source": "src/threed/SceneAnchor.tsx",
+      "doc": "Page content pinned to a place in a 3D scene: written inside `<Scene3D>`, it holds ordinary markup and is kept over the object it names (or over a fixed `position`) as the object and the camera move. The scene moves it with one CSS transform a frame; the page is not redrawn for it. It is hidden while its place is behind the camera or outside the view, and while its object is not in the scene. Outside a `<Scene3D>` it shows nothing.",
+      "props": {
+        "interface": "SceneAnchorProps",
+        "members": [
+          {
+            "name": "object",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            },
+            "doc": "The `id` of the object this content is pinned to: one of the scene's `objects` or `staticObjects`, or a child of a group. The content goes where the object is drawn, frame by frame, a model and an object that `transition` is easing included. While no object has that id, the content is hidden."
+          },
+          {
+            "name": "position",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "{ x: number; y: number; z: number }"
+            },
+            "doc": "A fixed place in the scene to pin the content to, `{ x, y, z }`, used when `object` is not given."
+          },
+          {
+            "name": "offset",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "{ x?: number; y?: number; z?: number }"
+            },
+            "doc": "How far the pin is from the object's own position (or from `position`), `{ x, y, z }` in scene units along the scene's axes: `{ y: 1 }` is one unit above, however the object is turned."
+          },
+          {
+            "name": "place",
+            "optional": true,
+            "type": {
+              "kind": "enum",
+              "options": [
+                "center",
+                "above",
+                "below",
+                "left",
+                "right"
+              ]
+            },
+            "default": "center",
+            "doc": "Where the content sits about the pin: 'center' (its middle on the pin, the default), 'above' (a name over a head), 'below', 'left' or 'right' (a card beside a part)."
+          },
+          {
+            "name": "clickThrough",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": false,
+            "doc": "Let the pointer through to the scene: for a label that is only read, so a click or an orbit that starts on it still reaches what is behind. Without it the content takes the pointer, as a button in it must."
+          },
+          {
+            "name": "children",
+            "optional": true,
+            "type": {
+              "kind": "node"
+            },
+            "doc": "The content: ordinary markup, a label, a health bar, a card with buttons."
+          },
+          {
+            "name": "className",
+            "optional": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "style",
+            "optional": true,
+            "type": {
+              "kind": "other",
+              "text": "React.CSSProperties"
             }
           }
         ]
@@ -11318,7 +11613,7 @@
             "type": {
               "kind": "string"
             },
-            "doc": "URL of the sprite sheet image"
+            "doc": "URL of the sprite sheet image. A path with no scheme (`\"assets/hero.png\"`) names a file in the app's own bundle, so logic can name a sheet without `asset()`; a path the bundle does not have is loaded as written."
           },
           {
             "name": "frameWidth",
@@ -11374,6 +11669,24 @@
             "doc": "Column offset for color variant (variantIndex × columns)"
           },
           {
+            "name": "frames",
+            "optional": true,
+            "type": {
+              "kind": "array",
+              "text": "number[]"
+            },
+            "doc": "The frames to play, in order, instead of the whole row: `frames={[4, 5, 6]}`. A frame is counted along the sheet from the first frame of `row`, left to right and then down, so with `columns={8}` frame 9 is the second frame of the row below. A list of one frame holds that frame."
+          },
+          {
+            "name": "loop",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": true,
+            "doc": "Whether the frames start again after the last (default true). With `loop={false}` they play once from the first, stay on the last, and `@end` is called: a jump, an explosion. It plays again when `frames` changes, or when `playing` is turned off and on."
+          },
+          {
             "name": "playing",
             "optional": true,
             "type": {
@@ -11399,6 +11712,31 @@
             },
             "default": 2,
             "doc": "Display scale multiplier"
+          },
+          {
+            "name": "x",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Where the sprite's left edge is, in pixels from the left of its container (the nearest positioned element: give the playing field `position: relative`). Moved by a transform, which the browser does without laying the page out again."
+          },
+          {
+            "name": "y",
+            "optional": true,
+            "type": {
+              "kind": "number"
+            },
+            "doc": "Where the sprite's top edge is, in pixels from the top of its container"
+          },
+          {
+            "name": "flipX",
+            "optional": true,
+            "type": {
+              "kind": "boolean"
+            },
+            "default": false,
+            "doc": "Mirror the sprite left to right, in place: a walk drawn facing right, shown facing left"
           },
           {
             "name": "zIndex",
@@ -11432,6 +11770,14 @@
               "kind": "function"
             },
             "doc": "Click handler; the sprite becomes a button, operable with Enter and Space"
+          },
+          {
+            "name": "onEnd",
+            "optional": true,
+            "type": {
+              "kind": "function"
+            },
+            "doc": "Called when a `loop={false}` run reaches its last frame. Where the person has asked for reduced motion the frames are not played: the last is shown and this is called at once."
           },
           {
             "name": "ariaLabel",
@@ -13015,7 +13361,7 @@
               "kind": "string"
             },
             "defaultUnknown": true,
-            "doc": "URL of the tileset sprite sheet"
+            "doc": "URL of the tileset sprite sheet. A path with no scheme (`\"assets/tiles.png\"`) names a file in the app's own bundle, so logic can name a tileset without `asset()`; a path the bundle does not have is loaded as written."
           },
           {
             "name": "tileSize",
@@ -13923,7 +14269,8 @@
       "RichTextEditor"
     ],
     "scene3d": [
-      "Scene3D"
+      "Scene3D",
+      "SceneAnchor"
     ],
     "smart": [
       "SmartGrid",
@@ -13948,7 +14295,8 @@
     "games": [
       "PixelGrid",
       "PixelCanvas",
-      "DPad"
+      "DPad",
+      "Controls"
     ]
   }
 }

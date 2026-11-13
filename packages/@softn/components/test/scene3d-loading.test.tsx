@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { Scene3D, type Scene3DModelStateInfo } from '../src/threed/Scene3D';
 import { emptyGltf, stubFetch, stubFrames, TestWebGLRenderer, waitFor } from './scene3d-doubles';
+import { exrBytes, hdrBytes } from './scene3d-panoramas';
 
 const counters = vi.hoisted(() => ({
   gltf: 0,
@@ -28,6 +29,10 @@ const counters = vi.hoisted(() => ({
   shader: 0,
   skeleton: 0,
   meshopt: 0,
+  hdr: 0,
+  exr: 0,
+  focus: 0,
+  occlusion: 0,
 }));
 
 vi.mock('three', async (importOriginal) => {
@@ -173,6 +178,54 @@ vi.mock('three/addons/libs/meshopt_decoder.module.js', () => {
   counters.meshopt++;
   return { MeshoptDecoder: { ready: Promise.resolve(), supported: true } };
 });
+// The readers of a panorama: one pixel of light (as half floats, three's 1016), whatever the bytes.
+vi.mock('three/addons/loaders/RGBELoader.js', () => {
+  counters.hdr++;
+  return {
+    RGBELoader: class {
+      parse() {
+        return { width: 1, height: 1, data: new Uint16Array(4), type: 1016 };
+      }
+    },
+  };
+});
+vi.mock('three/addons/loaders/EXRLoader.js', () => {
+  counters.exr++;
+  return {
+    EXRLoader: class {
+      parse() {
+        return { width: 1, height: 1, data: new Uint16Array(4), type: 1016 };
+      }
+    },
+  };
+});
+vi.mock('three/addons/postprocessing/BokehPass.js', () => {
+  counters.focus++;
+  return {
+    BokehPass: class {
+      enabled = true;
+      camera: unknown = null;
+      uniforms = { focus: { value: 0 }, aperture: { value: 0 }, maxblur: { value: 0 } };
+      materialBokeh = { defines: {} as Record<string, number>, needsUpdate: false };
+      render() {}
+      dispose() {}
+    },
+  };
+});
+vi.mock('three/addons/postprocessing/GTAOPass.js', () => {
+  counters.occlusion++;
+  return {
+    GTAOPass: class {
+      blendIntensity = 1;
+      camera: unknown = null;
+      gtaoMaterial = { defines: {} as Record<string, number>, needsUpdate: false, dispose() {} };
+      blendMaterial = { dispose() {} };
+      updateGtaoMaterial() {}
+      render() {}
+      dispose() {}
+    },
+  };
+});
 
 type Counters = typeof counters;
 const snapshot = (): Counters => ({ ...counters });
@@ -195,6 +248,10 @@ const nothing: Counters = {
   shader: 0,
   skeleton: 0,
   meshopt: 0,
+  hdr: 0,
+  exr: 0,
+  focus: 0,
+  occlusion: 0,
 };
 
 let container: HTMLDivElement;
@@ -219,6 +276,9 @@ beforeEach(() => {
       }),
     'https://models.test/basis.gltf': () =>
       emptyGltf({ extensionsUsed: ['KHR_texture_basisu'], extensionsRequired: ['KHR_texture_basisu'] }),
+    // One pixel each, as a real file of its kind: the scene reads a panorama's header itself before its reader does.
+    'https://models.test/sky.hdr': () => hdrBytes(1, 1, () => [1, 1, 1]),
+    'https://models.test/sky.exr': () => exrBytes(1, 1, () => [1, 1, 1]),
   });
 });
 
@@ -286,6 +346,44 @@ describe('Scene3D imports what the scene uses', () => {
     await waitFor(settled('o'), 'the model to settle');
     expect(states.at(-1)?.state).toBe('loaded');
     expect(delta(before)).toEqual({ ...nothing, obj: 1 });
+  });
+
+  // Each of the two readers of a panorama is fetched for a file of its kind and no other; an ordinary picture needs neither.
+  it('an .hdr environment imports its reader, an .exr its own, and a picture neither', async () => {
+    const lit = () => (container.querySelector('canvas') as HTMLCanvasElement & { __softnScene: { environment: unknown } }).__softnScene.environment !== null;
+    let before = snapshot();
+    act(() => root.render(<Scene3D environment={{ url: 'https://models.test/sky.hdr' }} />));
+    await waitFor(lit, 'the panorama');
+    expect(delta(before)).toEqual({ ...nothing, hdr: 1 });
+    act(() => root.unmount());
+
+    root = createRoot(container);
+    before = snapshot();
+    act(() => root.render(<Scene3D environment={{ url: 'https://models.test/sky.exr' }} />));
+    await waitFor(lit, 'the panorama');
+    expect(delta(before)).toEqual({ ...nothing, exr: 1 });
+    act(() => root.unmount());
+
+    root = createRoot(container);
+    before = snapshot();
+    act(() => root.render(<Scene3D environment={{ url: 'https://models.test/sky.jpg' }} />));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(delta(before)).toEqual(nothing);
+  });
+
+  // Bloom was the first scene with effects above, and fetched neither of these.
+  it('depth of field imports its pass, and ambient occlusion its own', async () => {
+    const chain = () => (container.querySelector('canvas') as { __softnEffects?: () => { depthOfField: unknown; ambientOcclusion: unknown } | null } | null)?.__softnEffects?.();
+    let before = snapshot();
+    act(() => root.render(<Scene3D effects={{ depthOfField: { focus: 3 } }} />));
+    await waitFor(() => !!chain()?.depthOfField, 'the chain to be built');
+    expect(delta(before)).toEqual({ ...nothing, focus: 1 });
+    expect(chain()?.ambientOcclusion).toBeNull();
+
+    before = snapshot();
+    act(() => root.render(<Scene3D effects={{ depthOfField: { focus: 3 }, ambientOcclusion: true }} />));
+    await waitFor(() => !!chain()?.ambientOcclusion, 'the chain to be built again');
+    expect(delta(before)).toEqual({ ...nothing, occlusion: 1 });
   });
 
   it('a plain scene imports no addon at all', async () => {

@@ -1,7 +1,7 @@
 /**
  * SoftN Component Registry
  *
- * What the Builder says of each of the 104 built-in components the palette
+ * What the Builder says of each of the 107 built-in components the palette
  * offers, and of the page itself: its category, icon and description, what
  * a new one starts with (`defaultProps`), which props the property panel
  * shows and with what control, and what it may hold. What the components
@@ -1322,11 +1322,14 @@ const baseRegistry: ComponentMeta[] = [
   comp(    'Loop',
     'Utility',
     'repeat',
-    'Render repeated content from an array expression',
+    'A clock for a game or an animation: calls its tick while running',
     { interval: 1000, running: false },
     [
       { name: 'interval', type: 'number', description: 'Milliseconds between ticks' },
       { name: 'running', type: 'expression' },
+      { name: 'frame', type: 'boolean', description: 'Tick once for each frame the screen draws, and not while the app is hidden' },
+      { name: 'maxFps', type: 'number', description: 'With frame, the most ticks in a second' },
+      { name: 'pauseHidden', type: 'boolean', description: 'Stop the timer while the app or the tab is hidden' },
       { name: 'onTick', type: 'event' },
     ],
     false
@@ -1480,9 +1483,27 @@ const baseRegistry: ComponentMeta[] = [
     [
       { name: 'onPress', type: 'event' },
       { name: 'onRelease', type: 'event' },
+      { name: 'onChange', type: 'event' },
       { name: 'buttonSize', type: 'number' },
       { name: 'color', type: 'color' },
       { name: 'visible', type: 'boolean' },
+    ],
+    false
+  ),
+  comp(
+    'Controls',
+    'Utility',
+    'gamepad',
+    'What the player holds, as one record: keys, a gamepad, and a DPad bound to the same variable',
+    { keys: '{ left: "ArrowLeft a", right: "ArrowRight d", up: "ArrowUp w", down: "ArrowDown s", fire: "Space" }' },
+    [
+      { name: 'keys', type: 'expression', description: 'The actions and the keys that hold each: { left: "ArrowLeft a", fire: "Space" }' },
+      { name: 'gamepad', type: 'expression', description: 'false to read no gamepad, or the buttons of each action: { fire: 0 }' },
+      { name: 'deadzone', type: 'number', description: 'How far the stick is pushed before it holds a direction' },
+      { name: 'enabled', type: 'boolean' },
+      { name: 'onChange', type: 'event' },
+      { name: 'onPress', type: 'event' },
+      { name: 'onRelease', type: 'event' },
     ],
     false
   ),
@@ -1611,9 +1632,15 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'rows', type: 'number' },
       { name: 'row', type: 'number' },
       { name: 'colOffset', type: 'number' },
+      { name: 'frames', type: 'expression', description: 'The frames to play, in order: [4, 5, 6]' },
+      { name: 'loop', type: 'boolean' },
       { name: 'playing', type: 'boolean' },
       { name: 'fps', type: 'number' },
       { name: 'scale', type: 'number' },
+      { name: 'x', type: 'number' },
+      { name: 'y', type: 'number' },
+      { name: 'flipX', type: 'boolean' },
+      { name: 'onEnd', type: 'event' },
       { name: 'className', type: 'string' },
     ],
     false
@@ -1715,7 +1742,25 @@ const baseRegistry: ComponentMeta[] = [
       { name: 'expandable', type: 'boolean' },
       { name: 'className', type: 'string' },
     ],
-    false
+    // What a scene draws of its children is the content pinned to places in it.
+    true,
+    ['SceneAnchor']
+  ),
+  comp(
+    'SceneAnchor',
+    'Display',
+    'message-square',
+    'Page content pinned to an object or a place in a 3D scene: a label, a card. Goes inside a Scene3D.',
+    { place: 'above' },
+    [
+      { name: 'object', type: 'string', description: 'The id of the object in the scene it is pinned to' },
+      { name: 'position', type: 'expression', description: 'A fixed place in the scene, { x, y, z }, when it names no object' },
+      { name: 'offset', type: 'expression', description: 'How far from that place, { x, y, z } in scene units' },
+      { name: 'place', type: 'select' },
+      { name: 'clickThrough', type: 'boolean' },
+      { name: 'className', type: 'string' },
+    ],
+    true
   ),
 
   // ==================== VALUES, PROGRESS AND HISTORY ====================

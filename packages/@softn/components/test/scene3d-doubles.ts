@@ -17,10 +17,17 @@ export class TestWebGLRenderer {
   outputColorSpace = '';
   capabilities = { getMaxAnisotropy: () => 4 };
   renders = 0;
-  setSize() {}
-  setPixelRatio() {}
+  /** Every size and pixel ratio it was given, in order. */
+  sizes: Array<[number, number]> = [];
+  pixelRatios: number[] = [];
+  setSize(width: number, height: number) {
+    this.sizes.push([width, height]);
+  }
+  setPixelRatio(ratio: number) {
+    this.pixelRatios.push(ratio);
+  }
   getPixelRatio() {
-    return 1;
+    return this.pixelRatios.at(-1) ?? 1;
   }
   // The effects composer asks the renderer how big it is before it decides
   // whether there is anything to build.
@@ -28,8 +35,30 @@ export class TestWebGLRenderer {
     target.set(300, 150);
     return target;
   }
-  render() {
+  /** The camera the last frame was drawn with. */
+  lastCamera: unknown = null;
+  /**
+   * The counters a real renderer keeps of what it drew, as the scene's
+   * readout reads them: cleared before each draw unless `autoReset` is off,
+   * and then only when asked. `drawn` is what one draw adds to them.
+   */
+  drawn = { calls: 0, triangles: 0 };
+  info = {
+    autoReset: true,
+    resets: 0,
+    render: { calls: 0, triangles: 0 },
+    reset(this: { resets: number; render: { calls: number; triangles: number } }) {
+      this.resets++;
+      this.render.calls = 0;
+      this.render.triangles = 0;
+    },
+  };
+  render(_scene?: unknown, camera?: unknown) {
     this.renders++;
+    this.lastCamera = camera ?? null;
+    if (this.info.autoReset) this.info.reset();
+    this.info.render.calls += this.drawn.calls;
+    this.info.render.triangles += this.drawn.triangles;
   }
   dispose() {}
   forceContextLoss() {}
@@ -106,6 +135,28 @@ export function stubFrames(): FrameStub {
       if (cb) cb(now);
     },
   };
+}
+
+/** A pointer event jsdom can dispatch: a mouse event given the pointer's id. */
+export function pointerEvent(type: string, pointerId: number, clientX = 0, clientY = 0, button = 0): PointerEvent {
+  const event = new MouseEvent(type, { bubbles: true, clientX, clientY, button });
+  Object.defineProperty(event, 'pointerId', { value: pointerId });
+  return event as PointerEvent;
+}
+
+/**
+ * Give a scene's canvas a place on the page, which jsdom does not: a
+ * rectangle for the pointer to be measured against, and pointer capture that
+ * does nothing. The default is 300 by 150 at the page's corner, so the
+ * middle of the view is (150, 75).
+ */
+export function placeCanvas(canvas: HTMLCanvasElement, width = 300, height = 150, left = 0, top = 0): HTMLCanvasElement {
+  canvas.getBoundingClientRect = () =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} }) as DOMRect;
+  canvas.setPointerCapture = vi.fn();
+  canvas.releasePointerCapture = vi.fn();
+  canvas.hasPointerCapture = () => false;
+  return canvas;
 }
 
 /** Three vertices, as float32 x/y/z: 36 bytes. */

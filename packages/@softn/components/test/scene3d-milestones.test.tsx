@@ -100,6 +100,19 @@ const takeParse = (name: string): Pending => {
   return pending;
 };
 const loaded = () => ({ scene: new THREE.Group(), animations: [] as [] });
+// What "loaded" says of a model with nothing in it, which is what `loaded()` is.
+const nothingInIt = {
+  clips: [],
+  materials: [],
+  meshes: [],
+  morphs: [],
+  nodes: [],
+  clipLengths: [],
+  cameras: [],
+  lights: [],
+  size: { x: 0, y: 0, z: 0 },
+  center: { x: 0, y: 0, z: 0 },
+};
 
 describe('model states', () => {
   it('reports pending, then loaded, with the attempt number', async () => {
@@ -110,7 +123,7 @@ describe('model states', () => {
       takeParse('a').resolve(loaded());
       await tick();
     });
-    expect(of('a').at(-1)).toEqual({ objectId: 'a', state: 'loaded', attempt: 1 });
+    expect(of('a').at(-1)).toEqual({ objectId: 'a', state: 'loaded', attempt: 1, ...nothingInIt });
     const loads = (container.querySelector('canvas') as HTMLCanvasElement & {
       __softnModelLoads: () => Record<string, { state: string }>;
     }).__softnModelLoads();
@@ -135,7 +148,7 @@ describe('model states', () => {
       takeParse('a').resolve(loaded());
       await tick();
     });
-    expect(of('a').at(-1)).toEqual({ objectId: 'a', state: 'loaded', attempt: 2 });
+    expect(of('a').at(-1)).toEqual({ objectId: 'a', state: 'loaded', attempt: 2, ...nothingInIt });
 
     // An unchanged `reload` is not a retry.
     act(() => root.render(<Scene3D objects={[model('a', 'a', { reload: 1 })]} onModelState={onModelState} />));
