@@ -618,8 +618,22 @@ function App(): React.ReactElement {
         // What the error card's "Try again" asks for again, should this open
         // fail: the address as it was given. Forgotten once the app is open.
         if (isForeground()) setUrlOpen({ value, initialPage });
-        setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '', directorySlug }]);
-        if (isForeground()) setActiveTabId(skeletonTabId);
+        const placeholder: OpenTab = { id: skeletonTabId, name: displayName, source: '', directorySlug };
+        // In the list now, ahead of the draw, for the two that ask below whether
+        // this tab is still open (here, after the download, and openBundle after
+        // each of its steps). The list they read was the last draw's, so a
+        // bundle that arrived before the next one (a small file from a near
+        // server, or one answered from a cache) found its own tab missing, took
+        // it for closed and was dropped without a word: the app sat at
+        // "Opening…" for as long as the person waited. Measured in WebKit on a
+        // first visit, 2026-11-13: 13 openings of 60 lost without this, none of
+        // 60 with it (test/openBeforeDraw.test.tsx has the order of events).
+        openTabsRef.current = [...openTabsRef.current, placeholder];
+        setOpenTabs((prev) => [...prev, placeholder]);
+        if (isForeground()) {
+          activeTabIdRef.current = skeletonTabId;
+          setActiveTabId(skeletonTabId);
+        }
 
         // The placeholder is the download's lease. Closing the tab aborts it —
         // a large bundle used to keep downloading after its tab was gone, and
