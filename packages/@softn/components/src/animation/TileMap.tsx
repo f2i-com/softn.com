@@ -9,9 +9,15 @@
 import * as React from 'react';
 import { isSafeUrl } from '@softn/core';
 import {ViewportTileMap} from './ViewportTileMap';
+import { useBundleSrc } from '../utils/bundle-src';
 
 export interface TileMapProps {
-  /** URL of the tileset sprite sheet */
+  /**
+   * URL of the tileset sprite sheet. A path with no scheme
+   * (`"assets/tiles.png"`) names a file in the app's own bundle, so logic
+   * can name a tileset without `asset()`; a path the bundle does not have is
+   * loaded as written.
+   */
   src?: string;
   /** Size of each tile in pixels (default 32) */
   tileSize?: number;
@@ -190,7 +196,11 @@ function sized(props: TileMapProps): SizedTileMapProps {
 }
 
 export function TileMap(props: TileMapProps) {
-  const map = sized(props);
+  // A tileset named by its path in the bundle is the bundle's file, for both
+  // ways of drawing the map: the path as written was asked of the page's
+  // own address, where the host has no such file.
+  const src = useBundleSrc(props.src);
+  const map = sized({ ...props, src });
   return props.viewport ? <ViewportTileMap {...map} /> : <LegacyTileMap {...map} />;
 }
 export default TileMap;

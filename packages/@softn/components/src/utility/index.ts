@@ -14,3 +14,4 @@ export * from './QRReader';
 export * from './Camera';
 export * from './Microphone';
 export * from './DPad';
+export * from './Controls';
