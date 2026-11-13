@@ -692,4 +692,41 @@ describe('a page whose code is written for a browser', () => {
     await settle();
     expect($('#out')!.textContent).toBe('sent 1');
   });
+
+  // The loop everyone writes. requestAnimationFrame handed its callback
+  // Date.now() while performance.now() counts from when the page started, so
+  // the first step was the fifty-odd years since 1970 and whatever it moved
+  // left the screen for good.
+  it('hands a requestAnimationFrame callback the clock performance.now() reads', async () => {
+    await mount(
+      `<p id="frames">0</p><p id="first">-</p><p id="longest">-</p><p id="x">0</p>
+<script>
+  let last = performance.now();
+  let frames = 0;
+  let longest = 0;
+  let x = 0;
+  function frame(now) {
+    const dt = (now - last) / 1000;
+    last = now;
+    frames++;
+    if (frames === 1) document.getElementById('first').textContent = String(dt);
+    longest = Math.max(longest, dt);
+    x += 100 * dt;
+    document.getElementById('frames').textContent = String(frames);
+    document.getElementById('longest').textContent = String(longest);
+    document.getElementById('x').textContent = String(x);
+    if (frames < 5) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>`,
+      () => $('#frames')?.textContent === '5'
+    );
+    expect($('#frames')!.textContent).toBe('5');
+    const first = Number($('#first')!.textContent);
+    // A frame or so, in seconds: not negative, and nowhere near a year.
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThan(5);
+    expect(Number($('#longest')!.textContent)).toBeLessThan(5);
+    expect(Number($('#x')!.textContent)).toBeLessThan(500);
+  });
 });

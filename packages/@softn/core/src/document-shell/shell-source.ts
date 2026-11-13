@@ -3557,7 +3557,12 @@ var __softnShell = (function (win) {
   }
 
   function queueMicrotask(fn) { Promise.resolve().then(fn); }
-  function requestAnimationFrame(fn) { return setTimeout(function () { fn(Date.now()); }, 16); }
+  // The callback is handed the clock performance.now() reads, as a browser
+  // hands it: the loop everyone writes, "let last = performance.now()" and
+  // then "(now - last) / 1000" in the callback, was given Date.now() here,
+  // and its first step was the fifty-odd years since 1970.
+  function frameTime() { return typeof performance === 'object' && performance && typeof performance.now === 'function' ? performance.now() : Date.now(); }
+  function requestAnimationFrame(fn) { return setTimeout(function () { fn(frameTime()); }, 16); }
   function cancelAnimationFrame(id) { clearTimeout(id); }
   // A copy as a browser makes one: dates, maps, sets, errors of their kind,
   // boxed values, an array with its length and its holes, typed arrays and

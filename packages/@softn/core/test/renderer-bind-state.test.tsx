@@ -28,7 +28,7 @@ const given: Record<string, SoftNProps> = {};
 
 function registry(): ComponentRegistry {
   const r = new ComponentRegistry();
-  for (const tag of ['Modal', 'Drawer', 'Confirm', 'Popover', 'Tooltip', 'Tabs', 'Pagination', 'Accordion', 'Sidebar', 'Collapse', 'Toast', 'FileChooser', 'Input']) {
+  for (const tag of ['Modal', 'Drawer', 'Confirm', 'Popover', 'Tooltip', 'Tabs', 'Pagination', 'Accordion', 'Sidebar', 'Collapse', 'Toast', 'FileChooser', 'Input', 'Controls', 'DPad']) {
     r.register(tag, (props: SoftNProps) => {
       given[tag] = props;
       return null;
@@ -183,6 +183,31 @@ describe('something that holds which one', () => {
     // A variable not set yet gives no list, and the chooser shows its own.
     draw('<FileChooser :bind={files} />', {});
     expect(given.FileChooser.value).toBeUndefined();
+  });
+});
+
+describe('what the player holds', () => {
+  // One record for keys, a gamepad and touch: each component is handed the
+  // record and hands back the next one.
+  it.each(['Controls', 'DPad'])('<%s :bind> is handed the record, and writes the record it hands back', (tag) => {
+    const pad = { left: false, presses: { left: 0 } };
+    const setState = draw(`<${tag} :bind={pad} />`, { pad });
+    expect(given[tag].value).toBe(pad);
+    const next = { left: true, presses: { left: 1 } };
+    call(tag, 'onChange', next);
+    expect(setState).toHaveBeenLastCalledWith('pad', next);
+
+    // A variable not set yet is nothing, not the empty text a field starts with.
+    draw(`<${tag} :bind={pad} />`, {});
+    expect(given[tag].value).toBeUndefined();
+  });
+
+  it('a handler written beside the binding still hears each press', () => {
+    const heard = vi.fn();
+    draw('<Controls :bind={pad} @press={heard} keys={{ fire: "Space" }} />', { pad: {} }, { heard });
+    call('Controls', 'onPress', 'fire');
+    expect(heard).toHaveBeenCalledWith('fire');
+    expect(given.Controls.keys).toEqual({ fire: 'Space' });
   });
 });
 

@@ -6,9 +6,108 @@
  * worker bundle.
  */
 
+/** The `host.call` kind that says a key listener tried to cancel a key it could not; its arguments are the event's type, key and code. */
+export const KEY_PREVENTED = 'input.keyPrevented';
+
+/**
+ * What tells the host that a key listener on the window called
+ * `preventDefault()` for a key the page had not kept from the browser.
+ *
+ * The call does nothing there: the listener runs after the browser has
+ * acted on the key, in the engine or a worker away, so the arrows scroll the
+ * page under a game whatever the listener says. Eight of the shipped games
+ * make that call, forty times between them, and none says which keys it
+ * wants with `softn.input.captureKeys`. Nothing told their authors. So the
+ * listeners a script puts on its window for keys are heard through a
+ * function that gives each event a `preventDefault` of this file's: for a
+ * key that was kept from the browser (`defaultPrevented` is true by then) it
+ * does nothing, as before, and for any other it tells the host, once for
+ * each key, and the host says so in the console, once for the app
+ * (script-runtime.ts).
+ *
+ * A function is given the same stand-in every time it is added, so adding
+ * it twice and taking it away behave as they did.
+ *
+ * Put after {@link SOFTN_BRIDGE_PREAMBLE} by both runtimes, and kept out of
+ * it, as the timers are: that preamble is the list of what an app can ask
+ * of its host, in either language, and this is not something an app asks.
+ */
+export const KEY_LISTENER_PREAMBLE = `
+;(function () {
+  if (typeof window !== "object" || window === null || typeof window.addEventListener !== "function") return;
+  var add = window.addEventListener, remove = window.removeEventListener;
+  var heard = new Map(), told = Object.create(null);
+  function isKey(type) { return type === "keydown" || type === "keyup" || type === "keypress"; }
+  function through(fn) {
+    var stand = heard.get(fn);
+    if (stand) return stand;
+    stand = function (e) {
+      if (e !== null && typeof e === "object") {
+        try {
+          e.preventDefault = function () {
+            var key = String(e.key);
+            if (e.defaultPrevented === true || told[key]) return;
+            told[key] = true;
+            host.call("${KEY_PREVENTED}", [String(e.type), key, String(e.code)], function () {});
+          };
+        } catch (_) {}
+      }
+      return fn.call(this, e);
+    };
+    heard.set(fn, stand);
+    return stand;
+  }
+  try {
+    window.addEventListener = function (type, fn, options) {
+      return add.call(window, type, isKey(type) && typeof fn === "function" ? through(fn) : fn, options);
+    };
+    if (typeof remove === "function") {
+      window.removeEventListener = function (type, fn, options) {
+        return remove.call(window, type, isKey(type) && heard.has(fn) ? heard.get(fn) : fn, options);
+      };
+    }
+  } catch (_) {}
+})();
+`;
+
 /**
  * Bridge preamble for the softn.* namespace.
  * Builds a JS object that delegates to host.call() for each capability.
+ *
+ * Two parts of it are not calls to the host but names for values the page
+ * and the logic share on the window, so that they can be written down in a
+ * guide and found:
+ *
+ * `softn.input.keys` and `softn.input.down(name)`: the keys a
+ * `<Scene3D gameControls>` holds, by name: `w`, `a`, `s`, `d`, `up`, `down`,
+ * `left`, `right`, `space` and `shift`, each true while it is down, and an
+ * empty record where no such scene is drawn. It is the window's
+ * `__softnKeys`. For any other keys, and for touch and a gamepad, a page
+ * binds a `<Controls>` to a variable instead.
+ *
+ * `softn.scene`: the mouse-look `<Scene3D>` on screen (`mouseLook` or
+ * `pointerLock`).
+ * - `softn.scene.yaw` and `softn.scene.pitch`: which way its camera faces,
+ *   in radians. Read them to move the player that way; set them to turn the
+ *   camera (a new game, a teleport).
+ * - `softn.scene.locked`: true while a `pointerLock` scene holds the
+ *   pointer. A game pauses when it turns false: the player pressed Escape.
+ * - `softn.scene.lock()`: ask the scene to take the pointer. Call it from
+ *   the handler of a click (a Start or Resume button), which is when a
+ *   browser allows it.
+ * - `softn.scene.unlock()`: give the pointer back, for a menu or a panel
+ *   opened over the game.
+ * These are the window's `__scene3dYaw`, `__scene3dPitch`, `__scene3dLocked`,
+ * `__scene3dWantLock` and `__scene3dReleaseLock`, which work as they did.
+ *
+ * Each is read as it stood when the call into the logic began, and what the
+ * logic sets is put on the page when the call ends (window-bridge.ts).
+ *
+ * That is on the page's thread, where every app's logic runs unless its
+ * manifest asks for a worker. Logic in a worker shares no `window.__…`
+ * value with the page, by these names or by the window's: there the keys
+ * are an empty record, `yaw` and `pitch` read 0, `locked` reads false, and
+ * `lock()` and `unlock()` reach no scene.
  */
 export const SOFTN_BRIDGE_PREAMBLE = `
 let softn = {
@@ -105,7 +204,26 @@ let softn = {
     // them. Text fields and the browser's own chords are never affected.
     captureKeys: function(keys, callback) {
       host.call("input.captureKeys", [JSON.stringify(Array.isArray(keys) ? keys : (keys == null ? [] : [String(keys)]))], callback || function(){});
+    },
+    // What a <Scene3D gameControls> holds (see the head of softn-preamble.ts).
+    get keys() {
+      var held = window.__softnKeys;
+      return held !== null && typeof held === "object" ? held : {};
+    },
+    down: function(name) {
+      var held = window.__softnKeys;
+      return held !== null && typeof held === "object" && held[String(name)] === true;
     }
+  },
+  // The mouse-look <Scene3D> on screen (see the head of softn-preamble.ts).
+  scene: {
+    get yaw() { var v = window.__scene3dYaw; return typeof v === "number" ? v : 0; },
+    set yaw(v) { window.__scene3dYaw = Number(v) || 0; },
+    get pitch() { var v = window.__scene3dPitch; return typeof v === "number" ? v : 0; },
+    set pitch(v) { window.__scene3dPitch = Number(v) || 0; },
+    get locked() { return window.__scene3dLocked === true; },
+    lock: function() { window.__scene3dWantLock = true; },
+    unlock: function() { window.__scene3dReleaseLock = true; }
   },
   sandbox: {
     run: function(source, input, callback) {

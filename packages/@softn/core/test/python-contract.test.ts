@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SOFTN_BRIDGE_PREAMBLE } from '../src/runtime/softn-preamble';
+import { KEY_LISTENER_PREAMBLE, KEY_PREVENTED, SOFTN_BRIDGE_PREAMBLE } from '../src/runtime/softn-preamble';
 import { TIMER_CLEAR, TIMER_WAIT, timerPreamble } from '../src/runtime/logic-timers';
 import {
   PYTHON_CAPABILITY_KINDS,
@@ -64,6 +64,14 @@ describe('one capability set, two languages', () => {
       expect(SOFTN_BRIDGE_PREAMBLE).not.toContain(`host.call("${kind}"`);
       expect(PYTHON_CAPABILITY_KINDS).not.toContain(kind);
     }
+  });
+
+  // Nor is what tells the host that a key listener called preventDefault():
+  // the runtime's own word, not something an app asks for.
+  it('leaves the key listener’s word to the host out of the capability set', () => {
+    expect(KEY_LISTENER_PREAMBLE).toContain(`host.call("${KEY_PREVENTED}"`);
+    expect(SOFTN_BRIDGE_PREAMBLE).not.toContain(KEY_PREVENTED);
+    expect(PYTHON_CAPABILITY_KINDS).not.toContain(KEY_PREVENTED);
   });
 
   it('binds every namespace the app writes before the dot', () => {
@@ -116,7 +124,13 @@ describe('one capability set, two languages', () => {
     const main = mainSource(['app']);
     expect(main).toContain('def _init():');
     expect(main).toContain('vars(m).get("_init")');
-    expect(main).toContain('_HOST_NAMES = ("_init",)');
+    // And the two the host calls when the app goes to the background and
+    // comes back, carried across the same way.
+    expect(main).toContain('_HOST_NAMES = ("_init", "_onHide", "_onShow")');
+    for (const name of ['_onHide', '_onShow']) {
+      expect(main).toContain(`def ${name}():`);
+      expect(main).toContain(`vars(m).get("${name}")`);
+    }
     expect(main).toContain('if k.startswith("_") and k not in _HOST_NAMES:');
   });
 });

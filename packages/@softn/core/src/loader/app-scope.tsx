@@ -66,7 +66,10 @@ export function useAppXDB(): XDBService {
 }
 
 export function useAppActive(): boolean {
-  return useAppScope().active;
+  // From the context itself, not through useAppScope: asking for the whole
+  // scope makes the shared store for a component outside any app, and what
+  // asks this (a game's clock, its controls, a 3D scene) has no use for one.
+  return React.useContext(AppScopeContext)?.active ?? true;
 }
 
 export function useAppAssets(): AppAssetResolver | undefined {

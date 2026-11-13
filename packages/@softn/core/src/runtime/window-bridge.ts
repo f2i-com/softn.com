@@ -5,13 +5,103 @@
  * way around a call into the script.
  */
 
+import { blankCommentsAndStrings } from './code-text';
 import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import { extractEventProps } from './event-props';
 import { appHears, shouldCaptureKey } from './key-capture';
 import type { LogicEngine } from './vm-adapter';
+import { deepEqual } from './vm-state';
 
 /** `window.__…` names a script's window never writes to the page's (see fromVM). */
 const HOST_WINDOW_NAME = /^__(?:tauri|react|softn|vite|webpack|playwright|vue|next|nuxt|zone|proto__$)/i;
+
+/**
+ * The keys a `<Scene3D gameControls>` holds, which `softn.input.keys` and
+ * `softn.input.down()` read: the one name of SoftN's own that logic is
+ * handed the value of for naming it. It is never written from logic.
+ */
+export const HELD_KEYS_NAME = '__softnKeys';
+
+/**
+ * What `softn.scene` reads and writes: where a mouse-look `<Scene3D>` is
+ * looking, whether it holds the pointer, and the two requests logic makes of
+ * it (softn-preamble.ts; the component's side is in Scene3D.tsx).
+ */
+export const SCENE_NAMES: readonly string[] = [
+  '__scene3dYaw',
+  '__scene3dPitch',
+  '__scene3dLocked',
+  '__scene3dWantLock',
+  '__scene3dReleaseLock',
+];
+
+/**
+ * The names of SoftN's own that its components keep on the page's window for
+ * logic: the keys a scene holds, and what a mouse-look scene and logic say to
+ * each other. They are the only names logic is handed the page's value of for
+ * reading them, they are never taken for the host's (hostWindowKeys), and a
+ * value the page takes away is taken from the logic too (toVM).
+ */
+const CHANNEL_NAMES: ReadonlySet<string> = new Set([HELD_KEYS_NAME, ...SCENE_NAMES]);
+
+/** Whether the text reaches `softn.<part>`: by its name, by taking it out of `softn`, or by handing `softn` on whole. */
+function reachesSoftn(text: string, part: 'input' | 'scene'): boolean {
+  // By its name: `softn.scene`, and `softn.input` wherever it is not only being asked to
+  // capture keys, which reads nothing of what a scene holds.
+  const after = part === 'input' ? '(?!\\s*\\??\\.\\s*captureKeys\\b)' : '';
+  if (new RegExp(`\\bsoftn\\s*\\??\\.\\s*${part}\\b${after}`).test(text)) return true;
+  // `const { scene } = softn`, `const { input: keys } = softn`.
+  if (new RegExp(`\\{[^{}]*\\b${part}\\b[^{}]*\\}\\s*=\\s*softn\\b`).test(text)) return true;
+  // `softn` under another name (`const s = softn`), in a call (`start(softn)`), or by a name worked out (`softn[part]`).
+  // Not a taking-apart (`{ … } = softn`), which says what it takes and is read above.
+  return /(?<!\}\s*)=\s*softn\s*(?:[;,)\n}]|$)/.test(text) || /[(,]\s*softn\s*[,)]/.test(text) || /\bsoftn\s*\[/.test(text);
+}
+
+/**
+ * The names of SoftN's own that a script's text reads, and the ones behind
+ * the `softn` names it uses.
+ *
+ * A name was shared with the page only once the script had written it: the
+ * keys were found on the script's own window after a call. So logic that
+ * only read `window.__scene3dLocked`, or the keys a scene holds, saw
+ * `undefined` for ever, and a game began by assigning each name it meant to
+ * read. The names are in the text, so they are taken from it as the script
+ * loads.
+ *
+ * `read` are those of SoftN's own names (CHANNEL_NAMES) that the text reads
+ * and nowhere assigns: the script is handed the page's value of each from its
+ * first call. Only those. Any other `window.__name` is shared as it always
+ * was, once the script has written it and from the call after: handing over
+ * whatever the page holds under a name, for the naming of it, let an app read
+ * what the page it is embedded in keeps on its window; and a game guards
+ * against starting twice with a name of its own (`if (!window.__listening)
+ * { window.__listening = true; … }`), which a second view of the same app
+ * must find unset on its first call however the first view wrote it. A name
+ * of SoftN's that the text also assigns is left out too: writing it first was
+ * the way round, and works as it did. The name behind `softn.input` is among
+ * them wherever the text reaches `softn.input`.
+ *
+ * `shared` are the names behind `softn.scene`, where the text reaches it:
+ * read from the first call, and written to the page when the call that wrote
+ * them ends (WindowBridge.shareKey).
+ */
+export function windowNamesIn(code: string): { read: string[]; shared: string[] } {
+  if (!code.includes('window') && !code.includes('softn')) return { read: [], shared: [] };
+  const text = blankCommentsAndStrings(code);
+  const read = new Set<string>();
+  const assigned = new Set<string>();
+  // The name, and what follows it: an assignment (`=`, `+=`, `||=`, `++`), or anything else.
+  const mention = /(\+\+|--|\bdelete\s+)?\s*\bwindow\s*\.\s*(__[A-Za-z0-9_$]+)\s*(=(?![=>])|[-+*/%&|^]=|\*\*=|<<=|>>>?=|&&=|\|\|=|\?\?=|\+\+|--)?/g;
+  for (const match of text.matchAll(mention)) {
+    if (!CHANNEL_NAMES.has(match[2])) continue;
+    if (match[1] !== undefined || match[3] !== undefined) assigned.add(match[2]);
+    else read.add(match[2]);
+  }
+  for (const name of assigned) read.delete(name);
+  if (reachesSoftn(text, 'input')) read.add(HELD_KEYS_NAME);
+  const shared = reachesSoftn(text, 'scene') ? [...SCENE_NAMES] : [];
+  return { read: [...read], shared };
+}
 
 /**
  * Which app's script wrote each `window.__…` value onto the page's window,
@@ -45,10 +135,21 @@ export class WindowBridge {
   /** Index of the `window` global in the VM; -1 until a script that declares one is loaded. */
   windowGlobalIndex = -1;
 
-  /** Set of __ window property keys to sync */
+  /** The `__` window keys the script is handed the page's value of (toVM). */
   private syncKeys: Set<string> = new Set();
+  /**
+   * Those of them the script's value is written to the page for (fromVM): a
+   * key found on the script's own window after a call, which is written
+   * from the next call on, as it always was, and a key shared for writing
+   * from the start (shareKey), which is written after the same call.
+   */
+  private writeKeys: Set<string> = new Set();
+  /** The keys shared because the script's text reads them (registerSyncKey). */
+  private readKeys: Set<string> = new Set();
   /** Cached: true when at least one syncKey is defined on the real window */
   private windowSyncActive = false;
+  /** Whether a key is shared for writing from the start (shareKey). */
+  private writesFromStart = false;
   /**
    * The `__` globals the host page already had when this runtime was made —
    * `__TAURI__`, `__softnAsset`, a devtools hook. A script may read them, and
@@ -96,7 +197,11 @@ export class WindowBridge {
     this.hostWindowKeys = new Set(
       typeof window === 'undefined'
         ? []
-        : Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__') && !windowKeyOwners.has(k))
+        : // Nor SoftN's own names for a scene and its logic: a scene puts where it looks on the
+          // window as it mounts, so logic started after it (a newer version of the app handed
+          // over in place, an editor's preview drawn again) took the names for the host's and
+          // could never write them. `softn.scene.yaw = 0` then did nothing, and said nothing.
+          Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__') && !windowKeyOwners.has(k) && !CHANNEL_NAMES.has(k))
     );
   }
 
@@ -171,20 +276,44 @@ export class WindowBridge {
     const vmWindow = engine.getGlobal(this.windowGlobalIndex);
     if (!vmWindow || typeof vmWindow !== 'object') return;
 
-    for (const key of Object.keys(vmWindow as Record<string, unknown>)) {
-      if (key.startsWith('__') && !this.syncKeys.has(key)) {
-        this.syncKeys.add(key);
-        this.windowSyncActive = true;
-      }
+    const held = vmWindow as Record<string, unknown>;
+    for (const key of Object.keys(held)) {
+      if (!key.startsWith('__') || this.writeKeys.has(key)) continue;
+      // A name the script only reads is on its window because the page's
+      // value was put there (toVM), not because the script wrote it: it is
+      // not the script's to write back until it holds something else.
+      if (this.readKeys.has(key) && this.windowSyncSeen.has(key) && deepEqual(this.windowSyncSeen.get(key), held[key])) continue;
+      this.syncKeys.add(key);
+      this.writeKeys.add(key);
+      this.windowSyncActive = true;
     }
   }
 
   /**
-   * Register a __ window property key for syncing from real window → VM.
+   * Hand the script the page's value of a `__` window property from now on,
+   * whether or not the script has written it: a name its text only reads
+   * (windowNamesIn). Should the script write to it after all, some way its
+   * text does not show, that is written to the page as for any key, once it
+   * is found on the script's window.
    */
   registerSyncKey(key: string): void {
     if (key.startsWith('__')) {
       this.syncKeys.add(key);
+      this.readKeys.add(key);
+    }
+  }
+
+  /**
+   * Share a `__` window property both ways from now on: what the script
+   * writes to it is on the page when the call that wrote it ends. For the
+   * names behind `softn.scene`, where `softn.scene.lock()` from a button
+   * must reach the scene while the click still counts as the person's.
+   */
+  shareKey(key: string): void {
+    if (key.startsWith('__')) {
+      this.syncKeys.add(key);
+      this.writeKeys.add(key);
+      this.writesFromStart = true;
     }
   }
 
@@ -226,6 +355,13 @@ export class WindowBridge {
         // from one it merely received.
         this.windowSyncSeen.set(key, value);
         changed = true;
+      } else if (value === undefined && CHANNEL_NAMES.has(key) && this.windowSyncSeen.has(key) && key in updated) {
+        // What the page has taken away is the logic's no longer: a scene that
+        // has gone takes `__scene3dLocked` with it, and `softn.scene.locked`
+        // went on saying the pointer was held.
+        delete updated[key];
+        this.windowSyncSeen.delete(key);
+        changed = true;
       }
     }
 
@@ -239,10 +375,10 @@ export class WindowBridge {
    * Only syncs keys registered via registerSyncKey().
    */
   fromVM(): void {
-    if (!this.windowSyncActive) return;
+    if (!this.windowSyncActive && !this.writesFromStart) return;
     const engine = this.engine();
     if (this.windowGlobalIndex < 0 || !engine) return;
-    if (typeof window === 'undefined' || this.syncKeys.size === 0) return;
+    if (typeof window === 'undefined' || this.writeKeys.size === 0) return;
 
     const vmWindow = engine.getGlobal(this.windowGlobalIndex);
     if (!vmWindow || typeof vmWindow !== 'object') return;
@@ -250,7 +386,7 @@ export class WindowBridge {
     const realWin = window as unknown as Record<string, unknown>;
     const vmWinObj = vmWindow as Record<string, unknown>;
 
-    for (const key of this.syncKeys) {
+    for (const key of this.writeKeys) {
       const value = vmWinObj[key];
       if (value === undefined) continue;
       // The host's own globals are read-only from in here — see hostWindowKeys.
@@ -293,8 +429,11 @@ export class WindowBridge {
     for (const coalescer of this.eventCoalescers) coalescer.dispose();
     this.eventCoalescers = [];
     this.syncKeys.clear();
+    this.writeKeys.clear();
+    this.readKeys.clear();
     this.windowSyncSeen.clear();
     this.windowSyncActive = false;
+    this.writesFromStart = false;
     // The app's latches go with the app. Left behind, the next runtime on
     // this page — a reload of the same bundle — would snapshot them as the
     // host's and refuse to write them, and pointer lock would never engage.

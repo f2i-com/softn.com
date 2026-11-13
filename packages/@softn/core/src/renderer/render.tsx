@@ -25,6 +25,7 @@ import type { EditMarks, SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent, type DeclaredPropKinds } from './registry';
 import { cssPropertyName, inlineStyleObject } from './inline-style';
 import { isCallbackProp } from '../runtime/drawn-functions';
+import { DROPPABLE_EVENT_PROPS, forEventProp } from '../runtime/droppable-calls';
 import { hostHoldsKeyboard } from '../runtime/key-capture';
 import {
   beginPass,
@@ -874,6 +875,12 @@ const BOUND_STATE: Record<string, { prop: string; flag?: boolean; writes: Array<
   // The files chosen: `onSelect` hands over the list, and an empty one when
   // the person takes them back.
   FileChooser: { prop: 'value', writes: [['onSelect']] },
+  // What the player holds, as one record: each is handed the record and
+  // hands back a new one when a key, a button or a direction changes. Bound
+  // the ordinary way they were handed `''` for a variable not yet set, and
+  // a record is what both expect.
+  Controls: { prop: 'value', writes: [['onChange']] },
+  DPad: { prop: 'value', writes: [['onChange']] },
 };
 
 /** Whether an element writes state itself: it has a `:bind`, or is a grid with `selectTo`. */
@@ -1038,6 +1045,11 @@ function renderElement(
   // `style` alone, the way `class:` does for one class. Merged after the
   // bindings below, so it also composes with a `:style` binding.
   let styleDirectives: Record<string, unknown> | null = null;
+  // The handlers written for an event that goes on reporting (a tick, the
+  // pointer moving, a scroll), by their prop: `@tick` and `onTick` alike.
+  // Calls they make into the logic may be dropped when it is behind; see
+  // runtime/droppable-calls.ts.
+  let mayBeDropped: string[] | null = null;
 
   for (const prop of node.props) {
     if (prop.name.startsWith('class:')) {
@@ -1096,6 +1108,7 @@ function renderElement(
         // state changes from these handlers trigger re-renders
         const isCallback = isCallbackProp(prop.name);
         const evalContext = isCallback ? callbackContext() : context;
+        if (isCallback && DROPPABLE_EVENT_PROPS.has(prop.name)) (mayBeDropped ??= []).push(prop.name);
 
         // `onClick={doThing()}` names the call to make on click, not a value to
         // compute now — the same reading `@click={doThing()}` already gets from
@@ -1359,6 +1372,7 @@ function renderElement(
     // the new value.
     const boundHandlerName = reactEventProp(event.name);
     const boundHandler = props[boundHandlerName];
+    if (DROPPABLE_EVENT_PROPS.has(boundHandlerName)) (mayBeDropped ??= []).push(boundHandlerName);
 
     // If the handler is a function call (e.g., @click={handleClick()}),
     // we need to wrap it in a closure to prevent immediate execution during render.
@@ -1433,6 +1447,16 @@ function renderElement(
       write(args[0]);
       return authored(...args);
     };
+  }
+
+  // What an event that goes on reporting calls in the logic may be dropped
+  // when the logic is behind, and nothing else may: the event decides, not
+  // what the function is called.
+  if (mayBeDropped) {
+    for (const name of mayBeDropped) {
+      const handler = props[name];
+      if (typeof handler === 'function') props[name] = forEventProp(name, handler as EventHandler);
+    }
   }
 
   if (typeof FinalComponent === 'string') {

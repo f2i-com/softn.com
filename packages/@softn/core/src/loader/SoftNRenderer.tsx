@@ -458,6 +458,9 @@ export interface SoftNRendererProps {
    * mounted and toggles them with `display`, so a renderer cannot tell from
    * its own tree whether it is on screen. Published to the components below;
    * defaults to true for a host that shows one app at a time.
+   *
+   * The app's logic is told when this changes, and when the browser's tab is
+   * hidden or shown: `_onHide()` and `_onShow()`, where it defines them.
    */
   active?: boolean;
 
@@ -1031,6 +1034,19 @@ function DefaultRuntimeErrorFallback({
   );
 }
 
+/** Whether the browser is showing this document: false while its tab is in the background. */
+function useDocumentShown(): boolean {
+  const [shown, setShown] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const read = () => setShown(document.visibilityState !== 'hidden');
+    read();
+    document.addEventListener('visibilitychange', read);
+    return () => document.removeEventListener('visibilitychange', read);
+  }, []);
+  return shown;
+}
+
 /**
  * SoftN Renderer Component
  *
@@ -1460,6 +1476,42 @@ export function SoftNRenderer({
   useEffect(() => {
     appViewRef.current?.setShown(active);
   }, [active]);
+
+  // ── The app going to the background and coming back ────────────────────
+  //
+  // Logic is told, by two functions it may define, as it is told the app has
+  // loaded (`_init`) and that a permission changed (`_onPermissionChange`):
+  // `_onHide()` when the app is no longer in front of the person, because the
+  // host is showing another of its apps or the browser's tab went to the
+  // background, and `_onShow()` when it is again. A game pauses there, a
+  // player stops its sound. The window's `blur`, which is what there was to
+  // listen for, says nothing when another app is chosen inside the host.
+  //
+  // Logic takes itself to be on screen when it starts. Started in the
+  // background, it is told `_onHide()` once, after `_init()`.
+  const documentShown = useDocumentShown();
+  const onScreen = active && documentShown;
+  const onScreenRef = useRef(onScreen);
+  onScreenRef.current = onScreen;
+  /** The functions of the logic that is running, and whether it was last told it is on screen. */
+  const shownToldRef = useRef<{ functions: Record<string, (...args: unknown[]) => unknown>; shown: boolean } | null>(null);
+  /**
+   * What the logic that has just gone was last told, for the logic that takes
+   * its place to take up if it takes its variables too (a newer version of the
+   * app handed over in place). Told it was in the background, an app has
+   * paused itself in those variables: started as though on screen, the new
+   * logic was never told `_onShow()` when the app came back, and stayed paused.
+   */
+  const shownBeforeRef = useRef<boolean | null>(null);
+  const tellShown = useCallback(() => {
+    const told = shownToldRef.current;
+    if (!told || told.shown === onScreenRef.current) return;
+    told.shown = onScreenRef.current;
+    const name = told.shown ? '_onShow' : '_onHide';
+    const tell = told.functions[name];
+    if (typeof tell === 'function') void Promise.resolve(tell()).catch((error: unknown) => console.error(`[SoftN] ${name} error:`, error));
+  }, []);
+  useEffect(tellShown, [onScreen, tellShown]);
 
   // ── A newer version of the open app, or a change to what it is allowed ──
 
@@ -2370,6 +2422,17 @@ export function SoftNRenderer({
                 });
               }
 
+              // Logic that has just started takes itself to be on screen:
+              // one started in the background is told it is not, after
+              // `_init`, and every change from here on (see tellShown).
+              // Logic that took over the variables of the logic before it took
+              // what that one had been told with them.
+              const tookVariables = result.carried !== undefined && 'names' in result.carried;
+              const before = shownBeforeRef.current;
+              shownBeforeRef.current = null;
+              shownToldRef.current = { functions: result.functions, shown: tookVariables && before !== null ? before : true };
+              tellShown();
+
               // Auto-poll sync status if there's a saved sync room
               if (resumeSavedSyncRoom && result.functions['refreshSyncStatus']) {
                 try {
@@ -2527,6 +2590,11 @@ export function SoftNRenderer({
       // Mark this effect invocation as stale so its async callbacks are ignored
       stale = true;
 
+      // The logic that is going is told nothing more of being shown or hidden.
+      // What it was last told is kept for the logic that follows it.
+      if (shownToldRef.current) shownBeforeRef.current = shownToldRef.current.shown;
+      shownToldRef.current = null;
+
       // Clean up script runtime and sync poll on source change or unmount
       if (scriptRuntimeRef.current) {
         scriptRuntimeRef.current.cleanup();
@@ -2565,6 +2633,7 @@ export function SoftNRenderer({
     showAlert,
     showScriptFailure,
     showPersistenceFailure,
+    tellShown,
     readAsset,
     restarts,
     runtimePermissions,

@@ -15,7 +15,7 @@ import {
   SnapshotDBBridge,
   SnapshotLocalStorageBridge,
 } from './script-worker-bridges';
-import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
+import { KEY_LISTENER_PREAMBLE, SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { adoptZippWasmSource } from './zipp-wasm-loader';
 import { adoptZippGlue } from './zipp-glue';
 import { TIMER_TRAILER, timerPreamble } from './logic-timers';
@@ -347,6 +347,7 @@ self.onmessage = async (evt: MessageEvent) => {
         (prologueIsStrict(resolvedCode) ? STRICT_DIRECTIVE : '') +
           VM_BRIDGE_PREAMBLE +
           SOFTN_BRIDGE_PREAMBLE +
+          KEY_LISTENER_PREAMBLE +
           timerPreamble(resolvedCode) +
           externalPreamble
       );

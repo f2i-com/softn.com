@@ -32,6 +32,11 @@ export function extractEventProps(event: Event): Record<string, unknown> {
     props.metaKey = event.metaKey;
     props.repeat = event.repeat;
     props.isComposing = event.isComposing === true;
+    // Whether the key has been kept from the browser by the time the script
+    // hears of it: one it named with `softn.input.captureKeys`, or one a
+    // `<Controls>` took. A listener's own `preventDefault()` changes
+    // nothing, and the runtime says so for a key this is false for.
+    props.defaultPrevented = event.defaultPrevented === true;
     return props;
   }
 

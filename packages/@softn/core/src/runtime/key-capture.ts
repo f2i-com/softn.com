@@ -179,7 +179,20 @@ export function lastPressWasFor(owner: object): boolean {
   const shown = typeof element.checkVisibility === 'function' ? element.checkVisibility() : element.isConnected;
   if (!shown) return false;
   const doc = target.nodeType === 9 ? (target as unknown as Document) : target.ownerDocument;
+  // Not a box of the host's that holds the app, which appHears takes a key on: this is asked
+  // before an app may write to the clipboard, and stays as narrow as it was.
   return !!doc && (target === doc || target === doc.body || target === doc.documentElement);
+}
+
+/**
+ * Whether `target` is an element that holds the app drawn in `element` and is
+ * neither a field of the host's nor one of its marked controls: the box a host
+ * keeps an app in, where it rests the focus when nothing in the app has it.
+ */
+function holdsApp(target: Node, element: Element): boolean {
+  if (target.nodeType !== 1 || target === element || !target.contains(element)) return false;
+  if (targetIsEditable(target as Node & { ownerDocument: Document | null })) return false;
+  return typeof (target as Element).matches !== 'function' || !(target as Element).matches(HOST_CHROME);
 }
 
 const POINTER_EVENT = /^(?:mouse|pointer|touch|drag|drop|wheel|click|dblclick|contextmenu|lostpointercapture|gotpointercapture)/;
@@ -211,7 +224,14 @@ export function appHears(owner: object, event: Event): boolean {
   if (!shown) return false;
   const doc = target.ownerDocument;
   if (doc && (target === doc.body || target === doc.documentElement)) return true;
-  if (!POINTER_EVENT.test(event.type)) return false;
+  // A key, or anything else that is not the pointer, aimed at a box that holds
+  // the app: where a host rests the focus while nothing in the app has it
+  // (SoftN Web keeps it on the app's own tab, so there is somewhere for it to
+  // land other than the page). The page was the only such box known here, so a
+  // game heard no key until the person had clicked one of its controls, and in
+  // a browser where a click gives a button no focus (Safari), never. Not a
+  // field the host has there, and not the host's marked controls.
+  if (!POINTER_EVENT.test(event.type)) return holdsApp(target, element);
   const chrome = typeof (target as unknown as Element).closest === 'function' && (target as unknown as Element).closest(HOST_CHROME) !== null;
   if (!chrome) return true;
   const press = heldPress;

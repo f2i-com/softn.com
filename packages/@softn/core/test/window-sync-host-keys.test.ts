@@ -302,6 +302,410 @@ describe('two apps open on one page', () => {
   });
 });
 
+describe('a name the logic only reads', () => {
+  const SCENE = ['__softnKeys', '__scene3dLocked', '__scene3dYaw', '__scene3dPitch', '__scene3dWantLock', '__scene3dReleaseLock', '__viteThing'];
+  const clear = () => {
+    for (const key of SCENE) delete realWin[key];
+  };
+  beforeEach(clear);
+  afterEach(clear);
+
+  // A name was shared only once the script had written it, so a game began
+  // by assigning every name it meant to read; one that did not read
+  // `undefined` for ever, with nothing to say why.
+  it('is seen without being written first: the keys a scene holds, and its pointer lock', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let sawKeys = "not read"
+        let sawLock = "not read"
+        function step() {
+          sawKeys = window.__softnKeys ? "w=" + window.__softnKeys.w : "undefined"
+          sawLock = String(window.__scene3dLocked)
+        }
+      `)
+    );
+    // What the component does on the real window, after the script has loaded.
+    realWin.__softnKeys = { w: true, space: false };
+    realWin.__scene3dLocked = true;
+    await result.functions.step();
+    expect(runtime.state.sawKeys).toBe('w=true');
+    expect(runtime.state.sawLock).toBe('true');
+
+    // And as they change, at each call.
+    (realWin.__softnKeys as Record<string, boolean>).w = false;
+    realWin.__scene3dLocked = false;
+    await result.functions.step();
+    expect(runtime.state.sawKeys).toBe('w=false');
+    expect(runtime.state.sawLock).toBe('false');
+    runtime.cleanup();
+  });
+
+  // Reading a name earlier changes nothing about when a write to it reaches
+  // the page: found on the script's window after the call that wrote it,
+  // and written from the next, as the head of this file says.
+  it('is written to the page as it always was once the logic does write it: from the next call', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        function start() { window.__scene3dWantLock = true }
+        function idle() {}
+      `)
+    );
+    await result.functions.start();
+    expect('__scene3dWantLock' in realWin).toBe(false);
+    await result.functions.idle();
+    expect(realWin.__scene3dWantLock).toBe(true);
+    runtime.cleanup();
+    expect('__scene3dWantLock' in realWin).toBe(false);
+  });
+
+  it('is not one of the host’s or a framework’s, which are shared as they were: once written', async () => {
+    realWin.__viteThing = { secret: 1 };
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let seen = "not read"
+        function look() { seen = typeof window.__viteThing }
+      `)
+    );
+    await result.functions.look();
+    await result.functions.look();
+    expect(runtime.state.seen).toBe('undefined');
+    runtime.cleanup();
+  });
+
+  it('is not taken from a comment or a string', async () => {
+    const { windowNamesIn } = await import('../src/runtime/window-bridge');
+    expect(windowNamesIn('// window.__scene3dYaw\nlet s = "window.__softnKeys"; let t = window.__scene3dLocked + window . __scene3dPitch')).toEqual({ read: ['__scene3dLocked', '__scene3dPitch'], shared: [] });
+    expect(windowNamesIn('let n = 1')).toEqual({ read: [], shared: [] });
+    // Only SoftN's own names: any other is shared as it always was, once the script has written it.
+    expect(windowNamesIn('let t = window.__c + window . __d; f(window.__hostConfig)')).toEqual({ read: [], shared: [] });
+    expect(windowNamesIn('if (softn.input.down("w")) go()')).toEqual({ read: ['__softnKeys'], shared: [] });
+    expect(windowNamesIn('softn.input.captureKeys(["a"])')).toEqual({ read: [], shared: [] });
+    expect(windowNamesIn('yaw = softn.scene.yaw')).toEqual({
+      read: [],
+      shared: ['__scene3dYaw', '__scene3dPitch', '__scene3dLocked', '__scene3dWantLock', '__scene3dReleaseLock'],
+    });
+    expect(windowNamesIn('let k = window.__softnKeys; let t = window.__TAURI__')).toEqual({ read: ['__softnKeys'], shared: [] });
+    // A name the text assigns anywhere is the script's own, shared as it always was.
+    expect(windowNamesIn('if (!window.__on) { window.__on = true }')).toEqual({ read: [], shared: [] });
+    for (const written of ['window.__n++', '++window.__n', 'window.__n += 1', 'window.__n ||= 1', 'window.__n ??= {}', 'delete window.__n', 'window . __n=2']) {
+      const own = written.replace('__n', '__scene3dYaw');
+      expect(windowNamesIn(`let a = window.__scene3dYaw; ${own}`), own).toEqual({ read: [], shared: [] });
+    }
+    // Comparing it, or writing into what it holds, is reading it.
+    for (const read of ['window.__n == 1', 'window.__n === 1', 'window.__n <= 1', 'window.__n >= 1', 'window.__n != 1', 'window.__n.w = true', 'window.__n[0] = 1', 'f(window.__n)']) {
+      const own = read.replace('__n', '__softnKeys');
+      expect(windowNamesIn(own), own).toEqual({ read: ['__softnKeys'], shared: [] });
+    }
+    // `softn.input` and `softn.scene` are reached by more than their own spelling. Found by
+    // review, 2026-11-13: `const input = softn.input; input.down("w")` answered false for ever.
+    const ALL = ['__scene3dYaw', '__scene3dPitch', '__scene3dLocked', '__scene3dWantLock', '__scene3dReleaseLock'];
+    expect(windowNamesIn('const input = softn.input; if (input.down("w")) go()')).toEqual({ read: ['__softnKeys'], shared: [] });
+    expect(windowNamesIn('const { scene } = softn; yaw = scene.yaw')).toEqual({ read: [], shared: ALL });
+    expect(windowNamesIn('const { input: pad, scene } = softn')).toEqual({ read: ['__softnKeys'], shared: ALL });
+    expect(windowNamesIn('const s = softn\nfunction f() { return s.scene.locked }')).toEqual({ read: ['__softnKeys'], shared: ALL });
+    expect(windowNamesIn('start(softn)')).toEqual({ read: ['__softnKeys'], shared: ALL });
+    expect(windowNamesIn('const look = softn?.scene')).toEqual({ read: [], shared: ALL });
+    // Other parts of `softn` reach neither.
+    expect(windowNamesIn('const db = softn.db; softn.nav.go("home"); const { net } = softn')).toEqual({ read: [], shared: [] });
+    // The old way round the bug, writing the keys' name first, is left as it worked.
+    expect(windowNamesIn('window.__softnKeys = {}; let w = window.__softnKeys.w')).toEqual({ read: [], shared: [] });
+    expect(windowNamesIn('window.__softnKeys = {}; let w = softn.input.down("w")')).toEqual({ read: ['__softnKeys'], shared: [] });
+  });
+
+  // Snake starts with `if (!window.__snakeKeyListenerAdded) { … = true; listen }`.
+  // A name the text also writes is not handed over before the script has
+  // written it, so a second view of the same app, whose first view has put
+  // the name on the page, still finds it unset on its own first call.
+  it('leaves a name the logic also writes as it was: a second view of the app starts as the first did', async () => {
+    const GUARD = `
+      let listening = "no"
+      function _init() {
+        if (!window.__listening) { window.__listening = true; listening = "yes" }
+      }
+      function idle() {}
+    `;
+    const first = makeRuntime(undefined, 'guarded-app');
+    const one = await first.loadScript(script(GUARD));
+    await one.functions._init();
+    await one.functions.idle();
+    expect(first.state.listening).toBe('yes');
+    expect(realWin.__listening).toBe(true);
+
+    const second = makeRuntime(undefined, 'guarded-app');
+    const two = await second.loadScript(script(GUARD));
+    await two.functions._init();
+    expect(second.state.listening).toBe('yes');
+    first.cleanup();
+    second.cleanup();
+    delete realWin.__listening;
+  });
+
+  // What a scene keeps on the window as a record it changes in place (the keys
+  // it holds) is read by the logic, never replaced by the logic's copy of it,
+  // and never claimed: another app reads it too.
+  it('reads the record a scene keeps on the window without taking it over', async () => {
+    const kept: Record<string, unknown> = { w: false };
+    const READER = `
+      let seen = "nothing"
+      function look() { seen = window.__softnKeys ? "w=" + window.__softnKeys.w : "undefined" }
+    `;
+    const a = makeRuntime(undefined, 'reader-a');
+    const b = makeRuntime(undefined, 'reader-b');
+    const one = await a.loadScript(script(READER));
+    const two = await b.loadScript(script(READER));
+    realWin.__softnKeys = kept;
+    await one.functions.look();
+    await one.functions.look();
+    expect(a.state.seen).toBe('w=false');
+    // Still the component's own object, so what it changes in place is seen.
+    expect(realWin.__softnKeys).toBe(kept);
+    kept.w = true;
+    await one.functions.look();
+    await two.functions.look();
+    expect(a.state.seen).toBe('w=true');
+    expect(b.state.seen).toBe('w=true');
+    a.cleanup();
+    b.cleanup();
+    // Not the logic's to take away either.
+    expect(realWin.__softnKeys).toBe(kept);
+  });
+
+  // Found by review, 2026-11-13. Handing over whatever the page holds under a
+  // name, for the naming of it, let an app read what the page it is embedded
+  // in keeps on its window: the probe read `window.__hostConfig.token`.
+  it('is one of SoftN’s own, and no other: what the page keeps on its window is not handed over for the asking', async () => {
+    realWin.__hostConfig = { token: 'the page’s own' };
+    realWin.__viewState = { a: 1 };
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let token = "not read"
+        let view = "not read"
+        function look() {
+          token = window.__hostConfig ? String(window.__hostConfig.token) : "undefined"
+          view = window.__viewState ? "a=" + window.__viewState.a : "undefined"
+        }
+      `)
+    );
+    for (let call = 0; call < 3; call++) await result.functions.look();
+    expect(runtime.state.token).toBe('undefined');
+    expect(runtime.state.view).toBe('undefined');
+    runtime.cleanup();
+    expect(realWin.__hostConfig).toEqual({ token: 'the page’s own' });
+    delete realWin.__hostConfig;
+    delete realWin.__viewState;
+  });
+
+  // Found by review, 2026-11-13: a latch read by its name and set some other
+  // way was taken for one the logic only reads, so a second view of the app
+  // was handed the first view's on its first call and never started.
+  it('a latch of the app’s own set some way its text does not show is still the app’s own: a second view starts', async () => {
+    for (const set of ['window["__listening"] = true', 'const w = window; w.__listening = true', 'Object.assign(window, { __listening: true })']) {
+      const GUARD = `
+        let listening = "no"
+        function _init() {
+          if (!window.__listening) { ${set}; listening = "yes" }
+        }
+        function idle() {}
+      `;
+      const first = makeRuntime(undefined, 'guarded-app');
+      const one = await first.loadScript(script(GUARD));
+      await one.functions._init();
+      await one.functions.idle();
+      expect(first.state.listening, set).toBe('yes');
+
+      const second = makeRuntime(undefined, 'guarded-app');
+      const two = await second.loadScript(script(GUARD));
+      await two.functions._init();
+      expect(second.state.listening, set).toBe('yes');
+      first.cleanup();
+      second.cleanup();
+      delete realWin.__listening;
+    }
+  });
+
+  // Found by review, 2026-11-13: `softn.scene.locked` went on saying the
+  // pointer was held after the scene that held it had gone.
+  it('is taken from the logic when the page takes it away', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let locked = "not read"
+        let direct = "not read"
+        function look() {
+          locked = String(softn.scene.locked)
+          direct = String(window.__scene3dLocked)
+        }
+      `)
+    );
+    realWin.__scene3dLocked = true;
+    await result.functions.look();
+    expect(runtime.state.locked).toBe('true');
+    // The scene unmounts.
+    delete realWin.__scene3dLocked;
+    await result.functions.look();
+    expect(runtime.state.locked).toBe('false');
+    expect(runtime.state.direct).toBe('undefined');
+    // And another mounts.
+    realWin.__scene3dLocked = true;
+    await result.functions.look();
+    expect(runtime.state.locked).toBe('true');
+    runtime.cleanup();
+  });
+});
+
+describe('softn.input and softn.scene: names for what the page and the logic share', () => {
+  const SCENE = ['__softnKeys', '__scene3dLocked', '__scene3dYaw', '__scene3dPitch', '__scene3dWantLock', '__scene3dReleaseLock'];
+  const clear = () => {
+    for (const key of SCENE) delete realWin[key];
+  };
+  beforeEach(clear);
+  afterEach(clear);
+
+  it('softn.input.keys and softn.input.down read the keys a scene holds', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let forward = "?"
+        let jump = "?"
+        let held = "?"
+        function step() {
+          forward = softn.input.down("w")
+          jump = softn.input.down("space")
+          held = Object.keys(softn.input.keys).filter(k => softn.input.keys[k]).join(",")
+        }
+        function press() { softn.input.keys.a = true; window.__softnKeys = { a: true } }
+      `)
+    );
+    // No scene with gameControls is drawn: nothing is held, and nothing fails.
+    await result.functions.step();
+    expect([runtime.state.forward, runtime.state.jump, runtime.state.held]).toEqual([false, false, '']);
+
+    realWin.__softnKeys = { w: true, a: false, space: true };
+    await result.functions.step();
+    expect([runtime.state.forward, runtime.state.jump, runtime.state.held]).toEqual([true, true, 'w,space']);
+
+    // Logic cannot press a key for the page: the name is SoftN's own.
+    await result.functions.press();
+    await result.functions.press();
+    expect((realWin.__softnKeys as Record<string, boolean>).a).toBe(false);
+    runtime.cleanup();
+  });
+
+  it('softn.scene reads where the scene looks and whether it holds the pointer', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let yaw = -1, pitch = -1, locked = "?"
+        function step() { yaw = softn.scene.yaw; pitch = softn.scene.pitch; locked = softn.scene.locked }
+      `)
+    );
+    // No scene yet: zero and not locked, never undefined.
+    await result.functions.step();
+    expect([runtime.state.yaw, runtime.state.pitch, runtime.state.locked]).toEqual([0, 0, false]);
+
+    // What a pointerLock scene writes as the mouse moves.
+    realWin.__scene3dYaw = 1.25;
+    realWin.__scene3dPitch = -0.5;
+    realWin.__scene3dLocked = true;
+    await result.functions.step();
+    expect([runtime.state.yaw, runtime.state.pitch, runtime.state.locked]).toEqual([1.25, -0.5, true]);
+    // Reading changed nothing on the page.
+    expect([realWin.__scene3dYaw, realWin.__scene3dPitch, realWin.__scene3dLocked]).toEqual([1.25, -0.5, true]);
+    runtime.cleanup();
+  });
+
+  it('softn.scene.lock() and unlock() ask the scene, and setting yaw turns it, by the end of the same call', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        function start() { softn.scene.yaw = 3; softn.scene.pitch = 0.25; softn.scene.lock() }
+        function menu() { softn.scene.unlock() }
+        function idle() {}
+      `)
+    );
+    await result.functions.start();
+    expect(realWin.__scene3dWantLock).toBe(true);
+    expect([realWin.__scene3dYaw, realWin.__scene3dPitch]).toEqual([3, 0.25]);
+
+    // The scene takes the request and clears it; logic that does not ask again does not ask again.
+    realWin.__scene3dWantLock = false;
+    realWin.__scene3dYaw = 3.5;
+    await result.functions.idle();
+    expect(realWin.__scene3dWantLock).toBe(false);
+    // Nor is the look the mouse has moved since put back to what logic last set.
+    expect(realWin.__scene3dYaw).toBe(3.5);
+
+    await result.functions.menu();
+    expect(realWin.__scene3dReleaseLock).toBe(true);
+    runtime.cleanup();
+  });
+
+  // Found by review, 2026-11-13. A scene puts where it looks on the window as
+  // it mounts. Logic started after that (a newer version of the app handed over
+  // in place, an editor's preview drawn again) took the names for the host's
+  // own and could never write them: `softn.scene.yaw = 0` did nothing.
+  it('setting yaw, and asking for the pointer, work for logic started after a scene is already there', async () => {
+    realWin.__scene3dYaw = 1.2;
+    realWin.__scene3dPitch = 0.3;
+    realWin.__scene3dLocked = false;
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let yaw = -1
+        function look() { yaw = softn.scene.yaw }
+        function start() { softn.scene.yaw = 0; softn.scene.pitch = 0; softn.scene.lock() }
+      `)
+    );
+    await result.functions.look();
+    expect(runtime.state.yaw).toBe(1.2);
+    await result.functions.start();
+    expect([realWin.__scene3dYaw, realWin.__scene3dPitch, realWin.__scene3dWantLock]).toEqual([0, 0, true]);
+    runtime.cleanup();
+  });
+
+  // The same by the window names an older game writes.
+  it('the window names are written too by logic started after a scene is already there', async () => {
+    realWin.__scene3dYaw = 1.2;
+    realWin.__scene3dWantLock = false;
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        function init() { window.__scene3dYaw = 0; window.__scene3dWantLock = false }
+        function start() { window.__scene3dYaw = 2; window.__scene3dWantLock = true }
+        function idle() {}
+      `)
+    );
+    await result.functions.init();
+    await result.functions.start();
+    await result.functions.idle();
+    expect([realWin.__scene3dYaw, realWin.__scene3dWantLock]).toEqual([2, true]);
+    runtime.cleanup();
+  });
+
+  it('the window names still work beside them, in one app', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(
+      script(`
+        let locked = "?"
+        function init() { window.__scene3dLocked = false; window.__scene3dWantLock = false }
+        function start() { window.__scene3dWantLock = true }
+        function step() { locked = softn.scene.locked }
+      `)
+    );
+    await result.functions.init();
+    await result.functions.start();
+    expect(realWin.__scene3dWantLock).toBe(true);
+    realWin.__scene3dLocked = true;
+    await result.functions.step();
+    expect(runtime.state.locked).toBe(true);
+    runtime.cleanup();
+  });
+});
+
 describe('host calls made from a window event handler', () => {
   class FakeAudio {
     static built: FakeAudio[] = [];

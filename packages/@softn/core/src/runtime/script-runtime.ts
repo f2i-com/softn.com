@@ -23,7 +23,7 @@ import {
   type SymbolScope,
 } from './vm-adapter';
 import { SandboxHost } from './sandbox-host';
-import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
+import { KEY_LISTENER_PREAMBLE, KEY_PREVENTED, SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { LogicTimers, TIMER_TRAILER, timerPreamble } from './logic-timers';
 import { prologueIsStrict, STRICT_DIRECTIVE } from './directive-prologue';
 import { blankCommentsAndStrings } from './code-text';
@@ -47,6 +47,7 @@ import {
 import type { LocalSpeechHost } from './local-speech';
 import { clearCapturedKeys, lastPressWasFor, parseCapturedKeys, setAppElement, setCapturedKeys } from './key-capture';
 import { deepEqual } from './vm-state';
+import { droppableRun } from './droppable-calls';
 import { clipboardWriteRefusal } from './clipboard-gate';
 import {
   COMPUTED_PREFIX,
@@ -75,7 +76,7 @@ import {
   readExternalValue,
   type ExternalPrimitive,
 } from './external-values';
-import { WindowBridge } from './window-bridge';
+import { WindowBridge, windowNamesIn } from './window-bridge';
 import { ConsentPendingError, requireNetHost, requirePermission, type HostGate } from './host-calls/permissions';
 import { markStart } from './state-carry-mark';
 import type { CarriedState, StartMark, StateSlots } from './state-carry';
@@ -768,7 +769,7 @@ export class SoftNScriptRuntime {
       // The logic starts a line of its own, and the engine counts its
       // positions from there (logic-origin.ts).
       const bridges = endLine(
-        strict + VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode
+        strict + VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + KEY_LISTENER_PREAMBLE + timerPreamble(resolvedCode) + extFnPreamble + shellCode
       );
       const origin = logicOrigin(bridges);
       const scriptCode = bridges + resolvedCode + TIMER_TRAILER;
@@ -826,11 +827,17 @@ export class SoftNScriptRuntime {
     }
     this.externalValuesGlobalIndex = symbolMap.get(EXTERNAL_VALUES_VAR)?.index ?? -1;
 
-    // 6. Set up window global index (sync keys are discovered dynamically)
+    // 6. Set up window global index. The `window.__…` names the logic's text
+    // uses are read from the page from its first call, and the ones behind
+    // `softn.scene` written to it too; a name the logic reaches some other
+    // way is found on its window once it has written it.
     if (useHostBridges) {
       const windowSym = symbolMap.get('window');
       if (windowSym) {
         this.windowBridge.windowGlobalIndex = windowSym.index;
+        const names = windowNamesIn(logicText ?? '');
+        for (const name of names.read) this.windowBridge.registerSyncKey(name);
+        for (const name of names.shared) this.windowBridge.shareKey(name);
       }
     }
 
@@ -994,16 +1001,15 @@ export class SoftNScriptRuntime {
           : '')
     );
 
-    // 7. Create async function wrappers (propagate state changes to React)
-    // Rapid-fire event handlers (mousemove, scroll, etc.) are marked droppable —
-    // safe to skip under queue saturation since they'll be superseded by the next
-    // event. All other functions (clicks, submits, etc.) are critical and will
-    // queue up to a hard limit to guarantee execution.
-    const DROPPABLE_PATTERN =
-      /^on_?(mouse_?move|pointer_?move|scroll|touch_?move|wheel)|^(tick|update|animate|render)/i;
+    // 7. Create async function wrappers (propagate state changes to React).
+    // Whether a call may be dropped when the queue is full is the event's to
+    // say, not the function's name: a call made from the handler of an event
+    // that goes on reporting (a tick, the pointer moving, a scroll) may be,
+    // since the next one supersedes it, and every other call (a click, a
+    // submit) waits its turn up to the hard limit. See droppable-calls.ts.
     const functions: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
     for (const name of functionNames) {
-      functions[name] = this.createVMFunction(name, { droppable: DROPPABLE_PATTERN.test(name) });
+      functions[name] = this.createVMFunction(name);
     }
 
     // 8. Create sync function wrappers (for template expressions, no state propagation)
@@ -1231,12 +1237,11 @@ export class SoftNScriptRuntime {
   private _perfSyncToVMMs = 0;
   private _perfChangedVars = 0;
 
-  private createVMFunction(
-    name: string,
-    options?: { droppable?: boolean }
-  ): (...args: unknown[]) => Promise<unknown> {
-    const droppable = options?.droppable ?? false;
+  private createVMFunction(name: string): (...args: unknown[]) => Promise<unknown> {
     return (...args: unknown[]): Promise<unknown> => {
+      // Asked now, while the handler that is calling is still running: the
+      // renderer marks the handlers of the events that may be dropped.
+      const leftOut = this.eventIsLeftOut(droppableRun());
       // What the script is given is read now, while the event is the one it
       // was: after the wait for the engine React has cleared the event's
       // `currentTarget`, and `@click={save}` was given no `target` and no
@@ -1247,7 +1252,7 @@ export class SoftNScriptRuntime {
       // way: a handler that waits for this call asks (failed-calls.ts).
       const outcome: CallOutcome = { failed: false };
       return withOutcome(
-        this.enterVM(name, droppable, () => this.vmEngine!.callFunction(name, crossing), outcome),
+        this.enterVM(name, leftOut, () => this.vmEngine!.callFunction(name, crossing), outcome),
         outcome
       );
     };
@@ -1261,16 +1266,39 @@ export class SoftNScriptRuntime {
    * is said here and the promise resolves all the same; `outcome`, when the
    * caller keeps one, is told of it.
    */
+  /** The run of a droppable event's handler whose calls were last weighed, and whether that event is left out. */
+  private weighedRun = 0;
+  private weighedRunLeftOut = false;
+
+  /**
+   * Whether the event whose handler is making this call is one to leave out:
+   * an event that may be dropped (`run` is its handler's, 0 for any other
+   * call), arriving when QUEUE_SOFT_LIMIT calls were already waiting. Asked
+   * once for each event, as its handler makes its first call, and answered
+   * the same for every call that handler makes: an event runs whole or not
+   * at all. Counting each call against the ones its own handler had just
+   * made dropped the thirty-third call of every tick that made more.
+   */
+  private eventIsLeftOut(run: number): boolean {
+    if (run === 0) return false;
+    if (run !== this.weighedRun) {
+      this.weighedRun = run;
+      this.weighedRunLeftOut = this.vmCallQueueDepth >= SoftNScriptRuntime.QUEUE_SOFT_LIMIT;
+    }
+    return this.weighedRunLeftOut;
+  }
+
+  /** How many calls may be waiting before an event that may be dropped is, and before any call is. */
+  private static readonly QUEUE_SOFT_LIMIT = 32;
+  private static readonly QUEUE_HARD_LIMIT = 128;
+
   private async enterVM(
     name: string,
-    droppable: boolean,
+    leftOut: boolean,
     run: () => unknown,
     outcome?: CallOutcome
   ): Promise<unknown> {
-    // Droppable calls (rapid-fire events) are dropped at the soft limit.
-    // Critical calls (user interactions) are only dropped at the hard limit.
-    const QUEUE_SOFT_LIMIT = 32;
-    const QUEUE_HARD_LIMIT = 128;
+    const QUEUE_HARD_LIMIT = SoftNScriptRuntime.QUEUE_HARD_LIMIT;
     // A runtime that has been torn down answers nothing. Without this, a
     // 30 Hz game loop keeps landing calls on the disposed engine — each one
     // an "engine is disposed" error in the console — until its renderer
@@ -1281,11 +1309,10 @@ export class SoftNScriptRuntime {
       this.reportStopped(name);
       return undefined;
     }
-    // Guard against unbounded queue growth from rapid async events.
-    if (droppable && this.vmCallQueueDepth >= QUEUE_SOFT_LIMIT) {
-      // Safe to drop: rapid-fire events are superseded by the next one
-      return undefined;
-    }
+    // Guard against unbounded queue growth from rapid async events: an event
+    // that reports where something is now, come while the engine was already
+    // far behind, is superseded by the next one (eventIsLeftOut).
+    if (leftOut) return undefined;
     if (this.vmCallQueueDepth >= QUEUE_HARD_LIMIT) {
       console.error(
         `[SoftN] Dropping VM call to ${name}: hard queue limit reached (${this.vmCallQueueDepth})`
@@ -2482,6 +2509,8 @@ export class SoftNScriptRuntime {
         return readBase64(this.gate, call);
       case 'files.saveFile':
         return saveFile(this.gate, call);
+      case KEY_PREVENTED:
+        return this.handleKeyPrevented(call);
       case 'input.captureKeys':
         return this.handleInputCaptureKeys(call);
       case 'ai.getCapabilities':
@@ -2610,6 +2639,27 @@ export class SoftNScriptRuntime {
     const keys = parseCapturedKeys(call.args[0]);
     setCapturedKeys(this, keys);
     return { captured: keys.length };
+  }
+
+  /** Whether this app has been told that `preventDefault()` in a window key listener does nothing. */
+  private keyPreventedSaid = false;
+
+  /**
+   * A key listener the logic put on the window called `preventDefault()` for
+   * a key that had not been kept from the browser (softn-preamble.ts). The
+   * call did nothing, and the page may have scrolled, or a button been
+   * pressed, under the game: said once for the app, with the two ways to
+   * keep a key.
+   */
+  private async handleKeyPrevented(call: PendingHostCall): Promise<unknown> {
+    if (this.keyPreventedSaid) return null;
+    this.keyPreventedSaid = true;
+    const [type, key] = call.args;
+    const named = key === ' ' ? 'Space' : String(key ?? '');
+    console.warn(
+      `[SoftN] A ${String(type ?? 'key')} listener on the window called preventDefault() for the ${named} key, which does nothing there: logic hears a key after the browser has acted on it, so the page may still scroll. Name the keys the app wants to itself with softn.input.captureKeys(["${named}"]), or use <Controls keys={{…}} />, which keeps the keys it is given.`
+    );
+    return null;
   }
 }
 
