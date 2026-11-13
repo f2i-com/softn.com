@@ -232,6 +232,38 @@ never sends an update sees nothing different.
   answered, and nothing is answered after `formlogic:dispose`, so a parent
   keeps a deadline of its own.
 
+## Page links, and where the app is (unreleased)
+
+A link to another page of the app (`<a href="about.html">`) was left to the
+browser, which took the frame to an address the parent has no such page at:
+the app went blank until it was opened again. The frame now follows such a
+link itself, as SoftN Web and the single-file shell do (core's `bundlePageAt`
+and `composePage`), and says where the app is so the parent can put it in its
+own address. It is an addition: a parent that sends no place and reads none
+sees nothing different, but for links that now work. The frame's side is
+`apps/formlogic-host/src/place.ts` and `main.tsx`.
+
+- The frame says it can: `formlogic:ready` carries `places: 1`.
+- A place is one string the parent keeps as it came: `/` for the main page,
+  `/about.html` or `/docs/guide.html` for another page file by its path among
+  the app's files, and a named page inside the app (a NavItem's `page`, kept
+  in `currentPage`) after `#`: `/#settings`, `/docs/guide.html#team`. Each
+  part is percent-encoded. It starts with one `/`, never `//`, holds no `\`
+  or `?`, and is at most 2000 characters.
+- The frame posts `{ type: 'place', place }` on the app's port right after
+  `shown`, then whenever the place changes. Never the same one twice in a row.
+- `formlogic:init` may carry `place`, read once: the app starts there. It is
+  read as untrusted. Anything that is no place of this app (no such page, a
+  file that is not a page, the wrong shape) starts the app on its main page,
+  with no error.
+- A link is followed when it names a page of the app (`.html`, `.htm`, `.ui`
+  among the files `init` carried); its `?query` and `#fragment` are not read.
+  Another page is a fresh run: its variables start again and what the app has
+  stored is kept. A link to anything else is still the browser's.
+- A `formlogic:update` while another page is showing keeps that page if the
+  new version has it. If it does not, the frame posts the place `/` and then
+  answers `restarted` with `changed` holding `page`.
+
 ## The editor bridge's AI requests
 
 The hosted editors talk to FormLogic over the channel in

@@ -34,6 +34,52 @@ to open. A parent that never sees `shown: 1` gets no `shown` and waits for nothi
 `--softn-loading-color` (the wheel; `currentColor` by default) and `--softn-loading-background`
 (transparent by default). Someone who asked for less motion sees it pulse slowly instead of spin.
 
+## The app's other pages, and where it is
+
+An app written as a site has more than one page file. A link from one to another
+(`<a href="about.html">`, a NavItem's `navigate`, `location.href = …` in a page's code) used to be
+left to the browser: the frame went to an address that is FormLogic's own page, which refuses to
+be framed, and the app went blank. The frame now shows the page itself, as SoftN Web and the
+single-app page do (core's `bundlePageAt` and `composePage`; `src/place.ts` decides): the app
+composed with that page as its main one and run afresh, on the records it has, with the same
+storage, backend calls, media, engine and theme. A link to the main page goes back to it. A link
+that is not to a page of the app (another site, an address with a scheme, a file that is not a
+page) is the browser's, as before, and a page's own code is sent to one of the app's pages or
+nowhere. An app whose manifest core's `readManifest` does not take (no `name`) opens as it did
+and has no link followed.
+
+`ready` says `places: 1`, and the frame tells its parent where the app is, on the port:
+
+```
+{ "type": "place", "place": "/docs/guide.html#team" }
+```
+
+`place` is one string, which the parent reads nothing in and may keep in its address bar:
+
+- `/` is the app's main page, and `/about.html` or `/docs/guide.html` another page file, by its
+  path in the bundle;
+- a named page inside it (what a NavItem's `page` sets, the app's `currentPage`, as the renderer
+  reports it) comes after `#`: `/#settings`, `/docs/guide.html#team`.
+
+It always starts with one `/` and never two, has no `\` or `?`, and is at most 2,000 characters;
+each part of the path and the name are percent-encoded. It is posted once after `shown`, and then
+whenever the app is somewhere else: a link followed, a named page chosen, a newer version that no
+longer has the page showing. It is never the same place twice running. An app whose logic sets a
+`currentPage` as it starts is told in two steps, when it opens and after each link: `/about.html`
+as the page is put on screen, then `/about.html#home` once its logic has started. The frame
+takes a place only in `init`, so a parent that keeps it in its address bar replaces the address,
+as SoftN Web does for a page change: a history entry would be one it could not go back to.
+
+`init` may carry that string back as `place`, and the app then starts there: on that page file,
+and, where the place names one, on that named page (given to the renderer as its first
+`currentPage`, as SoftN Web gives one). It is text from an address anyone can write, so it is
+read to that shape and held to the app's own files: a page the app has not, a file that is not a
+page, `//host`, `/../x`, a `?query`, text that is not percent-encoded, anything longer than 2,000
+characters or not text at all starts the app on its main page, with no error. A name is given
+only to an app whose files mention `currentPage`: an app that keeps its page under `page`, or
+keeps none, would have its NavItems set a variable it never reads. A parent that sends no `place`
+and reads none sees an app whose links to its own pages work, and nothing else different.
+
 ## Theme
 
 `init.dark` is FormLogic's own theme, and an app whose project declares none is drawn in it, as
@@ -214,10 +260,18 @@ version that worked when the newest has a problem. The frame adds what is its ow
 - One update at a time; those that come meanwhile are gathered, the newest taken and every `id`
   answered. `init` holds its parent to no size; an update is held to 4,000 text files and 32 MiB
   of characters, 4,000 media files and 128 MiB of media, and 32 waiting.
+- An app showing another of its page files (above) stays on it while the version has that page:
+  the version is composed with that page and handed to it, and answered as on the main page. A
+  version without the page opens the app at its main page: the frame posts the new `place`
+  (`/`), then answers `restarted` with `changed` holding `page`, `carried: false`, and a `reason`
+  that says the page is not in the version. Where that version's main page does not parse, it
+  is `kept` and the page showing stays.
 
-Test the queue, the engine handshake, the protocol, the policy, media, seeding and updates with
-`node --test apps/formlogic-host/test/*.mjs`. `update-live.test.mjs` runs core's built renderer
-and the installed engine in a jsdom page, so it needs `packages/@softn/core` built.
+Test the queue, the engine handshake, the protocol, the policy, media, seeding, updates and
+places with `node --test apps/formlogic-host/test/*.mjs`. `update-live.test.mjs` and
+`place-live.test.mjs` run core's built renderer and the installed engine in a jsdom page, so they
+need `packages/@softn/core` built (and `packages/@softn/components`, for the NavItem in the
+second), as `place.test.mjs` does for core's reading of which files are pages.
 
 ## Updating
 

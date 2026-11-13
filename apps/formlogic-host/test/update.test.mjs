@@ -9,7 +9,7 @@
 // update-live.test.mjs runs the same module against core's own.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createUpdater, importsFrom, planUpdate, readUpdate, sentence, UPDATE_LIMITS } from '../src/update.ts';
+import { createUpdater, importsFrom, planUpdate, readUpdate, sentence, PAGE_GONE, UPDATE_LIMITS } from '../src/update.ts';
 import { bundleLanguages } from '../src/engineInit.ts';
 import { mediaUrl } from '../src/media.ts';
 import { declaredThemeMode } from '../src/appTheme.ts';
@@ -404,6 +404,200 @@ test('a parent that posts without waiting is held to a line, and one reply that 
   hold();
   await tick(); await tick();
   assert.deepEqual(sent.map(reply => reply.id), [2]);
+});
+
+/**
+ * A frame whose app can be on another of its page files, as main.tsx wires one: each page put on
+ * screen is a running app of its own, started from the files of the version on screen, and `go`
+ * is a link followed. `composedWith` is the page each version was composed with.
+ */
+function site({ leave = true, hasPage = (text, main, path) => path !== main && text.has(path), composer = compose, assets = {} } = {}) {
+  const posted = [];
+  const redraws = [];
+  const composedWith = [];
+  const left = [];
+  const opened = files({ 'ui/about.ui': '<p>About</p>' });
+  const updates = createUpdater({
+    post: reply => posted.push(reply),
+    state: () => 'running',
+    languages: bundleLanguages, mediaUrl, themeOf: declaredThemeMode, ...(hasPage ? { hasPage } : {}),
+    compose: (text, main, logic) => { composedWith.push(main); return composer(text, main, logic); },
+  });
+  const screen = { page: null, app: runningApp() };
+  const start = (page, revision) => {
+    screen.page = page;
+    screen.app = runningApp();
+    screen.app.shown = revision;
+  };
+  const go = page => start(page, { ...compose(updates.files(), page ?? 'ui/main.ui', ['logic/main.logic']), importResolver: importsFrom(updates.files()) });
+  updates.open({
+    files: opened,
+    media: new Map(Object.entries(assets).map(([path, value]) => [path, mediaUrl(path, value)])),
+    update: revision => screen.app.update(revision),
+    redraw: next => redraws.push(next),
+    page: () => screen.page,
+    ...(leave ? { leave: revision => { left.push(revision); start(null, revision); } } : {}),
+  });
+  go(null);
+  const send = (id, text, extra = {}) => updates.receive({ type: 'formlogic:update', id, client: text, ...extra });
+  return { updates, posted, redraws, composedWith, left, screen, go, send };
+}
+const pages = (changes = {}) => client({ 'ui/about.ui': '<p>About</p>', ...changes });
+
+test('the files of the version on screen are what another page is composed from', async () => {
+  const { updates, send } = site();
+  assert.equal(updates.files().get('ui/about.ui'), '<p>About</p>');
+  send(1, pages({ 'ui/about.ui': '<p>About us</p>' }));
+  await tick();
+  assert.equal(updates.files().get('ui/about.ui'), '<p>About us</p>');
+  // A version kept back is not on screen, and a link goes to the page of the one that is.
+  send(2, pages({ 'ui/main.ui': '<broken', 'ui/about.ui': '<p>Never shown</p>' }));
+  await tick();
+  assert.equal(updates.files().get('ui/about.ui'), '<p>About us</p>');
+});
+
+test('an app on another of its pages is handed the version composed with that page, while the version has it', async () => {
+  const { posted, send, go, screen, composedWith, left, updates } = site();
+  go('ui/about.ui');
+  const about = screen.app;
+  send(1, pages({ 'ui/about.ui': '<p>About us</p>', 'ui/main.ui': '<div>Home {count}</div>' }));
+  await tick();
+  // Composed with the page showing as the main one, and handed to the page showing.
+  assert.deepEqual(composedWith, ['ui/about.ui']);
+  assert.equal(about.revisions.length, 1);
+  assert.equal(about.revisions[0].source, '<p>About us</p>');
+  assert.deepEqual(posted[0], { type: 'updated', id: 1, outcome: 'updated', changed: ['page'] });
+  assert.equal(screen.page, 'ui/about.ui');
+  assert.deepEqual(left, []);
+  // Its problems are that page's: it is kept back as on the main page, and the page stays.
+  send(2, pages({ 'ui/about.ui': '<broken' }));
+  await tick();
+  assert.equal(posted[1].outcome, 'kept');
+  assert.equal(screen.page, 'ui/about.ui');
+  assert.equal(updates.files().get('ui/about.ui'), '<p>About us</p>');
+  // Back on the main page (a link to it), a version is composed with the main page, as ever.
+  go(null);
+  send(3, pages({ 'ui/about.ui': '<p>About us</p>', 'ui/main.ui': '<div>Home again {count}</div>' }));
+  await tick();
+  assert.equal(composedWith.at(-1), 'ui/main.ui');
+  assert.equal(screen.app.revisions[0].source, '<div>Home again {count}</div>');
+  assert.deepEqual(posted[2], { type: 'updated', id: 3, outcome: 'updated', changed: ['page'] });
+});
+
+test('a version without the page the app is showing opens it at its main page, and says so', async () => {
+  const { posted, send, go, screen, composedWith, left, updates, redraws } = site({ assets: { 'assets/a.png': 'AAAA' } });
+  go('ui/about.ui');
+  const about = screen.app;
+  // The page is gone from the version (client() has no about page).
+  send(1, client({ 'ui/main.ui': '<div>Home {count}</div>' }));
+  await tick();
+  assert.deepEqual(posted[0], { type: 'updated', id: 1, outcome: 'restarted', changed: ['page'], reason: PAGE_GONE, carried: false });
+  assert.match(PAGE_GONE, /not in this version, so it was opened at its main page/);
+  // The page that was showing was handed nothing: the main page was opened afresh from the version.
+  assert.equal(about.revisions.length, 0);
+  assert.deepEqual(composedWith, ['ui/main.ui']);
+  assert.equal(left.length, 1);
+  assert.equal(left[0].source, '<div>Home {count}</div>');
+  assert.equal(await left[0].importResolver('/logic/main.logic'), 'let count = 0');
+  assert.equal(screen.page, null);
+  // The version is the one on screen from then on, and the next is handed to the main page.
+  assert.equal(updates.files().has('ui/about.ui'), false);
+  assert.equal(redraws.length, 0);
+  send(2, client({ 'ui/main.ui': '<div>Home once more {count}</div>' }));
+  await tick();
+  assert.deepEqual(posted[1], { type: 'updated', id: 2, outcome: 'updated', changed: ['page'] });
+  assert.equal(left.length, 1);
+  // The page comes back with a later version, a link goes to it, and it goes again: with other
+  // media and another side this time, which are both said, and the tree is drawn by the new manifest.
+  send(3, pages({ 'ui/main.ui': '<div>Home once more {count}</div>' }));
+  await tick();
+  assert.equal(posted[2].outcome, 'unchanged');
+  go('ui/about.ui');
+  send(4, client({ 'manifest.json': manifest({ config: { theme: { mode: 'dark' } } }) }), { assets: { 'assets/a.png': 'BBBB' } });
+  await tick();
+  assert.deepEqual(posted[3], { type: 'updated', id: 4, outcome: 'restarted', changed: ['page', 'media', 'theme'], reason: PAGE_GONE, carried: false });
+  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,BBBB');
+  assert.equal(redraws.length, 1);
+  assert.deepEqual(redraws[0], JSON.parse(manifest({ config: { theme: { mode: 'dark' } } })));
+  assert.equal(left.length, 2);
+  assert.equal(screen.page, null);
+});
+
+test('a version whose main page has a problem is kept back, and the page that was showing stays', async () => {
+  // The composer's own word for a page that does not parse, as core's composeBundleSource gives it.
+  const composer = (text, main, logic) => {
+    const composed = compose(text, main, logic);
+    return composed.source.includes('<broken') ? { ...composed, parseProblem: `${main}, line 1, column 1: Unclosed tag\n    at parse (parser.ts:1)` } : composed;
+  };
+  const { posted, send, go, screen, left, updates } = site({ composer, assets: { 'assets/a.png': 'AAAA' } });
+  go('ui/about.ui');
+  const about = screen.app;
+  send(1, client({ 'ui/main.ui': '<broken' }), { assets: { 'assets/a.png': 'BBBB' } });
+  await tick();
+  assert.deepEqual(posted[0], { type: 'updated', id: 1, outcome: 'kept', changed: [], problem: 'ui/main.ui, line 1, column 1: Unclosed tag' });
+  assert.deepEqual(left, []);
+  assert.equal(screen.page, 'ui/about.ui');
+  assert.equal(screen.app, about);
+  assert.equal(updates.files().get('ui/about.ui'), '<p>About</p>');
+  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,AAAA');
+  // A main page that is missing does not compose, which is a version with a problem too.
+  const gone = client();
+  delete gone['ui/main.ui'];
+  send(2, gone);
+  await tick();
+  assert.deepEqual(posted[1], { type: 'updated', id: 2, outcome: 'kept', changed: [], problem: 'Main file not found: ui/main.ui' });
+  assert.equal(screen.page, 'ui/about.ui');
+  // The parent mends it: the media it sent with the version kept back comes with this one.
+  send(3, client({ 'ui/main.ui': '<div>Mended {count}</div>' }));
+  await tick();
+  assert.deepEqual(posted[2], { type: 'updated', id: 3, outcome: 'restarted', changed: ['page', 'media'], reason: PAGE_GONE, carried: false });
+  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,BBBB');
+});
+
+test('a frame that cannot leave a page, or is not told which files are pages, does not guess', async () => {
+  // No way to open the main page where it stands: a new frame's to do, as for any change it cannot take.
+  const fixed = site({ leave: false });
+  fixed.go('ui/about.ui');
+  fixed.send(1, client());
+  await tick();
+  assert.deepEqual(fixed.posted[0], { type: 'updated', id: 1, outcome: 'reopen', reason: 'The page it was showing is not in this version, so it has to be opened again.' });
+  assert.equal(fixed.screen.app.revisions.length, 0);
+  assert.equal(fixed.updates.files().get('ui/about.ui'), '<p>About</p>');
+  // While the version has the page, it is handed over as ever.
+  fixed.send(2, pages({ 'ui/about.ui': '<p>About us</p>' }));
+  await tick();
+  assert.equal(fixed.posted[1].outcome, 'updated');
+  // Not told which files are pages (no hasPage): no page but the main one is stayed on.
+  const untold = site({ hasPage: null });
+  untold.go('ui/about.ui');
+  untold.send(1, pages({ 'ui/about.ui': '<p>About us</p>' }));
+  await tick();
+  assert.equal(untold.posted[0].outcome, 'restarted');
+  assert.equal(untold.posted[0].reason, PAGE_GONE);
+  assert.equal(untold.screen.page, null);
+});
+
+test('a link followed while a version is being taken leaves it for the page now showing', async () => {
+  const { posted, send, go, screen, composedWith } = site();
+  go('ui/about.ui');
+  const about = screen.app;
+  // The page showing is handed the version, and is taken down before it answers: core's renderer
+  // answers for one that has gone that it was kept back ("The app was closed.").
+  let closed;
+  about.update = revision => { about.revisions.push(revision); return new Promise(resolve => { closed = () => resolve({ outcome: 'kept', changed: [], problem: 'The app was closed.' }); }); };
+  send(1, pages({ 'ui/about.ui': '<p>About us</p>', 'ui/main.ui': '<div>Home {count}</div>' }));
+  await tick();
+  assert.equal(about.revisions.length, 1);
+  // The link: the main page, composed from the version still on screen.
+  go(null);
+  assert.equal(screen.app.shown.source, '<div>{count}</div>');
+  closed();
+  await tick(); await tick();
+  // The version was not lost with the page that had it: the page now showing took it.
+  assert.deepEqual(composedWith, ['ui/about.ui', 'ui/main.ui']);
+  assert.equal(screen.app.revisions.length, 1);
+  assert.equal(screen.app.revisions[0].source, '<div>Home {count}</div>');
+  assert.deepEqual(posted, [{ type: 'updated', id: 1, outcome: 'updated', changed: ['page'] }]);
 });
 
 test('what is said is one line, however much the app or the composer said', () => {

@@ -49,7 +49,7 @@ test('a store that refuses a write says so, where saves are confirmed and nowher
 test('an error says whether the app failed to open or failed while running', () => {
   assert.match(main, /port\?\.postMessage\(\{ type: 'error', reason, phase \}\);/);
   // Before the first page is drawn it is a load failure; after, a runtime one.
-  assert.match(main, /onLoad=\{\(\) => \{ if \(!drawn\) port\?\.postMessage\(\{ type: 'shown' \}\); drawn = true; \}\}/);
+  assert.match(main, /onLoad=\{\(\) => \{ if \(!drawn\) port\?\.postMessage\(\{ type: 'shown' \}\); drawn = true; tellPlace\(\); \}\}/);
   assert.match(main, /onError=\{error => reportError\(reasonOf\(error\), drawn \? 'runtime' : 'load'\)\}/);
   // What replaces the app with the frame's own message is a load failure.
   assert.match(main, /componentDidCatch\(error: unknown\) \{ reportError\(reasonOf\(error\), 'load'\); \}/);
@@ -70,7 +70,7 @@ test('a parent covering the frame while the app opens is told when its first pag
 test('a newer version of the app is taken on its port, and a frame still takes one init', () => {
   // ready says it will (an addition: a parent that never sees update: 1 never sends one), and the
   // protocol numbers are what they were.
-  assert.match(main, /type: 'formlogic:ready'[^\n]*, update: 1 \}, '\*'\);/);
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, update: 1(, [^\n]*)? \}, '\*'\);/);
   assert.match(main, /type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL,/);
   // One init for the life of the frame, as before: a second is not read at all.
   assert.match(main, /if \(started \|\| terminated \|\| event\.source !== parent \|\| event\.data\?\.type !== 'formlogic:init' \|\| !event\.ports\[0\]\) return;\s*started = true;/);
@@ -87,18 +87,61 @@ test('a newer version of the app is taken on its port, and a frame still takes o
   // There is an app to update from its first page until it fails to load or the frame ends.
   assert.match(main, /state: \(\) => terminated \? 'closed' : failed \? 'failed' : drawn \? 'running' : 'opening',/);
   assert.match(main, /if \(phase === 'load'\) failed = true;/);
-  // The renderer is given the version the app opens with in its props, as it always was, and the
-  // app as something to hand the later ones to.
-  assert.match(main, /const live = createLiveApp\(\);/);
+  // The renderer is given the version the page on screen opened with in its props, as it always
+  // was, and that page as something to hand the later ones to.
+  assert.match(main, /let shown: ShownPage = \{\s*file: start\.file, composed: first, live: createLiveApp\(\), imports: importsFrom\(files\),/);
+  assert.match(main, /const \{ composed, live \} = page;/);
   assert.match(main, /<SoftNWithXDB \{\.\.\.composed\} app=\{live\} /);
-  assert.match(main, /updates\.open\(\{ files, media, update: revision => live\.update\(revision\), redraw: next => \{ manifest = next; draw\(\); \} \}\);\s*draw\(\);/);
+  assert.match(main, /updates\.open\(\{\s*files, media,\s*(\/\/[^\n]*\n\s*)?update: revision => shown\.live\.update\(revision\),\s*redraw: next => \{ manifest = next; draw\(\); \},/);
+  assert.match(main, /leave: revision => show\(null, revision, revision\.importResolver\),\s*\}\);\s*draw\(\);/);
   // The page's media and the first version's imports are read through the same module.
   assert.match(main, /const resolveAsset = \(path: string\) => updates\.asset\(path\);/);
-  assert.match(main, /const imports = importsFrom\(files\);/);
-  assert.match(main, /importResolver=\{imports\}/);
+  assert.match(main, /importResolver=\{page\.imports\}/);
   // The tree can be drawn again, so it holds nothing of the init message (the app's files, its
   // media, the engine's bytes), and nothing is drawn in a frame that has ended.
   const draw = main.slice(main.indexOf('const draw = () => {'), main.indexOf('updates.open('));
   assert.match(draw, /^const draw = \(\) => \{\s*if \(terminated\) return;/);
   assert.doesNotMatch(draw, /\bevent\b/);
+});
+
+test('a link to another page of the app is shown in the frame, and the parent is told where the app is', () => {
+  // ready says it will (an addition: a parent that sends no place and reads none is told nothing it has to read).
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, places: 1 \}, '\*'\);/);
+  // The renderer asks the frame about each link, and the page's own code is sent to the app's
+  // pages or nowhere: any other address the frame goes to is the parent's own page.
+  assert.match(main, /key=\{page\.file \?\? ''\} onLink=\{followLink\} pagesOnly/);
+  // Decided as SoftN Web decides it, by core's own reading of the bundle, from the files of the
+  // version on screen; a link that is not to a page of the app stays the browser's.
+  const follow = main.slice(main.indexOf('const followLink = (href: string): boolean => {'), main.indexOf('updates.open('));
+  assert.match(follow, /const text = updates\.files\(\);\s*const main = mainPage\(text\);\s*const linked = linkedPage\(text, main, shown\.file, href, bundlePageAt\);\s*if \(linked === null \|\| main === null\) return false;\s*if \(linked\.showing\) return true;/);
+  assert.match(follow, /composed = composePage\(text, path\);/);
+  assert.match(follow, /show\(linked\.file, composed, importsFrom\(text\)\);\s*return true;/);
+  // Another page is another run with a live app of its own, and no named page until its renderer says one.
+  assert.match(main, /shown = \{ file, composed, live: createLiveApp\(\), imports \};\s*section = null;\s*draw\(\);\s*tellPlace\(\);/);
+  // The place is one message, sent from one line: after shown, never for an app that failed to
+  // load or a frame that has ended, and never the same place twice running.
+  assert.equal((main.match(/postMessage\(\{ type: 'place'/g) || []).length, 1);
+  assert.match(main, /const tellPlace = \(\) => \{\s*if \(!drawn \|\| failed \|\| terminated\) return;\s*const place = writePlace\(\{ file: shown\.file, section \}\);\s*if \(place === told\) return;\s*told = place;\s*port\?\.postMessage\(\{ type: 'place', place \}\);/);
+  assert.ok(main.indexOf("port?.postMessage({ type: 'shown' })") < main.indexOf('drawn = true; tellPlace();'));
+  // A named page the renderer reports is the app's place only while its page is the one on screen.
+  assert.match(main, /onPageChange=\{name => \{ if \(shown === page\) \{ section = name; tellPlace\(\); \} \}\}/);
+});
+
+test('the app starts at the place its parent names, held to the app\'s own files', () => {
+  // Read once, through place.ts, with core's own reading of which files are pages.
+  assert.equal((main.match(/event\.data\.place/g) || []).length, 1);
+  assert.match(main, /let start = startPlace\(event\.data\.place, files, mainPage\(files\), bundlePageAt\);/);
+  // The main page is composed first whatever the place, so an app that cannot open fails as it did.
+  assert.ok(main.indexOf('let first = composeBundleSource(files, manifest.main, manifest.files?.logic || []);') < main.indexOf('let start = startPlace('));
+  // A page that cannot be put together is not a place to start: the main page, with no named page.
+  assert.match(main, /first = composePage\(files, start\.file\);\s*\} catch \(problem\) \{\s*console\.warn\([^\n]*\);\s*start = \{ file: null, section: null \};/);
+  // A named page is given to the renderer as SoftN Web gives one, and nothing is given without one.
+  assert.match(main, /initialState: start\.section === null \? undefined : \{ currentPage: start\.section \},/);
+  assert.match(main, /initialState=\{page\.initialState\}/);
+});
+
+test('an app on another of its pages is handed a newer version of that page', () => {
+  // The rules (update.ts) ask where the app stands and whether a version still has that page.
+  assert.match(main, /hasPage: \(files, main, path\) => isOtherPage\(files, main, path, bundlePageAt\),/);
+  assert.match(main, /page: \(\) => shown\.file,/);
 });

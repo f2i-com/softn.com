@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LoadingIndicator, SoftNWithXDB, XDBStorageNotice, ZIPP_GLUE_EXPORTS, composeBundleSource, configureZippGlue, configureZippTorchSource, configureZippWasmSource, createLiveApp, getXDB, parseXDBFile, seedXDBBundleData, zippLanguages } from '@softn/core';
+import { LoadingIndicator, SoftNWithXDB, XDBStorageNotice, ZIPP_GLUE_EXPORTS, bundlePageAt, composeBundleSource, composePage, configureZippGlue, configureZippTorchSource, configureZippWasmSource, createLiveApp, getXDB, mainPage, parseXDBFile, seedXDBBundleData, zippLanguages, type LiveApp } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { declaredThemeMode } from './appTheme';
@@ -12,7 +12,8 @@ import { createNativeNetFetch } from './nativeFetch';
 import { framePolicy, zippDirectory } from './framePolicy';
 import { mediaUrl } from './media';
 import { seedBundledData } from './seed';
-import { createUpdater, importsFrom } from './update';
+import { createUpdater, importsFrom, type ImportResolver } from './update';
+import { isOtherPage, linkedPage, startPlace, writePlace } from './place';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -117,7 +118,26 @@ const updates = createUpdater<ReturnType<typeof composeBundleSource>>({
   post: reply => port?.postMessage(reply),
   state: () => terminated ? 'closed' : failed ? 'failed' : drawn ? 'running' : 'opening',
   languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,
+  // An app showing another of its page files stays on it while a newer version has that page (place.ts).
+  hasPage: (files, main, path) => isOtherPage(files, main, path, bundlePageAt),
 });
+/**
+ * What is on screen: the app's main page, or another of its page files after a link to it
+ * (`<a href="about.html">`). Another page is the app composed with that page as its main one and
+ * run afresh, on the records it has, as SoftN Web and the single-app page show one. Each is a
+ * renderer of its own, so each has its own live app to take a newer version of that page.
+ */
+interface ShownPage {
+  /** The page file, by its path in the bundle; null for the main page. */
+  file: string | null;
+  /** The page as it was composed when it was put on screen. Its later versions go to `live`. */
+  composed: ReturnType<typeof composeBundleSource>;
+  live: LiveApp;
+  /** Where its logic's imports are answered from: the files it was composed from. */
+  imports: ImportResolver;
+  /** The named page it starts on, where the parent said one (`init.place`). */
+  initialState?: Record<string, unknown>;
+}
 class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean; reason: string }> {
   state = { failed: false, reason: '' };
   static getDerivedStateFromError(error: unknown) { return { failed: true, reason: reasonOf(error) }; }
@@ -234,45 +254,127 @@ window.addEventListener('message', async event => {
       const url = mediaUrl(path, value);
       if (url) media.set(path, url);
     }
-    const composed = composeBundleSource(files, manifest.main, manifest.files?.logic || []);
+    // The main page, composed whatever page the app starts on: an app that cannot open at its main
+    // page fails to load in the same words wherever its parent says it was.
+    let first = composeBundleSource(files, manifest.main, manifest.files?.logic || []);
+    // Where the parent says the app was (`init.place`, an addition; place.ts): another of its page
+    // files, a named page inside one, or both. It is text from an address anyone can write, so it
+    // is held to this app's own files, and what is not a place of this app is its main page. A
+    // parent that sends none opens the app where it always did.
+    let start = startPlace(event.data.place, files, mainPage(files), bundlePageAt);
+    if (start.file !== null) {
+      try {
+        first = composePage(files, start.file);
+      } catch (problem) {
+        console.warn(`[SoftN] ${start.file} cannot be shown: ${reasonOf(problem)}`);
+        start = { file: null, section: null };
+      }
+    }
     // The records the app ships with, added once, before it first draws (seed.ts). An update adds none.
     const seeding = await seedBundledData(files, manifest, getXDB(appId), parseXDBFile, seedXDBBundleData, () => !terminated);
     if (terminated) return;
     for (const warning of seeding.warnings) console.warn(`[SoftN] ${warning}`);
-    // The app as something to hand a newer version of (core's createLiveApp). The version it opens
-    // with reaches the renderer as it always has, in the props below, which never change after;
-    // each later one goes through `live.update`, which changes as little of the running app as it
-    // must and answers what became of it (update.ts sends that to the parent).
-    const live = createLiveApp();
-    // The logic's imports are answered from the files of the version it belongs to: these for the
-    // one the app opens with, and each update's own for that update (update.ts).
-    const imports = importsFrom(files);
-    // Drawn once to open the app, and again when an update brings other media or another declared
-    // theme: nothing else of this tree changes, and the app inside it is not started again by it.
+    // The page on screen, as something to hand a newer version of (core's createLiveApp). The
+    // version a page opens with reaches the renderer as it always has, in the props below, which
+    // never change after; each later one goes through its `live.update`, which changes as little
+    // of the running app as it must and answers what became of it (update.ts sends that to the
+    // parent). The logic's imports are answered from the files of the version it belongs to: these
+    // for the one the app opens with, and each update's own for that update (update.ts).
+    let shown: ShownPage = {
+      file: start.file, composed: first, live: createLiveApp(), imports: importsFrom(files),
+      // As SoftN Web starts an app on a named page: the state NavItem's `page` sets.
+      initialState: start.section === null ? undefined : { currentPage: start.section },
+    };
+    // The named page inside it: the one the parent named, then whatever the renderer reports.
+    let section = start.section;
+    // Where the app is, told to the parent once its first page is shown and then whenever it is
+    // somewhere else: `{ type: 'place', place }`, one string the parent may keep in its address
+    // bar and send back as `init.place` (place.ts). Never told twice running.
+    let told: string | undefined;
+    const tellPlace = () => {
+      if (!drawn || failed || terminated) return;
+      const place = writePlace({ file: shown.file, section });
+      if (place === told) return;
+      told = place;
+      port?.postMessage({ type: 'place', place });
+    };
+    // Drawn once to open the app, again for each page of it a link goes to, and again when an
+    // update brings other media or another declared theme: nothing else of this tree changes, and
+    // the page inside it is not started again by a drawing that shows the same page.
     const draw = () => {
       if (terminated) return;
       // The media is read from the version the app has now. A new reader for each drawing, because
       // the page asks for its media again only when it is handed another one.
       const resolveAsset = (path: string) => updates.asset(path);
+      // The page this drawing shows. What a renderer says of its named page is the app's place
+      // only while that page is the one on screen: one being taken down may still say.
+      const page = shown;
+      const { composed, live } = page;
       // A bundle's permission.json cannot enable arbitrary network, hardware or sync access: the
       // parent grants what it grants (permissions.ts), files at most.
       // FormLogic's own theme, and the side the project declares, which wins over it (appTheme.ts).
       root.render(<Boundary><ThemeProvider defaultDarkMode={dark} declaredMode={declaredThemeMode(manifest)}>
         {savesAcknowledged && <XDBStorageNotice appId={appId} problemsOnly />}
         <SoftNWithXDB {...composed} app={live} appId={appId} resumeSavedSyncRoom={false}
+          // Another page file is another run of the app (the key), on the same records. A link
+          // to one is shown here (followLink), and the page's own code goes to one of the app's
+          // pages or nowhere (pagesOnly): any other address the frame went to was FormLogic's own
+          // page, which refuses to be framed, and the app went blank.
+          key={page.file ?? ''} onLink={followLink} pagesOnly
+          initialState={page.initialState}
+          onPageChange={name => { if (shown === page) { section = name; tellPlace(); } }}
           permissionConfig={framePermissions} scriptExecutionMode="main"
           assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}
           backendCall={backendCall} netFetchHandler={netFetchHandler}
-          importResolver={imports}
+          importResolver={page.imports}
           // Before its first page is drawn the app has not opened; after it, it is drawn and
           // what went wrong shows inside it.
           // shown: the app's first page is on screen, so a parent covering the frame while it opens
           // (ready's shown: 1) uncovers it. A failure to load is reported instead (error).
-          onLoad={() => { if (!drawn) port?.postMessage({ type: 'shown' }); drawn = true; }}
+          // place: where it is, told after shown and not again until it is somewhere else.
+          onLoad={() => { if (!drawn) port?.postMessage({ type: 'shown' }); drawn = true; tellPlace(); }}
           onError={error => reportError(reasonOf(error), drawn ? 'runtime' : 'load')} />
       </ThemeProvider></Boundary>);
     };
-    updates.open({ files, media, update: revision => live.update(revision), redraw: next => { manifest = next; draw(); } });
+    // Puts a page of the app on screen: a new run of it with a live app of its own, and no named
+    // page inside it until its renderer reports one.
+    const show = (file: string | null, composed: ShownPage['composed'], imports: ImportResolver) => {
+      shown = { file, composed, live: createLiveApp(), imports };
+      section = null;
+      draw();
+      tellPlace();
+    };
+    // A link on the page showing, asked by the renderer (onLink). True for a link to a page of the
+    // app, which is shown here, composed from the files of the version on screen; false leaves the
+    // link to the browser, as every link was (place.ts decides, as SoftN Web's AppRunner does, by
+    // core's bundlePageAt and composePage).
+    const followLink = (href: string): boolean => {
+      if (terminated) return false;
+      const text = updates.files();
+      const main = mainPage(text);
+      const linked = linkedPage(text, main, shown.file, href, bundlePageAt);
+      if (linked === null || main === null) return false;
+      if (linked.showing) return true;
+      const path = linked.file ?? main;
+      let composed: ShownPage['composed'];
+      try {
+        composed = composePage(text, path);
+      } catch (problem) {
+        console.warn(`[SoftN] ${path} cannot be shown: ${reasonOf(problem)}`);
+        return false;
+      }
+      show(linked.file, composed, importsFrom(text));
+      return true;
+    };
+    updates.open({
+      files, media,
+      // A newer version goes to the page on screen, composed with that page (update.ts).
+      update: revision => shown.live.update(revision),
+      redraw: next => { manifest = next; draw(); },
+      page: () => shown.file,
+      // A version without the page on screen: the app is opened at its main page from it.
+      leave: revision => show(null, revision, revision.importResolver),
+    });
     draw();
   } catch (error) {
     if (terminated) return;
@@ -298,4 +400,8 @@ window.addEventListener('message', async event => {
 // update: 1 is an addition: once the app is shown, this document takes a newer version of its files
 // on the port (`formlogic:update`) and answers what became of it (`updated`), so a parent need not
 // make a new frame for every change. One that never sends an update sees nothing different.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1, zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS, update: 1 }, '*');
+// places: 1 is an addition: this document shows the app's other page files itself when a link goes
+// to one, posts where the app is on its port (`{ type: 'place', place }`, after shown and whenever
+// it changes), and opens the app at the `place` an `init` carries (place.ts). A parent that sends
+// none and reads none sees an app whose links to its own pages work, and nothing else different.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1, zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS, update: 1, places: 1 }, '*');

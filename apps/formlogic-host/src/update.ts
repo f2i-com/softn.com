@@ -24,6 +24,12 @@
  * added once, before it first drew (seed.ts), and are not added again: a
  * `.xdb` file that an update adds or changes is carried with the files and
  * read by nothing until the app is next opened.
+ *
+ * An app may be showing another of its page files when a version comes, after
+ * a link to it (place.ts). It stays on that page while the version has it:
+ * the version is composed with that page as its main one, as it was when the
+ * link was followed, and handed over like any other. A version without the
+ * page is opened at its main page, and answered `restarted`.
  */
 
 /** What became of an update: core's four answers, and `reopen` for a change only a new frame can take. */
@@ -281,6 +287,9 @@ const NOT_RUNNING: Record<Exclude<UpdateState, 'running'>, string> = {
   closed: 'This frame has closed.',
 };
 
+/** Said with `restarted` where a version no longer has the page file the app was showing. */
+export const PAGE_GONE = 'The page it was showing is not in this version, so it was opened at its main page.';
+
 export interface UpdaterOptions<Composed extends object> {
   /** Sends a reply on the app's port. */
   post(reply: UpdateReply): void;
@@ -294,6 +303,12 @@ export interface UpdaterOptions<Composed extends object> {
   mediaUrl(path: string, value: unknown): string | null;
   /** The side a manifest declares the app is drawn in (appTheme.ts). */
   themeOf(manifest: unknown): unknown;
+  /**
+   * Whether a set of files has `path` as a page other than its main one (place.ts's isOtherPage,
+   * over core's bundlePageAt): asked of a version for the page file the app is showing. A frame
+   * that follows no links leaves it out, and no page but the main one is then stayed on.
+   */
+  hasPage?(files: ReadonlyMap<string, string>, main: string, path: string): boolean;
   limits?: UpdateLimits;
 }
 
@@ -310,6 +325,18 @@ export interface OpenApp<Composed extends object> {
    * the side it declares is no longer what the tree was last drawn with.
    */
   redraw(manifest: Record<string, unknown>): void;
+  /**
+   * The page file the app is showing in place of its main page, after a link to it, by its path
+   * in the bundle; null on its main page. `update` then hands a version to that page, and is given
+   * the version composed with it as the main one. Left out by an app that shows no other page.
+   */
+  page?(): string | null;
+  /**
+   * The page file it was showing is not in the version: opens the app at its main page from
+   * `revision`, afresh, as a link back to the main page opens it. Without it, such a version is
+   * answered `reopen`.
+   */
+  leave?(revision: Composed & { importResolver: ImportResolver }): void;
 }
 
 export interface Updater<Composed extends object> {
@@ -319,6 +346,8 @@ export interface Updater<Composed extends object> {
   receive(data: unknown): void;
   /** The address the page is given for a media file, from the media the app has now; '' for one it has not. */
   asset(path: string): string;
+  /** The text files of the version on screen: what another page of the app is composed from when a link goes to it. */
+  files(): ReadonlyMap<string, string>;
 }
 
 /** What became of an update, before it is addressed to the ids that asked. */
@@ -386,20 +415,41 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     const plan = planUpdate(files, client, options.languages);
     if ('reopen' in plan) return { outcome: 'reopen', reason: plan.reopen };
     if ('problem' in plan) return { outcome: 'kept', changed: [], problem: plan.problem };
+    // Where the app stands: on its main page, or on another of its page files after a link to it.
+    // That page is what the version is composed with while the version has it. One without it is
+    // opened at its main page, which only an app that can leave a page does where it stands.
+    const stood = running.page?.() ?? null;
+    const stays = stood !== null && options.hasPage?.(client, plan.main, stood) === true ? stood : null;
+    const leaves = stood !== null && stays === null;
+    if (leaves && !running.leave) return { outcome: 'reopen', reason: 'The page it was showing is not in this version, so it has to be opened again.' };
     // Files that do not compose (a page that is missing, Python and JavaScript mixed) are a version
     // with a problem, not a reason for a new frame: a new frame could not open them either, and
     // would show only its error where this one still shows the last version that worked.
     let composed: Composed;
     try {
-      composed = options.compose(client, plan.main, plan.logic);
+      composed = options.compose(client, stays ?? plan.main, plan.logic);
     } catch (error) {
       return { outcome: 'kept', changed: [], problem: sentence(error) || 'Its files could not be put together.' };
     }
     const before = manifestOf(files);
+    const themeChanged = canonical(options.themeOf(before) ?? null) !== canonical(options.themeOf(plan.manifest) ?? null);
+    // A main page opened afresh has no last version of its own to go back to, so the one problem
+    // the composer names (a page that does not parse) keeps the version back before anything is
+    // changed, and the page that was showing stays, on the version it has.
+    const unparsed = leaves ? sentence((composed as { parseProblem?: unknown }).parseProblem) : '';
+    if (unparsed) return { outcome: 'kept', changed: [], problem: unparsed };
     // The new media first, so logic that starts again reads it as it starts. It goes back if the version is kept back.
     const hadMedia = media;
     media = given === undefined ? hadMedia : mediaOf(given, hadMedia);
     const mediaChanged = media !== hadMedia;
+    if (leaves) {
+      files = client;
+      unread = undefined;
+      running.leave?.({ ...composed, importResolver: importsFrom(client) });
+      if (mediaChanged || themeChanged) running.redraw(plan.manifest);
+      // Another page altogether, whatever else of the version differs from the last.
+      return { outcome: 'restarted', changed: ['page', ...(mediaChanged ? ['media'] : []), ...(themeChanged ? ['theme'] : [])], reason: PAGE_GONE, carried: false };
+    }
     let result: LiveAnswer;
     try {
       // Its own resolver, over its own files: the logic of the version that is running is answered
@@ -412,6 +462,13 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     const gone = notRunning();
     if (gone) return gone;
     if (result.outcome === 'kept') {
+      // A link was followed while the version was being taken: the page that was handed it is no
+      // longer there to take it, and the page now showing was composed from the version before.
+      // It is handed the version in its turn, composed with that page.
+      if ((running.page?.() ?? null) !== stood) {
+        media = hadMedia;
+        return take(client, assets);
+      }
       if (mediaChanged) {
         media = hadMedia;
         running.redraw(before ?? plan.manifest);
@@ -420,7 +477,6 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     }
     files = client;
     unread = undefined;
-    const themeChanged = canonical(options.themeOf(before) ?? null) !== canonical(options.themeOf(plan.manifest) ?? null);
     if (mediaChanged || themeChanged) running.redraw(plan.manifest);
     const changed = [...(result.changed ?? []).filter((part): part is string => typeof part === 'string')];
     if (mediaChanged) changed.push('media');
@@ -482,5 +538,6 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
       if (!busy) void run();
     },
     asset: path => media.get(path.replace(/^\.\//, '')) || '',
+    files: () => files,
   };
 }
