@@ -530,6 +530,11 @@
     min-width: 2.75rem;
     justify-content: center;
   }
+  /* The expanded preview's Close (VisualCanvas): a finger's height where fingers are used. The
+     button's own height is set in its style, so this one has to say it is the rule. */
+  .st-preview-expanded-bar button {
+    min-height: 2.75rem !important;
+  }
 }
 
 /* Mint because it is the machine: the app in the frame is actually running. */

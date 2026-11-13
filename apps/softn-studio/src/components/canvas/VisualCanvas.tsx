@@ -292,17 +292,22 @@ export function StablePreviewSurface({
       >
         {children}
       </div>
+      {/* The expanded preview's own bar: a row above the page, never over it. It used to float on
+          the page's top corners, where it covered the app's own header and whatever buttons the
+          app has there. It comes after the page in this markup, so the page's node is the same
+          one whether or not it is expanded (see above), and is drawn first by `order`. */}
       {expanded && (
-        <div style={styles.expandedFloatingBar}>
-          <div style={styles.expandedFloatingLabel}>{label}</div>
+        <div className="st-preview-expanded-bar" style={styles.expandedBar}>
+          <div style={styles.expandedLabel} title={label}>{label}</div>
           <button
             ref={closeButtonRef}
             onClick={onClose}
             style={styles.expandedCloseBtn}
             aria-label="Close expanded preview"
-            title="Close expanded preview"
+            title="Close expanded preview (Esc)"
           >
             <Icon name="x" size={16} />
+            <span>Close</span>
           </button>
         </div>
       )}
@@ -1244,23 +1249,22 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'auto',
     background: 'var(--studio-bg-elevated)',
   },
-  expandedFloatingBar: {
-    position: 'fixed',
-    top: 16,
-    right: 16,
-    left: 16,
+  // A row of the expanded preview's own, above the page: drawn first though it comes last in
+  // the markup. On a phone it keeps clear of the notch.
+  expandedBar: {
+    order: -1,
+    flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    pointerEvents: 'none',
-    zIndex: 1001,
+    gap: 12,
+    minHeight: 44,
+    padding: 'max(4px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 4px max(14px, env(safe-area-inset-left))',
+    background: 'var(--studio-bg-elevated)',
+    borderBottom: '1px solid var(--studio-border)',
   },
-  expandedFloatingLabel: {
-    maxWidth: '70%',
-    padding: '8px 12px',
-    borderRadius: 999,
-    background: 'var(--studio-panel)',
-    border: '1px solid var(--studio-border)',
+  expandedLabel: {
+    minWidth: 0,
     fontFamily: 'var(--studio-mono)',
     fontSize: 13,
     fontWeight: 700,
@@ -1268,21 +1272,23 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    pointerEvents: 'auto',
   },
   expandedCloseBtn: {
-    width: 34,
-    height: 34,
+    flexShrink: 0,
+    minHeight: 36,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
+    padding: '0 12px 0 10px',
     border: '1px solid var(--studio-border)',
     background: 'var(--studio-panel)',
     color: 'var(--studio-text)',
-    borderRadius: 12,
+    borderRadius: 10,
     cursor: 'pointer',
     fontFamily: 'inherit',
-    pointerEvents: 'auto',
+    fontSize: 13,
+    fontWeight: 600,
   },
   expandedContent: {
     flex: 1,

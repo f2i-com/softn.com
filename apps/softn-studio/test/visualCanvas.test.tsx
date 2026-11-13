@@ -61,6 +61,17 @@ describe('StablePreviewSurface', () => {
     expect(mounted).toHaveBeenCalledOnce();
     expect(unmounted).not.toHaveBeenCalled();
 
+    // The expanded preview's bar is a row of its own above the page. It used to float over the
+    // page's top corners, on the app's own header and buttons. It is drawn first (`order`) while
+    // staying after the page in the markup, which is what keeps the page's node the same one.
+    const bar = closeButton.parentElement!;
+    expect(bar.style.position).toBe('');
+    expect(bar.style.order).toBe('-1');
+    expect(bar.textContent).toContain('Main');
+    const page = dialog.querySelector<HTMLElement>('[data-softn-preview-content="true"]')!;
+    expect(page.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bar.contains(page)).toBe(false);
+
     act(() =>
       closeButton.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
