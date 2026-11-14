@@ -106,7 +106,7 @@ test('a newer version of the app is taken on its port, and a frame still takes o
 
 test('a link to another page of the app is shown in the frame, and the parent is told where the app is', () => {
   // ready says it will (an addition: a parent that sends no place and reads none is told nothing it has to read).
-  assert.match(main, /type: 'formlogic:ready'[^\n]*, places: 1 \}, '\*'\);/);
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, places: 1(, [^\n]*)? \}, '\*'\);/);
   // The renderer asks the frame about each link, and the page's own code is sent to the app's
   // pages or nowhere: any other address the frame goes to is the parent's own page.
   assert.match(main, /key=\{page\.file \?\? ''\} onLink=\{followLink\} pagesOnly/);
@@ -125,6 +125,44 @@ test('a link to another page of the app is shown in the frame, and the parent is
   assert.ok(main.indexOf("port?.postMessage({ type: 'shown' })") < main.indexOf('drawn = true; tellPlace();'));
   // A named page the renderer reports is the app's place only while its page is the one on screen.
   assert.match(main, /onPageChange=\{name => \{ if \(shown === page\) \{ section = name; tellPlace\(\); \} \}\}/);
+});
+
+test('no link the person clicks takes the frame off the app: one to the outside goes to the parent', () => {
+  // ready says so (an addition: a parent that reads no link message sees such a link do nothing).
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, links: 1(, [^\n]*)? \}, '\*'\);/);
+  // links.ts listens (watchLinks: the window first, the document after the app's own handlers and
+  // core's), once, from the start of the frame's own code, before any of the app's can listen.
+  assert.equal((main.match(/watchLinks\(window, \{/g) || []).length, 1);
+  assert.ok(main.indexOf('watchLinks(window, {') < main.indexOf("window.addEventListener('message'"), 'listening before the app is given anything');
+  assert.doesNotMatch(main, /addEventListener\('(click|auxclick)'/, 'no other listener for clicks: links.ts holds the rules (links.test.mjs)');
+  const watch = main.slice(main.indexOf('watchLinks(window, {'), main.indexOf('later: run =>'));
+  // It decides from the click as the browser saw it: whether the app or core already took it, and
+  // whether the person clicked or the page's code called click().
+  assert.match(watch, /handled, byPerson: event\.isTrusted,/);
+  assert.match(watch, /open: \(\) => !terminated,/);
+  // The link message is one, sent from this one place, and only once the app is drawn and has not failed.
+  assert.equal((main.match(/postMessage\(\{ type: 'link'/g) || []).length, 1);
+  assert.match(watch, /if \(port && drawn && !failed\) port\.postMessage\(\{ type: 'link', href: action\.href \}\);/);
+  // What is carried out after a stopped click is over runs once the click is (links.ts's `later`).
+  assert.match(main, /later: run => \{\s*setTimeout\(run, 0\);\s*\},/);
+  // A page of the app is shown by the same rule the renderer's links follow.
+  assert.match(main, /pageLinks = \{\s*isPage: href => linkedPage\(updates\.files\(\), mainPage\(updates\.files\(\)\), shown\.file, href, bundlePageAt\) !== null,\s*follow: followLink,\s*\};/);
+});
+
+test('the page reads its own data files by name, as SoftN Web gives them', () => {
+  assert.match(main, /textUrl: textFileUrl,/);
+});
+
+test('a parent may send media as bytes, file by file, and the page is given blob: addresses either way', () => {
+  // ready says so (an addition: a parent that never sees mediaBytes: 1 sends base64 text, as it always did).
+  assert.match(main, /type: 'formlogic:ready'[^\n]*, mediaBytes: 1(, [^\n]*)? \}, '\*'\);/);
+  assert.equal((main.match(/mediaBytes: 1 \}/g) || []).length, 1, 'announced in ready alone');
+  // init: each file as it came, text or bytes, to media.ts, which makes its address or leaves it out (media.test.mjs).
+  assert.match(main, /for \(const \[path, value\] of Object\.entries\(event\.data\.assets \|\| \{\}\)\) \{\s*const url = mediaUrl\(path, value\);\s*if \(url\) media\.set\(path, url\);\s*\}/);
+  // An update's media go through the same module: a file sent again as it was keeps its address, and one
+  // no version has is let go of unless the page was given it (update.test.mjs).
+  assert.match(main, /import \{ mediaUrl, releaseMedia, sameMedia, textFileUrl \} from '\.\/media';/);
+  assert.match(main, /languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,\s*(\/\/[^\n]*\n\s*)*sameMedia, releaseMedia,/);
 });
 
 test('the app starts at the place its parent names, held to the app\'s own files', () => {

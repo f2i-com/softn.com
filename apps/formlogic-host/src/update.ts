@@ -81,7 +81,10 @@ export interface UpdateLimits {
   text: number;
   /** Media files in one update. */
   assets: number;
-  /** Characters of media in one update, as the base64 it arrives in. */
+  /**
+   * Characters of media in one update, as base64. A file sent as bytes counts as the base64 it
+   * would be, four characters for every three bytes, so the limit is the same either way.
+   */
   media: number;
   /** Characters of an id that is a string. */
   id: number;
@@ -99,10 +102,28 @@ export const UPDATE_LIMITS: Readonly<UpdateLimits> = Object.freeze({
   waiting: 32,
 });
 
+/**
+ * How many of an update's media files are compared at once with what the page has for them. One at
+ * a time, each of a game's thousand pictures would wait for the one before it to be read back; all
+ * at once, every file of the app would be held twice over.
+ */
+const COMPARED_AT_ONCE = 8;
+
 /** One line a person can act on: the first line, 300 characters at most, never a stack (main.tsx's reasonOf). */
 export function sentence(value: unknown): string {
   const text = value instanceof Error ? value.message : typeof value === 'string' ? value : '';
   return text.split('\n')[0].slice(0, 300);
+}
+
+/**
+ * What one media file of an update weighs against its limit: base64 text by its characters, and
+ * bytes (a Uint8Array or an ArrayBuffer, which media.ts takes as well) by the base64 they would be.
+ * Null for anything else, which is no file.
+ */
+function mediaWeight(value: unknown): number | null {
+  if (typeof value === 'string') return value.length;
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return Math.ceil(value.byteLength / 3) * 4;
+  return null;
 }
 
 /** An object as a message carries one: not a list, a Map or a buffer. */
@@ -123,7 +144,7 @@ export interface ReadUpdate {
   id: number | string;
   /** The app's text files, path to text. */
   client: Map<string, string>;
-  /** Its media as it came, path to base64; undefined where the parent sent none, which leaves the media as it is. */
+  /** Its media as it came, path to base64 text or bytes; undefined where the parent sent none, which leaves the media as it is. */
   assets: Record<string, unknown> | undefined;
 }
 
@@ -163,10 +184,13 @@ export function readUpdate(data: unknown, limits: UpdateLimits = UPDATE_LIMITS):
   if (names.length > limits.assets) return refuse(`The update carries ${names.length} media files, and a frame takes ${limits.assets} at most where it stands.`);
   let media = 0;
   for (const name of names) {
-    const value = data.assets[name];
-    // Anything but text is not served, as in init (media.ts), and weighs nothing.
-    if (typeof value === 'string') media += value.length;
-    if (media > limits.media) return refuse(`The update carries more media than a frame takes where it stands (${limits.media} characters of base64 at most).`);
+    // Each file is base64 text or bytes. Text that is not base64, or a file of a type the page is
+    // not given, is left out where the media is read, as in init (media.ts); anything else is a
+    // message gone wrong.
+    const weight = mediaWeight(data.assets[name]);
+    if (weight === null) return refuse(`The update's media file ${name.slice(0, 80)} is neither base64 text nor bytes.`);
+    media += weight;
+    if (media > limits.media) return refuse(`The update carries more media than a frame takes where it stands (${limits.media} characters of base64 at most, three bytes counting as four).`);
   }
   return { id, client, assets: data.assets };
 }
@@ -301,6 +325,26 @@ export interface UpdaterOptions<Composed extends object> {
   compose(files: ReadonlyMap<string, string>, main: string, logic: readonly string[]): Composed;
   /** The address a media file is served to the page as, or null for one it is not given (media.ts). */
   mediaUrl(path: string, value: unknown): string | null;
+  /**
+   * Whether the address the page has for a media file still serves what a version sends for it
+   * (media.ts's sameMedia): a file sent again as it was keeps its address, so nothing showing it is
+   * loaded again. A frame that leaves it out compares the addresses themselves, which tells a
+   * `data:` URL, made from the file, and no other kind.
+   */
+  sameMedia?(url: string, path: string, value: unknown): boolean | Promise<boolean>;
+  /**
+   * Lets go of a media address (media.ts's releaseMedia): one no version on screen has and the
+   * page was never given. One the page was given stays while the frame does, because the app may
+   * keep it in a variable, and a file let go from under it would no longer load. A frame that
+   * leaves it out lets go of nothing.
+   */
+  releaseMedia?(url: string): void;
+  /**
+   * The address one of the app's own text files is served to the page as, or null for one it is
+   * not given (media.ts's textFileUrl): data the page reads by name, `fetch('data/levels.json')`.
+   * Media come first. A frame that leaves this out serves media alone.
+   */
+  textUrl?(path: string, text: string): string | null;
   /** The side a manifest declares the app is drawn in (appTheme.ts). */
   themeOf(manifest: unknown): unknown;
   /**
@@ -344,7 +388,10 @@ export interface Updater<Composed extends object> {
   open(app: OpenApp<Composed>): void;
   /** A `formlogic:update` message from the port. Each one is answered, through `post`. */
   receive(data: unknown): void;
-  /** The address the page is given for a media file, from the media the app has now; '' for one it has not. */
+  /**
+   * The address the page is given for a media file, from the media the app has now, or for one of
+   * its own data files from the text it has now (`textUrl`); '' for one it has not.
+   */
   asset(path: string): string;
   /** The text files of the version on screen: what another page of the app is composed from when a link goes to it. */
   files(): ReadonlyMap<string, string>;
@@ -359,6 +406,11 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
   // The version on screen: the last one that was taken. A version kept back changes none of these.
   let files: ReadonlyMap<string, string> = new Map();
   let media: ReadonlyMap<string, string> = new Map();
+  // Every media address made and not let go of yet, and those of them the page has been given (`asset`).
+  const held = new Set<string>();
+  const handedOut = new Set<string>();
+  // The addresses of the version's own data files, made as the page asks for them (`asset`).
+  const textUrls = new WeakMap<ReadonlyMap<string, string>, Map<string, string>>();
   // Media the parent sent with a version that was not taken. Media left out means "as I last sent
   // it", so it goes with the next version that leaves its media out, and is let go once one is taken.
   let unread: Record<string, unknown> | undefined;
@@ -384,26 +436,67 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
   /**
    * The media an update carries, as the page is given it. The same Map where
    * nothing differs, so "is it the same media" is one comparison; and where a
-   * file says what it said, the text the frame already holds, so the copy
-   * that came with the update is let go. The media is `data:` addresses
-   * (media.ts): text, and nothing a browser holds open, so what an update
-   * replaces is let go with the Map that held it. There is no object URL
-   * here to release.
+   * file holds what it held, the address the page already has for it, so
+   * nothing showing it is loaded again. An address is a `blob:` URL
+   * (media.ts), a new one each time one is made, so each file is first
+   * compared with what the page's address for it holds (`sameMedia`, a few
+   * files at a time), and an address is made only for one that differs.
+   * What an update replaces is let go of once it is dealt with (`sweep`).
    */
-  const mediaOf = (assets: Record<string, unknown>, had: ReadonlyMap<string, string>): ReadonlyMap<string, string> => {
+  const mediaOf = async (assets: Record<string, unknown>, had: ReadonlyMap<string, string>): Promise<ReadonlyMap<string, string>> => {
+    const paths = Object.keys(assets);
+    const kept = new Set<string>();
+    const compare = options.sameMedia;
+    if (compare) {
+      let cursor = 0;
+      const comparing = async (): Promise<void> => {
+        while (cursor < paths.length) {
+          const path = paths[cursor++];
+          const was = had.get(path);
+          if (was === undefined) continue;
+          try {
+            if ((await compare(was, path, assets[path])) === true) kept.add(path);
+          } catch {
+            // A file that cannot be read back is given an address of its own.
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(COMPARED_AT_ONCE, paths.length) }, comparing));
+    }
     const next = new Map<string, string>();
     let same = true;
-    for (const path of Object.keys(assets)) {
+    for (const path of paths) {
+      const was = had.get(path);
+      if (was !== undefined && kept.has(path)) {
+        next.set(path, was);
+        continue;
+      }
       const url = options.mediaUrl(path, assets[path]);
       if (!url) continue;
-      const was = had.get(path);
       if (was === url) next.set(path, was);
       else {
+        held.add(url);
         next.set(path, url);
         same = false;
       }
     }
     return same && next.size === had.size ? had : next;
+  };
+
+  /**
+   * Once an update is dealt with: lets go of every media address made that
+   * the media on screen does not have, which is what a version replaced or
+   * took away, and what was made for one that was not taken. An address the
+   * page was given is not let go of, and is not looked at again: the app may
+   * hold it, and it stays as long as the frame does.
+   */
+  const sweep = (): void => {
+    const showing = new Set(media.values());
+    for (const url of held) {
+      if (showing.has(url)) continue;
+      held.delete(url);
+      if (!handedOut.delete(url)) options.releaseMedia?.(url);
+    }
   };
 
   const take = async (client: Map<string, string>, assets: Record<string, unknown> | undefined): Promise<Answer> => {
@@ -415,6 +508,12 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     const plan = planUpdate(files, client, options.languages);
     if ('reopen' in plan) return { outcome: 'reopen', reason: plan.reopen };
     if ('problem' in plan) return { outcome: 'kept', changed: [], problem: plan.problem };
+    // The version's media, ready before anything is decided of where the app stands: telling the
+    // files that are the same reads them back, and the app goes on meanwhile.
+    const hadMedia = media;
+    const nextMedia = given === undefined ? hadMedia : await mediaOf(given, hadMedia);
+    const meanwhile = notRunning();
+    if (meanwhile) return meanwhile;
     // Where the app stands: on its main page, or on another of its page files after a link to it.
     // That page is what the version is composed with while the version has it. One without it is
     // opened at its main page, which only an app that can leave a page does where it stands.
@@ -439,8 +538,7 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     const unparsed = leaves ? sentence((composed as { parseProblem?: unknown }).parseProblem) : '';
     if (unparsed) return { outcome: 'kept', changed: [], problem: unparsed };
     // The new media first, so logic that starts again reads it as it starts. It goes back if the version is kept back.
-    const hadMedia = media;
-    media = given === undefined ? hadMedia : mediaOf(given, hadMedia);
+    media = nextMedia;
     const mediaChanged = media !== hadMedia;
     if (leaves) {
       files = client;
@@ -505,6 +603,7 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
         } catch (error) {
           result = { outcome: 'reopen', reason: sentence(error) || 'The update could not be taken where the app stands.' };
         }
+        sweep();
         for (const id of gathered.ids) answer(id, result);
       }
     } finally {
@@ -517,6 +616,7 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
       app = opened;
       files = opened.files;
       media = opened.media;
+      for (const url of media.values()) held.add(url);
     },
     receive(data) {
       const update = readUpdate(data, limits);
@@ -537,7 +637,24 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
       }
       if (!busy) void run();
     },
-    asset: path => media.get(path.replace(/^\.\//, '')) || '',
+    asset: path => {
+      const name = path.replace(/^\.\//, '');
+      const found = media.get(name);
+      if (found) {
+        // The app may keep it from now on, so it is never let go of while the frame lives (`sweep`).
+        handedOut.add(found);
+        return found;
+      }
+      const text = files.get(name);
+      if (text === undefined || !options.textUrl) return '';
+      // Made once for each version's file: a page that asks for it on every frame of a game does not
+      // copy a large file each time. The cache goes with the version it was made from.
+      let made = textUrls.get(files);
+      if (!made) textUrls.set(files, made = new Map());
+      let url = made.get(name);
+      if (url === undefined) made.set(name, url = options.textUrl(name, text) ?? '');
+      return url;
+    },
     files: () => files,
   };
 }

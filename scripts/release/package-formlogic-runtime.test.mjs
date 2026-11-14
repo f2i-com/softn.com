@@ -297,7 +297,7 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     assert.deepEqual(hosted.engines, [...RUNTIME_ENGINES]);
     assert.deepEqual(hosted.engines, ['host-js', 'zipp-web', 'zipp-web-python']);
     assert.deepEqual(hosted.features, [...RUNTIME_FEATURES]);
-    assert.deepEqual(hosted.features, ['host-zipp/1', 'python-logic/1']);
+    assert.deepEqual(hosted.features, ['host-zipp/1', 'links/1', 'python-logic/1']);
     // What a site's own ZIPP must export for this runtime to run it, and the editors say the same.
     assert.deepEqual(hosted.zippGlueExports, ['default', 'Engine', 'accelGuestCall', 'addPythonPackage', 'zipp_install_panic_hook', 'zippProfile']);
     const editorsManifest = JSON.parse(bytes('app-editors/manifest.json').toString('utf8'));

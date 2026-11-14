@@ -15,10 +15,11 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { resolveObjectURL } from 'node:buffer';
 import { JSDOM } from 'jsdom';
 import { createUpdater, importsFrom } from '../src/update.ts';
 import { bundleLanguages } from '../src/engineInit.ts';
-import { mediaUrl } from '../src/media.ts';
+import { mediaUrl, releaseMedia, sameMedia } from '../src/media.ts';
 import { declaredThemeMode } from '../src/appTheme.ts';
 
 // A page for the renderer to draw in, there before React or core is loaded.
@@ -100,7 +101,7 @@ async function open(files = client(), assets = { 'assets/dot.png': 'AAAA' }) {
   const updates = createUpdater({
     post: reply => posted.push(reply),
     state: () => (drawn ? 'running' : 'opening'),
-    languages: bundleLanguages, compose: core.composeBundleSource, mediaUrl, themeOf: declaredThemeMode,
+    languages: bundleLanguages, compose: core.composeBundleSource, mediaUrl, sameMedia, releaseMedia, themeOf: declaredThemeMode,
   });
   const imports = importsFrom(text);
   const appId = `frame-update-${++apps}`;
@@ -219,31 +220,44 @@ test('the logic\'s imports are answered from the files of the update', async () 
 test('other media is shown without starting anything again, and the frame\'s tree drawn again keeps the version it has', async () => {
   const app = await open();
   const dot = () => app.container.querySelector('.dot')?.getAttribute('src');
-  assert.equal(dot(), 'data:image/png;base64,AAAA');
+  // What the picture's address serves, as base64; null where it serves nothing.
+  const shows = async () => {
+    const blob = resolveObjectURL(dot());
+    return blob ? `${blob.type};${Buffer.from(await blob.arrayBuffer()).toString('base64')}` : null;
+  };
+  const first = dot();
+  assert.match(first, /^blob:/);
+  assert.equal(await shows(), 'image/png;AAAA');
   // A version first, so the tree's own props (the version the app opened with) are no longer what is on screen.
   const renamed = client({ 'ui/main.ui': PAGE.replace('>Add<', '>Add one<') });
   assert.equal((await app.update(8, renamed)).outcome, 'updated');
   await app.reads('#inc', 'Add one');
   const reply = await app.update(9, renamed, { 'assets/dot.png': 'BBBB' });
   assert.deepEqual(reply, { type: 'updated', id: 9, outcome: 'updated', changed: ['media'] });
-  for (let i = 0; i < 200 && dot() !== 'data:image/png;base64,BBBB'; i++) await sleep(15);
-  assert.equal(dot(), 'data:image/png;base64,BBBB');
+  for (let i = 0; i < 200 && dot() === first; i++) await sleep(15);
+  const second = dot();
+  assert.notEqual(second, first);
+  assert.equal(await shows(), 'image/png;BBBB');
   assert.equal(app.drawings(), 2, 'the tree was drawn again for the media, with the props it opened with');
   await sleep(100);
   // Still the version it was handed, and nothing started again.
   assert.equal(app.read('#inc'), 'Add one');
   assert.equal(app.read('.count'), '3');
   assert.equal(app.read('.inits'), '1');
-  // Media left out is media as it is; the same media sent again is nothing to do.
+  // Media left out is media as it is; the same media sent again, as bytes this time, is nothing to do,
+  // and the picture keeps its address.
   assert.equal((await app.update(10, renamed)).outcome, 'unchanged');
-  assert.equal((await app.update(11, renamed, { 'assets/dot.png': 'BBBB' })).outcome, 'unchanged');
-  assert.equal(dot(), 'data:image/png;base64,BBBB');
+  assert.equal((await app.update(11, renamed, { 'assets/dot.png': new Uint8Array(Buffer.from('BBBB', 'base64')) })).outcome, 'unchanged');
+  assert.equal(dot(), second);
   assert.equal(app.drawings(), 2);
+  // The page was given the first picture's address, so it still serves what it did.
+  assert.equal(resolveObjectURL(first)?.size, 3);
   // A version kept back takes its media back with it.
   const kept = await app.update(12, client({ 'ui/main.ui': '<Stack><p>half' }), { 'assets/dot.png': 'CCCC' });
   assert.equal(kept.outcome, 'kept');
   await sleep(50);
-  assert.equal(dot(), 'data:image/png;base64,BBBB');
+  assert.equal(dot(), second);
+  assert.equal(await shows(), 'image/png;BBBB');
   assert.equal(app.read('#inc'), 'Add one');
   // The app goes on from where it was.
   await app.click('#inc');

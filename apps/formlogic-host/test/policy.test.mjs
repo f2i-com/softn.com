@@ -30,15 +30,29 @@ const ZIPP = 'https://runtime.example/zipp/';
  * The second (v0.0.36) is the site's ZIPP folder beside the runtime, `/zipp/`,
  * in `script-src` and `connect-src`: the host's own ZIPP install, whose glue the
  * shell imports (after checking its digest) and whose torch package it fetches.
+ * The third (after v0.0.40) is `blob:` in `connect-src`, which reaches no network
+ * either: a `blob:` address is one the document made from bytes it holds, and a
+ * document with an opaque origin reads no one else's. three.js reads the
+ * pictures inside a `.glb` that way, and without it every textured model was
+ * drawn in plain colours. The fourth (after v0.0.40) is `blob:` in `font-src`:
+ * the app's media are `blob:` addresses now (media.ts), its fonts among them,
+ * where they were data: URLs.
  */
 const ZIPP_POLICY =
-  `default-src 'none'; script-src ${ASSETS} ${ZIPP} 'wasm-unsafe-eval'; connect-src ${ASSETS} ${ZIPP} data:; ` +
-  `style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; ` +
+  `default-src 'none'; script-src ${ASSETS} ${ZIPP} 'wasm-unsafe-eval'; connect-src ${ASSETS} ${ZIPP} data: blob:; ` +
+  `style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data: blob:; ` +
   `worker-src blob:; form-action 'none'; base-uri 'none'; frame-src 'none'`;
 
-test('connect-src reaches the runtime directory, the site\'s ZIPP folder and data: URLs, and no network beyond', () => {
+test('connect-src reaches the runtime directory, the site\'s ZIPP folder, and data: and blob: URLs, and no network beyond', () => {
   const sources = framePolicy(ASSETS, ZIPP_DOCUMENT_ENGINES).split('; ').find((d) => d.startsWith('connect-src ')).split(' ').slice(1);
-  assert.deepEqual(sources, [ASSETS, ZIPP, 'data:']);
+  assert.deepEqual(sources, [ASSETS, ZIPP, 'data:', 'blob:']);
+  // Every source but the two folders is a scheme that names no host.
+  for (const source of sources.slice(2)) assert.match(source, /^[a-z]+:$/, source);
+});
+
+test('the app\'s media are read from data: and blob: addresses, its fonts too, and from no network', () => {
+  const directives = Object.fromEntries(framePolicy(ASSETS, ZIPP_DOCUMENT_ENGINES).split('; ').map((d) => [d.split(' ')[0], d.split(' ').slice(1)]));
+  for (const name of ['img-src', 'media-src', 'font-src']) assert.deepEqual(directives[name], ['data:', 'blob:'], name);
 });
 
 test('the ZIPP folder is the one beside the runtime directory, wherever the runtime is', () => {

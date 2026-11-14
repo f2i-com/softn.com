@@ -159,10 +159,11 @@ never sends an update sees nothing different.
   `{ type: 'formlogic:update', id, client, assets? }`:
   - `client`: the app's text files as `init` carries them, path to text. All
     of them, not the ones that changed.
-  - `assets`: its media as `init` carries it, path to base64, again the whole
-    set. Left out (or `null`), the media is as the parent last sent it, in
-    `init` or an update, which is the thing to do when it has not changed:
-    every file sent is read whole. Media sent with a version that was kept
+  - `assets`: its media as `init` carries it, path to base64 text, or to bytes
+    where the frame said `mediaBytes: 1` (below), again the whole set. Left
+    out (or `null`), the media is as the parent last sent it, in `init` or an
+    update, which is the thing to do when it has not changed: every file sent
+    is read whole. Media sent with a version that was kept
     back is not lost; it comes with the next version that leaves its media
     out. `{}` is an app with no media.
   - `id`: the parent's own, a number or text of 1 to 64 characters. It comes
@@ -204,10 +205,11 @@ never sends an update sees nothing different.
     reported an `error` with `phase: 'load'`, or it has ended;
   - the message is not one the frame takes: no usable `id` (answered with
     `id: null`), a `client` that is not an object of text, an `assets` that
-    is not an object, or more than a frame takes where it stands (4,000 text
-    files and 32 MiB of characters, 4,000 media files and 128 MiB of media,
-    32 updates waiting). `init` holds a parent to none of these, so the new
-    frame takes what the update could not.
+    is not an object or holds a file that is neither base64 text nor bytes,
+    or more than a frame takes where it stands (4,000 text files and 32 MiB
+    of characters, 4,000 media files and 128 MiB of media, bytes counting as
+    the base64 they would be, 32 updates waiting). `init` holds a parent to
+    none of these, so the new frame takes what the update could not.
 - Everything else of the manifest is taken where the app stands: its list of
   logic files is composed like the pages, the side it declares is drawn, and
   what the frame never read (a name, a version, a window size) changes
@@ -219,10 +221,11 @@ never sends an update sees nothing different.
   were added once, before it first drew, and an update adds none: a `.xdb`
   file it adds or changes is read when the app is next opened in a new frame.
 - The logic's imports are answered from the files of the version that is
-  running, and the page's `asset()` from that version's media. Media is
-  served as `data:` URLs, so nothing is held open for a file an update
-  replaced. Logic that kept an asset's address in a variable holds the old
-  one until it starts again.
+  running, and the page's `asset()` from that version's media. A file the
+  version sends as it was keeps its address. Logic that kept an asset's
+  address in a variable holds the old file until it starts again: an address
+  the page was given is never let go of while the frame lives (media is
+  served as `blob:` URLs, below).
 - Updates are taken one at a time, in the order they came. Those that arrive
   while one is being taken are gathered: the newest files are the ones taken
   (with the media last sent among them), and every `id` gets an answer, each
@@ -263,6 +266,86 @@ sees nothing different, but for links that now work. The frame's side is
 - A `formlogic:update` while another page is showing keeps that page if the
   new version has it. If it does not, the frame posts the place `/` and then
   answers `restarted` with `changed` holding `page`.
+
+## Links out of the app, and the app's own data (unreleased)
+
+Every link that was not to a page of the app still took the frame off it: a
+link to another site or a mail address, a file of the app's that is not a page,
+`about` or `/` or a folder. FormLogic then stopped the app ("This app tried to
+navigate away and was stopped"). Now no link the person clicks does
+(`apps/formlogic-host/src/links.ts`, and the README's "Links out of the app").
+
+- The frame says it: `formlogic:ready` carries `links: 1`, and the runtime's
+  `runtime-manifest.json` `features` names `links/1`, so a host can tell an
+  app's author what a link will do before any frame is open (FormLogic's
+  install warnings read it).
+- A link to another site, a mail address or a phone number is posted on the
+  app's port, `{ type: 'link', href }`, and the frame stays where it is. `href`
+  is absolute, at most 2000 characters, printable, and a web address has a host
+  and no name or password before it. Only a click the browser reports as the
+  person's is posted, never the page's code calling `click()`; but an app whose
+  code runs in the frame's own scripts (host-js) can reach the port and post a
+  link with no click, so the parent takes each as the frame's word. It is the
+  parent's to open or not: FormLogic checks the address again, shows it only
+  right after a press of the person's, and opens it in a new tab when the
+  person presses Open once it has been on screen a moment. A parent that reads
+  no `link` message sees such a link do nothing, where it used to lose the app.
+- A link to a page of the app that core leaves to the browser (a `target`, a
+  key held) is shown in place. Anything else that names no page of the app, an
+  empty address, and a `data:` or `blob:` address without `download`, keeps the
+  frame where it is and is said in the console.
+- All of this holds for a click the app stops on its way (`@click.stop`, a
+  component that stops its clicks, a page's own code in its capture phase): the
+  frame decides it where it is stopped, and for a link drawn in SVG, one an
+  SVG `<use>` draws too (where it draws several, which was clicked cannot be
+  told, and none is followed). An address is read as the browser's parser
+  reads it: `"&nbsp;#top"` is not a place on the page.
+- The app's own JSON files, which the parent sends with its pages, are served
+  by name from their text, so `fetch('data/levels.json')` reads one, as it does
+  in SoftN Web. Media are looked up first.
+- The frame's `connect-src` names `blob:` as well as `data:`. Neither reaches
+  the network: a `blob:` address is one the frame made itself, and an opaque
+  origin reads no other. three.js reads a `.glb`'s pictures that way, so every
+  textured model was drawn in plain colours without it. A parent that checks
+  the frame's policy (FormLogic's `check-zipp-sharing.mjs`) takes `blob:` there.
+
+## An app's media, as bytes and as `blob:` addresses (unreleased)
+
+A large app lagged in the frame. The parent turned each media file into base64
+text to post it, and the frame served each as a `data:` URL, the file written
+out as that text: a 24 MB model was a 32 MB string, put into the page wherever
+it was named and decoded again each time three.js read it. The frame's side is
+`apps/formlogic-host/src/media.ts`.
+
+- The frame serves every media file as a `blob:` URL, a short name for bytes it
+  holds once, however the file came. A page's `asset()` gives one, as it does
+  in SoftN Web. An app that read the base64 out of what `asset()` gave it can
+  no longer.
+- The frame says it takes bytes: `formlogic:ready` carries `mediaBytes: 1`.
+- A parent that reads it may send any file in `init.assets`, and in a
+  `formlogic:update`'s `assets`, as bytes (a `Uint8Array` or an `ArrayBuffer`)
+  in place of base64 text. The frame takes either, file by file, so a parent
+  can move over one file at a time. A parent that sends text works as before.
+- A `Uint8Array` is posted with the whole buffer it views. Views of one buffer
+  in one message carry that buffer once: FormLogic sends the files of the app's
+  media pack as views into the pack, and the frame is copied the pack, once. One
+  small view of a large buffer carries all of that buffer, so view the file
+  alone where the buffer holds more than the files sent. An `ArrayBuffer` in
+  `postMessage`'s transfer list is handed over, and the parent no longer has
+  it: transfer only a copy it does not keep.
+- Text that is not base64 is no file, and is left out, as a file of a type the
+  page is not given is. In an update, a file that is neither text nor bytes (a
+  number, an object) makes the update one the frame does not take, answered
+  `reopen`; such a file used to be left out. Bytes count against the update's
+  128 MiB as the base64 they would be.
+- The frame's `font-src` names `blob:` beside `data:`, as `img-src`,
+  `media-src` and `connect-src` already did, so an app's own fonts still load.
+  A parent that checks the frame's policy takes `blob:` in `font-src`.
+- A file an update sends as it was keeps its address, so nothing showing it is
+  loaded again: the frame reads the file back and compares the bytes, a few
+  files at a time. An address no version has any more is let go of, unless the
+  page was given it: the app may keep that one, and it stays until the frame
+  closes.
 
 ## The editor bridge's AI requests
 

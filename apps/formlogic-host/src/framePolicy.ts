@@ -53,13 +53,21 @@ export function framePolicy(assets: string, served: readonly EngineId[]): string
   // Nothing else is relaxed: the app still cannot fetch, load or navigate
   // anywhere outside the runtime directory and the site's ZIPP folder.
   // `connect-src` names `data:` as well, which is no network at all: it lets
-  // the app read its own bundled assets, served as data: URLs (media.ts), with
-  // fetch, as a model loader or a compute shader does. Pictures, sound and
-  // fonts never needed it. The ZIPP folder is in `script-src` for the one file
-  // the shell imports from it, the glue of the ZIPP the host sends (checked
-  // against the digest the host names first), and in `connect-src` for that
-  // check and for the torch package an app that declares torch is given.
+  // the app read its own files with fetch, as a model loader or a compute
+  // shader does: its JSON, served as data: URLs, and a model's embedded
+  // buffers. It names `blob:` too, also no network: a `blob:` address is one
+  // this document made from bytes it already holds, and a document with an
+  // opaque origin can read no one else's. The app's media are served that way
+  // (media.ts), and three.js reads the pictures inside a model file that way
+  // (a `.glb`'s textures): with `blob:` refused every textured model was drawn
+  // in plain colours. Pictures, sound, video and fonts take `blob:` beside
+  // `data:` for the same media. Fonts took `data:` alone while media were
+  // data: URLs; without `blob:` an app's own font would no longer load. The ZIPP
+  // folder is in `script-src` for the one file the shell imports from it, the
+  // glue of the ZIPP the host sends (checked against the digest the host names
+  // first), and in `connect-src` for that check and for the torch package an
+  // app that declares torch is given.
   const hostJavaScript = served.some((id) => NEEDS_UNSAFE_EVAL.includes(id)) ? " 'unsafe-eval'" : '';
   const zipp = zippDirectory(assets);
-  return `default-src 'none'; script-src ${assets} ${zipp} 'wasm-unsafe-eval'${hostJavaScript}; connect-src ${assets} ${zipp} data:; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; worker-src blob:; form-action 'none'; base-uri 'none'; frame-src 'none'`;
+  return `default-src 'none'; script-src ${assets} ${zipp} 'wasm-unsafe-eval'${hostJavaScript}; connect-src ${assets} ${zipp} data: blob:; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data: blob:; worker-src blob:; form-action 'none'; base-uri 'none'; frame-src 'none'`;
 }

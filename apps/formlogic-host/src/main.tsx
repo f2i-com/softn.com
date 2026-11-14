@@ -10,10 +10,11 @@ import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippAddress, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { createNativeNetFetch } from './nativeFetch';
 import { framePolicy, zippDirectory } from './framePolicy';
-import { mediaUrl } from './media';
+import { mediaUrl, releaseMedia, sameMedia, textFileUrl } from './media';
 import { seedBundledData } from './seed';
 import { createUpdater, importsFrom, type ImportResolver } from './update';
 import { isOtherPage, linkedPage, startPlace, writePlace } from './place';
+import { decideLink, watchLinks } from './links';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -118,8 +119,46 @@ const updates = createUpdater<ReturnType<typeof composeBundleSource>>({
   post: reply => port?.postMessage(reply),
   state: () => terminated ? 'closed' : failed ? 'failed' : drawn ? 'running' : 'opening',
   languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,
+  // Media are blob: addresses (media.ts): a file a version sends again as it was keeps the one the page
+  // has, and one no version has is let go of, unless the page was given it.
+  sameMedia, releaseMedia,
+  // The app's own data files, read with fetch (`fetch('data/levels.json')`) as SoftN Web reads them (media.ts).
+  textUrl: textFileUrl,
   // An app showing another of its page files stays on it while a newer version has that page (place.ts).
   hasPage: (files, main, path) => isOtherPage(files, main, path, bundlePageAt),
+});
+/**
+ * The link rules of the page on screen, once the app is open: whether a link names one of its
+ * pages, and showing that page. Set by `init`, read by the click listener below.
+ */
+let pageLinks: { isPage(href: string): boolean; follow(href: string): boolean } | undefined;
+/**
+ * Every click on a link, decided once by links.ts (after the app's own handlers and core's, or
+ * where the app stops the click on its way) and carried out here. A link to the outside goes to the
+ * parent; anything that would take the frame off the app is kept from it and said in the console.
+ * Listened for from the start, before any of the app's code can listen: the window hears a click
+ * first.
+ */
+watchLinks(window, {
+  open: () => !terminated,
+  decide: (link, event, handled) => decideLink({
+    written: link.written, resolved: link.resolved, download: link.download, unclear: link.unclear,
+    handled, byPerson: event.isTrusted,
+    isPage: href => pageLinks?.isPage(href) === true,
+  }),
+  act: (action, link) => {
+    if (action.kind === 'hand-on') {
+      // Until the app is drawn there is nothing on screen to have clicked; after the frame ends, no one to tell.
+      if (port && drawn && !failed) port.postMessage({ type: 'link', href: action.href });
+    } else if (action.kind === 'show-page') {
+      pageLinks?.follow(link.written);
+    } else {
+      console.warn(`[SoftN] ${action.warning}`);
+    }
+  },
+  later: run => {
+    setTimeout(run, 0);
+  },
 });
 /**
  * What is on screen: the app's main page, or another of its page files after a link to it
@@ -249,6 +288,7 @@ window.addEventListener('message', async event => {
     // Where a parent confirms saves, a refused one is news. Any other frame keeps its records in
     // memory by design: told so in red, every app it opens looks broken before it has saved a thing.
     const savesAcknowledged = appStorage?.acknowledgedPersistence.protocol === 1;
+    // Each media file as it came, base64 text or bytes (ready's mediaBytes: 1), served as a blob: address (media.ts).
     const media = new Map<string, string>();
     for (const [path, value] of Object.entries(event.data.assets || {})) {
       const url = mediaUrl(path, value);
@@ -366,6 +406,10 @@ window.addEventListener('message', async event => {
       show(linked.file, composed, importsFrom(text));
       return true;
     };
+    pageLinks = {
+      isPage: href => linkedPage(updates.files(), mainPage(updates.files()), shown.file, href, bundlePageAt) !== null,
+      follow: followLink,
+    };
     updates.open({
       files, media,
       // A newer version goes to the page on screen, composed with that page (update.ts).
@@ -404,4 +448,13 @@ window.addEventListener('message', async event => {
 // to one, posts where the app is on its port (`{ type: 'place', place }`, after shown and whenever
 // it changes), and opens the app at the `place` an `init` carries (place.ts). A parent that sends
 // none and reads none sees an app whose links to its own pages work, and nothing else different.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1, zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS, update: 1, places: 1 }, '*');
+// links: 1 is an addition: no link the person clicks takes this document off the app any more. A link
+// to another site, a mail address or a phone number is posted on the port, `{ type: 'link', href }`
+// (absolute, checked by links.ts), for the parent to open or offer; anything else that is no page of
+// the app stays where it is, said in the console. A parent that reads none sees such a link do nothing,
+// where it used to lose the app.
+// mediaBytes: 1 is an addition: this document takes each of the app's media files as bytes (a
+// Uint8Array or an ArrayBuffer) as well as base64 text, in `init.assets` and in an update's `assets`,
+// file by file, so a parent need not turn its files into text and back. Either way the page is given
+// `blob:` addresses (media.ts). A parent that reads none sends text, which works as it always did.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, storageProtocol: STORAGE_PROTOCOL, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities), shown: 1, zippGlue: 1, zippGlueExports: ZIPP_GLUE_EXPORTS, update: 1, places: 1, links: 1, mediaBytes: 1 }, '*');

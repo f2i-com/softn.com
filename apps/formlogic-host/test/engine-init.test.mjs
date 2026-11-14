@@ -285,7 +285,7 @@ test('the shell refuses the engine before it configures one, and routes native f
 
 test('the runtime says which optional capabilities it has, and how to read an app’s languages', () => {
   // The manifest's `features` is this list; the packager reads it from here.
-  assert.deepEqual([...RUNTIME_FEATURES], ['host-zipp/1', 'python-logic/1']);
+  assert.deepEqual([...RUNTIME_FEATURES], ['host-zipp/1', 'links/1', 'python-logic/1']);
   assert.ok(RUNTIME_FEATURES.every((f) => /^[a-z][a-z0-9-]*\/\d+$/.test(f)), 'named and versioned');
   assert.equal(LOGIC_LANGUAGES_PROTOCOL, 1);
   assert.ok(Number.isInteger(LOGIC_LANGUAGES_PROTOCOL));

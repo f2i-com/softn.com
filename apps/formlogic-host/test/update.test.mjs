@@ -9,12 +9,19 @@
 // update-live.test.mjs runs the same module against core's own.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { resolveObjectURL } from 'node:buffer';
 import { createUpdater, importsFrom, planUpdate, readUpdate, sentence, PAGE_GONE, UPDATE_LIMITS } from '../src/update.ts';
 import { bundleLanguages } from '../src/engineInit.ts';
-import { mediaUrl } from '../src/media.ts';
+import { mediaUrl, releaseMedia, sameMedia, textFileUrl } from '../src/media.ts';
 import { declaredThemeMode } from '../src/appTheme.ts';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+/** What a media address serves, as `type;base64`: '' for no address, and null for one that serves nothing, having been let go of. */
+async function served(url) {
+  if (url === '') return '';
+  const blob = resolveObjectURL(url);
+  return blob ? `${blob.type};${Buffer.from(await blob.arrayBuffer()).toString('base64')}` : null;
+}
 const manifest = (extra = {}) => JSON.stringify({ name: 'Notes', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'] }, ...extra });
 const client = (changes = {}) => ({ 'manifest.json': manifest(), 'ui/main.ui': '<div>{count}</div>', 'logic/main.logic': 'let count = 0', ...changes });
 const files = (changes = {}) => new Map(Object.entries(client(changes)));
@@ -48,22 +55,25 @@ function runningApp() {
 }
 
 /** A frame with an app open and its first page drawn, as main.tsx wires one. */
-function frame({ assets = {}, limits } = {}) {
+function frame({ assets = {}, limits, textUrl } = {}) {
   const posted = [];
   const redraws = [];
+  // The media addresses let go of, in turn.
+  const released = [];
   const app = runningApp();
   const opened = files();
   const at = { state: 'running' };
   const updates = createUpdater({
     post: reply => posted.push(reply),
     state: () => at.state,
-    languages: bundleLanguages, compose, mediaUrl, themeOf: declaredThemeMode, limits,
+    languages: bundleLanguages, compose, mediaUrl, textUrl, themeOf: declaredThemeMode, limits,
+    sameMedia, releaseMedia: url => { released.push(url); releaseMedia(url); },
   });
   const media = new Map(Object.entries(assets).map(([path, value]) => [path, mediaUrl(path, value)]));
   app.shown = { ...compose(opened, 'ui/main.ui', ['logic/main.logic']), importResolver: importsFrom(opened) };
   updates.open({ files: opened, media, update: revision => app.update(revision), redraw: next => redraws.push(next) });
   const send = (id, text = client(), extra = {}) => updates.receive({ type: 'formlogic:update', id, client: text, ...extra });
-  return { updates, posted, redraws, app, at, send };
+  return { updates, posted, redraws, app, at, send, media, released };
 }
 
 test('an update is a message with an id, the app\'s text files, and its media or none', () => {
@@ -75,8 +85,16 @@ test('an update is a message with an id, the app\'s text files, and its media or
   assert.equal(readUpdate({ id: 'save-12', client: client(), assets: null }).assets, undefined);
   assert.deepEqual(readUpdate({ id: 'save-12', client: client(), assets: { 'assets/a.png': 'AAAA' } }).assets, { 'assets/a.png': 'AAAA' });
   assert.deepEqual(readUpdate({ id: 1, client: client(), assets: {} }).assets, {}, 'an empty object is no media at all');
-  // What is not served is not a reason to refuse, as in init: it is dropped where the media is read.
-  assert.equal('refused' in readUpdate({ id: 1, client: client(), assets: { 'assets/a.png': 7 } }), false);
+  // Bytes are media as base64 text is, file by file, each as it came.
+  const bytes = new Uint8Array([1, 2, 3]);
+  const buffer = new ArrayBuffer(4);
+  const mixed = readUpdate({ id: 1, client: client(), assets: { 'assets/a.png': bytes, 'assets/b.glb': buffer, 'assets/c.png': 'AAAA' } });
+  assert.equal(mixed.assets['assets/a.png'], bytes);
+  assert.equal(mixed.assets['assets/b.glb'], buffer);
+  assert.equal(mixed.assets['assets/c.png'], 'AAAA');
+  // Text that is not base64, and a file of a type the page is not given, are not a reason to refuse, as in
+  // init: they are left out where the media is read.
+  assert.equal('refused' in readUpdate({ id: 1, client: client(), assets: { 'assets/a.png': '****', 'assets/page.html': 'AAAA' } }), false);
 });
 
 test('a malformed update is refused with the id it came with, where it has one', () => {
@@ -99,6 +117,12 @@ test('a malformed update is refused with the id it came with, where it has one',
   }
   assert.match(readUpdate({ id: 3, client: client({ 'ui/main.ui': { text: '<div/>' } }) }).refused, /ui\/main\.ui is not text/);
   for (const bad of ['AAAA', ['AAAA'], 7, new Map()]) assert.match(readUpdate({ id: 3, client: client(), assets: bad }).refused, /media \(assets\) is not an object/);
+  // Each media file is base64 text or bytes, a Uint8Array or an ArrayBuffer: anything else is a message gone wrong.
+  for (const bad of [7, null, true, {}, ['AAAA'], { 0: 1 }, new Uint16Array(2), new DataView(new ArrayBuffer(2)), new Blob(['x'])]) {
+    const refused = readUpdate({ id: 3, client: client(), assets: { 'assets/a.png': 'AAAA', 'assets/b.png': bad } });
+    assert.equal(refused.id, 3);
+    assert.equal(refused.refused, 'The update\'s media file assets/b.png is neither base64 text nor bytes.', Object.prototype.toString.call(bad));
+  }
 });
 
 test('an update is held to a size before any of it is composed', () => {
@@ -117,6 +141,13 @@ test('an update is held to a size before any of it is composed', () => {
   assert.match(readUpdate({ id: 1, client: client(), assets: { a: 'A', b: 'B', c: 'C' } }, limits).refused, /carries 3 media files, and a frame takes 2 at most/);
   assert.match(readUpdate({ id: 1, client: client(), assets: { 'a.png': 'A'.repeat(13) } }, limits).refused, /more media than a frame takes/);
   assert.equal('refused' in readUpdate({ id: 1, client: client(), assets: { 'a.png': 'A'.repeat(12) } }, limits), false);
+  // Bytes weigh the base64 they would be, four characters for every three: the same limit either way.
+  assert.equal('refused' in readUpdate({ id: 1, client: client(), assets: { 'a.png': new Uint8Array(9) } }, limits), false);
+  assert.match(readUpdate({ id: 1, client: client(), assets: { 'a.png': new Uint8Array(10) } }, limits).refused, /more media than a frame takes/);
+  assert.match(readUpdate({ id: 1, client: client(), assets: { 'a.png': new ArrayBuffer(10) } }, limits).refused, /more media than a frame takes/);
+  assert.equal('refused' in readUpdate({ id: 1, client: client(), assets: { 'a.png': new Uint8Array(new ArrayBuffer(100), 0, 9) } }, limits), false, 'a view weighs the bytes it views');
+  assert.equal('refused' in readUpdate({ id: 1, client: client(), assets: { 'a.png': 'AAAA', 'b.png': new Uint8Array(6) } }, limits), false);
+  assert.match(readUpdate({ id: 1, client: client(), assets: { 'a.png': 'AAAAAAAA', 'b.png': new Uint8Array(4) } }, limits).refused, /more media than a frame takes/);
 });
 
 test('a frame takes what it can draw or start again, and nothing that needs another engine, grant or app', () => {
@@ -281,43 +312,77 @@ test('the logic\'s imports are answered from the files of the version it belongs
   assert.equal(await first('/logic/helper.logic'), null);
 });
 
+test('the app\'s own data files reach the page from the text of the version on screen, media first', async () => {
+  const { updates, posted, send } = frame({ textUrl: textFileUrl, assets: { 'assets/a.png': 'AAAA' } });
+  const read = url => decodeURIComponent(url.slice(url.indexOf(',') + 1));
+  // The manifest is JSON, and so is the app's own data; a page or its logic is not given.
+  assert.equal(read(updates.asset('manifest.json')), manifest());
+  assert.equal(read(updates.asset('./manifest.json')), manifest());
+  assert.equal(updates.asset('ui/main.ui'), '');
+  assert.equal(updates.asset('logic/main.logic'), '');
+  assert.equal(updates.asset('data/levels.json'), '', 'one it does not have');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;AAAA', 'media as before');
+  // Asked again, the same address: made once for each version, not on every frame of a game.
+  assert.equal(updates.asset('manifest.json'), updates.asset('manifest.json'));
+  // A version that brings data is read from that version.
+  send(1, client({ 'data/levels.json': '{"level":1}' }));
+  await tick();
+  assert.equal(posted[0].outcome, 'unchanged');
+  assert.equal(read(updates.asset('data/levels.json')), '{"level":1}');
+  send(2, client({ 'data/levels.json': '{"level":2}' }));
+  await tick();
+  assert.equal(read(updates.asset('data/levels.json')), '{"level":2}');
+  // One that is kept back changes nothing the page reads.
+  send(3, client({ 'ui/main.ui': '<broken', 'data/levels.json': '{"level":3}' }));
+  await tick();
+  assert.equal(posted[2].outcome, 'kept');
+  assert.equal(read(updates.asset('data/levels.json')), '{"level":2}');
+  // A frame that gives no text addresses serves media alone, as it always did.
+  assert.equal(frame().updates.asset('manifest.json'), '');
+});
+
 test('other media reaches the page, and goes back with a version that is kept back', async () => {
   const { updates, posted, send, redraws, app } = frame({ assets: { 'assets/a.png': 'AAAA', 'assets/b.png': 'BBBB' } });
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,AAAA');
-  assert.equal(updates.asset('./assets/a.png'), 'data:image/png;base64,AAAA');
+  const a = updates.asset('assets/a.png');
+  assert.match(a, /^blob:/);
+  assert.equal(await served(a), 'image/png;AAAA');
+  assert.equal(updates.asset('./assets/a.png'), a);
   assert.equal(updates.asset('assets/none.png'), '');
-  // Left out: as it is. The same again: nothing to do, and nothing drawn.
+  // Left out: as it is. The same again: nothing to do, nothing drawn, and the page's addresses as they were.
   send(1);
   send(2, client(), { assets: { 'assets/a.png': 'AAAA', 'assets/b.png': 'BBBB' } });
   await tick(); await tick();
   assert.deepEqual(posted.map(reply => reply.outcome), ['unchanged', 'unchanged']);
   assert.equal(redraws.length, 0);
+  assert.equal(updates.asset('assets/a.png'), a);
   // Other media with the same text: drawn again where the app stands, and said.
-  send(3, client(), { assets: { 'assets/a.png': 'CCCC', 'assets/new.mp3': 'DDDD', 'assets/page.html': 'EEEE', 'assets/n.png': 7 } });
+  send(3, client(), { assets: { 'assets/a.png': 'CCCC', 'assets/new.mp3': 'DDDD', 'assets/page.html': 'EEEE', 'assets/n.png': '****' } });
   await tick();
   assert.deepEqual(posted[2], { type: 'updated', id: 3, outcome: 'updated', changed: ['media'] });
   assert.equal(redraws.length, 1);
   assert.deepEqual(redraws[0], JSON.parse(manifest()));
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,CCCC');
-  assert.equal(updates.asset('assets/new.mp3'), 'data:audio/mpeg;base64,DDDD');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;CCCC');
+  assert.equal(await served(updates.asset('assets/new.mp3')), 'audio/mpeg;DDDD');
   assert.equal(updates.asset('assets/b.png'), '', 'the whole set: what the update does not carry is gone');
   assert.equal(updates.asset('assets/page.html'), '', 'nothing that runs is served, as in init');
-  assert.equal(updates.asset('assets/n.png'), '');
+  assert.equal(updates.asset('assets/n.png'), '', 'nor text that is not base64');
   // With a page that changed too, both are said.
   send(4, client({ 'ui/main.ui': '<p>{count}</p>' }), { assets: { 'assets/a.png': 'AAAA' } });
   await tick();
   assert.deepEqual(posted[3], { type: 'updated', id: 4, outcome: 'updated', changed: ['page', 'media'] });
   assert.equal(redraws.length, 2);
+  const shown = updates.asset('assets/a.png');
   // The new media is there for logic that starts again while the version is taken…
   const release = app.hold();
   send(5, client({ 'ui/main.ui': '<broken' }), { assets: { 'assets/a.png': 'ZZZZ' } });
   await tick();
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,ZZZZ');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;ZZZZ');
   release();
   await tick();
   // …and goes back with a version that is kept back, the page drawn again with what it had.
   assert.equal(posted[4].outcome, 'kept');
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,AAAA');
+  assert.equal(updates.asset('assets/a.png'), shown);
+  assert.equal(await served(shown), 'image/png;AAAA');
   assert.equal(redraws.length, 3);
   // An empty object is no media at all.
   send(6, client({ 'ui/main.ui': '<p>{count}</p>' }), { assets: {} });
@@ -332,27 +397,126 @@ test('media left out is media as the parent last sent it, with a version that wa
   send(1, client({ 'ui/main.ui': '<broken' }), { assets: { 'assets/a.png': 'BBBB' } });
   await tick();
   assert.equal(posted[0].outcome, 'kept');
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,AAAA');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;AAAA');
   // The parent mends the page. Its media is what it last sent, so it leaves it out, and it is not lost.
   send(2, client({ 'ui/main.ui': '<p>{count}</p>' }));
   await tick();
   assert.deepEqual(posted[1], { type: 'updated', id: 2, outcome: 'updated', changed: ['page', 'media'] });
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,BBBB');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;BBBB');
   // The same for a version kept back before the renderer saw it (a manifest that is not JSON).
   send(3, client({ 'manifest.json': '{' }), { assets: { 'assets/a.png': 'CCCC' } });
   await tick();
   assert.equal(posted[2].outcome, 'kept');
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,BBBB');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;BBBB');
   send(4, client({ 'ui/main.ui': '<p>{count}</p>' }));
   await tick();
   assert.deepEqual(posted[3], { type: 'updated', id: 4, outcome: 'updated', changed: ['media'] });
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,CCCC');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;CCCC');
   // Once a version is taken there is nothing left over: the same again is nothing to do.
   const drawn = redraws.length;
   send(5, client({ 'ui/main.ui': '<p>{count}</p>' }));
   await tick();
   assert.deepEqual(posted[4], { type: 'updated', id: 5, outcome: 'unchanged', changed: [] });
   assert.equal(redraws.length, drawn);
+});
+
+test('media may come as bytes, file by file, and a file sent again as it was keeps the address the page has', async () => {
+  const { updates, posted, send, redraws } = frame({ assets: { 'assets/a.png': 'AAEC/w==', 'assets/b.glb': 'AAAA' } });
+  const a = updates.asset('assets/a.png');
+  const b = updates.asset('assets/b.glb');
+  // The same files as bytes, a Uint8Array and an ArrayBuffer: nothing to do, nothing drawn, the same addresses.
+  send(1, client(), { assets: { 'assets/a.png': new Uint8Array([0, 1, 2, 255]), 'assets/b.glb': new ArrayBuffer(3) } });
+  await tick();
+  assert.deepEqual(posted[0], { type: 'updated', id: 1, outcome: 'unchanged', changed: [] });
+  assert.equal(redraws.length, 0);
+  assert.equal(updates.asset('assets/a.png'), a);
+  assert.equal(updates.asset('assets/b.glb'), b);
+  // One file with other bytes, the other as text again: only the one that differs has a new address.
+  send(2, client(), { assets: { 'assets/a.png': new Uint8Array([0, 1, 2, 254]), 'assets/b.glb': 'AAAA' } });
+  await tick();
+  assert.deepEqual(posted[1], { type: 'updated', id: 2, outcome: 'updated', changed: ['media'] });
+  assert.notEqual(updates.asset('assets/a.png'), a);
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;AAEC/g==');
+  assert.equal(updates.asset('assets/b.glb'), b);
+  assert.equal(await served(b), 'model/gltf-binary;AAAA');
+  // A file new to the app, as bytes.
+  send(3, client(), { assets: { 'assets/a.png': new Uint8Array([0, 1, 2, 254]), 'assets/b.glb': 'AAAA', 'assets/c.mp3': new Uint8Array([7]).buffer } });
+  await tick();
+  assert.deepEqual(posted[2], { type: 'updated', id: 3, outcome: 'updated', changed: ['media'] });
+  assert.equal(await served(updates.asset('assets/c.mp3')), 'audio/mpeg;Bw==');
+});
+
+test('an update whose media holds a file that is neither text nor bytes is answered reopen, and changes nothing', () => {
+  const { updates, posted, send, redraws, app } = frame({ assets: { 'assets/a.png': 'AAAA' } });
+  const a = updates.asset('assets/a.png');
+  send(1, client({ 'ui/main.ui': '<p>{count}</p>' }), { assets: { 'assets/a.png': 7 } });
+  send(2, client({ 'ui/main.ui': '<p>{count}</p>' }), { assets: { 'assets/a.png': { bytes: [0, 0, 0] } } });
+  // Answered at once, as every message the frame does not take is.
+  assert.deepEqual(posted, [1, 2].map(id => ({ type: 'updated', id, outcome: 'reopen', reason: 'The update\'s media file assets/a.png is neither base64 text nor bytes.' })));
+  assert.equal(app.revisions.length, 0);
+  assert.equal(redraws.length, 0);
+  assert.equal(updates.asset('assets/a.png'), a);
+});
+
+test('an address no version has is let go of, unless the page was given it, which the app may still hold', async () => {
+  const { updates, posted, send, app, media, released } = frame({ assets: { 'assets/a.png': 'AAAA', 'assets/b.png': 'BBBB' } });
+  // The page asks for one picture, and never for the other.
+  const a = updates.asset('assets/a.png');
+  const b = media.get('assets/b.png');
+  send(1, client(), { assets: { 'assets/a.png': 'CCCC', 'assets/b.png': 'DDDD' } });
+  await tick();
+  assert.equal(posted[0].outcome, 'updated');
+  // The one the page was never given serves nothing now. The one it was serves what it did, for logic
+  // that kept it in a variable, until the frame ends.
+  assert.deepEqual(released, [b]);
+  assert.equal(await served(b), null);
+  assert.equal(await served(a), 'image/png;AAAA');
+  // What was made for a version that is kept back goes with it, but for a file the page asked for meanwhile.
+  const release = app.hold();
+  send(2, client({ 'ui/main.ui': '<broken' }), { assets: { 'assets/a.png': 'EEEE', 'assets/b.png': 'FFFF' } });
+  await tick();
+  const asked = updates.asset('assets/a.png');
+  assert.equal(await served(asked), 'image/png;EEEE');
+  release();
+  await tick();
+  assert.equal(posted[1].outcome, 'kept');
+  assert.equal(released.length, 2);
+  assert.equal(await served(released[1]), null, 'the picture the page never asked for');
+  assert.equal(await served(asked), 'image/png;EEEE', 'the one it did');
+  // What is on screen is never let go of.
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;CCCC');
+  assert.equal(await served(updates.asset('assets/b.png')), 'image/png;DDDD');
+  assert.equal(released.length, 2);
+});
+
+test('an app with many media files keeps the address of each that is the same, compared a few at a time', async () => {
+  const many = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`assets/p${i}.png`, Buffer.from([i, i, i]).toString('base64')]));
+  const { updates, posted, send } = frame({ assets: many });
+  const before = Object.keys(many).map(path => updates.asset(path));
+  send(1, client(), { assets: { ...many, 'assets/p3.png': Buffer.from([99, 99, 99]).toString('base64'), 'assets/p17.png': new Uint8Array([1, 2]) } });
+  await tick();
+  assert.deepEqual(posted[0], { type: 'updated', id: 1, outcome: 'updated', changed: ['media'] });
+  Object.keys(many).forEach((path, i) => {
+    if (i === 3 || i === 17) assert.notEqual(updates.asset(path), before[i], path);
+    else assert.equal(updates.asset(path), before[i], path);
+  });
+  assert.equal(await served(updates.asset('assets/p3.png')), 'image/png;Y2Nj');
+  assert.equal(await served(updates.asset('assets/p17.png')), 'image/png;AQI=');
+});
+
+test('a frame given no way to compare media compares the addresses, which tells a data: URL made from the file', async () => {
+  const dataUrl = (path, value) => (typeof value === 'string' ? `data:image/png;base64,${value}` : null);
+  const posted = [];
+  const app = runningApp();
+  const updates = createUpdater({ post: reply => posted.push(reply), state: () => 'running', languages: bundleLanguages, compose, mediaUrl: dataUrl, themeOf: declaredThemeMode });
+  updates.open({ files: files(), media: new Map([['assets/a.png', dataUrl('assets/a.png', 'AAAA')]]), update: revision => app.update(revision), redraw: () => {} });
+  updates.receive({ type: 'formlogic:update', id: 1, client: client(), assets: { 'assets/a.png': 'AAAA' } });
+  await tick();
+  assert.deepEqual(posted[0], { type: 'updated', id: 1, outcome: 'unchanged', changed: [] });
+  updates.receive({ type: 'formlogic:update', id: 2, client: client(), assets: { 'assets/a.png': 'BBBB' } });
+  await tick();
+  assert.deepEqual(posted[1], { type: 'updated', id: 2, outcome: 'updated', changed: ['media'] });
+  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,BBBB');
 });
 
 test('updates are taken one at a time, the newest of those that waited wins, and every id is answered', async () => {
@@ -374,7 +538,7 @@ test('updates are taken one at a time, the newest of those that waited wins, and
   // What became of the newest, said to each of the three.
   for (const reply of posted.slice(1)) assert.deepEqual({ ...reply, id: 0 }, { type: 'updated', id: 0, outcome: 'updated', changed: ['page', 'media'] });
   // "As it is" for the last of them is as the one before it left it.
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,CCCC');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;CCCC');
 });
 
 test('a parent that posts without waiting is held to a line, and one reply that cannot be sent strands no other', async () => {
@@ -420,7 +584,7 @@ function site({ leave = true, hasPage = (text, main, path) => path !== main && t
   const updates = createUpdater({
     post: reply => posted.push(reply),
     state: () => 'running',
-    languages: bundleLanguages, mediaUrl, themeOf: declaredThemeMode, ...(hasPage ? { hasPage } : {}),
+    languages: bundleLanguages, mediaUrl, sameMedia, releaseMedia, themeOf: declaredThemeMode, ...(hasPage ? { hasPage } : {}),
     compose: (text, main, logic) => { composedWith.push(main); return composer(text, main, logic); },
   });
   const screen = { page: null, app: runningApp() };
@@ -516,7 +680,7 @@ test('a version without the page the app is showing opens it at its main page, a
   send(4, client({ 'manifest.json': manifest({ config: { theme: { mode: 'dark' } } }) }), { assets: { 'assets/a.png': 'BBBB' } });
   await tick();
   assert.deepEqual(posted[3], { type: 'updated', id: 4, outcome: 'restarted', changed: ['page', 'media', 'theme'], reason: PAGE_GONE, carried: false });
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,BBBB');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;BBBB');
   assert.equal(redraws.length, 1);
   assert.deepEqual(redraws[0], JSON.parse(manifest({ config: { theme: { mode: 'dark' } } })));
   assert.equal(left.length, 2);
@@ -539,7 +703,7 @@ test('a version whose main page has a problem is kept back, and the page that wa
   assert.equal(screen.page, 'ui/about.ui');
   assert.equal(screen.app, about);
   assert.equal(updates.files().get('ui/about.ui'), '<p>About</p>');
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,AAAA');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;AAAA');
   // A main page that is missing does not compose, which is a version with a problem too.
   const gone = client();
   delete gone['ui/main.ui'];
@@ -551,7 +715,7 @@ test('a version whose main page has a problem is kept back, and the page that wa
   send(3, client({ 'ui/main.ui': '<div>Mended {count}</div>' }));
   await tick();
   assert.deepEqual(posted[2], { type: 'updated', id: 3, outcome: 'restarted', changed: ['page', 'media'], reason: PAGE_GONE, carried: false });
-  assert.equal(updates.asset('assets/a.png'), 'data:image/png;base64,BBBB');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;BBBB');
 });
 
 test('a frame that cannot leave a page, or is not told which files are pages, does not guess', async () => {

@@ -120,10 +120,17 @@ export const LOGIC_LANGUAGES_PROTOCOL = 1;
  * the one this runtime was built with. `ready` says the same (`zippGlue: 1`)
  * with what that glue must export.
  *
+ * `links/1` (after v0.0.40) is links.ts: no link the person clicks takes the
+ * frame off the app. A link to another site, a mail address or a phone number
+ * is handed to the parent (`{ type: 'link', href }`); anything else that is no
+ * page of the app stays where it is. `ready` says the same (`links: 1`). A host
+ * that tells an app's author what a link will do reads it here, before any
+ * frame is open: before it, such a link stopped the app.
+ *
  * Written out rather than computed for the same reason the engine list is: the
  * packager reads it without running anything.
  */
-export const RUNTIME_FEATURES: readonly string[] = ['host-zipp/1', 'python-logic/1'];
+export const RUNTIME_FEATURES: readonly string[] = ['host-zipp/1', 'links/1', 'python-logic/1'];
 
 /** Every document list, for the test that keeps {@link RUNTIME_ENGINES} honest. */
 export const DOCUMENT_ENGINE_LISTS: ReadonlyArray<readonly EngineId[]> = [

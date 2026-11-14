@@ -42,11 +42,10 @@ left to the browser: the frame went to an address that is FormLogic's own page, 
 be framed, and the app went blank. The frame now shows the page itself, as SoftN Web and the
 single-app page do (core's `bundlePageAt` and `composePage`; `src/place.ts` decides): the app
 composed with that page as its main one and run afresh, on the records it has, with the same
-storage, backend calls, media, engine and theme. A link to the main page goes back to it. A link
-that is not to a page of the app (another site, an address with a scheme, a file that is not a
-page) is the browser's, as before, and a page's own code is sent to one of the app's pages or
-nowhere. An app whose manifest core's `readManifest` does not take (no `name`) opens as it did
-and has no link followed.
+storage, backend calls, media, engine and theme. A link to the main page goes back to it. A page's
+own code is sent to one of the app's pages or nowhere. A link that is not to a page of the app is
+the next section's. An app whose manifest core's `readManifest` does not take (no `name`) opens as
+it did and has no link followed.
 
 `ready` says `places: 1`, and the frame tells its parent where the app is, on the port:
 
@@ -79,6 +78,56 @@ characters or not text at all starts the app on its main page, with no error. A 
 only to an app whose files mention `currentPage`: an app that keeps its page under `page`, or
 keeps none, would have its NavItems set a variable it never reads. A parent that sends no `place`
 and reads none sees an app whose links to its own pages work, and nothing else different.
+
+## Links out of the app
+
+The frame may open no window, and an address it goes to in place of the app is one of the
+parent's pages, which refuse to be framed. So every other link took the frame off the app until
+its parent opened it again: a link to another site or a mail address, a file of the app's that is
+not a page (`styles.css`), and one that names no page at all (`about`, `/`, a folder). One with a
+`target`, or clicked with a key held, did nothing.
+
+Now no link the person clicks takes the frame off the app. `src/links.ts` (`watchLinks`) listens
+for clicks on the document, so it hears each after the app's own handlers and core's (which
+cancels one it showed in place), whatever drew the link (an `<a>` in HTML or SVG, an `<area>`).
+A click the app stops on its way there (`@click.stop`, a component that stops its clicks, a page's
+own code) never reaches the document: a listener on the window, which hears every click first, puts
+a hold on that click's own `stopPropagation`, `stopImmediatePropagation` and `cancelBubble`, so it
+is decided where it is stopped, the browser is kept from following it then and there, and what was
+decided is carried out once the click is over, unless the app cancels it after all. Nothing else
+about a click changes: the app sees `defaultPrevented` as it made it. `src/links.ts` decides:
+
+- A link to another site (`https:`, `http:`, `//host`), a mail address or a phone number is posted
+  on the port, and the frame stays where it is:
+
+  ```
+  { "type": "link", "href": "https://example.com/" }
+  ```
+
+  `href` is absolute (the browser's reading of the link), at most 2,000 characters, with no
+  character a person cannot see, and a web address has a host and no name or password before it
+  (`https://bank.example.com@evil.example/` reads as one site and is another). The parent decides
+  what to do with it; FormLogic shows the address and opens it when the person says so. Only a
+  click the browser itself reports (`isTrusted`) is posted: the page's code calling `click()` on a
+  link is said in the console instead, as its `location.href = …` to another site always was.
+  A middle click posts it too. An app whose code runs in the frame's own scripts (host-js) can
+  reach the port and post a link with no click at all, so a parent must take each as the frame's
+  word: check the address again, and leave opening it to the person (FormLogic shows it only
+  right after a press of the person's, and its Open waits until the address has been on screen a
+  moment).
+- A link drawn by an SVG `<use>` is followed as the link it draws (the copy a `<use>` makes is out
+  of the click's reach); where it draws several, which was clicked cannot be told, and the frame
+  stays where it is.
+- A link to one of the app's pages that core left to the browser (a `target`, a key held) is shown
+  in place: there is no other window for it.
+- A link that names no page of the app, or a `data:` or `blob:` address (which would replace the app
+  with itself), keeps the frame where it is and is said in the console, where its author looks. A
+  `data:` or `blob:` link with a `download` attribute is the browser's, which saves it where the frame
+  may download (`allow-downloads`) and does nothing where it may not.
+- A link to a place on the same page (`#top`) is the browser's, as always.
+
+`ready` says `links: 1`. A parent that reads no `link` message sees such a link do nothing, where it
+used to lose the app.
 
 ## Theme
 
@@ -154,13 +203,41 @@ supplied; no FormLogic state is reachable from it.
 
 ## Media and seed data
 
-An app's `assets/` arrive in `init.assets` as base64 and are served to the page as `data:` URLs
-(`src/media.ts`): pictures (PNG, JPEG, GIF, WebP, AVIF, ICO, BMP, SVG, HDR, EXR), sound (MP3,
-WAV, Ogg, Opus, AAC, FLAC, M4A), video (MP4, WebM), fonts (WOFF, WOFF2, TTF, OTF), 3D models
-(glTF and GLB with their `.bin`, OBJ, STL, FBX), and WGSL shaders, text and Markdown to read,
-each under the type core's asset classification gives it. Nothing that runs (HTML, JavaScript)
-or styles the page is served. `connect-src` names `data:` so an app can `fetch` its own assets,
-as a model loader or a compute shader does; that reaches no network.
+An app's `assets/` arrive in `init.assets`, each file under its path, and are served to the page
+as `blob:` URLs (`src/media.ts`): pictures (PNG, JPEG, GIF, WebP, AVIF, ICO, BMP, SVG, HDR, EXR),
+sound (MP3, WAV, Ogg, Opus, AAC, FLAC, M4A), video (MP4, WebM), fonts (WOFF, WOFF2, TTF, OTF), 3D
+models (glTF and GLB with their `.bin`, OBJ, STL, FBX), and WGSL shaders, text and Markdown to
+read, each under the type core's asset classification gives it. Nothing that runs (HTML,
+JavaScript) or styles the page is served.
+
+A file may come as base64 text, as it always could, or as bytes: a `Uint8Array` or an
+`ArrayBuffer`. `ready` says `mediaBytes: 1` for this. A parent that reads it may send any file as
+bytes; one that does not sends text, which works as before. The frame takes either, file by file.
+Text that is not base64 is no file and is left out, as a file of a type the page is not given is.
+
+The files used to be `data:` URLs, which carry a file as base64 text: a 24 MB model was a 32 MB
+string, put into the page wherever it was named and decoded again each time it was read, and a
+large app lagged. A `blob:` URL is a short name for bytes the frame holds once, which is how SoftN
+Web gives an app its files, so `asset()` returns one here as well. A parent that sends bytes skips
+base64 altogether: nothing is turned into text and back.
+
+The policy names `blob:` beside `data:` wherever the page reads media: `img-src`, `media-src`,
+`font-src`, and `connect-src` for `fetch`, which a model loader or a compute shader uses (three.js
+reads the pictures inside a `.glb` that way too). None of them reaches a network: a `blob:` address
+is one the frame made from bytes it holds, and an opaque origin reads no one else's. `data:` stays
+for the app's JSON (below) and for files that carry `data:` URLs inside them, as a `.gltf` may.
+
+When a newer version of the app (below) brings its media, every file comes again. One that holds
+what it held keeps its address, so nothing showing it is loaded again: the frame reads the file
+back and compares the bytes. An address no version has any more is let go of, unless the page was
+given it. The app may keep that one in a variable, so it stays, with its file, until the frame
+closes.
+
+The app's own JSON files, which arrive with its pages in `init.client` rather than under
+`assets/`, are served by name as well, from their text (`fetch('data/levels.json')`,
+`asset('data/levels.json')`), as SoftN Web and the single-app page serve them: a frame that served
+media alone answered such a fetch 404. Media are looked up first. Each version's address for a
+file is made once, so a page that asks on every frame of a game does not copy the file each time.
 
 The `.xdb` files `manifest.files.xdb` names are the app's seed records. Before it first draws,
 the frame adds them to the app's database with core's reader and seeder (`src/seed.ts`), as SoftN
