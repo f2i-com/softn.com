@@ -40,6 +40,9 @@ export type { LogicEngine, LogicEngineFactory, LogicEngineThreads, PythonProject
 export { preloadSyncRuntime } from './xdb-sync-preload';
 export { carryAppSync, forgetAppSync } from './sync-app-state';
 export { preloadAIRuntime } from './ai-runtime-preload';
+// WebAssembly programs for <WasmApp>; the host is a chunk of its own, fetched by the first one.
+export { preloadWasmRuntime, startWasmProgram } from './wasm/program';
+export type { WasmArg, WasmCallOptions, WasmExportInfo, WasmFile, WasmInputEvent, WasmProgram, WasmProgramOptions } from './wasm/program';
 // A running app a host can hand a newer version of (`<SoftNRenderer app={…}>`).
 export { createLiveApp } from './live-app';
 export type { AppRevision, AppUpdatePart, AppUpdateResult, LiveApp, LiveAppOptions } from './live-app';

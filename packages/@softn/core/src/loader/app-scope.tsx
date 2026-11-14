@@ -72,6 +72,15 @@ export function useAppActive(): boolean {
   return React.useContext(AppScopeContext)?.active ?? true;
 }
 
+/**
+ * The identity of the app a component is drawn in; undefined outside any app
+ * or for an app given none. From the context itself, as useAppActive is:
+ * asking needs no store.
+ */
+export function useAppId(): string | undefined {
+  return React.useContext(AppScopeContext)?.appId;
+}
+
 export function useAppAssets(): AppAssetResolver | undefined {
   return useAppScope().assets;
 }

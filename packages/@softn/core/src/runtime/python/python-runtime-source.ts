@@ -51,7 +51,16 @@ type ArgEncoding =
   /** `JSON.stringify(x)`: always JSON, whatever it is. */
   | 'j'
   /** `typeof x === "object" ? JSON.stringify(x) : x`: JSON or the value as text. */
-  | 'e';
+  | 'e'
+  /**
+   * A WebAssembly function's arguments: JSON, with NaN and the infinities
+   * marked `{"nonFinite": "NaN"}` as the JavaScript preamble marks them. Every
+   * other call sends them as None (formlogic-python/1), which a module would be
+   * given as 0.
+   */
+  | 'w'
+  /** What softn.wasm.write writes: JSON, with NaN and the infinities in its lists (`{"f64": [...]}`) marked as for `w`. */
+  | 'v';
 
 interface Capability {
   /** Where it lives, e.g. `ai.gpu.createBuffer`. The last part is the method. */
@@ -113,6 +122,13 @@ const CAPABILITIES: readonly Capability[] = [
   cap('audio.whenEnded', 'audio.whenEnded', ['handle:s']),
   cap('input.captureKeys', 'input.captureKeys', ['keys:j']),
   cap('sandbox.run', 'sandbox.run', ['source:s', 'input:j']),
+  cap('wasm.load', 'wasm.load', ['source:e', 'options:o']),
+  cap('wasm.call', 'wasm.call', ['handle:s', 'name:s', 'args:w', 'options:o']),
+  cap('wasm.run', 'wasm.run', ['source:e', 'options:o']),
+  cap('wasm.read', 'wasm.read', ['handle:s', 'ptr:s', 'length:s', 'kind:s']),
+  cap('wasm.write', 'wasm.write', ['handle:s', 'ptr:s', 'data:v']),
+  cap('wasm.release', 'wasm.release', ['handle:s']),
+  cap('wasm.releaseAll', 'wasm.releaseAll'),
   cap('files.readZipText', 'files.readZipText', ['file_ref:s']),
   cap('files.pickFile', 'files.pickFile', ['options:o']),
   cap('files.readText', 'files.readText', ['file_ref:s']),
@@ -176,6 +192,8 @@ function encodeArg(arg: { name: string; encoding: ArgEncoding }): string {
     p: '_arg_payload',
     j: '_arg_json',
     e: '_arg_either',
+    w: '_arg_wasm_args',
+    v: '_arg_wasm_data',
   };
   return `${by[arg.encoding]}(${arg.name})`;
 }
@@ -395,6 +413,27 @@ def _arg_json(value):
 
 def _arg_either(value):
     return _dumps(value) if isinstance(value, (dict, list)) else _arg_str(value)
+
+
+def _non_finite(value):
+    # NaN or an infinity as the JavaScript preamble marks it; any other value as it is.
+    if isinstance(value, float) and not _math.isfinite(value):
+        return {"nonFinite": "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")}
+    return value
+
+
+def _arg_wasm_args(value):
+    # A module's float parameter takes NaN and the infinities, which every other
+    # call sends as None: marked here as the JavaScript preamble marks them.
+    items = [] if value is None else (list(value) if isinstance(value, (list, tuple)) else [value])
+    return _dumps([_non_finite(item) for item in items])
+
+
+def _arg_wasm_data(value):
+    # {"f64": [...]} and the like: the numbers of its lists marked as for a call's arguments.
+    if isinstance(value, dict):
+        value = {key: ([_non_finite(n) for n in item] if isinstance(item, (list, tuple)) else item) for key, item in value.items()}
+    return _dumps(value)
 
 
 def call(kind, args, callback=None):

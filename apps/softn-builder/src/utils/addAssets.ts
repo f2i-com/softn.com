@@ -173,7 +173,7 @@ export function replacementEndings(path: string): string[] {
 export function assetKindWords(path: string): string {
   const ending = endingOf(path);
   if (ending === '') return 'File';
-  const noun = { image: 'picture', audio: 'sound', video: 'video', model: 'model', font: 'font', text: 'file', binary: 'file' }[classifyAsset(path).kind];
+  const noun = { image: 'picture', audio: 'sound', video: 'video', model: 'model', font: 'font', text: 'file', program: 'program', binary: 'file' }[classifyAsset(path).kind];
   return `${ending === 'jpg' ? 'JPEG' : ending.toUpperCase()} ${noun}`;
 }
 

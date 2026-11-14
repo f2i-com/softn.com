@@ -230,6 +230,52 @@ let softn = {
       host.call("sandbox.run", [String(source), JSON.stringify(input)], callback);
     }
   },
+  // WebAssembly modules, each in a worker of its own (host-calls/wasm.ts).
+  // A source is a path in the app ("assets/x.wasm"), an https address (needs
+  // net), a data: URL, or {bundle}, {url}, {base64}. load answers {handle,
+  // exports, …}; call answers {value}; run answers {exitCode, stdout, stderr,
+  // files}; every failure answers {error}.
+  wasm: {
+    load: function(source, options, callback) {
+      if (typeof options === "function") { callback = options; options = {}; }
+      host.call("wasm.load", [source !== null && typeof source === "object" ? JSON.stringify(source) : String(source), options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
+    },
+    call: function(handle, name, args, options, callback) {
+      if (typeof args === "function") { callback = args; args = []; options = {}; }
+      if (typeof options === "function") { callback = options; options = {}; }
+      // NaN and the infinities, which JSON would make null, are written so a float parameter gets them.
+      var list = args === undefined ? [] : (Array.isArray(args) ? args : [args]);
+      var written = list.map(function(a) { return typeof a === "number" && !isFinite(a) ? { nonFinite: String(a) } : a; });
+      host.call("wasm.call", [String(handle), String(name), JSON.stringify(written), options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
+    },
+    run: function(source, options, callback) {
+      if (typeof options === "function") { callback = options; options = {}; }
+      host.call("wasm.run", [source !== null && typeof source === "object" ? JSON.stringify(source) : String(source), options && typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
+    },
+    read: function(handle, ptr, length, as, callback) {
+      if (typeof as === "function") { callback = as; as = "bytes"; }
+      host.call("wasm.read", [String(handle), String(ptr), String(length), as == null ? "bytes" : String(as)], callback || function(){});
+    },
+    write: function(handle, ptr, data, callback) {
+      // { f64: [...] } and the like: NaN and the infinities in its lists are written so a float gets them.
+      var sent = data === undefined ? "" : data;
+      if (sent && typeof sent === "object" && !Array.isArray(sent)) {
+        var marked = {};
+        Object.keys(sent).forEach(function(key) {
+          var list = sent[key];
+          marked[key] = Array.isArray(list) ? list.map(function(n) { return typeof n === "number" && !isFinite(n) ? { nonFinite: String(n) } : n; }) : list;
+        });
+        sent = marked;
+      }
+      host.call("wasm.write", [String(handle), String(ptr), JSON.stringify(sent)], callback || function(){});
+    },
+    release: function(handle, callback) {
+      host.call("wasm.release", [String(handle)], callback || function(){});
+    },
+    releaseAll: function(callback) {
+      host.call("wasm.releaseAll", [], callback || function(){});
+    }
+  },
   files: {
     readZipText: function(fileRef, callback) {host.call("files.readZipText", [fileRef], callback);},
     pickFile: function(options, callback) {

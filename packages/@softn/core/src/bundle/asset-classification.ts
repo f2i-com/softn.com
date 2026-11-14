@@ -15,7 +15,7 @@
  * extension list is maintained by hand against this one.
  */
 
-export type AssetKind = 'model' | 'audio' | 'video' | 'image' | 'font' | 'text' | 'binary';
+export type AssetKind = 'model' | 'audio' | 'video' | 'image' | 'font' | 'text' | 'program' | 'binary';
 
 export interface AssetClassification {
   /** What the file is, independent of how it is stored */
@@ -108,6 +108,11 @@ export const ASSET_CLASSIFICATIONS: Record<string, AssetClassification> = {
 
   // Documents
   pdf: { kind: 'binary', mime: 'application/pdf', binary: true },
+
+  // A WebAssembly module: run by SoftN in a worker of its own (softn.wasm,
+  // <WasmApp>), never by the page. Served under its own type, which a browser
+  // opens as no page.
+  wasm: { kind: 'program', mime: 'application/wasm', binary: true },
 };
 
 /**

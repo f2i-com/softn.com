@@ -32,6 +32,7 @@ export {
   useAppXDB,
   useAppActive,
   useAppAssets,
+  useAppId,
 } from './app-scope';
 export type { AppScope, AppAssetResolver } from './app-scope';
 

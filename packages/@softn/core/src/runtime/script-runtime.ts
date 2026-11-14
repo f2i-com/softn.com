@@ -87,6 +87,7 @@ import { QrReader } from './host-calls/qr';
 import { pickFile, readBase64, readText, readZipText, saveFile } from './host-calls/files';
 import { releaseFilesOf } from './file-registry';
 import { AppAI } from './host-calls/ai';
+import { AppWasm } from './host-calls/wasm';
 import type { BundleFileProvider } from './ai-manager';
 import { debug } from './debug';
 import { failureText, runtimeLineFailure } from './engine-output';
@@ -348,6 +349,8 @@ export class SoftNScriptRuntime {
   private readonly qr: QrReader;
   /** Local models and GPU compute. */
   private readonly ai: AppAI;
+  /** WebAssembly modules, each in a worker of its own. */
+  private readonly wasm: AppWasm;
   /** The device's voices, loaded at the app's first speech call (local-speech.ts). */
   private localSpeech: LocalSpeechHost | null = null;
   /** The worker `softn.sandbox.run` runs code in, made at its first call. */
@@ -430,6 +433,7 @@ export class SoftNScriptRuntime {
     this.microphone = new AppMicrophone(gate);
     this.qr = new QrReader(gate);
     this.ai = new AppAI(gate, (path) => this.network.readBlob(path));
+    this.wasm = new AppWasm(gate, (path) => this.network.readBlob(path), () => this.appId);
   }
 
   /**
@@ -2226,6 +2230,8 @@ export class SoftNScriptRuntime {
 
     // Release AI resources: each loaded model's Worker is terminated.
     this.ai.dispose();
+    // And each WebAssembly module's.
+    this.wasm.dispose();
 
     // Dispose WASM engine
     if (this.vmEngine) {
@@ -2556,6 +2562,20 @@ export class SoftNScriptRuntime {
         return this.ai.gpuRelease(call);
       case 'ai.gpu.releaseAll':
         return this.ai.gpuReleaseAll();
+      case 'wasm.load':
+        return this.wasm.load(call);
+      case 'wasm.call':
+        return this.wasm.call(call);
+      case 'wasm.run':
+        return this.wasm.run(call);
+      case 'wasm.read':
+        return this.wasm.read(call);
+      case 'wasm.write':
+        return this.wasm.write(call);
+      case 'wasm.release':
+        return this.wasm.release(call);
+      case 'wasm.releaseAll':
+        return this.wasm.releaseAll();
       case 'storage.op':
         return this.network.storage(call);
       case 'bundle.read':
