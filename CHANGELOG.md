@@ -6,7 +6,7 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.41
 
 - WebAssembly in apps. An app runs the `.wasm` files it ships, each in a worker of its own with only what SoftN gives it: WASI (arguments, environment, clocks, random numbers, stdin, stdout and stderr, and a folder of files held in the worker), SoftN's own imports for drawing, sound and messages, and nothing of the page, the device or the network. No JavaScript shipped with a module is run. A module from the app's own files needs no permission; one fetched from an address needs `net`.
   - `softn.wasm.load(source)` keeps a module running and answers `{ handle, kind, exports, missing, memoryMB, maxMemoryMB }`, each export with what it takes and gives back; `softn.wasm.call(handle, name, args, options)` calls a function and answers `{ value }`. NaN and the infinities reach a float parameter, or a float `write` puts in memory, from JavaScript and Python alike, and are refused for an integer one. A text, `{ base64 }` or any object argument is copied into the module's memory through its `alloc`/`malloc` and passed as where and how long; `returns: "text" | "json" | "bytes" | "cstring"` reads the answer back from one 64-bit number (where << 32 | length) or two 32-bit ones, and `free: true` gives it back through `dealloc`/`free`. `softn.wasm.read` and `write` reach the memory directly; `release` and `releaseAll` stop modules. In JavaScript and Python logic alike; every failure answers `{ error }`.

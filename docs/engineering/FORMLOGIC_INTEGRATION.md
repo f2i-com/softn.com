@@ -267,7 +267,7 @@ sees nothing different, but for links that now work. The frame's side is
   new version has it. If it does not, the frame posts the place `/` and then
   answers `restarted` with `changed` holding `page`.
 
-## Links out of the app, and the app's own data (unreleased)
+## Links out of the app, and the app's own data (from v0.0.41)
 
 Every link that was not to a page of the app still took the frame off it: a
 link to another site or a mail address, a file of the app's that is not a page,
@@ -309,7 +309,7 @@ navigate away and was stopped"). Now no link the person clicks does
   textured model was drawn in plain colours without it. A parent that checks
   the frame's policy (FormLogic's `check-zipp-sharing.mjs`) takes `blob:` there.
 
-## An app's media, as bytes and as `blob:` addresses (unreleased)
+## An app's media, as bytes and as `blob:` addresses (from v0.0.41)
 
 A large app lagged in the frame. The parent turned each media file into base64
 text to post it, and the frame served each as a `data:` URL, the file written
@@ -347,7 +347,7 @@ it was named and decoded again each time three.js read it. The frame's side is
   page was given it: the app may keep that one, and it stays until the frame
   closes.
 
-## An app's WebAssembly modules (unreleased)
+## An app's WebAssembly modules (from v0.0.41)
 
 An app may ship `.wasm` files under `assets/` and run them: functions called
 from its logic (`softn.wasm.load` and `softn.wasm.call`), a WASI command run
