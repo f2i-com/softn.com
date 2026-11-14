@@ -116,6 +116,7 @@ const SOFTN_ENTRY_TYPES = [
     'txt' => ['text/plain', 'text'],
     'xml' => ['application/xml', 'text'],
     'pdf' => ['application/pdf', 'binary'],
+    'wasm' => ['application/wasm', 'program'],
 ];
 
 function softn_fail(int $status, string $message): never

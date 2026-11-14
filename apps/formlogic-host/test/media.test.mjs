@@ -26,8 +26,20 @@ test('each served extension has the type SoftN classifies it under', () => {
     const known = ASSET_CLASSIFICATIONS[extension];
     assert.ok(known, `${extension} is an extension core classifies`);
     assert.equal(type, known.mime, extension);
-    assert.ok(['image', 'audio', 'video', 'font', 'model', 'text'].includes(known.kind), extension);
+    assert.ok(['image', 'audio', 'video', 'font', 'model', 'text', 'program'].includes(known.kind), extension);
   }
+});
+
+test('a WebAssembly module is served as bytes of its own type, for SoftN to run in a worker', async () => {
+  // Under application/wasm, which a browser opens as no page; the page reads its bytes (softn.wasm, <WasmApp>).
+  assert.equal(FRAME_MEDIA_TYPES.wasm, 'application/wasm');
+  const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+  const url = mediaUrl('assets/game.wasm', bytes);
+  assert.ok(url && url.startsWith('blob:'), url);
+  const read = await served(url);
+  assert.equal(read.type, 'application/wasm');
+  assert.deepEqual([...read.bytes], [...bytes]);
+  releaseMedia(url);
 });
 
 test('every picture, sound, video, font and model core knows is served, but the rarest formats', () => {

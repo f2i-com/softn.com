@@ -93,6 +93,7 @@ const ON_DEMAND_RUNTIME = [
   'xdb-sync',
   'xdb-server-sync',
   'zipp_torch',
+  'wasm-host',
 ];
 // The editor for a running app (src/edit/), by the module each of its chunks
 // starts at: the pane a person opens with Edit, the store their changes are

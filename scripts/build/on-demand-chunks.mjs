@@ -21,7 +21,7 @@
  * after the facade it starts at — dist/scene3d.js becomes
  * assets/scene3d-<hash>.js. Three.js itself is `vendor-three` below.
  */
-export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games'];
+export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games', 'wasm'];
 
 /**
  * The light component groups, each a chunk of its own like a feature, but
@@ -40,8 +40,10 @@ export const componentGroupChunks = ['controls', 'feedback', 'data', 'display', 
  * core-runtime/runtime/model-worker.js, a worker asset); `xdb-sync-*` the
  * peer sync runtime (yjs) and `xdb-server-sync-*` the directory's server
  * sync; `zipp_torch-*` the loader for the torch Python package (its
- * zipp_torch.wasm is a worker asset). Each is a dynamic import in core, so
- * each is a chunk of its own. `xdb-*` alone — the XDB module every app opens —
+ * zipp_torch.wasm is a worker asset); `wasm-host-*` what runs an app's
+ * WebAssembly modules (softn.wasm, <WasmApp>), whose worker is made from it
+ * as a `blob:`. Each is a dynamic import in core, so each is a chunk of its
+ * own. `xdb-*` alone — the XDB module every app opens —
  * is not in this list and stays precached.
  */
 export const onDemandRuntimeChunks = [
@@ -51,6 +53,7 @@ export const onDemandRuntimeChunks = [
   'xdb-sync',
   'xdb-server-sync',
   'zipp_torch',
+  'wasm-host',
 ];
 
 /**

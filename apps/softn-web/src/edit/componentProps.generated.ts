@@ -113,4 +113,5 @@ export const COMPONENT_PROPS: Readonly<Record<string, Readonly<Record<string, Pl
   "Tooltip": {"placement":["top","bottom","left","right","top-start","top-end","bottom-start","bottom-end"],"animation":["fade","scale","shift"],"animationDuration":"n","showDelay":"n","hideDelay":"n","disabled":"b","open":"b","defaultOpen":"b","arrow":"b","interactive":"b","offset":"n","variant":["dark","light","primary","success","warning","danger"],"size":["sm","md","lg"],"tooltipClassName":"s"},
   "TreeView": {"selectedId":"s","defaultExpandAll":"b","showLines":"b","indent":"n","ariaLabel":"s"},
   "Typewriter": {"speed":"n","deleteSpeed":"n","pauseDuration":"n","loop":"b","cursor":"b","cursorChar":"s"},
+  "WasmApp": {"src":"s","width":"n","height":"n","fit":["contain","pixel"],"smooth":"b","running":"b","memory":"n","label":"s"},
 };

@@ -347,6 +347,23 @@ it was named and decoded again each time three.js read it. The frame's side is
   page was given it: the app may keep that one, and it stays until the frame
   closes.
 
+## An app's WebAssembly modules (unreleased)
+
+An app may ship `.wasm` files under `assets/` and run them: functions called
+from its logic (`softn.wasm.load` and `softn.wasm.call`), a WASI command run
+once (`softn.wasm.run`), or a program that draws (`<WasmApp>`). Each runs in
+a `blob:` worker of its own, built from source text the runtime carries, which
+the frame's policy already allows (`worker-src blob:`, and
+`'wasm-unsafe-eval'` for ZIPP); a module reaches nothing of the page and
+nothing of the network.
+
+- The frame serves `.wasm` as a media file under `application/wasm`, like any
+  other (`FRAME_MEDIA_TYPES`), so `asset()` and the logic's reads find it. A
+  parent sends it in `init.assets` with the rest: FormLogic takes the extension
+  in an app's media for a module to be there to run. A parent that does not
+  send it leaves `softn.wasm` saying the app has no such file.
+- Nothing else of the protocol changes: no message, no `ready` key.
+
 ## The editor bridge's AI requests
 
 The hosted editors talk to FormLogic over the channel in

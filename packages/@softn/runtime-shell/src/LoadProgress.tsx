@@ -33,6 +33,7 @@ export const FEATURE_LABELS: Readonly<Record<string, string>> = {
   animation: 'Animation',
   pickers: 'Date and colour pickers',
   games: 'Game components',
+  wasm: 'WebAssembly programs',
 };
 
 /** How a download is named on screen. */

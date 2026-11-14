@@ -76,6 +76,7 @@ its own `.d.ts` (`packages/@softn/components/tsup.config.ts`):
 | `@softn/components/animation` | AnimatedBox, AnimatedNumber, Marquee, Typewriter, Draggable, SortableList, PanView, Sprite, TileMap. | ~19 KB |
 | `@softn/components/pickers` | DatePicker, ColorPicker. | ~15 KB |
 | `@softn/components/games` | PixelGrid, PixelCanvas, DPad, Controls. | ~16 KB |
+| `@softn/components/wasm` | WasmApp, a WebAssembly program run on top of the app. What runs the program, and its worker, is core's own chunk (`wasm-host`), fetched when the first program starts. | ~10 KB in the host build; core's `wasm-host` ~39 KB |
 
 The sizes come from bundling each source module with esbuild, minified, with
 react, `@softn/core`, three and the QR libraries external; the host-build
@@ -324,7 +325,7 @@ launcher says which of the two it is promising for each app.
    app's manifest and bundles its `sw.js` on Workbox's runtime) sweeps `dist` for js, css, html, svg,
    png, woff2 and wasm, minus:
    `core-runtime/`, the demos, `assets/vendor-three-*.js`, the feature
-   chunks `assets/{scene3d,charts,editors,smart,media,animation,pickers,games}-*.js`, the
+   chunks `assets/{scene3d,charts,editors,smart,media,animation,pickers,games,wasm}-*.js`, the
    Three addon chunks — `GLTFLoader-*`, `OBJLoader-*`, `FBXLoader-*`,
    `STLLoader-*`, `OrbitControls-*`, `RoomEnvironment-*`, `SkeletonUtils-*`,
    `EffectComposer-*`, `RenderPass-*`, `UnrealBloomPass-*`, `OutputPass-*`,
@@ -333,8 +334,8 @@ launcher says which of the two it is promising for each app.
    (`threeAddonChunks` in the config) — and
    core's own on-demand modules that only some apps reach —
    `ai-manager-*`, `model-host-*`, `ai-gpu-compute-manager-*`,
-   `xdb-sync-*` (~200 KB) and
-   `xdb-server-sync-*` (`onDemandRuntimeChunks` in the config). What remains
+   `xdb-sync-*` (~200 KB), `xdb-server-sync-*` and `wasm-host-*`, what runs
+   an app's WebAssembly (`onDemandRuntimeChunks` in the config). What remains
    is the shell: the entry, its CSS and fonts, the scripting engine's wasm,
    the inflate worker (`zipWorker-*.js`), the XDB module every app opens
    (`xdb-*.js`, which is not a sync runtime) and the five light component

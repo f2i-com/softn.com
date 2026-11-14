@@ -1373,6 +1373,30 @@ const baseRegistry: ComponentMeta[] = [
     false
   ),
   comp(
+    'WasmApp',
+    'Utility',
+    'code',
+    'A WebAssembly program of the app’s, run on top of it in a sandboxed worker',
+    { src: 'assets/program.wasm', width: 320, height: 240 },
+    [
+      { name: 'src', type: 'string', description: 'The .wasm file to run, such as assets/game.wasm' },
+      { name: 'width', type: 'number', description: 'Its screen’s width before its first frame' },
+      { name: 'height', type: 'number', description: 'Its screen’s height before its first frame' },
+      { name: 'running', type: 'boolean', description: 'False pauses it' },
+      { name: 'smooth', type: 'boolean' },
+      { name: 'memory', type: 'number', description: 'Megabytes it may grow to (256 unless set, at most 1024)' },
+      { name: 'args', type: 'expression', description: 'Its command-line arguments, as a list' },
+      { name: 'env', type: 'expression', description: 'Its environment variables, as a record' },
+      { name: 'files', type: 'expression', description: 'Files in its own folder, such as { "save.txt": saved }' },
+      { name: 'onReady', type: 'event', description: 'Started: receives { handle, exports } for softn.wasm.call' },
+      { name: 'onMessage', type: 'event', description: 'Receives each text it posts' },
+      { name: 'onExit', type: 'event' },
+      { name: 'onError', type: 'event' },
+      { name: 'className', type: 'string' },
+    ],
+    false
+  ),
+  comp(
     'AudioStream',
     'Utility',
     'audio-lines',
@@ -2179,6 +2203,7 @@ const EXPECTED_PROPS: Record<string, PropSchema[]> = {
   Microphone: [count('height')],
   Modal: [flag('loading', 'Covers what it holds with a spinner'), words('loadingText')],
   PixelCanvas: [choice('fit')],
+  WasmApp: [choice('fit'), words('label', 'What a screen reader calls it (default "WebAssembly program")')],
   Popover: [flag('defaultOpen')],
   Progress: [colour('color')],
   Radio: [words('label', 'A name for the group'), choice('size')],

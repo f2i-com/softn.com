@@ -40,6 +40,7 @@ import {
   parse,
   preloadAIRuntime,
   preloadSyncRuntime,
+  preloadWasmRuntime,
   preloadZippTorch,
   type ComponentRegistry,
 } from '@softn/core';
@@ -87,6 +88,8 @@ export const SYNC_RUNTIME = 'sync-runtime';
 export const TORCH_PACKAGE = 'torch';
 /** The name `missing` uses for the AI runtime's own chunks. */
 export const AI_RUNTIME = 'ai-runtime';
+/** The name `missing` uses for the WebAssembly host (`softn.wasm`). */
+export const WASM_RUNTIME = 'wasm-runtime';
 
 /**
  * What an install reaches the world through. Every member defaults to the
@@ -101,6 +104,8 @@ export interface OfflineInstallHost {
   preloadTorch?: (init: RequestInit) => Promise<void>;
   /** Fetches the AI runtime's chunks; core's preloadAIRuntime outside tests. */
   preloadAI?: () => Promise<void>;
+  /** Fetches the WebAssembly host's chunk; core's preloadWasmRuntime outside tests. */
+  preloadWasm?: () => Promise<void>;
   /** What a component fetches after its chunk, or undefined for none; @softn/components' offlineExtras outside tests. */
   componentExtras?: (name: string) => Promise<void> | undefined;
   /** Resolves true once something will keep what is fetched: a controlling service worker. */
@@ -277,6 +282,20 @@ async function performInstall(
       if (!ok) result.missing.push(AI_RUNTIME);
     }
 
+    // The WebAssembly host behind softn.wasm, a chunk of its own; the modules
+    // themselves are the app's files and already installed with it.
+    if (WASM_USE.test(app.source)) {
+      const ok = await abortable(
+        (options.preloadWasm ?? preloadWasmRuntime)().then(
+          () => true,
+          () => false
+        ),
+        signal
+      );
+      if (ok === ABORTED) return cancelled(result);
+      if (!ok) result.missing.push(WASM_RUNTIME);
+    }
+
     // torch is not in the engine the shell loads; the first `import torch`
     // fetches its loader chunk and zipp_torch.wasm. core's preloadZippTorch
     // fetches both past the HTTP cache, so the worker-assets route keeps them.
@@ -411,6 +430,8 @@ const WORKER_ASSET_LIMIT = 48;
 
 /** Code that may reach `softn.sandbox`, read from the app's composed source. */
 const SANDBOX_USE = /\bsandbox\b/;
+/** Code that may reach `softn.wasm`, in JavaScript or Python. */
+const WASM_USE = /\bwasm\s*\.\s*(?:load|call|run|read|write|release)/;
 
 /** The workers an app can start, by their entries under the copied dist. */
 export function workerEntries(app: Pick<OfflineInstallApp, 'execution' | 'source' | 'capabilities'>): string[] {

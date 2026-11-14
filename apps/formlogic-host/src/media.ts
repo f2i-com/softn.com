@@ -2,8 +2,10 @@
  * The media an app's page is served from its bundle's `assets/`: pictures,
  * sound, video, fonts, 3D models, and shader and text files, by extension, each
  * under the type SoftN's other hosts give it (core's asset classification;
- * test/media.test.mjs holds the two to the same types). Nothing that runs is
- * served (HTML, JavaScript): an app can show these and read them, no more.
+ * test/media.test.mjs holds the two to the same types). Nothing that runs in
+ * the page is served (HTML, JavaScript): an app can show these and read them,
+ * no more. A WebAssembly module is served as bytes, which SoftN runs in a
+ * worker of its own that reaches nothing of the page (softn.wasm, <WasmApp>).
  *
  * They were pictures, sound and two font formats only, so an app's video, its
  * TrueType fonts, its models or a compute shader came back from `asset()` as
@@ -25,6 +27,8 @@ export const FRAME_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze
   glb: 'model/gltf-binary', gltf: 'model/gltf+json', obj: 'model/obj', stl: 'model/stl', fbx: 'application/octet-stream', bin: 'application/octet-stream',
   // Shaders and text an app reads
   wgsl: 'text/plain', txt: 'text/plain', md: 'text/markdown',
+  // WebAssembly modules, run in a worker of their own
+  wasm: 'application/wasm',
 });
 
 /**
