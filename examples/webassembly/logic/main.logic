@@ -1,0 +1,105 @@
+// The game: what it posts, and what the app asks of it.
+
+let gameHandle = ""
+let score = 0
+let lives = 3
+let level = 1
+let gameNote = "Click the game, then press Space to launch the ball. Move with the arrow keys or the pointer."
+
+// <WasmApp @ready>: the handle softn.wasm.call reaches the running game by.
+function started(info) {
+  gameHandle = info.handle
+}
+
+// <WasmApp @message>: the game posts "score:120", "lives:2", "over" and the like.
+function heard(text) {
+  let message = String(text)
+  let colon = message.indexOf(":")
+  let name = colon < 0 ? message : message.slice(0, colon)
+  let value = colon < 0 ? 0 : Number(message.slice(colon + 1))
+  if (name === "score") score = value
+  else if (name === "lives") lives = value
+  else if (name === "level") {
+    level = value
+    gameNote = "Level " + value + ", a little faster. Press Space to launch."
+  } else if (name === "launch") gameNote = "Keep the ball up with the arrow keys or the pointer."
+  else if (name === "over") gameNote = "Game over. Press Space, or New game, to play again."
+  else if (name === "cleared") gameNote = "Cleared! Press Space for the next level."
+  else if (name === "ready") {
+    level = 1
+    gameNote = "Press Space, or click the game, to launch the ball."
+  }
+}
+
+function newGame() {
+  if (gameHandle) softn.wasm.call(gameHandle, "reset")
+}
+
+function setSpeed(speed) {
+  if (gameHandle) softn.wasm.call(gameHandle, "set_speed", [speed])
+}
+
+// The library: loaded once, then called.
+
+let numbers = "12, 7, 3.5, 21, 8, 13, 5, 34"
+let summary = null
+let libraryNote = ""
+let statsHandle = ""
+
+function withStats(next) {
+  if (statsHandle) {
+    next(statsHandle)
+    return
+  }
+  softn.wasm.load("assets/stats.wasm", function (m) {
+    if (m.error) {
+      libraryNote = m.error
+      return
+    }
+    statsHandle = m.handle
+    next(statsHandle)
+  })
+}
+
+function summarize() {
+  withStats(function (handle) {
+    softn.wasm.call(handle, "stats", [numbers], { returns: "json" }, function (r) {
+      if (r.error) {
+        libraryNote = r.error
+        return
+      }
+      summary = r.value.count > 0 ? r.value : null
+      libraryNote = r.value.count > 0 ? "" : "Write some numbers, separated by commas or spaces."
+    })
+  })
+}
+
+function countPrimes() {
+  libraryNote = "Counting…"
+  let begun = Date.now()
+  withStats(function (handle) {
+    softn.wasm.call(handle, "count_primes", [5000000], function (r) {
+      libraryNote = r.error ? r.error : r.value + " primes below five million, counted in " + (Date.now() - begun) + " ms"
+    })
+  })
+}
+
+// The command-line program: run once for each click.
+
+let text = "WebAssembly lets a SoftN app carry compiled code: a game written in Rust, a library its logic calls, a tool that reads text and writes a file. Each runs in a worker of its own, and each reaches only what SoftN gives it."
+let report = ""
+let reportNote = ""
+
+function countWords() {
+  reportNote = "Running…"
+  softn.wasm.run("assets/wordfreq.wasm", { args: ["8"], stdin: text }, function (r) {
+    if (r.stdout === undefined) {
+      report = ""
+      reportNote = r.error
+      return
+    }
+    report = r.stdout
+    let csv = r.files["report.csv"] ? r.files["report.csv"].text : ""
+    reportNote = r.stderr.trim() + (csv ? ". It wrote every word's count to report.csv, " + (csv.split("\n").length - 2) + " lines." : "")
+  })
+}

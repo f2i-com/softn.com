@@ -136,6 +136,7 @@
         "audio-media",
         "threejs-games",
         "machine-learning-torch",
+        "webassembly",
         "permissions",
         "offline-local-data"
       ]
@@ -311,6 +312,24 @@
       "reviewedAt": "2026-09-25",
       "retrieval": "retrieved",
       "notes": "Build, configuration, permission modes, record identity and limits of the single-app runtime."
+    },
+    {
+      "id": "softn-wasm-runtime",
+      "title": "SoftN’s WebAssembly host (core runtime)",
+      "url": "https://github.com/f2i-com/softn.com/blob/main/packages/@softn/core/src/runtime/wasm/wasm-host.ts",
+      "kind": "repository-source",
+      "reviewedAt": "2026-11-15",
+      "retrieval": "retrieved",
+      "notes": "softn.wasm.load, call, run, read and write; the limits; the worker each module runs in (wasm-worker.ts: WASI preview1, the softn imports, the memory ceiling) and the reader of a module’s bytes (wasm-binary.ts); the host call in host-calls/wasm.ts."
+    },
+    {
+      "id": "softn-wasm-app",
+      "title": "SoftN WasmApp component",
+      "url": "https://github.com/f2i-com/softn.com/blob/main/packages/@softn/components/src/utility/WasmApp.tsx",
+      "kind": "repository-source",
+      "reviewedAt": "2026-11-15",
+      "retrieval": "retrieved",
+      "notes": "The component that runs a program that draws: its props and events, the exports it calls, the keys as USB HID codes, the pointer, gamepads and sound."
     }
   ],
   "pages": [
@@ -2756,7 +2775,8 @@
       "relatedPageIds": [
         "language-support",
         "machine-learning-torch",
-        "architecture"
+        "architecture",
+        "webassembly"
       ]
     },
     {
@@ -3125,7 +3145,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The library also includes PixelGrid, PixelCanvas, QRCode, QRReader, Camera, Microphone, AudioStream, DPad and Controls; animation components such as AnimatedBox, AnimatedNumber, Sprite and TileMap; editors such as CodeEditor, MarkdownEditor and RichTextEditor; and Scene3D for Three.js scenes. Loop is the clock of a game, and Controls keeps what the player holds; the guide to 3D scenes and games shows them at work."
+              "text": "The library also includes PixelGrid, PixelCanvas, QRCode, QRReader, Camera, Microphone, AudioStream, DPad and Controls; animation components such as AnimatedBox, AnimatedNumber, Sprite and TileMap; editors such as CodeEditor, MarkdownEditor and RichTextEditor; Scene3D for Three.js scenes; and WasmApp, which runs a WebAssembly program on top of the app. Loop is the clock of a game, and Controls keeps what the player holds; the guide to 3D scenes and games shows them at work."
             },
             {
               "type": "paragraph",
@@ -3164,7 +3184,8 @@
       "relatedPageIds": [
         "forms-tables-dashboards",
         "audio-media",
-        "threejs-games"
+        "threejs-games",
+        "webassembly"
       ]
     },
     {
@@ -4073,6 +4094,10 @@
                 [
                   "Every pixel, sixty times a second",
                   "`<PixelCanvas>`"
+                ],
+                [
+                  "A game written in C, Rust or Zig, compiled to WebAssembly",
+                  "`<WasmApp src=\"assets/game.wasm\" />` (the WebAssembly guide)"
                 ]
               ],
               "caption": "Start with plain elements. Move to a specialist component when the game needs what it does."
@@ -4408,7 +4433,8 @@
       "relatedPageIds": [
         "state-events",
         "audio-media",
-        "assets-themes-responsive"
+        "assets-themes-responsive",
+        "webassembly"
       ]
     },
     {
@@ -4556,6 +4582,379 @@
         "language-support",
         "logic-zipp",
         "softn-app-format"
+      ]
+    },
+    {
+      "id": "webassembly",
+      "slug": "webassembly",
+      "title": "WebAssembly in SoftN apps",
+      "summary": "Run WebAssembly an app ships: call a module’s functions from logic, run a command-line program, or show a program that draws with WasmApp, each in a worker of its own with only what SoftN gives it.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "capabilities",
+      "seo": {
+        "title": "WebAssembly in SoftN apps | SoftN Docs",
+        "description": "Call WebAssembly functions from a SoftN app’s logic, run WASI command-line programs with softn.wasm.run, and show programs that draw with the WasmApp component, each sandboxed in a worker."
+      },
+      "updatedAt": "2026-11-15",
+      "sourceIds": [
+        "softn-wasm-runtime",
+        "softn-wasm-app"
+      ],
+      "sections": [
+        {
+          "id": "what-it-is",
+          "title": "Compiled code beside your logic",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "An app can ship WebAssembly modules, `.wasm` files compiled from C, C++, Rust, Zig, Go or AssemblyScript, and run them three ways: call a module’s functions from its logic, run a command-line program once and read what it printed, or show a program that draws with the `<WasmApp>` component."
+            },
+            {
+              "type": "paragraph",
+              "text": "Each module runs in a worker of its own and gets only what SoftN gives it: WASI for its arguments, environment, clocks, random numbers, standard input and output and a folder of files held in the worker, and SoftN’s own imports for a program that draws. It reaches nothing of the page, the device or the network. No JavaScript shipped with a module is run, so a module built with Emscripten’s, wasm-bindgen’s or Go’s JavaScript glue is built without it (see Build a module)."
+            },
+            {
+              "type": "paragraph",
+              "text": "The repository’s `examples/webassembly` runs all three, compiled from Rust: a brick-breaking game in `<WasmApp>` that posts its score to the app, a library the logic asks for statistics and primes, and a word counter run as a command. `node examples/webassembly/build.mjs` builds `WebAssembly.softn`; with `--rust` it compiles the modules first."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "No permission for your own modules",
+              "text": "A module from the app’s own files needs no permission: it is computation in a sandbox, as `softn.sandbox.run` is. A module fetched from an address is network access, and the app’s `net` permission must reach it."
+            }
+          ]
+        },
+        {
+          "id": "call-functions",
+          "title": "Call a module’s functions",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "let total = 0\nlet loud = \"\"\n\nfunction calculate() {\n  softn.wasm.load(\"assets/calc.wasm\", function (m) {\n    if (m.error) { console.log(m.error); return }\n    softn.wasm.call(m.handle, \"add\", [2, 40], function (r) {\n      total = r.value\n    })\n    softn.wasm.call(m.handle, \"shout\", [\"hello\"], { returns: \"text\", free: true }, function (r) {\n      loud = r.value\n    })\n  })\n}",
+              "caption": "logic/main.logic: load a module from the app’s files, then call functions it exports."
+            },
+            {
+              "type": "paragraph",
+              "text": "`load` answers `{ handle, kind, exports, missing, memoryMB, maxMemoryMB }`. `exports` lists each function with what it takes and gives back (`params` and `results`); `missing` lists the imports SoftN does not give, each of which stops the module if it is called. The module keeps its memory and state between calls until `softn.wasm.release(handle)`, `softn.wasm.releaseAll()` or the app closes."
+            },
+            {
+              "type": "paragraph",
+              "text": "Every answer is an object: a call answers `{ value }` and every failure `{ error }`, so a module’s own JSON with an `error` key is never mistaken for a failed call."
+            },
+            {
+              "type": "table",
+              "columns": [
+                "Argument",
+                "What the function receives"
+              ],
+              "rows": [
+                [
+                  "A number",
+                  "The number, as the parameter’s type takes it"
+                ],
+                [
+                  "A text",
+                  "Two numbers: where SoftN copied its UTF-8 bytes into the module’s memory, and how many there are"
+                ],
+                [
+                  "`{ base64: \"…\" }`",
+                  "Two numbers, for those bytes"
+                ],
+                [
+                  "`{ i64: \"…\" }`",
+                  "A 64-bit whole number larger than JavaScript numbers hold exactly"
+                ],
+                [
+                  "Any other object or list",
+                  "Two numbers, for its JSON text"
+                ]
+              ],
+              "caption": "Text and bytes are copied into memory the module gives: it exports `alloc(size)` or `malloc(size)`, or `options.alloc` names another, and it owns that memory after the call."
+            },
+            {
+              "type": "table",
+              "columns": [
+                "options.returns",
+                "What value is"
+              ],
+              "rows": [
+                [
+                  "`\"number\"` (the default)",
+                  "The result as a number; a 64-bit result past 2^53 as a text; several results as a list"
+                ],
+                [
+                  "`\"text\"`",
+                  "The UTF-8 text the function points to, given back as one 64-bit number (where << 32 | length) or as two 32-bit numbers"
+                ],
+                [
+                  "`\"json\"`",
+                  "That text, parsed"
+                ],
+                [
+                  "`\"bytes\"`",
+                  "Those bytes, as base64"
+                ],
+                [
+                  "`\"cstring\"`",
+                  "The text that ends at the first 0 byte after the pointer the function gives back"
+                ],
+                [
+                  "`\"none\"`",
+                  "`null`"
+                ]
+              ],
+              "caption": "How a call’s answer is read: `softn.wasm.call(handle, name, args, { returns: \"text\" }, callback)`."
+            },
+            {
+              "type": "paragraph",
+              "text": "With `free: true` SoftN gives an answer’s memory back once it has read it, through the module’s `dealloc(ptr, len)` or `free(ptr)`. `options.timeout` is how long the call may take, in milliseconds. `softn.wasm.read(handle, ptr, length, as)` reads the module’s memory, `as` being `bytes`, `text`, or a number type (`u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `f32`, `f64`, with `length` counted in them), and `softn.wasm.write(handle, ptr, data)` writes a text, `{ base64 }` or numbers such as `{ f32: [1.5, 2] }`."
+            }
+          ]
+        },
+        {
+          "id": "run-programs",
+          "title": "Run a command-line program",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "let counted = \"\"\n\nfunction count(text) {\n  softn.wasm.run(\"assets/wordcount.wasm\", { args: [\"--lines\"], stdin: text }, function (r) {\n    counted = r.error ? r.error : r.stdout\n  })\n}",
+              "caption": "A WASI command runs from start to exit in a worker of its own."
+            },
+            {
+              "type": "paragraph",
+              "text": "`run` answers `{ exitCode, stdout, stderr, files }`. The program finds `options.files` in its own folder, for example `{ \"input.txt\": \"some text\", \"photo.png\": { base64: \"…\" }, \"words.txt\": { bundle: \"data/words.txt\" } }`, and every file it writes is handed back, as `{ text }` or, where the bytes are not UTF-8, `{ base64 }`. `options.env` gives it environment variables, `options.output: \"bytes\"` returns stdout and stderr as base64, and `options.entry` runs an export other than `_start`. A program that traps answers `exitCode: null` and an `error`, with what it printed before it stopped."
+            }
+          ]
+        },
+        {
+          "id": "wasm-app",
+          "title": "Show a program that draws",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<WasmApp src=\"assets/game.wasm\" width={320} height={200} fit=\"pixel\"\n         @ready={started} @message={heard} @exit={ended} />",
+              "caption": "WasmApp runs the program on top of the app, and the app’s logic hears it and calls it."
+            },
+            {
+              "type": "paragraph",
+              "text": "The program draws by handing over frames of pixels. It hears the keys and gamepads while it has the focus, and the pointer and the wheel over its screen: a click gives it the focus, Tab moves on, and the browser’s own shortcuts (Ctrl or Cmd with a key) and the function keys stay the browser’s. A modifier pressed alone, and the characters AltGr or a Mac’s Option types, are the program’s; when the focus leaves, it is told every key and gamepad is let go. A program that exports no `key` or `text` takes no key from the browser at all. Its sound plays once the person has pressed something, as browsers require. What it posts arrives as `@message`, and `@ready` gives `{ handle, exports, missing }`: the app’s logic calls the program’s functions with that handle, `softn.wasm.call(handle, \"set_level\", [3])`. Only the app the program runs in can call it."
+            },
+            {
+              "type": "table",
+              "columns": [
+                "The program exports",
+                "Called"
+              ],
+              "rows": [
+                [
+                  "`frame(time_ms: f64)`",
+                  "At each screen refresh while it runs, one frame at a time"
+                ],
+                [
+                  "`key(code: i32, down: i32)`",
+                  "A key down (1) or up (0), as its USB HID code, the numbers SDL’s scancodes use: A is 4, Space 44, Right, Left, Down and Up 79 to 82"
+                ],
+                [
+                  "`text(codepoint: i32)`",
+                  "A character typed"
+                ],
+                [
+                  "`pointer(id, phase, x: f32, y: f32, buttons)`",
+                  "Phase 0 move, 1 down, 2 up, 3 cancel, at a point in the frame’s own pixels; id 0 is the mouse"
+                ],
+                [
+                  "`wheel(dx: f32, dy: f32)`",
+                  "The wheel turned"
+                ],
+                [
+                  "`gamepad(index, buttons, lx, ly, rx, ry)`",
+                  "Each frame for each pad, in the standard mapping"
+                ],
+                [
+                  "`resize(width, height)`",
+                  "The space it is shown in changed, in device pixels"
+                ]
+              ],
+              "caption": "Each is optional but `frame`, for a program that draws. Input is handed over just before the next frame."
+            },
+            {
+              "type": "table",
+              "columns": [
+                "It may import from softn",
+                "What it does"
+              ],
+              "rows": [
+                [
+                  "`present(ptr, width, height)`",
+                  "Shows width × height RGBA pixels from its memory"
+                ],
+                [
+                  "`audio(ptr, frames)`",
+                  "Queues stereo sound: 32-bit floats, left and right in turn"
+                ],
+                [
+                  "`audio_rate() -> i32`",
+                  "The rate to make sound at: 48000"
+                ],
+                [
+                  "`audio_queued() -> f64`",
+                  "Seconds of sound queued and not yet played"
+                ],
+                [
+                  "`post(ptr, len)`",
+                  "Sends a text to the app’s logic (`@message`)"
+                ],
+                [
+                  "`log(ptr, len)`",
+                  "Writes a line to the console"
+                ],
+                [
+                  "`now() -> f64`",
+                  "Milliseconds since it started"
+                ]
+              ],
+              "caption": "The `softn` imports. A program may use WASI as well: what it prints goes to the console."
+            },
+            {
+              "type": "paragraph",
+              "text": "A module with no `frame` is run once, and what it printed is shown in place of a screen. A program that has exited is stopped, its memory let go: what it has to tell the app, it posts first. WasmApp also takes `smooth`, `running` (false pauses it), `args`, `env`, `files`, `memory` (in MB) and `label`."
+            }
+          ]
+        },
+        {
+          "id": "build-modules",
+          "title": "Build a module",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A library exports functions and needs no main: Rust built as a `cdylib` for `wasm32-unknown-unknown`, C with wasi-sdk’s `-mexec-model=reactor`, Zig with `-fno-entry`. A command-line program is an ordinary one built for WASI: Rust’s `wasm32-wasip1`, wasi-sdk, `zig build-exe -target wasm32-wasi`, Go with `GOOS=wasip1 GOARCH=wasm`, or Emscripten with `-sSTANDALONE_WASM`."
+            },
+            {
+              "type": "code",
+              "language": "text",
+              "code": "// lib.rs: rustc --target wasm32-unknown-unknown --crate-type cdylib -O lib.rs\n#[no_mangle]\npub extern \"C\" fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n/// Memory SoftN copies a text or bytes argument into.\n#[no_mangle]\npub extern \"C\" fn alloc(len: usize) -> *mut u8 {\n    let mut buffer = Vec::<u8>::with_capacity(len.max(1));\n    let ptr = buffer.as_mut_ptr();\n    std::mem::forget(buffer);\n    ptr\n}\n\n/// Called with [\"hello\"] and { returns: \"text\", free: true }.\n#[no_mangle]\npub extern \"C\" fn shout(ptr: *mut u8, len: usize) -> u64 {\n    let text = unsafe { String::from_raw_parts(ptr, len, len.max(1)) };\n    let out: &mut [u8] = Box::leak(text.to_uppercase().into_bytes().into_boxed_slice());\n    ((out.as_ptr() as u64) << 32) | out.len() as u64\n}\n\n/// Gives back an answer shout made.\n#[no_mangle]\npub unsafe extern \"C\" fn dealloc(ptr: *mut u8, len: usize) {\n    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));\n}",
+              "caption": "A library in Rust: numbers in and out, and text through memory."
+            },
+            {
+              "type": "code",
+              "language": "text",
+              "code": "/* game.c: clang --target=wasm32 -nostdlib -O2 -Wl,--no-entry -o game.wasm game.c */\n#define IMPORT(name) __attribute__((import_module(\"softn\"), import_name(name)))\n#define EXPORT(name) __attribute__((export_name(name)))\n\nIMPORT(\"present\") void present(const unsigned char *pixels, int width, int height);\n\nstatic unsigned char screen[160 * 120 * 4];\nstatic int x = 80;\n\nEXPORT(\"key\") void key(int code, int down) {\n  if (down && code == 79) x++; /* Right */\n  if (down && code == 80) x--; /* Left */\n}\n\nEXPORT(\"frame\") void frame(double time_ms) {\n  for (int i = 0; i < 160 * 120; i++) {\n    unsigned char *p = &screen[i * 4];\n    p[0] = (i % 160 == x) ? 255 : 0;\n    p[1] = (unsigned char)(time_ms / 10);\n    p[2] = 64;\n    p[3] = 255;\n  }\n  present(screen, 160, 120);\n}",
+              "caption": "A program for WasmApp in C, with no C library: a line that moves with the arrow keys."
+            }
+          ]
+        },
+        {
+          "id": "python",
+          "title": "From Python",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "python",
+              "code": "import softn\n\ntotal = 0\n\n\ndef on_added(result):\n    global total\n    total = result[\"value\"]\n\n\ndef on_loaded(module):\n    softn.wasm.call(module[\"handle\"], \"add\", [2, 40], {}, on_added)\n\n\ndef calculate():\n    softn.wasm.load(\"assets/calc.wasm\", {}, on_loaded)",
+              "caption": "The same calls, in a Python app: softn.wasm.load, call, run, read, write, release and release_all."
+            }
+          ]
+        },
+        {
+          "id": "limits",
+          "title": "What a module may use",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Limit",
+                "Unless the call says",
+                "At most"
+              ],
+              "rows": [
+                [
+                  "A module’s file",
+                  "64 MB",
+                  "64 MB"
+                ],
+                [
+                  "The memory a module may grow to (`options.memory`, or WasmApp’s `memory`, in MB): one memory",
+                  "256 MB",
+                  "1,024 MB"
+                ],
+                [
+                  "Table entries, every table of a module together",
+                  "1,000,000",
+                  "1,000,000"
+                ],
+                [
+                  "A call (`options.timeout`, in milliseconds)",
+                  "10 seconds",
+                  "120 seconds"
+                ],
+                [
+                  "A run (`options.timeout`)",
+                  "30 seconds",
+                  "300 seconds"
+                ],
+                [
+                  "Starting a module",
+                  "60 seconds",
+                  "60 seconds"
+                ],
+                [
+                  "One frame of a WasmApp",
+                  "5 seconds",
+                  "5 seconds"
+                ],
+                [
+                  "Modules an app keeps loaded at once, those starting included",
+                  "8",
+                  "8"
+                ],
+                [
+                  "Commands an app runs at once (`softn.wasm.run`)",
+                  "4",
+                  "4"
+                ],
+                [
+                  "Programs an app runs at once (WasmApp)",
+                  "8",
+                  "8"
+                ],
+                [
+                  "Lines a call shows in the console (the rest are counted)",
+                  "200",
+                  "200"
+                ],
+                [
+                  "A run’s stdout, and its stderr",
+                  "4 MB each",
+                  "4 MB each"
+                ],
+                [
+                  "A module’s files together",
+                  "128 MB, 50,000 files and folders",
+                  "128 MB, 50,000 files and folders"
+                ]
+              ],
+              "caption": "What a module runs within. A call or a run names its own memory and time within these."
+            },
+            {
+              "type": "paragraph",
+              "text": "A module that runs past its time is stopped: its worker ends, the module is gone, and the call answers `{ error }`. Its time is counted from when the module is given the call, so a call that waits behind another is not stopped for the wait. The memory and table limits are written into the module, so its own allocator reports running out as it would anywhere. A module with more than one memory, one built for threads (shared memory) or for 64-bit memory, one that uses WebAssembly GC types, and one that keeps exception references (exnref) in a table or a global or inside an exception, or throws exceptions of more than 8 values, are refused, and so is a WebAssembly component (the component model): build a core module. A module from an address is fetched with no redirect, no referrer and no cookies, and modules still starting stop when their app closes."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "logic-zipp",
+        "components",
+        "threejs-games",
+        "permissions"
       ]
     },
     {

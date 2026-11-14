@@ -1,0 +1,67 @@
+<logic src="../logic/main.logic" />
+
+<App theme="dark" title="WebAssembly">
+  <Container size="md">
+    <Stack direction="vertical" gap="lg" padding="xl">
+      <Stack direction="vertical" gap="xs">
+        <Heading level={1}>WebAssembly on SoftN</Heading>
+        <Text variant="muted">Three programs compiled from Rust run beside this app, each in a sandboxed worker of its own: a game, a library the app's logic calls, and a command-line tool.</Text>
+      </Stack>
+
+      <Card title="A game, compiled to WebAssembly" subtitle="WasmApp runs it: frames of pixels, the keys, the pointer and sound.">
+        <Stack direction="vertical" gap="sm">
+          <WasmApp src="assets/game.wasm" width={240} height={180} fit="pixel" label="Brick breaker" @ready={started} @message={heard} />
+          <Stack direction="horizontal" gap="md" wrap>
+            <Stat label="Score" value={score} size="sm" />
+            <Stat label="Lives" value={lives} size="sm" />
+            <Stat label="Level" value={level} size="sm" />
+          </Stack>
+          <Text variant="muted">{gameNote}</Text>
+          <Stack direction="horizontal" gap="sm" wrap>
+            <Button variant="primary" @click={() => newGame()}>New game</Button>
+            <Button variant="secondary" @click={() => setSpeed(1.6)}>Faster</Button>
+            <Button variant="ghost" @click={() => setSpeed(1)}>Normal speed</Button>
+          </Stack>
+        </Stack>
+      </Card>
+
+      <Card title="Ask a library" subtitle="softn.wasm.load and softn.wasm.call: numbers summarised and primes counted, in Rust.">
+        <Stack direction="vertical" gap="sm">
+          <TextArea label="Numbers" :bind={numbers} rows={2} />
+          <Stack direction="horizontal" gap="sm" wrap>
+            <Button variant="primary" @click={() => summarize()}>Summarise</Button>
+            <Button variant="secondary" @click={() => countPrimes()}>Count the primes below five million</Button>
+          </Stack>
+          #if (summary)
+            <Stack direction="horizontal" gap="md" wrap>
+              <Stat label="Count" value={summary.count} size="sm" />
+              <Stat label="Mean" value={summary.mean} size="sm" />
+              <Stat label="Median" value={summary.median} size="sm" />
+              <Stat label="Standard deviation" value={summary.stdev} size="sm" />
+              <Stat label="From" value={summary.min} size="sm" />
+              <Stat label="To" value={summary.max} size="sm" />
+            </Stack>
+          #end
+          #if (libraryNote)
+            <Text variant="muted">{libraryNote}</Text>
+          #end
+        </Stack>
+      </Card>
+
+      <Card title="Run a command-line program" subtitle="softn.wasm.run: a WASI program reads the text on stdin, prints the most used words, and writes a file.">
+        <Stack direction="vertical" gap="sm">
+          <TextArea label="Text" :bind={text} rows={4} />
+          <Stack direction="horizontal" gap="sm" wrap>
+            <Button variant="primary" @click={() => countWords()}>Count the words</Button>
+          </Stack>
+          #if (report)
+            <Text as="pre" style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", whiteSpace: "pre", margin: 0, overflowX: "auto" }}>{report}</Text>
+          #end
+          #if (reportNote)
+            <Text variant="muted">{reportNote}</Text>
+          #end
+        </Stack>
+      </Card>
+    </Stack>
+  </Container>
+</App>

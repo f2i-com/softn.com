@@ -164,6 +164,7 @@ export const PURPOSES = {
   TooltipTrigger: 'Wraps an element with a tooltip (helper; not a registered tag).',
   TreeView: 'A tree of expandable nodes.',
   Typewriter: 'Types its text out character by character.',
+  WasmApp: 'Runs a WebAssembly program of the app\'s (src="assets/game.wasm") in a sandboxed worker on top of the app: it draws frames, hears keys, pointer and gamepads, makes sound. @message hears what it posts; @ready gives a handle for softn.wasm.call.',
 };
 
 const COMMON_PROPS = new Set(['className', 'style', 'id']);
