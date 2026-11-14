@@ -48,6 +48,7 @@ const animation = () => import('./animation');
 const scene3d = () => import('./scene3d');
 const pickers = () => import('./pickers');
 const games = () => import('./games');
+const wasm = () => import('./wasm');
 
 // `keyof M` ties each name to an export of its entry, so a renamed export is
 // a type error here rather than an "Element type is invalid" in a browser.
@@ -179,6 +180,9 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
   PixelCanvas: fromFeature('games', games, 'PixelCanvas'),
   DPad: fromFeature('games', games, 'DPad'),
   Controls: fromFeature('games', games, 'Controls'),
+
+  // A WebAssembly program run on top of the app; the host it runs in is core's own chunk
+  WasmApp: fromFeature('wasm', wasm, 'WasmApp'),
 };
 
 /**
@@ -191,6 +195,7 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
 export const offlineExtras: Record<string, () => Promise<void>> = {
   Scene3D: () => scene3d().then((m) => m.preloadScene3DAddons()),
   QRReader: () => media().then((m) => m.preloadQrDecoder()),
+  WasmApp: () => wasm().then((m) => m.preloadWasmApp()),
 };
 
 /** Every name registerRuntimeComponents() registers, eager and lazy alike. */

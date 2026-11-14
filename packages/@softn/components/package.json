@@ -96,6 +96,10 @@
       "types": "./dist/games.d.ts",
       "default": "./dist/games.js"
     },
+    "./wasm": {
+      "types": "./dist/wasm.d.ts",
+      "default": "./dist/wasm.js"
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,

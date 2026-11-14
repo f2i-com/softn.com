@@ -15,3 +15,4 @@ export * from './Camera';
 export * from './Microphone';
 export * from './DPad';
 export * from './Controls';
+export * from './WasmApp';

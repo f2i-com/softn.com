@@ -41,7 +41,7 @@ export const propKindsPath = join(packageRoot, 'src', 'prop-kinds.generated.ts')
 const SKIP_DIRS = new Set(['utils', 'entries', 'theme']);
 // Each name is registered by exactly one of these. `minimal` is not among them:
 // it is the union of the first six, spread together.
-const ENTRY_FILES = ['essentials', 'controls', 'feedback', 'data', 'display', 'navigation', 'charts', 'animation', 'editors', 'scene3d', 'smart', 'media', 'pickers', 'games'];
+const ENTRY_FILES = ['essentials', 'controls', 'feedback', 'data', 'display', 'navigation', 'charts', 'animation', 'editors', 'scene3d', 'smart', 'media', 'pickers', 'games', 'wasm'];
 
 function* sourceFiles(dir) {
   for (const name of readdirSync(dir).sort()) {

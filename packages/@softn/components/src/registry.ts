@@ -21,6 +21,7 @@ import { smartComponents } from './entries/smart';
 import { mediaComponents } from './entries/media';
 import { pickerComponents } from './entries/pickers';
 import { gameComponents } from './entries/games';
+import { wasmComponents } from './entries/wasm';
 
 /**
  * All built-in components
@@ -35,6 +36,7 @@ export const builtinComponents = {
   ...mediaComponents,
   ...pickerComponents,
   ...gameComponents,
+  ...wasmComponents,
 };
 
 /**

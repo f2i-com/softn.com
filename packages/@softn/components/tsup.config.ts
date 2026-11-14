@@ -28,6 +28,7 @@ export default defineConfig({
     animation: 'src/entries/animation.ts',
     pickers: 'src/entries/pickers.ts',
     games: 'src/entries/games.ts',
+    wasm: 'src/entries/wasm.ts',
   },
   format: ['esm'],
   dts: true,
