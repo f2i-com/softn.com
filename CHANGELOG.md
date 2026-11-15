@@ -6,7 +6,7 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.42
 
 - Upgrading from v0.0.41: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again. Every protocol number the FormLogic frame says is v0.0.41's.
 - The FormLogic frame (`apps/formlogic-host`):
