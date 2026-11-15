@@ -295,11 +295,21 @@ navigate away and was stopped"). Now no link the person clicks does
   empty address, and a `data:` or `blob:` address without `download`, keeps the
   frame where it is and is said in the console.
 - All of this holds for a click the app stops on its way (`@click.stop`, a
-  component that stops its clicks, a page's own code in its capture phase): the
-  frame decides it where it is stopped, and for a link drawn in SVG, one an
-  SVG `<use>` draws too (where it draws several, which was clicked cannot be
-  told, and none is followed). An address is read as the browser's parser
-  reads it: `"&nbsp;#top"` is not a place on the page.
+  component that stops its clicks, a page's own code in its capture phase),
+  and for a link drawn in SVG, one an SVG `<use>` draws too (where it draws
+  several, which was clicked cannot be told, and none is followed). An address
+  is read as the browser's parser reads it: `"&nbsp;#top"` is not a place on
+  the page.
+- From v0.0.42 the frame holds every click that may follow a link, from a
+  listener set before any of the app's code runs, and decides it once the
+  click is over, on the link as it is then. v0.0.41 decided it where the click
+  was stopped, and a link the app re-pointed after that (after `@click.stop`,
+  in a microtask, from a window listener of its own) went where it then
+  pointed. A click on a control inside a link (a `<label>`'s box, a
+  `<summary>`, a field) is the browser's. Nothing the parent sees changes.
+- From v0.0.42 an address on the frame's own site, by its host, whatever its
+  scheme or port, is not another site's: it is never posted as a `link`, and
+  the frame stays where it is.
 - The app's own JSON files, which the parent sends with its pages, are served
   by name from their text, so `fetch('data/levels.json')` reads one, as it does
   in SoftN Web. Media are looked up first.
@@ -340,6 +350,10 @@ it was named and decoded again each time three.js read it. The frame's side is
   128 MiB as the base64 they would be.
 - The frame's `font-src` names `blob:` beside `data:`, as `img-src`,
   `media-src` and `connect-src` already did, so an app's own fonts still load.
+- From v0.0.42 a file given to the page and then replaced by an update is let
+  go of once more than 64 MB of such files is kept, the oldest first
+  (`RETIRED_MEDIA_BYTES` in `src/update.ts`); a page that kept such an address
+  past that loses its file. It was kept until the frame closed.
   A parent that checks the frame's policy takes `blob:` in `font-src`.
 - A file an update sends as it was keeps its address, so nothing showing it is
   loaded again: the frame reads the file back and compares the bytes, a few

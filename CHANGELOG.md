@@ -6,6 +6,19 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- Upgrading from v0.0.41: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again. Every protocol number the FormLogic frame says is v0.0.41's.
+- The FormLogic frame (`apps/formlogic-host`):
+  - An app can no longer take the frame off itself by re-pointing a link while it is being clicked. Two fresh reviews of v0.0.41 showed links that went where the app pointed them after the frame had decided: an address set after `@click.stop`, one set in a microtask (as React's state is), one given to an `<a>` that had none, one set by a window listener of the app's logic, in Chromium, Firefox and WebKit alike. The frame now holds every click that may follow a link, from a listener set before any of the app's code runs, and decides it once the click is over, on the link as it is then, unless the app cancelled it. The app still reads `defaultPrevented` as it made it. A key's Enter on a focused link and a middle click are held the same way.
+  - A click on a control inside a link (a box in a `<label>`, a `<summary>`, a field) is the control's, as browsers have it. A `<button>` is not one: the link round it is followed, as browsers do.
+  - A MathML element with an `href` is a link (WebKit and Firefox follow one).
+  - An address on the frame's own site, by its host, is never another site's, whatever its scheme or port: it is kept where it is and said in the console.
+  - A link an SVG `<use>` draws is read from its address as the browser reads it (`" #a"`, `"#%61"` and `"index.html#a"` all draw `#a`), as it was drawn when the click began. A `<use>` of one of the app's SVG files is read from the file the frame holds, where it is UTF-8, or UTF-16 with its mark; a file in another encoding is not read, and a click on what it draws follows nothing.
+  - What the browser would have done with a link itself, the frame does once the click is over: it takes the page to a place on it, or saves the file of a `data:` or `blob:` link with `download`.
+  - Media given and then replaced by an update is let go of once more than 64 MB of it is kept. It was kept until the frame closed, so every save of an editing session that changed a large file held that file's old bytes. While a newer version is being taken, its logic reads that version's JSON files beside its media (it read the last version's).
+  - A text file's lone surrogates are written as U+FFFD.
+
 ## v0.0.41
 
 - WebAssembly in apps. An app runs the `.wasm` files it ships, each in a worker of its own with only what SoftN gives it: WASI (arguments, environment, clocks, random numbers, stdin, stdout and stderr, and a folder of files held in the worker), SoftN's own imports for drawing, sound and messages, and nothing of the page, the device or the network. No JavaScript shipped with a module is run. A module from the app's own files needs no permission; one fetched from an address needs `net`.
