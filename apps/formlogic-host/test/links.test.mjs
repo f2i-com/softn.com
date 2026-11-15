@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM, VirtualConsole } from 'jsdom';
-import { LINK_LIMIT, asParsed, decideLink, linkAt, linkKind, outsideAddress, watchLinks } from '../src/links.ts';
+import { LINK_LIMIT, asParsed, decideLink, letThrough, linkAt, linkKind, outsideAddress, watchLinks } from '../src/links.ts';
 
 const FRAME = 'https://site.example/hosted-runtime/index.html';
 const PAGES = new Set(['about.html', 'docs/guide.html', 'index.html']);
@@ -117,46 +117,59 @@ test('an empty address is kept, and said', () => {
 // jsdom goes nowhere when a link is followed, so that the frame stays where it is is seen here as a
 // click whose default was prevented by the time its dispatch is over.
 
-/** A page with links in it and the frame's watch on it; `acted` is what was carried out, `queued` what waits for the click's end. */
-function page(body) {
+/**
+ * A page with links in it and the frame's watch on it; `acted` is what was carried out, `followed` what the
+ * frame did as the browser would have, `queued` what waits for the click's end. `svg`: the frame's own SVG
+ * files, by their addresses.
+ */
+function page(body, { svg = {} } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body><div id="root"><div id="card">${body}</div></div></body></html>`, { url: 'https://frame.test/hosted-runtime/index.html', virtualConsole: new VirtualConsole() });
   const acted = [];
+  const followed = [];
   const queued = [];
   let open = true;
   const stop = watchLinks(dom.window, {
     open: () => open,
-    decide: (link, event, handled) => decideLink({ ...link, handled, byPerson: true, isPage: written => written.trim() === 'about.html' }),
+    decide: (link, event, handled) => decideLink({ ...link, handled, byPerson: true, ownHost: 'frame.test', isPage: written => written.trim() === 'about.html' }),
     act: (action, link) => acted.push({ ...action, written: link.written }),
+    follow: link => followed.push(link),
     later: run => queued.push(run),
+    svgText: url => svg[url],
   });
   const doc = dom.window.document;
-  /** Click the element `id` (left, or middle with `button: 1`), and say whether its default was prevented by the end. */
+  /**
+   * Click the element `id` (left, or middle with `button: 1`), and say whether its default was prevented by the
+   * end, as the browser has it (the app is shown its own cancelling alone: the frame's holding is read here).
+   */
+  const prevented = Object.getOwnPropertyDescriptor(dom.window.Event.prototype, 'defaultPrevented').get;
   const press = (id, { button = 0 } = {}) => {
     const event = new dom.window.MouseEvent(button === 1 ? 'auxclick' : 'click', { bubbles: true, cancelable: true, button });
     doc.getElementById(id).dispatchEvent(event);
-    return event.defaultPrevented;
+    return prevented.call(event);
   };
   const drain = () => { while (queued.length) queued.shift()(); };
-  return { dom, doc, acted, queued, press, drain, stop, close: () => { open = false; } };
+  return { dom, doc, acted, followed, queued, press, drain, stop, prevented: event => prevented.call(event), close: () => { open = false; } };
 }
 const LINKS = '<a id="out" href="https://other.example/?d=1">out</a><a id="page" href="about.html">page</a><a id="nowhere" href="styles.css">css</a><a id="empty" href="">empty</a>';
 
-test('a click no one stops is decided on the document, after the app\'s own handlers, and the app sees the click as it made it', () => {
+test('a click on a link is held as it begins and decided once it is over, and the app sees the click as it made it', () => {
   const p = page(LINKS);
   let seenByApp = null;
-  p.doc.getElementById('card').addEventListener('click', event => { seenByApp = event.defaultPrevented; });
+  p.doc.getElementById('card').addEventListener('click', event => { seenByApp = [event.defaultPrevented, event.returnValue]; });
   assert.equal(p.press('out'), true, 'the frame stays where it is');
-  assert.equal(seenByApp, false, 'nothing cancelled the click before the app saw it');
+  assert.deepEqual(seenByApp, [false, true], 'nothing cancelled the click, as far as the app can tell');
+  assert.deepEqual(p.acted, [], 'not yet: the app may point it elsewhere before the click is over');
+  p.drain();
   assert.deepEqual(p.acted, [{ kind: 'hand-on', href: 'https://other.example/?d=1', written: 'https://other.example/?d=1' }]);
-  assert.equal(p.queued.length, 0, 'carried out at once');
   // A page of the app, a file that is no page, and no address at all.
   assert.equal(p.press('page'), true);
   assert.equal(p.press('nowhere'), true);
   assert.equal(p.press('empty'), true);
+  p.drain();
   assert.deepEqual(p.acted.slice(1).map(a => a.kind), ['show-page', 'keep', 'keep']);
 });
 
-test('a click the app stops on its way is decided where it is stopped, and carried out once the click is over', () => {
+test('a click the app stops on its way is held all the same, and carried out once the click is over', () => {
   const ways = {
     'stopPropagation on the way up (a component, @click.stop)': (doc) => doc.getElementById('card').addEventListener('click', event => event.stopPropagation()),
     'stopPropagation on the way down (a page\'s code)': (doc) => doc.addEventListener('click', event => event.stopPropagation(), true),
@@ -198,8 +211,12 @@ test('each click is decided once, a middle click only for a link to the outside,
   p.press('out');
   p.drain();
   assert.equal(p.acted.length, 1);
-  assert.equal(p.press('page', { button: 1 }), false, 'a middle click on a page of the app is the browser\'s (it opens no window here)');
+  // A middle click asks for a window: held (Chromium and Firefox opened another site's in a tab), and nothing done with it.
+  assert.equal(p.press('page', { button: 1 }), true);
+  p.drain();
+  assert.equal(p.acted.length, 1);
   p.press('out', { button: 1 });
+  p.drain();
   assert.equal(p.acted.length, 2);
   assert.equal(p.acted[1].kind, 'hand-on');
   p.close();
@@ -217,6 +234,7 @@ test('an SVG link is a link, with its address in href or xlink:href', () => {
   p.doc.getElementById('old').setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', 'https://other.example/old');
   assert.equal(p.press('svgtext'), true);
   assert.equal(p.press('old'), true);
+  p.drain();
   assert.deepEqual(p.acted.map(a => a.href), ['https://other.example/svg', 'https://other.example/old']);
   // A click on what a link holds is a click on the link; an `a` with no address is no link.
   const q = page('<a id="wrapped" href="https://other.example/wrapped"><span id="inside">x</span></a><a id="bare"><span id="bareinside">y</span></a>');
@@ -245,10 +263,12 @@ test('a link an SVG <use> draws is the link it draws; where it draws several, no
   ].join(''));
   assert.equal(p.press('u1'), true, 'one link: the frame stays');
   assert.equal(p.press('u3'), true, 'one link, drawn by a <use> in what it draws');
+  p.drain();
   assert.deepEqual(p.acted.map(a => [a.kind, a.href]), [['hand-on', 'https://other.example/drawn'], ['hand-on', 'https://other.example/drawn']]);
   assert.equal(p.press('u2'), true, 'several: kept');
+  p.drain();
   assert.equal(p.acted[2].kind, 'keep');
-  assert.match(p.acted[2].warning, /draws more than one link/);
+  assert.match(p.acted[2].warning, /draws more than one/);
   assert.equal(p.press('u4'), false, 'a drawing with no link in it is no link');
   assert.equal(p.press('u5'), false, 'a <use> that draws itself draws nothing (a browser draws no loop)');
 });
@@ -261,6 +281,208 @@ test('an <area> of an image map, and a link in an open shadow root, are links', 
   // (a person's click crosses the shadow root: composed)
   const event = new p.dom.window.MouseEvent('click', { bubbles: true, cancelable: true, composed: true });
   root.getElementById('in').dispatchEvent(event);
-  assert.equal(event.defaultPrevented, true);
+  assert.equal(p.prevented(event), true);
+  p.drain();
   assert.deepEqual(p.acted.map(a => a.href), ['https://area.example/', 'https://shadow.example/']);
+});
+
+// ── A review of 2026-11-15, each case first seen to take a sandboxed frame off its app in Chromium, Firefox and
+// WebKit with no watcher in it (a real mouse click, under the frame's own content policy) ──
+
+test('a click the app stops is decided on the link as it is once the click is over: pointed elsewhere after the stop, it is that address the parent is asked about', async () => {
+  const ways = {
+    'set after the stop': a => { a.href = 'https://other.example/?d=sync'; },
+    'set in a microtask (React commits a state change in one, before the browser follows a link)': a => queueMicrotask(() => { a.href = 'https://other.example/?d=sync'; }),
+  };
+  for (const [way, repoint] of Object.entries(ways)) {
+    const p = page('<a id="more" href="#more">More</a>');
+    const a = p.doc.getElementById('more');
+    a.addEventListener('click', event => { event.stopPropagation(); repoint(a); });
+    assert.equal(p.press('more'), true, `${way}: held, though it was a place on the page when it was stopped`);
+    await Promise.resolve();
+    p.drain();
+    assert.deepEqual(p.acted.map(x => [x.kind, x.href]), [['hand-on', 'https://other.example/?d=sync']], way);
+    assert.deepEqual(p.followed, [], `${way}: not followed in the frame`);
+  }
+  // An <a> with no address until the click: held all the same, and decided on the address it then has.
+  const q = page('<a id="late">Later</a>');
+  const late = q.doc.getElementById('late');
+  late.addEventListener('click', event => { event.stopPropagation(); queueMicrotask(() => late.setAttribute('href', 'https://other.example/?d=late')); });
+  assert.equal(q.press('late'), true);
+  await Promise.resolve();
+  q.drain();
+  assert.deepEqual(q.acted.map(x => x.href), ['https://other.example/?d=late']);
+});
+
+test('a stopped click on a place on the page, or on a file a link saves, is done by the frame as the browser would have, and the app sees the click as it made it', () => {
+  const p = page('<a id="top" href="#top">Top</a><a id="save" href="data:text/plain,hi" download="notes.txt">Save</a>');
+  const seen = [];
+  for (const id of ['top', 'save']) {
+    p.doc.getElementById(id).addEventListener('click', event => {
+      event.stopPropagation();
+      seen.push([event.defaultPrevented, event.returnValue]);
+    });
+  }
+  assert.equal(p.press('top'), true, 'held');
+  assert.equal(p.press('save'), true, 'held');
+  assert.deepEqual(seen, [[false, true], [false, true]], 'not cancelled, as far as the app can tell');
+  p.drain();
+  assert.deepEqual(p.followed.map(l => [l.written, l.download, l.saveAs]), [['#top', false, undefined], ['data:text/plain,hi', true, 'notes.txt']]);
+  assert.deepEqual(p.acted, []);
+  // A middle click on one asks for a window the frame cannot open: nothing is done.
+  p.doc.getElementById('top').addEventListener('auxclick', event => event.stopPropagation());
+  p.press('top', { button: 1 });
+  p.drain();
+  assert.equal(p.followed.length, 2);
+});
+
+test('a stopped click that can follow no link (an icon in a button or a label) is left to the browser', () => {
+  const p = page('<svg width="0" height="0"><defs><path id="tick" d="M0 0L5 5"/></defs></svg><label id="label"><input type="checkbox" id="box"><svg><use id="icon" href="#tick"/></svg></label>');
+  p.doc.getElementById('label').addEventListener('click', event => event.stopPropagation());
+  assert.equal(p.press('icon'), false, 'the label is still the browser\'s to toggle its box');
+  p.drain();
+  assert.deepEqual([p.acted, p.followed], [[], []]);
+});
+
+test('a link an SVG <use> draws comes before a link that holds it, and where the click was cannot be told, none is followed', () => {
+  // <a href="#top"><svg><use href="#a"/></svg></a> went where #a goes, where the frame had decided #top and left it to the browser.
+  const p = page('<svg width="0" height="0"><defs><a id="a" href="https://other.example/?d=drawn"><rect width="9" height="9"/></a></defs></svg><a id="outer" href="#top"><svg><use id="u" href="#a"/></svg></a>');
+  assert.equal(p.press('u'), true, 'kept');
+  p.drain();
+  assert.equal(p.acted[0].kind, 'keep');
+  assert.match(p.acted[0].warning, /is itself inside a link/);
+  // A drawing with no link in it, inside a link, is that link's.
+  const q = page('<svg width="0" height="0"><defs><path id="i" d="M0 0L5 5"/></defs></svg><a id="o" href="https://other.example/?d=held"><svg><use id="v" href="#i"/></svg></a>');
+  assert.equal(q.press('v'), true);
+  q.drain();
+  assert.deepEqual(q.acted.map(x => x.href), ['https://other.example/?d=held']);
+});
+
+test('what a <use> draws is read from its address as the browser reads it', () => {
+  // Each draws #e: the parser drops the spaces and line breaks, a fragment is percent-decoded, and the page's own file is the page.
+  for (const href of [' #e', '\n#e', '#%65', 'index.html#e', 'https://frame.test/hosted-runtime/index.html#e']) {
+    const p = page(`<svg width="0" height="0"><defs><a id="e" href="https://other.example/?d=e"><rect width="9" height="9"/></a></defs></svg><svg><use id="u"/></svg>`);
+    p.doc.getElementById('u').setAttribute('href', href);
+    assert.equal(p.press('u'), true, JSON.stringify(href));
+    p.drain();
+    assert.deepEqual(p.acted.map(x => [x.kind, x.href]), [['hand-on', 'https://other.example/?d=e']], JSON.stringify(href));
+  }
+  // Another page of the same site is another document, which a frame with an opaque origin does not load: nothing is drawn.
+  const q = page('<svg width="0" height="0"><defs><a id="e" href="https://other.example/"><rect width="9" height="9"/></a></defs></svg><svg><use id="u" href="other.html#e"/></svg>');
+  assert.equal(q.press('u'), false);
+});
+
+test('a <use> of an SVG file of the app\'s: an icon from it is no link, and a link in it is not followed', () => {
+  const sprite = '<svg xmlns="http://www.w3.org/2000/svg"><symbol id="star"><path d="M0 0L5 5"/></symbol><a id="go" href="https://other.example/?d=file"><rect width="9" height="9"/></a></svg>';
+  const file = 'blob:null/0f4e2a1c';
+  // An icon from the file (Firefox draws from a blob: file of the frame's own, and follows a link in it).
+  const p = page(`<svg><use id="star" href="${file}#star"/></svg><svg><use id="go" href="${file}#go"/></svg><svg><use id="whole" href="${file}"/></svg>`, { svg: { [file]: sprite } });
+  assert.equal(p.press('star'), false, 'an icon: the browser\'s');
+  assert.equal(p.press('go'), true, 'a link in the file: kept');
+  p.drain();
+  assert.equal(p.acted[0].kind, 'keep');
+  assert.equal(p.press('whole'), true, 'the whole file, which holds a link: kept');
+  // A blob: address the frame did not make cannot be read: kept. An address on the web is not loaded here: nothing is drawn.
+  const q = page('<svg><use id="unknown" href="blob:null/ffff#go"/></svg><svg><use id="web" href="https://cdn.example/icons.svg#go"/></svg>');
+  assert.equal(q.press('unknown'), true);
+  q.drain();
+  assert.equal(q.acted[0].kind, 'keep');
+  assert.equal(q.press('web'), false);
+  // A data: address's own text is read.
+  const r = page(`<svg><use id="data" href="data:image/svg+xml,${encodeURIComponent(sprite)}#go"/></svg>`);
+  assert.equal(r.press('data'), true);
+  r.drain();
+  assert.equal(r.acted[0].kind, 'keep');
+});
+
+test('a MathML element with an address is a link (WebKit and Firefox follow one); one with none is not', () => {
+  const p = page('<math href="https://other.example/?d=math"><mi id="x">x</mi></math><math><mi id="y">y</mi></math>');
+  assert.equal(p.press('x'), true);
+  assert.equal(p.press('y'), false, 'a formula with no address is the browser\'s');
+  p.drain();
+  assert.deepEqual(p.acted.map(x => [x.kind, x.href]), [['hand-on', 'https://other.example/?d=math']]);
+});
+
+test('an address on the frame\'s own site is not another site\'s, whatever its scheme or port: kept, however it is written', () => {
+  for (const href of ['https:/api/apps/1/delete', 'https:api/apps/1/delete', '//site.example/api/apps/1/delete', 'https://site.example/app/other', 'HTTPS://SITE.EXAMPLE:443/x', 'http://site.example/api/apps/1/delete', 'https://site.example:8443/x']) {
+    const action = click(href, { ownHost: 'site.example' });
+    assert.equal(action.kind, 'keep', href);
+    assert.match(action.warning, /goes to the site this app is hosted on/, href);
+  }
+  assert.equal(click('https://site.example.evil.example/', { ownHost: 'site.example' }).kind, 'hand-on');
+  assert.equal(click('https://sub.site.example/', { ownHost: 'site.example' }).kind, 'hand-on', 'another host of the same domain is another site');
+  assert.equal(click('mailto:someone@site.example', { ownHost: 'site.example' }).kind, 'hand-on');
+  // No host of its own (a frame served from no site): nothing kept for it, mail and phone links among them.
+  assert.equal(click('mailto:someone@example.com', { ownHost: '' }).kind, 'hand-on');
+  assert.equal(click('https://site.example/x', { ownHost: '' }).kind, 'hand-on');
+});
+
+// ── The second review of 2026-11-15, each case seen leaving the frame (or breaking a control) in a browser ──
+
+test('a decoy whose id is a fragment as written hides no link: every element a browser may read it as is looked in', () => {
+  // Browsers look up only the decoded id: `#%65` draws #e, where the frame found the plain shape with id "%65" first.
+  const p = page('<svg width="0" height="0"><defs><a id="e" href="https://other.example/?d=e"><rect width="9" height="9"/></a><rect id="%65"/><a id="é" href="https://other.example/?d=utf8"><rect width="9" height="9"/></a><rect id="%C3%A9"/></defs></svg><svg><use id="u1" href="#%65"/></svg><svg><use id="u2" href="#é"/></svg>');
+  assert.equal(p.press('u1'), true);
+  assert.equal(p.press('u2'), true);
+  p.drain();
+  assert.deepEqual(p.acted.map(x => [x.kind, x.href]), [['hand-on', 'https://other.example/?d=e'], ['hand-on', 'https://other.example/?d=utf8']]);
+});
+
+test('what a <use> drew as the click began is its link: drawing another icon in the click changes nothing', () => {
+  const body = '<svg width="0" height="0"><defs><a id="e" href="https://other.example/?d=drawn"><rect width="9" height="9"/></a><path id="i" d="M0 0L5 5"/></defs></svg><svg id="s"><use id="u" href="#e"/></svg>';
+  for (const stopped of [false, true]) {
+    const p = page(body);
+    const use = p.doc.getElementById('u');
+    // the app draws an icon as the click goes down (a capture handler), and may stop it after
+    p.doc.getElementById('s').addEventListener('click', () => use.setAttribute('href', '#i'), true);
+    if (stopped) use.addEventListener('click', event => event.stopPropagation());
+    assert.equal(p.press('u'), true, `held${stopped ? ', stopped' : ''}`);
+    p.drain();
+    assert.deepEqual(p.acted.map(x => [x.kind, x.href]), [['hand-on', 'https://other.example/?d=drawn']], stopped ? 'stopped' : 'not stopped');
+  }
+});
+
+test('a listener of the app\'s on the window, after the document\'s, cannot point a place on the page elsewhere: the click is held from its start', async () => {
+  for (const later of ['at once', 'in a microtask']) {
+    const p = page('<a id="more" href="#more">More</a><a id="save" href="data:text/plain,x" download>Save</a>');
+    const point = a => { a.setAttribute('href', 'https://other.example/?d=late'); a.removeAttribute('download'); };
+    p.dom.window.addEventListener('click', event => { const a = event.target; if (later === 'at once') point(a); else queueMicrotask(() => point(a)); });
+    assert.equal(p.press('more'), true, later);
+    assert.equal(p.press('save'), true, later);
+    await Promise.resolve();
+    p.drain();
+    assert.deepEqual(p.acted.map(x => [x.kind, x.href]), [['hand-on', 'https://other.example/?d=late'], ['hand-on', 'https://other.example/?d=late']], later);
+    assert.deepEqual(p.followed, [], `${later}: nothing done as the browser`);
+  }
+});
+
+test('a click on a control inside a link is the control\'s: a box ticked in a label, a summary opened, a radio with a formula in its label', () => {
+  const p = page([
+    '<a href="#row"><label id="lab"><input type="checkbox" id="box"> Tick</label></a>',
+    '<a><details><summary id="sum">More</summary>Hidden</details></a>',
+    '<label><input type="radio" name="r" id="radio"><math><mi id="mi">x</mi></math></label>',
+    '<a href="https://other.example/?d=button"><button id="btn" type="button">Go</button></a>',
+  ].join(''));
+  for (const id of ['lab', 'box', 'sum', 'mi']) {
+    p.doc.getElementById(id).addEventListener('click', event => event.stopPropagation());
+    assert.equal(p.press(id), false, `${id}: the browser's`);
+  }
+  // Through a button the browser follows the link that holds it, as it does here.
+  assert.equal(p.press('btn'), true);
+  p.drain();
+  assert.deepEqual(p.acted.map(x => [x.kind, x.href]), [['hand-on', 'https://other.example/?d=button']]);
+  assert.deepEqual(p.followed, []);
+});
+
+test('the frame\'s own click on a link it makes to save a file is let through to the browser', () => {
+  const p = page('<div id="spot"></div>');
+  const save = p.doc.createElement('a');
+  save.id = 'own';
+  save.href = 'data:text/plain,x';
+  save.download = 'x.txt';
+  letThrough(save);
+  p.doc.getElementById('spot').append(save);
+  assert.equal(p.press('own'), false);
+  p.drain();
+  assert.deepEqual([p.acted, p.followed], [[], []]);
 });

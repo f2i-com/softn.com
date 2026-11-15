@@ -87,15 +87,21 @@ its parent opened it again: a link to another site or a mail address, a file of 
 not a page (`styles.css`), and one that names no page at all (`about`, `/`, a folder). One with a
 `target`, or clicked with a key held, did nothing.
 
-Now no link the person clicks takes the frame off the app. `src/links.ts` (`watchLinks`) listens
-for clicks on the document, so it hears each after the app's own handlers and core's (which
-cancels one it showed in place), whatever drew the link (an `<a>` in HTML or SVG, an `<area>`).
-A click the app stops on its way there (`@click.stop`, a component that stops its clicks, a page's
-own code) never reaches the document: a listener on the window, which hears every click first, puts
-a hold on that click's own `stopPropagation`, `stopImmediatePropagation` and `cancelBubble`, so it
-is decided where it is stopped, the browser is kept from following it then and there, and what was
-decided is carried out once the click is over, unless the app cancels it after all. Nothing else
-about a click changes: the app sees `defaultPrevented` as it made it. `src/links.ts` decides:
+Now no link the person clicks takes the frame off the app. `src/links.ts` (`watchLinks`) listens on
+the window, set before any of the app's code runs, so it hears every click first, whatever drew the
+link (an `<a>` in HTML or SVG, an `<area>`, a MathML element with an `href`, which WebKit and
+Firefox follow as a link, a link an SVG `<use>` draws). A click that may follow a link is held
+there, before the app's handlers have it, and decided once it is over, on the link as it is then,
+unless the app cancelled it (core cancels a link to one of the app's pages it showed in place).
+Decided any earlier, a click went wherever the app pointed its link after: an address set after
+`@click.stop`, one set in a microtask (as React's state is, before the browser follows a link), one
+given to an `<a>` that had none, one set by a window listener of the app's logic after the
+document's, in Chromium, Firefox and WebKit alike; a key's Enter on a focused link and a middle
+click the same. What the browser would have done itself (a place on the page, a file a `data:` or
+`blob:` link saves) the frame does. A click on a control (a box in a `<label>`, a `<summary>`, a
+field) is the control's and the browser's, wherever a link holds it, as browsers have it; a
+`<button>` is not one, and the browser follows the link round it. Nothing else about a click
+changes: the app reads `defaultPrevented` as it made it. `src/links.ts` decides:
 
 - A link to another site (`https:`, `http:`, `//host`), a mail address or a phone number is posted
   on the port, and the frame stays where it is:
@@ -114,17 +120,29 @@ about a click changes: the app sees `defaultPrevented` as it made it. `src/links
   reach the port and post a link with no click at all, so a parent must take each as the frame's
   word: check the address again, and leave opening it to the person (FormLogic shows it only
   right after a press of the person's, and its Open waits until the address has been on screen a
-  moment).
+  moment). An address on the frame's own site, by its host, is not another site, however it is
+  written and whatever its scheme or port (`https:/api/…` with one slash is read against the frame;
+  a session's cookies are the host's): it is kept and said in the console.
 - A link drawn by an SVG `<use>` is followed as the link it draws (the copy a `<use>` makes is out
-  of the click's reach); where it draws several, which was clicked cannot be told, and the frame
-  stays where it is.
+  of the click's reach), before any link that holds the `<use>`, as the browser follows it, and as
+  it was drawn when the click began (the copy the browser follows). What a `<use>` draws is read from
+  its address as the browser reads it: `" #a"`, `"#%61"` and `"index.html#a"` all draw `#a`, and a
+  fragment is looked up decoded every way a browser decodes it (an element whose id is the fragment
+  as written hides nothing). Where it draws several links, or a link holds the `<use>` as well (the
+  click may be on the drawn link or beside it), which was clicked cannot be told, and the frame stays
+  where it is. A `<use>` of one of the app's SVG files (`asset('icons.svg') + '#star'`) is read from
+  the file the frame holds, where it is UTF-8 or UTF-16 with its mark: an icon from it is no link, and
+  a link in it is not followed (Firefox follows one); one in another encoding cannot be read, and a
+  click on it follows nothing.
 - A link to one of the app's pages that core left to the browser (a `target`, a key held) is shown
   in place: there is no other window for it.
 - A link that names no page of the app, or a `data:` or `blob:` address (which would replace the app
   with itself), keeps the frame where it is and is said in the console, where its author looks. A
-  `data:` or `blob:` link with a `download` attribute is the browser's, which saves it where the frame
-  may download (`allow-downloads`) and does nothing where it may not.
-- A link to a place on the same page (`#top`) is the browser's, as always.
+  `data:` or `blob:` link with a `download` attribute saves its file: the frame clicks a link of its
+  own once the click is over, which the browser saves where the frame may download
+  (`allow-downloads`) and does nothing with where it may not.
+- A link to a place on the same page (`#top`) goes there, as always: the frame takes the page there
+  once the click is over (also where the link has a `download` attribute, as a browser does).
 
 `ready` says `links: 1`. A parent that reads no `link` message sees such a link do nothing, where it
 used to lose the app.
@@ -230,14 +248,20 @@ for the app's JSON (below) and for files that carry `data:` URLs inside them, as
 When a newer version of the app (below) brings its media, every file comes again. One that holds
 what it held keeps its address, so nothing showing it is loaded again: the frame reads the file
 back and compares the bytes. An address no version has any more is let go of, unless the page was
-given it. The app may keep that one in a variable, so it stays, with its file, until the frame
-closes.
+given it. The app may keep that one in a variable, so it stays, with its file: up to 64 MB of such
+files (`RETIRED_MEDIA_BYTES` in `src/update.ts`), the oldest let go of past that. Kept until the
+frame closed, every save of an editing session that changed a large file held its last bytes.
 
 The app's own JSON files, which arrive with its pages in `init.client` rather than under
 `assets/`, are served by name as well, from their text (`fetch('data/levels.json')`,
 `asset('data/levels.json')`), as SoftN Web and the single-app page serve them: a frame that served
 media alone answered such a fetch 404. Media are looked up first. Each version's address for a
 file is made once, so a page that asks on every frame of a game does not copy the file each time.
+While a newer version is being taken its logic starts again, and reads that version's JSON files
+beside its media (it read the last version's JSON with the new media); a version kept back changes
+neither. Core starts the last version that worked again inside the same update when a new one fails
+to start, and that start reads the new version's files until the update is answered: the frame
+cannot tell the two starts apart.
 
 The `.xdb` files `manifest.files.xdb` names are the app's seed records. Before it first draws,
 the frame adds them to the app's database with core's reader and seeder (`src/seed.ts`), as SoftN

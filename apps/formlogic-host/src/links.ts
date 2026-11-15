@@ -37,11 +37,16 @@
  *   One with an empty address (`href=""`) would load the frame's own address
  *   again, which takes the app off it: kept, and said.
  *
- * Every click on a link is decided once (`watchLinks`): on the document after
- * the app's and core's handlers, or, for a click the app stops on its way
- * there (`@click.stop`, a component that stops its clicks, a page's code), at
- * the moment it is stopped. A stopped click was otherwise the browser's, and
- * took the frame wherever its link said.
+ * Every click that may follow a link is held as it begins, by a listener on the
+ * window that hears it before any of the app's, and decided once it is over, on
+ * the link as it is then (`watchLinks`): the browser follows none of them itself.
+ * Decided earlier, a click went where the app pointed its link after: an address
+ * set after a stop (`@click.stop`), or in a microtask, as React's state is, or by
+ * a window listener of the app's logic after the document's, all before the
+ * browser follows a link, in Chromium, Firefox and WebKit alike. What the browser
+ * would have done itself (a place on the page, a file a link saves) the frame
+ * does. A click on a control (a box in a `<label>`, a `<summary>`) is the
+ * browser's, as is a click on what no link holds.
  *
  * This module is the deciding and the listening; main.tsx carries out what is
  * decided. It runs alone under `node --test`.
@@ -120,6 +125,15 @@ export function outsideAddress(resolved: string): string | null {
   return null;
 }
 
+/** The host an address names, as the URL parser reads it (lower case, punycode); '' for none (`mailto:`, `tel:`). */
+function hostOf(address: string): string {
+  try {
+    return new URL(address).hostname;
+  } catch {
+    return '';
+  }
+}
+
 /** What the shell does with a click on a link (main.tsx carries it out). */
 export type LinkAction =
   /** Hand `href` to the parent, and keep the frame where it is. */
@@ -150,6 +164,13 @@ export interface ClickedLink {
   isPage(written: string): boolean;
   /** It is one of several links an SVG `<use>` draws, and which the click was on cannot be told (`linkAt`). */
   unclear?: boolean;
+  /**
+   * The frame's own site, by its host (its runtime's). An address there is no other site, whatever
+   * its scheme or port (a session's cookies are the host's, and http is sent on to https): an app's
+   * `https:/api/…` (one slash, read against the frame) or `//host/…` was handed on as one, and a
+   * person who opened it visited the host's own pages with their session. Empty: no site to keep.
+   */
+  ownHost?: string;
 }
 
 /** The address as it may be shown in a console line: printable, and not longer than a line. */
@@ -165,16 +186,18 @@ function shown(written: string): string {
 /** What to do with a click on a link: the rules at the top of this file. */
 export function decideLink(link: ClickedLink): LinkAction {
   if (link.handled) return { kind: 'browser' };
-  if (link.unclear) return { kind: 'keep', warning: 'A link drawn by an SVG <use> that draws more than one link was not followed: which of them was clicked cannot be told. Give each link a <use> of its own, or draw it in place.' };
+  if (link.unclear) return { kind: 'keep', warning: 'A link drawn by an SVG <use> was not followed: which link the click was on cannot be told (the <use> draws more than one, is itself inside a link, or draws from a file whose links are not followed). Give each link a <use> of its own, outside other links, or draw it in place.' };
   const kind = linkKind(link.written);
   if (kind === 'fragment') return { kind: 'browser' };
   if (kind === 'empty') return { kind: 'keep', warning: 'A link with an empty address would load the frame again and take the app off it, so it was not followed. Give it the page it opens ("about.html"), or "#" for a link that only runs its click.' };
   if (kind === 'outside') {
     if (!link.byPerson) return { kind: 'keep', warning: `The page's code clicked a link to ${shown(link.written)}; only a link the person clicks goes to another site.` };
     const href = outsideAddress(link.resolved);
-    return href === null
-      ? { kind: 'keep', warning: `A link to ${shown(link.written)} was not opened: it is not an address this app may hand on.` }
-      : { kind: 'hand-on', href };
+    if (href === null) return { kind: 'keep', warning: `A link to ${shown(link.written)} was not opened: it is not an address this app may hand on.` };
+    if (link.ownHost && hostOf(href) === link.ownHost.toLowerCase()) {
+      return { kind: 'keep', warning: `A link to ${shown(link.written)} was not opened: it goes to the site this app is hosted on, not to another site.` };
+    }
+    return { kind: 'hand-on', href };
   }
   if (kind === 'inline') {
     if (link.download) return { kind: 'browser' };
@@ -193,23 +216,31 @@ export interface FoundLink {
   written: string;
   resolved: string;
   download: boolean;
+  /** The name a link that downloads gives its file (its `download` attribute's value). */
+  saveAs?: string;
   /** One of several links an SVG `<use>` draws: which was clicked cannot be told, and none is followed. */
   unclear?: boolean;
 }
 
 const XLINK = 'http://www.w3.org/1999/xlink';
 const SVG = 'http://www.w3.org/2000/svg';
+const MATHML = 'http://www.w3.org/1998/Math/MathML';
 /** How many `<use>`s deep the links one draws are looked for (one that draws one that draws …). */
 const USE_DEPTH = 4;
+const UNCLEAR: FoundLink = Object.freeze({ written: '', resolved: '', download: false, unclear: true });
 
 /** What is written in a link's address: `href`, or an SVG link's older `xlink:href`; null for none. */
 function addressOf(element: Partial<Element>): string | null {
   return element.getAttribute?.('href') ?? element.getAttributeNS?.(XLINK, 'href') ?? null;
 }
 
-/** Whether `element` is a link with an address: an `<a>` (HTML's or SVG's) or an `<area>`. */
+/**
+ * Whether `element` is a link with an address: an `<a>` (HTML's or SVG's), an `<area>`, or a MathML
+ * element with an `href`, which WebKit and Firefox follow as a link (`<math href>`).
+ */
 function isLink(element: Partial<Element>): boolean {
-  return typeof element.getAttribute === 'function' && (element.localName === 'a' || element.localName === 'area') && addressOf(element) !== null;
+  if (typeof element.getAttribute !== 'function' || addressOf(element) === null) return false;
+  return element.localName === 'a' || element.localName === 'area' || element.namespaceURI === MATHML;
 }
 
 function found(element: Partial<Element>): FoundLink {
@@ -220,182 +251,321 @@ function found(element: Partial<Element>): FoundLink {
   } catch {
     // (an address the browser cannot read stays as written: links.ts hands on none such)
   }
-  return { written, resolved, download: element.hasAttribute?.('download') === true };
+  const download = element.hasAttribute?.('download') === true;
+  return download ? { written, resolved, download, saveAs: element.getAttribute?.('download') ?? '' } : { written, resolved, download };
 }
 
-/** The element an SVG `<use>` draws, one of its page's own named `#id`; null for none (another document's is never loaded here). */
-function drawnBy(use: Element): Element | null {
-  const named = addressOf(use);
-  if (named === null || !named.startsWith('#') || named.length < 2) return null;
-  return use.ownerDocument?.getElementById(named.slice(1)) ?? null;
+/**
+ * What a `<use>` may draw from besides its own page: the text of an SVG file the frame serves at a
+ * `blob:` address it made (media.ts), or undefined for an address it did not make; and, kept by
+ * `watchLinks`, each such file read once.
+ */
+export interface Drawing {
+  svgText?(url: string): string | undefined;
+  read?: Map<string, Document | null>;
+}
+
+/** An address without its fragment. */
+function withoutFragment(address: string): string {
+  const at = address.indexOf('#');
+  return at < 0 ? address : address.slice(0, at);
+}
+
+/**
+ * The document a `<use>` of `url` (another document than its own page) draws from: one the frame can
+ * read (an SVG file it serves, or a `data:` address's own text); null for one the browser does not load
+ * here (an `http:` address or a path: a `<use>` loads only from its page's origin, and this frame's is
+ * opaque); undefined for one it may load and the frame cannot read (a `blob:` address it did not make).
+ */
+function documentAt(url: URL, from: Document, drawing: Drawing): Document | null | undefined {
+  const address = withoutFragment(url.href);
+  const read = drawing.read ?? new Map<string, Document | null>();
+  drawing.read = read;
+  if (read.has(address)) return read.get(address);
+  let text: string | undefined;
+  if (url.protocol === 'blob:') {
+    text = drawing.svgText?.(address);
+    if (text === undefined) return undefined;
+  } else if (url.protocol === 'data:') {
+    const comma = address.indexOf(',');
+    if (comma < 0) return null;
+    try {
+      const body = address.slice(comma + 1);
+      text = /;base64$/i.test(address.slice(0, comma)) ? atob(decodeURIComponent(body)) : decodeURIComponent(body);
+    } catch {
+      return null;
+    }
+  } else {
+    return null;
+  }
+  const Parser = from.defaultView?.DOMParser;
+  const doc = Parser ? new Parser().parseFromString(text, 'image/svg+xml') : null;
+  // (the files read last are kept, a few: an app's sprite is clicked again and again, its media come and go)
+  if (read.size >= READ_KEPT) read.delete(read.keys().next().value as string);
+  read.set(address, doc);
+  return doc;
+}
+
+/** How many of the frame's own SVG files, read for what a `<use>` of them draws, are kept read. */
+const READ_KEPT = 16;
+
+/** A fragment with each `%XX` read as the byte it names, a character each (as Firefox reads a `<use>`'s). */
+function bytesDecoded(fragment: string): string {
+  return fragment.replace(/%([0-9a-f]{2})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/**
+ * The elements of `doc` a fragment may name: its text percent-decoded as UTF-8 (as Chromium and WebKit
+ * read a `<use>`'s), byte by byte (as Firefox does), and as it is written. A browser looks up only a
+ * decoded id, so one element whose id was the fragment as written (`id="%65"` beside `id="e"`, for
+ * `#%65`) hid the link drawn: every one of them is looked in, and their links taken together.
+ */
+function byFragment(doc: Document, fragment: string): Element[] {
+  const ids = new Set([fragment, bytesDecoded(fragment)]);
+  try {
+    ids.add(decodeURIComponent(fragment));
+  } catch {
+    // (not UTF-8: its bytes' reading stands)
+  }
+  const named: Element[] = [];
+  for (const id of ids) {
+    const element = doc.getElementById(id);
+    if (element !== null && !named.includes(element)) named.push(element);
+  }
+  return named;
+}
+
+/**
+ * What an SVG `<use>` draws, its address read as the browser reads it: an address the URL parser
+ * takes as its page's own (`" #a"`, `"\n#a"`, `"#%61"`, `"index.html#a"` all draw `#a`, where
+ * `#a` alone was looked for) or another document's ({@link documentAt}). `nothing` for none, and
+ * `unknown` where what it draws cannot be read. `external` is set for an element of another document.
+ */
+function drawnBy(use: Element, drawing: Drawing): { elements: Element[]; external: boolean } | 'nothing' | 'unknown' {
+  const written = addressOf(use);
+  const page = use.ownerDocument;
+  if (written === null || page === null) return 'nothing';
+  let url: URL;
+  try {
+    url = new URL(written, use.baseURI);
+  } catch {
+    return 'nothing';
+  }
+  const fragment = url.hash.slice(1);
+  if (withoutFragment(url.href) === withoutFragment(page.URL)) {
+    const elements = fragment === '' ? [] : byFragment(page, fragment);
+    return elements.length === 0 ? 'nothing' : { elements, external: false };
+  }
+  const doc = documentAt(url, page, drawing);
+  if (doc === undefined) return 'unknown';
+  if (doc === null) return 'nothing';
+  // (a whole document where no fragment names a part of it)
+  const elements = fragment === '' ? (doc.documentElement ? [doc.documentElement] : []) : byFragment(doc, fragment);
+  return elements.length === 0 ? 'nothing' : { elements, external: true };
 }
 
 /**
  * The links `element` draws into the copy a `<use>` makes of it: itself where it is one, those in it,
- * and those its own `<use>`s draw, `depth` deep. False where they could not all be looked at. An
- * element already looked at (a `<use>` that draws itself, or what holds it) draws nothing more: a
- * browser draws no loop.
+ * and those its own `<use>`s draw, `depth` deep. False where they could not all be looked at, or one
+ * is in another document (an SVG file of the app's, whose addresses the browser reads against that
+ * file's: none is followed). An element already looked at (a `<use>` that draws itself, or what holds
+ * it) draws nothing more: a browser draws no loop.
  */
-function linksDrawn(element: Element, depth: number, into: Set<Element>, seen: Set<Element> = new Set()): boolean {
+function linksDrawn(element: Element, depth: number, into: Set<Element>, drawing: Drawing, external = false, seen: Set<Element> = new Set()): boolean {
   if (seen.has(element)) return true;
   seen.add(element);
+  const before = into.size;
   if (isLink(element)) into.add(element);
-  for (const link of element.querySelectorAll('a, area')) if (isLink(link)) into.add(link);
+  for (const link of element.querySelectorAll('a, area, [href]')) if (isLink(link)) into.add(link);
+  if (external && into.size > before) return false;
   const uses = element.localName === 'use' ? [element, ...element.querySelectorAll('use')] : [...element.querySelectorAll('use')];
   for (const use of uses) {
-    const drawn = drawnBy(use);
-    if (drawn === null || seen.has(drawn)) continue;
-    if (depth === 0 || !linksDrawn(drawn, depth - 1, into, seen)) return false;
+    const drawn = drawnBy(use, drawing);
+    if (drawn === 'unknown') return false;
+    if (drawn === 'nothing') continue;
+    for (const target of drawn.elements) {
+      if (seen.has(target)) continue;
+      if (depth === 0 || !linksDrawn(target, depth - 1, into, drawing, external || drawn.external, seen)) return false;
+    }
   }
   return true;
 }
 
 /**
- * The link a click is on, if any: an `<a>` (HTML's, or SVG's, whose address may be its older
- * `xlink:href`) or an `<area>` with an address, nearest the click first.
+ * The link a click whose path is `path` is on, if any: an `<a>` (HTML's, or SVG's, whose address may
+ * be its older `xlink:href`), an `<area>` or a MathML element with an address, nearest the click first.
  *
  * Or one an SVG `<use>` draws: the copy it makes is in a shadow tree of its own, which the click's
- * path does not reach, and the browser follows the copy's link all the same. The link is looked for
- * in what the `<use>` draws: where that is one link, the click was on it; where it is several (or they
- * could not all be looked at), which was clicked cannot be told, and none is followed.
+ * path does not reach, and the browser follows the copy's link all the same, before any link that
+ * holds the `<use>` (`<a href="#top"><svg><use href="#a"/></svg></a>` went where `#a` goes). The link
+ * is looked for in what the `<use>` draws: where that is one link, and no link holds the `<use>`, the
+ * click was on it; where it is several, where a link holds the `<use>` too (the click was on the
+ * drawn link or beside it), or where they could not all be looked at, which was clicked cannot be
+ * told, and none is followed. `drawnBefore`: what each `<use>` drew as the click began, the copy the
+ * browser follows, taken with what it draws now (an app that draws another icon as it is clicked).
  */
-export function linkAt(event: Event): FoundLink | null {
-  let use: Element | null = null;
-  for (const target of event.composedPath()) {
-    const element = target as Partial<Element>;
+export function linkIn(path: readonly EventTarget[], drawing: Drawing = {}, drawnBefore?: ReadonlyMap<Element, ReadonlySet<Element> | 'unknown'>): FoundLink | null {
+  for (let at = 0; at < path.length; at++) {
+    const element = path[at] as Partial<Element>;
     if (isLink(element)) return found(element);
-    if (use === null && element.localName === 'use' && element.namespaceURI === SVG) use = element as Element;
+    if (element.localName !== 'use' || element.namespaceURI !== SVG) continue;
+    const links = new Set<Element>();
+    let whole = linksDrawn(element as Element, USE_DEPTH, links, drawing);
+    const before = drawnBefore?.get(element as Element);
+    if (before === 'unknown') whole = false;
+    else if (before) for (const link of before) links.add(link);
+    // A drawing with no link in it: the click is on whatever holds it.
+    if (links.size === 0 && whole) continue;
+    const held = path.slice(at + 1).some((target) => isLink(target as Partial<Element>));
+    return links.size === 1 && whole && !held ? found([...links][0]) : UNCLEAR;
   }
-  if (use === null) return null;
-  const links = new Set<Element>();
-  const whole = linksDrawn(use, USE_DEPTH, links);
-  if (links.size === 1 && whole) return found([...links][0]);
-  if (links.size === 0 && whole) return null;
-  return { written: '', resolved: '', download: false, unclear: true };
+  return null;
+}
+
+const HTML = 'http://www.w3.org/1999/xhtml';
+/**
+ * The controls a click is the click of, wherever a link holds them: the browser ticks the box in a
+ * `<label>`, opens the `<details>` of a `<summary>`, and follows no link round them (where it does
+ * round a `<button>`, which is not one of these).
+ */
+const CONTROLS = new Set(['label', 'input', 'select', 'textarea', 'summary']);
+
+/**
+ * Whether the browser may follow a link from a click whose path is `path`, read as the click begins:
+ * the first of these from the click outward is an `<a>` or an `<area>` (with an address now or
+ * without one yet: the browser reads it as it follows it), a MathML element with an address, or a
+ * `<use>` that draws a link (or whose drawing cannot all be read), and no control comes before it.
+ * A `<use>` that draws no link is an icon, passed for what holds it. What each `<use>` draws is kept
+ * in `drawnBefore`: the copy the browser follows is the one drawn as the click began.
+ */
+function mayFollow(path: readonly EventTarget[], drawing: Drawing, drawnBefore: Map<Element, ReadonlySet<Element> | 'unknown'>): boolean {
+  for (const target of path) {
+    const element = target as Partial<Element>;
+    if (typeof element.getAttribute !== 'function') continue;
+    if (element.namespaceURI === HTML && CONTROLS.has(element.localName ?? '')) return false;
+    if (element.localName === 'a' || element.localName === 'area') return true;
+    if (element.namespaceURI === MATHML && addressOf(element) !== null) return true;
+    if (element.localName === 'use' && element.namespaceURI === SVG) {
+      const links = new Set<Element>();
+      const whole = linksDrawn(element as Element, USE_DEPTH, links, drawing);
+      drawnBefore.set(element as Element, whole ? links : 'unknown');
+      if (!whole || links.size > 0) return true;
+    }
+  }
+  return false;
+}
+
+/** Elements the frame clicks itself, doing what it held a click for (a file a link saves): those clicks are the browser's. */
+const framesOwn = new WeakSet<EventTarget>();
+
+/** Lets the frame's own click on `element` through to the browser (main.tsx's `followHere`). */
+export function letThrough(element: Element): void {
+  framesOwn.add(element);
+}
+
+/** {@link linkIn} of a click as it is dispatched (its path is gone once the dispatch is over). */
+export function linkAt(event: Event, drawing: Drawing = {}): FoundLink | null {
+  return linkIn(event.composedPath(), drawing);
 }
 
 /** What `watchLinks` is given by the frame. */
 export interface LinkWatch {
   /** Whether clicks are the frame's to look at now (not once it has ended). */
   open(): boolean;
-  /** What a click on `link` comes to (`decideLink`, with what only the frame knows): `handled` is the app's cancelling. */
+  /**
+   * What a click on `link` comes to (`decideLink`, with what only the frame knows). `handled` is the
+   * app's cancelling: a click the app cancelled is never decided, so it is false here.
+   */
   decide(link: FoundLink, event: MouseEvent, handled: boolean): LinkAction;
   /** Carry out what was decided (never `browser`). */
   act(action: Exclude<LinkAction, { kind: 'browser' }>, link: FoundLink, event: MouseEvent): void;
+  /**
+   * Do what the browser would have done with a link decided as its own (a place on the page, or a
+   * file a `data:` or `blob:` link saves): the frame held the click, so the browser did not. A click
+   * the frame makes for it is let through (`letThrough`).
+   */
+  follow?(link: FoundLink): void;
   /** Run after the click's dispatch has ended (`setTimeout(run, 0)`). */
   later(run: () => void): void;
+  /** The text of an SVG file the frame serves at a `blob:` address it made, for a `<use>` of it ({@link Drawing}). */
+  svgText?(url: string): string | undefined;
 }
 
 /**
- * Listen for clicks on links in `win`, and decide each once (see the top of this file):
+ * Listen for clicks on links in `win`, and decide each once the click is over (see the top of this
+ * file). A listener on the window, set before any of the app's code runs, hears every click first:
+ * a click that may follow a link (`mayFollow`) is held there, before the app's handlers have it, so
+ * the browser follows nothing whatever the app does in the click (points the link elsewhere, in a
+ * handler, a microtask or a listener of its logic's own on the window, stops it, draws another icon).
+ * Once the click is over it is decided on the link as it is then, and carried out, unless the app
+ * cancelled it (`preventDefault`, `returnValue = false`): the app has dealt with it (core cancels a
+ * link to one of the app's pages it showed in place). What the browser would have done itself, a
+ * place on the page or a file a link saves, the frame does (`follow`). A middle click asks for a
+ * window this frame cannot open: only a link to the outside is taken from it.
  *
- * - on the document, on the way up, after the app's and core's handlers: as a link in a browser
- *   is, with the app's own cancelling (`preventDefault`) saying it has dealt with the click;
- * - where the app stops one on its way there (`stopPropagation`, `stopImmediatePropagation`,
- *   `cancelBubble`): what a listener on the window, which hears every click first, put on that
- *   click's own methods. Then the frame keeps the browser from following it there and then, and
- *   carries out what was decided once the click is over, unless the app cancels it after all.
- *
- * Nothing else about a click changes: the app sees `defaultPrevented` as it made it. Returns
- * a function that stops listening.
+ * Nothing else about a click changes: the app reads `defaultPrevented` and `returnValue` as it made
+ * them. Returns a function that stops listening.
  */
 export function watchLinks(win: Window, watch: LinkWatch): () => void {
-  const decided = new WeakSet<Event>();
   const relevant = (click: MouseEvent): boolean => watch.open() && (click.type === 'click' ? click.button === 0 : click.button === 1);
   const proto = (win as Window & typeof globalThis).Event.prototype;
   const nativePrevent = proto.preventDefault;
-  const nativeStop = proto.stopPropagation;
-  const nativeStopNow = proto.stopImmediatePropagation;
-  const cancelBubble = Object.getOwnPropertyDescriptor(proto, 'cancelBubble');
   const returnValue = Object.getOwnPropertyDescriptor(proto, 'returnValue');
+  const defaultPrevented = Object.getOwnPropertyDescriptor(proto, 'defaultPrevented');
+  /** Whether the click's default is prevented, as the browser has it. */
+  const prevented = (click: MouseEvent): boolean => (defaultPrevented?.get ? defaultPrevented.get.call(click) === true : click.defaultPrevented);
+  // What the page's `<use>`s draw from: the frame's own SVG files, read as they are needed.
+  const drawing: Drawing = { svgText: watch.svgText ? (url) => watch.svgText!(url) : undefined, read: new Map() };
 
-  /** What the click comes to, or null where it is the browser's (or not one to act on now). */
-  const deciding = (click: MouseEvent, link: FoundLink): Exclude<LinkAction, { kind: 'browser' }> | null => {
-    const action = watch.decide(link, click, click.defaultPrevented);
-    // A middle click asks for a window this frame cannot open: only a link to the outside is worth taking from it.
-    if (action.kind === 'browser' || (click.type === 'auxclick' && action.kind !== 'hand-on')) return null;
-    return action;
-  };
-
-  const onDocument = (event: Event): void => {
+  const onClick = (event: Event): void => {
     const click = event as MouseEvent;
-    if (decided.has(click) || !relevant(click)) return;
-    decided.add(click);
-    const link = linkAt(click);
-    if (link === null) return;
-    const action = deciding(click, link);
-    if (action === null) return;
-    nativePrevent.call(click);
-    watch.act(action, link, click);
-  };
-
-  const onWindow = (event: Event): void => {
-    const click = event as MouseEvent;
-    if (!relevant(click)) return;
-    const link = linkAt(click);
-    if (link === null) return;
-    /** The click was stopped here, and is carried out after it unless the app cancels it. */
-    let stoppedHere = false;
+    if (!relevant(click) || prevented(click)) return;
+    // The click's path, kept: once the click is over it is gone, and the link it is on is read again then.
+    const path = click.composedPath();
+    if (path.some((target) => framesOwn.has(target))) return;
+    const drawnBefore = new Map<Element, ReadonlySet<Element> | 'unknown'>();
+    if (!mayFollow(path, drawing, drawnBefore)) return;
     let cancelled = false;
-    const stopped = (): void => {
-      if (decided.has(click)) return;
-      decided.add(click);
-      const action = deciding(click, link);
-      if (action === null) return;
-      stoppedHere = true;
-      nativePrevent.call(click);
-      watch.later(() => {
-        if (!cancelled) watch.act(action, link, click);
-      });
-    };
+    nativePrevent.call(click);
     const own = (name: string, value: unknown): void => {
       Object.defineProperty(click, name, { configurable: true, writable: true, value });
     };
     own('preventDefault', function preventDefault(): void {
-      if (stoppedHere) cancelled = true;
+      cancelled = true;
       nativePrevent.call(click);
     });
-    own('stopPropagation', function stopPropagation(): void {
-      stopped();
-      nativeStop.call(click);
-    });
-    own('stopImmediatePropagation', function stopImmediatePropagation(): void {
-      stopped();
-      nativeStopNow.call(click);
-    });
-    if (cancelBubble?.get && cancelBubble.set) {
-      const { get, set } = cancelBubble;
-      Object.defineProperty(click, 'cancelBubble', {
-        configurable: true,
-        get: () => get.call(click),
-        set: (value: unknown) => {
-          if (value) stopped();
-          set.call(click, value);
-        },
-      });
-    }
-    if (returnValue?.get && returnValue.set) {
-      const { get, set } = returnValue;
+    // The frame's holding is its own: the app reads the click as it made it.
+    Object.defineProperty(click, 'defaultPrevented', { configurable: true, get: () => cancelled });
+    if (returnValue?.set) {
+      const { set } = returnValue;
       Object.defineProperty(click, 'returnValue', {
         configurable: true,
-        get: () => get.call(click),
+        get: () => !cancelled,
         set: (value: unknown) => {
           // (`returnValue = false` is the old way to cancel)
-          if (value === false && stoppedHere) cancelled = true;
+          if (value === false) cancelled = true;
           set.call(click, value);
         },
       });
     }
+    watch.later(() => {
+      if (cancelled || !watch.open()) return;
+      const link = linkIn(path, drawing, drawnBefore);
+      if (link === null) return;
+      const action = watch.decide(link, click, false);
+      if (action.kind === 'browser') {
+        if (click.type === 'click') watch.follow?.(link);
+        return;
+      }
+      if (click.type === 'auxclick' && action.kind !== 'hand-on') return;
+      watch.act(action, link, click);
+    });
   };
 
-  win.addEventListener('click', onWindow, true);
-  win.addEventListener('auxclick', onWindow, true);
-  win.document.addEventListener('click', onDocument);
-  win.document.addEventListener('auxclick', onDocument);
+  win.addEventListener('click', onClick, true);
+  win.addEventListener('auxclick', onClick, true);
   return () => {
-    win.removeEventListener('click', onWindow, true);
-    win.removeEventListener('auxclick', onWindow, true);
-    win.document.removeEventListener('click', onDocument);
-    win.document.removeEventListener('auxclick', onDocument);
+    win.removeEventListener('click', onClick, true);
+    win.removeEventListener('auxclick', onClick, true);
   };
 }

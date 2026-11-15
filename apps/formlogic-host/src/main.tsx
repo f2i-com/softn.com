@@ -10,11 +10,11 @@ import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippAddress, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { createNativeNetFetch } from './nativeFetch';
 import { framePolicy, zippDirectory } from './framePolicy';
-import { mediaUrl, releaseMedia, sameMedia, textFileUrl } from './media';
+import { mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl } from './media';
 import { seedBundledData } from './seed';
 import { createUpdater, importsFrom, type ImportResolver } from './update';
 import { isOtherPage, linkedPage, startPlace, writePlace } from './place';
-import { decideLink, watchLinks } from './links';
+import { decideLink, letThrough, linkKind, watchLinks, type FoundLink } from './links';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -120,8 +120,9 @@ const updates = createUpdater<ReturnType<typeof composeBundleSource>>({
   state: () => terminated ? 'closed' : failed ? 'failed' : drawn ? 'running' : 'opening',
   languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,
   // Media are blob: addresses (media.ts): a file a version sends again as it was keeps the one the page
-  // has, and one no version has is let go of, unless the page was given it.
-  sameMedia, releaseMedia,
+  // has, and one no version has is let go of; one the page was given, the oldest first, once more than
+  // 64 MB of such files are held (update.ts's RETIRED_MEDIA_BYTES).
+  sameMedia, releaseMedia, mediaBytes,
   // The app's own data files, read with fetch (`fetch('data/levels.json')`) as SoftN Web reads them (media.ts).
   textUrl: textFileUrl,
   // An app showing another of its page files stays on it while a newer version has that page (place.ts).
@@ -133,19 +134,48 @@ const updates = createUpdater<ReturnType<typeof composeBundleSource>>({
  */
 let pageLinks: { isPage(href: string): boolean; follow(href: string): boolean } | undefined;
 /**
- * Every click on a link, decided once by links.ts (after the app's own handlers and core's, or
- * where the app stops the click on its way) and carried out here. A link to the outside goes to the
- * parent; anything that would take the frame off the app is kept from it and said in the console.
- * Listened for from the start, before any of the app's code can listen: the window hears a click
- * first.
+ * What the browser would have done with a link the frame held (every one is, until its click is
+ * over: links.ts): go to the place on the page it names, or save the file a `data:` or `blob:` link
+ * downloads, under the name its `download` gives it. A place on the page first: a link to one with a
+ * `download` attribute goes there, as a browser's does. The frame's own click on the link that saves
+ * is let through to the browser. Nothing else is the browser's.
+ */
+function followHere(link: FoundLink): void {
+  if (linkKind(link.written) === 'fragment') {
+    try {
+      location.hash = new URL(link.resolved).hash;
+    } catch {
+      // (a place on the page is always an address the parser reads)
+    }
+    return;
+  }
+  if (!link.download) return;
+  const save = document.createElement('a');
+  save.href = link.resolved;
+  save.download = link.saveAs ?? '';
+  letThrough(save);
+  document.body.append(save);
+  save.click();
+  save.remove();
+}
+// The frame's own site, by its host: a link there is no other site's (links.ts).
+const ownHost = new URL(assets).hostname;
+/**
+ * Every click on a link, held as it begins and decided once it is over by links.ts, and carried out
+ * here. A link to the outside goes to the parent; anything that would take the frame off the app is
+ * kept from it and said in the console. Listened for from the start, before any of the app's code
+ * can listen: the window hears a click first.
  */
 watchLinks(window, {
   open: () => !terminated,
   decide: (link, event, handled) => decideLink({
     written: link.written, resolved: link.resolved, download: link.download, unclear: link.unclear,
-    handled, byPerson: event.isTrusted,
+    handled, byPerson: event.isTrusted, ownHost,
     isPage: href => pageLinks?.isPage(href) === true,
   }),
+  follow: followHere,
+  // An SVG file of the app's, drawn by a <use> of its blob: address: what its links are (media.ts).
+  svgText: svgTextOf,
   act: (action, link) => {
     if (action.kind === 'hand-on') {
       // Until the app is drawn there is nothing on screen to have clicked; after the frame ends, no one to tell.

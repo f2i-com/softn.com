@@ -160,9 +160,9 @@ test('a parent may send media as bytes, file by file, and the page is given blob
   // init: each file as it came, text or bytes, to media.ts, which makes its address or leaves it out (media.test.mjs).
   assert.match(main, /for \(const \[path, value\] of Object\.entries\(event\.data\.assets \|\| \{\}\)\) \{\s*const url = mediaUrl\(path, value\);\s*if \(url\) media\.set\(path, url\);\s*\}/);
   // An update's media go through the same module: a file sent again as it was keeps its address, and one
-  // no version has is let go of unless the page was given it (update.test.mjs).
-  assert.match(main, /import \{ mediaUrl, releaseMedia, sameMedia, textFileUrl \} from '\.\/media';/);
-  assert.match(main, /languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,\s*(\/\/[^\n]*\n\s*)*sameMedia, releaseMedia,/);
+  // no version has is let go of; one the page was given, past a limit, by its size (update.test.mjs).
+  assert.match(main, /import \{ mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl \} from '\.\/media';/);
+  assert.match(main, /languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,\s*(\/\/[^\n]*\n\s*)*sameMedia, releaseMedia, mediaBytes,/);
 });
 
 test('the app starts at the place its parent names, held to the app\'s own files', () => {

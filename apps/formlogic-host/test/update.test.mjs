@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveObjectURL } from 'node:buffer';
-import { createUpdater, importsFrom, planUpdate, readUpdate, sentence, PAGE_GONE, UPDATE_LIMITS } from '../src/update.ts';
+import { createUpdater, importsFrom, planUpdate, readUpdate, sentence, PAGE_GONE, RETIRED_MEDIA_BYTES, UPDATE_LIMITS } from '../src/update.ts';
 import { bundleLanguages } from '../src/engineInit.ts';
 import { mediaUrl, releaseMedia, sameMedia, textFileUrl } from '../src/media.ts';
 import { declaredThemeMode } from '../src/appTheme.ts';
@@ -54,8 +54,8 @@ function runningApp() {
   return app;
 }
 
-/** A frame with an app open and its first page drawn, as main.tsx wires one. */
-function frame({ assets = {}, limits, textUrl } = {}) {
+/** A frame with an app open and its first page drawn, as main.tsx wires one (`mediaBytes`: how large it says each file is). */
+function frame({ assets = {}, limits, textUrl, mediaBytes } = {}) {
   const posted = [];
   const redraws = [];
   // The media addresses let go of, in turn.
@@ -67,7 +67,7 @@ function frame({ assets = {}, limits, textUrl } = {}) {
     post: reply => posted.push(reply),
     state: () => at.state,
     languages: bundleLanguages, compose, mediaUrl, textUrl, themeOf: declaredThemeMode, limits,
-    sameMedia, releaseMedia: url => { released.push(url); releaseMedia(url); },
+    sameMedia, releaseMedia: url => { released.push(url); releaseMedia(url); }, ...(mediaBytes ? { mediaBytes } : {}),
   });
   const media = new Map(Object.entries(assets).map(([path, value]) => [path, mediaUrl(path, value)]));
   app.shown = { ...compose(opened, 'ui/main.ui', ['logic/main.logic']), importResolver: importsFrom(opened) };
@@ -487,6 +487,51 @@ test('an address no version has is let go of, unless the page was given it, whic
   assert.equal(await served(updates.asset('assets/a.png')), 'image/png;CCCC');
   assert.equal(await served(updates.asset('assets/b.png')), 'image/png;DDDD');
   assert.equal(released.length, 2);
+});
+
+test('what the page was given and versions since replaced is kept for an app that may hold it, up to a limit, the oldest let go of past it', async () => {
+  // Each save of an editing session that changed a large file kept its last bytes until the frame ended.
+  const { updates, send, released } = frame({ assets: { 'assets/a.png': 'AAAA' }, mediaBytes: () => 40 * 1024 * 1024 });
+  const first = updates.asset('assets/a.png');
+  send(1, client(), { assets: { 'assets/a.png': 'BBBB' } });
+  await tick();
+  const second = updates.asset('assets/a.png');
+  assert.deepEqual(released, [], 'one replaced file of 40 MB is kept');
+  assert.equal(await served(first), 'image/png;AAAA');
+  send(2, client(), { assets: { 'assets/a.png': 'CCCC' } });
+  await tick();
+  assert.deepEqual(released, [first], `past ${RETIRED_MEDIA_BYTES / 1024 / 1024} MB, the oldest goes`);
+  assert.equal(await served(first), null);
+  assert.equal(await served(second), 'image/png;BBBB');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;CCCC', 'what is on screen is never let go of');
+});
+
+test('logic that starts again as a version is taken reads that version\'s data files beside its media, and a version kept back changes neither', async () => {
+  const { updates, posted, send, app } = frame({ textUrl: textFileUrl, assets: { 'assets/a.png': 'AAAA' } });
+  const read = url => decodeURIComponent(url.slice(url.indexOf(',') + 1));
+  send(1, client({ 'data/levels.json': '{"level":1}' }));
+  await tick();
+  // While the next version is being taken (its logic starting again), the page reads its JSON with its media:
+  // it read the last version's JSON beside the new media.
+  const release = app.hold();
+  send(2, client({ 'logic/main.logic': 'let count = 2', 'data/levels.json': '{"level":2}' }), { assets: { 'assets/a.png': 'BBBB' } });
+  await tick();
+  assert.equal(read(updates.asset('data/levels.json')), '{"level":2}');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;BBBB');
+  release();
+  await tick();
+  assert.equal(posted[1].outcome, 'restarted');
+  assert.equal(read(updates.asset('data/levels.json')), '{"level":2}');
+  // A version kept back: its own while it was taken, and after it the last version that worked, both.
+  const again = app.hold();
+  send(3, client({ 'ui/main.ui': '<broken', 'logic/main.logic': 'let count = 2', 'data/levels.json': '{"level":3}' }), { assets: { 'assets/a.png': 'CCCC' } });
+  await tick();
+  assert.equal(read(updates.asset('data/levels.json')), '{"level":3}');
+  again();
+  await tick();
+  assert.equal(posted[2].outcome, 'kept');
+  assert.equal(read(updates.asset('data/levels.json')), '{"level":2}');
+  assert.equal(await served(updates.asset('assets/a.png')), 'image/png;BBBB');
 });
 
 test('an app with many media files keeps the address of each that is the same, compared a few at a time', async () => {

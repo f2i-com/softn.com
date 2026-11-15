@@ -8,7 +8,7 @@
 // sent.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FRAME_MEDIA_TYPES, FRAME_TEXT_TYPES, mediaUrl, releaseMedia, sameMedia, textFileUrl } from '../src/media.ts';
+import { FRAME_MEDIA_TYPES, FRAME_TEXT_TYPES, mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl } from '../src/media.ts';
 import { ASSET_CLASSIFICATIONS } from '../../../packages/@softn/core/src/bundle/asset-classification.ts';
 
 /** What an address serves as a page's fetch reads it: its type and its bytes, or null where it serves nothing. */
@@ -133,6 +133,44 @@ test('an address holds a file sent again as it was, as text or as bytes, and not
   assert.equal(await sameMedia('data:image/png;base64,AAEC/w==', 'assets/a.png', 'AAEC/w=='), false);
   const foreign = URL.createObjectURL(new Blob([new Uint8Array([0, 1, 2, 255])], { type: 'image/png' }));
   assert.equal(await sameMedia(foreign, 'assets/a.png', 'AAEC/w=='), false);
+});
+
+test('a JSON file whose text holds half of a surrogate pair is still served, that half read as U+FFFD', () => {
+  // encodeURIComponent threw on it, and the file could not be read at all.
+  const body = url => decodeURIComponent(url.slice(url.indexOf(',') + 1));
+  assert.equal(body(textFileUrl('data/cut.json', '{"cut":"ab\ud83d"}')), '{"cut":"ab�"}');
+  assert.equal(body(textFileUrl('data/cut.json', '"\ude00x"')), '"�x"');
+  assert.equal(body(textFileUrl('data/whole.json', '"😀"')), '"😀"', 'a whole pair is as it was');
+});
+
+test('an SVG file served here can be read back by its address, as a <use> of it draws it, and its size is known', () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><symbol id="star"><path d="M0 0L5 5"/></symbol></svg>';
+  const url = mediaUrl('assets/icons.svg', Buffer.from(svg).toString('base64'));
+  assert.equal(svgTextOf(url), svg);
+  assert.equal(mediaBytes(url), Buffer.byteLength(svg));
+  const png = mediaUrl('assets/dot.png', 'AAAA');
+  assert.equal(svgTextOf(png), undefined, 'an SVG file alone');
+  assert.equal(mediaBytes(png), 3);
+  releaseMedia(url);
+  assert.equal(svgTextOf(url), undefined, 'let go of with the file');
+  assert.equal(mediaBytes(url), 0);
+  assert.equal(svgTextOf('blob:null/not-made-here'), undefined);
+  releaseMedia(png);
+});
+
+test('an SVG file\'s text is kept only where it is read as a browser reads it: UTF-16 by its mark, UTF-8 otherwise, nothing else', () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><a id="é" href="https://x.example/"><rect/></a></svg>';
+  const b64 = (bytes) => Buffer.from(bytes).toString('base64');
+  // UTF-16 with its byte order mark, either way round: read as such (Firefox draws from one, and follows its links)
+  const le = mediaUrl('assets/le.svg', b64(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(svg, 'utf16le')])));
+  assert.equal(svgTextOf(le), svg);
+  const be = Buffer.from(svg, 'utf16le').swap16();
+  assert.equal(svgTextOf(mediaUrl('assets/be.svg', b64(Buffer.concat([Buffer.from([0xfe, 0xff]), be])))), svg);
+  // another encoding named, or bytes that are not UTF-8: not read here (unknown, so a click on a <use> of it is kept)
+  assert.equal(svgTextOf(mediaUrl('assets/latin1.svg', b64(Buffer.from(`<?xml version="1.0" encoding="ISO-8859-1"?>${svg.replace('é', 'e')}`)))), undefined);
+  assert.equal(svgTextOf(mediaUrl('assets/bad.svg', b64(Buffer.concat([Buffer.from('<svg id="'), Buffer.from([0xe9]), Buffer.from('"/>')])))), undefined);
+  // UTF-8 named, or none named: read
+  assert.equal(svgTextOf(mediaUrl('assets/named.svg', b64(Buffer.from(`<?xml version="1.0" encoding="utf-8"?>${svg}`)))), `<?xml version="1.0" encoding="utf-8"?>${svg}`);
 });
 
 test('an address let go of serves nothing, and no other address is let go of', async () => {

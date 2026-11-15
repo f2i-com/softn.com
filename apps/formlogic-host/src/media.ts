@@ -68,6 +68,19 @@ function bytesOf(value: unknown): Uint8Array | null {
 const made = new Map<string, Blob>();
 
 /**
+ * The text of each SVG file served here, by its address: what links.ts reads where a `<use>` draws
+ * from one (`<use href={asset('icons.svg') + '#a'}>`). The browser follows a link in what it draws
+ * (Firefox does, from a `blob:` file of the frame's own), and the frame must see that link to decide
+ * it, at once, while the click is dispatched.
+ */
+const svgTexts = new Map<string, string>();
+
+/** The text of the SVG file served at `url`, an address made here; undefined for any other. */
+export function svgTextOf(url: string): string | undefined {
+  return svgTexts.get(url);
+}
+
+/**
  * The `blob:` URL a bundle asset is served as, or null for one the page is not given. Each call
  * makes a new one.
  *
@@ -93,7 +106,30 @@ export function mediaUrl(path: string, value: unknown): string | null {
   }
   const url = URL.createObjectURL(blob);
   made.set(url, blob);
+  if (type === 'image/svg+xml') {
+    const text = svgText(bytes);
+    if (text !== null) svgTexts.set(url, text);
+  }
   return url;
+}
+
+/**
+ * An SVG file's text as a browser reads it, or null where the frame cannot be sure of reading it so:
+ * UTF-16 by its byte order mark, else UTF-8 throughout. A file whose XML declaration names another
+ * encoding, or that is not UTF-8, is read by its own rules (Firefox followed a link in a UTF-16 file
+ * and in a Latin-1 one, where reading them as UTF-8 found none): its text is not kept, so a `<use>`
+ * of it reads as unknown, and a click on it follows nothing (links.ts).
+ */
+function svgText(bytes: Uint8Array): string | null {
+  try {
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le', { fatal: true }).decode(bytes);
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be', { fatal: true }).decode(bytes);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const declared = /^\s*<\?xml[^>]*\bencoding\s*=\s*["']([^"']+)["']/i.exec(text)?.[1];
+    return declared === undefined || /^utf-?8$/i.test(declared) ? text : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -115,11 +151,17 @@ export async function sameMedia(url: string, path: string, value: unknown): Prom
   return true;
 }
 
+/** How many bytes an address made here serves; 0 for any other. */
+export function mediaBytes(url: string): number {
+  return made.get(url)?.size ?? 0;
+}
+
 /**
  * Lets go of an address `mediaUrl` made: the file is freed, and the address serves nothing from
  * then on. Any other address is left alone.
  */
 export function releaseMedia(url: string): void {
+  svgTexts.delete(url);
   if (made.delete(url)) URL.revokeObjectURL(url);
 }
 
@@ -144,5 +186,14 @@ export const FRAME_TEXT_TYPES: Readonly<Record<string, string>> = Object.freeze(
 export function textFileUrl(path: string, text: unknown): string | null {
   if (typeof text !== 'string') return null;
   const type = typeOf(FRAME_TEXT_TYPES, path);
-  return type ? `data:${type};charset=utf-8,${encodeURIComponent(text)}` : null;
+  return type ? `data:${type};charset=utf-8,${encodeURIComponent(wellFormed(text))}` : null;
+}
+
+/**
+ * `text` with each half of a surrogate pair that has no other half made U+FFFD, as UTF-8 bytes would
+ * have it: `encodeURIComponent` throws on one, and a JSON file whose text held one (a string cut in
+ * the middle of an emoji and kept as it was) could not be read at all, by fetch or by the markup.
+ */
+function wellFormed(text: string): string {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�');
 }

@@ -311,6 +311,14 @@ const NOT_RUNNING: Record<Exclude<UpdateState, 'running'>, string> = {
   closed: 'This frame has closed.',
 };
 
+/**
+ * The most bytes of media the page was given that versions since have replaced, kept for an app that
+ * may still hold their addresses; past it the oldest are let go of. Kept for the frame's whole life,
+ * an editing session's every save that changed a large file held its last bytes (ten saves of a 24 MB
+ * model, 240 MB), with no end to it.
+ */
+export const RETIRED_MEDIA_BYTES = 64 * 1024 * 1024;
+
 /** Said with `restarted` where a version no longer has the page file the app was showing. */
 export const PAGE_GONE = 'The page it was showing is not in this version, so it was opened at its main page.';
 
@@ -334,11 +342,14 @@ export interface UpdaterOptions<Composed extends object> {
   sameMedia?(url: string, path: string, value: unknown): boolean | Promise<boolean>;
   /**
    * Lets go of a media address (media.ts's releaseMedia): one no version on screen has and the
-   * page was never given. One the page was given stays while the frame does, because the app may
-   * keep it in a variable, and a file let go from under it would no longer load. A frame that
-   * leaves it out lets go of nothing.
+   * page was never given. One the page was given stays, because the app may keep it in a variable,
+   * and a file let go from under it would no longer load: up to `RETIRED_MEDIA_BYTES` of such
+   * files, the oldest let go of past that (`mediaBytes` says how large each is). A frame that leaves
+   * it out lets go of nothing.
    */
   releaseMedia?(url: string): void;
+  /** How many bytes a media address serves (media.ts's mediaBytes); a frame that leaves it out keeps every file the page was given. */
+  mediaBytes?(url: string): number;
   /**
    * The address one of the app's own text files is served to the page as, or null for one it is
    * not given (media.ts's textFileUrl): data the page reads by name, `fetch('data/levels.json')`.
@@ -409,8 +420,15 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
   // Every media address made and not let go of yet, and those of them the page has been given (`asset`).
   const held = new Set<string>();
   const handedOut = new Set<string>();
+  // Those the page was given that the media on screen no longer has, the oldest first, and their bytes.
+  const retired: Array<{ url: string; bytes: number }> = [];
+  let retiredBytes = 0;
   // The addresses of the version's own data files, made as the page asks for them (`asset`).
   const textUrls = new WeakMap<ReadonlyMap<string, string>, Map<string, string>>();
+  // The files of a version while it is being taken: its logic starts again as it is handed over, and
+  // reads its own data files beside its own media (`asset`). It read the last version's JSON with the
+  // new media, where `files` became this version only once it had been taken.
+  let taking: ReadonlyMap<string, string> | null = null;
   // Media the parent sent with a version that was not taken. Media left out means "as I last sent
   // it", so it goes with the next version that leaves its media out, and is let go once one is taken.
   let unread: Record<string, unknown> | undefined;
@@ -487,15 +505,27 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
    * Once an update is dealt with: lets go of every media address made that
    * the media on screen does not have, which is what a version replaced or
    * took away, and what was made for one that was not taken. An address the
-   * page was given is not let go of, and is not looked at again: the app may
-   * hold it, and it stays as long as the frame does.
+   * page was given is kept a while longer, as the app may hold it: up to
+   * `RETIRED_MEDIA_BYTES` of such files, the oldest let go of past that.
    */
   const sweep = (): void => {
     const showing = new Set(media.values());
     for (const url of held) {
       if (showing.has(url)) continue;
       held.delete(url);
-      if (!handedOut.delete(url)) options.releaseMedia?.(url);
+      if (!handedOut.delete(url)) {
+        options.releaseMedia?.(url);
+        continue;
+      }
+      if (!options.mediaBytes || !options.releaseMedia) continue;
+      const bytes = options.mediaBytes(url);
+      retired.push({ url, bytes });
+      retiredBytes += bytes;
+    }
+    while (retiredBytes > RETIRED_MEDIA_BYTES && retired.length > 0) {
+      const oldest = retired.shift()!;
+      retiredBytes -= oldest.bytes;
+      options.releaseMedia?.(oldest.url);
     }
   };
 
@@ -552,9 +582,12 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     try {
       // Its own resolver, over its own files: the logic of the version that is running is answered
       // from that version, whichever one that turns out to be.
+      taking = client;
       result = await running.update({ ...composed, importResolver: importsFrom(client) });
     } catch (error) {
       result = { outcome: 'kept', problem: sentence(error) };
+    } finally {
+      taking = null;
     }
     // Closed, or replaced by its own failure, while the version was being taken: nothing is left to draw.
     const gone = notRunning();
@@ -641,16 +674,18 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
       const name = path.replace(/^\.\//, '');
       const found = media.get(name);
       if (found) {
-        // The app may keep it from now on, so it is never let go of while the frame lives (`sweep`).
+        // The app may keep it from now on, so it is kept past the version that replaces it, while
+        // such files stay under RETIRED_MEDIA_BYTES (`sweep`).
         handedOut.add(found);
         return found;
       }
-      const text = files.get(name);
+      const version = taking ?? files;
+      const text = version.get(name);
       if (text === undefined || !options.textUrl) return '';
       // Made once for each version's file: a page that asks for it on every frame of a game does not
       // copy a large file each time. The cache goes with the version it was made from.
-      let made = textUrls.get(files);
-      if (!made) textUrls.set(files, made = new Map());
+      let made = textUrls.get(version);
+      if (!made) textUrls.set(version, made = new Map());
       let url = made.get(name);
       if (url === undefined) made.set(name, url = options.textUrl(name, text) ?? '');
       return url;
