@@ -134,6 +134,7 @@ describe('SoftN Studio v2 Web App Containers', () => {
     ]);
 
     const report = await browserEnvironment.checkApp(vfs, { blueprint: null });
+    expect(report.errors).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.renderedHeadless).toBe(true);
     expect(report.rendered).toContain('Ready from ZIPP TypeScript');

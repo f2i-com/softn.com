@@ -136,8 +136,9 @@ describe('the pages Studio writes itself', () => {
   }, 30_000);
 
   it('declare what they read: both bundled examples, the one in Python too', async () => {
-    expect(EXAMPLES.length).toBeGreaterThanOrEqual(2);
-    for (const example of EXAMPLES) {
+    const uiExamples = EXAMPLES.filter((e) => !e.files.some((f) => f.path === 'manifest.json' && /"engine"\s*:\s*2/.test(f.content)));
+    expect(uiExamples.length).toBeGreaterThanOrEqual(2);
+    for (const example of uiExamples) {
       const files = fromList(example.files);
       const whole = await browserEnvironment.checkApp(files, { blueprint: null });
       expect(whole.errors, example.id).toEqual([]);

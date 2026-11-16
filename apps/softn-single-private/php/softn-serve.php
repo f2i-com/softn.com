@@ -112,14 +112,7 @@ const SOFTN_ENTRY_TYPES = [
     'wgsl' => ['text/plain', 'text'],
     'xdb' => ['application/json', 'text'],
     'html' => ['text/html', 'text'],
-    'htm' => ['text/html', 'text'],
     'js' => ['application/javascript', 'text'],
-    'mjs' => ['application/javascript', 'text'],
-    'cjs' => ['application/javascript', 'text'],
-    'jsx' => ['application/javascript', 'text'],
-    'ts' => ['text/typescript', 'text'],
-    'tsx' => ['text/typescript', 'text'],
-    'mts' => ['text/typescript', 'text'],
     'txt' => ['text/plain', 'text'],
     'xml' => ['application/xml', 'text'],
     'pdf' => ['application/pdf', 'binary'],
@@ -802,12 +795,15 @@ function softn_source(array $config, string $private): never
         $declared = json_decode((string)@file_get_contents($config['permissions']), true);
         if (!is_array($declared)) softn_fail(503, 'The permission sidecar is not valid JSON.');
     }
+    $isContainer = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
     $text = [];
     $entries = [];
     $total = 0;
     foreach ($index as $name => $entry) {
         if ($name === 'manifest.json' || softn_withheld($name, $config['withhold'])) continue;
-        if (softn_classify($name)[1] !== 'text') {
+        $ext = strtolower((string)pathinfo($name, PATHINFO_EXTENSION));
+        $isText = softn_classify($name)[1] === 'text' || ($isContainer && in_array($ext, ['htm', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts'], true));
+        if (!$isText) {
             $entries[$name] = $entry['size'];
             continue;
         }

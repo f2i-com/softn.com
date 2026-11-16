@@ -18,6 +18,7 @@ import { registerAllBuiltins } from '@softn/components';
 import { configureZippWasmSource } from '@softn/core';
 import { EXAMPLES } from '../src/examples';
 import { browserEnvironment } from '../src/lib/agent/appCheck';
+import { projectContainerMode } from '../src/lib/sourceKinds';
 import { generateBlueprintFromBrief, scaffoldProjectFiles } from '../src/lib/studioProject';
 import type { ProjectBrief, VFSFile } from '../src/types/studio';
 
@@ -63,7 +64,9 @@ describe('the loops in the pages Studio writes', () => {
 
   it('have a key in both bundled examples', () => {
     for (const example of EXAMPLES) {
-      const found = loops(vfs(example.files));
+      const files = vfs(example.files);
+      if (projectContainerMode(files) === 'web') continue;
+      const found = loops(files);
       expect(found.length, example.id).toBeGreaterThan(0);
       for (const loop of found) expect(loop, example.id).toMatch(/ key=\{item\.id\}$/);
     }

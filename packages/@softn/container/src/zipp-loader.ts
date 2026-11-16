@@ -178,6 +178,27 @@ async function compileWasmSource(source: BufferSource | WebAssembly.Module | str
   return WebAssembly.compile(view);
 }
 
+async function resolveNodeContainerPkgRoot(): Promise<string | null> {
+  const pathMod = await import('node:path');
+  const fsMod = await import('node:fs');
+  try {
+    const moduleMod = await import('node:module');
+    const req = moduleMod.createRequire(pathMod.join(process.cwd(), 'package.json'));
+    return pathMod.dirname(req.resolve('@softn/container/package.json'));
+  } catch {
+    let dir = process.cwd();
+    for (let i = 0; i < 6; i++) {
+      const direct = pathMod.join(dir, 'packages', '@softn', 'container');
+      if (fsMod.existsSync(pathMod.join(direct, 'package.json'))) return direct;
+      if (fsMod.existsSync(pathMod.join(dir, 'package.json')) && pathMod.basename(dir) === 'container') return dir;
+      const parent = pathMod.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  }
+}
+
 /**
  * Load and instantiate a ZIPP WASM engine for `tier`.
  */
@@ -189,13 +210,14 @@ export async function loadZippEngine(options: {
 }): Promise<LoadedZippBindings> {
   const { tier, explicitSource, fallbackGlueFactory } = options;
   let runtimeUrl = options.runtimeUrl;
-  if (!runtimeUrl) {
+  if (
+    !runtimeUrl ||
+    (isNodeRuntime() && (runtimeUrl === '/runtime/' || runtimeUrl.endsWith('/assets/container-runtime/')))
+  ) {
     if (isNodeRuntime()) {
-      const urlMod = await import('node:url');
-      const fsMod = await import('node:fs');
-      const candidateA = urlMod.fileURLToPath(new URL('./runtime/', import.meta.url));
-      const candidateB = urlMod.fileURLToPath(new URL('../dist/runtime/', import.meta.url));
-      runtimeUrl = fsMod.existsSync(candidateA) ? candidateA : candidateB;
+      const pathMod = await import('node:path');
+      const pkgRoot = await resolveNodeContainerPkgRoot();
+      runtimeUrl = pkgRoot ? pathMod.join(pkgRoot, 'dist', 'runtime') : '/runtime/';
     } else {
       runtimeUrl = '/runtime/';
     }
@@ -207,9 +229,22 @@ export async function loadZippEngine(options: {
   }
 
   const loadPromise = (async (): Promise<LoadedZippBindings> => {
-    const normalizedBase = runtimeUrl.replace(/\/?$/, '/');
-    const targetSource =
+    const normalizedBase = runtimeUrl.replace(/[\\/]?$/, '/');
+    let targetSource: BufferSource | WebAssembly.Module | string =
       explicitSource ?? `${normalizedBase}engines/${ENGINE_FILENAMES[tier]}`;
+    if (!explicitSource && isNodeRuntime() && typeof targetSource === 'string') {
+      const fsMod = await import('node:fs');
+      if (!fsMod.existsSync(targetSource)) {
+        const pathMod = await import('node:path');
+        const pkgRoot = await resolveNodeContainerPkgRoot();
+        if (pkgRoot) {
+          const fallbackPath = pathMod.resolve(pkgRoot, '..', 'core', 'wasm-zipp', 'zipp_wasm_bg.wasm');
+          if (fsMod.existsSync(fallbackPath)) {
+            targetSource = fallbackPath;
+          }
+        }
+      }
+    }
     const module = await compileWasmSource(targetSource);
     const metaJson = readCustomSection(module, META_SECTION);
     const meta = metaJson ? (JSON.parse(metaJson) as Record<string, unknown>) : null;

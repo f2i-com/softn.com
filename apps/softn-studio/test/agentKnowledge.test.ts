@@ -24,7 +24,7 @@ describe('the generated knowledge', () => {
   it('matches its sources exactly (regenerate when this fails)', () => {
     const expected = buildKnowledge(readFileSync(MANIFEST_PATH, 'utf8'), readFileSync(DOCS_PATH, 'utf8')) as Record<string, string>;
     for (const [name, text] of Object.entries(expected)) {
-      expect(readFileSync(join(OUT_DIR, name), 'utf8'), `${name} is stale: run npm run generate:knowledge -w @softn/studio`).toBe(text);
+      expect(readFileSync(join(OUT_DIR, name), 'utf8').replaceAll('\r\n', '\n'), `${name} is stale: run npm run generate:knowledge -w @softn/studio`).toBe(text);
     }
   });
 

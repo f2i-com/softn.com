@@ -21,14 +21,6 @@ function hasLegacySoftNDirectives(source: string): boolean {
   return false;
 }
 
-function isStandardHtmlDocument(source: string): boolean {
-  return (
-    /<!doctype\s+html/i.test(source) ||
-    /<html[\s>]/i.test(source) ||
-    /<script\b[^>]*\btype\s*=\s*["']?(?:module|text\/python)["']?/i.test(source)
-  );
-}
-
 function inferTitleFromHtml(html: string): string {
   const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
   if (!m) return '';
@@ -188,11 +180,20 @@ export function detectWebContainer(
     return { isWebContainer: true };
   }
 
+  // A manifest that declares v1 `files.ui` or `files.logic` without `engine: 2` / `container: true`
+  // is a v1 SoftN HTML/UI bundle (e.g. `SoftNRenderer` light-DOM pages), not a v2 Web Container.
+  const filesBlock = raw.files && typeof raw.files === 'object' && !Array.isArray(raw.files)
+    ? (raw.files as Record<string, unknown>)
+    : null;
+  if (filesBlock && (Array.isArray(filesBlock.ui) || Array.isArray(filesBlock.logic))) {
+    return { isWebContainer: false };
+  }
+
   const entryHtml = textFiles.get(main) ?? '';
   if (hasLegacySoftNDirectives(entryHtml)) {
     return { isWebContainer: false };
   }
-  if (isStandardHtmlDocument(entryHtml)) {
+  if (/<script\b[^>]*\btype\s*=\s*["']?(?:module|text\/python)["']?/i.test(entryHtml)) {
     return { isWebContainer: true };
   }
   return { isWebContainer: false };

@@ -389,7 +389,7 @@ function blockText(block) {
 }
 
 function hash(text) {
-  return createHash('sha256').update(text).digest('hex').slice(0, 16);
+  return createHash('sha256').update(text.replaceAll('\r\n', '\n')).digest('hex').slice(0, 16);
 }
 
 /** Build every generated module's text from the two sources' text (and the components' own sources, for prop types). */
