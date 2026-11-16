@@ -6,6 +6,36 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- Upgrading from v0.0.43: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again, and every protocol number in `softn-formlogic-runtime` is v0.0.43's. A site that deployed v0.0.43 should deploy this over it whole: the web container's files moved (below), and v0.0.43's were served as never changing.
+- Smaller releases. v0.0.43 copied the web container's whole runtime into every app: the website archive went from 32 MB to 114 MB, and each single-app archive gained 7.4 MB.
+  - The website keeps the container's files once, under `/shared/container-runtime/<digest>/`, for the runtime, Studio, the Builder and the play shell, as it keeps the ZIPP engine once. The archive is 41.8 MB.
+  - The ZIPP engine is in a deployment once. The container's Python tiers run the JavaScript-and-Python engine every SoftN app already carries, and its `javascript` tier (`Intl`, `Temporal`) runs that engine's JavaScript: the page hands the container the module it compiled for itself (`engineWasm` takes a function, asked only when an app needs the tier, and core exports `zippEngineForWorker`). So an app's container folder holds two engines, `lite` and `typescript`, where v0.0.43's held five, three of them copies of what core ships. The container loads the bindings of the engine it is handed (`zipp.meta`'s variant), whichever tier asked.
+  - The folder is named by the digest of its contents. Its files keep their names from release to release, and `zipp-javascript-lite.wasm` reads as a fingerprinted name to the cache rule every deployment ships (a year, immutable): a returning browser would have run the last release's engine under this release's bindings.
+  - Studio and the Builder, which install everything they ship, install the container's files from the shared folder; v0.0.43 had every visitor's service worker download all five engines, 22 MB.
+- The web container's sandbox (`packages/@softn/container`). Two reviews of v0.0.43 ran each of these in a browser; none of them is possible now, and each has a test.
+  - An app could run script in the page that embeds it: by an operation that set `innerHTML` on a `<softn-*>` element, and by an SVG `script` written with a prefix (`<svg:script>`), on the first page or made later. The host now takes nothing in an operation as checked: an element is named by its own name in any namespace, and a `<softn-*>` element is handed only the properties its own class declares.
+  - An app granted no network could reach another origin through `srcset`, `ping`, `background`, CSS `image-set()`, an escaped `u\72l()`, a `)` inside a quoted address, a `<style>` it wrote and a `<link>` to its own stylesheet. One rule now covers every attribute that names an address, on the first page and after; CSS is read token by token; a stylesheet the script writes or links is read by the host before the page reads it.
+  - An app's own SVG or HTML file could be opened as a document of the embedding site (an image opened in a new tab). An SVG is now a `data:` address, HTML and XML are plain text, and a link to a file of the app's is the container's to follow.
+  - A link's `target="_top"` moved the embedding page, and a fragment link changed its address. Every click on a link of the app's is the container's to carry out: a link out opens in a tab of its own with no handle on the page, a fragment scrolls inside the app.
+  - `:host { position: fixed }` laid the app over the embedding page, and the app's stylesheet could restyle the consent bar. `:host` never matches, the app's box contains and clips everything it draws (a modal dialog opens without the browser's top layer, `popover` is not set), and the bar is drawn in a shadow root of its own.
+  - An app that claimed another's `id` in its manifest was handed the other's saved data. Data is kept under the host's name for the app, the address it was loaded from, or the digest of its bytes. An app's records count against its storage quota as its localStorage does.
+  - Found in a further pass and closed with the rest: an app could take the keyboard focus from a field of the embedding page at any time (it is now given the focus only when it has it already or nothing in the page does, and `autofocus` is not set); an SVG paint attribute (`mask="url(…)"`, `fill`, `filter`) and a `.gltf` model's textures and buffers were fetched from wherever they named; a canvas, a 3D shape's segment count and the number of nodes on the page were whatever the app asked for, on the embedding page's own thread and memory. The consent bar names the sites a network grant covers, or says "any site".
+- Web containers, fixed:
+  - A Python script written in the page did not start ("Python project: no modules").
+  - Classic `<script>`s share the page's global scope (a function in one is called from the next), and one that fails does not stop the others.
+  - A module the page imports is held to the same test as the page for the full engine (`toLocaleString`, `localeCompare`): on the lite engine those answer unformatted, with no error.
+  - What a person already allowed is in place before the app's first script runs (`initialGrantedCapabilities`); a `fetch` on load was refused on every visit.
+  - A preview that is replaced while it starts no longer blanks the one that replaced it, and the Builder's preview waits for typing to settle.
+  - What an app prints reaches the browser's console in the runtime and the single-app shell.
+  - The folder's address is whole, so the Worker and the app's chunks find it in a build whose base is `./` (the single-app shell, the desktop Builder).
+  - The PHP single-app host hands a container its images, fonts and wasm, and no longer restarts it when Allow is pressed.
+  - The runtime keeps a container's saved data with the app's other data: Remove clears it, an update can bring it forward, a backup carries it.
+- Which engine runs a bundle is one rule (`@softn/bundle-format`'s `declaresContainer`): a bundle with a manifest says `"engine": 2`, and one with no manifest is a web container when it has a page. v0.0.43 guessed from the entry page, so a SoftN HTML page with a module script and no `files.ui` ran in the container; Studio previewed any project with a doctype as a container and exported it for SoftN; the Builder saved a SoftN bundle with `"engine": 2` stamped on it. A hosted Studio or Builder (FormLogic's) offers SoftN apps only: its build carries no container runtime.
+- Build: a container tier whose engine cannot be fetched and verified stops the build. A failed download used to leave another engine under the tier's name, in a build that passed.
+- Directory API: a manifest-less archive with an all-digit file name is answered as a bundle, not a 500, and its page is the first by name, as the runtime chooses it.
+
 ## v0.0.43
 
 - Upgrading from v0.0.42: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so existing `.ui` + `.logic` bundles run without being rebuilt or parsed again, and every protocol number in `softn-formlogic-runtime` is v0.0.42's.

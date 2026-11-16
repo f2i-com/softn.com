@@ -1,5 +1,8 @@
 # SoftN v2 Redesign Blueprint: "Docker for Sandboxed Web Apps"
 
+> [!NOTE]
+> **This is the proposal the web container was built from, kept as it was written. It is not a description of what ships.** Parts of it are not built (an XDB engine on OPFS, an IndexedDB shim, the FormLogic frame and the desktop loader on `<softn-app>`, a v1 bridge for the element), and its links to files on the author's machine go nowhere. For what the container does today, see the README's section on web containers, `packages/@softn/container`, and the CHANGELOG.
+
 > [!IMPORTANT]
 > **Core Architectural Shift:** SoftN transitions from a bespoke React-based `.ui` language into a **universal, capability-sandboxed Web App Container (`<softn-app>`)** powered by the [ZIPP](file:///E:/repos/zipp.org/README.md) Rust/WASM VM. Any standard HTML/CSS/JS/TS web app — **including unmodified, already-compiled Vite/React/Vue/Svelte/Canvas `dist/` builds** — can be zipped into a `.softn` archive and executed safely with zero code rewrites, while heavy libraries (like Three.js), UI extensions, and capabilities are hosted externally on the SoftN runtime and fetched strictly on demand.
 

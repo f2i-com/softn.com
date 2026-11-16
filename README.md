@@ -23,11 +23,11 @@ The project is actively developed. The examples, container microkernel, editors,
 | Capability                     | What it gives you                                                                                                                                                                              |
 | :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Web App Containers (v2)**    | Package 100% standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip an existing compiled `dist/` build — into a `.softn` container with zero custom template syntax required.     |
-| **Pay-as-you-go WASM engines** | Boots on `zipp-javascript-lite.wasm` (~760 KB Brotli) by default, upgrading on demand to full `Intl`/`Temporal` JS, zero-build TypeScript, or Python + `torch` only when an app uses them.     |
-| **Hosted zero-bundle imports** | Import `'preact'`, `'preact/hooks'`, `'htm'`, `'marked'`, Split-Realm WebGL2 `'three'`, `<softn-chart>`, and `<softn-datagrid>` from the host runtime at 0 KB of bundle weight.                |
+| **Pay-as-you-go WASM engines** | Boots on `zipp-javascript-lite.wasm` (~760 KB Brotli) by default. An app that needs `Intl`/`Temporal`, TypeScript or Python runs on the engine that has it; the JavaScript-and-Python one is the engine SoftN's own apps run on, so a deployment carries it once. |
+| **Hosted zero-bundle imports** | Import the container's own small `'preact'` (`h`, `render`, `Fragment`), `'preact/hooks'` (`useState`, `useEffect`, `useRef`, `useMemo`), `'htm'` and `'marked'` (`parse`), Split-Realm WebGL2 `'three'`, `<softn-chart>`, and `<softn-datagrid>` at 0 KB of bundle weight. |
 | **Visual `.ui` compatibility** | Classic `.ui` + `.logic` bundles and all 107 built-in components remain fully supported across SoftN Web, Single-App hosts, Studio AI, and the drag-and-drop visual Builder.                   |
 | **AI-assisted creation**       | Studio turns a brief into a v2 Web App Container or a v1 `.ui` app using your OpenAI, Anthropic, local (Ollama / LM Studio), or custom provider — verified headlessly inside the ZIPP sandbox. |
-| **Local-first XDB & security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage.|
+| **Local-first XDB & security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage. A v2 web container acts on the network grant today; the others are v1 apps'. |
 
 ## SoftN v2 Web App Containers
 
@@ -42,8 +42,8 @@ my-web-app.softn  (or zip any Vite/React/Vue dist/ folder directly)
 ├── index.html          # Standard HTML5 entry (auto-discovered even without manifest.json)
 ├── app.ts              # ES modules (.js, .mjs, .ts) or Python (.py) run in the ZIPP Worker
 ├── styles.css          # Scoped automatically inside the container's closed ShadowRoot
-├── manifest.json       # Optional: name, version, icon, "engine": 2
-├── permission.json     # Optional: capabilities requested from the host (net, storage, camera…)
+├── manifest.json       # Optional. With one, "engine": 2 is what makes the bundle a web container
+├── permission.json     # Optional: the hosts the app may reach ("net"), asked of the person first
 └── xdb/*.xdb           # Optional: seeded local collections accessed via `import { db } from 'softn:db'`
 ```
 
@@ -89,7 +89,11 @@ Try the standalone multi-container showcase locally (featuring an unmodified com
 npm run demo:container   # builds @softn/container + showcase bundles and serves http://127.0.0.1:4830
 ```
 
-Read the full architecture specification in [`docs/rfcs/softn-v2-container.md`](docs/rfcs/softn-v2-container.md).
+Which engine runs a bundle is one rule everywhere: a bundle with a `manifest.json` is a web container when the manifest says `"engine": 2`, and a SoftN v1 bundle otherwise; an archive with no manifest (a zipped `dist/`) is a web container when it has a page to open.
+
+On a page of your own, the container needs `script-src 'self' 'wasm-unsafe-eval'` (and `worker-src 'self'`) where a Content Security Policy is set: its engines are WebAssembly. An app's page is drawn inside the element's box and never over your page; a link out opens in a new tab, and the app's saved data is kept under the address its archive was loaded from.
+
+The design proposal the container was built from is [`docs/rfcs/softn-v2-container.md`](docs/rfcs/softn-v2-container.md). It is a plan, and parts of it are not built.
 
 ## See an app powered by ZIPP
 
@@ -251,7 +255,7 @@ Capabilities such as network, microphone and synchronization require support and
       |                                             | Batched DOM Mutations &
       v                                             | Split-Realm WebGL2 / Canvas Ops
   Web Worker ---> Tiered ZIPP WASM VM --------------+
-                  (lite / js / ts / py + torch)
+                  (lite / js / ts / python)
                         |
                         +---> Hosted `/runtime/vendor/*` (preact, htm, marked, three)
                         +---> Gated `softn:*` bridges (`softn:db`, `softn:net`, `softn:storage`)
