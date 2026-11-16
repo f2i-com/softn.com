@@ -14,6 +14,7 @@
  * the app runs.
  */
 
+import { declaresContainer, zeroConfigEntry } from '@softn/bundle-format/engine';
 import { logicImportPaths, pageLogicSources, resolveBundlePath } from '@softn/core';
 
 const ASSETS = /^assets\//i;
@@ -41,57 +42,24 @@ export function projectContainerMode(
   files: ReadonlyMap<string, { content: string | Uint8Array }>,
   brief?: { appFormat?: 'container' | 'ui'; logicLanguage?: string } | null
 ): 'web' | 'legacy-ui' {
-  if (files.size === 0) {
-    if (brief?.appFormat === 'container' || brief?.logicLanguage === 'typescript') return 'web';
-    return 'legacy-ui';
-  }
-
-  let manifestMain: string | null = null;
+  // The runtime's rule, and no other (@softn/bundle-format's engine.ts): a project is
+  // previewed, checked and explained to the agent as the engine that will run its export.
+  // Studio had a rule of its own here (any TypeScript file, any doctype), so an imported
+  // website or a SoftN HTML page was previewed in the container and exported for SoftN.
   const manifestFile = files.get('manifest.json');
   if (manifestFile && typeof manifestFile.content === 'string') {
     try {
-      const parsed = JSON.parse(manifestFile.content) as Record<string, unknown>;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        if (parsed.engine === 2 || parsed.container === true) return 'web';
-        if (typeof parsed.main === 'string') manifestMain = parsed.main;
-        else if (typeof parsed.entry === 'string') manifestMain = parsed.entry;
-      }
+      return declaresContainer(JSON.parse(manifestFile.content)) ? 'web' : 'legacy-ui';
     } catch {
-      // Fall through to entry inspection
+      // A manifest that does not parse says nothing: as a project that has none yet.
     }
   }
 
-  // TypeScript modules outside assets/ only run in the v2 container engine
-  for (const path of files.keys()) {
-    if (!/^builder\//i.test(path) && !ASSETS.test(path) && /\.(?:tsx?|mts)$/i.test(path)) {
-      return 'web';
-    }
-  }
-
-  const entryPath =
-    (manifestMain && files.has(manifestMain) ? manifestMain : null) ??
-    (files.has('index.html') ? 'index.html' : files.has('ui/main.ui') ? 'ui/main.ui' : null);
-
-  if (!entryPath || /\.ui$/i.test(entryPath)) return 'legacy-ui';
-
-  const entryFile = files.get(entryPath);
-  const entryText = entryFile && typeof entryFile.content === 'string' ? entryFile.content : '';
-  if (!entryText) return brief?.appFormat === 'container' ? 'web' : 'legacy-ui';
-
-  if (/<logic[\s>]|<import\s+[A-Z]\w*\s+from\s*=|<data>\s*<collection\b|^\s*#(?:if|each)\b/m.test(entryText)) {
-    return 'legacy-ui';
-  }
-  if (!/<!doctype\s+html/i.test(entryText) && !/<html[\s>]/i.test(entryText) && /<App[\s>]/.test(entryText)) {
-    return 'legacy-ui';
-  }
-  if (
-    /<!doctype\s+html/i.test(entryText) ||
-    /<html[\s>]/i.test(entryText) ||
-    /<script\b[^>]*\btype\s*=\s*["']?(?:module|text\/python)["']?/i.test(entryText)
-  ) {
-    return 'web';
-  }
-  return brief?.appFormat === 'container' ? 'web' : 'legacy-ui';
+  // No manifest yet: what the brief asked for, while the project is being written; with no
+  // brief (files brought in from elsewhere), a container when there is a page to open.
+  if (brief?.appFormat) return brief.appFormat === 'container' ? 'web' : 'legacy-ui';
+  if (files.size === 0) return brief?.logicLanguage === 'typescript' ? 'web' : 'legacy-ui';
+  return zeroConfigEntry(files.keys()) ? 'web' : 'legacy-ui';
 }
 
 /**

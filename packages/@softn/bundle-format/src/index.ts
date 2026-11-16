@@ -19,6 +19,7 @@
  * existing .softn file opening exactly as before.
  */
 export * from './zip';
+export * from './engine';
 export * from './inspect';
 export * from './handoff';
 export * from './capabilities';

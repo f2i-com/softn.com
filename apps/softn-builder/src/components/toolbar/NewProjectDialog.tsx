@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useState } from 'react';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import type { LogicLanguage } from '../../utils/logicFiles';
 import { dialogStyles } from './dialogStyles';
@@ -236,7 +237,9 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
           <fieldset style={styles.fieldset}>
             <legend style={styles.label}>App runtime</legend>
             <div style={styles.cards}>
-              {FORMATS.map((option) => (
+              {/* A host's Builder (FormLogic's) offers what the host runs: its build carries no
+                  container runtime, and its frame runs SoftN apps. */}
+              {FORMATS.filter((option) => option.key === 'ui' || !isHostedEditor()).map((option) => (
                 <label
                   key={option.key}
                   className="bl-choice"

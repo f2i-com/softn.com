@@ -17,6 +17,7 @@
  */
 
 import { debug } from './debug';
+import { declaresContainer } from '@softn/bundle-format/engine';
 import { MAX_ZIP_INPUT_BYTES, classifyAsset, pageLogicSources, resolveBundlePath } from '@softn/core';
 import { bytesToBase64 } from './base64';
 import { countedId } from './ids';
@@ -99,16 +100,6 @@ function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
   return Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string') : [];
 }
 
-function isLegacySoftNMarkupText(source: string): boolean {
-  return (
-    /<App[\s>]/i.test(source) ||
-    /<logic[\s>]/i.test(source) ||
-    /<import\s+[A-Z]\w*\s+from\s*=/i.test(source) ||
-    /<data>\s*<collection\b/i.test(source) ||
-    /(?:^|\n)\s*#(?:if|each)\s*\(/m.test(source)
-  );
-}
-
 /**
  * Load a .softn bundle from Uint8Array data
  */
@@ -152,18 +143,12 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   if (!mainEntry) throw new Error(`Invalid bundle: entry file "${manifest.main}" is not in the bundle`);
   let mainFileId: string | null = null;
 
-  const mainSourcePreview = decoder.decode(mainEntry.bytes);
-  const hasTypeScriptEntry = [...files.keys()].some(
-    (p) => !p.startsWith('assets/') && !p.startsWith('server/') && /\.(?:tsx?|mts)$/i.test(p)
-  );
-  const isWebContainer =
-    Boolean(synthesizedManifest) ||
-    rawManifest.engine === 2 ||
-    rawManifest.container === true ||
-    hasTypeScriptEntry ||
-    (/\.html?$/i.test(mainEntry.path) &&
-      !isLegacySoftNMarkupText(mainSourcePreview) &&
-      /<script\b[^>]*\btype\s*=\s*["']?(?:module|text\/python)["']?/i.test(mainSourcePreview));
+  // The runtime's rule, and no other (@softn/bundle-format's engine.ts): a bundle with no
+  // manifest of its own (one was made for it here), or whose manifest says `"engine": 2`.
+  // The Builder had a rule of its own (any TypeScript file, a module script in the page), so
+  // a SoftN bundle could be opened as a web container and saved with `"engine": 2` stamped
+  // on it, after which every runtime ran it on the other engine.
+  const isWebContainer = Boolean(synthesizedManifest) || declaresContainer(rawManifest);
 
   // Load UI files. The entry is loaded whether or not `files.ui` lists it:
   // the runtime reads it by `main`, so a bundle that names it only there is

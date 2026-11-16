@@ -198,7 +198,11 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
   for (const [path, bytes] of collected.entries) if (isPagePath(path) || /\.js$/i.test(path)) texts.set(path, decoder.decode(bytes));
   const linked = linkedScripts(texts);
   const listedLogic = listed('logic');
+  // The engine the project was previewed and checked on is the one its bundle says: a web
+  // container that came with no manifest of its own (a website brought in as files) gets
+  // `"engine": 2` written, which is what makes every runtime run it as one.
   const isV2Container = out.engine === 2 || out.container === true || projectContainerMode(files) === 'web';
+  if (isV2Container && out.engine !== 2 && out.container !== true) out.engine = 2;
   const logic = group(
     'logic',
     (p) =>

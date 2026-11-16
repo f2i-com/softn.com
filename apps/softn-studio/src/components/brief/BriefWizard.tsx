@@ -102,7 +102,10 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
       collections: [],
       authNeeded: false,
       style: 'clean',
-      appFormat: 'container',
+      // A web container by default, except in a host's Studio (FormLogic's): that build
+      // carries no container runtime and the host's frame runs SoftN apps, so a container
+      // made there could be neither previewed nor run.
+      appFormat: isHostedEditor() ? 'ui' : 'container',
       logicLanguage: 'javascript',
       referenceImages: [],
     }
@@ -641,7 +644,10 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
                       ext: '.ui / DSL',
                       desc: 'Declarative SoftN component markup (<App>, :bind, #each) for backwards-compatible bundles.',
                     },
-                  ].map((fmt) => {
+                  ]
+                    // A host's Studio offers what the host runs (see the default above).
+                    .filter((fmt) => fmt.id === 'ui' || !isHostedEditor())
+                    .map((fmt) => {
                     const currentFormat = brief.appFormat ?? (brief.logicLanguage === 'typescript' ? 'container' : 'ui');
                     const on = currentFormat === fmt.id;
                     return (

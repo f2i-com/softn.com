@@ -6,20 +6,10 @@
  * dynamic `import()` only when a tab actually mounts a v2 Web Container.
  */
 
+import { declaresContainer, zeroConfigEntry } from '@softn/bundle-format/engine';
 import type { BundleBinaryStore, BundleManifest } from './bundleProcessor';
 
 export const WEB_CONTAINER_SOURCE_SENTINEL = '<!--softn:v2-web-container-->';
-
-function hasLegacySoftNDirectives(source: string): boolean {
-  if (!source) return false;
-  if (/<logic[\s>]|<import\s+[A-Z]\w*\s+from\s*=|<data>\s*<collection\b|^\s*#(?:if|each)\b/m.test(source)) {
-    return true;
-  }
-  if (!/<!doctype\s+html/i.test(source) && !/<html[\s>]/i.test(source) && /<App[\s>]/.test(source)) {
-    return true;
-  }
-  return false;
-}
 
 function inferTitleFromHtml(html: string): string {
   const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
@@ -132,15 +122,9 @@ export function detectWebContainer(
   const hasAny = (p: string) => textFiles.has(p) || Boolean(hasBinary?.(p));
 
   if (!textFiles.has('manifest.json')) {
-    let htmlEntry: string | null = null;
-    if (textFiles.has('index.html')) htmlEntry = 'index.html';
-    else if (textFiles.has('app.html')) htmlEntry = 'app.html';
-    else {
-      const rootHtml = [...textFiles.keys()]
-        .filter((k) => !k.includes('/') && /\.html?$/i.test(k))
-        .sort();
-      htmlEntry = rootHtml[0] ?? null;
-    }
+    // No manifest: a zipped folder of a web app, opened at its page (the one rule for which
+    // page is @softn/bundle-format's zeroConfigEntry).
+    const htmlEntry = zeroConfigEntry(textFiles.keys());
     if (!htmlEntry) {
       return { isWebContainer: false };
     }
@@ -176,25 +160,9 @@ export function detectWebContainer(
     return { isWebContainer: false };
   }
 
-  if (raw.engine === 2 || raw.container === true) {
-    return { isWebContainer: true };
-  }
-
-  // A manifest that declares v1 `files.ui` or `files.logic` without `engine: 2` / `container: true`
-  // is a v1 SoftN HTML/UI bundle (e.g. `SoftNRenderer` light-DOM pages), not a v2 Web Container.
-  const filesBlock = raw.files && typeof raw.files === 'object' && !Array.isArray(raw.files)
-    ? (raw.files as Record<string, unknown>)
-    : null;
-  if (filesBlock && (Array.isArray(filesBlock.ui) || Array.isArray(filesBlock.logic))) {
-    return { isWebContainer: false };
-  }
-
-  const entryHtml = textFiles.get(main) ?? '';
-  if (hasLegacySoftNDirectives(entryHtml)) {
-    return { isWebContainer: false };
-  }
-  if (/<script\b[^>]*\btype\s*=\s*["']?(?:module|text\/python)["']?/i.test(entryHtml)) {
-    return { isWebContainer: true };
-  }
-  return { isWebContainer: false };
+  // A bundle with a manifest says which engine runs it (@softn/bundle-format's engine.ts):
+  // `"engine": 2`, or it is a SoftN bundle. Not a guess from its page: a SoftN HTML page has
+  // a `<script type="module">` too, and a bundle of one with no `files.ui` listed was run in
+  // the container, where `{count}` is text and `<Button>` is an unknown element.
+  return { isWebContainer: declaresContainer(raw) };
 }

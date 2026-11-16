@@ -142,7 +142,9 @@ final class Bundle
             }
             // Normalize a single top-level wrapper folder (e.g. `dist/index.html`) when root lacks manifest/entry.
             if (!isset($files['manifest.json']) && !isset($files['index.html']) && !isset($files['app.html']) && $files !== []) {
-                $fileNames = array_keys($files);
+                // As strings: PHP makes an all-digit name ("2024") an integer key, and this
+                // file is strict about types, so such a bundle was answered with a 500.
+                $fileNames = array_map('strval', array_keys($files));
                 $slash = strpos($fileNames[0], '/');
                 if ($slash !== false && $slash > 0) {
                     $prefix = substr($fileNames[0], 0, $slash + 1);
@@ -156,7 +158,7 @@ final class Bundle
                     if ($allUnderPrefix && (isset($files[$prefix . 'manifest.json']) || isset($files[$prefix . 'index.html']) || isset($files[$prefix . 'app.html']))) {
                         $unwrapped = [];
                         foreach ($files as $fn => $entry) {
-                            $unwrapped[substr($fn, strlen($prefix))] = $entry;
+                            $unwrapped[substr((string) $fn, strlen($prefix))] = $entry;
                         }
                         $files = $unwrapped;
                     }
@@ -167,12 +169,15 @@ final class Bundle
                 if (isset($files['index.html'])) $inferredHtmlEntry = 'index.html';
                 elseif (isset($files['app.html'])) $inferredHtmlEntry = 'app.html';
                 else {
-                    foreach (array_keys($files) as $fn) {
-                        if (!str_contains($fn, '/') && preg_match('/\.html?$/i', $fn) === 1) {
-                            $inferredHtmlEntry = $fn;
-                            break;
-                        }
+                    // The first page at the root by name, as the runtime and the inspector
+                    // choose it (@softn/bundle-format's zeroConfigEntry): by the archive's
+                    // own order, "b.html, a.html" was listed as page B and ran page A.
+                    $rootPages = [];
+                    foreach (array_map('strval', array_keys($files)) as $fn) {
+                        if (!str_contains($fn, '/') && preg_match('/\.html?$/i', $fn) === 1) $rootPages[] = $fn;
                     }
+                    sort($rootPages, SORT_STRING);
+                    if ($rootPages !== []) $inferredHtmlEntry = $rootPages[0];
                 }
                 if ($inferredHtmlEntry === null) throw new ApiError(400, 'The bundle has no manifest.json.');
             }

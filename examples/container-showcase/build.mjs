@@ -66,6 +66,8 @@ writeBundle('preact-fieldnotes.softn', {
   'manifest.json': JSON.stringify({
     name: 'Fieldnotes (TypeScript + Hosted Preact)',
     version: '2.0.0',
+    // A bundle with a manifest says which engine runs it; without this it is a SoftN bundle.
+    engine: 2,
     main: 'index.html',
     theme: 'dark',
   }),
@@ -133,6 +135,8 @@ writeBundle('three-orbit.softn', {
   'manifest.json': JSON.stringify({
     name: 'Hosted Three.js Split-Realm',
     version: '2.0.0',
+    // A bundle with a manifest says which engine runs it; without this it is a SoftN bundle.
+    engine: 2,
     main: 'index.html',
     theme: 'dark',
   }),

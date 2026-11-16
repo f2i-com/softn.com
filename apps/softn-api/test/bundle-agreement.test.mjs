@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { zeroConfigEntry } from '@softn/bundle-format/engine';
 import { openBundleArchive } from '@softn/bundle-format/zip';
 import { makeBundle, repo, runPhp, skip, startServer } from './helpers/harness.mjs';
 import { concat, craftEnd, craftRecords, craftZip, craftZip64End, crc32, deflate, enc, unicodePathExtra } from './helpers/craft.mjs';
@@ -362,6 +363,28 @@ test('publishing and a new version answer a refused archive with the reason', sk
   } finally {
     s.stop();
   }
+});
+
+test('an archive with no manifest opens at the page the runtime opens, and a name of digits is a name', skip, () => {
+  const page = (title) => enc(`<!doctype html><html><head><title>${title}</title></head><body>${title}</body></html>`);
+  // "b.html" is first in the archive and "a.html" first by name: the runtime opens the
+  // first by name, and the directory listed the app by the other page's title.
+  const twoPages = craftZip([{ name: 'b.html', data: page('Page B') }, { name: 'a.html', data: page('Page A') }]);
+  // PHP makes a key of digits an integer, and the directory's reader is strict about
+  // types: this archive was answered with a 500.
+  const digits = craftZip([{ name: '2024', data: enc('a year') }, { name: 'page.html', data: page('Year book') }]);
+  // The same in a wrapping folder, as a zipped dist/ is.
+  const wrapped = craftZip([{ name: 'dist/2024', data: enc('a year') }, { name: 'dist/index.html', data: page('Wrapped') }]);
+  const names = (bytes) => openBundleArchive(bytes).names();
+  assert.equal(zeroConfigEntry(names(twoPages)), 'a.html');
+  assert.equal(zeroConfigEntry(names(digits)), 'page.html');
+  const verdicts = directoryVerdicts([twoPages, digits, wrapped]);
+  assert.deepEqual(verdicts.map((v) => (v.ok ? v.name : v.error)), ['Page A', 'Year book', 'Wrapped']);
+  // No page at all is not a bundle, with or without a name of digits in it.
+  const [none] = directoryVerdicts([craftZip([{ name: '2024', data: enc('a year') }, { name: 'notes.txt', data: enc('none') }])]);
+  assert.equal(none.ok, false);
+  assert.equal(none.status, 400);
+  assert.match(none.error, /no manifest\.json/);
 });
 
 const demoDir = path.join(repo, 'apps/softn-web/public/demos');
