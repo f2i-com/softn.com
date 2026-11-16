@@ -103,6 +103,7 @@ export function gatherRecords(now = new Date().toISOString()): Map<string, XdbRe
  * written nowhere. A canvas that has not said is taken for the open file's.
  */
 export function flushCanvasToActiveFile(): void {
+  if (useProjectStore.getState().projectFormat === 'web') return;
   const filesState = useFilesStore.getState();
   const canvasState = useCanvasStore.getState();
   const pageId = canvasState.pageId ?? filesState.activeFileId;
@@ -140,6 +141,7 @@ function resolveMainPath(): string {
     );
   }
   if (uiPaths.includes('ui/main.ui')) return 'ui/main.ui';
+  if (uiPaths.includes('index.html')) return 'index.html';
   if (uiPaths.length === 1) return uiPaths[0];
   throw new Error('The project has no ui/main.ui to be its entry file. Create one, or name one main.ui.');
 }
@@ -176,7 +178,8 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
   // project opened from a bundle always takes the multi-file path, whatever
   // its count, because that is the path that keeps original source and the
   // declared entry.
-  const hasMultipleFiles = filesState.uiFiles.size + filesState.logicFiles.size > 1 || retained.manifest !== null
+  const hasMultipleFiles = projectState.projectFormat === 'web'
+    || filesState.uiFiles.size + filesState.logicFiles.size > 1 || retained.manifest !== null
     || [...filesState.uiFiles.values()].some((file) => file.originalSource !== undefined);
 
   const common = {
@@ -189,6 +192,7 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
     assets: currentAssets(filesState, { assets: projectState.assets, source: retained }),
     permissions: projectState.permissions,
     pythonPackages: projectState.pythonPackages,
+    projectFormat: projectState.projectFormat,
     icon: icon?.bytes,
     iconPath,
     source,

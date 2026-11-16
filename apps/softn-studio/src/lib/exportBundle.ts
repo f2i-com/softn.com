@@ -1,7 +1,7 @@
 import { zipSync } from 'fflate';
 import type { ValidationError, VFSFile } from '../types/studio';
 import { bundleNameProblem, isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
-import { isPagePath, linkedScripts } from './sourceKinds';
+import { isPagePath, linkedScripts, projectContainerMode } from './sourceKinds';
 import { MAIN_PAGE_PATH } from './studioProject';
 
 /**
@@ -198,12 +198,15 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
   for (const [path, bytes] of collected.entries) if (isPagePath(path) || /\.js$/i.test(path)) texts.set(path, decoder.decode(bytes));
   const linked = linkedScripts(texts);
   const listedLogic = listed('logic');
+  const isV2Container = out.engine === 2 || out.container === true || projectContainerMode(files) === 'web';
   const logic = group(
     'logic',
     (p) =>
       !p.startsWith('server/') &&
-      (linked.has(p) ||
-        (!listedAssets.has(p) && (/\.(logic|py)$/i.test(p) || (/\.js$/i.test(p) && listedLogic.has(p)))))
+      (isV2Container
+        ? !listedAssets.has(p) && !/^assets\//i.test(p) && /\.(?:logic|m?js|tsx?|mts|jsx|py)$/i.test(p)
+        : linked.has(p) ||
+          (!listedAssets.has(p) && (/\.(logic|py)$/i.test(p) || (/\.js$/i.test(p) && listedLogic.has(p)))))
   );
   // Server logic stays `.logic`: the PHP and Rust hosts run it as JavaScript
   // only, so a `server/*.py` is not server logic any host can run (the

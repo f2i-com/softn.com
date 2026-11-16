@@ -140,10 +140,47 @@ final class Bundle
                 // By its name, before a byte of anything is inflated.
                 if ($secrets !== null && ($kind = Secrets::named($name)) !== null) throw new SecretFound($name, $kind);
             }
-            // The two JSON files are decoded whole, so they are refused by
-            // their declared size before a byte of anything is inflated.
-            if (!isset($files['manifest.json'])) throw new ApiError(400, 'The bundle has no manifest.json.');
+            // Normalize a single top-level wrapper folder (e.g. `dist/index.html`) when root lacks manifest/entry.
+            if (!isset($files['manifest.json']) && !isset($files['index.html']) && !isset($files['app.html']) && $files !== []) {
+                $fileNames = array_keys($files);
+                $slash = strpos($fileNames[0], '/');
+                if ($slash !== false && $slash > 0) {
+                    $prefix = substr($fileNames[0], 0, $slash + 1);
+                    $allUnderPrefix = true;
+                    foreach ($fileNames as $fn) {
+                        if (!str_starts_with($fn, $prefix) || strlen($fn) <= strlen($prefix)) {
+                            $allUnderPrefix = false;
+                            break;
+                        }
+                    }
+                    if ($allUnderPrefix && (isset($files[$prefix . 'manifest.json']) || isset($files[$prefix . 'index.html']) || isset($files[$prefix . 'app.html']))) {
+                        $unwrapped = [];
+                        foreach ($files as $fn => $entry) {
+                            $unwrapped[substr($fn, strlen($prefix))] = $entry;
+                        }
+                        $files = $unwrapped;
+                    }
+                }
+            }
+            $inferredHtmlEntry = null;
+            if (!isset($files['manifest.json'])) {
+                if (isset($files['index.html'])) $inferredHtmlEntry = 'index.html';
+                elseif (isset($files['app.html'])) $inferredHtmlEntry = 'app.html';
+                else {
+                    foreach (array_keys($files) as $fn) {
+                        if (!str_contains($fn, '/') && preg_match('/\.html?$/i', $fn) === 1) {
+                            $inferredHtmlEntry = $fn;
+                            break;
+                        }
+                    }
+                }
+                if ($inferredHtmlEntry === null) throw new ApiError(400, 'The bundle has no manifest.json.');
+            }
+            // The JSON files (and any zero-config HTML entry) are decoded whole, so they are capped before reading.
             $caps = ['manifest.json' => self::MAX_MANIFEST_BYTES, 'permission.json' => self::MAX_PERMISSION_BYTES];
+            if ($inferredHtmlEntry !== null && $files[$inferredHtmlEntry]['size'] <= self::MAX_MANIFEST_BYTES) {
+                $caps[$inferredHtmlEntry] = self::MAX_MANIFEST_BYTES;
+            }
             foreach ($caps as $file => $max) {
                 if (isset($files[$file]) && $files[$file]['size'] > $max) throw new ApiError(400, "The bundle's $file is larger than " . intdiv($max, 1024) . ' KB.');
             }
@@ -152,8 +189,24 @@ final class Bundle
                 $bytes = self::readEntry($handle, $entry, isset($caps[$name]), $secrets);
                 if ($bytes !== null) $kept[$name] = $bytes;
             }
-            $manifest = json_decode(self::jsonText($kept['manifest.json']), true, 32);
-            if (!is_array($manifest)) throw new ApiError(400, 'The bundle\'s manifest.json is not valid JSON.');
+            if ($inferredHtmlEntry !== null) {
+                $htmlText = $kept[$inferredHtmlEntry] ?? '';
+                $inferredTitle = 'Web App';
+                if ($htmlText !== '' && preg_match('/<title[^>]*>([\s\S]*?)<\/title>/i', $htmlText, $tm) === 1) {
+                    $cleaned = trim((string) preg_replace('/\s+/', ' ', strip_tags($tm[1])));
+                    if ($cleaned !== '') $inferredTitle = $cleaned;
+                }
+                $manifest = [
+                    'name' => $inferredTitle,
+                    'version' => '1.0.0',
+                    'description' => '',
+                    'main' => $inferredHtmlEntry,
+                    'config' => ['execution' => 'worker'],
+                ];
+            } else {
+                $manifest = json_decode(self::jsonText($kept['manifest.json']), true, 32);
+                if (!is_array($manifest)) throw new ApiError(400, 'The bundle\'s manifest.json is not valid JSON.');
+            }
             $name = Text::clean(is_string($manifest['name'] ?? null) ? $manifest['name'] : '', 64);
             if ($name === '') throw new ApiError(400, 'The manifest has no name.');
             $version = Text::clean(is_string($manifest['version'] ?? null) ? $manifest['version'] : '', 32);

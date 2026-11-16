@@ -213,7 +213,8 @@ const LEFT_PANELS = new Set(['pages', 'history', 'ai', 'settings', 'files']);
 const DEVICE_PRESETS = new Set(['desktop', 'tablet', 'mobile']);
 const TARGETS = new Set(['web', 'desktop', 'dual']);
 const STYLES = new Set(['clean', 'bold', 'minimal', 'playful', 'dark']);
-const LOGIC_LANGUAGES = new Set(['javascript', 'python']);
+const LOGIC_LANGUAGES = new Set(['javascript', 'typescript', 'python']);
+const APP_FORMATS = new Set(['container', 'ui']);
 const BLUEPRINT_FIELD_TYPES = new Set(['string', 'number', 'boolean', 'date', 'array', 'object']);
 const RELATIONSHIP_TYPES = new Set(['one-to-one', 'one-to-many', 'many-to-many']);
 const RECENT_LIMIT = 12;
@@ -248,6 +249,7 @@ function isPersistedBrief(value: unknown): boolean {
     // Optional: a brief saved before the language choice has none, and
     // loads as JavaScript rather than failing the whole project record.
     (value.logicLanguage === undefined || LOGIC_LANGUAGES.has(String(value.logicLanguage))) &&
+    (value.appFormat === undefined || APP_FORMATS.has(String(value.appFormat))) &&
     // Optional too, and for the same reason: a brief from before torch.
     (value.pythonPackages === undefined || isStringArray(value.pythonPackages))
   );

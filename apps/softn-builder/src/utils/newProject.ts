@@ -14,9 +14,10 @@ import { useFilesStore } from '../stores/filesStore';
 import { useHistoryStore } from '../stores/historyStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSchemaStore } from '../stores/schemaStore';
+import type { LogicFileState, UIFileState } from '../types/builder';
 import { flushCanvasToActiveFile } from './buildProjectBundle';
 import { expressionText } from './starterProps';
-import type { NewProjectConfig, StarterTemplate } from '../components/toolbar/NewProjectDialog';
+import type { NewProjectConfig, NewProjectLanguage, StarterTemplate } from '../components/toolbar/NewProjectDialog';
 
 /** Put a starter template's elements under the canvas root. */
 export function applyStarterTemplate(template: StarterTemplate): void {
@@ -44,12 +45,6 @@ export function applyStarterTemplate(template: StarterTemplate): void {
     canvas.updateElementProps(page, { direction: 'vertical', gap: 'md', padding: 'lg' });
     const heading = canvas.addElement('Heading', page);
     canvas.updateElementProps(heading, { level: 1, children: 'Dashboard' });
-    // Each of the three is given what it shows, under the names the component
-    // reads. The cards and the list were told their fields as `titleField`,
-    // `descriptionField` and `subtitleField`, which neither reads, and none of
-    // the three had anything to show: the starter ran as a heading over "No
-    // items to display", twice. The rows are examples, written where the
-    // person will find them, to be replaced with a name from the logic.
     const stats = canvas.addElement('SmartStats', page);
     canvas.updateElementProps(stats, { stats: 'Open: 12, Done: 30, Overdue: 2', columns: 3 });
     const cards = canvas.addElement('SmartCards', page);
@@ -85,13 +80,286 @@ function rows(name: string, list: readonly Record<string, string>[]): { props: R
   return text === null ? { props: {}, expressionProps: [] } : { props: { [name]: text }, expressionProps: [name] };
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function buildWebContainerStarter(
+  name: string,
+  description: string,
+  template: StarterTemplate,
+  language: NewProjectLanguage
+): { html: string; css: string; scriptPath: string; scriptContent: string } {
+  const safeName = escapeHtml(name || 'Untitled App');
+  const safeDesc = escapeHtml(description || 'Running inside a sandboxed SoftN v2 Web Container.');
+  const scriptPath = language === 'python' ? 'main.py' : language === 'typescript' ? 'app.ts' : 'app.js';
+  const scriptTag =
+    language === 'python'
+      ? `<script type="text/python" src="./${scriptPath}"></script>`
+      : `<script type="module" src="./${scriptPath}"></script>`;
+
+  const bodyInner =
+    template === 'dashboard'
+      ? `  <main class="shell">
+    <header class="hero">
+      <div>
+        <h1>${safeName}</h1>
+        <p class="muted">${safeDesc}</p>
+      </div>
+      <button id="add-task-btn" class="btn">+ Add Item</button>
+    </header>
+    <section class="stats" id="stats-grid">
+      <div class="card"><span class="label">Active</span><strong id="stat-active">3</strong></div>
+      <div class="card"><span class="label">Completed</span><strong id="stat-done">1</strong></div>
+    </section>
+    <section class="card">
+      <h2>Tasks</h2>
+      <ul id="task-list" class="list"></ul>
+    </section>
+  </main>`
+      : template === 'landing'
+        ? `  <main class="shell centered">
+    <h1>${safeName}</h1>
+    <p class="muted">${safeDesc}</p>
+    <button id="cta-btn" class="btn">Get started (<span id="clicks">0</span>)</button>
+  </main>`
+        : `  <main class="shell">
+    <h1>${safeName}</h1>
+    <p class="muted">${safeDesc}</p>
+    <div id="app"></div>
+  </main>`;
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${safeName}</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+${bodyInner}
+  ${scriptTag}
+</body>
+</html>
+`;
+
+  const css = `:root {
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  color: var(--softn-fg, #f8fafc);
+  background: var(--softn-bg, #0f172a);
+}
+
+body {
+  margin: 0;
+  padding: 24px;
+}
+
+.shell {
+  max-width: 760px;
+  margin: 0 auto;
+  display: grid;
+  gap: 16px;
+}
+
+.shell.centered {
+  text-align: center;
+  justify-items: center;
+  padding-top: 48px;
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.muted {
+  opacity: 0.72;
+  margin: 4px 0 0;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.card .label {
+  display: block;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.card strong {
+  font-size: 24px;
+}
+
+.btn {
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: none;
+  background: #6366f1;
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.list li {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  display: flex;
+  justify-content: space-between;
+}
+`;
+
+  let scriptContent: string;
+  if (language === 'python') {
+    scriptContent = `# ${scriptPath} — runs inside SoftN's isolated ZIPP Python Worker
+from js import document
+
+app = document.getElementById("app")
+if app:
+    app.textContent = "Python Web Container ready."
+`;
+  } else if (template === 'dashboard') {
+    const typeDecl = language === 'typescript' ? `\ninterface TaskItem {\n  title: string;\n  done: boolean;\n}\n` : '';
+    const listType = language === 'typescript' ? ': TaskItem[]' : '';
+    scriptContent = `// ${scriptPath} — runs inside SoftN's isolated ZIPP Worker${typeDecl}
+const tasks${listType} = [
+  { title: 'Write container spec', done: true },
+  { title: 'Preview in SoftN Builder', done: false },
+];
+
+function render() {
+  const list = document.getElementById('task-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const item of tasks) {
+    const li = document.createElement('li');
+    li.textContent = \`\${item.done ? '✓' : '○'} \${item.title}\`;
+    list.appendChild(li);
+  }
+  const active = document.getElementById('stat-active');
+  const done = document.getElementById('stat-done');
+  if (active) active.textContent = String(tasks.filter((t) => !t.done).length);
+  if (done) done.textContent = String(tasks.filter((t) => t.done).length);
+}
+
+document.getElementById('add-task-btn')?.addEventListener('click', () => {
+  tasks.push({ title: \`Task #\${tasks.length + 1}\`, done: false });
+  render();
+});
+
+render();
+`;
+  } else if (template === 'landing') {
+    const countType = language === 'typescript' ? ': number' : '';
+    scriptContent = `// ${scriptPath} — runs inside SoftN's isolated ZIPP Worker
+let clicks${countType} = 0;
+
+document.getElementById('cta-btn')?.addEventListener('click', () => {
+  clicks += 1;
+  const badge = document.getElementById('clicks');
+  if (badge) badge.textContent = String(clicks);
+});
+`;
+  } else {
+    const msgType = language === 'typescript' ? ': string' : '';
+    scriptContent = `// ${scriptPath} — runs inside SoftN's isolated ZIPP Worker
+const root = document.getElementById('app');
+const message${msgType} = 'Web Container ready.';
+if (root) {
+  root.textContent = message;
+}
+`;
+  }
+
+  return { html, css, scriptPath, scriptContent };
+}
+
 /** Replace the workspace with a new app made from the dialog's choices. */
 export function startNewProject(config: NewProjectConfig): void {
+  const isWeb = config.format === 'web' || config.language === 'typescript';
+  const baseLanguage = config.language === 'python' ? 'python' : 'javascript';
+
   useCanvasStore.getState().reset();
-  useProjectStore.getState().reset(config.language);
+  useProjectStore.getState().reset(baseLanguage);
   useHistoryStore.getState().clear();
   useSchemaStore.getState().reset();
-  useFilesStore.getState().reset(config.language);
+
+  if (isWeb) {
+    const project = useProjectStore.getState();
+    project.setProjectFormat('web');
+    project.setName(config.name);
+    project.setDescription(config.description);
+    project.setThemeMode(config.theme);
+    project.setVersion('1.0.0');
+    project.setPythonPackages(config.pythonPackages);
+
+    const starter = buildWebContainerStarter(config.name, config.description, config.template, config.language);
+    const htmlId = 'web_index_html';
+    const rootId = `root_${htmlId}`;
+    const uiFiles = new Map<string, UIFileState>([
+      [
+        htmlId,
+        {
+          id: htmlId,
+          path: 'index.html',
+          elements: new Map([
+            [
+              rootId,
+              {
+                id: rootId,
+                componentType: 'App',
+                props: { theme: config.theme },
+                children: [],
+                parentId: null,
+              },
+            ],
+          ]),
+          rootId,
+          imports: [],
+          originalSource: starter.html,
+        },
+      ],
+    ]);
+    const logicFiles = new Map<string, LogicFileState>([
+      ['web_style_css', { id: 'web_style_css', path: 'style.css', content: starter.css }],
+      ['web_entry_script', { id: 'web_entry_script', path: starter.scriptPath, content: starter.scriptContent }],
+    ]);
+
+    useFilesStore.getState().loadFromBundle(uiFiles, logicFiles, new Map(), htmlId);
+    useProjectStore.getState().setSource({
+      ...useProjectStore.getState().source,
+      mainFileId: htmlId,
+    });
+    useProjectStore.getState().markDirty();
+    return;
+  }
+
+  useFilesStore.getState().reset(baseLanguage);
 
   const project = useProjectStore.getState();
   project.setName(config.name);

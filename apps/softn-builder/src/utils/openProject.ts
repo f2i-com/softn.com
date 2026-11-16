@@ -151,6 +151,7 @@ export interface ProjectSnapshot {
     themeMode: 'light' | 'dark' | 'system';
     permissions: SerializedProject['permissions'];
     pythonPackages: string[];
+    projectFormat?: 'ui' | 'web';
     logicSource: string;
     collections: SerializedProject['collections'];
     assets: AssetFile[];
@@ -257,6 +258,7 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
       // offers become the setting, and export writes the setting: a
       // misspelt declaration is dropped on the next save rather than kept.
       pythonPackages: readPythonPackages(bundle.rawManifest).packages,
+      projectFormat: bundle.projectFormat ?? 'ui',
       // The default logic is not this project's; a bundle without a main
       // logic file has none.
       logicSource: mainLogicFile?.content ?? '',
@@ -460,6 +462,7 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       // A session written before the setting existed has it only in the
       // manifest it retained, if it came from a bundle.
       pythonPackages: Array.isArray(project.pythonPackages) ? project.pythonPackages : readPythonPackages(source.manifest).packages,
+      projectFormat: project.projectFormat === 'web' || source.manifest?.engine === 2 ? 'web' : 'ui',
       logicSource: project.logicSource || '',
       collections: project.collections || [],
       // A session's assets are its files' (`files.assetFiles`, below), and the
@@ -524,6 +527,7 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
       themeMode: snapshot.project.themeMode,
       permissions: snapshot.project.permissions,
       pythonPackages: snapshot.project.pythonPackages,
+      projectFormat: snapshot.project.projectFormat ?? 'ui',
       logicSource: snapshot.project.logicSource,
       collections: snapshot.project.collections,
     });
@@ -536,7 +540,9 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
       // The file store must hold the same tree the canvas is given, or the
       // first flush reads the theme it put there as an edit and rewrites the
       // file's source. This is the copy on open, not an edit.
-      useFilesStore.getState().syncUIFileElements(snapshot.files.mainFileId, snapshot.canvas.elements, snapshot.canvas.rootId);
+      if (snapshot.project.projectFormat !== 'web') {
+        useFilesStore.getState().syncUIFileElements(snapshot.files.mainFileId, snapshot.canvas.elements, snapshot.canvas.rootId);
+      }
     } else {
       useFilesStore.setState({
         nodes: snapshot.files.nodes,

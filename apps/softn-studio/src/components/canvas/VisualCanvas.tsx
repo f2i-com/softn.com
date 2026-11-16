@@ -16,7 +16,8 @@ import { confirmLeaveDraft, confirmShowing } from '../../lib/handEdit';
 import { askAgentToFix } from '../../lib/agentOrchestrator';
 import { listenToConsoleErrors, notePreviewFault, readAppFault, readAppLog, type AppFault } from '../../lib/previewFaults';
 import { MediaView, mediaKindFor } from './MediaView';
-import { isLogicPath, isPagePath } from '../../lib/sourceKinds';
+import { isLogicPath, isPagePath, projectContainerMode } from '../../lib/sourceKinds';
+import { isPrivatePath } from '../../lib/paths';
 import {
   buildPreviewXDBState,
   composePreviewProject,
@@ -61,6 +62,108 @@ export function useSettledFiles<T>(value: T, delay: number, maxWait = 2_000): T 
  * every keystroke, or thirty times a second in a game's loop, says its one line once; an app
  * with a new complaint each time stops being copied out here.
  */
+/** Live preview host for SoftN v2 Web App Containers (`@softn/container`). */
+const StudioWebContainerPreview: React.FC<{
+  files: Map<string, VFSFile>;
+  activePage: string | null;
+  theme: 'light' | 'dark' | 'auto';
+  declaredPermissions: unknown;
+  grantedCapabilities: readonly string[];
+  onConsole: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
+  onError: (err: Error) => void;
+}> = ({ files, activePage, theme, declaredPermissions, grantedCapabilities, onConsole, onError }) => {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<import('@softn/container').SoftNContainerHandle | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
+
+  const vfsSource = useMemo(() => {
+    const out: Record<string, string | Uint8Array> = {};
+    for (const [p, f] of files) {
+      if (!isPrivatePath(p)) out[p] = f.content;
+    }
+    return out;
+  }, [files]);
+
+  const onConsoleRef = useRef(onConsole);
+  onConsoleRef.current = onConsole;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const grantedRef = useRef(grantedCapabilities);
+  grantedRef.current = grantedCapabilities;
+  const activePageRef = useRef(activePage);
+  activePageRef.current = activePage;
+
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return;
+    let cancelled = false;
+    setBootError(null);
+    const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+
+    void (async () => {
+      try {
+        const { mountSoftNContainer } = await import('@softn/container');
+        if (cancelled) return;
+        const mounted = await mountSoftNContainer(el, {
+          source: vfsSource,
+          runtimeUrl: `${base}assets/container-runtime/`,
+          theme,
+          persistStorage: false,
+          permissionMode: 'deny',
+          permissionsOverride: (declaredPermissions ?? undefined) as import('@softn/container').ContainerPermissions | undefined,
+          onConsole: (level, text) => onConsoleRef.current(level, text),
+          onError: (err) => onErrorRef.current(err),
+        });
+        if (cancelled) {
+          mounted.dispose();
+          return;
+        }
+        handleRef.current = mounted;
+        if (grantedRef.current.length > 0) {
+          mounted.setGrantedCapabilities(grantedRef.current as import('@softn/bundle-format/capabilities').Capability[]);
+        }
+        const initialPage = activePageRef.current;
+        if (initialPage && initialPage !== mounted.manifest.main && /\.html?$/i.test(initialPage)) {
+          await mounted.navigate(initialPage).catch(() => undefined);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setBootError(msg);
+        onErrorRef.current(err instanceof Error ? err : new Error(msg));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      handleRef.current?.dispose();
+      handleRef.current = null;
+    };
+  }, [vfsSource, theme, declaredPermissions]);
+
+  useEffect(() => {
+    handleRef.current?.setGrantedCapabilities(grantedCapabilities as import('@softn/bundle-format/capabilities').Capability[]);
+  }, [grantedCapabilities]);
+
+  useEffect(() => {
+    const h = handleRef.current;
+    if (h && activePage && activePage !== h.manifest.main && /\.html?$/i.test(activePage)) {
+      void h.navigate(activePage).catch(() => undefined);
+    }
+  }, [activePage]);
+
+  if (bootError) {
+    return (
+      <div className="st-state-panel" role="alert" style={{ margin: 16 }}>
+        <h3 className="st-state-title">Container preview error</h3>
+        <p className="st-state-message">{bootError}</p>
+      </div>
+    );
+  }
+
+  return <div ref={hostRef} style={{ width: '100%', height: '100%', flex: '1 1 auto', minHeight: 0 }} />;
+};
+
 const APP_LOG_LINES = 12;
 /** And how many different lines of its own (console.log, console.warn) a project may put there. */
 const APP_PRINT_LINES = 40;
@@ -797,6 +900,94 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     }
 
     const codeView = activeVFSFile ? <CodeFile path={activeVFSFile} source={previewFileContent} /> : null;
+    const isV2Container = projectContainerMode(files) === 'web';
+
+    if (isV2Container && isSoftNUIFile) {
+      const requested = declaration.requested;
+      const capabilityNote =
+        requested.length > 0 ? (
+          <div role="note" style={styles.capabilityNote} data-preview-capabilities={previewAllowed ? 'allowed' : 'withheld'}>
+            {previewAllowed ? (
+              <>
+                Allowed in this preview: {requested.join(', ')}, until the project or its permission.json changes.{' '}
+                <button type="button" className="st-btn st-btn-sm" onClick={() => setAllowedKey(null)}>
+                  Withhold again
+                </button>
+              </>
+            ) : (
+              <>
+                This project asks for {requested.join(', ')}. {requested.length === 1 ? 'It is' : 'They are'} withheld here until you allow{' '}
+                {requested.length === 1 ? 'it' : 'them'}.{' '}
+                <button type="button" className="st-btn st-btn-sm st-btn-primary" onClick={() => setAllowedKey(declaration.key)}>
+                  Allow in preview
+                </button>
+              </>
+            )}
+          </div>
+        ) : null;
+      const stopNotice = stoppedBecause ? (
+        <div role="alert" className="st-preview-stop-notice" data-preview-stopped="true">
+          <p>
+            <strong>Container error.</strong> {stoppedBecause}
+          </p>
+          <div className="st-preview-stop-actions">
+            {aiConnected && (
+              <button
+                type="button"
+                className="st-btn st-btn-sm st-btn-primary"
+                disabled={agentWriting}
+                onClick={() => {
+                  if (!askAgentToFix(stoppedBecause)) return;
+                  const ws = useWorkspaceStore.getState();
+                  if (ws.leftPanel !== 'ai' || !ws.leftPanelExpanded) ws.setLeftPanel('ai');
+                  onShowChat?.();
+                }}
+              >
+                Ask the AI to fix it
+              </button>
+            )}
+            <button
+              type="button"
+              className="st-btn st-btn-sm"
+              onClick={() => {
+                setStop(null);
+                setRefreshKey((k) => k + 1);
+              }}
+            >
+              Restart the preview
+            </button>
+          </div>
+        </div>
+      ) : null;
+      const declaredMode = declaredThemeMode(manifest);
+      const containerTheme = declaredMode === 'dark' || declaredMode === 'light' ? declaredMode : 'auto';
+      const rendererStyle = showCode ? { ...styles.rendererWrap, display: 'none' } : styles.rendererWrap;
+      return (
+        <>
+          {showCode && codeView}
+          <div style={rendererStyle}>
+            {stopNotice}
+            {capabilityNote}
+            <StudioWebContainerPreview
+              key={`${refreshKey}:${previewDataResets}`}
+              files={files}
+              activePage={activeVFSFile}
+              theme={containerTheme}
+              declaredPermissions={declaration.declared}
+              grantedCapabilities={previewAllowed ? requested : []}
+              onConsole={(_level, text) => {
+                logAppLine(text);
+              }}
+              onError={(err) => {
+                useWorkspaceStore.getState().addConsoleOutput(`[App] ${err.message}`);
+                notePreviewFault(projectId, { text: err.message, stopped: true });
+                setStop({ run, reason: err.message });
+              }}
+            />
+          </div>
+        </>
+      );
+    }
 
     // Code, for a page whose preview is not running: nothing to keep alive.
     if (showCode && !(isSoftNUIFile && softNSource && PreviewComponent) && htmlPreview === null) {

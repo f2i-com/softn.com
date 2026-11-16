@@ -6,7 +6,8 @@ is an application; each is imported by several.
 
 | Package | In one line | Used by |
 | --- | --- | --- |
-| [`core/`](@softn/core) | The engine: the `.ui` parser, the renderer, the `.logic` runtime on the ZIPP WebAssembly engine (`wasm-zipp/`, installed from a ZIPP release), XDB records and sync, bundle loading, the FormLogic starter adapter | Every runtime and editor |
+| [`container/`](@softn/container) | The v2 Web App Container microkernel (`<softn-app>`): Worker-isolated tiered ZIPP WASM engines, closed Shadow DOM surgical patcher, hosted `/runtime/vendor/` libraries (`preact`, `htm`, `marked`, Split-Realm `three`), `softn:*` bridges, and `<softn-*>` custom elements | Web runtime, single-app shell, Studio, Builder, standalone embeds |
+| [`core/`](@softn/core) | The v1 `.ui` & `.logic` engine: the `.ui` parser, the renderer, the `.logic` runtime on the ZIPP WebAssembly engine (`wasm-zipp/`, installed from a ZIPP release), XDB records and sync, bundle loading, the FormLogic starter adapter | Every runtime and editor |
 | [`components/`](@softn/components) | The built-in component library (layout, forms, data, charts, audio, 3D, smart components) registered into core's renderer | Every runtime and editor |
 | [`bundle-format/`](@softn/bundle-format) | The `.softn` contract without the engine: the archive reader, the inspector, `permission.json` declarations, the page-to-page hand-off and bundle URL rules | Core (re-exported), the site, the editors, the web runtime |
 | [`editor-shared/`](@softn/editor-shared) | What Builder and Studio share and neither owns: hand-off to the runtime and publish page, opening a bundle from a same-origin link, modal keyboard ownership, the FormLogic editor channel | Builder, Studio |
@@ -16,8 +17,8 @@ is an application; each is imported by several.
 | [`brand/`](@softn/brand) | The one look the apps share: tokens, fonts, the theme switch, the product bar, the site URL rules | Site, web runtime, Builder, Studio, loader, the docs |
 | [`vite-plugin/`](@softn/vite-plugin) | A Vite plugin that imports `.ui` files as SoftN sources in an ordinary web project | Anyone building with SoftN outside these apps |
 
-Build order matters for the two that produce `dist/`: `npm run build:packages`
-builds `core`, then `components`, then `vite-plugin`. The others are consumed
+Build order matters for the packages that produce `dist/`: `npm run build:packages`
+builds `container`, `core`, `components`, and `vite-plugin`. The others are consumed
 as TypeScript sources through workspace links. `bundle-format` is inlined into
 core's published build so core stays self-contained.
 

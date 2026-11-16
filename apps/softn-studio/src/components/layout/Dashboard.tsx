@@ -57,21 +57,14 @@ interface DashboardProps {
 
 const TARGET_LABEL: Record<string, string> = { web: 'Web app', desktop: 'Desktop app', dual: 'Web and desktop' };
 
-/** Which language an example's logic is in, read from its files: a `.py` file outside assets/ is Python. */
-function exampleLanguage(example: ExampleProject): 'Python' | 'JavaScript' {
-  return example.files.some((file) => /\.py$/i.test(file.path) && !/^assets\//i.test(file.path)) ? 'Python' : 'JavaScript';
+function exampleLanguage(example: ExampleProject): 'Python' | 'TypeScript' | 'JavaScript' {
+  if (example.files.some((file) => /\.py$/i.test(file.path) && !/^assets\//i.test(file.path))) return 'Python';
+  if (example.files.some((file) => /\.(?:tsx?|mts)$/i.test(file.path) && !/^assets\//i.test(file.path))) return 'TypeScript';
+  return 'JavaScript';
 }
 
-/**
- * A few real lines of the example's logic — the function that switches pages,
- * which both examples have — so the two cards show the difference between
- * them rather than describe it. Comments are left out: the card has room for
- * the shape of the code, not its explanation.
- */
 function exampleExcerpt(example: ExampleProject): { path: string; lines: string[] } | null {
-  // `main.js` or `main.py` beside index.html, as Studio lays a project out now; `logic/main.logic`
-  // or `logic/main.py` in a project laid out before.
-  const logic = example.files.find((file) => /^(logic\/)?main\.(logic|js|py)$/.test(file.path));
+  const logic = example.files.find((file) => /^(logic\/)?(main|app)\.(logic|js|ts|py)$/.test(file.path));
   if (!logic) return null;
   const all = logic.content.split('\n');
   const isComment = (line: string) => /^\s*(#|\/\/)/.test(line);

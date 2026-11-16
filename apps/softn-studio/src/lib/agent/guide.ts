@@ -601,3 +601,81 @@ export function projectHasBackend(manifestSource: string | undefined): boolean {
     return false;
   }
 }
+
+/**
+ * System guide for SoftN v2 Web App Containers (`@softn/container`).
+ * Teaches pure 100% standard HTML5, CSS, and JS/TS/Python DOM with hosted vendor modules.
+ */
+export function buildV2ContainerGuide({
+  language,
+  torch,
+  backend = false,
+  style,
+}: {
+  language: 'javascript' | 'typescript' | 'python';
+  torch: boolean;
+  backend?: boolean;
+  style: string;
+}): string {
+  const python = language === 'python';
+  const ts = language === 'typescript';
+  const entryScript = python ? 'main.py' : ts ? 'app.ts' : 'main.js';
+  return `# How to build a SoftN v2 Web App Container
+
+This project is a **SoftN v2 Web App Container** (\`"engine": 2\` in \`manifest.json\`).
+It runs 100% standard **HTML5, CSS, and ${python ? 'Python' : ts ? 'TypeScript' : 'JavaScript'} DOM** inside an isolated WebAssembly Worker and closed ShadowRoot — **with zero custom SoftN template sugar**.
+
+## Strict Rules (Never Mix v1 DSL)
+- **Write 100% standard HTML5** (\`<!DOCTYPE html>\`, \`<html>\`, \`<head>\`, \`<body>\`).
+- **NEVER** write SoftN v1 template syntax (\`<App>\`, \`<Stack>\`, \`<Card>\`, \`#if\`, \`#each\`, \`:bind\`, \`@click\`, \`<import ... />\`, or \`<data><collection .../></data>\`).
+- Assets use normal relative URLs (\`<img src="./assets/icon.svg">\`, \`url("./assets/bg.png")\`, \`fetch("./data.json")\`), **NOT** \`asset("...")\`.
+
+## Project Files
+- **manifest.json** — required. Keep \`"engine": 2\`, \`"name"\`, \`"version"\`, \`"main": "index.html"\`, \`"icon": "assets/icon.svg"\`, \`"config": { "execution": "worker", "theme": { "mode": "light" | "dark" }${python && torch ? ', "python": { "packages": ["torch"] }' : ''} }\`, and \`"files": { "ui": [...], "logic": [...], "xdb": [...], "assets": [...] }\` listing every file in the bundle. Keep \`"icon": "assets/icon.svg"\` when rewriting \`manifest.json\` (you can redraw \`assets/icon.svg\` with \`write_file\`).
+- **permission.json** — declare capabilities (\`net\`, \`camera\`, \`mic\`, \`files\`, \`qr\`, \`ai\`, \`gpu\`, \`sync\`, \`storage\`, \`accel\`) when needed, e.g. \`{ "permissions": { "net": { "enabled": true, "allowed_hosts": ["api.example.com"] } } }\`.
+- **index.html** — main HTML5 document (and optional extra HTML pages navigated via \`<a href="about.html">\`).
+- **styles.css** — custom CSS stylesheet. Link \`<link rel="stylesheet" href="softn:ui.css">\` first for built-in theme tokens and utility classes!
+- **${entryScript}** — ${python ? 'referenced via `<script type="text/python" src="./main.py"></script>`' : `zero-build ES module referenced via \`<script type="module" src="./${entryScript}"></script>\` (supports multi-file relative ES \`import\` / \`export\`)`}.
+- **xdb/*.xdb** — seed JSON collections (\`{ "collection": "tasks", "records": [{ "id": "1", "title": "First item", "done": false }] }\`).
+
+## Styling with \`softn:ui.css\`
+Link \`<link rel="stylesheet" href="softn:ui.css" />\` in \`<head>\` to get automatic light/dark tokens (\`data-theme="dark" | "light"\` on \`<html>\`):
+- CSS variables: \`--softn-bg\`, \`--softn-surface\`, \`--softn-border\`, \`--softn-fg\`, \`--softn-muted\`, \`--softn-primary\`, \`--softn-danger\`, \`--softn-radius\`, \`--softn-space-xs|sm|md|lg\`.
+- Layout & UI classes: \`.container\`, \`.stack\`, \`.row\`, \`.between\`, \`.wrap\`, \`.grid\`, \`.gap-xs|sm|md|lg\`, \`.card\`, \`.badge\`, \`.muted\`, \`.btn\`, \`.btn.primary\`, \`.btn.danger\`, plus styled native \`input\`, \`select\`, \`textarea\`, \`table\`.
+
+${
+  python
+    ? `## Python DOM Scripting (\`main.py\`)
+- \`import js\` gives access to \`js.document\` and \`js.window\` (\`getElementById\`, \`querySelector\`, \`createElement\`, \`addEventListener\`, \`textContent\`, \`className\`, \`style\`).
+${torch ? PYTHON_TORCH_SECTION : ''}`
+    : `## Hosted Zero-Bundle Modules & Built-in APIs (${ts ? 'TypeScript `.ts`' : 'JavaScript `.js`'})
+You can import these directly with **zero npm install and zero bundler** (note: use \`.ts\` + \`htm\` tagged templates rather than \`.tsx\` JSX):
+1. **Preact + Hooks + HTM** (recommended for reactive UIs):
+   \`\`\`ts
+   import { h, render } from 'preact';
+   import { useState, useEffect, useMemo } from 'preact/hooks';
+   import htm from 'htm';
+   const html = htm.bind(h);
+   \`\`\`
+2. **Synchronous Local Database (\`softn:db\`)** — automatically seeded from \`xdb/*.xdb\`:
+   \`\`\`ts
+   import { db } from 'softn:db';
+   const rows = db.query('tasks'); // Returns flat records: [{ id, title, done, created_at, updated_at }] — read item.title directly (NOT item.data.title!)
+   const created = db.create('tasks', { title: 'Ship v2', done: false });
+   db.update(created.id, { done: true });
+   db.delete(created.id);
+   \`\`\`
+3. **Markdown (\`marked\`)**: \`import { marked } from 'marked';\` -> \`marked.parse(md)\`.
+4. **Split-Realm 3D WebGL2 (\`three\`)**: \`import * as THREE from 'three';\` (\`Scene\`, \`PerspectiveCamera\`, \`Box/Sphere/Plane/Cylinder/TorusGeometry\`, \`MeshStandard/BasicMaterial\`, \`Mesh\`, \`Ambient/Directional/PointLight\`, \`WebGLRenderer({ canvas, antialias: true })\`, \`requestAnimationFrame\`).
+5. **2D Canvas & Standard DOM**: \`canvas.getContext('2d')\`, \`localStorage\`, \`fetch('./local.json')\`, \`setTimeout\`, \`setInterval\`, \`requestAnimationFrame\`.`
+}
+
+## On-Demand \`<softn-*>\` Custom Elements
+Drop these directly in HTML or \`htm\` templates (lazy-loaded automatically when present):
+- \`<softn-chart type="bar" color="#14b8a6" values="[12, 28, 42]"></softn-chart>\` (\`type="bar" | "line"\`)
+- \`<softn-datagrid columns="title,status" rows='[{"title":"Alpha","status":"Active"}]' searchable></softn-datagrid>\`
+
+## Design Quality
+Match the brief's **${style}** aesthetic. Build complete, interactive, responsive UIs with realistic seeded data, clear typography, keyboard-friendly forms, and zero placeholder stubs.
+${backend ? `\n${PRIVATE_BACKEND_SECTION}\n` : ''}`;
+}

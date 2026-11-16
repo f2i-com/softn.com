@@ -28,6 +28,7 @@ import { bundlePageAt, composePage, mainPage, pageTitle } from './pages';
 // The slim bar the runtime draws over every app, for the pages a directory
 // serves through this shell; drawn from the shared tokens, which come along.
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
+import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
 import {
   apply as applySiteTheme,
   readChoice as readThemeChoice,
@@ -80,6 +81,10 @@ export interface RunnableApplication {
    * browser: each page of the site starts the app itself, at its own address.
    */
   followsLinks?: boolean;
+  /** True when the bundle runs inside `@softn/container` (`<softn-app>`). */
+  webContainer?: boolean;
+  /** Raw `.softn` archive bytes when loaded from an archive. */
+  bundleData?: Uint8Array;
 }
 export function Loading({ text = 'Loading…' }: { text?: string }) {
   return (
@@ -410,6 +415,26 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
         <LoadProgress variant="bar" top="var(--softn-tab-bar-height)" />
         <div className="application-content" ref={content} tabIndex={-1} data-softn-theme-box={THEME_BOX}>
           <Boundary>
+            {app.webContainer ? (
+              <WebContainerView
+                source={app.bundleData ?? Object.fromEntries(app.textFiles)}
+                appId={app.appId}
+                declaredPermissions={app.declared}
+                grantedCapabilities={granted ? requested : []}
+                theme={
+                  app.themeMode === 'dark' || app.themeMode === 'light'
+                    ? app.themeMode
+                    : app.config.theme
+                }
+                onReady={onLoad}
+                onTitleChange={showTitle}
+                loading={<Loading text={app.config.loadingText} />}
+                error={(error: Error) => {
+                  reportFailure(error);
+                  return <Failure error={error} />;
+                }}
+              />
+            ) : (
             <SoftNWithXDB
               key={page?.path ?? ''}
               source={shown.source}
@@ -435,6 +460,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
                 return <Failure error={error} />;
               }}
             />
+            )}
           </Boundary>
         </div>
       </div>

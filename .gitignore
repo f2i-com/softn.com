@@ -91,3 +91,6 @@ docs/generated/*
 
 # Built by examples/torch-trainer/build.mjs from the source beside it.
 examples/torch-trainer/*.softn
+
+# Built by examples/container-showcase/build.mjs from the source beside it.
+examples/container-showcase/bundles/*.softn

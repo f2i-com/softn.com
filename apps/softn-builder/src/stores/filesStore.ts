@@ -72,7 +72,7 @@ function folderAt(nodes: Map<string, ProjectFileNode>, path: string): string | n
 }
 
 // Default initial state for a new UI file
-function createEmptyUIFile(id: string, path: string, logicSrc?: string): UIFileState {
+function createEmptyUIFile(id: string, path: string, logicSrc?: string, rawHtmlSource?: string): UIFileState {
   const rootId = `root_${id}`;
   const elements = new Map<string, CanvasElement>([
     [
@@ -94,6 +94,7 @@ function createEmptyUIFile(id: string, path: string, logicSrc?: string): UIFileS
     rootId,
     imports: [],
     ...(logicSrc ? { logicSrc } : {}),
+    ...(rawHtmlSource !== undefined ? { originalSource: rawHtmlSource } : {}),
   };
 }
 
@@ -557,6 +558,8 @@ interface FilesStore {
   syncUIFileElements: (id: string, elements: Map<string, CanvasElement>, rootId: string) => void;
   updateUIFileLogicSrc: (id: string, logicSrc: string | undefined) => void;
   updateUIFileSource: (id: string, source: string) => void;
+  /** Update an HTML container file's raw source directly without invoking the v1 `.ui` parser. */
+  updateRawUIFile: (id: string, source: string) => void;
   /**
    * A collection was added, renamed or removed in Data: say so in the
    * `<data>` block of each page that keeps its own source. The block stands
@@ -939,7 +942,11 @@ export const useFilesStore = create<FilesStore>((set, get) => {
 
       // Create file content
       if (type === 'ui') {
-        newUIFiles.set(id, createEmptyUIFile(id, fullPath));
+        const isWeb = useProjectStore.getState().projectFormat === 'web' || /\.html?$/i.test(fullPath);
+        const starterHtml = isWeb
+          ? `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>${name.replace(/\.html?$/i, '') || 'Page'}</title>\n</head>\n<body>\n  <div id="app"></div>\n</body>\n</html>\n`
+          : undefined;
+        newUIFiles.set(id, createEmptyUIFile(id, fullPath, undefined, starterHtml));
       } else {
         newLogicFiles.set(id, createEmptyLogicFile(id, fullPath));
       }
@@ -1362,6 +1369,15 @@ export const useFilesStore = create<FilesStore>((set, get) => {
     edit((state) => {
       const file = state.uiFiles.get(id);
       if (!file || file.originalSource === source) return state;
+      if (useProjectStore.getState().projectFormat === 'web') {
+        const newUIFiles = new Map(state.uiFiles);
+        newUIFiles.set(id, {
+          ...file,
+          originalSource: source,
+          baseline: { source, elements: file.elements, rootId: file.rootId, imports: file.imports },
+        });
+        return { uiFiles: newUIFiles, nodes: markedChanged(state.nodes, id) };
+      }
       const parsed = parseSource(source);
 
       const newUIFiles = new Map(state.uiFiles);
@@ -1380,6 +1396,20 @@ export const useFilesStore = create<FilesStore>((set, get) => {
         baseline: { source, elements: parsed.elements, rootId: parsed.rootId, imports: parsed.imports },
       });
 
+      return { uiFiles: newUIFiles, nodes: markedChanged(state.nodes, id) };
+    });
+  },
+
+  updateRawUIFile: (id, source) => {
+    edit((state) => {
+      const file = state.uiFiles.get(id);
+      if (!file || file.originalSource === source) return state;
+      const newUIFiles = new Map(state.uiFiles);
+      newUIFiles.set(id, {
+        ...file,
+        originalSource: source,
+        baseline: { source, elements: file.elements, rootId: file.rootId, imports: file.imports },
+      });
       return { uiFiles: newUIFiles, nodes: markedChanged(state.nodes, id) };
     });
   },
@@ -1547,10 +1577,12 @@ export const useFilesStore = create<FilesStore>((set, get) => {
       return id;
     };
 
-    // Always create standard roots for consistent navigator layout
-    ensureFolder('ui');
-    ensureFolder('logic');
-    ensureFolder('assets');
+    // Always create standard roots for v1 `.ui` projects; web containers keep their exact layout
+    if (useProjectStore.getState().projectFormat !== 'web') {
+      ensureFolder('ui');
+      ensureFolder('logic');
+      ensureFolder('assets');
+    }
 
     // Add UI files
     for (const [id, file] of uiFiles) {

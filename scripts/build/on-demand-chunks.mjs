@@ -152,12 +152,12 @@ export const onDemandRuntimeCaching = [
     // deployment would be the previous release's, talking to this release's
     // main thread. Online it is always the current one, and the copy is
     // refreshed; offline the copy answers.
-    urlPattern: /\/assets\/core-runtime\/.+\.(?:js|wasm|json)$/,
+    urlPattern: /\/assets\/(?:core|container)-runtime\/.+\.(?:js|wasm|css|json)$/,
     handler: 'NetworkFirst',
     options: {
       cacheName: 'softn-worker-assets',
       networkTimeoutSeconds: 4,
-      expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 * 30 },
+      expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 30 },
       cacheableResponse: { statuses: [0, 200] },
     },
   },

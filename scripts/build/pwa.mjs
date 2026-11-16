@@ -92,7 +92,10 @@ export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], m
     // build the engine and the QR decoder are held at their shared copy
     // (shared-assets.mjs), which this worker may cache though it is outside
     // its scope.
-    const hashed = file.startsWith('assets/') && !file.startsWith('assets/core-runtime/');
+    const hashed =
+      file.startsWith('assets/') &&
+      !file.startsWith('assets/core-runtime/') &&
+      !file.startsWith('assets/container-runtime/');
     entries.push({ url: sharedPrecacheUrl(file), revision: hashed ? null : createHash('md5').update(bytes).digest('hex') });
   }
   return entries;

@@ -238,8 +238,8 @@ const run = (label, cmd, cmdArgs, options = {}) => {
   if (r.status !== 0) fail(`${label} failed (exit ${r.status ?? r.signal})`);
 };
 if (buildPackages) {
-  const [command, commandArgs, options] = npmCommand(['run', 'build', '-w', '@softn/core', '-w', '@softn/components']);
-  run('build @softn/core and @softn/components', command, commandArgs, { cwd: root, ...options });
+  const [command, commandArgs, options] = npmCommand(['run', 'build', '-w', '@softn/core', '-w', '@softn/container', '-w', '@softn/components']);
+  run('build @softn/core, @softn/container and @softn/components', command, commandArgs, { cwd: root, ...options });
 }
 
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-formlogic-runtime-'));

@@ -159,6 +159,8 @@ interface SharedOptions {
    * (removed when empty). Absent: whatever the retained manifest said stays.
    */
   pythonPackages?: string[];
+  /** Project runtime format (`'web'` for SoftN v2 Web App Containers, `'ui'` for legacy `.ui` bundles). */
+  projectFormat?: 'ui' | 'web';
   /** What the opened bundle carried; absent for a project made here. */
   source?: RetainedExportSource;
 }
@@ -187,6 +189,7 @@ export interface MultiBundleOptions extends SharedOptions {
 /** The entry file when the caller did not say: the conventional one, or the only one. */
 function defaultMain(uiPaths: string[]): string {
   if (uiPaths.includes('ui/main.ui')) return 'ui/main.ui';
+  if (uiPaths.includes('index.html')) return 'index.html';
   if (uiPaths.length === 1) return uiPaths[0];
   throw new Error('The project has no ui/main.ui to be its entry file. Create one, or name one main.ui.');
 }
@@ -303,9 +306,15 @@ function composeManifest(
   iconPath: string | null
 ): Record<string, unknown> {
   const retained = options.source?.manifest;
+  const isWeb = options.projectFormat === 'web' || retained?.engine === 2 || retained?.container === true;
   const manifest: Record<string, unknown> = retained
     ? (JSON.parse(JSON.stringify(retained)) as Record<string, unknown>)
-    : { formatVersion: BUNDLE_FORMAT_VERSION };
+    : isWeb
+      ? { formatVersion: 2, engine: 2 }
+      : { formatVersion: BUNDLE_FORMAT_VERSION };
+  if (isWeb && manifest.engine === undefined) {
+    manifest.engine = 2;
+  }
 
   manifest.name = options.name;
   manifest.version = options.version;
@@ -330,6 +339,9 @@ function composeManifest(
   manifest.files = files;
 
   const config = isObject(manifest.config) ? { ...manifest.config } : {};
+  if (isWeb && config.execution === undefined) {
+    config.execution = 'worker';
+  }
   const previousName = typeof retained?.name === 'string' ? retained.name : null;
   // A project made here starts with a window, as the Builder's own projects
   // always have. A manifest that came with none leaves with none: the
@@ -533,11 +545,17 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
     );
   }
 
-  // Add logic files
+  // Add logic files (and for v2 web containers, stylesheets/JSON/docs edited as text files)
+  const textAssetPaths: string[] = [];
+  const isWebExport = options.projectFormat === 'web' || options.source?.manifest?.engine === 2 || options.source?.manifest?.container === true;
   for (const [, logicFile] of options.logicFiles) {
     const path = stripSlash(logicFile.path);
-    logicPaths.push(path);
     files[path] = fileBytes(logicFile.content, logicFile.bom);
+    if (isWebExport && !/\.(?:m?js|cjs|tsx?|mts|jsx|py|logic)$/i.test(path)) {
+      textAssetPaths.push(path);
+    } else {
+      logicPaths.push(path);
+    }
     debug(
       '[exportMultiFileBundle] Added logic file:',
       path,
@@ -547,9 +565,13 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
   }
 
   const shared = addSharedEntries(files, options);
+  const allAssets = [...shared.assets];
+  for (const p of textAssetPaths) {
+    if (!allAssets.includes(p)) allAssets.push(p);
+  }
   const manifest = composeManifest(
     options,
-    { ui: uiPaths, logic: logicPaths, xdb: shared.xdb, assets: shared.assets },
+    { ui: uiPaths, logic: logicPaths, xdb: shared.xdb, assets: allAssets },
     main,
     shared.iconPath
   );
@@ -570,6 +592,8 @@ export function parseBundle(data: Uint8Array): {
   files: Map<string, Uint8Array>;
   /** Entries the reader left out, their names taken for ways out of the bundle. */
   dropped: string[];
+  /** True when `manifest.json` was synthesized from a zero-config HTML container. */
+  synthesizedManifest?: boolean;
 } {
   // Validated read, shared with softn-web and softn-loader.
   //
@@ -579,20 +603,76 @@ export function parseBundle(data: Uint8Array): {
   // catches an archive understating a file's size, which hands this reader a
   // truncated file while every other reader sees the whole one.
   const archive = openBundleArchive(data);
-  const files = archive.readAll();
+  let files = archive.readAll();
   // What it left out is said when the project opens: saved again, the project has it no more.
   const dropped = archive.unsafeNames();
+
+  // Unwrap a single top-level wrapper folder (e.g. `dist/index.html` -> `index.html`)
+  if (!files.has('manifest.json') && !files.has('index.html') && !files.has('app.html') && files.size > 0) {
+    let singlePrefix: string | null = null;
+    let uniform = true;
+    for (const key of files.keys()) {
+      if (key.endsWith('/')) continue;
+      const slash = key.indexOf('/');
+      if (slash <= 0) {
+        uniform = false;
+        break;
+      }
+      const prefix = key.slice(0, slash + 1);
+      if (singlePrefix === null) singlePrefix = prefix;
+      else if (singlePrefix !== prefix) {
+        uniform = false;
+        break;
+      }
+    }
+    if (uniform && singlePrefix && (files.has(`${singlePrefix}manifest.json`) || files.has(`${singlePrefix}index.html`) || files.has(`${singlePrefix}app.html`))) {
+      const unwrapped = new Map<string, Uint8Array>();
+      for (const [k, v] of files) {
+        if (k.startsWith(singlePrefix) && k.length > singlePrefix.length) {
+          unwrapped.set(k.slice(singlePrefix.length), v);
+        }
+      }
+      files = unwrapped;
+    }
+  }
 
   // Debug: log all paths in the bundle
   debug('[parseBundle] Files in bundle:', Array.from(files.keys()));
 
   // The manifest at the root, the one every runtime and the directory read.
-  // The first path anywhere that ended in `manifest.json` was taken for it
-  // (`assets/manifest.json`, `notmanifest.json`), and the Builder opened, and
-  // exported with that manifest at its root, a bundle no runtime opens.
   const manifestData = files.get('manifest.json');
   if (!manifestData) {
-    throw new Error('Invalid bundle: missing manifest.json');
+    const rootHtml = [...files.keys()].filter((p) => !p.includes('/') && /\.html?$/i.test(p));
+    const htmlEntry = files.has('index.html')
+      ? 'index.html'
+      : files.has('app.html')
+        ? 'app.html'
+        : rootHtml.length === 1
+          ? rootHtml[0]
+          : null;
+    if (!htmlEntry) {
+      throw new Error('Invalid bundle: missing manifest.json');
+    }
+    const htmlText = new TextDecoder().decode(files.get(htmlEntry)!);
+    const titleMatch = htmlText.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const inferredName = (titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : '') || 'Web App';
+    const inferred = {
+      formatVersion: 2,
+      engine: 2,
+      name: inferredName.slice(0, 64),
+      version: '1.0.0',
+      description: '',
+      main: htmlEntry,
+      config: { execution: 'worker' },
+    };
+    const inferredBytes = strToU8(JSON.stringify(inferred, null, 2));
+    return {
+      manifest: inferred as unknown as BundleManifest,
+      manifestBytes: inferredBytes,
+      files,
+      dropped,
+      synthesizedManifest: true,
+    };
   }
 
   let manifest: unknown;

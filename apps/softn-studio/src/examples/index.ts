@@ -3,6 +3,7 @@ import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, pr
 import { resetProjectSessionForImport } from '../lib/projectSession';
 import { READING_LIST } from './readingList';
 import { READING_LIST_PYTHON } from './readingListPython';
+import { CONTAINER_FIELDNOTES } from './containerFieldnotes';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
 /**
@@ -22,7 +23,7 @@ export interface ExampleProject {
   files: Array<{ path: string; content: string }>;
 }
 
-export const EXAMPLES: readonly ExampleProject[] = [READING_LIST, READING_LIST_PYTHON];
+export const EXAMPLES: readonly ExampleProject[] = [READING_LIST, READING_LIST_PYTHON, CONTAINER_FIELDNOTES];
 
 export const DEFAULT_EXAMPLE: ExampleProject = READING_LIST;
 

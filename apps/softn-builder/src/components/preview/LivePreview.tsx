@@ -15,6 +15,7 @@ import { previewSourceFor, undeclaredPythonPackage } from '../../utils/previewSo
 import { type AppUpdateResult, inspectDeclaration, type PermissionConfig } from '@softn/core';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
+import type { ContainerPreviewRuntimeProps } from './ContainerPreviewRuntime';
 import { PreviewProblems } from './PreviewProblems';
 import { previewThemeProps } from '../../utils/previewTheme';
 // The theme entry alone: the package's root would bring every component,
@@ -359,7 +360,7 @@ const SETTLE_MS = 200;
 
 export function LivePreview({ initialDevice = 'desktop', beside = false }: LivePreviewProps) {
   const { elements, rootId } = useCanvasStore();
-  const { projectId, logicSource, collections: projectCollections, themeMode, permissions, pythonPackages, setPythonPackages, source: retainedSource, assets: projectAssets } = useProjectStore();
+  const { name: projectName, version: projectVersion, projectFormat, projectId, logicSource, collections: projectCollections, themeMode, permissions, pythonPackages, setPythonPackages, source: retainedSource, assets: projectAssets } = useProjectStore();
   // The preview runs under the project's own declaration, as the runtime
   // will: a call the app has not declared fails here too, not first in the
   // runtime after export. And what it declares is withheld until it is
@@ -397,6 +398,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
   const [isLoading, setIsLoading] = useState(true);
   const [forceRender, setForceRender] = useState(false);
   const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<PreviewRuntimeProps> | null>(null);
+  const [ContainerComponent, setContainerComponent] = useState<React.ComponentType<ContainerPreviewRuntimeProps> | null>(null);
   const [previewRecordsFor, setPreviewRecordsFor] = useState<typeof import('./PreviewRuntime').previewRecordsFor | null>(null);
   const [sourceInfo, setSourceInfo] = useState<string | null>(null);
   // Which start of the app this is. A new one is a new engine and the
@@ -453,12 +455,70 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
   }, [entities, seedData, recordIdentity, projectCollections]);
   const previewRecords = useMemo(() => previewRecordsFor?.(collections) ?? {}, [previewRecordsFor, collections]);
 
+  const containerFiles = useMemo<Record<string, string | Uint8Array>>(() => {
+    if (projectFormat !== 'web') return {};
+    const out: Record<string, string | Uint8Array> = {};
+    let mainHtmlPath = 'index.html';
+    const declaredMain = retainedSource.manifest && typeof retainedSource.manifest.main === 'string'
+      ? retainedSource.manifest.main.replace(/^\/+/, '')
+      : null;
+    for (const [id, ui] of uiFiles) {
+      const p = ui.path.replace(/^\/+/, '');
+      out[p] = ui.originalSource ?? '';
+      if (id === retainedSource.mainFileId || (declaredMain && p === declaredMain)) {
+        mainHtmlPath = p;
+      }
+    }
+    if (!(mainHtmlPath in out)) {
+      const firstHtml = Object.keys(out).find((k) => /\.html?$/i.test(k));
+      if (firstHtml) mainHtmlPath = firstHtml;
+    }
+    for (const [, lf] of logicFiles) {
+      out[lf.path.replace(/^\/+/, '')] = lf.content;
+    }
+    for (const [assetPath, asset] of previewAssets) {
+      out[assetPath.replace(/^\/+/, '')] = asset.data;
+    }
+    for (const col of collections) {
+      const xdbPath = retainedSource.xdbPaths.get(col.name) ?? `xdb/${col.name}.xdb`;
+      out[xdbPath] = JSON.stringify({
+        collection: col.name,
+        records: col.fullRecords ?? col.seedData ?? [],
+      });
+    }
+    out['manifest.json'] = JSON.stringify({
+      formatVersion: 2,
+      engine: 2,
+      name: projectName || 'Untitled App',
+      version: projectVersion || '1.0.0',
+      main: mainHtmlPath,
+      config: {
+        execution: 'worker',
+        ...(pythonPackages.length > 0 ? { python: { packages: pythonPackages } } : {}),
+      },
+    });
+    const permJson = buildPermissionJson(permissions);
+    if (permJson) out['permission.json'] = permJson;
+    return out;
+  }, [projectFormat, uiFiles, logicFiles, previewAssets, collections, retainedSource, projectName, projectVersion, pythonPackages, permissions]);
+
   // Get source - prioritize ui/main.ui for stable preview behavior.
   // IMPORTANT: useMemo must be a pure computation — no setState calls.
   // Errors and info are returned as part of the result and synced via useEffect.
   const previewStateNow = useMemo(
-    () => previewSourceFor({ elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages }),
-    [elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages]
+    () => {
+      if (projectFormat === 'web') {
+        const firstHtml = [...uiFiles.values()].find((f) => f.path.replace(/^\/+/, '') === 'index.html') ?? [...uiFiles.values()][0];
+        return {
+          source: firstHtml?.originalSource ?? '',
+          error: null,
+          info: null,
+          composition: undefined,
+        };
+      }
+      return previewSourceFor({ elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages });
+    },
+    [projectFormat, elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages]
   );
   const [settledState] = useSettled(previewStateNow, beside ? SETTLE_MS : 0);
   // A project that cannot be composed for a moment (a file half written)
@@ -494,14 +554,23 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
     const loadRenderer = async () => {
       setIsLoading(true);
       try {
-        const preview = await import('./PreviewRuntime');
-        if (!active) return;
-        setPreviewComponent(() => preview.PreviewRuntime);
-        setPreviewRecordsFor(() => preview.previewRecordsFor);
+        if (projectFormat === 'web') {
+          const mod = await import('./ContainerPreviewRuntime');
+          if (!active) return;
+          setContainerComponent(() => mod.ContainerPreviewRuntime);
+        } else {
+          const preview = await import('./PreviewRuntime');
+          if (!active) return;
+          setPreviewComponent(() => preview.PreviewRuntime);
+          setPreviewRecordsFor(() => preview.previewRecordsFor);
+        }
       } catch (e) {
         // If import fails, show placeholder
-        console.error('[LivePreview] Failed to load @softn/core:', e);
-        if (active) setPreviewComponent(null);
+        console.error('[LivePreview] Failed to load preview runtime:', e);
+        if (active) {
+          setPreviewComponent(null);
+          setContainerComponent(null);
+        }
       }
 
       if (active) setIsLoading(false);
@@ -510,7 +579,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
     return () => {
       active = false;
     };
-  }, []);
+  }, [projectFormat]);
 
   const dimensions = deviceDimensions[device];
 
@@ -620,6 +689,27 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
             View source
           </button>
         </div>
+      );
+    }
+
+    if (projectFormat === 'web' && ContainerComponent) {
+      const startKey = `web-${run}`;
+      return (
+        <DeviceViewport width={dimensions.width} height={dimensions.height}>
+          <PreviewErrorBoundary key={startKey} fallback={renderError}>
+            <ContainerComponent
+              key={startKey}
+              projectId={projectId}
+              files={containerFiles}
+              themeMode={themeMode}
+              declaredPermissions={declaration.declared}
+              grantedCapabilities={previewAllowed ? declaration.requested : []}
+              onError={(err) => {
+                setError(err.message);
+              }}
+            />
+          </PreviewErrorBoundary>
+        </DeviceViewport>
       );
     }
 

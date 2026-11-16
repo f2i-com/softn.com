@@ -845,10 +845,11 @@ function writeBuildInfo() {
 // against the pins in apps/softn-web/public/demos/index.json.
 if (withDemos && demosDirArg === null) run(['run', 'fetch:demos']);
 
-// The apps import @softn/core and @softn/components from dist/, so those have
+// The apps import @softn/core, @softn/components and @softn/container from dist/, so those have
 // to exist before any app build starts.
 run(['run', 'build:core']);
 run(['run', 'build:components']);
+run(['run', 'build', '-w', '@softn/container']);
 
 // Each app refers to the engine and the QR decoder at their one shared copy
 // (shared-assets.mjs), gathered below once the apps are in place.

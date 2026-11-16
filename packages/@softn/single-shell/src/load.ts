@@ -6,6 +6,7 @@ import {
   type BundleManifest,
 } from '@softn/runtime-shell/bundleProcessor';
 import { warmFirstScreen } from '@softn/runtime-shell/zipWarmup';
+import { unwrapContainerZipEntries } from '@softn/runtime-shell/containerBundle';
 import { preloadRememberedFirstDraw, readManifest } from '@softn/core';
 import { assembleApplication, mark } from './assemble';
 import { digest, fetchBytes, parseConfig } from './config';
@@ -50,8 +51,10 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
   // Indexes the archive and reads its text; binaries are read when an asset()
   // asks for them, or by the warm-up below.
   mark('softn:zip:start');
-  const { textFiles, binaryFiles, archive } = readZip(bytes);
+  const rawZip = readZip(bytes);
   mark('softn:zip:end');
+  const { archive } = rawZip;
+  const { textFiles, binaryFiles } = unwrapContainerZipEntries(rawZip.textFiles, rawZip.binaryFiles);
   const sidecar = config.permissions;
   const { raw, ...app } = await assembleApplication({
     textFiles,
@@ -61,18 +64,14 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
     grantScope: configUrl + hash,
     signal,
   });
-  // The declared size bounds the favicon before its bytes exist: an oversize
-  // icon is never inflated, where it used to be inflated and then refused.
   const icon =
     typeof raw.icon === 'string' && (binaryFiles.declaredSize(raw.icon) ?? Infinity) <= 256 * 1024
       ? extractIconDataUrl(binaryFiles, raw)
       : undefined;
   const assets = createAssetResolver(binaryFiles, textFiles);
-  // Not awaited, as in the launcher: the app renders while a worker inflates
-  // what its source names by literal, then the manifest's asset list.
-  // `assets.dispose()` releases the archive, which ends a warm-up still in
-  // flight.
-  const warmup = warmFirstScreen(archive, bytes, firstScreenAssets(app.source, raw, binaryFiles));
-  return { config, ...app, icon, assets, warmup };
+  const warmup = app.webContainer
+    ? { done: Promise.resolve(), abort: () => {} }
+    : warmFirstScreen(archive, bytes, firstScreenAssets(app.source, raw, binaryFiles));
+  return { config, ...app, bundleData: bytes, icon, assets, warmup };
 }
 export type LoadedApplication = Awaited<ReturnType<typeof loadApplication>>;

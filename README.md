@@ -2,32 +2,94 @@
 
 # SoftN
 
-### Build an app. Keep the source. Run it your way.
+### Docker for Sandboxed Web Apps — Build, Package, and Run Anywhere.
 
-A UI language, visual builder and runtime for editable apps on the web and desktop.
+A lightweight WebAssembly container runtime, AI studio, and visual builder for sandboxed web and desktop apps.
 
-[Explore apps](https://softn.com) · [Get started](#get-started) · [FormLogic integration](#connect-to-formlogic) · [Documentation](#documentation)
+[Explore apps](https://softn.com) · [Web Containers (v2)](#softn-v2-web-app-containers) · [Get started](#get-started) · [FormLogic integration](#connect-to-formlogic) · [Documentation](#documentation)
 
 </div>
 
 ![Fieldnotes running inside the real SoftN Builder, with a task dashboard, editable form and live preview](docs/readme-assets/builder-preview.jpg)
 
-_Meet **Fieldnotes**: a working app whose form, logic running on ZIPP and XDB records update one dashboard. This is the actual Builder preview. [Read the source](examples/fieldnotes) · [Get the .softn bundle](apps/softn-site/public/examples/Fieldnotes.softn) · [Screenshot details](docs/readme-assets/README.md)._
+_Meet **Fieldnotes**: a working app whose form, logic running on ZIPP and XDB records update one dashboard. This is the actual Builder preview. [Read the source](examples/fieldnotes) · [Get the .softn bundle](apps/softn-site/public/examples/Fieldnotes.softn) · [Try the v2 Container Showcase](examples/container-showcase) · [Screenshot details](docs/readme-assets/README.md)._
 
-SoftN brings the interface, logic and data model together in a portable `.softn` app. Build visually, edit the source, or use your own AI provider in Studio. Open the result in the browser, run it on the desktop, publish it to the app directory, or connect it to FormLogic for a hosted backend.
+SoftN packages web applications — interface, code, data seeds, and capability declarations — into portable `.softn` containers. With **SoftN v2 Web App Containers** (`@softn/container`), any standard HTML, CSS, JavaScript, TypeScript, or Python app (including unmodified Vite, React, Vue, or Svelte `dist/` builds) runs inside an isolated [ZIPP](https://github.com/f2i-com/zipp.org) Rust/WebAssembly Worker and closed Shadow DOM, while classic **v1 `.ui` + `.logic` bundles** continue to run with 100% backwards compatibility across the runtime, Studio AI, and the visual Builder.
 
-The project is actively developed. The examples and runtime are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
+The project is actively developed. The examples, container microkernel, editors, and runtime are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
 
 ## What you can build
 
-| Capability                | What it gives you                                                                                                                                                              |
-| :------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Interfaces that adapt** | 107 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
-| **An editable workspace** | A visual builder, schema editor, source editor and live desktop, tablet and mobile previews. Files the canvas cannot safely rewrite remain editable in Code view.              |
-| **AI-assisted creation**  | Studio turns a brief into an app using your configured OpenAI, Anthropic or custom provider. You can also write `.ui` and `.logic` directly.                                   |
-| **Logic and data**        | JavaScript-compatible `.logic` runs in the zipp Rust/WASM engine. XDB provides app-scoped local records, with synchronization and native storage where the host supports them. |
-| **Portable apps**         | A `.softn` bundle carries the editable interface, client logic, data seeds and assets. Reopen it, customize it and export it again.                                            |
-| **More than CRUD**        | Audio, microphone input, animation and Three.js scenes are available through components and explicitly granted capabilities.                                                   |
+| Capability                     | What it gives you                                                                                                                                                                              |
+| :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Web App Containers (v2)**    | Package 100% standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip an existing compiled `dist/` build — into a `.softn` container with zero custom template syntax required.     |
+| **Pay-as-you-go WASM engines** | Boots on `zipp-javascript-lite.wasm` (~760 KB Brotli) by default, upgrading on demand to full `Intl`/`Temporal` JS, zero-build TypeScript, or Python + `torch` only when an app uses them.     |
+| **Hosted zero-bundle imports** | Import `'preact'`, `'preact/hooks'`, `'htm'`, `'marked'`, Split-Realm WebGL2 `'three'`, `<softn-chart>`, and `<softn-datagrid>` from the host runtime at 0 KB of bundle weight.                |
+| **Visual `.ui` compatibility** | Classic `.ui` + `.logic` bundles and all 107 built-in components remain fully supported across SoftN Web, Single-App hosts, Studio AI, and the drag-and-drop visual Builder.                   |
+| **AI-assisted creation**       | Studio turns a brief into a v2 Web App Container or a v1 `.ui` app using your OpenAI, Anthropic, local (Ollama / LM Studio), or custom provider — verified headlessly inside the ZIPP sandbox. |
+| **Local-first XDB & security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage.|
+
+## SoftN v2 Web App Containers
+
+SoftN v2 (`@softn/container` / `<softn-app>`) treats `.softn` archives like **Docker containers for web apps**:
+
+- **Bring your own stack (100% standard DOM):** Write plain HTML + CSS + Vanilla JS/TS, use SoftN's zero-build hosted Preact/HTM modules, or zip any production `dist/` folder from Vite, React, Vue, or Svelte directly into a `.softn` or `.zip` file — no custom DSL or code rewrites needed.
+- **Hard Worker + Shadow DOM isolation:** Guest code never touches the host `window` or main thread. It executes inside a dedicated Web Worker on the Rust/WASM ZIPP VM while a lightweight ~23 KB host microkernel applies batched surgical DOM patches inside a closed `ShadowRoot` and enforces `permission.json` network/capability gates.
+- **Split-Realm WebGL2 & Custom Elements:** Guest scripts can write `import * as THREE from 'three'` or render to 2D `<canvas>` while WebGL2 draw calls execute natively on the host GPU without bundling Three.js inside the `.softn` file. Drop `<softn-chart>` or `<softn-datagrid>` into any HTML page to lazy-load rich UI widgets on demand.
+
+```text
+my-web-app.softn  (or zip any Vite/React/Vue dist/ folder directly)
+├── index.html          # Standard HTML5 entry (auto-discovered even without manifest.json)
+├── app.ts              # ES modules (.js, .mjs, .ts) or Python (.py) run in the ZIPP Worker
+├── styles.css          # Scoped automatically inside the container's closed ShadowRoot
+├── manifest.json       # Optional: name, version, icon, "engine": 2
+├── permission.json     # Optional: capabilities requested from the host (net, storage, camera…)
+└── xdb/*.xdb           # Optional: seeded local collections accessed via `import { db } from 'softn:db'`
+```
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Field Tracker</title>
+    <link rel="stylesheet" href="softn:ui.css" />
+  </head>
+  <body class="container stack gap-md">
+    <div id="app"></div>
+    <script type="module">
+      import { h, render } from 'preact';
+      import { useState } from 'preact/hooks';
+      import htm from 'htm';
+      import { db } from 'softn:db';
+
+      const html = htm.bind(h);
+      function App() {
+        const [items, setItems] = useState(() => db.query('tasks'));
+        const add = () => {
+          db.create('tasks', { title: `Item #${items.length + 1}` });
+          setItems(db.query('tasks'));
+        };
+        return html`
+          <div class="card stack gap-sm">
+            <h1>Field Tracker (${items.length})</h1>
+            <button class="btn primary" onClick=${add}>+ Add Task</button>
+          </div>
+        `;
+      }
+      render(html`<${App} />`, document.getElementById('app'));
+    </script>
+  </body>
+</html>
+```
+
+Try the standalone multi-container showcase locally (featuring an unmodified compiled Kanban `dist/` bundle, a zero-build TypeScript + Preact + `softn:db` app, and a 1.5 KB Split-Realm Three.js 3D demo):
+
+```bash
+npm run demo:container   # builds @softn/container + showcase bundles and serves http://127.0.0.1:4830
+```
+
+Read the full architecture specification in [`docs/rfcs/softn-v2-container.md`](docs/rfcs/softn-v2-container.md).
 
 ## See an app powered by ZIPP
 
@@ -145,26 +207,28 @@ The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explai
 | **Server logic and SQLite** | Use the [Rust private backend](apps/softn-host-rust/PRIVATE_BACKEND.md) or [PHP backend packaging](apps/softn-host-php/SINGLE_APP_DEPLOYMENT.md). |
 | **FormLogic**               | Use the connected host and named backend actions described above.                                                                       |
 
-A typical client bundle contains:
+A `.softn` archive can be either a **v2 Web App Container** (standard HTML/CSS/JS/TS or a zipped `dist/` build, `manifest.json` optional) or a **v1 Visual `.ui` Bundle**:
 
 ```text
-my-app.softn
-├── manifest.json       # App identity, entry point and metadata
-├── permission.json     # Capabilities requested from the runtime
-├── ui/                 # Pages and reusable components
-├── logic/              # Client behavior
-├── xdb/                # Optional collection seeds
-└── assets/             # Images, styles and other app assets
+# v2 Web App Container (.softn or .zip)        # v1 Visual Component Bundle (.softn)
+my-web-app.softn                               my-ui-app.softn
+├── index.html          # Standard HTML5       ├── manifest.json       # App identity & entry
+├── app.ts / assets/*   # ES modules & CSS     ├── permission.json     # Requested capabilities
+├── manifest.json       # Optional metadata    ├── ui/                 # .ui pages & components
+├── permission.json     # Optional permissions ├── logic/              # .logic or .py scripts
+└── xdb/                # Optional seed data   ├── xdb/                # Optional seed data
+                                               └── assets/             # Images & styles
 ```
 
-Capabilities such as network, microphone and synchronization require support and permission from the host. An app's bundle is editable source; include only material you intend to distribute in client downloads.
+Capabilities such as network, microphone and synchronization require support and permission from the host. An app's bundle is portable; include only material you intend to distribute in client downloads.
 
 ## Documentation
 
 | Topic                   | Read next                                                                                                                                                      |
 | :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The guides              | [softn.com/docs](https://softn.com/docs/): thirty-one pages from "What is SoftN?" to hosting, generated from [`docs/content/softn-docs.json`](docs/README.md)     |
-| Language and components | Expand the reference below for `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                   |
+| The guides              | [softn.com/docs](https://softn.com/docs/): thirty-four pages from "What is SoftN?" to hosting, generated from [`docs/content/softn-docs.json`](docs/README.md) |
+| v2 Web Containers       | [SoftN v2 Container Architecture RFC](docs/rfcs/softn-v2-container.md) · [Container showcase](examples/container-showcase)                                     |
+| Language and components | Expand the reference below for v1 `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                |
 | Data modeling           | [Builder collections, ER relationships and record references](docs/engineering/BUILDER_DATA.md)                                                                         |
 | Loading and composition | [Bundle loading](docs/engineering/BUNDLE_LOADING.md) · [Component loading](docs/engineering/COMPONENT_LOADING.md) · [Reopening local apps](docs/engineering/LOCAL_APP_REOPEN.md)                   |
 | Hosting                 | [Single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/engineering/SINGLE_APP_PRIVATE.md) · [Private backend](apps/softn-host-rust/PRIVATE_BACKEND.md) |
@@ -176,6 +240,24 @@ Capabilities such as network, microphone and synchronization require support and
 <summary><strong>Language, components, runtime and deployment reference</strong></summary>
 
 ## Architecture Overview
+
+### v2 Web App Container Pipeline (`@softn/container`)
+
+```
+.softn / .zip (HTML + CSS + JS/TS/Py or compiled dist/)
+      |
+      +---> Sanitized HTML + Scoped CSS ---> Closed ShadowRoot (<softn-app>)
+      |                                             ^
+      |                                             | Batched DOM Mutations &
+      v                                             | Split-Realm WebGL2 / Canvas Ops
+  Web Worker ---> Tiered ZIPP WASM VM --------------+
+                  (lite / js / ts / py + torch)
+                        |
+                        +---> Hosted `/runtime/vendor/*` (preact, htm, marked, three)
+                        +---> Gated `softn:*` bridges (`softn:db`, `softn:net`, `softn:storage`)
+```
+
+### v1 Visual `.ui` & `.logic` Pipeline (`@softn/core` + `@softn/components`)
 
 ```
 .softn/.ui Source
@@ -879,10 +961,10 @@ them shows the engine's debug readout.
 
 | App               | Description                                                                                                                                                                 |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **softn-site**    | The softn.com landing page and app directory: browse, search and filter apps, play them in a popup, publish and update your own                                             |
-| **softn-web**     | Browser-based `.softn` runtime with multi-tab, URL routing and `?open=` deep links. Installable PWA                                                                         |
-| **softn-studio**  | Brief to blueprint to app, against whichever model provider you configure. Installable PWA                                                                                  |
-| **softn-builder** | Visual IDE with drag-and-drop editor, live preview, bundle export. Installable PWA                                                                                          |
+| **softn-site**    | The softn.com landing page and app directory: browse, search and filter v2 Web Containers and v1 `.softn` apps, inspect sources, play them, and publish your own            |
+| **softn-web**     | Browser-based `.softn` & `.zip` runtime running both Worker-isolated v2 Web Containers (`<softn-app>`) and v1 `.ui` apps, with multi-tab and `?open=` deep links. PWA       |
+| **softn-studio**  | AI-assisted workspace: brief to blueprint to v2 Web App Container (`HTML + CSS + JS/TS/Py`) or v1 `.ui` app, verified headlessly inside ZIPP. Installable PWA               |
+| **softn-builder** | Hybrid IDE: code & live-preview workspace for v2 Web Containers alongside a 107-component drag-and-drop visual editor for v1 `.ui` apps, schema designer, and `.softn` export|
 | **softn-loader**  | Tauri desktop runtime with `.softn` file association and XDB/SQLite                                                                                                         |
 | **softn-api**     | The directory behind softn.com: PHP and folder-based JSON, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
 
@@ -1146,13 +1228,16 @@ the six release archives, in the words of the `README.md` each carries.
 ### Running Apps
 
 ```bash
-# Everything web on one origin: /, /web/, /builder/ and /studio/
+# Everything web on one origin (normally http://localhost:1420): /, /web/, /builder/, /studio/, /docs/ and /api/
 npm run dev
 
-# Or one at a time
+# Standalone v2 Web App Container showcase (http://127.0.0.1:4830)
+npm run demo:container
+
+# Or one app at a time
 npm run dev:site      # landing page   1421
 npm run dev:web       # web runtime    1420
-npm run dev:builder   # visual builder 1422
+npm run dev:builder   # builder IDE    1422
 npm run dev:studio    # AI studio      1423
 
 # Desktop loader (requires Rust)
@@ -1218,7 +1303,10 @@ Chromium and skips itself until `npm run e2e:install` has put one on the machine
 
 | File                                                 | Purpose                                                                                                                                                                                                                      |
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/@softn/core/src/parser/`                   | Lexer and AST parser                                                                                                                                                                                                         |
+| `packages/@softn/container/`                         | SoftN v2 Web App Container microkernel (`<softn-app>`): Worker-isolated tiered ZIPP engines, closed ShadowRoot DOM patcher, hosted `/runtime/vendor/` modules, Split-Realm Three.js WebGL2, and `<softn-*>` custom elements  |
+| `packages/@softn/runtime-shell/src/WebContainerView.tsx` | Shared React host wrapper and zero-config container detector (`containerBundle.ts`) used by `softn-web` and `softn-single`                                                                                               |
+| `examples/container-showcase/`                       | Standalone v2 container showcase (`compiled-kanban.softn`, `preact-fieldnotes.softn`, `three-orbit.softn`)                                                                                                                   |
+| `packages/@softn/core/src/parser/`                   | v1 `.ui` lexer and AST parser                                                                                                                                                                                                |
 | `packages/@softn/core/src/renderer/`                 | AST to React renderer and component registry                                                                                                                                                                                 |
 | `packages/@softn/core/src/runtime/script-runtime.ts` | Script runtime (state sync, bridges, the `softn.*` call table)                                                                                                                                                               |
 | `packages/@softn/core/src/runtime/host-calls/`       | What `softn.*` calls reach: the permission gate, network and storage, audio, microphone, QR, files, AI and GPU                                                                                                               |

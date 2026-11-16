@@ -1443,7 +1443,7 @@ function App(): React.ReactElement {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".softn"
+        accept=".softn,.zip"
         onChange={handleFileInputChange}
         style={{ display: 'none' }}
         data-softn-host=""
@@ -1502,7 +1502,7 @@ function App(): React.ReactElement {
             onDownload={handleDownloadTab}
             // The runtime's own editor, opened by the person from the bar and
             // by nothing else: no app, address or message opens it.
-            onEdit={toggleEditor}
+            onEdit={activeTab.webContainer ? undefined : toggleEditor}
             editing={editingTabId === activeTab.id}
           />
         )}
@@ -1666,6 +1666,8 @@ function App(): React.ReactElement {
               storageEndpoint={
                 tab.directorySlug ? `/api/apps/${encodeURIComponent(tab.directorySlug)}/storage` : undefined
               }
+              webContainer={tab.webContainer}
+              bundleData={tab.bundleData}
             />
           ))}
         </div>

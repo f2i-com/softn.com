@@ -82,6 +82,19 @@ function decrement() {
  */
 export function blankLogicFile(path: string): string {
   const name = path.split('/').pop() ?? path;
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.css')) {
+    return `/* ${name} */\n\n`;
+  }
+  if (lower.endsWith('.json')) {
+    return `{\n}\n`;
+  }
+  if (lower.endsWith('.md') || lower.endsWith('.txt')) {
+    return ``;
+  }
+  if (/\.(?:tsx?|mts)$/.test(lower)) {
+    return `// ${name}\n// SoftN Web Container — TypeScript module\n\nexport {};\n`;
+  }
   return logicLanguageOf(path) === 'python'
     ? `# ${name}\n# SoftN logic - Python, run in the ZIPP engine\n\n`
     : `// ${name}\n// SoftN logic — JavaScript, run in a sandboxed VM\n\n`;

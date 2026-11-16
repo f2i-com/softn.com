@@ -369,9 +369,14 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           // imports and logic link lead to a file the project has. Read
           // after the build, which puts the canvas into its file first.
           const files = useFilesStore.getState();
-          setReferences(danglingReferences(files.uiFiles, files.logicFiles));
-          // Nor whether each page parses, or what the parser warns of in one that does.
-          setPages(pageDiagnostics(files.uiFiles));
+          if (useProjectStore.getState().projectFormat === 'web') {
+            setReferences([]);
+            setPages([]);
+          } else {
+            setReferences(danglingReferences(files.uiFiles, files.logicFiles));
+            // Nor whether each page parses, or what the parser warns of in one that does.
+            setPages(pageDiagnostics(files.uiFiles));
+          }
         })
         .catch((e) => {
           if (!cancelled) setPreflightError(e instanceof Error ? e.message : 'Could not check the bundle.');

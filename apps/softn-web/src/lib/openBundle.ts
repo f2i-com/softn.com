@@ -28,6 +28,11 @@ import {
   type ZipResult,
 } from '@softn/runtime-shell/bundleProcessor';
 import { warmFirstScreen, type FirstScreenWarmup } from '@softn/runtime-shell/zipWarmup';
+import {
+  WEB_CONTAINER_SOURCE_SENTINEL,
+  detectWebContainer,
+  unwrapContainerZipEntries,
+} from '@softn/runtime-shell/containerBundle';
 import { resolveServerConfig } from '@softn/runtime-shell/net';
 // The consent rule the desktop loader and the single-app shell share. The
 // grant itself is kept on the app's cache record (appCache), by origin, where
@@ -120,6 +125,8 @@ export interface OpenTab {
   editMarks?: EditMarks;
   /** Another page of the bundle a link has put on screen (AppRunner follows it), where it is not the main one. */
   shownPage?: string;
+  /** Whether this tab runs inside the v2 `<softn-app>` Web Container (`@softn/container`). */
+  webContainer?: boolean;
   /**
    * The name its address is written with, where that is not `name`: the
    * bundle's own, for an app the person renamed in the runtime's editor to a
@@ -262,7 +269,13 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     } finally {
       mark('softn:zip:end');
     }
-    const { textFiles, binaryFiles, archive } = zip;
+    const { archive } = zip;
+    const { textFiles, binaryFiles } = unwrapContainerZipEntries(zip.textFiles, zip.binaryFiles);
+    const containerCheck = detectWebContainer(
+      textFiles,
+      (p) => binaryFiles.has(p),
+      fileName
+    );
 
     // What the person changed in this app with the runtime's editor is laid
     // over its files before anything reads them (edit/drafts.ts): the app
@@ -301,16 +314,20 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // manifest without `files` opens, as it always did in core, and what
     // cannot run is refused in the inspector's words.
     let manifest: BundleManifest;
-    try {
-      manifest = readManifest<BundleManifest>(textFiles);
-    } catch (err) {
-      throw err instanceof ManifestError ? new Error(`Invalid manifest.json: ${err.message}`) : err;
+    if (containerCheck.inferredManifest) {
+      manifest = containerCheck.inferredManifest;
+    } else {
+      try {
+        manifest = readManifest<BundleManifest>(textFiles);
+      } catch (err) {
+        throw err instanceof ManifestError ? new Error(`Invalid manifest.json: ${err.message}`) : err;
+      }
     }
     if (manifest.name.length > 255) {
       throw new Error('Invalid manifest.json: name exceeds 255 characters');
     }
 
-    const appName = manifest.name || fileName.replace(/\.softn$/, '');
+    const appName = manifest.name || fileName.replace(/\.(?:softn|zip)$/i, '');
 
     // What the app IS, as distinct from what it calls itself. Everything
     // that persists — its database, its granted permissions, its cached
@@ -410,32 +427,36 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // Theirs to change: not from the directory or a link, now or when it was saved.
     const mine = !directorySlug && !request.fromLink && !cachedApp?.directorySlug && !cachedApp?.linked;
 
-    // Load XDB data (per-app isolation)
-    mark('softn:xdb-seed:start');
-    try {
-      await loadXDBData(textFiles, manifest, appOrigin);
-    } finally {
-      mark('softn:xdb-seed:end');
-    }
-    if (placeholderClosed()) return null;
+    // Load XDB data (per-app isolation) & compose v1 source unless this is a v2 Web Container
+    let source = WEB_CONTAINER_SOURCE_SENTINEL;
+    let logicBasePath: string | undefined;
+    let preIncludedLogicPaths: string[] | undefined;
+    let python: PythonProject | undefined;
+    let parseProblem: string | undefined;
+    if (!containerCheck.isWebContainer) {
+      mark('softn:xdb-seed:start');
+      try {
+        await loadXDBData(textFiles, manifest, appOrigin);
+      } finally {
+        mark('softn:xdb-seed:end');
+      }
+      if (placeholderClosed()) return null;
 
-    // Process source
-    let composed: ReturnType<typeof processBundle>;
-    mark('softn:compose:start');
-    try {
-      composed = processBundle(textFiles, manifest);
-    } finally {
-      mark('softn:compose:end');
-    }
-    const { source, logicBasePath, preIncludedLogicPaths, python, parseProblem } = composed;
+      let composed: ReturnType<typeof processBundle>;
+      mark('softn:compose:start');
+      try {
+        composed = processBundle(textFiles, manifest);
+      } finally {
+        mark('softn:compose:end');
+      }
+      source = composed.source;
+      logicBasePath = composed.logicBasePath;
+      preIncludedLogicPaths = composed.preIncludedLogicPaths;
+      python = composed.python;
+      parseProblem = composed.parseProblem;
 
-    // The assets the composed source names by literal, then the manifest's
-    // asset list, start inflating now, in a worker where there is one,
-    // while the cache write, the consent lookup and the render go on. Not
-    // awaited: an asset() the app makes before its entry lands reads the
-    // entry itself. Disposing the tab's asset resolver releases the
-    // archive, which ends the warm-up.
-    warmup = warmFirstScreen(archive, data, firstScreenAssets(source, manifest, binaryFiles));
+      warmup = warmFirstScreen(archive, data, firstScreenAssets(source, manifest, binaryFiles));
+    }
     // Withheld until the user answers, and withheld here too: a remote
     // `import` is network access just as surely as fetch() in app logic,
     // and it resolves during loadScript — before the bar has been on
@@ -475,11 +496,11 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // Home shows it — but the warm-up and the resolver were minted for a
     // tab that no longer exists, so they go the way the failure path
     // below sends them.
-    if (placeholderClosed()) {
-      warmup.abort();
-      importResolver.dispose();
-      return null;
-    }
+      if (placeholderClosed()) {
+        warmup?.abort();
+        importResolver.dispose();
+        return null;
+      }
 
     // What this build asks for that the one before it did not, for the
     // consent bar: an update must not add a capability under a request
@@ -628,6 +649,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       directorySlug,
       mine,
       edited,
+      webContainer: containerCheck.isWebContainer || undefined,
       ...(addressName !== undefined ? { addressName } : {}),
     };
     host.setOpenTabs((prev) => {
@@ -647,7 +669,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // on screen already; nothing waits on this, and the outcome is a word
     // on its card at Home. Not started for a record the cache could not
     // write: there is nothing to record the outcome on.
-    if (cachedRecord) {
+    if (cachedRecord && !containerCheck.isWebContainer) {
       host.installOffline(tabId, cachedRecord, source, manifest.config?.execution, requested, python?.packages);
     }
     return appName;

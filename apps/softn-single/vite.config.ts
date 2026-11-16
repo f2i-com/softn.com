@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
 export default defineConfig({
@@ -9,7 +10,7 @@ export default defineConfig({
   // (`/play/`), where the directory serves it for every app in the catalogue.
   base: process.env.VITE_BASE || './',
   // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
-  plugins: [react(), coreWorkerAssetPlugin(), scriptPolicyPlugin()],
+  plugins: [react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin(), scriptPolicyPlugin()],
   resolve: { dedupe: ['react', 'react-dom'] },
   // In the site build, the engine and the QR decoder by their one shared copy
   // (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.

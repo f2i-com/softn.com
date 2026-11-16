@@ -28,6 +28,7 @@ const RED = '\x1b[31m';
 // import, with a resolution error that names a file rather than the fix — so
 // the fix is said before anything starts.
 const REQUIRED_BUILDS = [
+  'packages/@softn/container/dist/index.js',
   'packages/@softn/core/dist/index.js',
   'packages/@softn/core/dist/zipp_wasm_bg.wasm',
   'packages/@softn/components/dist/index.js',

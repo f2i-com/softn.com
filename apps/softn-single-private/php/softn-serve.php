@@ -112,7 +112,14 @@ const SOFTN_ENTRY_TYPES = [
     'wgsl' => ['text/plain', 'text'],
     'xdb' => ['application/json', 'text'],
     'html' => ['text/html', 'text'],
+    'htm' => ['text/html', 'text'],
     'js' => ['application/javascript', 'text'],
+    'mjs' => ['application/javascript', 'text'],
+    'cjs' => ['application/javascript', 'text'],
+    'jsx' => ['application/javascript', 'text'],
+    'ts' => ['text/typescript', 'text'],
+    'tsx' => ['text/typescript', 'text'],
+    'mts' => ['text/typescript', 'text'],
     'txt' => ['text/plain', 'text'],
     'xml' => ['application/xml', 'text'],
     'pdf' => ['application/pdf', 'binary'],
@@ -651,13 +658,43 @@ function softn_guard(array $config, string $private): void
 function softn_manifest(ZipArchive $zip): array
 {
     $raw = $zip->getFromName('manifest.json');
-    $manifest = is_string($raw) ? json_decode($raw, true) : null;
-    if (!is_array($manifest) || !is_string($manifest['name'] ?? null) || !is_string($manifest['main'] ?? null) || !is_array($manifest['files'] ?? null)) {
+    if (!is_string($raw)) {
+        // Support zero-config v2 HTML Web App Containers (`index.html` or `app.html` with no manifest.json)
+        $htmlEntry = null;
+        foreach (['index.html', 'app.html'] as $candidate) {
+            if ($zip->statName($candidate) !== false) {
+                $htmlEntry = $candidate;
+                break;
+            }
+        }
+        if ($htmlEntry === null) {
+            softn_fail(503, 'Invalid application manifest.');
+        }
+        $htmlText = $zip->getFromName($htmlEntry);
+        $title = 'Web App';
+        if (is_string($htmlText) && preg_match('/<title[^>]*>([\s\S]*?)<\/title>/i', $htmlText, $m)) {
+            $parsedTitle = trim((string)preg_replace('/\s+/', ' ', strip_tags($m[1])));
+            if ($parsedTitle !== '') $title = softn_text_cut($parsedTitle, 64);
+        }
+        return [
+            'engine' => 2,
+            'name' => $title,
+            'version' => '1.0.0',
+            'main' => $htmlEntry,
+            'files' => (object)[],
+            'config' => (object)['execution' => 'worker'],
+        ];
+    }
+    $manifest = json_decode($raw, true);
+    $isV2 = is_array($manifest) && (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
+    if (!is_array($manifest) || !is_string($manifest['name'] ?? null) || !is_string($manifest['main'] ?? null) || (!$isV2 && !is_array($manifest['files'] ?? null))) {
         softn_fail(503, 'Invalid application manifest.');
     }
     $files = [];
-    foreach (['ui', 'logic', 'xdb', 'assets'] as $kind) {
-        if (is_array($manifest['files'][$kind] ?? null)) $files[$kind] = array_values(array_filter($manifest['files'][$kind], 'is_string'));
+    if (is_array($manifest['files'] ?? null)) {
+        foreach (['ui', 'logic', 'xdb', 'assets'] as $kind) {
+            if (is_array($manifest['files'][$kind] ?? null)) $files[$kind] = array_values(array_filter($manifest['files'][$kind], 'is_string'));
+        }
     }
     $out = [
         'name' => $manifest['name'],
@@ -665,6 +702,8 @@ function softn_manifest(ZipArchive $zip): array
         'main' => $manifest['main'],
         'files' => (object)$files,
     ];
+    if (($manifest['engine'] ?? null) === 2) $out['engine'] = 2;
+    if (($manifest['container'] ?? null) === true) $out['container'] = true;
     if (is_string($manifest['description'] ?? null)) $out['description'] = $manifest['description'];
     if (is_string($manifest['icon'] ?? null)) $out['icon'] = $manifest['icon'];
     $config = [];

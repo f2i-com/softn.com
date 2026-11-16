@@ -99,4 +99,28 @@ describe('inspectBundle', () => {
     const r = inspectBundle(bundle({ ...good, '../escape.txt': 'x' }));
     expect(r.problem).toMatch(/unsafe path/);
   });
+
+  it('accepts zero-config HTML and dist/ web app containers without a manifest.json', () => {
+    const rootHtml = inspectBundle(
+      bundle({
+        'index.html': '<!DOCTYPE html><html><head><title>Kanban Board</title></head><body><div id="app"></div></body></html>',
+        'assets/index-abc123.js': 'console.log("ok")',
+      }),
+    );
+    expect(rootHtml.problem).toBeNull();
+    expect(rootHtml.name).toBe('Kanban Board');
+    expect(rootHtml.version).toBe('1.0.0');
+    expect(rootHtml.main).toBe('index.html');
+    expect(rootHtml.execution).toBe('worker');
+
+    const distWrapped = inspectBundle(
+      bundle({
+        'dist/index.html': '<!DOCTYPE html><html><head><title>Compiled Dist</title></head><body></body></html>',
+        'dist/assets/chunk.js': 'export const x = 1;',
+      }),
+    );
+    expect(distWrapped.problem).toBeNull();
+    expect(distWrapped.name).toBe('Compiled Dist');
+    expect(distWrapped.main).toBe('index.html');
+  });
 });

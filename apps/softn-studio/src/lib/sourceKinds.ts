@@ -23,14 +23,75 @@ export function isPagePath(path: string): boolean {
   return /\.(ui|html?)$/i.test(path) && !ASSETS.test(path);
 }
 
-/** JavaScript logic: `.logic`, or `.js` outside `assets/`. */
+/** JavaScript or TypeScript logic: `.logic`, or `.js/.mjs/.ts/.tsx/.mts/.jsx` outside `assets/`. */
 export function isJavaScriptLogicPath(path: string): boolean {
-  return /\.logic$/i.test(path) || (/\.js$/i.test(path) && !ASSETS.test(path));
+  return /\.logic$/i.test(path) || (/\.(?:m?js|tsx?|mts|jsx)$/i.test(path) && !ASSETS.test(path));
 }
 
-/** Logic in either language the runtime runs. */
+/** Logic in any language the runtime runs. */
 export function isLogicPath(path: string): boolean {
-  return isJavaScriptLogicPath(path) || /\.py$/i.test(path);
+  return isJavaScriptLogicPath(path) || (/\.py$/i.test(path) && !ASSETS.test(path));
+}
+
+/**
+ * Determine whether `files` is a SoftN v2 Web App Container (`'web'`, run by `@softn/container`)
+ * or a legacy v1 SoftN template bundle (`'legacy-ui'`, run by `@softn/core`).
+ */
+export function projectContainerMode(
+  files: ReadonlyMap<string, { content: string | Uint8Array }>,
+  brief?: { appFormat?: 'container' | 'ui'; logicLanguage?: string } | null
+): 'web' | 'legacy-ui' {
+  if (files.size === 0) {
+    if (brief?.appFormat === 'container' || brief?.logicLanguage === 'typescript') return 'web';
+    return 'legacy-ui';
+  }
+
+  let manifestMain: string | null = null;
+  const manifestFile = files.get('manifest.json');
+  if (manifestFile && typeof manifestFile.content === 'string') {
+    try {
+      const parsed = JSON.parse(manifestFile.content) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        if (parsed.engine === 2 || parsed.container === true) return 'web';
+        if (typeof parsed.main === 'string') manifestMain = parsed.main;
+        else if (typeof parsed.entry === 'string') manifestMain = parsed.entry;
+      }
+    } catch {
+      // Fall through to entry inspection
+    }
+  }
+
+  // TypeScript modules outside assets/ only run in the v2 container engine
+  for (const path of files.keys()) {
+    if (!/^builder\//i.test(path) && !ASSETS.test(path) && /\.(?:tsx?|mts)$/i.test(path)) {
+      return 'web';
+    }
+  }
+
+  const entryPath =
+    (manifestMain && files.has(manifestMain) ? manifestMain : null) ??
+    (files.has('index.html') ? 'index.html' : files.has('ui/main.ui') ? 'ui/main.ui' : null);
+
+  if (!entryPath || /\.ui$/i.test(entryPath)) return 'legacy-ui';
+
+  const entryFile = files.get(entryPath);
+  const entryText = entryFile && typeof entryFile.content === 'string' ? entryFile.content : '';
+  if (!entryText) return brief?.appFormat === 'container' ? 'web' : 'legacy-ui';
+
+  if (/<logic[\s>]|<import\s+[A-Z]\w*\s+from\s*=|<data>\s*<collection\b|^\s*#(?:if|each)\b/m.test(entryText)) {
+    return 'legacy-ui';
+  }
+  if (!/<!doctype\s+html/i.test(entryText) && !/<html[\s>]/i.test(entryText) && /<App[\s>]/.test(entryText)) {
+    return 'legacy-ui';
+  }
+  if (
+    /<!doctype\s+html/i.test(entryText) ||
+    /<html[\s>]/i.test(entryText) ||
+    /<script\b[^>]*\btype\s*=\s*["']?(?:module|text\/python)["']?/i.test(entryText)
+  ) {
+    return 'web';
+  }
+  return brief?.appFormat === 'container' ? 'web' : 'legacy-ui';
 }
 
 /**

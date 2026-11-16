@@ -28,7 +28,10 @@ export type AgentState =
  * logic files' names — `.logic` is JavaScript, `.py` is Python — and an app
  * uses one of them for all of its logic.
  */
-export type LogicLanguage = 'javascript' | 'python';
+export type LogicLanguage = 'javascript' | 'typescript' | 'python';
+
+/** Whether the project uses the v2 Web App Container runtime (`@softn/container`) or v1 `.ui` templates. */
+export type StudioAppFormat = 'container' | 'ui';
 
 /** Brief wizard data */
 export interface ProjectBrief {
@@ -39,6 +42,8 @@ export interface ProjectBrief {
   collections: string[];
   authNeeded: boolean;
   style: VisualStyle;
+  /** Container format (`'container'` for v2 HTML/CSS/JS/TS web containers, `'ui'` for v1 SoftN templates). */
+  appFormat?: StudioAppFormat;
   /**
    * What the scaffold and the model write the logic in. Absent in projects
    * saved before the choice existed, and absent means JavaScript, which is

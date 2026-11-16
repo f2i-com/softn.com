@@ -6,6 +6,19 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- Upgrading from v0.0.42: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so existing `.ui` + `.logic` bundles run without being rebuilt or parsed again, and every protocol number in `softn-formlogic-runtime` is v0.0.42's.
+- SoftN v2 Web App Containers (`packages/@softn/container`):
+  - `<softn-app>` custom element and `mountSoftNContainer()` microkernel (~14 KB gzipped, React-free) run standard web apps (`index.html`, CSS, ES modules, TypeScript/TSX, Python, and unmodified Vite/esbuild/Parcel `dist/` builds) inside a Worker-isolated ZIPP WebAssembly sandbox.
+  - Tiered on-demand ZIPP WASM engines (`javascript-lite`, `javascript`, `typescript`, `python`, and `python-torch`) with static same-origin `.glue.js` bindings so strict `script-src 'self' 'wasm-unsafe-eval'` CSP hosts need no `'unsafe-inline'` or `blob:` script execution.
+  - Closed `ShadowRoot` surgical DOM patcher with tag/attribute/URL/CSS sanitization, deterministic integer node handles, synchronous cached layout metrics, shadow-scoped `@keyframes`, and Canvas 2D / Split-Realm WebGL2 (`three`) rendering on the main thread.
+  - Hosted `/runtime/vendor/` imports (`preact`, `preact/hooks`, `preact/jsx-runtime`, `htm`, `marked`, `three`), capability-gated `softn:*` bridges (`softn:db`, `softn:net`, `softn:storage`) with a shadow-isolated consent bar, and lazy `<softn-chart>` / `<softn-datagrid>` UI extensions (`examples/container-showcase`).
+- Ecosystem support across the website, runtimes, PHP hosts, Studio AI, and Builder (with full backwards compatibility for v1 `.ui` + `.logic` bundles):
+  - Directory and bundle inspector (`@softn/bundle-format`, `apps/softn-site`, `apps/softn-api`): unwraps single-folder `dist/` archives (`dist/index.html` -> `index.html`), infers zero-config HTML container manifests, prioritizes `index.html` in the source viewer, and updates site copy and repository documentation.
+  - Web, single-app, and PHP hosts (`@softn/runtime-shell`, `@softn/single-shell`, `apps/softn-web`, `apps/softn-single`, `apps/softn-single-private`, `apps/softn-host-php`): detects and mounts v2 Web Containers alongside v1 `.ui` apps, accepts dropped `.zip` archives in SoftN Web, and serves `.htm`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, and `.mts` sources cleanly from the private PHP single-app host.
+  - Studio AI (`apps/softn-studio`) and Builder (`apps/softn-builder`): adds `Web Container (v2)` project creation and scaffolding (`HTML + CSS + JS/TS/Python`), AI system prompt guidance and headless ZIPP WASM validation, multi-language editor modes, live `<softn-app>` previews, zero-config `dist/` import and `.softn` export, and a bundled TypeScript `Fieldnotes` container example.
+
 ## v0.0.42
 
 - Upgrading from v0.0.41: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again. Every protocol number the FormLogic frame says is v0.0.41's.

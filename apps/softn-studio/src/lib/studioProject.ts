@@ -86,14 +86,18 @@ export function projectLogicLanguage(
   brief?: Pick<ProjectBrief, 'logicLanguage'> | null,
 ): LogicLanguage {
   let python = false;
+  let typescript = false;
   let javascript = false;
   for (const path of files.keys()) {
     if (isPrivatePath(path)) continue;
     const lower = path.toLowerCase();
-    if (lower.endsWith('.py')) python = true;
+    if (lower.endsWith('.py') && !lower.startsWith('assets/')) python = true;
+    else if (/\.(?:tsx?|mts)$/i.test(lower) && !lower.startsWith('assets/')) typescript = true;
     else if (isJavaScriptLogicPath(path)) javascript = true;
   }
-  if (python !== javascript) return python ? 'python' : 'javascript';
+  if (python && !javascript && !typescript) return 'python';
+  if (typescript && !python) return 'typescript';
+  if (javascript && !python) return 'javascript';
   return brief?.logicLanguage ?? 'javascript';
 }
 
@@ -602,6 +606,244 @@ function buildXdb(collection: BlueprintCollection): string {
  * The logic is `main.js` or, when the brief chose Python, `main.py`; the
  * file's name is what tells the runtime which it is.
  */
+function scaffoldV2ContainerFiles(
+  brief: ProjectBrief,
+  blueprint: Blueprint,
+  slugs: string[],
+  xdbPaths: string[],
+  packages: string[],
+  requirements: string
+): Array<{ path: string; content: string }> {
+  const lang = brief.logicLanguage ?? 'javascript';
+  const python = lang === 'python';
+  const ts = lang === 'typescript';
+  const logicPath = python ? 'main.py' : ts ? 'app.ts' : 'main.js';
+  const accent = accentFor(brief.style);
+  const theme = themeFor(brief.style);
+  const pagesMeta = blueprint.pages.map((page, i) => ({ id: slugs[i], label: page.name }));
+  const colNames = blueprint.collections.map((c) => ({ key: collectionKey(c.name), title: c.name }));
+
+  const scriptTag = python
+    ? `<script type="text/python" src="./${logicPath}"></script>`
+    : `<script type="module" src="./${logicPath}"></script>`;
+
+  const indexHtml = `<!DOCTYPE html>
+<html lang="en" data-theme="${theme}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${esc(brief.appName)}</title>
+    <link rel="icon" href="./${APP_ICON_PATH}" />
+    <link rel="stylesheet" href="softn:ui.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="container stack gap-lg"></div>
+    ${scriptTag}
+  </body>
+</html>
+`;
+
+  const stylesCss = `:root {
+  --app-accent: ${accent};
+}
+
+.app-header {
+  padding-top: var(--softn-space-md);
+}
+
+.app-title {
+  margin: 0;
+  color: var(--app-accent);
+}
+`;
+
+  const jsOrTsSource = [
+    "import { h, render } from 'preact';",
+    "import { useState } from 'preact/hooks';",
+    "import htm from 'htm';",
+    ...(colNames.length > 0 ? ["import { db } from 'softn:db';"] : []),
+    '',
+    'const html = htm.bind(h);',
+    `const appName${ts ? ': string' : ''} = ${JSON.stringify(brief.appName)};`,
+    `const appDescription${ts ? ': string' : ''} = ${JSON.stringify(brief.description)};`,
+    `const pages${ts ? ': Array<{ id: string; label: string }>' : ''} = ${JSON.stringify(pagesMeta)};`,
+    `const collections${ts ? ': Array<{ key: string; title: string }>' : ''} = ${JSON.stringify(colNames)};`,
+    '',
+    'function App() {',
+    `  const [page, setPage] = useState(${JSON.stringify(slugs[0] ?? 'home')});`,
+    '  return html`',
+    '    <div class="stack gap-md app-header">',
+    '      <div class="row between wrap gap-sm">',
+    '        <h1 class="app-title">${appName}</h1>',
+    '        ${pages.length > 1 ? html`',
+    '          <nav class="row gap-xs">',
+    '            ${pages.map((item) => html`',
+    '              <button key=${item.id} class=${page === item.id ? "btn primary" : "btn"} onClick=${() => setPage(item.id)}>${item.label}</button>',
+    '            `)}',
+    '          </nav>',
+    '        ` : null}',
+    '      </div>',
+    '      <p class="muted">${appDescription}</p>',
+    ...(colNames.length > 0
+      ? [
+          '      ${collections.map((col) => {',
+          '        const rows = db.query(col.key);',
+          '        return html`',
+          '          <section key=${col.key} class="card stack gap-xs">',
+          '            <h2>${col.title}</h2>',
+          '            <div class="muted">${rows.length} seeded record(s)</div>',
+          '          </section>',
+          '        `;',
+          '      })}',
+        ]
+      : [
+          '      <section class="card stack gap-xs">',
+          '        <h2>${pages.find((p) => p.id === page)?.label ?? "Home"}</h2>',
+          '        <p class="muted">Starter container ready. Describe what belongs here to build it out.</p>',
+          '      </section>',
+        ]),
+    '    </div>',
+    '  `;',
+    '}',
+    '',
+    "const root = document.getElementById('app');",
+    'if (root) render(html`<${App} />`, root);',
+    '',
+  ].join('\n');
+
+  const pySource = [
+    'import js',
+    '',
+    `app_name = ${JSON.stringify(brief.appName)}`,
+    `app_description = ${JSON.stringify(brief.description)}`,
+    '',
+    'root = js.document.getElementById("app")',
+    'if root:',
+    '    card = js.document.createElement("div")',
+    '    card.className = "card stack gap-xs"',
+    '    h1 = js.document.createElement("h1")',
+    '    h1.className = "app-title"',
+    '    h1.textContent = app_name',
+    '    p = js.document.createElement("p")',
+    '    p.className = "muted"',
+    '    p.textContent = app_description',
+    '    card.appendChild(h1)',
+    '    card.appendChild(p)',
+    '    root.appendChild(card)',
+    '',
+  ].join('\n');
+
+  const files: Array<{ path: string; content: string }> = [
+    {
+      path: 'manifest.json',
+      content: JSON.stringify(
+        {
+          engine: 2,
+          name: brief.appName,
+          version: '2.0.0',
+          description: brief.description,
+          main: MAIN_PAGE_PATH,
+          icon: APP_ICON_PATH,
+          target: brief.target,
+          files: {
+            ui: [MAIN_PAGE_PATH],
+            logic: [logicPath],
+            xdb: xdbPaths,
+            assets: [APP_ICON_PATH, 'styles.css'],
+          },
+          config: {
+            execution: 'worker',
+            theme: { mode: theme },
+            ...(packages.length > 0 ? { python: { packages } } : {}),
+          },
+          pages: blueprint.pages.map((page) => ({
+            id: page.id,
+            name: page.name,
+            path: MAIN_PAGE_PATH,
+            route: page.route,
+          })),
+        },
+        null,
+        2
+      ),
+    },
+    {
+      path: 'permission.json',
+      content: JSON.stringify({ permissions: {} }, null, 2),
+    },
+    {
+      path: APP_ICON_PATH,
+      content: appIconSvg(accent),
+    },
+    {
+      path: 'styles.css',
+      content: stylesCss,
+    },
+    {
+      path: MAIN_PAGE_PATH,
+      content: indexHtml,
+    },
+    {
+      path: logicPath,
+      content: python ? pySource : jsOrTsSource,
+    },
+    {
+      path: 'builder/blueprint.json',
+      content: JSON.stringify(blueprint, null, 2),
+    },
+    {
+      path: 'builder/data-model.json',
+      content: JSON.stringify({ collections: blueprint.collections }, null, 2),
+    },
+    {
+      path: 'builder/requirements.md',
+      content: requirements,
+    },
+    {
+      path: 'builder/task-graph.json',
+      content: JSON.stringify(generateTaskGraph(blueprint), null, 2),
+    },
+    {
+      path: 'builder/component-map.json',
+      content: JSON.stringify(
+        {
+          pages: blueprint.pages.map((page) => ({
+            id: page.id,
+            path: MAIN_PAGE_PATH,
+            components: page.components,
+          })),
+        },
+        null,
+        2
+      ),
+    },
+    {
+      path: 'builder/generation-log.json',
+      content: JSON.stringify(
+        [
+          {
+            type: 'architect',
+            timestamp: new Date().toISOString(),
+            message: 'Generated initial v2 Web Container blueprint from the guided brief.',
+          },
+        ],
+        null,
+        2
+      ),
+    },
+    {
+      path: 'builder/provider-config.json',
+      content: JSON.stringify({ perRoleModels: 'configured in settings' }, null, 2),
+    },
+  ];
+
+  for (const [index, collection] of blueprint.collections.entries()) {
+    files.push({ path: xdbPaths[index], content: buildXdb(collection) });
+  }
+  return files;
+}
+
 export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint): Array<{ path: string; content: string }> {
   const slugs = pageSlugs(blueprint.pages);
   const pagePaths = slugs.map((slug) => pageFileCandidates(slug)[0]);
@@ -618,9 +860,13 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
     `- AI: bring your own API key`,
     `- Style: ${brief.style}`,
     `- Authentication: ${brief.authNeeded ? 'required' : 'not required'}`,
-    `- Logic: ${python ? 'Python' : 'JavaScript'}`,
+    `- Logic: ${python ? 'Python' : brief.logicLanguage === 'typescript' ? 'TypeScript' : 'JavaScript'}`,
     ...(packages.length > 0 ? [`- Python packages: ${packages.join(', ')}`] : []),
   ].join('\n');
+
+  if (brief.appFormat === 'container' || brief.logicLanguage === 'typescript') {
+    return scaffoldV2ContainerFiles(brief, blueprint, slugs, xdbPaths, packages, requirements);
+  }
 
   const files: Array<{ path: string; content: string }> = [
     {

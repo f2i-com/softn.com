@@ -23,6 +23,7 @@
   "dependencies": {
     "@softn/brand": "*",
     "@softn/components": "*",
+    "@softn/container": "*",
     "@softn/core": "*",
     "@softn/runtime-shell": "*"
   },

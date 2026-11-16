@@ -74,6 +74,8 @@ export function newProjectId(): string {
   return `project_${projectCounter}_${random}`;
 }
 
+export type BuilderProjectFormat = 'ui' | 'web';
+
 interface ProjectStore {
   // Project metadata
   name: string;
@@ -95,6 +97,9 @@ interface ProjectStore {
    * not declare, so an app that uses it has to say so.
    */
   pythonPackages: string[];
+
+  /** `'ui'` for legacy visual `.ui` apps; `'web'` for SoftN v2 Web App Containers (`@softn/container`). */
+  projectFormat: BuilderProjectFormat;
 
   // Logic source (.logic — JavaScript)
   logicSource: string;
@@ -138,6 +143,7 @@ interface ProjectStore {
   setThemeMode: (mode: 'light' | 'dark' | 'system') => void;
   setPermissions: (permissions: PermissionDeclaration) => void;
   setPythonPackages: (packages: string[]) => void;
+  setProjectFormat: (format: BuilderProjectFormat) => void;
 
   // Actions - Logic
   setLogicSource: (source: string) => void;
@@ -196,6 +202,7 @@ export interface SerializedProject {
   permissions?: PermissionDeclaration;
   /** Absent in sessions written before the setting existed: none. */
   pythonPackages?: string[];
+  projectFormat?: BuilderProjectFormat;
   logicSource: string;
   collections: CollectionDef[];
 }
@@ -223,6 +230,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
   themeMode: 'light',
   permissions: emptyDeclaration(),
   pythonPackages: [],
+  projectFormat: 'ui',
   logicSource: defaultLogicSource('javascript'),
   collections: [],
   assets: [],
@@ -256,6 +264,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
 
   setPythonPackages: (packages) => {
     edit({ pythonPackages: [...new Set(packages)] });
+  },
+
+  setProjectFormat: (projectFormat) => {
+    set({ projectFormat });
   },
 
   setThemeMode: (mode) => {
@@ -374,6 +386,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
       themeMode: 'light',
       permissions: emptyDeclaration(),
       pythonPackages: [],
+      projectFormat: 'ui',
       logicSource: defaultLogicSource(language),
       collections: [],
       assets: [],
@@ -397,6 +410,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
       themeMode: state.themeMode,
       permissions: state.permissions,
       pythonPackages: state.pythonPackages,
+      ...(state.projectFormat === 'web' ? { projectFormat: 'web' as const } : {}),
       logicSource: state.logicSource,
       collections: state.collections,
     };
@@ -412,6 +426,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
       themeMode: readThemeMode(data.themeMode),
       permissions: data.permissions ? { ...emptyDeclaration(), ...data.permissions } : emptyDeclaration(),
       pythonPackages: Array.isArray(data.pythonPackages) ? data.pythonPackages.filter((name) => typeof name === 'string') : [],
+      projectFormat: data.projectFormat === 'web' ? 'web' : 'ui',
       logicSource: data.logicSource || '',
       collections: data.collections || [],
       isDirty: false,

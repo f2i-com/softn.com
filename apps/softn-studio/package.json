@@ -17,6 +17,7 @@
     "@softn/brand": "*",
     "@softn/bundle-format": "*",
     "@softn/components": "*",
+    "@softn/container": "*",
     "@softn/core": "*",
     "@softn/editor-shared": "*",
     "fflate": "^0.8.2",

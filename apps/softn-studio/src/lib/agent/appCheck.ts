@@ -32,6 +32,7 @@ import { checkStorageScope, formatConsoleArgs, loadPageLogic, LOGIC_SYNTAX, quie
 import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from '../previewProject';
 import { getBundleEntryPath } from '../studioProject';
 import { isPrivatePath, normalizeProjectPath } from '../paths';
+import { projectContainerMode } from '../sourceKinds';
 import { checkTemplateNames, type LogicNames, type TemplateFile } from './templateNames';
 import type { CheckReport } from './types';
 import { backendSqlProblems, migrationSqlProblems } from './sqlLint';
@@ -631,9 +632,91 @@ export async function templateNameErrors(files: Map<string, VFSFile>, page: stri
   });
 }
 
+async function renderV2ContainerHeadless(
+  files: Map<string, VFSFile>,
+  targetPage: string
+): Promise<{ errors: string[]; warnings: string[]; text: string; snapshot: string }> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const vfsRecord: Record<string, string | Uint8Array> = {};
+  for (const [p, f] of files) {
+    if (!isPrivatePath(p)) vfsRecord[p] = f.content;
+  }
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:-99999px;top:0;width:1024px;height:768px;pointer-events:none;';
+  document.body.appendChild(host);
+  try {
+    const { mountSoftNContainer } = await import('@softn/container');
+    const isNode = typeof process !== 'undefined' && typeof (process as { versions?: { node?: string } }).versions?.node === 'string';
+    const base = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL || '/';
+    const browserRuntimeUrl = `${base.endsWith('/') ? base : `${base}/`}assets/container-runtime/`;
+    const handle = await mountSoftNContainer(host, {
+      source: vfsRecord,
+      ...(isNode ? {} : { runtimeUrl: browserRuntimeUrl }),
+      isolation: 'inline',
+      persistStorage: false,
+      permissionMode: 'deny',
+      onConsole: (level, line) => {
+        if (level === 'error') errors.push(line);
+        else if (level === 'warn') warnings.push(line);
+      },
+      onError: (err) => {
+        errors.push(err.message);
+      },
+    });
+    try {
+      if (targetPage !== handle.manifest.main) {
+        await handle.navigate(targetPage).catch((e) => errors.push(e instanceof Error ? e.message : String(e)));
+      }
+      await new Promise((r) => setTimeout(r, 30));
+      const viewport = handle.shadowRoot.querySelector('[data-softn-viewport]') ?? handle.shadowRoot;
+      const text = (viewport.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const snapshot = describeDom(viewport as unknown as Element);
+      return { errors, warnings, text, snapshot };
+    } finally {
+      handle.dispose();
+    }
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : String(err));
+    return { errors, warnings, text: '', snapshot: '' };
+  } finally {
+    host.remove();
+  }
+}
+
 /** The checks themselves: validator and composer everywhere, the render wherever there is a document. */
 const checks: AgentEnvironment = {
   async checkApp(files, { page, blueprint }) {
+    if (projectContainerMode(files) === 'web') {
+      const errors: string[] = [];
+      const warnings: string[] = [];
+      for (const problem of validateProject(files, blueprint)) {
+        if (problem.level === 'info') continue;
+        const line = `${problem.file}: ${problem.message}`;
+        (problem.level === 'error' ? errors : warnings).push(line);
+      }
+      const backend = await backendProblems(files);
+      errors.push(...backend.errors);
+      warnings.push(...backend.warnings);
+      const target = pageToCheck(files, page);
+      if (!target) {
+        if (page) errors.push(`${page} is not a file in the project.`);
+        else errors.push('There is no page to render: manifest.json\'s main should name one, e.g. "main": "index.html".');
+        return { ok: false, errors: dedupe(errors), warnings: dedupe(warnings), renderedHeadless: false };
+      }
+      let rendered: string | undefined;
+      let renderedHeadless = false;
+      if (typeof document !== 'undefined' && typeof window !== 'undefined' && errors.length === 0) {
+        const outcome = await renderV2ContainerHeadless(files, target);
+        renderedHeadless = true;
+        errors.push(...outcome.errors.map((e) => `${target} (render): ${e}`));
+        warnings.push(...outcome.warnings.map((w) => `${target} (render): ${w}`));
+        rendered = outcome.text.slice(0, 600);
+        if (!outcome.text) warnings.push(`${target} (render): the page rendered no visible text.`);
+      }
+      const errs = dedupe(errors);
+      return { ok: errs.length === 0, errors: errs, warnings: dedupe(warnings), page: target, rendered, renderedHeadless };
+    }
     const errors: string[] = [];
     const warnings: string[] = [];
     for (const problem of validateProject(files, blueprint)) {
@@ -696,6 +779,11 @@ const checks: AgentEnvironment = {
     const target = pageToCheck(files, page);
     if (!target) return { ok: false, text: page ? `${page} is not a file in the project.` : 'There is no page to render.' };
     if (typeof document === 'undefined') return { ok: false, text: 'inspect_preview needs a browser document, and there is none here. Use check_app.' };
+    if (projectContainerMode(files) === 'web') {
+      const outcome = await renderV2ContainerHeadless(files, target);
+      const errors = outcome.errors.length > 0 ? `\n\nErrors while rendering:\n${outcome.errors.map((e) => `- ${e}`).join('\n')}` : '';
+      return { ok: true, text: `${target} renders:\n${outcome.snapshot || outcome.text || '(nothing visible)'}${errors}` };
+    }
     const outcome = await renderHeadless(files, target);
     if ('composeError' in outcome) return { ok: false, text: `${target} cannot be composed: ${outcome.composeError}` };
     const errors = outcome.errors.length > 0 ? `\n\nErrors while rendering:\n${outcome.errors.map((e) => `- ${e}`).join('\n')}` : '';

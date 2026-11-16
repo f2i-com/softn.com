@@ -14,8 +14,9 @@
 import { useVFSStore } from '../../stores/vfsStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { projectLogicLanguage, projectPythonPackages, revisionNotes } from '../studioProject';
+import { projectContainerMode } from '../sourceKinds';
 import { describeTree } from './executeTool';
-import { buildGuide, projectHasBackend } from './guide';
+import { buildGuide, buildV2ContainerGuide, projectHasBackend } from './guide';
 import { componentIndexText, docIndexText } from './knowledge';
 import { textProtocolGuide } from './tools';
 import type { ToolProtocol } from './types';
@@ -52,10 +53,28 @@ const WORKFLOW = `You are the SoftN Studio agent. You build and change SoftN app
 export function buildAgentSystemPrompt(protocol: ToolProtocol): string {
   const ws = useWorkspaceStore.getState();
   const files = useVFSStore.getState().files;
-  const python = projectLogicLanguage(files, ws.brief) === 'python';
+  const language = projectLogicLanguage(files, ws.brief);
+  const python = language === 'python';
   const torch = python && projectPythonPackages(files, ws.brief).includes('torch');
   const manifest = files.get('manifest.json');
   const backend = projectHasBackend(typeof manifest?.content === 'string' ? manifest.content : undefined);
+  const isV2Container = projectContainerMode(files, ws.brief) === 'web';
+
+  if (isV2Container) {
+    const v2Workflow = WORKFLOW.replace(
+      'Name images and other binary assets that already exist through `asset("assets/…")` (see Assets below).',
+      'Reference binary assets in the bundle with standard relative paths (`./assets/icon.svg`), never `asset(...)`.'
+    );
+    return [
+      v2Workflow,
+      buildV2ContainerGuide({ language, torch, backend, style: ws.brief?.style || 'clean' }),
+      `## Guides (read_docs)\n${docIndexText(python)}`,
+      protocol === 'text' ? textProtocolGuide() : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n---\n\n');
+  }
+
   return [
     WORKFLOW,
     buildGuide({ python, torch, backend, style: ws.brief?.style || 'clean' }),

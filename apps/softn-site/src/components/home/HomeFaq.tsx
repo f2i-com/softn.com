@@ -16,12 +16,11 @@ const FAQ: Answer[] = [
     q: 'Is this HTML?',
     a: (
       <>
-        Partly, on purpose. A page can be written as an HTML page — <code>div</code>, <code>header</code>,{' '}
-        <code>form</code>, <code>input</code>, <code>button</code>, classes and a <code>&lt;style&gt;</code> block — and
-        SoftN reads it as a browser’s HTML parser would. It adds its own: components such as <code>&lt;Button&gt;</code>,{' '}
-        <code>{'{expressions}'}</code>, <code>@click</code>, <code>:bind</code>, and <code>#if</code> and{' '}
-        <code>#each</code> blocks. Code runs in SoftN’s sandbox rather than as the page’s own script, so a script written
-        for an ordinary web page may need changes. <a href={HTML_GUIDE_HREF}>HTML and SoftN</a>
+        Yes. A SoftN v2 container runs standard HTML, CSS, JavaScript, TypeScript, and Python inside an isolated WebAssembly
+        Worker and Shadow DOM viewport, with optional hosted modules (<code>preact</code>, <code>htm</code>,{' '}
+        <code>three</code>, <code>marked</code>), <code>softn:db</code>, and on-demand <code>&lt;softn-*&gt;</code>{' '}
+        elements — while remaining backwards-compatible with SoftN <code>.ui</code> templates.{' '}
+        <a href={HTML_GUIDE_HREF}>HTML and SoftN</a>
       </>
     ),
   },
@@ -29,10 +28,10 @@ const FAQ: Answer[] = [
     q: 'Can I bring a website?',
     a: (
       <>
-        A simple one, with some work. Pages in HTML and CSS carry across, and their scripts run in the sandbox with the
-        APIs SoftN provides. Scripts loaded from other sites, a framework’s build output (React, Vue), npm packages and
-        server code such as PHP do not come across as they are. Zip the site with its index.html, import the zip in
-        Studio, then check it in Preview. <a href={HTML_GUIDE_HREF}>What carries across</a>
+        Yes — client-side web apps and compiled static builds (<code>dist/index.html</code> from Vite, React, Preact, Vue,
+        or Vanilla JS) can be zipped directly into a <code>.softn</code> container with zero rewrites, even without a{' '}
+        <code>manifest.json</code>. External network calls stay blocked unless declared in <code>permission.json</code> and
+        approved by the user. <a href={HTML_GUIDE_HREF}>What carries across</a>
       </>
     ),
   },

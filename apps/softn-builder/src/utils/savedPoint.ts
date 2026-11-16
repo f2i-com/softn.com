@@ -36,7 +36,7 @@ import type { AssetFile, CanvasElement, ProjectFileNode, UIFileState, UIImport }
 import { elementsEqual } from './elementsEqual';
 import { liveImports } from './pageImports';
 
-const PROJECT_FIELDS = ['name', 'version', 'description', 'icon', 'themeMode', 'permissions', 'pythonPackages', 'logicSource', 'collections', 'assets', 'source'] as const;
+const PROJECT_FIELDS = ['name', 'version', 'description', 'icon', 'themeMode', 'permissions', 'pythonPackages', 'projectFormat', 'logicSource', 'collections', 'assets', 'source'] as const;
 const SCHEMA_FIELDS = ['entities', 'relationships', 'seedData', 'recordIdentity', 'tombstones'] as const;
 
 type ProjectFields = Pick<ReturnType<typeof useProjectStore.getState>, (typeof PROJECT_FIELDS)[number]>;

@@ -24,7 +24,7 @@ import {
 import type { ValidationError, VFSFile } from '../types/studio';
 import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from './previewProject';
 import { isPrivatePath } from './paths';
-import { isJavaScriptLogicPath, isPagePath, linkedScripts } from './sourceKinds';
+import { isJavaScriptLogicPath, isPagePath, linkedScripts, projectContainerMode } from './sourceKinds';
 import { getBundleEntryPath } from './studioProject';
 
 export type PageComposition = Extract<ReturnType<typeof composePreviewProject>, { ok: true }>['composition'];
@@ -353,6 +353,26 @@ export function logicSyntaxProblems(files: Map<string, VFSFile>): Promise<Valida
  * other's for good.
  */
 async function checkLogic(files: Map<string, VFSFile>): Promise<ValidationError[]> {
+  if (projectContainerMode(files) === 'web') {
+    const problems: ValidationError[] = [];
+    const { transformEsModule } = await import('@softn/container/esm-linker');
+    for (const [path, file] of files) {
+      if (isPrivatePath(path) || /^assets\//i.test(path) || typeof file.content !== 'string') continue;
+      if (/\.(?:m?js|tsx?|mts|jsx)$/i.test(path)) {
+        try {
+          transformEsModule(file.content, path);
+        } catch (err) {
+          problems.push({
+            file: path,
+            level: 'error',
+            type: LOGIC_SYNTAX,
+            message: message(err),
+          });
+        }
+      }
+    }
+    return problems;
+  }
   const problems: ValidationError[] = [];
   const loaded = new Set<string>();
   for (const page of pagesToLoad(files)) {

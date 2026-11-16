@@ -102,6 +102,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
       collections: [],
       authNeeded: false,
       style: 'clean',
+      appFormat: 'container',
       logicLanguage: 'javascript',
       referenceImages: [],
     }
@@ -234,8 +235,12 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
 
   // One language for all of an app's logic: the runtime refuses a bundle
   // that mixes them, so this is a choice for the whole project.
+  const isV2Container = brief.appFormat === 'container' || brief.logicLanguage === 'typescript';
   const languages: { id: LogicLanguage; label: string; ext: string; desc: string }[] = [
     { id: 'javascript', label: 'JavaScript', ext: '.js', desc: 'The SoftN default: logic in .js files, written as JavaScript.' },
+    ...(isV2Container
+      ? [{ id: 'typescript' as const, label: 'TypeScript', ext: '.ts', desc: 'Zero-build TypeScript ES modules inside the v2 Web Container.' }]
+      : []),
     { id: 'python', label: 'Python', ext: '.py', desc: 'Logic in .py modules, each named after its file. Pick it if Python is what you know.' },
   ];
 
@@ -614,6 +619,61 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
                     }} />
                   </div>
                 </button>
+              </div>
+
+              <div style={s.field}>
+                <div id="brief-format-label" style={s.label}>App runtime</div>
+                <div
+                  role="group"
+                  aria-labelledby="brief-format-label"
+                  style={{ ...s.radioGroup, flexDirection: m ? 'column' : 'row' }}
+                >
+                  {[
+                    {
+                      id: 'container' as const,
+                      label: 'Web Container (v2)',
+                      ext: 'HTML + DOM',
+                      desc: '100% standard HTML, CSS, and ES modules in an isolated ZIPP Worker with hosted Preact & Three.js.',
+                    },
+                    {
+                      id: 'ui' as const,
+                      label: 'SoftN Templates (v1)',
+                      ext: '.ui / DSL',
+                      desc: 'Declarative SoftN component markup (<App>, :bind, #each) for backwards-compatible bundles.',
+                    },
+                  ].map((fmt) => {
+                    const currentFormat = brief.appFormat ?? (brief.logicLanguage === 'typescript' ? 'container' : 'ui');
+                    const on = currentFormat === fmt.id;
+                    return (
+                      <button
+                        key={fmt.id}
+                        type="button"
+                        onClick={() => {
+                          updateBrief((b) => ({
+                            ...b,
+                            appFormat: fmt.id,
+                            logicLanguage: fmt.id === 'ui' && b.logicLanguage === 'typescript' ? 'javascript' : b.logicLanguage,
+                          }));
+                        }}
+                        aria-pressed={on}
+                        style={{
+                          ...s.radioCard,
+                          flex: m ? 'none' : '1 1 0',
+                          ...(on ? s.radioCardActive : {}),
+                        }}
+                      >
+                        <div style={{ minWidth: 0, paddingRight: 18 }}>
+                          <div style={s.radioLabel}>
+                            {fmt.label}
+                            <span style={s.langExt}>{fmt.ext}</span>
+                          </div>
+                          <div style={s.radioDesc}>{fmt.desc}</div>
+                        </div>
+                        {on && <span style={s.cardCheck}>{renderCheck(18)}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div style={{ ...s.field, marginBottom: 0 }}>

@@ -26,7 +26,12 @@ export function SourceViewer({ slug, version, main }: { slug: string; version?: 
         if (ac.signal.aborted) return;
         setFiles(r.files);
         setTruncated(r.truncated);
-        const first = r.files.find((f) => f.path === main) ?? r.files.find((f) => /\.ui$/i.test(f.path)) ?? r.files.find((f) => f.text !== null) ?? r.files[0];
+        const first =
+          r.files.find((f) => f.path === main) ??
+          r.files.find((f) => /^(?:[^/]+\/)?index\.html?$/i.test(f.path)) ??
+          r.files.find((f) => /\.(?:html?|ui)$/i.test(f.path)) ??
+          r.files.find((f) => f.text !== null) ??
+          r.files[0];
         setSelected(first?.path ?? null);
       })
       .catch((e) => {
@@ -94,7 +99,7 @@ function SourceContent({ file, wrap, onWrap }: { file: SourceFile; wrap: boolean
   const [copyStatus, setCopyStatus] = useState('');
   const active = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
-  const isMarkup = /\.(ui|html|svg|xml)$/i.test(file.path);
+  const isMarkup = /\.(ui|html?|svg|xml)$/i.test(file.path);
   // Python logic is highlighted as Python; a .logic file stays plain text.
   const isPython = languageOf(file.path) === 'python';
   return <>

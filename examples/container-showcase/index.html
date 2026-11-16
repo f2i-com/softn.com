@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SoftN v2 Container Showcase — Docker for Web Apps</title>
+  <script type="module" src="/runtime/softn.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #020617;
+      color: #f8fafc;
+    }
+    body { max-width: 1280px; margin: 0 auto; padding: 28px 20px; }
+    h1 { margin: 0 0 6px; font-size: 1.65rem; }
+    p.sub { margin: 0 0 24px; color: #94a3b8; font-size: 0.95rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 20px;
+    }
+    .frame {
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #0f172a;
+      display: flex;
+      flex-direction: column;
+      min-height: 360px;
+    }
+    .frame-bar {
+      padding: 8px 14px;
+      background: #090d16;
+      border-bottom: 1px solid #1e293b;
+      font-size: 0.78rem;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+    }
+    softn-app { flex: 1; }
+  </style>
+</head>
+<body>
+  <h1>SoftN v2 Container Runtime</h1>
+  <p class="sub">
+    Three isolated <code>&lt;softn-app&gt;</code> containers running simultaneously inside Dedicated ZIPP WASM Workers — zero React in the host runtime.
+  </p>
+
+  <div class="grid">
+    <div class="frame">
+      <div class="frame-bar">
+        <span>compiled-kanban.softn (Zero-Config Vite <code>dist/</code>)</span>
+        <span>zipp-lite.wasm</span>
+      </div>
+      <softn-app src="/bundles/compiled-kanban.softn" runtime-url="/runtime/"></softn-app>
+    </div>
+
+    <div class="frame">
+      <div class="frame-bar">
+        <span>preact-fieldnotes.softn (Zero-Build TS + Hosted Preact + DB)</span>
+        <span>zipp-typescript.wasm</span>
+      </div>
+      <softn-app src="/bundles/preact-fieldnotes.softn" runtime-url="/runtime/"></softn-app>
+    </div>
+
+    <div class="frame">
+      <div class="frame-bar">
+        <span>three-orbit.softn (1.1 KB App + Hosted Split-Realm Three.js)</span>
+        <span>zipp-lite.wasm</span>
+      </div>
+      <softn-app src="/bundles/three-orbit.softn" runtime-url="/runtime/"></softn-app>
+    </div>
+  </div>
+</body>
+</html>

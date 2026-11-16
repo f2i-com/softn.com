@@ -21,3 +21,38 @@ export function editorLanguageFor(path: string | undefined): 'javascript' | 'pyt
     ? 'python'
     : 'javascript';
 }
+
+export type CodeEditorLanguage = 'html' | 'css' | 'typescript' | 'javascript' | 'python' | 'json' | 'plain';
+
+/** Syntax highlight language for any editable text file in the project. */
+export function codeLanguageFor(path: string | undefined): CodeEditorLanguage {
+  if (!path) return 'javascript';
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.py')) return 'python';
+  if (/\.(?:tsx?|mts)$/.test(lower)) return 'typescript';
+  if (lower.endsWith('.css')) return 'css';
+  if (lower.endsWith('.json') || lower.endsWith('.xdb')) return 'json';
+  if (/\.(?:html?|ui)$/.test(lower)) return 'html';
+  if (/\.(?:md|txt)$/.test(lower)) return 'plain';
+  return 'javascript';
+}
+
+/** Human-readable badge label for a file's syntax mode. */
+export function codeLanguageLabelFor(path: string | undefined): string {
+  switch (codeLanguageFor(path)) {
+    case 'python':
+      return 'Python';
+    case 'typescript':
+      return 'TypeScript';
+    case 'css':
+      return 'CSS';
+    case 'json':
+      return 'JSON';
+    case 'html':
+      return 'HTML';
+    case 'plain':
+      return 'Text';
+    default:
+      return 'JavaScript';
+  }
+}

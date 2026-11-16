@@ -43,3 +43,6 @@ export { PermissionPrompt, PERMISSION_INFO, BROWSER_DEVICE_NOTE } from './Permis
 export type { PermissionPromptProps } from './PermissionPrompt';
 export { LoadProgress, FEATURE_LABELS } from './LoadProgress';
 export type { LoadProgressProps } from './LoadProgress';
+export * from './containerBundle';
+export { WebContainerView } from './WebContainerView';
+export type { WebContainerViewProps } from './WebContainerView';

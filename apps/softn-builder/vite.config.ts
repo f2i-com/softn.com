@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { softnPwa } from '../../scripts/build/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
@@ -22,6 +23,7 @@ export default defineConfig({
     retireServiceWorkersPlugin(),
     react(),
     coreWorkerAssetPlugin(),
+    ...(env.VITE_FORMLOGIC_EDITOR === '1' ? [] : [containerRuntimeAssetPlugin()]),
     // What runs as script: this deployment's files only (scripts/build/script-policy.mjs). Not in
     // the desktop build, whose webview has a policy of its own. FormLogic frames this page as a
     // document of its own, so it needs the policy as much as a site does.

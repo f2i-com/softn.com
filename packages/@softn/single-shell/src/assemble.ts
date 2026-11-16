@@ -14,6 +14,10 @@ import {
   processBundle,
   type BundleManifest,
 } from '@softn/runtime-shell/bundleProcessor';
+import {
+  WEB_CONTAINER_SOURCE_SENTINEL,
+  detectWebContainer,
+} from '@softn/runtime-shell/containerBundle';
 import { digest, parsePermissions } from './config';
 
 /**
@@ -41,6 +45,8 @@ export interface AssembleInput {
   appId: string;
   /** What the grant is scoped to besides the declaration: the page and the exact bundle bytes. */
   grantScope: string;
+  /** Parsed manifest when the host served it out-of-band (e.g. `softn-single-private`). */
+  manifestHint?: Record<string, unknown>;
   signal: AbortSignal;
 }
 
@@ -59,45 +65,68 @@ export type AssembledApplication = ReturnType<typeof processBundle> & {
    * the rule's (@softn/components, theme/app-theme.ts), not the shell's.
    */
   themeMode: unknown;
+  /** True when the bundle runs inside `@softn/container` (`<softn-app>`). */
+  webContainer?: boolean;
 };
 
 export async function assembleApplication(input: AssembleInput): Promise<AssembledApplication> {
-  const { textFiles, sidecar, appId, grantScope, signal } = input;
-  // The one manifest read every host shares (core's readManifest or
-  // normalizeManifest): a manifest without `files` opens here as it does in
-  // the launcher, and what cannot run is refused in the inspector's words.
+  const { textFiles, sidecar, appId, grantScope, manifestHint, signal } = input;
+  const checkFiles =
+    manifestHint && !textFiles.has('manifest.json')
+      ? new Map([...textFiles, ['manifest.json', JSON.stringify(manifestHint)]])
+      : textFiles;
+  const containerCheck = detectWebContainer(checkFiles);
   let raw: BundleManifest;
-  try {
-    raw = input.readManifest();
-  } catch (e) {
-    throw Error(`Invalid application manifest: ${e instanceof ManifestError ? e.message : String(e)}`);
+  if (containerCheck.inferredManifest) {
+    raw = containerCheck.inferredManifest;
+  } else {
+    try {
+      raw = input.readManifest();
+    } catch (e) {
+      throw Error(`Invalid application manifest: ${e instanceof ManifestError ? e.message : String(e)}`);
+    }
   }
-  // Operator sidecar, then the bundle's permission.json, then its legacy
-  // manifest declaration, then nothing.
   const declared = sidecar
     ? parsePermissions(await sidecar())
     : textFiles.has('permission.json')
       ? parsePermissions(JSON.parse(textFiles.get('permission.json')!))
       : parsePermissions(extractPermissions(textFiles, raw) ?? { permissions: {} });
-  mark('softn:compose:start');
-  const source = processBundle(textFiles, raw);
-  mark('softn:compose:end');
-  mark('softn:xdb-seed:start');
-  await loadXDBData(textFiles, raw, appId);
-  mark('softn:xdb-seed:end');
+  let source: ReturnType<typeof processBundle>;
+  if (containerCheck.isWebContainer) {
+    if (manifestHint && !textFiles.has('manifest.json')) {
+      textFiles.set('manifest.json', JSON.stringify(manifestHint));
+    }
+    source = {
+      source: WEB_CONTAINER_SOURCE_SENTINEL,
+      logicBasePath: undefined,
+      preIncludedLogicPaths: [],
+      languages: [],
+    };
+  } else {
+    mark('softn:compose:start');
+    source = processBundle(textFiles, raw);
+    mark('softn:compose:end');
+    mark('softn:xdb-seed:start');
+    await loadXDBData(textFiles, raw, appId);
+    mark('softn:xdb-seed:end');
+  }
   signal.throwIfAborted();
-  // Consent is build- and policy-specific, including host restrictions, not
-  // just capability names: the page, the bundle bytes and the declaration.
   const grantKey =
     'single-grant:' + (await digest(new TextEncoder().encode(grantScope + JSON.stringify(declared))));
   signal.throwIfAborted();
-  // Read the way inspectBundle reads it: only the literal 'worker' asks for a
-  // worker, and anything else, a misspelling included, is main. Whether the
-  // script can in fact leave the main thread is still the renderer's decision.
-  const execution: 'worker' | 'main' = raw.config?.execution === 'worker' ? 'worker' : 'main';
-  // Passed on as written. A manifest is a file anyone can write, so `config`
-  // and `theme` are only looked into when they are objects.
+  const execution: 'worker' | 'main' =
+    containerCheck.isWebContainer || raw.config?.execution === 'worker' ? 'worker' : 'main';
   const theme: unknown = (raw.config as { theme?: unknown } | null | undefined)?.theme;
   const themeMode: unknown = theme && typeof theme === 'object' ? (theme as { mode?: unknown }).mode : undefined;
-  return { raw, declared, grantKey, appId, textFiles, execution, themeMode, ...source };
+  return {
+    raw,
+    declared,
+    grantKey,
+    appId,
+    textFiles,
+    execution,
+    themeMode,
+    ...(containerCheck.isWebContainer ? { webContainer: true } : {}),
+    ...source,
+  };
 }

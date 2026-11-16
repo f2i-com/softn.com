@@ -545,6 +545,7 @@ function App() {
   }, [behindSomething]);
 
   // Sync active file with canvas when file selection changes
+  const projectFormat = useProjectStore((state) => state.projectFormat);
   const activeFileId = useFilesStore((state) => state.activeFileId);
   const fileNodes = useFilesStore((state) => state.nodes);
   const activeNode = activeFileId ? fileNodes.get(activeFileId) : null;
@@ -594,9 +595,14 @@ function App() {
   // column, and is drawn only where the canvas keeps a phone's width beside
   // it. Asked for where it does not fit, the panels that are in its way are
   // put away, Files first; a panel opened again later takes the room back.
-  const columnWidth = sheets ? 0 : canvasWidthWith(windowWidth, panelOpen);
+  const columnWidth = sheets
+    ? 0
+    : projectFormat === 'web'
+      ? windowWidth - (panelOpen.files ? PANEL_WIDTHS.files : PANEL_WIDTHS.rail)
+      : canvasWidthWith(windowWidth, panelOpen);
   const previewFits = columnWidth >= CANVAS_BESIDE_PREVIEW + PREVIEW_PANE_MIN;
-  const previewBeside = besidePreview && previewFits && pageOpen && !sheets;
+  const canPreviewBeside = projectFormat === 'web' ? (hasActiveFile && !isAssetFileActive) : pageOpen;
+  const previewBeside = besidePreview && previewFits && canPreviewBeside && !sheets;
   const togglePreviewBeside = useCallback(() => {
     if (previewBeside) {
       setBesidePreview(false);
@@ -641,7 +647,7 @@ function App() {
       <div className="bl-tabrow">
         <FileTabs />
         {/* What is done to the whole canvas, at the end of its row of tabs. */}
-        {pageOpen && !sheets && (
+        {canPreviewBeside && !sheets && (
           <div className="bl-tabrow-tools">
             <button
               type="button"
@@ -670,13 +676,30 @@ function App() {
           <AssetView />
         </div>
       ) : isLogicFileActive ? (
-        <div data-panel="Canvas" style={styles.centerTop}>
-          <LogicEditor />
-        </div>
+        projectFormat === 'web' ? (
+          <div className="bl-split">
+            <div data-panel="Canvas">
+              <LogicEditor />
+            </div>
+            {previewBeside && (
+              <div data-panel="Preview">
+                <LivePreview initialDevice="mobile" beside />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div data-panel="Canvas" style={styles.centerTop}>
+            <LogicEditor />
+          </div>
+        )
       ) : (
         <div className="bl-split">
           <div data-panel="Canvas">
-            <Canvas onShowComponents={sheets || !panelOpen.components ? showComponents : undefined} byTouch={sheets} />
+            {projectFormat === 'web' ? (
+              <SourceView />
+            ) : (
+              <Canvas onShowComponents={sheets || !panelOpen.components ? showComponents : undefined} byTouch={sheets} />
+            )}
           </div>
           {previewBeside && (
             <div data-panel="Preview">
@@ -685,7 +708,7 @@ function App() {
           )}
         </div>
       )}
-      {pageOpen && !sheets && dockLogic && (
+      {projectFormat !== 'web' && pageOpen && !sheets && dockLogic && (
         <div data-panel="Logic" style={styles.centerBottom}>
           {logicHeader(() => setDockLogic(false))}
           <div style={{ flex: 1, minHeight: 0 }}>
@@ -693,7 +716,7 @@ function App() {
           </div>
         </div>
       )}
-      {pageOpen && !sheets && !dockLogic && (
+      {projectFormat !== 'web' && pageOpen && !sheets && !dockLogic && (
         // The dock put away: its heading, as the sections under Properties fold to theirs.
         <button type="button" className="bl-section-head" style={{ borderTop: '1px solid var(--line-soft)', position: 'static', flexShrink: 0 }} onClick={() => setDockLogic(true)} aria-expanded={false} data-action="show-logic">
           <span>Logic</span>
@@ -726,11 +749,11 @@ function App() {
                 sidePanel('files', 'Files', PANEL_WIDTHS.files, null)
               )}
 
-              {sidePanel('components', 'Components', PANEL_WIDTHS.components, <ComponentPalette onToggleDock={() => setPanelOpen('components', false)} />)}
+              {projectFormat !== 'web' && sidePanel('components', 'Components', PANEL_WIDTHS.components, <ComponentPalette onToggleDock={() => setPanelOpen('components', false)} />)}
 
               <div style={styles.centerWithTabs}>{middle}</div>
 
-              {panelOpen.properties ? (
+              {projectFormat !== 'web' && (panelOpen.properties ? (
                 <div className="bl-panel" style={{ width: PANEL_WIDTHS.properties, minWidth: PANEL_WIDTHS.properties }}>
                   <div data-panel="Properties" style={styles.rightPanelTop}>
                     <PropertyPanel onToggleDock={() => setPanelOpen('properties', false)} />
@@ -742,7 +765,7 @@ function App() {
                 </div>
               ) : (
                 sidePanel('properties', 'Properties', PANEL_WIDTHS.properties, null, somethingSelected)
-              )}
+              ))}
             </div>
           </div>
         );

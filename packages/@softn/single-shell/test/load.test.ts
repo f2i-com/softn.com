@@ -293,3 +293,24 @@ it('warms the assets the source names by literal, without a Worker, and does not
   app.assets.dispose();
   expect(app.assets('assets/pixel.png')).toBe('');
 });
+
+it('detects and prepares zero-config dist/index.html web containers without running the v1 .ui composer', async () => {
+  const bytes = zipSync({
+    'dist/index.html': strToU8('<!DOCTYPE html><html><head><title>Compiled Kanban</title></head><body><div id="app"></div></body></html>'),
+    'dist/assets/index-abc.js': strToU8('console.log("ok")'),
+  });
+  vi.stubGlobal(
+    'fetch',
+    async (url: string) =>
+      new Response(
+        url === base
+          ? JSON.stringify({ version: 1, id: 'kanban', title: 'Kanban', bundle: 'app.softn' })
+          : bytes
+      )
+  );
+  const app = await loadApplication(base, new AbortController().signal);
+  expect(app.webContainer).toBe(true);
+  expect(app.execution).toBe('worker');
+  expect(app.bundleData).toBeInstanceOf(Uint8Array);
+  app.assets.dispose();
+});

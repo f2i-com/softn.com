@@ -16,6 +16,8 @@
     "./PermissionBar": "./src/PermissionBar.tsx",
     "./PermissionPrompt": "./src/PermissionPrompt.tsx",
     "./LoadProgress": "./src/LoadProgress.tsx",
+    "./containerBundle": "./src/containerBundle.ts",
+    "./WebContainerView": "./src/WebContainerView.tsx",
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -23,6 +25,8 @@
   },
   "dependencies": {
     "@softn/brand": "*",
+    "@softn/bundle-format": "*",
+    "@softn/container": "*",
     "@softn/core": "*"
   },
   "peerDependencies": {

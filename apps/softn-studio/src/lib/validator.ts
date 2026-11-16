@@ -3,6 +3,8 @@ import type { ValidationError, VFSFile, Blueprint } from '../types/studio';
 import { planBundle } from './exportBundle';
 import { pageParseProblems } from './pageDiagnostics';
 import { normalizeProjectPath } from './paths';
+import { resolveProjectRelativePath } from './projectImport';
+import { projectContainerMode } from './sourceKinds';
 import { findPageFile, pageFileCandidates, pageSlugs } from './studioProject';
 
 /**
@@ -50,15 +52,20 @@ export function validateProject(
     // Python, or a .py file whose name Python cannot import all passed here
     // and then stopped the app at Run. The composer is what refuses them, so
     // it is run on the same entries, and what it says is reported as it said it.
-    const refusal = compositionRefusal(entries);
-    if (refusal) {
-      errors.push({
-        file: fileNamedIn(refusal.message, files) ?? refusal.main,
-        level: 'error',
-        type: 'bundle-refused',
-        message: refusal.message,
-        suggestion: 'The runtime cannot start this app until it is fixed.',
-      });
+    const isV2Container = projectContainerMode(files) === 'web';
+    if (isV2Container) {
+      errors.push(...v2ContainerLinkProblems(entries));
+    } else {
+      const refusal = compositionRefusal(entries);
+      if (refusal) {
+        errors.push({
+          file: fileNamedIn(refusal.message, files) ?? refusal.main,
+          level: 'error',
+          type: 'bundle-refused',
+          message: refusal.message,
+          suggestion: 'The runtime cannot start this app until it is fixed.',
+        });
+      }
     }
   }
 
@@ -76,8 +83,10 @@ export function validateProject(
     }
   }
 
-  // What core's parser says of each page, at the page's own lines.
-  errors.push(...pageParseProblems(files));
+  // What core's parser says of each page, at the page's own lines (v1 template bundles only).
+  if (projectContainerMode(files) !== 'web') {
+    errors.push(...pageParseProblems(files));
+  }
 
   // JSON files must parse; the inspector reads only the manifest and the declaration.
   for (const [path, file] of files) {
@@ -98,7 +107,7 @@ export function validateProject(
   }
 
   // Blueprint pages should each have a file, in either format.
-  if (blueprint) {
+  if (blueprint && projectContainerMode(files) !== 'web') {
     const slugs = pageSlugs(blueprint.pages);
     for (const [index, page] of blueprint.pages.entries()) {
       if (!findPageFile(files, blueprint.pages, index)) {
@@ -128,6 +137,38 @@ export function validateProject(
 }
 
 const decoder = new TextDecoder();
+
+function v2ContainerLinkProblems(entries: Map<string, Uint8Array>): ValidationError[] {
+  const out: ValidationError[] = [];
+  for (const [pagePath, bytes] of entries) {
+    if (!/\.html?$/i.test(pagePath) || /^assets\//i.test(pagePath)) continue;
+    const html = decoder.decode(bytes);
+    const checkRef = (rawRef: string, kind: 'script' | 'stylesheet') => {
+      const clean = rawRef.trim().split(/[?#]/)[0];
+      if (!clean || /^(?:softn:|https?:|data:|blob:)/i.test(clean)) return;
+      const resolved = clean.startsWith('/')
+        ? normalizeProjectPath(clean.slice(1))
+        : resolveProjectRelativePath(pagePath, clean);
+      if (!resolved || !entries.has(resolved)) {
+        out.push({
+          file: pagePath,
+          level: 'error',
+          type: 'missing-reference',
+          message: `${pagePath} references ${kind} "${rawRef}", which is not in the bundle.`,
+          suggestion: 'Create the missing file or update the path in the HTML tag.',
+        });
+      }
+    };
+    for (const m of html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
+      checkRef(m[1], 'script');
+    }
+    for (const m of html.matchAll(/<link\b[^>]*rel\s*=\s*["']stylesheet["'][^>]*>/gi)) {
+      const hm = /\bhref\s*=\s*["']([^"']+)["']/i.exec(m[0]);
+      if (hm) checkRef(hm[1], 'stylesheet');
+    }
+  }
+  return out;
+}
 
 /**
  * Why the runtime's composer would refuse the planned bundle, or null when it

@@ -21,11 +21,11 @@ export function ForDevelopers(): React.ReactElement {
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">For developers</p>
-          <h2 className="band-title">It reads like a page you already know.</h2>
+          <h2 className="band-title">Standard HTML, CSS, JS, TypeScript, or Python — in a sandboxed container.</h2>
           <p className="band-sub">
-            Ordinary elements, a <code>class</code>, a <code>&lt;label for&gt;</code>. SoftN adds <code>:bind</code> to keep
-            a field and a value in step, <code>@click</code> for events, <code>{'{expressions}'}</code> in the text, and a
-            logic block that runs in its sandbox.
+            Write standard HTML and ES modules with <code>softn:ui.css</code> and <code>softn:db</code>, zip a compiled{' '}
+            <code>dist/</code> web app (React, Preact, Vue, Svelte, or Three.js) straight into a <code>.softn</code>{' '}
+            container, or build declaratively with <code>.ui</code> templates — all isolated inside a WebAssembly worker.
           </p>
         </div>
         <div className="dev-grid">

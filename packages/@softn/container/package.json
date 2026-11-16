@@ -1,0 +1,49 @@
+{
+  "name": "@softn/container",
+  "version": "0.0.42",
+  "description": "SoftN v2 Web App Container Runtime — React-free HTML/CSS/DOM sandbox powered by ZIPP WASM",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./archive": {
+      "types": "./dist/archive.d.ts",
+      "default": "./dist/archive.js"
+    },
+    "./esm-linker": {
+      "types": "./dist/esm-linker.d.ts",
+      "default": "./dist/esm-linker.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsup && node scripts/sync-runtime-assets.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@softn/bundle-format": "*",
+    "fflate": "^0.8.2"
+  },
+  "optionalDependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0",
+    "three": "^0.170.0",
+    "@types/three": "^0.170.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.12"
+  }
+}

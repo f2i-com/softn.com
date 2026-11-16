@@ -57,8 +57,9 @@ const styles: Record<string, React.CSSProperties> = {
 export function SourceView() {
   const { elements, rootId } = useCanvasStore();
   const projectCollections = useProjectStore((state) => state.collections);
+  const projectFormat = useProjectStore((state) => state.projectFormat);
   const entities = useSchemaStore((state) => state.entities);
-  const { activeFileId, uiFiles, logicFiles, nodes, updateUIFileSource } = useFilesStore();
+  const { activeFileId, uiFiles, logicFiles, nodes, updateUIFileSource, updateRawUIFile } = useFilesStore();
   const isDirty = activeFileId ? nodes.get(activeFileId)?.isDirty : false;
 
   // Get the initial source - prefer original source from loaded bundle.
@@ -105,6 +106,10 @@ export function SourceView() {
     (newSource: string) => {
       // Update the store immediately for live preview
       if (activeFileId) {
+        if (projectFormat === 'web') {
+          updateRawUIFile(activeFileId, newSource);
+          return;
+        }
         if (recordedFor.current !== activeFileId) {
           recordedFor.current = activeFileId;
           const canvas = useCanvasStore.getState();
@@ -113,7 +118,7 @@ export function SourceView() {
         updateUIFileSource(activeFileId, newSource);
       }
     },
-    [activeFileId, updateUIFileSource]
+    [activeFileId, projectFormat, updateRawUIFile, updateUIFileSource]
   );
 
   // Determine if showing original or generated source
@@ -123,15 +128,18 @@ export function SourceView() {
   // Which editing mode is safe for this file. A file the visual model
   // cannot write back is edited here, as source; the canvas will not
   // regenerate it, and says so when an edit there was refused.
-  const { fidelity, blocked } = useSourceFidelity(activeFile);
-  const sourceOnly = fidelity !== null && !fidelity.lossless;
+  const { fidelity, blocked } = useSourceFidelity(projectFormat === 'web' ? null : activeFile);
+  const sourceOnly = projectFormat !== 'web' && fidelity !== null && !fidelity.lossless;
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <div style={styles.titleContainer}>
+          {projectFormat === 'web' && (
+            <span className="bl-badge" data-tone="code">HTML</span>
+          )}
           <span style={styles.title}>
-            {isFromBundle ? activeFile?.path || 'Source (.ui)' : 'Source (.ui)'}
+            {isFromBundle ? activeFile?.path || (projectFormat === 'web' ? 'index.html' : 'Source (.ui)') : 'Source (.ui)'}
           </span>
           {isDirty && <span className="bl-dirty-dot" title="Unsaved changes" role="img" aria-label="Unsaved changes" />}
           {fidelity && (

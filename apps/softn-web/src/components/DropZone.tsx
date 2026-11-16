@@ -121,12 +121,12 @@ export function DropZone({ onFile, onError, children }: DropZoneProps): React.Re
       e.stopPropagation();
 
       const files = Array.from(e.dataTransfer.files);
-      const softnFile = files.find((f) => /\.softn$/i.test(f.name));
+      const softnFile = files.find((f) => /\.(?:softn|zip)$/i.test(f.name));
 
       if (softnFile) {
         await onFile(softnFile);
       } else if (files.length > 0) {
-        onError(new Error('Drop a .softn app file here, or use Open file to choose one.'));
+        onError(new Error('Drop a .softn or .zip app file here, or use Open file to choose one.'));
       }
     },
     [onFile, onError]

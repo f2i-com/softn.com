@@ -4,17 +4,21 @@ import type { LogicLanguage } from '../../utils/logicFiles';
 import { dialogStyles } from './dialogStyles';
 
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
+export type NewProjectFormat = 'ui' | 'web';
+export type NewProjectLanguage = LogicLanguage | 'typescript';
 
 export interface NewProjectConfig {
   name: string;
   description: string;
   theme: 'light' | 'dark' | 'system';
   template: StarterTemplate;
+  /** `'web'` for SoftN v2 Web App Containers (HTML + CSS + JS/TS/Python); `'ui'` (default) for visual `.ui` apps. */
+  format?: NewProjectFormat;
   /**
    * The language of the app's logic. An app has one: the runtime refuses a
    * bundle whose logic mixes the two, so it is chosen when the app is made.
    */
-  language: LogicLanguage;
+  language: NewProjectLanguage;
   /**
    * The Python packages the app asks for (`config.python.packages`): torch
    * or nothing. Only a Python app has any.
@@ -131,9 +135,30 @@ export const TEMPLATES: { key: StarterTemplate; title: string; description: stri
   { key: 'dashboard', title: 'Dashboard', description: 'A heading, stat tiles, cards and a list, with example rows to replace.' },
 ];
 
-const LANGUAGES: { key: LogicLanguage; title: string; description: string; path: string }[] = [
+const FORMATS: { key: NewProjectFormat; title: string; description: string; path: string }[] = [
+  {
+    key: 'ui',
+    title: 'Visual Components',
+    description: 'Drag-and-drop SoftN components with reactive bindings.',
+    path: 'ui/main.ui',
+  },
+  {
+    key: 'web',
+    title: 'Web Container (v2)',
+    description: '100% standard HTML, CSS, and ES modules in a sandboxed Worker.',
+    path: 'index.html + app.ts',
+  },
+];
+
+const UI_LANGUAGES: { key: NewProjectLanguage; title: string; description: string; path: string }[] = [
   { key: 'javascript', title: 'JavaScript', description: 'Runs in a sandboxed VM. The default.', path: 'logic/main.logic' },
   { key: 'python', title: 'Python', description: 'Runs on the ZIPP engine, with optional machine learning.', path: 'logic/main.py' },
+];
+
+const WEB_LANGUAGES: { key: NewProjectLanguage; title: string; description: string; path: string }[] = [
+  { key: 'typescript', title: 'TypeScript', description: 'Transpiled on demand inside the ZIPP Worker.', path: 'app.ts' },
+  { key: 'javascript', title: 'JavaScript', description: 'Standard ES modules on zipp-javascript-lite.', path: 'app.js' },
+  { key: 'python', title: 'Python', description: 'Runs on the ZIPP Python engine, with optional torch.', path: 'main.py' },
 ];
 
 export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialogProps) {
@@ -143,7 +168,8 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
   const [description, setDescription] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [template, setTemplate] = useState<StarterTemplate>('blank');
-  const [language, setLanguage] = useState<LogicLanguage>('javascript');
+  const [format, setFormat] = useState<NewProjectFormat>('ui');
+  const [language, setLanguage] = useState<NewProjectLanguage>('javascript');
   const [torch, setTorch] = useState(false);
 
   useEffect(() => {
@@ -152,11 +178,14 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
     setDescription('');
     setTheme('system');
     setTemplate('blank');
+    setFormat('ui');
     setLanguage('javascript');
     setTorch(false);
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const languageOptions = format === 'web' ? WEB_LANGUAGES : UI_LANGUAGES;
 
   const handleCreate = () => {
     onCreate({
@@ -164,6 +193,7 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
       description: description.trim(),
       theme,
       template,
+      ...(format === 'web' ? { format: 'web' as const } : {}),
       language,
       pythonPackages: language === 'python' && torch ? ['torch'] : [],
     });
@@ -203,12 +233,45 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
             />
           </div>
 
+          <fieldset style={styles.fieldset}>
+            <legend style={styles.label}>App runtime</legend>
+            <div style={styles.cards}>
+              {FORMATS.map((option) => (
+                <label
+                  key={option.key}
+                  className="bl-choice"
+                  data-checked={format === option.key}
+                  style={{ position: 'relative', display: 'block' }}
+                >
+                  <input
+                    type="radio"
+                    name={`${fieldId}-format`}
+                    value={option.key}
+                    checked={format === option.key}
+                    onChange={() => {
+                      setFormat(option.key);
+                      if (option.key === 'ui' && language === 'typescript') {
+                        setLanguage('javascript');
+                      } else if (option.key === 'web' && language === 'javascript') {
+                        setLanguage('typescript');
+                      }
+                    }}
+                    style={styles.radio}
+                  />
+                  <span style={styles.cardTitle}>{option.title}</span>
+                  <span style={styles.cardDesc}>{option.description}</span>
+                  <span style={styles.cardPath}>{option.path}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
           {/* One language per app: the runtime refuses a bundle whose logic
               mixes the two, so this is the moment to choose. */}
           <fieldset style={styles.fieldset}>
             <legend style={styles.label}>Logic language</legend>
             <div style={styles.cards}>
-              {LANGUAGES.map((option) => (
+              {languageOptions.map((option) => (
                 <label
                   key={option.key}
                   className="bl-choice"

@@ -6,7 +6,7 @@ import React from 'react';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { CodeEditor } from './CodeEditor';
-import { editorLanguageFor } from './logicLanguage';
+import { codeLanguageFor, codeLanguageLabelFor, editorLanguageFor } from './logicLanguage';
 import { dockLogicFile, entryFileId } from '../../utils/logicFiles';
 import { dockInlineLogicHolder } from '../../utils/inlineLogic';
 import { toast } from '../../stores/notificationStore';
@@ -68,6 +68,7 @@ const styles: Record<string, React.CSSProperties> = {
 
 export function LogicEditor() {
   const retainedSource = useProjectStore((state) => state.source);
+  const projectFormat = useProjectStore((state) => state.projectFormat);
   const { activeFileId, nodes, uiFiles, logicFiles, updateLogicFile } = useFilesStore((state) => ({
     activeFileId: state.activeFileId,
     nodes: state.nodes,
@@ -135,7 +136,20 @@ export function LogicEditor() {
   // the runtime: a `.py` logic file is Python. Getting this wrong is not
   // cosmetic — the highlighter would mark correct Python as broken, and its
   // auto-indent would fight code whose indentation is the program.
-  const editorLanguage = editorLanguageFor(logicFile.path);
+  const editorLanguage = projectFormat === 'web' ? codeLanguageFor(logicFile.path) : editorLanguageFor(logicFile.path);
+  const badgeLabel = projectFormat === 'web' ? codeLanguageLabelFor(logicFile.path) : (editorLanguage === 'python' ? 'Python' : 'JavaScript');
+  const hintText =
+    projectFormat === 'web'
+      ? editorLanguage === 'css'
+        ? 'Container stylesheet — scoped inside the Shadow DOM'
+        : editorLanguage === 'json'
+          ? 'JSON data or configuration file in the container'
+          : editorLanguage === 'python'
+            ? 'Python script — runs inside the isolated ZIPP WASM Worker'
+            : 'ES module — runs inside the isolated ZIPP WASM Worker'
+      : editorLanguage === 'python'
+        ? 'Top-level names are state; functions are callable'
+        : 'Define state, computed values, and functions';
 
   return (
     <div style={styles.container}>
@@ -145,14 +159,12 @@ export function LogicEditor() {
             JavaScript and the editor behaves differently for it. */}
         <span style={styles.titleRow}>
           <span className="bl-badge" data-tone="code" data-logic-language={editorLanguage}>
-            {editorLanguage === 'python' ? 'Python' : 'JavaScript'}
+            {badgeLabel}
           </span>
           <span style={styles.path} title={logicFile.path}>{logicFile.path}</span>
         </span>
         <span style={styles.hint}>
-          {editorLanguage === 'python'
-            ? 'Top-level names are state; functions are callable'
-            : 'Define state, computed values, and functions'}
+          {hintText}
         </span>
       </div>
       <EditorWayOut style={{ display: 'block', padding: '3px 16px', borderBottom: '1px solid var(--line-soft)' }} />

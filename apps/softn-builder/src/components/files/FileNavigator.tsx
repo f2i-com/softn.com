@@ -546,12 +546,30 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
   );
   const rootFileIds = useMemo(() => rootFilesOf(nodes), [nodes]);
   const retainedSource = useProjectStore((state) => state.source);
+  const projectFormat = useProjectStore((state) => state.projectFormat);
 
   // A logic file named without an extension takes the project's language,
   // which is the language of the logic its entry file links: an app's logic
   // is all one language, and the runtime refuses one that mixes them.
   const entryLogic = dockLogicFile(null, uiFiles, logicFiles, entryFileId(uiFiles, retainedSource));
-  const logicExtension = entryLogic && logicLanguageOf(entryLogic.path) === 'python' ? '.py' : '.logic';
+  const hasTypeScript = useMemo(
+    () => [...logicFiles.values()].some((f) => /\.(?:tsx?|mts)$/i.test(f.path)),
+    [logicFiles]
+  );
+  const hasPython = useMemo(
+    () => [...logicFiles.values()].some((f) => /\.py$/i.test(f.path)),
+    [logicFiles]
+  );
+  const logicExtension =
+    projectFormat === 'web'
+      ? hasPython
+        ? '.py'
+        : hasTypeScript
+          ? '.ts'
+          : '.js'
+      : entryLogic && logicLanguageOf(entryLogic.path) === 'python'
+        ? '.py'
+        : '.logic';
 
   // What the last file action was refused for, said where it was asked. The
   // store refuses a name that is taken, a .py name Python cannot import, and
@@ -667,10 +685,11 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
       if (activeNode?.type === 'file' && (type === 'folder' || activeNode.fileType === type)) {
         return activeNode.path.split('/').slice(0, -1).join('/');
       }
+      if (projectFormat === 'web') return '';
       if (type === 'logic') return 'logic';
       return 'ui';
     },
-    [activeFileId, nodes]
+    [activeFileId, nodes, projectFormat]
   );
 
   const handleQuickCreateStart = useCallback((type: 'ui' | 'logic' | 'folder', parentPath?: string) => {
@@ -714,10 +733,15 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
         // In the folder asked for from a folder's menu, and with the other components otherwise.
         createComponentFile(trimmed, parentPath);
       } else if (quickCreateType === 'ui') {
-        createFile(parentPath, trimmed.endsWith('.ui') ? trimmed : `${trimmed}.ui`, 'ui');
+        const uiName = projectFormat === 'web'
+          ? (/\.(?:html?|ui)$/i.test(trimmed) ? trimmed : `${trimmed}.html`)
+          : (trimmed.endsWith('.ui') ? trimmed : `${trimmed}.ui`);
+        createFile(parentPath, uiName, 'ui');
       } else {
-        // `.py` is a logic file too: it used to become `helpers.py.logic`.
-        const named = /\.(logic|py)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`;
+        // `.py`, `.ts`, `.js`, `.css`, `.json`, etc. keep their explicit extension when typed.
+        const named = projectFormat === 'web'
+          ? (/\.(?:m?js|cjs|tsx?|mts|jsx|py|css|json|md|txt|logic)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`)
+          : (/\.(logic|py)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`);
         createFile(parentPath, named, 'logic');
       }
     });
@@ -734,6 +758,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     handleQuickCreateCancel,
     attempt,
     logicExtension,
+    projectFormat,
   ]);
 
   const handleNewUIFile = useCallback(() => {

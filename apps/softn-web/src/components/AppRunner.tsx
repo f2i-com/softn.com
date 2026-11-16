@@ -6,6 +6,8 @@ import { SoftNWithXDB, XDBStorageNotice, bundlePageAt, composePage, mainPage, ty
 import { Spinner, Box, Text } from '@softn/components/essentials';
 import { ThemeProvider } from '@softn/components/theme';
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
+import { requestedCapabilities } from '@softn/runtime-shell/bundleProcessor';
+import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
 import { LoadProgress } from '@softn/runtime-shell/LoadProgress';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
 import { SlowOpen } from './SlowOpen';
@@ -80,6 +82,10 @@ interface AppRunnerProps {
   editMarks?: EditMarks;
   /** Told which other page of the bundle a link has put on screen, or null for its main page. */
   onShownPage?: (path: string | null) => void;
+  /** True when the tab is a SoftN v2 Web App Container (`@softn/container`). */
+  webContainer?: boolean;
+  /** Raw `.softn`/`.zip` archive bytes for `WebContainerView`. */
+  bundleData?: Uint8Array;
 }
 
 interface ErrorBoundaryState {
@@ -165,7 +171,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, onCancelOpen, serverUrl, serverToken, serverCollections, storageEndpoint, live, onUpdate, editMarks, onShownPage }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, onCancelOpen, serverUrl, serverToken, serverCollections, storageEndpoint, live, onUpdate, editMarks, onShownPage, webContainer, bundleData }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
   // What the app is waiting on the permission bar for, and whether allowing
   // will start it again, as its renderer says: the bar says both before it
@@ -395,6 +401,46 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
       <div className="softn-runner-app" style={APP_BOX_STYLE} data-softn-theme-box={themeBox}>
         <RunnerErrorBoundary>
           <ThemeProvider followHost followSystem declaredMode={themeMode} box={themeBox}>
+            {webContainer && (bundleData || textFiles) ? (
+              <WebContainerView
+                source={bundleData ?? Object.fromEntries(textFiles ?? [])}
+                appId={runtimeAppId}
+                initialPage={initialPage}
+                declaredPermissions={consent?.config ?? permissionConfig}
+                grantedCapabilities={consent ? [] : requestedCapabilities(permissionConfig ?? { permissions: {} })}
+                theme={themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto'}
+                onReady={onReady}
+                loading={
+                  <Box
+                    className="softn-runner-loading"
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      height: '100%',
+                      minHeight: '300px',
+                      flexDirection: 'column',
+                      gap: '1rem',
+                      background: 'var(--ink)',
+                    }}
+                  >
+                    <Spinner size="lg" />
+                    <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
+                      <span role="status">Starting {appName}…</span>
+                    </Text>
+                  </Box>
+                }
+                error={(err) => (
+                  <div className="softn-runner-error-wrap" role="alert">
+                    <RunnerErrorCard
+                      title="This app couldn’t start"
+                      hint="The container runtime could not open or execute this web app. Check the technical reason below."
+                      detail={err.message}
+                    />
+                  </div>
+                )}
+              />
+            ) : (
             <SoftNWithXDB
               // Another page is another run, and so is another identity: an
               // app the person's first edit made their own copy of starts
@@ -466,6 +512,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                 </div>
               )}
             />
+            )}
           </ThemeProvider>
         </RunnerErrorBoundary>
       </div>

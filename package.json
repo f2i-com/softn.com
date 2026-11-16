@@ -11,7 +11,9 @@
   ],
   "scripts": {
     "build": "npm run build:packages && npm run build:apps",
-    "build:packages": "npm run build -w @softn/core && npm run build -w @softn/components && npm run build -w @softn/vite-plugin",
+    "build:packages": "npm run build -w @softn/core && npm run build -w @softn/container && npm run build -w @softn/components && npm run build -w @softn/vite-plugin",
+    "build:container": "npm run build -w @softn/container",
+    "demo:container": "npm run build -w @softn/container && node examples/container-showcase/build.mjs && node examples/container-showcase/serve.mjs",
     "build:apps": "npm run build --workspace=apps --if-present",
     "build:core": "npm run build -w @softn/core",
     "build:components": "npm run build -w @softn/components",

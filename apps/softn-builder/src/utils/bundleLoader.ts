@@ -77,6 +77,8 @@ export interface LoadedBundle {
   iconDataUrl: string | null;
   /** The archive path of the icon, when the manifest named one that exists. */
   iconPath: string | null;
+  /** `'web'` when the bundle is a SoftN v2 Web App Container (`@softn/container`), `'ui'` otherwise. */
+  projectFormat?: 'ui' | 'web';
 }
 
 /** The kinds of picture a project's icon may be: what the export writes back as one (buildProjectBundle.ts, decodeIconDataUrl). */
@@ -97,11 +99,21 @@ function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
   return Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string') : [];
 }
 
+function isLegacySoftNMarkupText(source: string): boolean {
+  return (
+    /<App[\s>]/i.test(source) ||
+    /<logic[\s>]/i.test(source) ||
+    /<import\s+[A-Z]\w*\s+from\s*=/i.test(source) ||
+    /<data>\s*<collection\b/i.test(source) ||
+    /(?:^|\n)\s*#(?:if|each)\s*\(/m.test(source)
+  );
+}
+
 /**
  * Load a .softn bundle from Uint8Array data
  */
 export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
-  const { manifest, manifestBytes, files, dropped } = parseBundle(data);
+  const { manifest, manifestBytes, files, dropped, synthesizedManifest } = parseBundle(data);
   // The manifest as read, before anything here touches the typed view of it.
   const rawManifest = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
 
@@ -140,19 +152,57 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   if (!mainEntry) throw new Error(`Invalid bundle: entry file "${manifest.main}" is not in the bundle`);
   let mainFileId: string | null = null;
 
+  const mainSourcePreview = decoder.decode(mainEntry.bytes);
+  const hasTypeScriptEntry = [...files.keys()].some(
+    (p) => !p.startsWith('assets/') && !p.startsWith('server/') && /\.(?:tsx?|mts)$/i.test(p)
+  );
+  const isWebContainer =
+    Boolean(synthesizedManifest) ||
+    rawManifest.engine === 2 ||
+    rawManifest.container === true ||
+    hasTypeScriptEntry ||
+    (/\.html?$/i.test(mainEntry.path) &&
+      !isLegacySoftNMarkupText(mainSourcePreview) &&
+      /<script\b[^>]*\btype\s*=\s*["']?(?:module|text\/python)["']?/i.test(mainSourcePreview));
+
   // Load UI files. The entry is loaded whether or not `files.ui` lists it:
   // the runtime reads it by `main`, so a bundle that names it only there is
   // a valid bundle everywhere else and opens here too (listed on export).
   const loadUi = (found: NonNullable<ReturnType<typeof resolveEntry>>): void => {
     const source = decoder.decode(found.bytes);
+    const fileId = generateFileId();
+    if (found.path === mainEntry.path) mainFileId = fileId;
+
+    if (isWebContainer) {
+      const rootId = `root_${fileId}`;
+      uiFiles.set(fileId, {
+        id: fileId,
+        path: found.path,
+        elements: new Map([
+          [
+            rootId,
+            {
+              id: rootId,
+              componentType: 'App',
+              props: { theme: 'system' },
+              children: [],
+              parentId: null,
+            },
+          ],
+        ]),
+        rootId,
+        imports: [],
+        originalSource: source,
+        ...(startsWithByteOrderMark(found.bytes) ? { bom: true } : {}),
+      });
+      return;
+    }
+
     const parsed = parseSource(source);
     // Props an older Builder wrote under names the components never read
     // (propMigrations.ts) become what the components take; each rewrite is
     // reported so the author sees what moved.
     warnings.push(...describeMigrations(found.path, migrateElements(parsed.elements.values())));
-
-    const fileId = generateFileId();
-    if (found.path === mainEntry.path) mainFileId = fileId;
 
     // Convert parsed imports to UIImport format
     const imports: UIImport[] = parsed.imports || [];
@@ -199,6 +249,16 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   const entryFileId: string | null = mainFileId;
   if (!entryFileId) throw new Error(`Invalid bundle: entry file "${manifest.main}" could not be loaded`);
 
+  if (isWebContainer) {
+    for (const [path, bytes] of files) {
+      if (consumed.has(path) || path.endsWith('/') || path.startsWith('assets/') || path.startsWith('server/')) continue;
+      if (/\.html?$/i.test(path)) {
+        consumed.add(path);
+        loadUi({ path, bytes, migrated: false });
+      }
+    }
+  }
+
   // Load logic files
   for (const logicPath of declaredPaths(manifest, 'logic')) {
     const found = resolveEntry(files, logicPath, 'logic');
@@ -241,14 +301,37 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     }
   }
 
+  if (isWebContainer) {
+    for (const [path, bytes] of files) {
+      if (consumed.has(path) || path.endsWith('/') || path === 'manifest.json' || path === 'permission.json') continue;
+      if (path.startsWith('server/') || /\.xdb$/i.test(path)) continue;
+      if (/\.(?:m?js|cjs|tsx?|mts|jsx|py|css|json|md|txt)$/i.test(path)) {
+        consumed.add(path);
+        const fileId = generateFileId();
+        logicFiles.set(fileId, {
+          id: fileId,
+          path,
+          content: decoder.decode(bytes),
+          ...(startsWithByteOrderMark(bytes) ? { bom: true } : {}),
+        });
+      }
+    }
+  }
+
   // Load XDB files. One the Builder cannot read (it does not parse, or it
   // names a collection another has already given) is kept as it came, with
   // the entries it does not model, and goes back into every export listed
   // where it was (bundleExporter.ts, unreadXdbPaths). It was left out with a
   // toast, and every record in it was gone from the export.
   const unreadXdb = new Map<string, Uint8Array>();
-  debug('[bundleLoader] XDB files in manifest:', declaredPaths(manifest, 'xdb'));
-  for (const xdbPath of declaredPaths(manifest, 'xdb')) {
+  const xdbCandidates = [...declaredPaths(manifest, 'xdb')];
+  if (isWebContainer) {
+    for (const path of files.keys()) {
+      if (/\.xdb$/i.test(path) && !xdbCandidates.includes(path)) xdbCandidates.push(path);
+    }
+  }
+  debug('[bundleLoader] XDB files in manifest:', xdbCandidates);
+  for (const xdbPath of xdbCandidates) {
     const found = resolveEntry(files, xdbPath, 'xdb');
     if (!found) {
       warnings.push(`XDB file not found: ${xdbPath}`);
@@ -344,6 +427,17 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     consumed.add(found.path);
     assets.set(found.path, found.bytes);
   }
+  if (isWebContainer) {
+    for (const [path, bytes] of files) {
+      if (consumed.has(path) || path.endsWith('/') || path === 'manifest.json' || path === 'permission.json') continue;
+      if (path.startsWith('server/')) continue;
+      if (path === manifest.icon) continue;
+      if (classifyAsset(path).binary || path.startsWith('assets/')) {
+        consumed.add(path);
+        assets.set(path, bytes);
+      }
+    }
+  }
 
   // The icon, wherever the manifest put it. It is an asset when it is in the
   // assets group; either way the project keeps it as a data URL too.
@@ -431,6 +525,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     permissions,
     iconDataUrl,
     iconPath,
+    projectFormat: isWebContainer ? 'web' : 'ui',
   };
 }
 

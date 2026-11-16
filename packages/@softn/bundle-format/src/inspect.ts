@@ -131,6 +131,60 @@ function unpackedTooLarge(total: number): string {
   return `The bundle unpacks to ${fmt(total)}; the directory takes at most 128 MB.`;
 }
 
+function unwrapSingleContainerRoot(entries: Map<string, Uint8Array>): Map<string, Uint8Array> {
+  if (entries.has('manifest.json') || entries.has('index.html') || entries.has('app.html')) {
+    return entries;
+  }
+  const filePaths = [...entries.keys()].filter((k) => !k.endsWith('/'));
+  if (filePaths.length === 0) return entries;
+  const firstSlash = filePaths[0].indexOf('/');
+  if (firstSlash <= 0) return entries;
+  const prefix = filePaths[0].slice(0, firstSlash + 1);
+  if (!filePaths.every((p) => p.startsWith(prefix) && p.length > prefix.length)) return entries;
+  if (
+    !entries.has(`${prefix}manifest.json`) &&
+    !entries.has(`${prefix}index.html`) &&
+    !entries.has(`${prefix}app.html`)
+  ) {
+    return entries;
+  }
+  const unwrapped = new Map<string, Uint8Array>();
+  for (const [k, v] of entries) {
+    if (k.startsWith(prefix) && k.length > prefix.length) {
+      unwrapped.set(k.slice(prefix.length), v);
+    }
+  }
+  return unwrapped;
+}
+
+function discoverHtmlEntry(entries: Map<string, Uint8Array>): string | null {
+  if (entries.has('index.html')) return 'index.html';
+  if (entries.has('app.html')) return 'app.html';
+  const rootHtml = [...entries.keys()]
+    .filter((k) => !k.includes('/') && /\.html?$/i.test(k))
+    .sort();
+  return rootHtml[0] ?? null;
+}
+
+function inferHtmlTitle(html: string): string {
+  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  if (!m) return '';
+  return m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 64);
+}
+
+function discoverHtmlIcon(entries: Map<string, Uint8Array>, html: string): string | undefined {
+  const linkMatch = /<link\b[^>]*rel\s*=\s*["'](?:shortcut\s+)?icon["'][^>]*>/i.exec(html);
+  if (linkMatch) {
+    const hrefMatch = /\bhref\s*=\s*["']([^"']+)["']/i.exec(linkMatch[0]);
+    const clean = hrefMatch?.[1]?.replace(/^\.?\/+/, '').split(/[?#]/)[0];
+    if (clean && entries.has(clean)) return clean;
+  }
+  for (const candidate of ['favicon.svg', 'favicon.png', 'assets/icon.svg', 'assets/icon.png', 'icon.svg', 'icon.png']) {
+    if (entries.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 /** Inspect bundle bytes. Never throws: an archive that will not open is a report with one error. */
 export function inspectBundle(bytes: Uint8Array): BundleInspection {
   let entries: Map<string, Uint8Array>;
@@ -220,43 +274,66 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     error('That file is not a .softn bundle (it does not open as an archive).');
     return finish({});
   }
-  const paths = [...entries.keys()].filter((k) => !k.endsWith('/'));
-  const total = paths.reduce((n, k) => n + entries.get(k)!.length, 0);
-  if (paths.length === 0) error('The bundle is empty.');
-  if (paths.length > MAX_ENTRIES) error(`The bundle has ${paths.length} files; the directory takes at most ${MAX_ENTRIES}.`);
+  const rawPaths = [...entries.keys()].filter((k) => !k.endsWith('/'));
+  const total = rawPaths.reduce((n, k) => n + entries.get(k)!.length, 0);
+  if (rawPaths.length === 0) error('The bundle is empty.');
+  if (rawPaths.length > MAX_ENTRIES) error(`The bundle has ${rawPaths.length} files; the directory takes at most ${MAX_ENTRIES}.`);
   if (total > MAX_UNCOMPRESSED) error(unpackedTooLarge(total));
-  for (const p of paths) {
+  for (const p of rawPaths) {
     if (p.startsWith('/') || p.includes('\\') || /(^|\/)\.\.(\/|$)/.test(p)) error(`The bundle has a file with an unsafe path: ${p}`);
   }
 
+  const resolved = unwrapSingleContainerRoot(entries);
+  const paths = [...resolved.keys()].filter((k) => !k.endsWith('/'));
+
   const decoder = new TextDecoder();
-  const manifestBytes = entries.get('manifest.json');
-  if (!manifestBytes) {
-    error('The bundle has no manifest.json.');
-    return finish({ files: paths.length, bytes: total });
-  }
-  if (manifestBytes.length > MAX_MANIFEST_BYTES) {
-    error(`The manifest.json is larger than ${fmt(MAX_MANIFEST_BYTES)}; the directory will refuse the bundle.`);
-  }
+  const manifestBytes = resolved.get('manifest.json');
   let manifest: {
     name?: unknown;
     version?: unknown;
     description?: unknown;
     main?: unknown;
     icon?: unknown;
+    engine?: unknown;
+    container?: unknown;
     config?: { execution?: unknown; python?: unknown };
     files?: Record<string, unknown>;
     permissions?: unknown;
   };
-  try {
-    manifest = JSON.parse(decoder.decode(manifestBytes));
-  } catch {
-    error('The manifest.json is not valid JSON.');
-    return finish({ files: paths.length, bytes: total });
-  }
-  if (!manifest || typeof manifest !== 'object') {
-    error('The manifest.json is not a JSON object.');
-    return finish({ files: paths.length, bytes: total });
+  let inferredContainer = false;
+  if (!manifestBytes) {
+    const htmlEntry = discoverHtmlEntry(resolved);
+    if (!htmlEntry) {
+      error('The bundle has no manifest.json.');
+      return finish({ files: rawPaths.length, bytes: total });
+    }
+    inferredContainer = true;
+    const htmlSource = decoder.decode(resolved.get(htmlEntry)!);
+    const title = inferHtmlTitle(htmlSource) || 'Web App';
+    const icon = discoverHtmlIcon(resolved, htmlSource);
+    manifest = {
+      name: title,
+      version: '1.0.0',
+      description: '',
+      main: htmlEntry,
+      ...(icon ? { icon } : {}),
+      config: { execution: 'worker' },
+    };
+    warn(`No manifest.json: inferred entry ${htmlEntry} and default container metadata.`);
+  } else {
+    if (manifestBytes.length > MAX_MANIFEST_BYTES) {
+      error(`The manifest.json is larger than ${fmt(MAX_MANIFEST_BYTES)}; the directory will refuse the bundle.`);
+    }
+    try {
+      manifest = JSON.parse(decoder.decode(manifestBytes));
+    } catch {
+      error('The manifest.json is not valid JSON.');
+      return finish({ files: rawPaths.length, bytes: total });
+    }
+    if (!manifest || typeof manifest !== 'object') {
+      error('The manifest.json is not a JSON object.');
+      return finish({ files: rawPaths.length, bytes: total });
+    }
   }
 
   const name = typeof manifest.name === 'string' ? manifest.name.trim() : '';
@@ -267,7 +344,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   else if (name.length > 64) error(`The name is ${name.length} characters; the directory keeps 64.`);
   if (!version) error('The manifest has no version.');
   if (!main) error('The manifest names no entry file (main).');
-  else if (!entries.has(main)) error(`The manifest's entry file is not in the bundle: ${main}`);
+  else if (!resolved.has(main)) error(`The manifest's entry file is not in the bundle: ${main}`);
   if (!description) warn('No description: the card will say "No description yet".');
 
   // Files the manifest promises must be there; the runtime resolves them by
@@ -282,7 +359,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
       }
       for (const item of list) {
         if (typeof item !== 'string') error(`manifest.files.${group} has an entry that is not a path.`);
-        else if (!entries.has(item)) error(`manifest.files.${group} lists ${item}, but the bundle has no such file.`);
+        else if (!resolved.has(item)) error(`manifest.files.${group} lists ${item}, but the bundle has no such file.`);
       }
     }
     for (const key of Object.keys(manifest.files)) {
@@ -292,10 +369,11 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     error('manifest.files must be an object of file groups.');
   }
 
-  let execution = 'main';
+  let execution = inferredContainer || manifest.engine === 2 || manifest.container === true ? 'worker' : 'main';
   const declaredExecution = manifest.config?.execution;
   if (declaredExecution === 'worker') execution = 'worker';
-  else if (declaredExecution !== undefined && declaredExecution !== 'main') {
+  else if (declaredExecution === 'main') execution = 'main';
+  else if (declaredExecution !== undefined) {
     warn(`config.execution is "${String(declaredExecution)}"; the runtime knows "main" and "worker" and will use main.`);
   }
   const { packages: pythonPackages, problems: pythonPackageProblems } = readPythonPackages(manifest);
@@ -305,7 +383,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   // does not have, or an entry it cannot read, is refused at publication.
   let capabilities: string[] = [];
   let storagePolicies: Record<string, string> = {};
-  const perm = entries.get('permission.json');
+  const perm = resolved.get('permission.json');
   if (perm) {
     if (perm.length > MAX_PERMISSION_BYTES) {
       error(`The permission.json is larger than ${fmt(MAX_PERMISSION_BYTES)}; the directory will refuse the bundle.`);
@@ -362,7 +440,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
 
   let iconDataUrl: string | null = null;
   if (typeof manifest.icon === 'string' && manifest.icon) {
-    const icon = entries.get(manifest.icon);
+    const icon = resolved.get(manifest.icon);
     if (!icon) warn(`The manifest names an icon the bundle does not have: ${manifest.icon}. The card will show an initial.`);
     else if (icon.length > MAX_ICON_BYTES) warn(`The icon is ${fmt(icon.length)}; the directory shows icons up to ${fmt(MAX_ICON_BYTES)}, so the card will show an initial.`);
     else {
@@ -376,8 +454,8 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   }
 
   // Size is not a rule, but it is a wait on a phone before the first frame.
-  const large = paths.filter((p) => entries.get(p)!.length > LARGE_FILE_BYTES);
-  for (const p of large.slice(0, 5)) warn(`${p} is ${fmt(entries.get(p)!.length)}; every visitor downloads it before the app opens.`);
+  const large = paths.filter((p) => resolved.get(p)!.length > LARGE_FILE_BYTES);
+  for (const p of large.slice(0, 5)) warn(`${p} is ${fmt(resolved.get(p)!.length)}; every visitor downloads it before the app opens.`);
   if (large.length > 5) warn(`${large.length - 5} more files are over ${fmt(LARGE_FILE_BYTES)}.`);
   if (total > LARGE_BUNDLE_BYTES && total <= MAX_UNCOMPRESSED) warn(`The bundle unpacks to ${fmt(total)}. Say so in the description, and consider what a phone on mobile data will make of it.`);
 

@@ -144,6 +144,7 @@ export async function loadServedApplication(
     sidecar: pack.declared !== null ? () => Promise.resolve(pack.declared) : undefined,
     appId,
     grantScope: url.href + pack.digest,
+    manifestHint: pack.manifest as unknown as Record<string, unknown>,
     signal,
   });
   const assets = createServedAssetResolver(
