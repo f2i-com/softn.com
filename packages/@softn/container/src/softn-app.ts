@@ -458,7 +458,7 @@ export async function mountSoftNContainer(
       if (!threeHost) {
         const { SplitRealmSceneHost: HostCtor } = await import('./vendor/webgl-scene-host');
         if (disposed) return;
-        threeHost = new HostCtor(archive, runtimeUrl);
+        threeHost = new HostCtor(archive, runtimeUrl, options.hostThree);
       }
       threeHost.enqueue(canvas, canvasId, ops);
     };

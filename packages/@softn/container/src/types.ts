@@ -205,6 +205,12 @@ export interface SoftNContainerOptions {
   engineWasm?: Partial<Record<ZippEngineTier, ZippEngineSupplier>>;
   /** Optional custom vendor ESM module map (`specifier -> ESM source or URL`). */
   vendorModules?: Record<string, string>;
+  /**
+   * The embedding page's own Three.js, for a host that bundles one: asked for when an app
+   * first draws a 3D scene, instead of the copy in the runtime folder (`vendor/three.js`),
+   * which such a host need not ship.
+   */
+  hostThree?: () => Promise<unknown>;
   /** Permission mode: `'prompt'` shows non-blocking consent bar; `'preapproved'` grants declared permissions; `'deny'` denies all. */
   permissionMode?: 'prompt' | 'preapproved' | 'deny';
   /** Override `permission.json` from host deployment configuration. */

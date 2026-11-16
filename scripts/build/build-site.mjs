@@ -15,8 +15,8 @@
  *                    in, so the page fetches the bundle and nothing else first
  *   dist/shared/     what every app above ships alike, once, for all of them:
  *                    the ZIPP engine and the QR decoder (shared-assets.mjs),
- *                    and the web container's Worker, engines and vendor
- *                    modules (container-runtime-assets.mjs)
+ *                    and the web container's Worker and engines
+ *                    (container-runtime-assets.mjs)
  *   dist/docs/       the documentation: static pages generated from
  *                    docs/content/softn-docs.json (docs/scripts/build-docs.mjs),
  *                    with sitemap-docs.xml and robots.txt beside index.html
@@ -630,7 +630,7 @@ the admin key.
 - \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
-- \`/shared/\` — what every app above ships alike, kept once: the ZIPP engine and the QR decoder, and the web container's files (its Worker, the smaller ZIPP engines it runs plain web apps on, its vendor modules)
+- \`/shared/\` — what every app above ships alike, kept once: the ZIPP engine and the QR decoder, and the web container's files (its Worker and the smaller ZIPP engines it runs plain web apps on)
 ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — a page of download links for those bundles\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
 - \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
@@ -910,9 +910,8 @@ for (const app of APPS) {
   const kept = collectSharedAssets(outDir, [...APPS, PLAY].map((app) => app.into), SHARED_ASSETS);
   if (!kept.some((name) => name.startsWith('zipp_wasm_bg-'))) throw new Error('No app shipped the ZIPP engine to share');
   console.log(`\nShared by every app, once: ${kept.join(', ')}`);
-  // The web container's Worker, the engines core does not carry and the vendor
-  // modules: one folder, named by the digest of what is in it, which every app
-  // above was built to ask.
+  // The web container's Worker and the engines core does not carry: one folder,
+  // named by the digest of what is in it, which every app above was built to ask.
   const runtime = placeSharedContainerRuntime(outDir, [...APPS, PLAY].map((app) => app.into), SHARED_CONTAINER_RUNTIME);
   console.log(`The web container's ${runtime.files.length} files, once: ${runtime.url}`);
 }

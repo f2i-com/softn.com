@@ -228,6 +228,60 @@ test('a Python script runs on the runtime’s own engine, and what it prints rea
   }
 });
 
+const ORBIT_HTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Orbit</title><script type="module" src="./scene.js"></script></head>
+<body><p id="state">Starting…</p><canvas id="gl" width="320" height="200"></canvas></body>
+</html>`;
+
+const ORBIT_JS = `import * as THREE from 'three';
+const canvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(320, 200);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 320 / 200, 0.1, 100);
+camera.position.set(0, 1, 3);
+scene.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x3b82f6 })));
+scene.add(new THREE.AmbientLight(0xffffff, 1));
+renderer.render(scene, camera);
+document.getElementById('state').textContent = 'Scene drawn';
+`;
+
+test('a 3D scene is drawn by the runtime’s own Three.js: the folder ships no second copy', async ({ page }, testInfo) => {
+  const log = watchConsole(page, testInfo);
+  await keepShadowRoots(page);
+  const scripts: Fetched[] = [];
+  page.on('requestfinished', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/three/i.test(path)) void request.response().then((response) => scripts.push({ path, status: response?.status() ?? 0 }));
+  });
+  try {
+    await openBundle(page, 'Orbit.softn', containerBundle({ 'index.html': ORBIT_HTML, 'scene.js': ORBIT_JS }));
+    await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Scene drawn');
+    // The page's side of the scene: the canvas is a WebGL one once the renderer has it, at
+    // the size the app asked for.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            for (const root of (window as unknown as { __softnRoots?: ShadowRoot[] }).__softnRoots ?? []) {
+              const canvas = root.querySelector('canvas');
+              if (canvas) return { webgl: canvas.getContext('2d') === null, width: canvas.width > 0, height: canvas.height > 0 };
+            }
+            return null;
+          }),
+        { timeout: 30_000 }
+      )
+      .toEqual({ webgl: true, width: true, height: true });
+    // Three.js came from the runtime's own chunk, once, and nothing asked the folder for one.
+    expect(scripts.filter((entry) => /\/vendor\/three\.js$/.test(entry.path))).toEqual([]);
+    expect(scripts.some((entry) => /^\/web\/assets\/vendor-three-[\w-]+\.js$/.test(entry.path) && entry.status === 200), JSON.stringify(scripts)).toBe(true);
+    expect(log.uncaught).toEqual([]);
+  } finally {
+    await log.attach('orbit');
+  }
+});
+
 // Each of these ran script in the page, or reached another origin, in v0.0.43 (the unit suite
 // has the whole list, in jsdom; these are the ones only a browser shows as they are).
 const HOSTILE = `<!doctype html>

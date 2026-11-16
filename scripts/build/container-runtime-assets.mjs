@@ -1,7 +1,7 @@
 /**
  * What @softn/container needs beside an app, served in dev and written at build: its Worker,
- * the ZIPP engines an app that carries @softn/core does not already have, each engine's
- * bindings, and the hosted vendor modules.
+ * the ZIPP engines an app that carries @softn/core does not already have, and the bindings
+ * of each engine that runs.
  *
  * Not the whole of the package's `dist/runtime/`, which is a drop-in for a page with no SoftN
  * on it and so carries everything. An app built here has @softn/core, and with it:
@@ -14,6 +14,8 @@
  *     `Temporal`; `zipp-javascript.wasm` is the same engine built without Python). The host
  *     hands over core's for that tier too, so the 4.9 MB file and its bindings stay out;
  *   - the torch package, in `assets/core-runtime/`. `zipp-torch.wasm` is the same file;
+ *   - Three.js, the chunk its own 3D components load, which it hands the container for a
+ *     scene an app draws. `vendor/three.js` is the same library once more;
  *   - the container itself, compiled into the app's own chunks, so the drop-in's entry
  *     (`softn.js`) and its chunks are never asked for.
  *
@@ -64,13 +66,17 @@ const MIME_TYPES = new Map([
   ['.txt', 'text/plain; charset=utf-8'],
 ]);
 
-// What core has, or stands in for (see the note above). The bindings of core's engine stay
-// (`zipp-python-base.glue.js`): the container loads them for whichever tier that engine runs.
-const CORE_HAS = new Set([
+// What the app has already, or stands in for (see the note above). The bindings of core's
+// engine stay (`zipp-python-base.glue.js`): the container loads them for whichever tier that
+// engine runs.
+const APP_HAS = new Set([
   'engines/zipp-python-base.wasm',
   'engines/zipp-torch.wasm',
   'engines/zipp-javascript.wasm',
   'engines/zipp-javascript.glue.js',
+  // Three.js: the app bundles its own for `<Scene3D>`, and hands it to the container
+  // (containerHost.ts's hostThree).
+  'vendor/three.js',
 ]);
 
 /** Whether a host that carries @softn/core serves this file of `dist/runtime/` (a `/`-separated path). */
@@ -78,7 +84,7 @@ export function isHostedRuntimeFile(relative) {
   // Source maps are not shipped; .br and .gz twins are the deployment's to write
   // (precompress-assets.mjs), from the bytes it ends up serving.
   if (/\.(?:map|br|gz)$/.test(relative)) return false;
-  if (CORE_HAS.has(relative)) return false;
+  if (APP_HAS.has(relative)) return false;
   return relative === 'container-worker.js' || relative.startsWith('engines/') || relative.startsWith('vendor/');
 }
 

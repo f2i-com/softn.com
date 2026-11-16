@@ -27,12 +27,25 @@ const clampDrawingSize = (value: unknown): number =>
 
 let threeModulePromise: Promise<typeof import('three')> | null = null;
 
-function loadHostThree(runtimeUrl?: string): Promise<typeof import('three')> {
+/**
+ * Three.js for the page's side of a 3D scene, loaded once.
+ *
+ * The host's own when it has one (`hostThree`): an app that bundles Three.js draws its own
+ * 3D with it, so a second copy from the runtime folder was 680 KB of the same library, and
+ * the two were mixed: the model loader below is compiled against the bundled one, and the
+ * scene it made was added to a scene of the folder's. Otherwise the copy in the runtime
+ * folder, which is what a page with no Three.js of its own has.
+ */
+function loadHostThree(runtimeUrl?: string, hostThree?: () => Promise<unknown>): Promise<typeof import('three')> {
   if (!threeModulePromise) {
     const base = (runtimeUrl ?? '/runtime/').replace(/\/?$/, '/');
-    threeModulePromise = (
-      import(/* @vite-ignore */ `${base}vendor/three.js`) as Promise<typeof import('three')>
-    ).catch(() => import('three'));
+    const fromFolder = (): Promise<typeof import('three')> =>
+      (import(/* @vite-ignore */ `${base}vendor/three.js`) as Promise<typeof import('three')>).catch(() => import('three'));
+    threeModulePromise = hostThree ? (hostThree() as Promise<typeof import('three')>).catch(fromFolder) : fromFolder();
+    // A load that failed is tried again by the next scene, not remembered.
+    threeModulePromise.catch(() => {
+      threeModulePromise = null;
+    });
   }
   return threeModulePromise;
 }
@@ -42,16 +55,20 @@ export class SplitRealmSceneHost {
   private readonly pendingQueues = new Map<number, { canvas: HTMLCanvasElement; ops: ThreeSceneOp[] }>();
   private readonly archive: ContainerArchive;
   private readonly runtimeUrl?: string;
+  private readonly hostThree?: () => Promise<unknown>;
   private loading = false;
   private disposed = false;
+  /** Three.js could not be loaded for this mount; a later mount asks again. */
+  private unavailable = false;
 
-  constructor(archive: ContainerArchive, runtimeUrl?: string) {
+  constructor(archive: ContainerArchive, runtimeUrl?: string, hostThree?: () => Promise<unknown>) {
     this.archive = archive;
     this.runtimeUrl = runtimeUrl;
+    this.hostThree = hostThree;
   }
 
   enqueue(canvas: HTMLCanvasElement, canvasId: number, ops: ThreeSceneOp[]): void {
-    if (this.disposed) return;
+    if (this.disposed || this.unavailable) return;
     let q = this.pendingQueues.get(canvasId);
     if (!q) {
       q = { canvas, ops: [] };
@@ -65,7 +82,19 @@ export class SplitRealmSceneHost {
     if (this.loading || this.disposed) return;
     this.loading = true;
     try {
-      const THREE = await loadHostThree(this.runtimeUrl);
+      let THREE: typeof import('three');
+      try {
+        THREE = await loadHostThree(this.runtimeUrl, this.hostThree);
+      } catch (err) {
+        // Three.js did not arrive (offline, a file missing): this mount draws no 3D. What
+        // was queued is dropped and nothing more is taken. The queue used to be kept and
+        // the load asked for again at once, which failed again at once, without end and
+        // without the page's thread ever being given back: the embedding page stopped.
+        this.unavailable = true;
+        this.pendingQueues.clear();
+        console.warn('[SoftN] Hosted 3D scene renderer unavailable:', err);
+        return;
+      }
       if (this.disposed) return;
 
       for (const [canvasId, entry] of this.pendingQueues) {
@@ -74,7 +103,8 @@ export class SplitRealmSceneHost {
         this.applyCanvasOps(THREE, entry.canvas, canvasId, ops);
       }
     } catch (err) {
-      console.warn('[SoftN] Hosted 3D scene renderer unavailable:', err);
+      // An operation the renderer refused: that batch is gone, the scene carries on.
+      console.warn('[SoftN] A 3D scene operation failed:', err);
     } finally {
       this.loading = false;
       for (const entry of this.pendingQueues.values()) {

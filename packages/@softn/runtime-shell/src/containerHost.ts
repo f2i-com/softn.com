@@ -28,8 +28,7 @@ interface HostEnv {
 }
 
 /**
- * Where this build keeps the container's Worker, engine files and vendor modules, ending in
- * `/`. A build names its folder by the digest of what is in it, so a file of one release is
+ * Where this build keeps the container's Worker and engine files, ending in `/`. A build names its folder by the digest of what is in it, so a file of one release is
  * never answered from a cache for another; the site names one folder for all its apps. The
  * dev server, which serves the files straight from the package, has no digest to name.
  */
@@ -57,13 +56,23 @@ export function containerRuntimeUrl(
 const coreEngine = (): Promise<WebAssembly.Module> => zippEngineForWorker();
 
 /**
- * The options every SoftN host mounts a container with: its files' folder, and core's engine
- * for every tier the folder holds no engine for. The container loads the bindings that go
- * with the engine it is handed, so core's runs under its own whichever tier asked.
+ * The app's own Three.js, which every SoftN host bundles for its 3D components: the chunk
+ * a `<Scene3D>` loads, fetched when a container first draws a scene. The folder's copy
+ * (`vendor/three.js`) was the same library again, and the model loader the container is
+ * compiled with is bound to this one.
  */
-export function hostedContainerOptions(): Required<Pick<SoftNContainerOptions, 'runtimeUrl' | 'engineWasm'>> {
+const ownThree = (): Promise<unknown> => import('three');
+
+/**
+ * The options every SoftN host mounts a container with: its files' folder, core's engine
+ * for every tier the folder holds no engine for, and the host's own Three.js. The container
+ * loads the bindings that go with the engine it is handed, so core's runs under its own
+ * whichever tier asked.
+ */
+export function hostedContainerOptions(): Required<Pick<SoftNContainerOptions, 'runtimeUrl' | 'engineWasm' | 'hostThree'>> {
   return {
     runtimeUrl: containerRuntimeUrl(),
     engineWasm: { javascript: coreEngine, python: coreEngine, 'python-torch': coreEngine },
+    hostThree: ownThree,
   };
 }
