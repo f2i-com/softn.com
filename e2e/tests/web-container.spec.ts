@@ -258,24 +258,33 @@ test('a 3D scene is drawn by the runtime’s own Three.js: the folder ships no s
   try {
     await openBundle(page, 'Orbit.softn', containerBundle({ 'index.html': ORBIT_HTML, 'scene.js': ORBIT_JS }));
     await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Scene drawn');
-    // The page's side of the scene: the canvas is a WebGL one once the renderer has it, at
-    // the size the app asked for.
+    // Three.js came from the runtime's own chunk, and nothing asked the folder for one.
     await expect
-      .poll(
-        () =>
-          page.evaluate(() => {
-            for (const root of (window as unknown as { __softnRoots?: ShadowRoot[] }).__softnRoots ?? []) {
-              const canvas = root.querySelector('canvas');
-              if (canvas) return { webgl: canvas.getContext('2d') === null, width: canvas.width > 0, height: canvas.height > 0 };
-            }
-            return null;
-          }),
-        { timeout: 30_000 }
-      )
-      .toEqual({ webgl: true, width: true, height: true });
-    // Three.js came from the runtime's own chunk, once, and nothing asked the folder for one.
-    expect(scripts.filter((entry) => /\/vendor\/three\.js$/.test(entry.path))).toEqual([]);
-    expect(scripts.some((entry) => /^\/web\/assets\/vendor-three-[\w-]+\.js$/.test(entry.path) && entry.status === 200), JSON.stringify(scripts)).toBe(true);
+      .poll(() => scripts.some((entry) => /^\/web\/assets\/vendor-three-[\w-]+\.js$/.test(entry.path) && entry.status === 200), { timeout: 30_000 })
+      .toBe(true);
+    // The page's side of the scene, where this browser can draw one at all (a machine with
+    // no graphics may not): the canvas is a WebGL one once the renderer has it, at the size
+    // the app asked for.
+    const canDraw = await page.evaluate(() => {
+      const probe = document.createElement('canvas');
+      return Boolean(probe.getContext('webgl2') ?? probe.getContext('webgl'));
+    });
+    if (canDraw) {
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() => {
+              for (const root of (window as unknown as { __softnRoots?: ShadowRoot[] }).__softnRoots ?? []) {
+                const canvas = root.querySelector('canvas');
+                if (canvas) return { webgl: canvas.getContext('2d') === null, width: canvas.width > 0, height: canvas.height > 0 };
+              }
+              return null;
+            }),
+          { timeout: 30_000 }
+        )
+        .toEqual({ webgl: true, width: true, height: true });
+    }
+    expect(scripts.filter((entry) => /\/vendor\/three\.js$/.test(entry.path)), JSON.stringify(scripts)).toEqual([]);
     expect(log.uncaught).toEqual([]);
   } finally {
     await log.attach('orbit');
