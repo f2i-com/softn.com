@@ -8,7 +8,9 @@ import { describeCapability, type Capability } from '@softn/bundle-format/capabi
 export function renderConsentBar(
   requested: readonly Capability[],
   appName: string,
-  onDecision: (granted: boolean) => void
+  onDecision: (granted: boolean) => void,
+  /** The hosts the app's network grant names; none listed means any site, and the bar says so. */
+  netHosts: readonly string[] = []
 ): HTMLElement {
   const bar = document.createElement('div');
   bar.setAttribute('data-softn-consent-bar', '');
@@ -27,7 +29,10 @@ export function renderConsentBar(
     'z-index:2147483647',
   ].join(';');
 
-  const labels = requested.map((c) => describeCapability(c).label).join(', ');
+  // What "the network" means for this app is part of what is being asked: the sites it
+  // names, or any site at all when it names none. The bar said "network" for both.
+  const reach = netHosts.length > 0 ? netHosts.slice(0, 6).join(', ') + (netHosts.length > 6 ? `, and ${netHosts.length - 6} more` : '') : 'any site';
+  const labels = requested.map((c) => (c === 'net' ? `${describeCapability(c).label} (${reach})` : describeCapability(c).label)).join(', ');
   const msg = document.createElement('span');
   msg.textContent = `${appName} requests access to: ${labels}`;
 

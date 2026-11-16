@@ -184,22 +184,47 @@ export interface ContainerLimits {
   storageQuotaBytes?: number;
 }
 
+/** A ZIPP engine as a host can hand it over: bytes, a compiled module, or an address to fetch. */
+export type ZippEngineSource = BufferSource | WebAssembly.Module | string;
+
+/** An engine, or a function that answers one when its tier is first needed. */
+export type ZippEngineSupplier = ZippEngineSource | (() => ZippEngineSource | Promise<ZippEngineSource>);
+
 /** Configuration for mounting a SoftN v2 container. */
 export interface SoftNContainerOptions {
   /** `.softn` ZIP bytes, URL to a `.softn` archive, or unpacked file map. */
   source: Uint8Array | ArrayBuffer | string | Record<string, string | Uint8Array>;
   /** Base URL where `/runtime/` assets (`engines/`, `vendor/`, `ui/`, `compat/`) are served. */
   runtimeUrl?: string;
-  /** Optional explicit engine WASM source/module override (used in tests or custom hosts). */
-  engineWasm?: Partial<Record<ZippEngineTier, BufferSource | WebAssembly.Module | string>>;
+  /**
+   * A tier's engine from the host instead of from `runtimeUrl`'s `engines/` folder: its bytes, a
+   * compiled module, an address, or a function that answers one of those. A function is asked
+   * only when an app needs that tier, so a host whose page already runs ZIPP's JavaScript and
+   * Python engine can offer it for the Python tiers and ship no second copy of it.
+   */
+  engineWasm?: Partial<Record<ZippEngineTier, ZippEngineSupplier>>;
   /** Optional custom vendor ESM module map (`specifier -> ESM source or URL`). */
   vendorModules?: Record<string, string>;
   /** Permission mode: `'prompt'` shows non-blocking consent bar; `'preapproved'` grants declared permissions; `'deny'` denies all. */
   permissionMode?: 'prompt' | 'preapproved' | 'deny';
   /** Override `permission.json` from host deployment configuration. */
   permissionsOverride?: ContainerPermissions;
+  /**
+   * What the person has already allowed, for a host that asks them itself (`permissionMode:
+   * 'deny'`): in place before the app's first script runs. A grant handed over only after the
+   * mount resolves comes after the page's start-up scripts, so a `fetch` on load was refused
+   * for a visitor who had allowed it on every earlier visit. Not `'preapproved'`, which grants
+   * whatever the archive itself asks for.
+   */
+  initialGrantedCapabilities?: readonly Capability[];
   /** Stable container storage identity override. */
   appId?: string;
+  /**
+   * The key prefix the app's kept data goes under in the embedding page's localStorage,
+   * instead of `softn-v2:<appId>:`. For a host that keeps each app's data under a prefix of
+   * its own and lists, moves and removes it by that prefix: the container's is then with it.
+   */
+  storagePrefix?: string;
   /** Theme preference (`'light' | 'dark' | 'auto'`). */
   theme?: 'light' | 'dark' | 'auto';
   /** Execution mode: `'worker'` (default in browser) or `'inline'` (used in Node/JSDOM tests where Web Workers are unavailable). */
@@ -230,7 +255,8 @@ export type HostToWorkerMsg =
       binaryFilesBase64: Record<string, string>;
       runtimeUrl: string;
       engineTier: ZippEngineTier;
-      engineModule?: WebAssembly.Module | Uint8Array;
+      /** The engine to run: a compiled module or bytes; an address only for a session in the page itself. */
+      engineModule?: WebAssembly.Module | Uint8Array | string;
       torchModule?: WebAssembly.Module | Uint8Array;
       vendorModules?: Record<string, string>;
       grantedCapabilities: Capability[];

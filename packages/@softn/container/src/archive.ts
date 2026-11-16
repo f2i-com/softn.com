@@ -350,7 +350,22 @@ export class ContainerArchive {
     return inflated;
   }
 
-  /** Mint or return a cached `blob:` URL for a binary/media asset inside the container. */
+  /**
+   * An address the page can load a file of the app's from: a `blob:` URL, minted once.
+   *
+   * A `blob:` URL made here belongs to the embedding page's origin, and a browser opens one
+   * as a document when the person asks it to ("Open image in new tab", a link opened in a
+   * tab). So a file that a browser would run as a document is never given one in that form:
+   *
+   *   - an SVG is a `data:` URL: it still draws as an image, where its scripts never run,
+   *     and a browser will not open a `data:` address as a page;
+   *   - HTML and XML are plain text. Nothing loads the app's pages from an address (the
+   *     container reads them from the archive), so this only answers an app that points an
+   *     image or a media element at one.
+   *
+   * v0.0.43 gave each its own type, and an app's `picture.svg` opened in a new tab ran its
+   * script as the embedding site.
+   */
   getBlobUrl(path: string, basePath?: string): string | null {
     if (this.disposed || typeof URL.createObjectURL !== 'function') return null;
     const resolved = resolveVfsPath(path, basePath);
@@ -359,9 +374,16 @@ export class ContainerArchive {
     if (existing) return existing;
     const bytes = this.readBytes(resolved);
     if (!bytes) return null;
-    const copy = new Uint8Array(bytes.byteLength);
-    copy.set(bytes);
-    const url = URL.createObjectURL(new Blob([copy], { type: mimeTypeFor(resolved) }));
+    const type = mimeTypeFor(resolved);
+    let url: string;
+    if (/^image\/svg\+xml/i.test(type)) {
+      url = `data:image/svg+xml;base64,${bytesToBase64(bytes)}`;
+    } else {
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      const inert = /^(?:text\/html|application\/xhtml\+xml|application\/xml|text\/xml)/i.test(type) ? 'text/plain; charset=utf-8' : type;
+      url = URL.createObjectURL(new Blob([copy], { type: inert }));
+    }
     this.blobUrls.set(resolved, url);
     return url;
   }

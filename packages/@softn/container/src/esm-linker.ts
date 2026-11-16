@@ -411,20 +411,29 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
       prev?.value !== 'function' &&
       tokens[i + 1]?.value === '('
     ) {
-      // Find matching closing `)` to append `, __meta.url`
+      // Find the matching closing `)`: the importer's address goes in as the second argument.
+      // A second argument of the script's own (`import(spec, { with: { type: 'json' } })`) is
+      // dropped for it: appended after one, the address landed in a third place the loader
+      // never reads, and the specifier was resolved against the page instead of the module.
       let depth = 1;
+      let nested = 0;
+      let firstComma = -1;
       let j = i + 2;
       while (j < tokens.length && depth > 0) {
         if (tokens[j].type === 'punct') {
-          if (tokens[j].value === '(') depth++;
-          else if (tokens[j].value === ')') depth--;
+          const value = tokens[j].value;
+          if (value === '(') depth++;
+          else if (value === ')') depth--;
+          else if (value === '[' || value === '{') nested++;
+          else if (value === ']' || value === '}') nested = Math.max(0, nested - 1);
+          else if (value === ',' && depth === 1 && nested === 0 && firstComma < 0) firstComma = j;
         }
         if (depth === 0) break;
         j++;
       }
       if (j < tokens.length) {
         edits.push({ start: tok.start, end: tok.end, replacement: '__import' });
-        edits.push({ start: tokens[j].start, end: tokens[j].end, replacement: ', __meta.url)' });
+        edits.push({ start: tokens[firstComma < 0 ? j : firstComma].start, end: tokens[j].end, replacement: ', __meta.url)' });
       }
       continue;
     }

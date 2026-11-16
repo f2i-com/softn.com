@@ -4,7 +4,10 @@
   "description": "SoftN v2 Web App Container Runtime — React-free HTML/CSS/DOM sandbox powered by ZIPP WASM",
   "license": "Apache-2.0",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/index.js",
+    "./dist/runtime/softn.js"
+  ],
   "files": [
     "dist"
   ],

@@ -55,6 +55,36 @@ interface WorkerTransport {
 
 const shadowRootRegistry = new WeakMap<HTMLElement, ShadowRoot>();
 
+/**
+ * Which mount an element's shadow root belongs to: the latest. An element is mounted into
+ * again whenever its host re-renders (a preview on every keystroke), and the mount before is
+ * disposed afterwards, or is still starting. Only the owner writes to the root or empties it:
+ * a superseded mount that emptied "its" root on dispose blanked the live one.
+ */
+const rootOwners = new WeakMap<ShadowRoot, object>();
+
+/**
+ * Inline, important, and after `all: initial`: what the app's stylesheet cannot change. The
+ * app's sheet is in the same shadow root as these elements and can select them, but a
+ * declaration on the element itself outranks any in a sheet of the same importance, and
+ * `all` leaves it no property to reach for.
+ */
+const PINNED = 'all:initial!important;box-sizing:border-box!important;font:inherit!important;color:inherit!important;';
+
+/** The column the consent bar and the app's box are laid out in. */
+const FRAME_STYLE = `${PINNED}display:flex!important;flex-direction:column!important;position:relative!important;width:100%!important;height:100%!important;`;
+
+/**
+ * The app's box: everything the app draws is inside it. It is the containing block of the
+ * app's `position: fixed` elements and clips what they draw, scrolls the app's page, and is
+ * a stacking context of its own below the consent bar: whatever `z-index` the app picks, it
+ * draws under the bar and never over the embedding page.
+ */
+const DOCROOT_STYLE = `${PINNED}display:block!important;flex:1 1 auto!important;min-height:0!important;width:100%!important;position:relative!important;overflow:auto!important;contain:layout paint!important;isolation:isolate!important;z-index:0!important;`;
+
+/** The consent bar's place: above the app's box, in a shadow root of its own that no sheet of the app's reaches. */
+const CONSENT_STYLE = `${PINNED}display:block!important;flex:none!important;position:relative!important;z-index:1!important;`;
+
 const ENGINE_FILES: Readonly<Record<ZippEngineTier, string>> = {
   lite: 'zipp-javascript-lite.wasm',
   javascript: 'zipp-javascript.wasm',
@@ -66,8 +96,8 @@ const ENGINE_FILES: Readonly<Record<ZippEngineTier, string>> = {
 /** Shared page-level compiled WebAssembly.Module cache so multiple Workers share 1 download & 1 compile! */
 const sharedEngineModuleCache = new Map<string, Promise<WebAssembly.Module>>();
 
-function getSharedCompiledEngine(runtimeUrl: string, tier: ZippEngineTier): Promise<WebAssembly.Module> {
-  const url = `${runtimeUrl}engines/${ENGINE_FILES[tier]}`;
+/** The engine at `url`, fetched and compiled once for this page however many containers ask for it. */
+function getSharedCompiledEngine(url: string): Promise<WebAssembly.Module> {
   let existing = sharedEngineModuleCache.get(url);
   if (!existing) {
     existing = (async () => {
@@ -111,10 +141,15 @@ async function loadArchiveSource(
   return source;
 }
 
-function loadPersistedStorage(appId: string): Record<string, string> {
+/**
+ * Where an app's kept data goes in the embedding page's localStorage: `<base>ls:<key>` for
+ * what its script keeps through localStorage, `<base>db` for its records. The base is the
+ * host's (`storagePrefix`), or `softn-v2:<appId>:`.
+ */
+function loadPersistedStorage(base: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (typeof localStorage === 'undefined') return out;
-  const prefix = `softn-v2:${appId}:ls:`;
+  const prefix = `${base}ls:`;
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
@@ -129,14 +164,15 @@ function loadPersistedStorage(appId: string): Record<string, string> {
   return out;
 }
 
+/** Keep, drop or clear what the app's script kept. False when the page's storage refused. */
 function applyPersistedStorageOp(
-  appId: string,
+  base: string,
   op: 'set' | 'remove' | 'clear',
   key?: string,
   value?: string
-): void {
-  if (typeof localStorage === 'undefined') return;
-  const prefix = `softn-v2:${appId}:ls:`;
+): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  const prefix = `${base}ls:`;
   try {
     if (op === 'set' && key !== undefined && value !== undefined) {
       localStorage.setItem(prefix + key, value);
@@ -150,15 +186,17 @@ function applyPersistedStorageOp(
       }
       for (const k of toRemove) localStorage.removeItem(k);
     }
+    return true;
   } catch {
-    // Ignore storage quota / security errors on host
+    // The page's storage is full or closed to this page: the caller says so.
+    return false;
   }
 }
 
-function loadPersistedDb(appId: string): Record<string, unknown[]> {
+function loadPersistedDb(base: string): Record<string, unknown[]> {
   if (typeof localStorage === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(`softn-v2:${appId}:db`);
+    const raw = localStorage.getItem(`${base}db`);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -169,15 +207,35 @@ function loadPersistedDb(appId: string): Record<string, unknown[]> {
   }
 }
 
-function savePersistedDbCollection(appId: string, collection: string, records: unknown[]): void {
-  if (typeof localStorage === 'undefined') return;
+/**
+ * Keep a collection of the app's records. Refused past `quotaBytes` for all of them together:
+ * the Worker counts too, but what is written to the embedding page's storage is decided
+ * here, where the app's script has no say.
+ */
+function savePersistedDbCollection(base: string, collection: string, records: unknown[], quotaBytes: number): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  // The name is the app's word, and a key of an object here: not one that is the object's own
+  // machinery (`__proto__` would replace what the records are kept in).
+  if (typeof collection !== 'string' || !collection || collection === '__proto__' || collection === 'constructor' || collection === 'prototype') return true;
+  if (!Array.isArray(records)) return true;
   try {
-    const current = loadPersistedDb(appId);
+    const current = loadPersistedDb(base);
     current[collection] = records;
-    localStorage.setItem(`softn-v2:${appId}:db`, JSON.stringify(current));
+    const text = JSON.stringify(current);
+    if (text.length * 2 > quotaBytes) return false;
+    localStorage.setItem(`${base}db`, text);
+    return true;
   } catch {
-    // Ignore host storage errors
+    // The page's storage is full or closed to this page: the caller says so.
+    return false;
   }
+}
+
+/** The bytes the app's kept localStorage takes in the embedding page's, as the Worker counts them. */
+function persistedStorageBytes(base: string): number {
+  let bytes = 0;
+  for (const [key, value] of Object.entries(loadPersistedStorage(base))) bytes += (key.length + value.length) * 2;
+  return bytes;
 }
 
 /**
@@ -188,9 +246,26 @@ export async function mountSoftNContainer(
   options: SoftNContainerOptions
 ): Promise<SoftNContainerHandle> {
   const shadowRoot = getOrAttachClosedShadow(hostEl);
+  const owner = {};
+  rootOwners.set(shadowRoot, owner);
+  /** Whether this mount is still the one the element shows. */
+  const owns = (): boolean => rootOwners.get(shadowRoot) === owner;
   shadowRoot.replaceChildren();
 
-  const runtimeUrl = (options.runtimeUrl ?? '/runtime/').replace(/\/?$/, '/');
+  // The folder's whole address, made once against the page: it is read from the page, from
+  // the Worker and from this module's own chunks, and a relative folder is a different place
+  // to each (`runtime-url="./runtime/"` had the Worker look beneath its own script). Under
+  // Node, where a test names a folder on disk, it is left as given.
+  const givenRuntimeUrl = (options.runtimeUrl ?? '/runtime/').replace(/\/?$/, '/');
+  const underNode = typeof process !== 'undefined' && typeof process.versions?.node === 'string';
+  let runtimeUrl = givenRuntimeUrl;
+  if (!underNode && typeof document !== 'undefined') {
+    try {
+      runtimeUrl = new URL(givenRuntimeUrl, document.baseURI).href;
+    } catch {
+      runtimeUrl = givenRuntimeUrl;
+    }
+  }
   const limits: Required<ContainerLimits> = {
     ...DEFAULT_LIMITS,
     ...(options.limits ?? {}),
@@ -198,19 +273,39 @@ export async function mountSoftNContainer(
 
   const rawSource = await loadArchiveSource(options.source);
   const archive = await ContainerArchive.open(rawSource);
-  const appId = options.appId ?? archive.manifest.id;
+  // Where the app's saved data is kept in the embedding page's storage. The host's word when
+  // it gives one; otherwise the address the archive was loaded from, or the digest of its
+  // bytes. Never the `id` the app's own manifest claims: an app that claimed another's id
+  // was handed the other's saved data, and wrote over it.
+  const appId =
+    options.appId ??
+    (typeof options.source === 'string'
+      ? `src:${typeof document !== 'undefined' ? new URL(options.source, document.baseURI).href : options.source}`
+      : `sha256:${archive.digest}`);
+  // The keys the app's kept data goes under: the host's own place for it, when it has one
+  // (a host that lists, moves and removes each app's data keeps the container's with it).
+  const storageBase = options.storagePrefix ?? `softn-v2:${appId}:`;
+  // Said once: the page's storage refused (it is full, or a private window keeps none).
+  let storageRefused = false;
+  const storageKept = (kept: boolean): void => {
+    if (kept || storageRefused) return;
+    storageRefused = true;
+    options.onError?.(new Error('This app’s data could not be kept: the browser’s storage for this page is full or unavailable.'));
+  };
   const permissions = options.permissionsOverride ?? archive.permissions;
   const requestedCaps = archive.requestedCapabilities;
 
+  // What is granted before the first script runs: everything the archive asks for when the
+  // deployment preapproved it, else what the host says the person already allowed.
   let grantedCaps = new Set<Capability>(
-    options.permissionMode === 'preapproved' ? requestedCaps : []
+    options.permissionMode === 'preapproved' ? requestedCaps : (options.initialGrantedCapabilities ?? [])
   );
 
   // Legacy v1 `.ui` fallback path (0 bytes loaded unless `.ui` entry detected)
   if (archive.manifest.mode === 'legacy-ui') {
     const mountDiv = document.createElement('div');
     mountDiv.style.cssText = 'width:100%;height:100%';
-    shadowRoot.appendChild(mountDiv);
+    if (owns()) shadowRoot.appendChild(mountDiv);
     const { mountLegacyUiBundle } = await import('./compat/legacy-ui');
     const legacyHandle = await mountLegacyUiBundle(mountDiv, archive, runtimeUrl);
     options.onReady?.({
@@ -228,7 +323,7 @@ export async function mountSoftNContainer(
       dispose() {
         legacyHandle.dispose();
         archive.dispose();
-        shadowRoot.replaceChildren();
+        if (owns()) shadowRoot.replaceChildren();
       },
     };
   }
@@ -280,7 +375,8 @@ export async function mountSoftNContainer(
   };
 
   const mountPage = async (pagePath: string): Promise<void> => {
-    if (disposed) return;
+    // A mount the element no longer shows draws nothing: the root is the newer mount's.
+    if (disposed || !owns()) return;
     teardownPage();
     shadowRoot.replaceChildren();
 
@@ -315,7 +411,15 @@ export async function mountSoftNContainer(
     styleEl.textContent = [SHADOW_HOST_BASE_CSS, ...prepared.styles].join('\n');
     shadowRoot.appendChild(styleEl);
 
-    // Non-blocking consent bar when capabilities are requested in `'prompt'` mode
+    // The consent bar above, the app's box below: a column whose layout the app's stylesheet
+    // cannot change (see PINNED).
+    const frameEl = document.createElement('div');
+    frameEl.setAttribute('data-softn-frame', '');
+    frameEl.style.cssText = FRAME_STYLE;
+
+    // Non-blocking consent bar when capabilities are requested in `'prompt'` mode. It is drawn
+    // in a shadow root of its own: the app's stylesheet shares the outer root and could
+    // otherwise restyle the bar's words, or hide them and leave the button.
     const permissionMode = options.permissionMode ?? 'prompt';
     if (permissionMode === 'prompt' && requestedCaps.length > 0 && grantedCaps.size === 0) {
       const bar = renderConsentBar(requestedCaps, archive.manifest.name, (allowed) => {
@@ -327,19 +431,24 @@ export async function mountSoftNContainer(
             grantedCapabilities: [...grantedCaps],
           });
         }
-      });
-      shadowRoot.appendChild(bar);
+      }, (permissions.permissions?.net?.allowed_hosts ?? []).filter((host): host is string => typeof host === 'string'));
+      const consentEl = document.createElement('div');
+      consentEl.setAttribute('data-softn-container-consent', '');
+      consentEl.style.cssText = CONSENT_STYLE;
+      consentEl.attachShadow({ mode: 'closed' }).appendChild(bar);
+      frameEl.appendChild(consentEl);
     }
 
     const docRootEl = document.createElement('div');
     docRootEl.setAttribute('data-softn-docroot', '');
-    docRootEl.style.cssText = 'width:100%;height:100%';
+    docRootEl.style.cssText = DOCROOT_STYLE;
 
     const viewportEl = document.createElement('div');
     viewportEl.setAttribute('data-softn-viewport', '');
     viewportEl.setAttribute('data-theme', effectiveTheme);
     docRootEl.appendChild(viewportEl);
-    shadowRoot.appendChild(docRootEl);
+    frameEl.appendChild(docRootEl);
+    shadowRoot.appendChild(frameEl);
 
     const handleThreeOps = async (
       canvas: HTMLCanvasElement,
@@ -390,8 +499,10 @@ export async function mountSoftNContainer(
           options.onTitleChange?.(title);
         },
         onNavigate: (href) => {
+          // A page of the app's, and only a page: a link to any other file of the app's is
+          // not something to show as a document.
           const next = resolveVfsPath(href, pagePath);
-          if (next && archive.has(next)) {
+          if (next && /\.html?$/i.test(next) && archive.has(next)) {
             void mountPage(next).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
           }
         },
@@ -455,11 +566,20 @@ export async function mountSoftNContainer(
             break;
 
           case 'storage-write':
-            if (persistStorage) applyPersistedStorageOp(appId, msg.op, msg.key, msg.value);
+            if (!persistStorage) break;
+            // A value that would take the app's kept localStorage past its quota is not
+            // kept: the Worker refuses it first, and this holds whatever the Worker sends.
+            if (
+              msg.op === 'set' &&
+              persistedStorageBytes(storageBase) + ((msg.key?.length ?? 0) + (msg.value?.length ?? 0)) * 2 > limits.storageQuotaBytes
+            ) {
+              break;
+            }
+            storageKept(applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value));
             break;
 
           case 'db-write':
-            if (persistStorage) savePersistedDbCollection(appId, msg.collection, msg.records);
+            if (persistStorage) storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes));
             break;
 
           case 'error': {
@@ -475,18 +595,25 @@ export async function mountSoftNContainer(
       };
 
       const startSession = async () => {
-        // Pre-resolve explicit engine source if given as string path/URL or BufferSource
-        const explicitWasm = options.engineWasm?.[activeTier];
-        let transferableEngine: WebAssembly.Module | Uint8Array | undefined;
+        // The tier's engine: the host's own when it names one for this tier (bytes, a compiled
+        // module, an address, or a function asked only now, so a host that offers the engine
+        // its page already runs compiles nothing for an app on another tier), else the file
+        // in the runtime folder. An address is fetched and compiled once per page here, and
+        // the module handed to the Worker; without a Worker the session loads it itself.
+        const supplied = options.engineWasm?.[activeTier];
+        const explicitWasm = typeof supplied === 'function' ? await supplied() : supplied;
+        let engineSource: WebAssembly.Module | Uint8Array | string | undefined;
         if (explicitWasm instanceof WebAssembly.Module) {
-          transferableEngine = explicitWasm;
-        } else if (explicitWasm && typeof explicitWasm !== 'string') {
-          transferableEngine =
+          engineSource = explicitWasm;
+        } else if (typeof explicitWasm === 'string') {
+          engineSource = useWorkerIsolation ? await getSharedCompiledEngine(explicitWasm) : explicitWasm;
+        } else if (explicitWasm) {
+          engineSource =
             explicitWasm instanceof ArrayBuffer
               ? new Uint8Array(explicitWasm)
               : new Uint8Array(explicitWasm.buffer, explicitWasm.byteOffset, explicitWasm.byteLength);
-        } else if (useWorkerIsolation && !explicitWasm) {
-          transferableEngine = await getSharedCompiledEngine(runtimeUrl, activeTier);
+        } else if (useWorkerIsolation) {
+          engineSource = await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[activeTier]}`);
         }
 
         const initMsg: HostToWorkerMsg = {
@@ -497,14 +624,17 @@ export async function mountSoftNContainer(
           scripts: prepared.scripts,
           textFiles,
           binaryFilesBase64,
-          runtimeUrl: typeof explicitWasm === 'string' ? explicitWasm : runtimeUrl,
+          // Always the runtime folder: the tier's bindings and the hosted vendor modules are
+          // read from it whichever engine runs. (An engine named by address used to be sent
+          // here in its place, and the Worker then looked for `engines/` beneath a .wasm.)
+          runtimeUrl,
           engineTier: activeTier,
-          ...(transferableEngine ? { engineModule: transferableEngine } : {}),
+          ...(engineSource ? { engineModule: engineSource } : {}),
           ...(options.vendorModules ? { vendorModules: options.vendorModules } : {}),
           grantedCapabilities: [...grantedCaps],
           permissions,
-          initialStorage: persistStorage ? loadPersistedStorage(appId) : {},
-          initialDbRecords: persistStorage ? loadPersistedDb(appId) : {},
+          initialStorage: persistStorage ? loadPersistedStorage(storageBase) : {},
+          initialDbRecords: persistStorage ? loadPersistedDb(storageBase) : {},
           limits,
         };
 
@@ -547,10 +677,6 @@ export async function mountSoftNContainer(
             },
             terminate: () => inlineSession.dispose(),
           };
-          if (typeof explicitWasm === 'string') {
-            (initMsg as { engineModule?: unknown }).engineModule = explicitWasm as unknown as Uint8Array;
-            initMsg.runtimeUrl = runtimeUrl;
-          }
           await inlineSession.handleMessage(initMsg);
         }
       };
@@ -566,11 +692,13 @@ export async function mountSoftNContainer(
 
   await mountPage(archive.manifest.main);
 
-  options.onReady?.({
-    manifest: archive.manifest,
-    engineTier: activeTier,
-    capabilitiesRequested: requestedCaps,
-  });
+  if (owns()) {
+    options.onReady?.({
+      manifest: archive.manifest,
+      engineTier: activeTier,
+      capabilitiesRequested: requestedCaps,
+    });
+  }
 
   return {
     manifest: archive.manifest,
@@ -599,7 +727,8 @@ export async function mountSoftNContainer(
       disposed = true;
       teardownPage();
       archive.dispose();
-      shadowRoot.replaceChildren();
+      // Only what this mount drew: a newer mount into the same element owns the root now.
+      if (owns()) shadowRoot.replaceChildren();
     },
   };
 }

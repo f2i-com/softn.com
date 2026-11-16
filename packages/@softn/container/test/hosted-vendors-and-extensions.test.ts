@@ -219,7 +219,10 @@ describe('Hosted /runtime/vendor/ Libraries, Zero-Build TypeScript, softn:db & <
     });
 
     await flushAsync(25);
-    expect(handle.shadowRoot.querySelector('[data-softn-consent-bar]')).not.toBeNull();
+    // The bar has a place above the app's box, and is drawn in a shadow root of its own, out
+    // of reach of the app's stylesheet (and of this test).
+    expect(handle.shadowRoot.querySelector('[data-softn-container-consent]')).not.toBeNull();
+    expect(handle.shadowRoot.querySelector('[data-softn-consent-bar]')).toBeNull();
     expect(handle.shadowRoot.querySelector('#hello')?.textContent).toBe('App Ready');
     handle.dispose();
 

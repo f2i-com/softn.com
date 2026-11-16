@@ -25,6 +25,38 @@ const ENGINE_FILENAMES: Readonly<Record<ZippEngineTier, string>> = {
   'python-torch': 'zipp-python-base.wasm',
 };
 
+/**
+ * The bindings that go with an engine, by the variant its own `zipp.meta` names. A host may
+ * hand a tier an engine that can do more than the tier asks (a SoftN app runs the
+ * `javascript` tier on the JavaScript-and-Python engine its page already has, and ships no
+ * `zipp-javascript.wasm`), and that engine instantiates only under its own bindings: the
+ * Python build imports what the JavaScript-only bindings do not provide. So the bindings
+ * follow the engine that runs, and the tier's name decides them only for an engine that
+ * does not say what it is.
+ */
+const GLUE_FILE_BY_VARIANT: Readonly<Record<string, string>> = {
+  lite: 'zipp-javascript-lite.glue.js',
+  javascript: 'zipp-javascript.glue.js',
+  'javascript-typescript': 'zipp-typescript.glue.js',
+  'javascript-python-base': 'zipp-python-base.glue.js',
+};
+
+/** The bindings file in `engines/` for the engine that was compiled, whatever tier asked for it. */
+export function glueFileFor(tier: ZippEngineTier, meta: Record<string, unknown> | null): string {
+  const variant = typeof meta?.variant === 'string' ? meta.variant : '';
+  return GLUE_FILE_BY_VARIANT[variant] ?? ENGINE_FILENAMES[tier].replace(/\.wasm$/, '.glue.js');
+}
+
+/**
+ * What the lite engine answers differently from the full one, with no error to say so: it has
+ * no `Intl` or `Temporal` (those throw), and its locale methods fall back to the plain ones
+ * (`(1234.5).toLocaleString()` is "1234.5", a date's is its `toString()`, `localeCompare`
+ * ignores its options, `toLocaleUpperCase('tr')` is `toUpperCase()`). A script that names any
+ * of them runs on the full engine, wherever in the app it is.
+ */
+const NEEDS_FULL_JAVASCRIPT =
+  /\b(?:Intl|Temporal)\b|\.(?:toLocale(?:String|DateString|TimeString|UpperCase|LowerCase)|localeCompare)\b/;
+
 /** Inspect extracted scripts & manifest to pick the smallest sufficient ZIPP engine tier. */
 export function selectEngineTier(
   scripts: readonly ExtractedScript[],
@@ -43,7 +75,7 @@ export function selectEngineTier(
     } else if (s.language === 'typescript') {
       hasTypeScript = true;
     }
-    if (/\b(?:Intl|Temporal)\b|\.toLocale(?:String|DateString|TimeString|Compare)\b/.test(s.code)) {
+    if (NEEDS_FULL_JAVASCRIPT.test(s.code)) {
       wantsIntlOrTemporal = true;
     }
   }
@@ -56,7 +88,10 @@ export function selectEngineTier(
     } else if (/\.(?:ts|tsx|mts)$/i.test(path)) {
       hasTypeScript = true;
     } else if (/\.(?:js|mjs|jsx)$/i.test(path) && !wantsIntlOrTemporal) {
-      if (/\b(?:Intl|Temporal)\b/.test(content)) wantsIntlOrTemporal = true;
+      // The same test as an inline script's: a module the page imports is the app as well.
+      // (Files were held only to `Intl` and `Temporal`, so a module that formatted a price
+      // with toLocaleString ran on lite and printed it unformatted.)
+      if (NEEDS_FULL_JAVASCRIPT.test(content)) wantsIntlOrTemporal = true;
     }
   }
 
@@ -253,7 +288,7 @@ export async function loadZippEngine(options: {
     let bindings: Record<string, unknown> | null = null;
     // Prefer same-origin `.glue.js` in browser/Worker contexts so strict `script-src 'self'` CSPs succeed without `blob:` or `data:`
     if (!isNodeRuntime()) {
-      const glueFile = ENGINE_FILENAMES[tier].replace(/\.wasm$/, '.glue.js');
+      const glueFile = glueFileFor(tier, meta);
       const baseHref =
         typeof document !== 'undefined'
           ? document.baseURI

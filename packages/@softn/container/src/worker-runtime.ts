@@ -157,9 +157,14 @@ export class ContainerWorkerSession {
           if (/\.py$/i.test(p)) pyFiles[p] = content;
         }
         const entry = pyScripts[pyScripts.length - 1];
-        pyFiles[entry.originPath] = entry.code;
+        // A script written in the page has no file of its own, and the name the page gives it
+        // (`index.html.inline-1.py`) is not one Python can import: the engine answered "Python
+        // project: no modules" and the app never started. It joins the project under a name
+        // that is a module's.
+        const entryFile = entry.src ? entry.originPath : '__softn_page__.py';
+        pyFiles[entryFile] = entry.code;
         if (engine.initPythonProject) {
-          engine.initPythonProject(pyFiles, entry.originPath, []);
+          engine.initPythonProject(pyFiles, entryFile, []);
         } else {
           engine.initSource(entry.code, 'python');
         }
@@ -198,17 +203,27 @@ export class ContainerWorkerSession {
         .replace(/\u2028/g, '\\u2028')
         .replace(/\u2029/g, '\\u2029');
 
-      // Build ordered execution steps for classic & module `<script>` tags
+      // Build ordered execution steps for classic & module `<script>` tags.
+      //
+      // A classic script runs as a script of its own in the page's one global scope, as a
+      // browser runs it: by indirect eval, so its `var`s and functions are the page's and the
+      // next script can call them. (Each used to be the body of a function of its own, where
+      // everything it declared was local: a page with a library in one `<script>` and the code
+      // that calls it in the next found nothing defined.) Its `let`, `const` and `class`
+      // declarations stay its own, which is where this differs from a browser.
+      //
+      // A script that throws, or does not parse, says so and the next one still runs.
       const bootSteps: string[] = [];
       for (const s of msg.scripts) {
         if (s.kind === 'classic') {
-          bootSteps.push(
-            `__softnBoot = __softnBoot.then(function () {\n${s.code}\n});`
-          );
+          // TypeScript is compiled with this program, so a classic TypeScript script stays
+          // written into it (text handed to eval at run time would arrive untranslated).
+          const body = s.language === 'typescript' ? `\n${s.code}\n` : ` (0, eval)(${JSON.stringify(s.code)}); `;
+          bootSteps.push(`__softnBoot = __softnBoot.then(function () {${body}}).then(undefined, __softnScriptFailed);`);
         } else if (s.kind === 'module') {
           const entryUrl = `${VIRTUAL_ORIGIN}/${s.originPath.replace(/^\/+/, '')}`;
           bootSteps.push(
-            `__softnBoot = __softnBoot.then(function () { return __softnModules.import(${JSON.stringify(entryUrl)}, ${JSON.stringify(entryUrl)}); });`
+            `__softnBoot = __softnBoot.then(function () { return __softnModules.import(${JSON.stringify(entryUrl)}, ${JSON.stringify(entryUrl)}); }).then(undefined, __softnScriptFailed);`
           );
         }
       }
@@ -225,9 +240,10 @@ export class ContainerWorkerSession {
         `function __softnContainerEvent(id, type, props) { return globalThis.__softnDocEvent(id, type, props, []); }`,
         `function __softnContainerRaf(ts) { return globalThis.__softnRunRaf(ts); }`,
         `function __softnContainerWantsRaf() { return globalThis.__softnWantsRaf(); }`,
+        `function __softnScriptFailed(err) { console.error('[SoftN] Script startup error:', err && err.stack ? err.stack : String(err)); }`,
         `var __softnBoot = Promise.resolve();`,
         ...bootSteps,
-        `__softnBoot.then(function () { globalThis.__softnDocReady(); }, function (err) { console.error('[SoftN] Script startup error:', err && err.stack ? err.stack : String(err)); globalThis.__softnDocReady(); });`,
+        `__softnBoot.then(function () { globalThis.__softnDocReady(); }, function (err) { __softnScriptFailed(err); globalThis.__softnDocReady(); });`,
       ].join('\n');
 
       engine.setSyncHostCapabilities([...DB_SYNC_OPS, ...LS_SYNC_OPS, ...APP_SYNC_OPS]);
@@ -476,7 +492,9 @@ export class ContainerWorkerSession {
               throw new Error(`Remote module import denied by net permission: ${resolved.url}`);
             }
             if (!this.definedModules.has(resolved.url)) {
-              const resp = await fetch(resolved.url, { credentials: 'omit' });
+              // No redirects, as for the app's own fetches: a host the app was granted could
+              // answer with a redirect to one it was not, whose script would then be run.
+              const resp = await fetch(resolved.url, { credentials: 'omit', redirect: 'error' });
               if (!resp.ok) throw new Error(`HTTP ${resp.status} loading ${resolved.url}`);
               const remoteSrc = await resp.text();
               const blocks: string[] = [];
@@ -605,7 +623,17 @@ export class ContainerWorkerSession {
       }
       return col;
     };
+    // The app's records count against the same quota as its localStorage: both are kept in
+    // the embedding page's storage, which is the page's to run out of. (Only localStorage was
+    // counted, so an app could write records until the page's own keys had no room.)
     const persistCollection = (name: string) => {
+      let bytes = this.localStoreBytes;
+      for (const col of this.dbCollections.values()) {
+        for (const rec of col.values()) bytes += JSON.stringify(rec).length * 2;
+      }
+      if (bytes > this.storageQuotaBytes) {
+        throw new Error('QuotaExceededError: container storage quota exceeded');
+      }
       const col = getCollection(name);
       this.postToHost({ type: 'db-write', collection: name, records: [...col.values()] });
     };

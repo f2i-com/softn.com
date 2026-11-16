@@ -56,10 +56,12 @@ if (fs.existsSync(sumsPath)) {
 }
 
 const releaseCacheDir = path.join(CACHE_DIR, releaseTag);
+// A folder of the release's files given by hand (ZIPP_RELEASE_DIR), then this checkout's
+// cache of what was downloaded before. No other place: a path on one person's machine was
+// here, which a build anywhere else skipped and a build there took from first.
 const candidateDirs = [
   process.env.ZIPP_RELEASE_DIR ? path.resolve(process.env.ZIPP_RELEASE_DIR) : null,
   releaseCacheDir,
-  `E:/repos/zipp.org/target/rel-${version}`,
 ].filter(Boolean);
 
 const API = REPOSITORY.replace('https://github.com/', 'https://api.github.com/repos/');
@@ -92,16 +94,17 @@ function getReleaseAssetsMap() {
 }
 
 async function resolveReleaseArtifact(artifactName, optional = false) {
+  // Only a file the release's own checksums name, and only when its bytes are those: a file
+  // with nothing to hold it to was taken as it was.
   const expected = expectedSums.get(artifactName);
+  if (!expected) return null;
   for (const dir of candidateDirs) {
     const candidate = path.join(dir, artifactName);
-    if (fs.existsSync(candidate)) {
-      if (!expected || sha256File(candidate) === expected) {
-        return candidate;
-      }
+    if (fs.existsSync(candidate) && sha256File(candidate) === expected) {
+      return candidate;
     }
   }
-  if (!expected || process.env.ZIPP_RELEASE_DIR) {
+  if (process.env.ZIPP_RELEASE_DIR) {
     return null;
   }
   // Fetch via GitHub API asset endpoint first (same resilience as fetch-zipp-release.mjs), then fallback to browser release URL
@@ -191,16 +194,28 @@ const tsBrSrc = await resolveReleaseArtifact(`zipp-${version}-javascript-typescr
 const pyBrSrc = await resolveReleaseArtifact(`zipp-${version}-javascript-python-base.wasm.br`, true);
 const torchBrSrc = await resolveReleaseArtifact(`zipp-${version}-torch-package.wasm.br`, true);
 
-const stagedLite = copyFirstExisting([liteWasmSrc, coreJsWasm, corePyWasm], ENGINES_DIR, 'zipp-javascript-lite.wasm');
+// Each tier is its own engine or the build stops. A tier's file used to be whichever engine
+// could be found (a download that failed left core's JavaScript engine under the name
+// `zipp-typescript.wasm`), and the build passed: every TypeScript app then failed where it
+// ran. The `javascript` tier's engine is the one core installs as its JavaScript-only build,
+// the same file of the same release, so that one may come from core.
+function required(staged, name, how) {
+  if (staged) return staged;
+  console.error(`[container] ${name} is missing: ${how}`);
+  process.exit(1);
+}
+const fromRelease = `it is ZIPP ${releaseTag}'s own file, taken from ZIPP_RELEASE_DIR, from ${path.relative(REPO_ROOT, releaseCacheDir)}, or downloaded from the release (this build could not reach it)`;
+
+const stagedLite = required(copyFirstExisting([liteWasmSrc], ENGINES_DIR, 'zipp-javascript-lite.wasm'), 'zipp-javascript-lite.wasm', fromRelease);
 copyFirstExisting([liteBrSrc], ENGINES_DIR, 'zipp-javascript-lite.wasm.br');
 
-const stagedJs = copyFirstExisting([jsWasmSrc, coreJsWasm, corePyWasm], ENGINES_DIR, 'zipp-javascript.wasm');
+const stagedJs = required(copyFirstExisting([jsWasmSrc, coreJsWasm], ENGINES_DIR, 'zipp-javascript.wasm'), 'zipp-javascript.wasm', `${fromRelease}; or core's packages/@softn/core/wasm-zipp-web/ (run fetch-zipp-release.mjs --ensure)`);
 copyFirstExisting([jsBrSrc], ENGINES_DIR, 'zipp-javascript.wasm.br');
 
-const stagedTs = copyFirstExisting([tsWasmSrc, coreJsWasm, corePyWasm], ENGINES_DIR, 'zipp-typescript.wasm');
+const stagedTs = required(copyFirstExisting([tsWasmSrc], ENGINES_DIR, 'zipp-typescript.wasm'), 'zipp-typescript.wasm', fromRelease);
 copyFirstExisting([tsBrSrc], ENGINES_DIR, 'zipp-typescript.wasm.br');
 
-const stagedPy = copyFirstExisting([corePyWasm], ENGINES_DIR, 'zipp-python-base.wasm');
+const stagedPy = required(copyFirstExisting([corePyWasm], ENGINES_DIR, 'zipp-python-base.wasm'), 'zipp-python-base.wasm', "it is core's engine, packages/@softn/core/wasm-zipp/ (run fetch-zipp-release.mjs --ensure)");
 copyFirstExisting([pyBrSrc], ENGINES_DIR, 'zipp-python-base.wasm.br');
 
 copyFirstExisting([coreTorchWasm], ENGINES_DIR, 'zipp-torch.wasm');

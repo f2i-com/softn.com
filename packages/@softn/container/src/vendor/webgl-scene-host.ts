@@ -16,6 +16,15 @@ interface HostedSceneState {
   objects: Map<number, import('three').Object3D>;
 }
 
+/** The most segments one side of a shape is built with. */
+const MAX_SEGMENTS = 256;
+
+const MAX_DRAWING_SIDE = 8192;
+
+/** A drawing surface's side in pixels: at least one, and no more than a page can hold. */
+const clampDrawingSize = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.min(MAX_DRAWING_SIDE, Math.floor(value))) : 1;
+
 let threeModulePromise: Promise<typeof import('three')> | null = null;
 
 function loadHostThree(runtimeUrl?: string): Promise<typeof import('three')> {
@@ -124,7 +133,7 @@ export class SplitRealmSceneHost {
         case 'resize': {
           if (state) {
             state.renderer.setPixelRatio(Math.min(op[3] || 1, 2));
-            state.renderer.setSize(op[1], op[2], false);
+            state.renderer.setSize(clampDrawingSize(op[1]), clampDrawingSize(op[2]), false);
           }
           break;
         }
@@ -147,7 +156,15 @@ export class SplitRealmSceneHost {
         case 'mesh': {
           if (!state) break;
           const [, id, spec] = op;
-          const [gKind, ...gp] = spec.geo;
+          const [gKind, ...rawGp] = spec.geo;
+          // The shape's numbers are the app's. A size is any finite number; a count of
+          // segments is held to what a page can build without stopping (a sphere of a
+          // million by a million segments was built here, on the embedding page's thread).
+          const gp = rawGp.map((value, index) => {
+            if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+            const isCount = gKind === 'sphere' ? index >= 1 : gKind === 'plane' ? index >= 2 : gKind === 'cylinder' ? index >= 3 : gKind === 'torus' ? index >= 2 : false;
+            return isCount ? Math.max(1, Math.min(MAX_SEGMENTS, Math.floor(value))) : value;
+          });
           let geometry: import('three').BufferGeometry;
           switch (gKind) {
             case 'sphere':
@@ -198,11 +215,23 @@ export class SplitRealmSceneHost {
           const [, id, path] = op;
           const holder = new THREE.Group();
           state.objects.set(id, holder);
-          const blobUrl = this.archive.getBlobUrl(path);
+          const blobUrl = typeof path === 'string' ? this.archive.getBlobUrl(path) : null;
           if (blobUrl) {
             void import('three/examples/jsm/loaders/GLTFLoader.js')
               .then(({ GLTFLoader }) => {
-                const loader = new GLTFLoader();
+                // A model names its buffers and textures by address, and the loader fetches
+                // whatever it names: a `.gltf` whose texture was `https://elsewhere/t.png`
+                // reached that origin from an app granted no network. Every address the
+                // loader asks for is the model itself, a `data:` address, a file of the
+                // app's beside the model, or nothing.
+                const base = blobUrl.slice(0, blobUrl.lastIndexOf('/') + 1);
+                const manager = new THREE.LoadingManager();
+                manager.setURLModifier((url) => {
+                  if (url === blobUrl || /^data:/i.test(url)) return url;
+                  const beside = url.startsWith(base) ? this.archive.getBlobUrl(decodeURIComponent(url.slice(base.length)), path) : null;
+                  return beside ?? 'data:,';
+                });
+                const loader = new GLTFLoader(manager);
                 loader.load(blobUrl, (gltf) => {
                   if (!this.disposed) holder.add(gltf.scene);
                 });

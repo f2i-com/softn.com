@@ -6,8 +6,20 @@
  * `<softn-app>`'s closed `ShadowRoot`.
  */
 
-import { ContainerArchive, base64ToBytes } from './archive';
-import { NODE_ID_ATTR, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { ContainerArchive, base64ToBytes, resolveVfsPath } from './archive';
+import {
+  MAX_EVENT_TYPES,
+  MAX_HOST_NODES,
+  canvasPropertyAllowed,
+  canvasSide,
+  createHostElement,
+  hostAttributeValue,
+  hostElementName,
+  isDeclaredElementProperty,
+  isExternalHref,
+  isLinkElement,
+} from './host-policy';
+import { NODE_ID_ATTR, sanitizeContainerCss } from './sanitize';
 import type {
   Canvas2DCmd,
   ContainerPermissions,
@@ -16,21 +28,12 @@ import type {
   ThreeSceneOp,
 } from './types';
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
-const MATH_NS = 'http://www.w3.org/1998/Math/MathML';
-
-const FORBIDDEN_DYNAMIC_TAGS = new Set([
-  'script',
-  'iframe',
-  'frame',
-  'frameset',
-  'object',
-  'embed',
-  'applet',
-  'base',
-]);
-
-const URL_ATTRS = new Set(['src', 'href', 'poster', 'action', 'formaction', 'xlink:href']);
+/**
+ * Attributes of the two elements the app does not create — the document's root (id 0) and
+ * its `body`, the viewport (id 1) — that the app may set. Not `style` on the root, which is
+ * the box the app is kept in.
+ */
+const ROOT_ATTRIBUTE = /^(?:class|lang|dir|role|title|data-[\w.-]+|aria-[\w-]+)$/;
 
 const CAPTURE_ONLY_EVENTS = new Set([
   'focus',
@@ -70,6 +73,20 @@ export class HostDomPatcher {
 
   private readonly listenedEvents = new Set<string>();
   private readonly cleanupFns: Array<() => void> = [];
+  /**
+   * `<style>` elements the app made, each with the ids of the text nodes it was given. The
+   * text never goes into the element as written: the page reads the sheet only after the
+   * host has (sanitizeContainerCss), on every change to it.
+   */
+  private readonly styleSheets = new Map<Element, number[]>();
+  /**
+   * `<link>` elements the app made. Each is a `<style>` in the page: a stylesheet of the
+   * app's is read from the archive and put there by the host's rule, and any other `rel`
+   * (prefetch, preload, an icon) does nothing.
+   */
+  private readonly links = new Map<Element, { rel: string; href: string }>();
+  /** Structured values for a `<softn-*>` element whose class has not arrived yet. */
+  private readonly pendingProperties = new Map<Element, Array<[string, unknown]>>();
   private readonly measuredIds = new Set<number>();
   private resizeObserver: ResizeObserver | null = null;
   private measureScheduled = false;
@@ -109,24 +126,33 @@ export class HostDomPatcher {
     for (const op of ops) {
       switch (op[0]) {
         case 'e': {
-          const [, id, rawTag, attrs, ns] = op;
-          const lower = rawTag.toLowerCase();
-          if (FORBIDDEN_DYNAMIC_TAGS.has(lower)) {
-            const placeholder = document.createComment(`blocked:${lower}`);
-            this.nodes.set(id, placeholder);
+          const [, id, rawTag, attrs, rawNs] = op;
+          if (!Number.isInteger(id) || id <= 1 || typeof rawTag !== 'string') break;
+          // The page is the embedding page's to lay out and paint: past a size no app's page
+          // has a use for, it is not grown.
+          if (!this.nodes.has(id) && this.nodes.size >= MAX_HOST_NODES) break;
+          const ns = rawNs === 'svg' || rawNs === 'math' ? rawNs : undefined;
+          // The element's own name, by the host's rule (host-policy.ts): none for what the
+          // page does not get, whatever prefix or case the operation spelled it with.
+          const name = hostElementName(rawTag, ns);
+          if (name === null) {
+            this.nodes.set(id, document.createComment('blocked'));
             break;
           }
-          const el =
-            ns === 'svg'
-              ? document.createElementNS(SVG_NS, rawTag)
-              : ns === 'math'
-                ? document.createElementNS(MATH_NS, rawTag)
-                : document.createElement(lower);
-          if (lower.startsWith('softn-')) {
+          const lower = name.toLowerCase();
+          // A `<link>` is a `<style>` here, filled by the host when it names a stylesheet of
+          // the app's; the page never fetches what a link names.
+          const isLink = !ns && lower === 'link';
+          const el = isLink ? document.createElement('style') : createHostElement(name, ns);
+          if (isLink) this.links.set(el, { rel: '', href: '' });
+          else if (lower === 'style') this.styleSheets.set(el, []);
+          if (!ns && lower.startsWith('softn-')) {
             this.callbacks.onCustomTag?.(lower);
           }
-          for (const [k, v] of Object.entries(attrs)) {
-            this.applySafeAttribute(el, lower, k, v);
+          if (attrs && typeof attrs === 'object') {
+            for (const [k, v] of Object.entries(attrs)) {
+              this.applySafeAttribute(el, lower, k, typeof v === 'string' ? v : null);
+            }
           }
           el.setAttribute(NODE_ID_ATTR, String(id));
           this.nodes.set(id, el);
@@ -134,11 +160,16 @@ export class HostDomPatcher {
         }
 
         case 'x': {
-          const [, id, text] = op;
+          const [, id, rawText] = op;
+          if (!Number.isInteger(id) || id <= 1) break;
+          const text = typeof rawText === 'string' ? rawText : String(rawText ?? '');
           const existing = this.nodes.get(id);
           if (existing && existing.nodeType === Node.TEXT_NODE) {
             existing.nodeValue = text;
-          } else {
+            // A text node of a `<style>` is kept out of the page: its sheet is written again.
+            const sheet = this.sheetOf(id);
+            if (sheet) this.writeStyleSheet(sheet);
+          } else if (existing || this.nodes.size < MAX_HOST_NODES) {
             const tn = document.createTextNode(text);
             if (existing?.parentNode) existing.parentNode.replaceChild(tn, existing);
             this.nodes.set(id, tn);
@@ -148,7 +179,7 @@ export class HostDomPatcher {
 
         case 'm': {
           const [, id] = op;
-          if (!this.nodes.has(id)) {
+          if (Number.isInteger(id) && id > 1 && !this.nodes.has(id) && this.nodes.size < MAX_HOST_NODES) {
             this.nodes.set(id, document.createComment(''));
           }
           break;
@@ -156,18 +187,42 @@ export class HostDomPatcher {
 
         case 'a': {
           const [, id, name, val] = op;
-          const target = id === 0 ? this.docRootEl : id === 1 ? this.viewportEl : this.nodes.get(id);
+          if (typeof name !== 'string') break;
+          const value = typeof val === 'string' ? val : null;
+          if (id === 0 || id === 1) {
+            // The document's root and its body are the host's own elements: the app names
+            // their classes and the like, and the body's style, and nothing else of them.
+            const root = id === 0 ? this.docRootEl : this.viewportEl;
+            const lowerName = name.toLowerCase();
+            if (ROOT_ATTRIBUTE.test(lowerName)) {
+              if (value === null) root.removeAttribute(lowerName);
+              else root.setAttribute(lowerName, value);
+            } else if (id === 1 && lowerName === 'style') {
+              if (value === null) root.removeAttribute('style');
+              else root.setAttribute('style', sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted));
+            }
+            break;
+          }
+          const target = this.nodes.get(id);
           if (target && target.nodeType === Node.ELEMENT_NODE) {
             const el = target as Element;
-            this.applySafeAttribute(el, el.tagName.toLowerCase(), name, val);
+            this.applySafeAttribute(el, this.links.has(el) ? 'link' : el.localName.toLowerCase(), name, value);
           }
           break;
         }
 
         case 'c': {
           const [, parentId, childIds] = op;
+          if (!Array.isArray(childIds)) break;
           const parent = parentId === 1 ? this.viewportEl : this.nodes.get(parentId);
           if (!parent || (parent.nodeType !== Node.ELEMENT_NODE && parent.nodeType !== Node.DOCUMENT_FRAGMENT_NODE)) {
+            break;
+          }
+          // A `<link>` has no children. A `<style>`'s are its text, which the host writes.
+          if (this.links.has(parent as Element)) break;
+          if (this.styleSheets.has(parent as Element)) {
+            this.styleSheets.set(parent as Element, childIds.filter((cid) => Number.isInteger(cid)));
+            this.writeStyleSheet(parent as Element);
             break;
           }
           this.reconcileChildren(parent as Element, childIds);
@@ -221,50 +276,81 @@ export class HostDomPatcher {
     }
   }
 
+  /** Set or remove an attribute the app asked for, by the host's rule (host-policy.ts). */
   private applySafeAttribute(el: Element, lowerTag: string, name: string, val: string | null): void {
     const lowerName = name.toLowerCase();
-    if (lowerName === NODE_ID_ATTR || lowerName.startsWith('on')) return;
+    if (lowerName === NODE_ID_ATTR) return;
+
+    // A `<link>`: only what decides which sheet it is. The `<style>` standing in for it
+    // takes `media` as a link does; nothing else of a link means anything here.
+    const link = this.links.get(el);
+    if (link) {
+      if (lowerName === 'rel') link.rel = val ?? '';
+      else if (lowerName === 'href') link.href = val ?? '';
+      else if (lowerName === 'media' || lowerName === 'title' || lowerName === 'id' || lowerName === 'class' || lowerName.startsWith('data-')) {
+        if (val === null) el.removeAttribute(lowerName);
+        else el.setAttribute(lowerName, val);
+        return;
+      } else return;
+      this.writeLinkedSheet(el, link);
+      return;
+    }
 
     if (val === null) {
       el.removeAttribute(name);
+      if (isLinkElement(lowerTag)) this.holdLink(el);
       return;
     }
 
-    if (URL_ATTRS.has(lowerName)) {
-      const clean = sanitizeHostAssetUrl(
-        lowerName,
-        val,
-        lowerTag,
-        this.entryPath,
-        this.archive,
-        this.permissions,
-        this.netGranted
-      );
-      if (clean === null) {
-        el.removeAttribute(name);
-      } else {
-        el.setAttribute(name, clean);
-        if (lowerTag === 'a' && lowerName === 'href' && /^https?:/i.test(clean)) {
-          el.setAttribute('rel', 'noopener noreferrer');
-          if (!el.hasAttribute('target')) el.setAttribute('target', '_blank');
-        }
-      }
-      return;
-    }
-
-    if (lowerName === 'style') {
-      el.setAttribute(
-        'style',
-        sanitizeContainerCss(val, this.entryPath, this.archive, this.permissions, this.netGranted)
-      );
-      return;
-    }
-
+    const clean = hostAttributeValue(lowerTag, name, val, {
+      entryPath: this.entryPath,
+      archive: this.archive,
+      permissions: this.permissions,
+      netGranted: this.netGranted,
+    });
     try {
-      el.setAttribute(name, val);
+      if (clean === null) el.removeAttribute(name);
+      else el.setAttribute(name, clean);
     } catch {
       // Ignore invalid attribute names
     }
+    if (isLinkElement(lowerTag)) this.holdLink(el);
+  }
+
+  /** A link out opens in a tab of its own with no handle on this page, whatever target the app gave it and in whatever order it set them. */
+  private holdLink(el: Element): void {
+    if (!isExternalHref(el.getAttribute('href') ?? '')) return;
+    el.setAttribute('rel', 'noopener noreferrer');
+    el.setAttribute('target', '_blank');
+  }
+
+  /** The `<style>` whose text node `id` is, if it is one's. */
+  private sheetOf(id: number): Element | null {
+    for (const [sheet, ids] of this.styleSheets) {
+      if (ids.includes(id)) return sheet;
+    }
+    return null;
+  }
+
+  /** Write a `<style>` the app made: its text nodes' text, read by the host first. */
+  private writeStyleSheet(sheet: Element): void {
+    let css = '';
+    for (const id of this.styleSheets.get(sheet) ?? []) {
+      const node = this.nodes.get(id);
+      if (node && node.nodeType === Node.TEXT_NODE) css += node.nodeValue ?? '';
+    }
+    sheet.textContent = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted);
+  }
+
+  /** Fill the `<style>` standing in for a `<link>`: a stylesheet of the app's, by the host's rule, or nothing. */
+  private writeLinkedSheet(el: Element, link: { rel: string; href: string }): void {
+    let css = '';
+    if (/(?:^|\s)stylesheet(?:\s|$)/i.test(link.rel) && link.href.trim()) {
+      const path = resolveVfsPath(link.href, this.entryPath);
+      const text = path ? this.archive.readText(path) : null;
+      if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted);
+    }
+    el.textContent = css;
   }
 
   /** Reconcile `parent`'s DOM children to match `childIds` with minimal DOM moves. */
@@ -329,6 +415,10 @@ export class HostDomPatcher {
         if (typeof val === 'number') el.scrollLeft = val;
         break;
       case 'focus':
+        // Only where it takes the focus from nobody: when it is already inside the app, or
+        // nothing in the embedding page has it. An app that could focus its own field at
+        // any time took the keys a person was typing into the page around it.
+        if (!this.mayTakeFocus()) break;
         try {
           el.focus({ preventScroll: true });
         } catch {
@@ -343,15 +433,12 @@ export class HostDomPatcher {
         }
         break;
       case 'showModal':
-        if (typeof (el as HTMLDialogElement).showModal === 'function') {
-          try {
-            if (!(el as HTMLDialogElement).open) (el as HTMLDialogElement).showModal();
-          } catch {
-            el.setAttribute('open', '');
-          }
-        } else {
-          el.setAttribute('open', '');
-        }
+        // Open, but not as the browser's modal: a modal dialog is drawn in the top layer,
+        // over the whole embedding page and over whatever there asks the person for
+        // consent, and makes the rest of that page inert. Inside its box the app's dialog
+        // is still a dialog: it has the `open` attribute, its `close()` works, and the
+        // app's own backdrop is the app's to draw.
+        el.setAttribute('open', '');
         break;
       case 'close':
         if (typeof (el as HTMLDialogElement).close === 'function') {
@@ -370,12 +457,55 @@ export class HostDomPatcher {
         this.scheduleBoxMeasure();
         break;
       default:
-        // Allow structured data properties (`data`, `options`, `rows`, `config`) on `<softn-*>` custom elements
-        if (el.tagName.toLowerCase().startsWith('softn-') && !prop.startsWith('__')) {
-          (el as unknown as Record<string, unknown>)[prop] = val;
-        }
+        // A structured value (`data`, `options`, `rows`) for a `<softn-*>` element: only a
+        // property the element's own class declares (host-policy.ts). Not whatever name the
+        // operation carries: `innerHTML` is a property too, and its value would be parsed
+        // in the embedding page.
+        if (typeof prop === 'string' && el.localName.startsWith('softn-')) this.setElementProperty(el, prop, val);
         break;
     }
+  }
+
+  /** Whether the app may be given the focus: it has it already, or nothing in the embedding page does. */
+  private mayTakeFocus(): boolean {
+    const root = this.viewportEl.getRootNode() as ShadowRoot | Document;
+    const inside = root.activeElement;
+    if (inside && this.viewportEl.contains(inside)) return true;
+    const doc = this.viewportEl.ownerDocument;
+    const active = doc?.activeElement ?? null;
+    if (!active || active === doc.body || active === doc.documentElement) return true;
+    // The element the app is drawn in holding the focus is the app holding it.
+    return 'host' in root && active === (root as ShadowRoot).host;
+  }
+
+  /** Hand `val` to a `<softn-*>` element's own property, now or when its class has arrived. */
+  private setElementProperty(el: HTMLElement, prop: string, val: unknown): void {
+    const defined = typeof customElements !== 'undefined' && customElements.get(el.localName);
+    if (defined) {
+      if (isDeclaredElementProperty(el, prop)) (el as unknown as Record<string, unknown>)[prop] = val;
+      return;
+    }
+    // Its class is still loading: kept, and asked again by the same rule once it is defined.
+    const waiting = this.pendingProperties.get(el);
+    if (waiting) {
+      waiting.push([prop, val]);
+      return;
+    }
+    this.pendingProperties.set(el, [[prop, val]]);
+    if (typeof customElements === 'undefined') return;
+    void customElements.whenDefined(el.localName).then(() => {
+      const kept = this.pendingProperties.get(el) ?? [];
+      this.pendingProperties.delete(el);
+      if (this.disposed) return;
+      try {
+        customElements.upgrade(el);
+      } catch {
+        // Not in a document yet: it upgrades when it is, and declares nothing until then.
+      }
+      for (const [name, value] of kept) {
+        if (isDeclaredElementProperty(el, name)) (el as unknown as Record<string, unknown>)[name] = value;
+      }
+    });
   }
 
   /** Replay batched 2D `<canvas>` drawing commands onto the host `<canvas>`. */
@@ -385,8 +515,13 @@ export class HostDomPatcher {
     height: number,
     cmds: readonly Canvas2DCmd[]
   ): void {
-    if (width > 0 && canvas.width !== width) canvas.width = width;
-    if (height > 0 && canvas.height !== height) canvas.height = height;
+    // The size the app asked for, held to what the page can hold: a canvas is the embedding
+    // page's memory.
+    const w = canvasSide(width);
+    const h = canvasSide(height);
+    if (w > 0 && canvas.width !== w) canvas.width = w;
+    if (h > 0 && canvas.height !== h) canvas.height = h;
+    if (!Array.isArray(cmds)) return;
     let ctx: CanvasRenderingContext2D | null = null;
     try {
       ctx = canvas.getContext('2d');
@@ -398,7 +533,9 @@ export class HostDomPatcher {
     for (const cmd of cmds) {
       switch (cmd[0]) {
         case 'prop':
-          (ctx as unknown as Record<string, unknown>)[cmd[1]] = cmd[2];
+          // A drawing property of the context, by name (host-policy.ts): not any name, and
+          // not a filter that names an address.
+          if (canvasPropertyAllowed(cmd[1], cmd[2])) (ctx as unknown as Record<string, unknown>)[cmd[1]] = cmd[2];
           break;
         case 'clearRect':
           ctx.clearRect(cmd[1], cmd[2], cmd[3], cmd[4]);
@@ -542,16 +679,36 @@ export class HostDomPatcher {
       // Never allow a form inside `<softn-app>` to navigate the host browser window
       e.preventDefault();
     };
+    // Every click on a link of the app's is the host's to carry out, never the browser's: the
+    // link is an element of the embedding page, so followed natively it would move that
+    // page (to the link's address, or to a fragment of its own address), and its `target`
+    // is the app's word. A link out opens in a tab of its own with no handle on this page;
+    // a fragment scrolls inside the app; a page of the app's is the container's to show;
+    // anything else does nothing. v0.0.43 left links out to the browser, `target="_top"`
+    // and all.
     const onClickCapture = (e: Event) => {
       const target = e.target instanceof Element ? e.target : null;
-      const anchor = target?.closest('a[href]');
-      if (anchor) {
-        const href = anchor.getAttribute('href') ?? '';
-        if (href && !href.startsWith('#') && !/^https?:/i.test(href)) {
-          e.preventDefault();
-          this.callbacks.onNavigate?.(href);
+      const anchor = target?.closest('a[href], area[href]');
+      if (!anchor || !this.viewportEl.contains(anchor)) return;
+      e.preventDefault();
+      const href = (anchor.getAttribute('href') ?? '').trim();
+      if (!href) return;
+      if (href.startsWith('#')) {
+        const root = this.viewportEl.getRootNode() as ShadowRoot | Document;
+        let to: Element | null = null;
+        try {
+          to = href.length > 1 ? root.getElementById?.(decodeURIComponent(href.slice(1))) ?? null : this.viewportEl;
+        } catch {
+          to = null;
         }
+        if (to && this.viewportEl.contains(to)) to.scrollIntoView({ block: 'start' });
+        return;
       }
+      if (isExternalHref(href)) {
+        if (typeof window !== 'undefined' && typeof window.open === 'function') window.open(href, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      this.callbacks.onNavigate?.(href);
     };
     const onInputOrChange = (e: Event) => {
       const changes = this.extractInputSync(e.target);
@@ -574,7 +731,10 @@ export class HostDomPatcher {
   }
 
   private ensureEventListener(eventType: string): void {
-    if (this.listenedEvents.has(eventType)) return;
+    if (typeof eventType !== 'string' || !eventType || this.listenedEvents.has(eventType)) return;
+    // Each kind is a listener on the embedding page's element: no app has a use for more
+    // kinds than there are.
+    if (this.listenedEvents.size >= MAX_EVENT_TYPES) return;
     if (eventType === 'softn:viewport') {
       this.listenedEvents.add(eventType);
       const onResize = () => {
@@ -603,8 +763,12 @@ export class HostDomPatcher {
       if (nodeId === null) return;
 
       const syncChanges = this.extractInputSync(e.target);
-      const activeEl = this.viewportEl.ownerDocument?.activeElement;
-      const activeId = activeEl instanceof Element ? this.findNearestNodeId(activeEl) : null;
+      // The focused element inside the app's own root. (The document's is the embedding
+      // page's `<softn-app>` element, which is none of the app's, so the app's script never
+      // learned where the focus was.)
+      const root = this.viewportEl.getRootNode() as ShadowRoot | Document;
+      const activeEl = root.activeElement;
+      const activeId = activeEl instanceof Element && this.viewportEl.contains(activeEl) ? this.findNearestNodeId(activeEl) : null;
       if (activeId !== null) syncChanges.push(['f', activeId]);
 
       const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this));
@@ -696,6 +860,9 @@ export class HostDomPatcher {
     this.resizeObserver = null;
     this.nodes.clear();
     this.imageCache.clear();
+    this.styleSheets.clear();
+    this.links.clear();
+    this.pendingProperties.clear();
   }
 }
 

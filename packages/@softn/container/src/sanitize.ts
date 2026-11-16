@@ -13,6 +13,8 @@
  */
 
 import { ContainerArchive, resolveVfsPath, VIRTUAL_ORIGIN } from './archive';
+import { rewriteCss } from './css-policy';
+import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement } from './host-policy';
 import { SOFTN_UI_CSS } from './ui-css';
 import type {
   ContainerPermissions,
@@ -23,22 +25,6 @@ import type {
 } from './types';
 
 export const NODE_ID_ATTR = 'data-softn-id';
-const SVG_NS = 'http://www.w3.org/2000/svg';
-const MATH_NS = 'http://www.w3.org/1998/Math/MathML';
-
-const FORBIDDEN_HOST_TAGS = new Set([
-  'script',
-  'iframe',
-  'frame',
-  'frameset',
-  'object',
-  'embed',
-  'applet',
-  'base',
-  'noscript',
-]);
-
-const URL_ATTRIBUTES = new Set(['src', 'href', 'poster', 'action', 'formaction', 'xlink:href']);
 
 /** Check whether an external URL is allowed under `permission.json`'s `net` capability. */
 export function isExternalUrlAllowed(
@@ -102,16 +88,21 @@ export function sanitizeHostAssetUrl(
     return null;
   }
 
-  // Anchor `<a href="https://...">` navigation links don't auto-fetch; mark safe external links inertly
-  if (tagName === 'a' && attrName === 'href' && /^https?:/i.test(trimmed)) {
+  // A link out (`<a href="https://...">`, an image map's `<area>`) fetches nothing until the
+  // person follows it, and then the patcher opens it in a tab of its own.
+  const isLink = (tagName === 'a' || tagName === 'area') && attrName === 'href';
+  if (isLink && /^https?:/i.test(trimmed)) {
     return originalTrimmed;
   }
 
   // Virtual-origin or relative path -> resolve from `.softn` archive VFS
   const vfsPath = resolveVfsPath(originalTrimmed, basePath);
   if (vfsPath && archive.has(vfsPath)) {
-    // Internal HTML page link (`<a href="about.html">`) keeps clean path for SPA/container navigation
-    if (tagName === 'a' && attrName === 'href' && /\.html?$/i.test(vfsPath)) {
+    // A link to a file of the app's keeps the file's path: the patcher follows it inside the
+    // container (a page) or does nothing (anything else). It is never given a `blob:`
+    // address: one made by this page is this page's origin, and a link the person opens in
+    // a new tab would show the app's file there as a document of the embedding site.
+    if (isLink) {
       return vfsPath;
     }
     return archive.getBlobUrl(vfsPath) ?? '';
@@ -129,7 +120,11 @@ export function sanitizeHostAssetUrl(
   return null;
 }
 
-/** Sanitize CSS text, scoping `:root`/`html`/`body` to `[data-softn-viewport]` and rewriting `url(...)`. */
+/**
+ * A stylesheet of the app's, or a `style` attribute's value, for the page: every address by
+ * the host's rule, no `@import`, no `:host` (css-policy.ts reads it as CSS does), and `html`,
+ * `body` and `:root` scoped to the container's viewport.
+ */
 export function sanitizeContainerCss(
   css: string,
   basePath: string,
@@ -137,30 +132,16 @@ export function sanitizeContainerCss(
   permissions: ContainerPermissions,
   netGranted: boolean
 ): string {
-  // Strip hex/backslash escapes that could disguise `@import` or `javascript:`
-  let out = css.replace(/\/\*[\s\S]*?\*\//g, ' ');
-  // Strip external `@import` rules
-  out = out.replace(/@import\b[^;{}]*;?/gi, '/* @import stripped */');
-  // Strip legacy IE `expression(...)` / `-moz-binding` / `behavior:`
-  out = out.replace(/expression\s*\([^)]*\)/gi, 'none');
-  out = out.replace(/((?:^|[;{])\s*)(-moz-binding|behavior)\s*:[^;{}]*/gi, '$1/* stripped */');
-
-  // Rewrite `url(...)` resources
-  out = out.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (_full, _q: string, rawTarget: string) => {
-    const target = rawTarget.trim();
-    if (!target || target.startsWith('#')) return `url("${target}")`;
-    if (/^data:(?:image\/(?:png|jpeg|gif|webp|avif)|font\/|application\/font)/i.test(target)) {
-      return `url("${target}")`;
-    }
+  let out = rewriteCss(css, (target) => {
+    // An empty address is the page's own: the embedding page, fetched again as an image.
+    if (!target) return null;
+    // A fragment alone names something in this document (an SVG filter, clip or gradient).
+    if (target.startsWith('#')) return target;
+    if (/^data:(?:image\/(?:png|jpeg|gif|webp|avif)|font\/|application\/font)/i.test(target)) return target;
     const vfs = resolveVfsPath(target, basePath);
-    if (vfs && archive.has(vfs)) {
-      const blob = archive.getBlobUrl(vfs);
-      return blob ? `url("${blob}")` : 'url("about:blank")';
-    }
-    if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) {
-      return `url("${target}")`;
-    }
-    return 'url("about:blank")';
+    if (vfs && archive.has(vfs)) return archive.getBlobUrl(vfs);
+    if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
+    return null;
   });
 
   // Scope top-level `html` / `body` / `:root` selectors to the container viewport inside ShadowRoot
@@ -307,14 +288,15 @@ export function prepareHtmlDocument(
     }
   }
 
-  // Remove any remaining forbidden tags (`<iframe>`, `<object>`, `<meta http-equiv="refresh">`, etc.)
+  // Remove what the page does not get (`<iframe>`, `<object>`, an SVG `script`, ...), by the
+  // element's own name whatever prefix it was written with (host-policy.ts), and a
+  // `<meta http-equiv>`, which is a navigation.
   for (const el of Array.from(parsed.body.querySelectorAll('*'))) {
-    const tag = el.tagName.toLowerCase();
-    if (FORBIDDEN_HOST_TAGS.has(tag)) {
+    if (hostElementName(el.localName, undefined) === null) {
       el.remove();
       continue;
     }
-    if (tag === 'meta' && el.hasAttribute('http-equiv')) {
+    if (el.localName.toLowerCase() === 'meta' && el.hasAttribute('http-equiv')) {
       el.remove();
     }
   }
@@ -351,7 +333,7 @@ export function prepareHtmlDocument(
     children?: BlueprintNode[];
   }
 
-  const buildNode = (domNode: Node, inheritedNs?: 'svg' | 'math'): { seed: SeedNode | null; bp: BlueprintNode | null } => {
+  const buildNode = (domNode: Node): { seed: SeedNode | null; bp: BlueprintNode | null } => {
     if (domNode.nodeType === Node.TEXT_NODE) {
       const text = domNode.nodeValue ?? '';
       const id = nextId++;
@@ -374,23 +356,21 @@ export function prepareHtmlDocument(
     }
 
     const el = domNode as Element;
-    const rawTag = el.tagName;
-    const lowerTag = rawTag.toLowerCase();
-    if (FORBIDDEN_HOST_TAGS.has(lowerTag)) return { seed: null, bp: null };
-
-    const ns: 'svg' | 'math' | undefined =
-      inheritedNs ??
-      (lowerTag === 'svg' || el.namespaceURI === SVG_NS
-        ? 'svg'
-        : lowerTag === 'math' || el.namespaceURI === MATH_NS
-          ? 'math'
-          : undefined);
-    const tag = ns === 'svg' ? el.localName : lowerTag;
+    // The namespace the parser gave the element, not its ancestor's: an element inside
+    // `<foreignObject>` is HTML again, and is created as HTML.
+    const ns: 'svg' | 'math' | undefined = el.namespaceURI === SVG_NS ? 'svg' : el.namespaceURI === MATH_NS ? 'math' : undefined;
+    // The name the element is made by: its own, without a prefix, and none for what the page
+    // does not get (host-policy.ts). `<svg:script>` inside `<svg>` was looked up whole, not
+    // found, and created by that name, which makes an SVG `script`.
+    const tag = hostElementName(el.localName, ns);
+    if (tag === null) return { seed: null, bp: null };
+    const lowerTag = tag.toLowerCase();
 
     const id = nextId++;
     const seedAttrs: Record<string, string> = {};
     const hostAttrs: Record<string, string> = {};
     const inlineHandlers: Record<string, string> = {};
+    const context = { entryPath, archive, permissions, netGranted };
 
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name;
@@ -400,20 +380,17 @@ export function prepareHtmlDocument(
         inlineHandlers[lower] = attr.value;
         continue;
       }
+      // The app's script sees the attribute as written; the page gets it by the host's rule.
       seedAttrs[name] = attr.value;
-      if (URL_ATTRIBUTES.has(lower)) {
-        const cleanUrl = sanitizeHostAssetUrl(lower, attr.value, lowerTag, entryPath, archive, permissions, netGranted);
-        if (cleanUrl !== null) hostAttrs[name] = cleanUrl;
-      } else if (lower === 'style') {
-        hostAttrs.style = sanitizeContainerCss(attr.value, entryPath, archive, permissions, netGranted);
-      } else {
-        hostAttrs[name] = attr.value;
-      }
+      const clean = hostAttributeValue(lowerTag, name, attr.value, context);
+      if (clean !== null) hostAttrs[name] = clean;
     }
 
-    if (lowerTag === 'a' && hostAttrs.href && /^https?:/i.test(hostAttrs.href)) {
+    // A link out opens in a tab of its own, with no handle on this page, whatever the app
+    // wrote for its target (the patcher's click rule says the same for a link made later).
+    if (isLinkElement(lowerTag) && hostAttrs.href && isExternalHref(hostAttrs.href)) {
       hostAttrs.rel = 'noopener noreferrer';
-      if (!hostAttrs.target) hostAttrs.target = '_blank';
+      hostAttrs.target = '_blank';
     }
 
     // `<template>` holds inert template content for guest `.content.cloneNode(true)`
@@ -439,7 +416,7 @@ export function prepareHtmlDocument(
     const seedChildren: SeedNode[] = [];
     const bpChildren: BlueprintNode[] = [];
     for (const child of Array.from(el.childNodes)) {
-      const built = buildNode(child, ns);
+      const built = buildNode(child);
       if (built.seed) seedChildren.push(built.seed);
       if (built.bp) bpChildren.push(built.bp);
     }
@@ -515,12 +492,7 @@ export function prepareHtmlDocument(
         nodeMap.set(bp.id, cn);
         return cn;
       }
-      const el =
-        bp.ns === 'svg'
-          ? document.createElementNS(SVG_NS, bp.tag!)
-          : bp.ns === 'math'
-            ? document.createElementNS(MATH_NS, bp.tag!)
-            : document.createElement(bp.tag!);
+      const el = createHostElement(bp.tag!, bp.ns);
       if (bp.tag && bp.tag.startsWith('softn-')) customTagsSeen.add(bp.tag);
       if (bp.hostAttrs) {
         for (const [k, v] of Object.entries(bp.hostAttrs)) {
