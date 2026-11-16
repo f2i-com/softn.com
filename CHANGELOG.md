@@ -6,7 +6,7 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.44
 
 - Upgrading from v0.0.43: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again, and every protocol number in `softn-formlogic-runtime` is v0.0.43's. A site that deployed v0.0.43 should deploy this over it whole: the web container's files moved (below), and v0.0.43's were served as never changing.
 - Smaller releases. v0.0.43 copied the web container's whole runtime into every app: the website archive went from 32 MB to 114 MB, and each single-app archive gained 7.4 MB.
