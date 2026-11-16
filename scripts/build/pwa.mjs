@@ -74,10 +74,12 @@ function walk(dir, prefix = '') {
  * assets/core-runtime/). The manifest is added, as it is written outside the
  * globs' extensions.
  */
-export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], maximumFileSizeToCacheInBytes = 2 * 1024 * 1024 } = {}, { warn = () => {} } = {}) {
+export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], maximumFileSizeToCacheInBytes = 2 * 1024 * 1024, additionalManifestEntries = [] } = {}, { warn = () => {} } = {}) {
   const take = globPatterns.map(globToRegExp);
   const leave = globIgnores.map(globToRegExp);
-  const entries = [];
+  // What the app installs from outside its own output, by address: in the site build, the
+  // container's files in their one shared folder (container-runtime-assets.mjs).
+  const entries = additionalManifestEntries.map(({ url, revision = null }) => ({ url, revision }));
   for (const file of walk(outDir).sort()) {
     if (file === 'sw.js') continue;
     const always = file === 'manifest.webmanifest';
@@ -88,14 +90,13 @@ export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], m
       continue;
     }
     // Vite's own assets/ are hashed; the workers' files it copies to
-    // assets/core-runtime/ keep their names from build to build. In the site
-    // build the engine and the QR decoder are held at their shared copy
-    // (shared-assets.mjs), which this worker may cache though it is outside
-    // its scope.
-    const hashed =
-      file.startsWith('assets/') &&
-      !file.startsWith('assets/core-runtime/') &&
-      !file.startsWith('assets/container-runtime/');
+    // assets/core-runtime/ keep their names from build to build. The
+    // container's files sit under a folder named by their digest
+    // (assets/container-runtime/<digest>/), so their addresses change with
+    // them too. In the site build the engine and the QR decoder are held at
+    // their shared copy (shared-assets.mjs), which this worker may cache
+    // though it is outside its scope.
+    const hashed = file.startsWith('assets/') && !file.startsWith('assets/core-runtime/');
     entries.push({ url: sharedPrecacheUrl(file), revision: hashed ? null : createHash('md5').update(bytes).digest('hex') });
   }
   return entries;

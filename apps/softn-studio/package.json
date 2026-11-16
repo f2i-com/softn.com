@@ -20,6 +20,7 @@
     "@softn/container": "*",
     "@softn/core": "*",
     "@softn/editor-shared": "*",
+    "@softn/runtime-shell": "*",
     "fflate": "^0.8.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

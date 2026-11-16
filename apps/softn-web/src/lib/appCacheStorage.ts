@@ -10,7 +10,8 @@
 // origin (computeAppOrigin, ./appCacheIdentity): `xdb:<origin>:<collection>` holds its records, and
 // `softn:<origin>:<key>` holds what its script keeps through `localStorage`
 // itself — a save slot, a cartridge's battery, the ticket for a seat at an
-// online table. Everything that counts, moves, exports, imports or removes
+// online table — and, under `softn:<origin>:v2:`, everything a web container
+// keeps (containerStoragePrefix). Everything that counts, moves, exports, imports or removes
 // an app's data goes through `appDataStores` below, the one place that knows
 // there are two. Export, migration and removal used to know the first alone:
 // a backup of Pocket carried its records and not the game it had saved, an
@@ -35,6 +36,26 @@ export interface AppDataStoreKeys {
   owns: (rest: string) => boolean;
 }
 
+/**
+ * The prefix a build's own localStorage keys are under. The bridge folds anything outside
+ * [A-Za-z0-9_-] to `_` before it prefixes; a digest never has any, but the two spellings
+ * must agree. Folded, the prefix has no ":" in it to run into another's.
+ */
+export function localStorePrefix(origin: string): string {
+  return `softn:${origin.replace(/[^a-zA-Z0-9_-]/g, '_')}:`;
+}
+
+/**
+ * Where a web container keeps a build's data: inside the build's own local store, under
+ * `v2:`. So everything here that counts, copies, exports or removes a build's data covers
+ * a container's as it does any other app's. The container's own default (`softn-v2:<id>:`)
+ * is a prefix nothing here knew: removing such an app left its data behind, and an update
+ * that brought the data forward brought none.
+ */
+export function containerStoragePrefix(origin: string): string {
+  return `${localStorePrefix(origin)}v2:`;
+}
+
 /** The prefix each store keeps one build's keys under. */
 export function appDataStores(origin: string): AppDataStoreKeys[] {
   return [
@@ -46,10 +67,9 @@ export function appDataStores(origin: string): AppDataStoreKeys[] {
     // one called "Notes:" (`xdb:Notes::tasks`), and moving Notes's data to its
     // digest took them too.
     { store: 'xdb', prefix: `xdb:${origin}:`, owns: (rest) => !rest.includes(':') || XDB_NOTE.test(rest) },
-    // The bridge folds anything outside [A-Za-z0-9_-] to `_` before it
-    // prefixes. A digest never has any, but the two spellings must agree.
-    // Folded, the prefix has no ":" in it to run into another's.
-    { store: 'local', prefix: `softn:${origin.replace(/[^a-zA-Z0-9_-]/g, '_')}:`, owns: () => true },
+    // What the build's script kept through localStorage (localStorePrefix), a web
+    // container's data among it (containerStoragePrefix).
+    { store: 'local', prefix: localStorePrefix(origin), owns: () => true },
   ];
 }
 

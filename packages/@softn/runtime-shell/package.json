@@ -17,6 +17,7 @@
     "./PermissionPrompt": "./src/PermissionPrompt.tsx",
     "./LoadProgress": "./src/LoadProgress.tsx",
     "./containerBundle": "./src/containerBundle.ts",
+    "./containerHost": "./src/containerHost.ts",
     "./WebContainerView": "./src/WebContainerView.tsx",
     "./package.json": "./package.json"
   },

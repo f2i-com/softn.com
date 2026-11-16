@@ -41,6 +41,7 @@ import { duringCheck, explainEngineStops, heardByPreview } from '../previewFault
 import { bareAssetPaths } from '../previewAssets';
 import { isLogicPath, isPagePath } from '../sourceKinds';
 import { explainUngrantedCalls } from '../declaredCapabilities';
+import { hostedContainerOptions } from '@softn/runtime-shell/containerHost';
 import { createRoot } from 'react-dom/client';
 
 export interface RunFunctionRequest {
@@ -648,11 +649,11 @@ async function renderV2ContainerHeadless(
   try {
     const { mountSoftNContainer } = await import('@softn/container');
     const isNode = typeof process !== 'undefined' && typeof (process as { versions?: { node?: string } }).versions?.node === 'string';
-    const base = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL || '/';
-    const browserRuntimeUrl = `${base.endsWith('/') ? base : `${base}/`}assets/container-runtime/`;
     const handle = await mountSoftNContainer(host, {
       source: vfsRecord,
-      ...(isNode ? {} : { runtimeUrl: browserRuntimeUrl }),
+      // In a browser, the build's own folder and core's engine for the Python tiers; under Node
+      // (the agent's tests) the container finds its package's files itself.
+      ...(isNode ? {} : hostedContainerOptions()),
       isolation: 'inline',
       persistStorage: false,
       permissionMode: 'deny',

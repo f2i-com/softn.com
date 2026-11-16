@@ -27,6 +27,7 @@
     "@softn/container": "*",
     "@softn/core": "*",
     "@softn/editor-shared": "*",
+    "@softn/runtime-shell": "*",
     "@xyflow/react": "^12.10.0",
     "fflate": "^0.8.2",
     "react": "^18.2.0",

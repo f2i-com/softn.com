@@ -13,8 +13,10 @@
  *   dist/play/       the single-app shell: /play/<slug> is an app's own page,
  *                    rendered by the API with the app's configuration written
  *                    in, so the page fetches the bundle and nothing else first
- *   dist/shared/     what every app above ships alike — the ZIPP engine and the
- *                    QR decoder — once, for all of them (shared-assets.mjs)
+ *   dist/shared/     what every app above ships alike, once, for all of them:
+ *                    the ZIPP engine and the QR decoder (shared-assets.mjs),
+ *                    and the web container's Worker, engines and vendor
+ *                    modules (container-runtime-assets.mjs)
  *   dist/docs/       the documentation: static pages generated from
  *                    docs/content/softn-docs.json (docs/scripts/build-docs.mjs),
  *                    with sitemap-docs.xml and robots.txt beside index.html
@@ -40,6 +42,7 @@ import { buildSite as buildDocs } from '../../docs/scripts/build-docs.mjs';
 import { repoRoot as root } from '../lib/paths.mjs';
 import { npmCommand } from '../lib/npm.mjs';
 import { collectSharedAssets } from './shared-assets.mjs';
+import { placeSharedContainerRuntime } from './container-runtime-assets.mjs';
 
 const outDir = path.join(root, 'dist');
 
@@ -627,7 +630,7 @@ the admin key.
 - \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
-- \`/shared/\` — what every app above ships alike (the ZIPP engine, the QR decoder), kept once
+- \`/shared/\` — what every app above ships alike, kept once: the ZIPP engine and the QR decoder, and the web container's files (its Worker, the smaller ZIPP engines it runs plain web apps on, its vendor modules)
 ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — a page of download links for those bundles\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
 - \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
@@ -852,10 +855,17 @@ run(['run', 'build:components']);
 run(['run', 'build', '-w', '@softn/container']);
 
 // Each app refers to the engine and the QR decoder at their one shared copy
-// (shared-assets.mjs), gathered below once the apps are in place.
+// (shared-assets.mjs), gathered below once the apps are in place, and to the
+// web container's files in the one folder written below for all of them
+// (container-runtime-assets.mjs).
 const SHARED_ASSETS = '/shared/assets/';
+const SHARED_CONTAINER_RUNTIME = '/shared/container-runtime/';
 for (const app of [...APPS, PLAY]) {
-  run(['run', 'build', '-w', app.workspace], { VITE_BASE: app.base, SOFTN_SHARED_ASSETS: SHARED_ASSETS });
+  run(['run', 'build', '-w', app.workspace], {
+    VITE_BASE: app.base,
+    SOFTN_SHARED_ASSETS: SHARED_ASSETS,
+    SOFTN_SHARED_CONTAINER_RUNTIME: SHARED_CONTAINER_RUNTIME,
+  });
 }
 
 // The documentation is generated twice: once here, so the card data the
@@ -900,6 +910,11 @@ for (const app of APPS) {
   const kept = collectSharedAssets(outDir, [...APPS, PLAY].map((app) => app.into), SHARED_ASSETS);
   if (!kept.some((name) => name.startsWith('zipp_wasm_bg-'))) throw new Error('No app shipped the ZIPP engine to share');
   console.log(`\nShared by every app, once: ${kept.join(', ')}`);
+  // The web container's Worker, the engines core does not carry and the vendor
+  // modules: one folder, named by the digest of what is in it, which every app
+  // above was built to ask.
+  const runtime = placeSharedContainerRuntime(outDir, [...APPS, PLAY].map((app) => app.into), SHARED_CONTAINER_RUNTIME);
+  console.log(`The web container's ${runtime.files.length} files, once: ${runtime.url}`);
 }
 
 // With the examples: the bundles, once, at the root, where every `?open=`

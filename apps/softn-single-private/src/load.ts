@@ -6,7 +6,7 @@ import {
   type BundleManifest,
   type RunnableApplication,
 } from '@softn/single-shell';
-import { createServedAssetResolver } from './assets';
+import { createServedAssetResolver, entryUrl } from './assets';
 
 /**
  * What `index.php?source` answers: the deployment's settings, the manifest
@@ -31,6 +31,10 @@ export interface SourcePack {
 }
 
 const MAX_PACK_BYTES = 32 * 1024 * 1024;
+/** The most a web container's other files may come to together, fetched into the page. */
+const MAX_CONTAINER_BYTES = 128 * 1024 * 1024;
+/** How many of them are asked for at a time. */
+const ENTRIES_AT_ONCE = 6;
 
 function entryName(name: string): boolean {
   return (
@@ -152,6 +156,26 @@ export async function loadServedApplication(
     new Set(Object.keys(pack.entries)),
     textFiles
   );
+  // A web container runs from its files, all of them. The pack carries the text; every
+  // other entry is fetched here, a few at a time, and the manifest is put back among them
+  // (the pack carries it apart). The container used to be handed the text alone, so an
+  // app's images, fonts and wasm were not there.
+  let containerFiles: Record<string, string | Uint8Array> | undefined;
+  if (app.webContainer) {
+    containerFiles = { ...pack.text, 'manifest.json': JSON.stringify(pack.manifest) };
+    const names = Object.keys(pack.entries);
+    const total = names.reduce((sum, name) => sum + pack.entries[name], 0);
+    if (total > MAX_CONTAINER_BYTES) throw Error('This app’s files are larger than this host opens in the browser.');
+    for (let at = 0; at < names.length; at += ENTRIES_AT_ONCE) {
+      const batch = names.slice(at, at + ENTRIES_AT_ONCE);
+      const loaded = await Promise.all(
+        batch.map((name) => fetchBytes(new URL(entryUrl(url.pathname, name), url).href, signal, pack.entries[name], 'no-store', progress))
+      );
+      batch.forEach((name, i) => {
+        containerFiles![name] = loaded[i];
+      });
+    }
+  }
   return {
     config: {
       title: pack.title,
@@ -160,6 +184,7 @@ export async function loadServedApplication(
       permissionMode: pack.permissionMode,
     },
     ...app,
+    ...(containerFiles ? { containerFiles } : {}),
     assets,
     pack,
   };

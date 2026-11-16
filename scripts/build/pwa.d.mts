@@ -11,6 +11,8 @@ export interface SoftnPwaOptions {
     globPatterns?: string[];
     globIgnores?: string[];
     maximumFileSizeToCacheInBytes?: number;
+    /** Installed too, by address: files outside the app's own output. No revision for an address that changes with its content. */
+    additionalManifestEntries?: Array<{ url: string; revision?: string | null }>;
     importScripts?: string[];
     runtimeCaching?: Array<{
       urlPattern: RegExp;

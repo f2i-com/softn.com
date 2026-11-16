@@ -85,6 +85,12 @@ export interface RunnableApplication {
   webContainer?: boolean;
   /** Raw `.softn` archive bytes when loaded from an archive. */
   bundleData?: Uint8Array;
+  /**
+   * A web container's files, every one of them, for a host with no archive to hand over (the
+   * PHP host serves an app's files one by one). Without the archive or this, the container
+   * is mounted from the text files alone and the app's images, fonts and wasm are missing.
+   */
+  containerFiles?: Record<string, string | Uint8Array>;
 }
 export function Loading({ text = 'Loading…' }: { text?: string }) {
   return (
@@ -279,6 +285,13 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   // app's records as they were. The way back is the browser's: each page
   // shown is an entry in its history.
   const main = useMemo(() => mainPage(app.textFiles), [app]);
+  // What a web container is mounted from, the same object for as long as the app is the same:
+  // a new one each render (as a host served the app's files without its archive made) started
+  // the container again whenever anything here re-rendered, Allow among them, and the app
+  // lost what the person had done.
+  const containerSource = useMemo(() => (app.webContainer ? (app.bundleData ?? app.containerFiles ?? Object.fromEntries(app.textFiles)) : null), [app]);
+  // The same list for the same answer, so the container is told of a grant when it changes.
+  const containerGrants = useMemo(() => (granted ? inspectDeclaration(app.declared).requested : []), [granted, app]);
   const [page, setPage] = useState<{ path: string; composed: ComposedBundleSource } | null>(null);
   const show = useCallback(
     (path: string | null): boolean => {
@@ -415,12 +428,12 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
         <LoadProgress variant="bar" top="var(--softn-tab-bar-height)" />
         <div className="application-content" ref={content} tabIndex={-1} data-softn-theme-box={THEME_BOX}>
           <Boundary>
-            {app.webContainer ? (
+            {app.webContainer && containerSource ? (
               <WebContainerView
-                source={app.bundleData ?? Object.fromEntries(app.textFiles)}
+                source={containerSource}
                 appId={app.appId}
                 declaredPermissions={app.declared}
-                grantedCapabilities={granted ? requested : []}
+                grantedCapabilities={containerGrants}
                 theme={
                   app.themeMode === 'dark' || app.themeMode === 'light'
                     ? app.themeMode

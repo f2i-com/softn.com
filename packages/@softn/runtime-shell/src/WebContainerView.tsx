@@ -2,14 +2,17 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { Capability } from '@softn/bundle-format/capabilities';
 import type { PermissionConfig } from '@softn/core';
 import type { ContainerPermissions, SoftNContainerHandle } from '@softn/container';
+import { hostedContainerOptions } from './containerHost';
 
 export interface WebContainerViewProps {
   /** Raw `.softn`/`.zip` archive bytes or unpacked VFS map. */
   source: Uint8Array | Record<string, string | Uint8Array>;
-  /** Base URL for `@softn/container`'s runtime assets (`assets/container-runtime/`). */
+  /** Where `@softn/container`'s runtime files are, when not where this build put them (containerHost.ts). */
   runtimeUrl?: string;
   /** Content-addressed identity for isolated container storage. */
   appId: string;
+  /** The host's own key prefix for this app's kept data, when it keeps each app's data under one it manages. */
+  storagePrefix?: string;
   /** Optional initial HTML page to navigate to inside the archive. */
   initialPage?: string;
   /** Declared permissions from `permission.json` or operator sidecar. */
@@ -32,12 +35,6 @@ export interface WebContainerViewProps {
   onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
 }
 
-function defaultRuntimeUrl(): string {
-  const metaEnv = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
-  const base = metaEnv?.BASE_URL ?? './';
-  return `${base.replace(/\/?$/, '/')}assets/container-runtime/`;
-}
-
 /**
  * Shared React host wrapper that lazily imports `@softn/container` and mounts
  * a Worker-isolated SoftN v2 Web App Container inside a closed ShadowRoot.
@@ -46,6 +43,7 @@ export function WebContainerView({
   source,
   runtimeUrl,
   appId,
+  storagePrefix,
   initialPage,
   declaredPermissions,
   grantedCapabilities,
@@ -84,14 +82,28 @@ export function WebContainerView({
         if (cancelled) return;
         const mounted = await mountSoftNContainer(el, {
           source,
-          runtimeUrl: runtimeUrl ?? defaultRuntimeUrl(),
+          // The build's own folder and core's engine for the Python tiers (containerHost.ts).
+          ...hostedContainerOptions(),
+          ...(runtimeUrl ? { runtimeUrl } : {}),
           appId,
+          ...(storagePrefix ? { storagePrefix } : {}),
           theme,
           persistStorage,
-          // Host's own PermissionBar owns UI; start withheld and apply `grantedCapabilities` immediately
+          // The host's own PermissionBar asks; the container never does. What the person has
+          // already allowed is in place before the app's first script runs (a grant applied
+          // after the mount came after the page's start-up `fetch`, which was refused).
           permissionMode: 'deny',
+          initialGrantedCapabilities: grantedRef.current as Capability[],
           permissionsOverride: declaredPermissions as unknown as ContainerPermissions | undefined,
-          onConsole: (level, text) => onConsoleRef.current?.(level, text),
+          // To the host's listener when it has one; otherwise to the browser's console, as an
+          // app's own page would write there. With no listener the app's errors went nowhere:
+          // a script that threw left a blank page and nothing to read.
+          onConsole: (level, text) => {
+            const listener = onConsoleRef.current;
+            if (listener) listener(level, text);
+            // eslint-disable-next-line no-console -- the app's own printing, at the level it printed at
+            else console[level]('[SoftN app]', text);
+          },
           onTitleChange: (title) => onTitleRef.current?.(title),
           onError: (err) => {
             console.error('[SoftN Container]', err);
@@ -102,9 +114,8 @@ export function WebContainerView({
           return;
         }
         handleRef.current = mounted;
-        if (grantedRef.current.length > 0) {
-          mounted.setGrantedCapabilities(grantedRef.current as Capability[]);
-        }
+        // Whatever changed while it started (the person pressed Allow during the boot).
+        mounted.setGrantedCapabilities(grantedRef.current as Capability[]);
         if (initialPage && initialPage !== mounted.manifest.main) {
           await mounted.navigate(initialPage).catch(() => undefined);
         }
@@ -123,7 +134,7 @@ export function WebContainerView({
       handleRef.current?.dispose();
       handleRef.current = null;
     };
-  }, [source, runtimeUrl, appId, theme, persistStorage, declaredPermissions, initialPage]);
+  }, [source, runtimeUrl, appId, storagePrefix, theme, persistStorage, declaredPermissions, initialPage]);
 
   // Dynamically upgrade/revoke capabilities in-place when user clicks Allow on host PermissionBar
   useEffect(() => {

@@ -521,6 +521,10 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
     [projectFormat, elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages]
   );
   const [settledState] = useSettled(previewStateNow, beside ? SETTLE_MS : 0);
+  // A web container's files settle as a SoftN app's state does, while a file is being typed
+  // in beside the preview: every keystroke was a new set of files, and the container was
+  // started again on each one.
+  const [settledContainerFiles] = useSettled(containerFiles, beside ? SETTLE_MS : 0);
   // A project that cannot be composed for a moment (a file half written)
   // does not take the running app away: the last state that composed stays,
   // for this start of the app, and a line under the header says what is
@@ -700,7 +704,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
             <ContainerComponent
               key={startKey}
               projectId={projectId}
-              files={containerFiles}
+              files={settledContainerFiles}
               themeMode={themeMode}
               declaredPermissions={declaration.declared}
               grantedCapabilities={previewAllowed ? declaration.requested : []}

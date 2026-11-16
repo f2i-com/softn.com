@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { softnPwa } from '../../scripts/build/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
-import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
+import { containerRuntimeAssetPlugin, sharedContainerPrecache } from '../../scripts/build/container-runtime-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
@@ -75,6 +75,11 @@ export default defineConfig({
         // draws or asks for it, so this is what installing downloads, not what
         // a page loads.
         globIgnores: [],
+        // What a web-container preview runs on (@softn/container's Worker, the engines
+        // core does not carry, the vendor modules): under assets/ in a build of the
+        // Builder alone, where the globs find it; in the site build in the one folder
+        // all four apps share, which is installed from there.
+        additionalManifestEntries: env.VITE_FORMLOGIC_EDITOR === '1' ? [] : sharedContainerPrecache(),
         // Every file fits inside 8 MiB — the largest is the ZIPP engine at
         // ~6.3 MiB (javascript-python-base; torch is a package of ~2 MiB under
         // core-runtime/). Raise this rather than let Workbox skip a file,

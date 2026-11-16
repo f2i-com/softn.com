@@ -3,6 +3,7 @@ import { useAIStore, useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { declarePythonPackage, getBundleEntryPath, MAIN_PAGE_PATH, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
 import { createEphemeralXDBScope, SoftNWithXDB, type AppUpdateResult, type SoftNRendererProps, type XDBService } from '@softn/core';
+import { hostedContainerOptions } from '@softn/runtime-shell/containerHost';
 import type { DevicePreset, ValidationError, VFSFile } from '../../types/studio';
 import { PreviewError } from './PreviewError';
 import { PAGE_PARSE, pageAndImports, pageParseProblems } from '../../lib/pageDiagnostics';
@@ -98,7 +99,6 @@ const StudioWebContainerPreview: React.FC<{
     if (!el) return;
     let cancelled = false;
     setBootError(null);
-    const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
 
     void (async () => {
       try {
@@ -106,10 +106,14 @@ const StudioWebContainerPreview: React.FC<{
         if (cancelled) return;
         const mounted = await mountSoftNContainer(el, {
           source: vfsSource,
-          runtimeUrl: `${base}assets/container-runtime/`,
+          // The build's own folder and core's engine for the Python tiers.
+          ...hostedContainerOptions(),
           theme,
           persistStorage: false,
+          // Studio asks; what was allowed in this preview is in place before the app's
+          // first script runs.
           permissionMode: 'deny',
+          initialGrantedCapabilities: grantedRef.current as import('@softn/bundle-format/capabilities').Capability[],
           permissionsOverride: (declaredPermissions ?? undefined) as import('@softn/container').ContainerPermissions | undefined,
           onConsole: (level, text) => onConsoleRef.current(level, text),
           onError: (err) => onErrorRef.current(err),
@@ -119,9 +123,7 @@ const StudioWebContainerPreview: React.FC<{
           return;
         }
         handleRef.current = mounted;
-        if (grantedRef.current.length > 0) {
-          mounted.setGrantedCapabilities(grantedRef.current as import('@softn/bundle-format/capabilities').Capability[]);
-        }
+        mounted.setGrantedCapabilities(grantedRef.current as import('@softn/bundle-format/capabilities').Capability[]);
         const initialPage = activePageRef.current;
         if (initialPage && initialPage !== mounted.manifest.main && /\.html?$/i.test(initialPage)) {
           await mounted.navigate(initialPage).catch(() => undefined);

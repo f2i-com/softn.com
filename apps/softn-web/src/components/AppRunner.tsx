@@ -9,6 +9,7 @@ import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/Permiss
 import { requestedCapabilities } from '@softn/runtime-shell/bundleProcessor';
 import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
 import { LoadProgress } from '@softn/runtime-shell/LoadProgress';
+import { containerStoragePrefix } from '../lib/appCacheStorage';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
 import { SlowOpen } from './SlowOpen';
 import './AppRunner.css';
@@ -288,6 +289,12 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   // Deliberately not rebuilt on the consent grant: the renderer keeps its own
   // componentState across the reload, and a fresh object here would re-seed
   // currentPage and throw the user back to the page they arrived on.
+  // What a web container is mounted from and what it has been granted: the same object for
+  // the same app and the same answer. A new one each render started the container again
+  // whenever the tab re-rendered, and told it of its grants on every render.
+  const containerSource = useMemo(() => (webContainer ? (bundleData ?? Object.fromEntries(textFiles ?? [])) : null), [webContainer, bundleData, textFiles]);
+  const containerGrants = useMemo(() => (consent ? [] : requestedCapabilities(permissionConfig ?? { permissions: {} })), [consent, permissionConfig]);
+
   const initialState = useMemo(() => {
     let savedRoom: string | null = null;
     try {
@@ -401,13 +408,16 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
       <div className="softn-runner-app" style={APP_BOX_STYLE} data-softn-theme-box={themeBox}>
         <RunnerErrorBoundary>
           <ThemeProvider followHost followSystem declaredMode={themeMode} box={themeBox}>
-            {webContainer && (bundleData || textFiles) ? (
+            {webContainer && containerSource && (bundleData || textFiles) ? (
               <WebContainerView
-                source={bundleData ?? Object.fromEntries(textFiles ?? [])}
+                source={containerSource}
                 appId={runtimeAppId}
+                // With the build's other data, so Home counts it, Remove clears it and an
+                // update can bring it forward (lib/appCacheStorage.ts).
+                storagePrefix={containerStoragePrefix(runtimeAppId)}
                 initialPage={initialPage}
                 declaredPermissions={consent?.config ?? permissionConfig}
-                grantedCapabilities={consent ? [] : requestedCapabilities(permissionConfig ?? { permissions: {} })}
+                grantedCapabilities={containerGrants}
                 theme={themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto'}
                 onReady={onReady}
                 loading={
