@@ -6,7 +6,7 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.43
 
 - Upgrading from v0.0.42: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so existing `.ui` + `.logic` bundles run without being rebuilt or parsed again, and every protocol number in `softn-formlogic-runtime` is v0.0.42's.
 - SoftN v2 Web App Containers (`packages/@softn/container`):
