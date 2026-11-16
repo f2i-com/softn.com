@@ -30,6 +30,19 @@ export function pageBundle({ id, name, html, permissions = {} }: { id: string; n
   return Buffer.from(zipped);
 }
 
+/**
+ * A .softn of plain web files, as a buffer for a file input: whatever is given, zipped as it
+ * is, with no manifest unless one is among the files. An archive with an `index.html` at its
+ * root and no manifest is a web container (@softn/container), as a zipped `dist/` is.
+ */
+export function containerBundle(files: Record<string, string>): Buffer {
+  const zipped = zipSync(
+    Object.fromEntries(Object.entries(files).map(([file, text]) => [file, strToU8(text)])),
+    { level: 6, mtime: new Date('2026-09-25T00:00:00.000Z') }
+  );
+  return Buffer.from(zipped);
+}
+
 /** A .softn bundle of one `.ui` page, with `.logic` beside it if given, as a buffer for a file input. */
 export function uiBundle({ name, ui, logic, config }: { name: string; ui: string; logic?: string; config?: Record<string, unknown> }): Buffer {
   const manifest = { name, version: '1.0.0', description: 'Built by the e2e gate.', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: logic === undefined ? [] : ['logic/main.logic'] }, ...(config ? { config } : {}) };
