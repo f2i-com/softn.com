@@ -21,7 +21,10 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 import { containerBundle } from '../helpers/bundle';
 import { watchConsole } from '../helpers/console';
-import { centreOf, keepShadowRoots, openBundle, shown } from '../helpers/container';
+import { centreOf, clickIn, keepShadowRoots, openBundle, seeIn, shown, textIn } from '../helpers/container';
+import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 const SHARED_FOLDER = /^\/shared\/container-runtime\/[0-9a-f]{12}\//;
 
@@ -373,6 +376,293 @@ test('an app cannot run script in the runtime’s page, reach an origin it was n
     expect(log.uncaught).toEqual([]);
   } finally {
     await log.attach('hostile');
+  }
+});
+
+// An element of the app's own with a shadow tree. The unit suite has the tree and the rules
+// (test/shadow-dom.test.ts); what only a browser does is here: it fills the slots with the
+// element's own children, applies the tree's stylesheet to the element (`:host`), and would
+// send a form or follow a link inside the tree by itself if the container did not hear of it.
+const CARD = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Card</title></head>
+<body>
+<user-card id="card"><span slot="title" id="given">Ada</span><em id="rest">and the rest</em></user-card>
+<p id="seen">none</p>
+<script>
+  class UserCard extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: 'open' });
+      root.innerHTML = '<style>:host { display: block; letter-spacing: 3px } .frame { color: rgb(4, 5, 6) }</style>' +
+        '<div class="frame"><h2 id="heading"><slot name="title">nobody</slot></h2><slot></slot> <button id="add" type="button">Add one</button> <b id="count">0</b> ' +
+        '<a id="next" href="second.html">next</a><form id="form" action="/nowhere"><input id="q" name="q"><button id="send">send</button></form></div>';
+      let count = 0;
+      root.getElementById('add').addEventListener('click', () => { count += 1; root.getElementById('count').textContent = String(count); });
+      root.getElementById('form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        document.getElementById('seen').textContent = 'sent:' + new FormData(event.target).get('q');
+      });
+    }
+  }
+  customElements.define('user-card', UserCard);
+  document.getElementById('seen').textContent = 'ready';
+</script>
+</body>
+</html>`;
+
+test('an element with a shadow tree: its slots are filled, its stylesheet is its own, and a form or a link inside it is the app’s', async ({ page }, testInfo) => {
+  const log = watchConsole(page, testInfo);
+  await keepShadowRoots(page);
+  try {
+    await openBundle(page, 'Card.softn', containerBundle({ 'index.html': CARD, 'second.html': page_('Second', '<p id="where">second page</p>', '') }));
+    await expect.poll(() => textIn(page, '#seen'), { timeout: 60_000 }).toBe('ready');
+    const address = page.url();
+
+    // The tree is drawn in the element's place, and the element's own children where its slots are.
+    await expect.poll(() => textIn(page, '#count')).toBe('0');
+    const heading = (await seeIn(page, '#heading'))!;
+    const given = (await seeIn(page, '#given'))!;
+    expect(given.width, 'the child given to the title slot is drawn').toBeGreaterThan(0);
+    expect(given.top, 'inside the heading the slot is in').toBeGreaterThanOrEqual(heading.top - 1);
+    expect(given.top + given.height).toBeLessThanOrEqual(heading.top + heading.height + 1);
+    expect((await seeIn(page, '#rest'))!.width, 'the other child is drawn in the unnamed slot').toBeGreaterThan(0);
+    // :host is the app's own element in the tree's stylesheet, and the stylesheet applies inside.
+    expect((await seeIn(page, '#card'))?.letterSpacing).toBe('3px');
+    expect((await seeIn(page, '.frame'))?.color).toBe('rgb(4, 5, 6)');
+
+    // A real click inside the tree.
+    await clickIn(page, '#add');
+    await expect.poll(() => textIn(page, '#count')).toBe('1');
+
+    // Enter in a field of a form inside the tree: the app's listener hears it, and the
+    // browser sends nothing (a submit does not leave the tree it happened in).
+    await clickIn(page, '#q');
+    await page.keyboard.type('hello');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => textIn(page, '#seen')).toBe('sent:hello');
+    expect(page.url()).toBe(address);
+
+    // A link inside the tree is the container's to follow: a page of the app's, shown in the app.
+    await clickIn(page, '#next');
+    await expect.poll(() => textIn(page, '#where')).toBe('second page');
+    expect(page.url()).toBe(address);
+    expect(log.uncaught).toEqual([]);
+  } finally {
+    await log.attach('shadow-tree');
+  }
+});
+
+// Saving a file, and reading one the person picks. Each crosses the app's box, so each is
+// the person's to allow: the page asks before a file is saved, in a bar of its own that
+// names the app and the file, and a picked file is read only for an app that was allowed files.
+const FILES = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Files</title>
+<style>
+  /* Words of the app's own, drawn over the bar that asks the person: what an app would do to have "Save" pressed for a file it did not name. */
+  [data-softn-container-save]::after, [data-softn-frame]::before {
+    content: "Notes wants to save notes.txt" !important; position: absolute !important; inset: 0 !important;
+    background: #0f172a !important; color: #fff !important; z-index: 2147483647 !important; pointer-events: none !important;
+  }
+</style>
+</head>
+<body>
+<button id="export" type="button">Export</button>
+<input id="pick" type="file">
+<p id="picked">starting</p>
+<script>
+  document.getElementById('export').addEventListener('click', () => {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob(['a,b\\n1,2\\n'], { type: 'text/csv' }));
+    link.download = 'table.csv';
+    link.click();
+  });
+  const pick = document.getElementById('pick');
+  pick.addEventListener('change', async () => {
+    const file = pick.files[0];
+    document.getElementById('picked').textContent = file ? file.name + ':' + file.size + ':' + (await file.text()) : 'no file was handed over';
+  });
+  // Said by the script: the runtime's "Starting…" is over the app until its script has run.
+  document.getElementById('picked').textContent = 'nothing picked';
+</script>
+</body>
+</html>`;
+
+test('a file is saved only at the person’s word, in the page’s own bar, and a picked file is read only by an app allowed files', async ({ page }, testInfo) => {
+  const log = watchConsole(page, testInfo);
+  await keepShadowRoots(page);
+  const pickFile = async () => {
+    const chooser = page.waitForEvent('filechooser');
+    await clickIn(page, '#pick');
+    await (await chooser).setFiles({ name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') });
+  };
+  try {
+    // An app that asked for nothing: its file field hands it nothing.
+    await openBundle(page, 'Files.softn', containerBundle({ 'index.html': FILES }));
+    await expect.poll(() => textIn(page, '#picked'), { timeout: 60_000 }).toBe('nothing picked');
+    await pickFile();
+    await expect.poll(() => textIn(page, '#picked')).toBe('no file was handed over');
+
+    // Saving: the bar names the app and the file; "Not now" saves nothing.
+    await clickIn(page, '#export');
+    await expect.poll(() => textIn(page, '[data-softn-save-bar]')).toContain('wants to save a file to this device: “table.csv”');
+    let downloads = 0;
+    page.on('download', () => downloads++);
+    // A click that lands on "Save" as the bar appears (it was on its way to the app) is not a yes.
+    await clickIn(page, '[data-softn-save-allow]');
+    expect(await seeIn(page, '[data-softn-save-bar]')).not.toBeNull();
+    await clickIn(page, '[data-softn-save-deny]');
+    await expect.poll(() => seeIn(page, '[data-softn-save-bar]')).toBeNull();
+    expect(downloads).toBe(0);
+    // And "Save" saves it, under the name given, with the bytes the app made.
+    await page.waitForTimeout(600);
+    await clickIn(page, '#export');
+    await expect.poll(async () => (await seeIn(page, '[data-softn-save-allow]')) !== null).toBe(true);
+    // The app's stylesheet draws nothing on the bar or the frame it is in: they are in
+    // another root than the app's page, and a stylesheet matches only what is in its own.
+    const drawn = await page.evaluate(() => {
+      for (const root of (window as unknown as { __softnRoots?: ShadowRoot[] }).__softnRoots ?? []) {
+        const holder = root.querySelector('[data-softn-container-save]');
+        const frame = root.querySelector('[data-softn-frame]');
+        if (holder && frame) return [getComputedStyle(holder, '::after').content, getComputedStyle(frame, '::before').content];
+      }
+      return null;
+    });
+    expect(drawn).toEqual(['none', 'none']);
+    await page.waitForTimeout(500);
+    const saved = page.waitForEvent('download');
+    await clickIn(page, '[data-softn-save-allow]');
+    const download = await saved;
+    expect(download.suggestedFilename()).toBe('table.csv');
+    expect(fs.readFileSync(await download.path(), 'utf8')).toBe('a,b\n1,2\n');
+
+    // The same app, declaring files: once the person allows it, what they pick is read.
+    await openBundle(page, 'FilesAllowed.softn', containerBundle({ 'index.html': FILES.replace('<title>Files</title>', '<title>Files Allowed</title>'), 'permission.json': JSON.stringify({ permissions: { files: { enabled: true } } }) }));
+    await expect.poll(() => textIn(page, '#picked'), { timeout: 60_000 }).toBe('nothing picked');
+    await page.locator('[data-softn-consent]').getByRole('button', { name: 'Allow', exact: true }).click();
+    await pickFile();
+    await expect.poll(() => textIn(page, '#picked')).toBe('note.txt:5:hello');
+    expect(log.uncaught).toEqual([]);
+  } finally {
+    await log.attach('files');
+  }
+});
+
+// An answer from the network, read as it arrives. The unit suite has the rules
+// (test/web-apis.test.ts) against a network it writes by hand; here the Worker reads a real
+// server through the browser's own fetch, a piece at a time, and hands each piece to the app
+// before the next is written.
+const STREAMING = (port: number) => `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Streaming</title></head>
+<body>
+<button id="go" type="button">Ask</button> <button id="listen" type="button">Listen</button>
+<p id="seen">starting</p>
+<p id="feed">not listening</p>
+<script>
+  const base = 'http://127.0.0.1:${port}';
+  const seen = [];
+  const say = (what) => { seen.push(what); document.getElementById('seen').textContent = seen.join(' '); };
+  document.getElementById('go').addEventListener('click', async () => {
+    try {
+      const response = await fetch(base + '/words');
+      say('head:' + response.status);
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      for (;;) {
+        const step = await reader.read();
+        if (step.done) break;
+        say('[' + step.value + ']');
+      }
+      say('end');
+    } catch (error) {
+      say('failed:' + error.message);
+    }
+  });
+  document.getElementById('listen').addEventListener('click', () => {
+    const told = [];
+    const tell = (what) => { told.push(what); document.getElementById('feed').textContent = told.join(' '); };
+    const feed = new EventSource(base + '/feed');
+    feed.onopen = () => tell('open');
+    feed.onmessage = (event) => tell('message:' + event.data + ':' + event.lastEventId);
+    feed.onerror = () => tell('error');
+  });
+  document.getElementById('seen').textContent = 'ready';
+</script>
+</body>
+</html>`;
+
+test('an answer from the network is the app’s as it arrives, and a feed is read a message at a time and asked for again', async ({ page }, testInfo) => {
+  const log = watchConsole(page, testInfo);
+  await keepShadowRoots(page);
+  // A server that writes when the test says so.
+  const held: Record<string, http.ServerResponse[]> = { '/words': [], '/feed': [] };
+  const asked: Array<{ method: string; path: string; place: string | undefined; cookie: string | undefined }> = [];
+  const server = http.createServer((request, response) => {
+    const path = (request.url ?? '').split('?')[0];
+    asked.push({ method: request.method ?? '', path, place: request.headers['last-event-id'] as string | undefined, cookie: request.headers.cookie });
+    response.setHeader('access-control-allow-origin', '*');
+    if (request.method === 'OPTIONS') {
+      response.setHeader('access-control-allow-headers', request.headers['access-control-request-headers'] ?? '');
+      response.writeHead(204).end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': path === '/feed' ? 'text/event-stream' : 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    response.flushHeaders();
+    (held[path] ??= []).push(response);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    await openBundle(
+      page,
+      'Streaming.softn',
+      containerBundle({
+        'index.html': STREAMING(port),
+        'permission.json': JSON.stringify({ permissions: { net: { enabled: true, allow_http: true, allowed_hosts: ['127.0.0.1'] } } }),
+      })
+    );
+    await expect.poll(() => textIn(page, '#seen'), { timeout: 60_000 }).toBe('ready');
+    await page.locator('[data-softn-consent]').getByRole('button', { name: 'Allow', exact: true }).click();
+    await expect.poll(() => textIn(page, '#seen'), { timeout: 60_000 }).toBe('ready');
+    const address = page.url();
+
+    // The head, then each piece as the server writes it: the app has one before the next exists.
+    await clickIn(page, '#go');
+    await expect.poll(() => held['/words'].length).toBe(1);
+    await expect.poll(() => textIn(page, '#seen')).toBe('head:200');
+    held['/words'][0].write('one');
+    await expect.poll(() => textIn(page, '#seen')).toBe('head:200 [one]');
+    held['/words'][0].write('two');
+    await expect.poll(() => textIn(page, '#seen')).toBe('head:200 [one] [two]');
+    held['/words'][0].end();
+    await expect.poll(() => textIn(page, '#seen')).toBe('head:200 [one] [two] end');
+
+    // A feed: a message at a time, and asked for again from where it left off when it ends.
+    await clickIn(page, '#listen');
+    await expect.poll(() => held['/feed'].length).toBe(1);
+    await expect.poll(() => textIn(page, '#feed')).toBe('open');
+    held['/feed'][0].write('retry: 100\nid: 5\ndata: first\n\n');
+    await expect.poll(() => textIn(page, '#feed')).toBe('open message:first:5');
+    held['/feed'][0].end();
+    await expect.poll(() => held['/feed'].length).toBe(2);
+    await expect.poll(() => textIn(page, '#feed')).toBe('open message:first:5 error open');
+    held['/feed'][1].write('data: second\n\n');
+    await expect.poll(() => textIn(page, '#feed')).toBe('open message:first:5 error open message:second:5');
+
+    // The first asking of each needed no question put to the server first; the second
+    // asking of the feed named its place, and nothing of the page's went with any of them.
+    const feeds = asked.filter((one) => one.path === '/feed' && one.method === 'GET');
+    expect(feeds.map((one) => one.place)).toEqual([undefined, '5']);
+    expect(asked.slice(0, 2).map((one) => one.method + ' ' + one.path)).toEqual(['GET /words', 'GET /feed']);
+    expect(asked.every((one) => one.cookie === undefined)).toBe(true);
+    expect(page.url()).toBe(address);
+    expect(log.uncaught).toEqual([]);
+  } finally {
+    for (const open of Object.values(held).flat()) open.destroy();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await log.attach('streaming');
   }
 });
 
