@@ -94,6 +94,40 @@ describe('the private host\'s service worker', () => {
     expect(await (await fetchFor(new Request(asset))).text()).toBe('cached runtime');
   });
 
+  // The workers' files keep their names from release to release. Cache first, a returning
+  // visitor ran the last release's script and sandbox workers with this release's page.
+  it('asks the network first for the runtime’s workers, and answers from its copy only without one', async () => {
+    const worker = `${SCOPE}assets/core-runtime/runtime/sandbox-worker.js`;
+    const torch = `${SCOPE}assets/core-runtime/zipp_torch.wasm`;
+    const { version } = install({}, async () => new Response(''));
+    const kept = { [version]: { [worker]: () => new Response('/* sandbox worker of release A */'), [torch]: () => new Response('torch A') } };
+
+    const online = install(kept, async (request) => new Response(`/* release B: ${new URL(request.url).pathname} */`));
+    expect(await (await online.fetchFor(new Request(worker))).text()).toBe('/* release B: /assets/core-runtime/runtime/sandbox-worker.js */');
+    expect(await (await online.fetchFor(new Request(torch))).text()).toBe('/* release B: /assets/core-runtime/zipp_torch.wasm */');
+
+    const offline = install(kept, async () => {
+      throw new TypeError('offline');
+    });
+    expect(await (await offline.fetchFor(new Request(worker))).text()).toBe('/* sandbox worker of release A */');
+    // Nothing kept and no network: the request fails, as it would with no worker at all.
+    await expect(offline.fetchFor(new Request(`${SCOPE}assets/core-runtime/runtime/model-worker.js`))).rejects.toThrow('offline');
+
+    // A file named by its contents is still answered from the copy, with no request.
+    const hashed = `${SCOPE}assets/index-AbCd1234.js`;
+    const asked: string[] = [];
+    const cached = install({ [version]: { [hashed]: () => new Response('cached runtime') } }, async (request) => {
+      asked.push(request.url);
+      return new Response('from the network');
+    });
+    expect(await (await cached.fetchFor(new Request(hashed))).text()).toBe('cached runtime');
+    expect(asked).toEqual([]);
+    // And so is the container's, whose folder is named by the digest of what is in it.
+    const container = `${SCOPE}assets/container-runtime/e03138f892dd/container-worker.js`;
+    const digest = install({ [version]: { [container]: () => new Response('container worker') } }, async () => new Response('from the network'));
+    expect(await (await digest.fetchFor(new Request(container))).text()).toBe('container worker');
+  });
+
   // Every cache but this worker's own went when it activated, and with them
   // the models apps had downloaded, at every bump of VERSION.
   it('keeps the downloaded models when a new version of it activates', async () => {

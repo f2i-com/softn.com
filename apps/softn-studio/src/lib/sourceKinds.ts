@@ -14,7 +14,7 @@
  * the app runs.
  */
 
-import { declaresContainer, zeroConfigEntry } from '@softn/bundle-format/engine';
+import { manifestRunsInContainer, zeroConfigEntry } from '@softn/bundle-format/engine';
 import { logicImportPaths, pageLogicSources, resolveBundlePath } from '@softn/core';
 
 const ASSETS = /^assets\//i;
@@ -49,7 +49,8 @@ export function projectContainerMode(
   const manifestFile = files.get('manifest.json');
   if (manifestFile && typeof manifestFile.content === 'string') {
     try {
-      return declaresContainer(JSON.parse(manifestFile.content)) ? 'web' : 'legacy-ui';
+      // And only over a page: `"engine": 2` with a `.ui` entry is the SoftN bundle its entry is.
+      return manifestRunsInContainer(JSON.parse(manifestFile.content)) ? 'web' : 'legacy-ui';
     } catch {
       // A manifest that does not parse says nothing: as a project that has none yet.
     }

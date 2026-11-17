@@ -238,8 +238,20 @@ describe('a bundle zipped by hand', () => {
     const site = [{ path: 'index.html', content: '<h1>Hello</h1>' }];
     const project = asProject(site, 'My bakery');
     expect(project.map((entry) => entry.path)).toEqual(['manifest.json', 'permission.json', 'index.html']);
-    expect(JSON.parse(project[0].content as string)).toEqual({ name: 'My bakery', version: '1.0.0', main: 'index.html' });
+    // The engine every runtime runs a manifest-less site on, said: the manifest used to say
+    // nothing of it, and the site that ran in the container when opened in the runtime was
+    // previewed and exported as a SoftN app after a trip through Studio.
+    expect(JSON.parse(project[0].content as string)).toEqual({ name: 'My bakery', version: '1.0.0', engine: 2, main: 'index.html' });
     expect(JSON.parse(project[1].content as string)).toEqual({ permissions: {} });
+    // The page the runtime would open, whatever it is called: a site whose page is home.html
+    // got no manifest at all, and so was a container where one called index.html was not.
+    const named = asProject([{ path: 'home.html', content: '<h1>Home</h1>' }, { path: 'about.html', content: '<h1>About</h1>' }], 'My bakery');
+    expect(JSON.parse(named[0].content as string)).toEqual({ name: 'My bakery', version: '1.0.0', engine: 2, main: 'about.html' });
+    expect(JSON.parse(asProject([{ path: 'b.html', content: '' }, { path: 'app.html', content: '' }], 'x')[0].content as string).main).toBe('app.html');
+    // A hosted editor has no container to preview one in: there a site is the SoftN page it was.
+    const hosted = asProject(site, 'My bakery', { container: false });
+    expect(JSON.parse(hosted[0].content as string)).toEqual({ name: 'My bakery', version: '1.0.0', main: 'index.html' });
+    expect(asProject([{ path: 'home.html', content: '' }], 'x', { container: false })).toHaveLength(1);
     // Its own permission.json stands, and anything with a manifest, or no page to run, is left as it came.
     const declared = [...site, { path: 'permission.json', content: '{"permissions":{"net":{"enabled":true}}}' }];
     expect(asProject(declared, 'My bakery').map((entry) => entry.path)).toEqual(['manifest.json', 'index.html', 'permission.json']);

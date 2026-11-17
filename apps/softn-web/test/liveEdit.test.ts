@@ -373,7 +373,8 @@ describe('an app of the person’s own, edited while it runs', () => {
     expect(session.add('ui/main.ui')).toBe('The app already has ui/main.ui.');
     expect(session.add('assets/logo.png')).toMatch(/not text/);
     // Text to whoever wrote it, and bytes to the runtime, which does not know the ending: said as that, not as "a picture".
-    for (const name of ['data/rows.csv', 'logic/extra.mjs', 'logic/extra.ts', 'ui/old.htm']) {
+    // (`.htm` was among them until the registry knew it for the page every other reader takes it for.)
+    for (const name of ['data/rows.csv', 'logic/extra.mjs', 'logic/extra.ts']) {
       expect(session.add(name), name).toMatch(/^A file with that ending is carried as it is and not read as text/);
       expect(session.add(name), name).not.toMatch(/picture/);
     }

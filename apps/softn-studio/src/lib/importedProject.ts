@@ -3,6 +3,7 @@ import { asProject, type ProjectImportEntry } from './projectImport';
 import { resetProjectSessionForImport } from './projectSession';
 import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage, resolveManifest } from './studioProject';
 import { randomUUID } from '@softn/bundle-format/crypto';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 
 /** The app's name as the imported manifest gives it, or null when it gives none that can be read. */
 function manifestName(batch: ProjectImportEntry[]): string | null {
@@ -32,7 +33,8 @@ export function openImportedInStores(fileName: string, imported: ProjectImportEn
   // it), else as its manifest names the app, else by its file. It took the file's name
   // whatever was inside: a second download of Counter Club opened as "Counter Club (1)".
   const importedProjectName = opener.name?.trim() || manifestName(imported) || fileName.replace(/\.(softn|zip|json)$/i, '');
-  const batch = asProject(imported, importedProjectName);
+  // A zipped website is the web container it is everywhere else, except in a hosted editor, which has none.
+  const batch = asProject(imported, importedProjectName, { container: !isHostedEditor() });
   useVFSStore.getState().openFiles(batch);
 
   const importedWorkspace = useWorkspaceStore.getState();

@@ -112,6 +112,7 @@ const SOFTN_ENTRY_TYPES = [
     'wgsl' => ['text/plain', 'text'],
     'xdb' => ['application/json', 'text'],
     'html' => ['text/html', 'text'],
+    'htm' => ['text/html', 'text'],
     'js' => ['application/javascript', 'text'],
     'txt' => ['text/plain', 'text'],
     'xml' => ['application/xml', 'text'],
@@ -652,18 +653,46 @@ function softn_manifest(ZipArchive $zip): array
 {
     $raw = $zip->getFromName('manifest.json');
     if (!is_string($raw)) {
-        // Support zero-config v2 HTML Web App Containers (`index.html` or `app.html` with no manifest.json)
-        $htmlEntry = null;
-        foreach (['index.html', 'app.html'] as $candidate) {
-            if ($zip->statName($candidate) !== false) {
-                $htmlEntry = $candidate;
-                break;
+        // No manifest: a zipped folder of a web app, opened at its page. The page
+        // every other reader of a bundle opens (@softn/bundle-format's
+        // zeroConfigEntry): index.html, else app.html, else the first page at the
+        // archive's root by name. This host knew the first two names only, and
+        // answered 503 for a site whose page is home.html.
+        $root = [];
+        $folders = [];
+        $atRoot = 0;
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (!is_string($name) || $name === '' || str_ends_with($name, '/')) continue;
+            $slash = strpos($name, '/');
+            if ($slash === false) {
+                $atRoot++;
+                if (preg_match('/\.html?$/i', $name)) $root[] = $name;
+            } else {
+                $folders[substr($name, 0, $slash)] = true;
             }
         }
+        $htmlEntry = null;
+        if (in_array('index.html', $root, true)) {
+            $htmlEntry = 'index.html';
+        } elseif (in_array('app.html', $root, true)) {
+            $htmlEntry = 'app.html';
+        } elseif ($root !== []) {
+            sort($root, SORT_STRING);
+            $htmlEntry = $root[0];
+        }
         if ($htmlEntry === null) {
+            // Everything inside one folder: the folder was zipped, not its files.
+            // The runtimes that read an archive in the browser look inside it;
+            // this host serves each file by its name in the archive, so it says
+            // what to do rather than only that something is wrong.
+            if ($atRoot === 0 && count($folders) === 1) {
+                softn_fail(503, 'The application\'s files are inside a folder ("' . softn_text_cut((string)array_key_first($folders), 64) . '") in the archive. Zip the files themselves, so that the page or manifest.json is at the top of the archive.');
+            }
             softn_fail(503, 'Invalid application manifest.');
         }
-        $htmlText = $zip->getFromName($htmlEntry);
+        // The head of the page is enough for its title, on a request that runs for every visit.
+        $htmlText = $zip->getFromName($htmlEntry, 262144);
         $title = 'Web App';
         if (is_string($htmlText) && preg_match('/<title[^>]*>([\s\S]*?)<\/title>/i', $htmlText, $m)) {
             $parsedTitle = trim((string)preg_replace('/\s+/', ' ', strip_tags($m[1])));
@@ -678,8 +707,16 @@ function softn_manifest(ZipArchive $zip): array
             'config' => (object)['execution' => 'worker'],
         ];
     }
+    // A byte order mark, which some editors write, is not part of the JSON; the
+    // runtimes that read the archive in the browser read past it.
+    if (str_starts_with($raw, "\xEF\xBB\xBF")) $raw = substr($raw, 3);
     $manifest = json_decode($raw, true);
-    $isV2 = is_array($manifest) && (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
+    // `"engine": 2` as JSON has it, with one kind of number: 2.0 and 2e0 are 2.
+    // json_decode makes those floats, which `=== 2` took for a SoftN bundle, so
+    // a manifest written by a tool that prints 2.0 ran on the other engine here.
+    $engine = is_array($manifest) ? ($manifest['engine'] ?? null) : null;
+    $engineIsContainer = (is_int($engine) || is_float($engine)) && (float)$engine === 2.0;
+    $isV2 = is_array($manifest) && ($engineIsContainer || ($manifest['container'] ?? null) === true);
     if (!is_array($manifest) || !is_string($manifest['name'] ?? null) || !is_string($manifest['main'] ?? null) || (!$isV2 && !is_array($manifest['files'] ?? null))) {
         softn_fail(503, 'Invalid application manifest.');
     }
@@ -695,8 +732,19 @@ function softn_manifest(ZipArchive $zip): array
         'main' => $manifest['main'],
         'files' => (object)$files,
     ];
-    if (($manifest['engine'] ?? null) === 2) $out['engine'] = 2;
+    if ($engineIsContainer) $out['engine'] = 2;
     if (($manifest['container'] ?? null) === true) $out['container'] = true;
+    if ($isV2) {
+        // What the container reads of a manifest beyond the fields here
+        // (packages/@softn/container/src/archive.ts): its import map and its
+        // theme. Left out, an app's `imports` resolved nothing on this host and
+        // did on every other.
+        if (is_array($manifest['imports'] ?? null)) {
+            $imports = array_filter($manifest['imports'], 'is_string');
+            if ($imports !== []) $out['imports'] = (object)$imports;
+        }
+        if (in_array($manifest['theme'] ?? null, ['light', 'dark'], true)) $out['theme'] = $manifest['theme'];
+    }
     if (is_string($manifest['description'] ?? null)) $out['description'] = $manifest['description'];
     if (is_string($manifest['icon'] ?? null)) $out['icon'] = $manifest['icon'];
     $config = [];
@@ -704,6 +752,10 @@ function softn_manifest(ZipArchive $zip): array
         if (is_string($manifest['config']['execution'] ?? null)) $config['execution'] = $manifest['config']['execution'];
         if (is_array($manifest['config']['theme'] ?? null)) $config['theme'] = $manifest['config']['theme'];
         if (is_array($manifest['config']['window'] ?? null)) $config['window'] = $manifest['config']['window'];
+        // A container's Python packages, which decide the engine its pages start on.
+        if ($isV2 && is_array($manifest['config']['python']['packages'] ?? null)) {
+            $config['python'] = ['packages' => array_values(array_filter($manifest['config']['python']['packages'], 'is_string'))];
+        }
     }
     $out['config'] = (object)$config;
     if (is_array($manifest['permissions'] ?? null)) {
@@ -800,6 +852,8 @@ function softn_source(array $config, string $private): never
     $entries = [];
     $total = 0;
     foreach ($index as $name => $entry) {
+        // An array's key that reads as a whole number is one: a file called "2024".
+        $name = (string)$name;
         if ($name === 'manifest.json' || softn_withheld($name, $config['withhold'])) continue;
         $ext = strtolower((string)pathinfo($name, PATHINFO_EXTENSION));
         $isText = softn_classify($name)[1] === 'text' || ($isContainer && in_array($ext, ['htm', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts'], true));

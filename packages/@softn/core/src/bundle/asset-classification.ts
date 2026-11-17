@@ -102,6 +102,11 @@ export const ASSET_CLASSIFICATIONS: Record<string, AssetClassification> = {
   wgsl: { kind: 'text', mime: 'text/plain', binary: false },
   xdb: { kind: 'text', mime: 'application/json', binary: false },
   html: { kind: 'text', mime: 'text/html', binary: false },
+  // The same file under its three-letter name. Every reader of a bundle's names took a
+  // `.htm` for a page (the inspectors, the directory, the container) while this registry
+  // had no entry for it, so the hosts carried it as bytes: the directory listed an app
+  // whose page is `index.htm` and no host could open it.
+  htm: { kind: 'text', mime: 'text/html', binary: false },
   js: { kind: 'text', mime: 'application/javascript', binary: false },
   txt: { kind: 'text', mime: 'text/plain', binary: false },
   xml: { kind: 'text', mime: 'application/xml', binary: false },

@@ -26,14 +26,13 @@ import {
   createImportResolver,
   loadXDBData,
   processBundle,
-  readZip,
   type BundleBinaryReader,
   type BundleManifest as SharedBundleManifest,
   type DisposableImportResolver,
 } from '@softn/runtime-shell/bundleProcessor';
 import { resolveServerConfig, type ServerSyncSettings } from '@softn/runtime-shell/net';
 import { DesktopShell, DesktopWelcome } from './DesktopShell';
-import { computeBundleAppId, isSoftnPath } from './bundleFile';
+import { computeBundleAppId, desktopBundleFiles, isSoftnPath } from './bundleFile';
 // The consent rule, bar and dialog every host that runs one bundle shares
 // (@softn/runtime-shell), so a bundle is asked in the same words here as in
 // the browser. Grants stay under this loader's own prefix, where earlier
@@ -418,7 +417,10 @@ function App(): React.ReactElement {
         // Indexes the archive; a text file is decoded, and a binary read and
         // checked, when something asks for it (the manifest, the composer,
         // the icon, an asset()). Disposing the asset resolver releases the archive.
-        const { textFiles, binaryFiles } = readZip(data);
+        // A bundle zipped as its folder is looked inside, as the browser runtime
+        // does, and a web container is refused in words that say what it is
+        // (bundleFile.ts): this loader has no engine for one.
+        const { textFiles, binaryFiles } = desktopBundleFiles(data);
 
         // The one manifest read every host shares (core's readManifest): a
         // manifest without `files` opens, and one that cannot run is refused

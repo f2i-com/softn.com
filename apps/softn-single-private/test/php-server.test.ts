@@ -627,6 +627,85 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     }
   });
 
+  it('decides the engine, the page and the names of an archive as every other host does', async () => {
+    const page = (title: string) => `<!doctype html><html><head><title>${title}</title></head><body><script src="./app.js"></script></body></html>`;
+    const source = async (files: Record<string, Uint8Array>) => {
+      writeFileSync(join(root, 'private/app.softn'), zipSync(files, { level: 6 }));
+      const response = await fetch(`${origin}/index.php?source`);
+      const body = await response.text();
+      return { status: response.status, text: body, pack: response.status === 200 ? JSON.parse(body) : null };
+    };
+    writeFileSync(join(root, 'private/serve.config.php'), config(`'viewerToken' => false,`));
+    try {
+      // `"engine": 2.0` is 2: PHP reads it as a float, which was taken for a SoftN bundle.
+      // With it, what the container reads of the manifest and nothing it does not.
+      const typed = await source({
+        'manifest.json': strToU8(
+          '{"name":"Typed","version":"1","main":"index.html","engine":2.0,"id":"someone-else","imports":{"lib":"./lib.js","bad":7},"theme":"dark","config":{"python":{"packages":["numpy",3]},"server":{"token":"SECRET"}}}'
+        ),
+        'index.html': strToU8(page('Typed')),
+        'lib.js': strToU8('export const a = 1;'),
+      });
+      expect(typed.status).toBe(200);
+      expect(typed.pack.manifest).toEqual({
+        name: 'Typed',
+        version: '1',
+        main: 'index.html',
+        files: {},
+        engine: 2,
+        imports: { lib: './lib.js' },
+        theme: 'dark',
+        config: { python: { packages: ['numpy'] } },
+      });
+      expect(typed.text).not.toContain('SECRET');
+      expect((await source({ 'manifest.json': strToU8('{"name":"E","version":"1","main":"index.html","engine":2e0}'), 'index.html': strToU8(page('E')) })).pack.manifest.engine).toBe(2);
+
+      // A byte order mark ahead of the JSON is read past, as the browser's readers do.
+      const marked = await source({
+        'manifest.json': new Uint8Array([0xef, 0xbb, 0xbf, ...strToU8('{"name":"Marked","version":"1","main":"index.html","engine":2}')]),
+        'index.html': strToU8(page('Marked')),
+      });
+      expect(marked.status).toBe(200);
+      expect(marked.pack.manifest).toMatchObject({ name: 'Marked', engine: 2 });
+
+      // Text that only looks like the number is not the container's, and a SoftN manifest gets none of its fields.
+      const worded = await source({
+        'manifest.json': strToU8('{"name":"Worded","version":"1","main":"ui/main.ui","engine":"2","imports":{"lib":"./lib.js"},"files":{"ui":["ui/main.ui"]}}'),
+        'ui/main.ui': strToU8('<App><Text>Hi</Text></App>'),
+      });
+      expect(worded.status).toBe(200);
+      expect(worded.pack.manifest.engine).toBeUndefined();
+      expect(worded.pack.manifest.imports).toBeUndefined();
+
+      // No manifest: the first page at the root by name, whatever it is called.
+      const home = await source({ 'home.html': strToU8(page('Home Page')), 'about.html': strToU8(page('About')), 'app.js': strToU8('document.title = "x";') });
+      expect(home.status).toBe(200);
+      expect(home.pack.manifest).toMatchObject({ engine: 2, name: 'About', main: 'about.html' });
+      expect(Object.keys(home.pack.text).sort()).toEqual(['about.html', 'app.js', 'home.html']);
+      // index.html before app.html before the rest.
+      expect((await source({ 'a.html': strToU8(page('A')), 'app.html': strToU8(page('App')) })).pack.manifest.main).toBe('app.html');
+      expect((await source({ 'a.html': strToU8(page('A')), 'app.html': strToU8(page('App')), 'index.html': strToU8(page('Index')) })).pack.manifest.main).toBe('index.html');
+
+      // A file whose name is all digits is a file: `?source` was a blank 500.
+      const numbered = await source({ 'index.html': strToU8(page('Numbered')), '2024': strToU8('a year'), '-5': strToU8('minus five') });
+      expect(numbered.status).toBe(200);
+      expect(Object.keys(numbered.pack.entries).sort()).toEqual(['-5', '2024']);
+
+      // The folder was zipped, not its files: said so, with the folder's name.
+      const wrapped = await source({ 'dist/index.html': strToU8(page('Wrapped')), 'dist/app.js': strToU8('1') });
+      expect(wrapped.status).toBe(503);
+      expect(wrapped.text).toContain('inside a folder ("dist")');
+      expect(wrapped.text).toContain('Zip the files themselves');
+      // Nothing to open at all is still the plain refusal.
+      const notes = await source({ 'readme.md': strToU8('# notes'), 'docs/a.md': strToU8('a') });
+      expect(notes.status).toBe(503);
+      expect(notes.text).toBe('Invalid application manifest.');
+    } finally {
+      writeFileSync(join(root, 'private/app.softn'), bundle);
+      writeFileSync(join(root, 'private/serve.config.php'), config());
+    }
+  });
+
   it('reports an unknown setting instead of guessing', async () => {
     writeFileSync(join(root, 'private/serve.config.php'), config(`'downloadable' => true,`));
     try {

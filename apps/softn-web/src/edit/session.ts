@@ -655,7 +655,7 @@ export class EditSession {
     if (this.files.has(name) || this.binaries.includes(name)) return `The app already has ${name}.`;
     const sort = classifyAsset(name);
     if (sort.binary) {
-      // An ending the runtime does not know (.csv, .mjs, .ts, .htm) is text
+      // An ending the runtime does not know (.csv, .mjs, .ts) is text
       // to the person who wrote it, and bytes to the runtime.
       return sort.kind === 'binary'
         ? 'A file with that ending is carried as it is and not read as text, so it cannot be written here. Add it in Studio or the Builder.'

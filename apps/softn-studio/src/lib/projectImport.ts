@@ -1,4 +1,5 @@
 import { MAX_ZIP_INPUT_BYTES, classifyAsset, openBundleArchive } from '@softn/core';
+import { zeroConfigEntry } from '@softn/bundle-format/engine';
 import { canonicalKey, normalizeProjectPath } from './paths';
 import { keptAsBytes, readsAsText } from './fileKinds';
 
@@ -44,14 +45,27 @@ export function namedAsText(path: string): boolean {
 }
 
 /**
- * A website, zipped: an `index.html` and no manifest. It previews as it is, and its export was a file with no manifest,
- * which no runtime opens and Builder refuses. So it gets what a new project starts with: a manifest naming the page,
- * which export fills in from the files, and an empty permission.json, so the site declares nothing it did not ask for.
+ * A website, zipped: a page and no manifest. It gets what a new project starts with: a manifest naming the page, which
+ * export fills in from the files, and an empty permission.json, so the site declares nothing it did not ask for.
+ *
+ * The manifest says `"engine": 2`, because that is what the archive is everywhere else: a bundle with no manifest is a
+ * web container when it has a page (@softn/bundle-format's engine.ts), opened at the page that rule names. The manifest
+ * written here used to say nothing of the engine and was written only for a site whose page is `index.html`: so the same
+ * zip ran in the container when opened in the runtime, was previewed and exported as a SoftN app after a trip through
+ * Studio, and was a container again if its page happened to be called `home.html`.
+ *
+ * `container: false` is the hosted editor's (FormLogic's), whose build carries no container to preview one in: there a
+ * site with an `index.html` is the SoftN HTML page it always was.
  */
-export function asProject(entries: ProjectImportEntry[], name: string): ProjectImportEntry[] {
+export function asProject(entries: ProjectImportEntry[], name: string, { container = true }: { container?: boolean } = {}): ProjectImportEntry[] {
   const has = (path: string) => entries.some((entry) => entry.path === path);
-  if (has('manifest.json') || !has('index.html')) return entries;
-  const manifest = { path: 'manifest.json', content: JSON.stringify({ name, version: '1.0.0', main: 'index.html' }, null, 2) };
+  if (has('manifest.json')) return entries;
+  const page = container ? zeroConfigEntry(entries.map((entry) => entry.path)) : has('index.html') ? 'index.html' : null;
+  if (!page) return entries;
+  const manifest = {
+    path: 'manifest.json',
+    content: JSON.stringify(container ? { name, version: '1.0.0', engine: 2, main: page } : { name, version: '1.0.0', main: page }, null, 2),
+  };
   const permissions = { path: 'permission.json', content: JSON.stringify({ permissions: {} }, null, 2) };
   return has('permission.json') ? [manifest, ...entries] : [manifest, permissions, ...entries];
 }

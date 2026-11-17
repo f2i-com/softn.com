@@ -17,7 +17,7 @@
  */
 
 import { debug } from './debug';
-import { declaresContainer } from '@softn/bundle-format/engine';
+import { manifestRunsInContainer } from '@softn/bundle-format/engine';
 import { MAX_ZIP_INPUT_BYTES, classifyAsset, pageLogicSources, resolveBundlePath } from '@softn/core';
 import { bytesToBase64 } from './base64';
 import { countedId } from './ids';
@@ -148,7 +148,8 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   // The Builder had a rule of its own (any TypeScript file, a module script in the page), so
   // a SoftN bundle could be opened as a web container and saved with `"engine": 2` stamped
   // on it, after which every runtime ran it on the other engine.
-  const isWebContainer = Boolean(synthesizedManifest) || declaresContainer(rawManifest);
+  // And only over a page: `"engine": 2` with a `.ui` entry is the SoftN bundle its entry is.
+  const isWebContainer = Boolean(synthesizedManifest) || manifestRunsInContainer(rawManifest);
 
   // Load UI files. The entry is loaded whether or not `files.ui` lists it:
   // the runtime reads it by `main`, so a bundle that names it only there is

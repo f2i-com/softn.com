@@ -26,6 +26,19 @@ export function declaresContainer(manifest: unknown): boolean {
 }
 
 /**
+ * Whether a project with this manifest is a web container to the editors: it says so, and the
+ * entry it names, when it names one, is a page. A manifest that says `"engine": 2` over a
+ * `.ui` entry is run by every runtime as the SoftN bundle its entry is (the container reads
+ * pages, not `.ui`), so an editor that went by the declaration alone previewed one engine
+ * and exported for the other. A manifest that names no entry yet is a project being written.
+ */
+export function manifestRunsInContainer(manifest: unknown): boolean {
+  if (!declaresContainer(manifest)) return false;
+  const main = (manifest as { main?: unknown }).main;
+  return typeof main !== 'string' || main === '' || /\.html?$/i.test(main);
+}
+
+/**
  * The page a bundle with no manifest opens, from its file names: `index.html`, else
  * `app.html`, else the first page at its root by name. Null when it has none, which is a
  * bundle nothing can open.

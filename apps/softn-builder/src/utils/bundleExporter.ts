@@ -24,6 +24,7 @@
 
 import { zipSync, strToU8 } from 'fflate';
 import { isUnsafeEntryName, openBundleArchive } from '@softn/core';
+import { zeroConfigEntry } from '@softn/bundle-format/engine';
 import type {
   CanvasElement,
   CollectionDef,
@@ -642,14 +643,10 @@ export function parseBundle(data: Uint8Array): {
   // The manifest at the root, the one every runtime and the directory read.
   const manifestData = files.get('manifest.json');
   if (!manifestData) {
-    const rootHtml = [...files.keys()].filter((p) => !p.includes('/') && /\.html?$/i.test(p));
-    const htmlEntry = files.has('index.html')
-      ? 'index.html'
-      : files.has('app.html')
-        ? 'app.html'
-        : rootHtml.length === 1
-          ? rootHtml[0]
-          : null;
+    // The page every other reader of a manifest-less archive opens (@softn/bundle-format's
+    // zeroConfigEntry): index.html, else app.html, else the first page at the root by name.
+    // The Builder took a lone page only, and refused a site with two that the runtime opens.
+    const htmlEntry = zeroConfigEntry(files.keys());
     if (!htmlEntry) {
       throw new Error('Invalid bundle: missing manifest.json');
     }

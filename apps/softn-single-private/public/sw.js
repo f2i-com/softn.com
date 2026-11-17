@@ -6,7 +6,7 @@
  * cookie-gated answers from the server and a redeployed application is seen on
  * the next visit. Paths are taken from the registration scope, so a deployment
  * under a sub-directory works unchanged. Bump VERSION when this file changes. */
-var VERSION = 'softn-serve-sw-2';
+var VERSION = 'softn-serve-sw-3';
 var base = new URL(self.registration.scope).pathname;
 var precache = [
   base + 'pwa-icons/icon-192.png',
@@ -69,6 +69,29 @@ self.addEventListener('fetch', function (event) {
     return;
   }
   var relative = url.pathname.slice(base.length);
+  // The runtime's workers and the torch package keep their names from release
+  // to release (assets/core-runtime/runtime/script-worker.js), unlike every
+  // other file under assets/, which is named by its contents. Answered cache
+  // first, a returning visitor ran the copy kept from the release they first
+  // saw, with this release's page: a fix to the sandbox worker never reached
+  // them. So the network first, and the copy when there is no network.
+  if (relative.indexOf('assets/core-runtime/') === 0) {
+    event.respondWith(
+      fetch(request).then(function (response) {
+        if (response.ok) {
+          var copy = response.clone();
+          caches.open(VERSION).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
+        }
+        return response;
+      }).catch(function (error) {
+        return caches.open(VERSION).then(function (cache) { return cache.match(request); }).then(function (cached) {
+          if (cached) return cached;
+          throw error;
+        });
+      })
+    );
+    return;
+  }
   if (relative.indexOf('assets/') === 0 || relative.indexOf('pwa-icons/') === 0 || precache.indexOf(url.pathname) >= 0) {
     event.respondWith(
       // This worker's own cache: an app's model downloads share the origin's

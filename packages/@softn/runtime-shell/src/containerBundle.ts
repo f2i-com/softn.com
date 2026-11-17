@@ -34,14 +34,86 @@ function discoverHtmlIcon(
 }
 
 /**
+ * An archive's text files with a wrapper folder's name taken off each: a Map to whoever holds
+ * it, that decodes an entry when it is first read and not before.
+ *
+ * The archive's own map does that (a text entry is inflated and decoded on `get`), and for
+ * the reason this one must: an archive of nine 50 MB JSON files of spaces is 451 KB. The
+ * unwrap used to copy every entry into a plain Map, which read them all: such an archive,
+ * zipped as its folder, held 445 MB of text before the app had started or the person had
+ * been asked anything, where the same files at the archive's root held none.
+ */
+class UnwrappedTexts extends Map<string, string> {
+  readonly #inner: Map<string, string>;
+  readonly #prefix: string;
+  /** The names this view has, without the prefix. */
+  readonly #names = new Set<string>();
+  /** What was put into the view itself, which the archive does not hold. */
+  readonly #own = new Map<string, string>();
+
+  constructor(inner: Map<string, string>, prefix: string) {
+    super();
+    this.#inner = inner;
+    this.#prefix = prefix;
+    for (const key of inner.keys()) {
+      if (key.startsWith(prefix) && key.length > prefix.length) this.#names.add(key.slice(prefix.length));
+    }
+  }
+
+  override get size(): number {
+    return this.#names.size;
+  }
+  override has(key: string): boolean {
+    return this.#names.has(key);
+  }
+  override get(key: string): string | undefined {
+    if (!this.#names.has(key)) return undefined;
+    return this.#own.has(key) ? this.#own.get(key) : this.#inner.get(this.#prefix + key);
+  }
+  override set(key: string, value: string): this {
+    this.#names.add(key);
+    this.#own.set(key, value);
+    return this;
+  }
+  override delete(key: string): boolean {
+    this.#own.delete(key);
+    return this.#names.delete(key);
+  }
+  override clear(): void {
+    this.#own.clear();
+    this.#names.clear();
+  }
+  override keys(): MapIterator<string> {
+    return this.#names.values();
+  }
+  override *entries(): MapIterator<[string, string]> {
+    for (const key of this.#names) yield [key, this.get(key) as string];
+  }
+  override *values(): MapIterator<string> {
+    for (const key of this.#names) yield this.get(key) as string;
+  }
+  override forEach(callback: (value: string, key: string, map: Map<string, string>) => void, thisArg?: unknown): void {
+    for (const [key, value] of this.entries()) callback.call(thisArg, value, key, this);
+  }
+  override [Symbol.iterator](): MapIterator<[string, string]> {
+    return this.entries();
+  }
+}
+
+/**
  * Unwraps a single top-level wrapper folder (e.g. `dist/index.html` -> `index.html`)
  * when root has neither `manifest.json` nor `index.html` / `app.html`.
+ *
+ * Nor `ui/main.ui`: that is a SoftN bundle's own layout, with `ui/` its folder of pages and
+ * not a wrapper. The container reads it so (archive.ts), and this did not: an archive of
+ * `ui/main.ui` and `ui/index.html` was a web container to the host that opened it and a
+ * SoftN bundle to the container it was then handed to.
  */
 export function unwrapContainerZipEntries(
   textFiles: Map<string, string>,
   binaryFiles: BundleBinaryStore
 ): { textFiles: Map<string, string>; binaryFiles: BundleBinaryStore; unwrappedPrefix: string | null } {
-  if (textFiles.has('manifest.json') || textFiles.has('index.html') || textFiles.has('app.html')) {
+  if (textFiles.has('manifest.json') || textFiles.has('index.html') || textFiles.has('app.html') || textFiles.has('ui/main.ui')) {
     return { textFiles, binaryFiles, unwrappedPrefix: null };
   }
   const allKeys = [...textFiles.keys(), ...binaryFiles.keys()].filter((k) => !k.endsWith('/'));
@@ -64,13 +136,9 @@ export function unwrapContainerZipEntries(
     return { textFiles, binaryFiles, unwrappedPrefix: null };
   }
 
-  // Lazy Map/Store views that strip `prefix` without eagerly decoding untouched entries
-  const strippedTexts = new Map<string, string>();
-  for (const key of textFiles.keys()) {
-    if (key.startsWith(prefix) && key.length > prefix.length) {
-      strippedTexts.set(key.slice(prefix.length), textFiles.get(key)!);
-    }
-  }
+  // Views that take `prefix` off each name and read an entry only when it is asked for, as
+  // the archive's own stores do.
+  const strippedTexts = new UnwrappedTexts(textFiles, prefix);
 
   const binKeys = [...binaryFiles.keys()]
     .filter((k) => k.startsWith(prefix) && k.length > prefix.length)
