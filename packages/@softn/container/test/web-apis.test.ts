@@ -616,6 +616,81 @@ describe('MessageChannel, a range, and elements of the app’s own making', () =
   });
 });
 
+describe('element.animate', () => {
+  /** An animation as the page runs one: this test's jsdom has none, so the test ends each by hand. */
+  class FakeAnimation extends EventTarget {
+    static made: FakeAnimation[] = [];
+    calls: string[] = [];
+    constructor(
+      readonly el: Element,
+      readonly frames: unknown,
+      readonly timing: Record<string, unknown>
+    ) {
+      super();
+      FakeAnimation.made.push(this);
+    }
+    cancel() { this.calls.push('cancel'); }
+    finish() { this.calls.push('finish'); }
+    pause() { this.calls.push('pause'); }
+    play() { this.calls.push('play'); }
+    reverse() { this.calls.push('reverse'); }
+  }
+  const proto = Element.prototype as unknown as { animate?: unknown };
+
+  afterEach(() => {
+    delete proto.animate;
+  });
+
+  const SCRIPT = `var box = document.getElementById('box');
+    var seen = [];
+    var say = function (what) { seen.push(what); document.getElementById('seen').textContent = seen.join(' '); };
+    var fade = box.animate([{ opacity: 1, backgroundImage: 'url(https://evil.example/a.png)' }, { opacity: 0.2, transform: 'translateX(10px)', offset: 1 }], { duration: 80, fill: 'forwards', easing: 'ease-in', iterations: Infinity, pseudoElement: '::before' });
+    say([fade instanceof Animation, fade.playState, typeof fade.currentTime, box.getAnimations().length].join('|'));
+    fade.onfinish = function () { say('finished:' + fade.playState); };
+    fade.finished.then(function () { say('promise'); });
+    var slide = box.animate({ opacity: [0, 1] }, 50);
+    slide.finished.then(function () { say('slide-finished'); }, function (e) { say('slide:' + e.name); });
+    slide.oncancel = function () { say('cancelled:' + slide.playState); };
+    document.getElementById('stop').addEventListener('click', function () { slide.pause(); slide.play(); slide.cancel(); });
+    // Not on the page: nothing to draw, and it ends.
+    document.createElement('div').animate([{ opacity: 0 }], 10).finished.then(function () { say('apart'); });`;
+  const BODY = '<div id="box">box</div><button id="stop" type="button">stop</button><p id="seen"></p>';
+
+  it('is run by the page with its values held to the stylesheet’s rule, and tells the script when it ends', async () => {
+    FakeAnimation.made = [];
+    proto.animate = function (this: Element, frames: unknown, timing: Record<string, unknown>) {
+      return new FakeAnimation(this, frames, timing);
+    };
+    const { handle, root, text } = await open({ 'index.html': page(BODY, SCRIPT) });
+    await expect.poll(() => FakeAnimation.made.length).toBe(2);
+    await expect.poll(() => text('#seen')).toBe('true|running|number|1 apart');
+    const [fade, slide] = FakeAnimation.made;
+    expect(fade.el).toBe(root.querySelector('#box'));
+    // The picture from somewhere else is gone from the keyframe; the rest is as written.
+    expect(JSON.stringify(fade.frames)).not.toContain('evil.example');
+    expect(fade.frames).toMatchObject([{ opacity: 1 }, { opacity: 0.2, transform: 'translateX(10px)', offset: 1 }]);
+    expect(fade.timing).toEqual({ duration: 80, fill: 'forwards', easing: 'ease-in', iterations: Infinity });
+    expect(slide.frames).toEqual({ opacity: ['0', '1'] });
+    expect(slide.timing).toEqual({ duration: 50 });
+    // The page says the first has ended.
+    fade.dispatchEvent(new Event('finish'));
+    await expect.poll(() => text('#seen')).toBe('true|running|number|1 apart finished:finished promise');
+    // The script pauses, plays and cancels the second: the page is asked each, and the wait on it ends.
+    (root.querySelector('#stop') as HTMLElement).click();
+    await expect.poll(() => slide.calls).toEqual(['pause', 'play', 'cancel']);
+    await expect.poll(() => text('#seen')).toBe('true|running|number|1 apart finished:finished promise cancelled:idle slide:AbortError');
+    handle.dispose();
+  });
+
+  it('ends at once on a page that runs no animations, so what waits on it goes on', async () => {
+    const { handle, text } = await open({ 'index.html': page(BODY, SCRIPT) });
+    await expect.poll(() => text('#seen')).toContain('finished:finished');
+    expect(text('#seen')).toContain('promise');
+    expect(text('#seen')).toContain('slide-finished');
+    handle.dispose();
+  });
+});
+
 describe('an element that scrolls, and what it holds', () => {
   it('goes to the end when the script sets scrollTop to what it holds, however much that is by now', async () => {
     const { handle, root, result } = await open({

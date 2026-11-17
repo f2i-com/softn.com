@@ -173,6 +173,9 @@ export type ShellOp =
   | ['unblob', string]
   /** An image that is not on the page, for the host to load and say when it has: a token to answer by, and the address. */
   | ['img', string, string]
+  /** An animation of an element (`element.animate`): its key, the element, its keyframes and its timing; and what the script then asks of it. */
+  | ['anim', string, number, unknown, unknown]
+  | ['anim-ctl', string, string]
   | ['k2d', number, number, number, Canvas2DCmd[]]
   | ['3d', number, ThreeSceneOp[]];
 

@@ -796,6 +796,118 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   }
 
   // ---------------------------------------------------------------------------
+  // 9b. element.animate
+  // ---------------------------------------------------------------------------
+  // The page runs the animation (it draws it); the script holds what it would hold in a
+  // browser: an Animation to wait on, end early or cancel. Svelte's transitions are made
+  // this way, and stopped the app where one began.
+  var AnimatedProto = g.Element && g.Element.prototype;
+  if (doc && Target && push && AnimatedProto && typeof AnimatedProto.animate !== 'function') {
+    var animations = Object.create(null);
+    var animationSeq = 0;
+    var clock = function () { return g.performance && typeof g.performance.now === 'function' ? g.performance.now() : Date.now(); };
+    var Animation = class extends Target {
+      constructor(target, frames, timing) {
+        super();
+        var self = this;
+        this.id = typeof timing.id === 'string' ? timing.id : '';
+        this.playState = 'running';
+        this.pending = false;
+        this.playbackRate = 1;
+        this.startTime = clock() + (Number(timing.delay) || 0);
+        this.timeline = null;
+        this.onfinish = null; this.oncancel = null; this.onremove = null;
+        this.effect = {
+          target: target,
+          getKeyframes: function () { return frames; },
+          getTiming: function () { return timing; },
+          getComputedTiming: function () { return Object.assign({ progress: null }, timing); },
+          updateTiming: function () {},
+        };
+        this._key = String(++animationSeq);
+        this._held = null;
+        this._span = typeof timing.duration === 'number' ? timing.duration * (typeof timing.iterations === 'number' ? timing.iterations : 1) : 0;
+        this.finished = new Promise(function (resolve, reject) { self._resolve = resolve; self._reject = reject; });
+        // An animation that is cancelled is not an error nobody caught.
+        this.finished.then(undefined, function () {});
+        this.ready = Promise.resolve(this);
+      }
+      get currentTime() {
+        if (this.playState === 'idle') return null;
+        if (this.playState === 'paused') return this._held;
+        if (this.playState === 'finished') return this._span;
+        return Math.max(0, (clock() - this.startTime) * this.playbackRate);
+      }
+      set currentTime(value) { if (typeof value === 'number') this.startTime = clock() - value; }
+      _ended() {
+        if (this.playState === 'idle' || this.playState === 'finished') return;
+        this.playState = 'finished';
+        this._resolve(this);
+        tell(this, 'finish', {});
+      }
+      cancel() {
+        if (this.playState === 'idle') return;
+        var running = this.playState !== 'finished';
+        this.playState = 'idle';
+        delete animations[this._key];
+        push(['anim-ctl', this._key, 'cancel']);
+        if (running) this._reject(failure('The user aborted a request.', 'AbortError'));
+        tell(this, 'cancel', {});
+      }
+      finish() {
+        if (this.playState === 'idle') return;
+        push(['anim-ctl', this._key, 'finish']);
+        this._ended();
+      }
+      pause() {
+        if (this.playState !== 'running') return;
+        this._held = this.currentTime;
+        this.playState = 'paused';
+        push(['anim-ctl', this._key, 'pause']);
+      }
+      play() {
+        if (this.playState !== 'paused') return;
+        this.startTime = clock() - (this._held || 0);
+        this.playState = 'running';
+        push(['anim-ctl', this._key, 'play']);
+      }
+      reverse() { this.playbackRate = -this.playbackRate; push(['anim-ctl', this._key, 'reverse']); }
+      updatePlaybackRate(rate) { this.playbackRate = Number(rate) || 1; }
+      commitStyles() {}
+      persist() {}
+    };
+    try { Object.defineProperty(Animation, 'name', { value: 'Animation', configurable: true }); } catch (e) {}
+    define('Animation', Animation);
+    AnimatedProto.animate = function (keyframes, options) {
+      var timing = typeof options === 'number' ? { duration: options } : Object.assign({}, options || {});
+      // Forever cannot be carried as a number: said in words.
+      if (timing.iterations === Infinity) timing.iterations = 'infinite';
+      var frames;
+      try { frames = JSON.parse(JSON.stringify(keyframes === undefined || keyframes === null ? [] : keyframes)); } catch (e) { frames = []; }
+      var animation = new Animation(this, frames, timing);
+      var id = this === doc.body ? 1 : this.__softnNode;
+      if (typeof id === 'number' && id > 0 && this.isConnected !== false) {
+        animations[animation._key] = animation;
+        push(['anim', animation._key, id, frames, timing]);
+      } else {
+        // Not on the page: there is nothing to draw, and it ends.
+        later(function () { animation._ended(); });
+      }
+      return animation;
+    };
+    AnimatedProto.getAnimations = function () {
+      var el = this;
+      return Object.keys(animations).map(function (key) { return animations[key]; }).filter(function (animation) { return animation.effect && animation.effect.target === el; });
+    };
+    doc.addEventListener('softn:animation', function (event) {
+      var animation = animations[event.id];
+      if (!animation) return;
+      if (event.state === 'finished') animation._ended();
+      else { delete animations[event.id]; animation.playState = 'idle'; }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // 10. customElements
   // ---------------------------------------------------------------------------
   // An element of the app's own making, by a name with a hyphen in it. It draws in the page's

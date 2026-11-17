@@ -52,6 +52,11 @@ const TREE_PROPERTIES = new Set(['selectedIndex', 'chosen', 'focus', 'scrollInto
 /** The most images an app has the page load for it that are not on the page (`new Image()`). */
 const MAX_PRELOADED_IMAGES = 2048;
 
+/** The most animations an app runs at once, the most keyframes in one, and the longest any part of one lasts. */
+const MAX_ANIMATIONS = 2048;
+const MAX_KEYFRAMES = 512;
+const MAX_ANIMATION_MS = 3_600_000;
+
 /**
  * Events that do not bubble: heard on their way down to the element. `load` and `error` are an
  * image's (and a video's): listened for as they bubble, they were never heard, and an image's
@@ -122,6 +127,8 @@ export class HostDomPatcher {
   private resizeObserver: ResizeObserver | null = null;
   private measureScheduled = false;
   private readonly imageCache = new Map<string, HTMLImageElement>();
+  /** Animations the app's script started (`element.animate`), by the key the script knows each by. */
+  private readonly animations = new Map<string, { el: Element; animation: Animation }>();
   /** A link to a page of the app's that was clicked, held until the app's script has heard the click. */
   private heldLink: { event: Event; href: string } | null = null;
   private disposed = false;
@@ -171,6 +178,8 @@ export class HostDomPatcher {
     // which option it shows before it had any (a framework that fills a select and chooses
     // in one turn showed the first), and a field was focused before it was on the page.
     const afterTree: Array<[number, string, unknown]> = [];
+    const started: Array<[string, number, unknown, unknown]> = [];
+    const controlled: Array<[string, string]> = [];
 
     // A blob the script made an address for is kept before anything else in the turn is
     // read: the same turn that makes the address sets it on an image.
@@ -196,6 +205,15 @@ export class HostDomPatcher {
 
         case 'img':
           if (typeof op[1] === 'string' && typeof op[2] === 'string') this.preloadImage(op[1], op[2]);
+          break;
+
+        case 'anim':
+          // After the tree: the element it animates may have been made in this same turn.
+          if (typeof op[1] === 'string' && typeof op[2] === 'number') started.push([op[1], op[2], op[3], op[4]]);
+          break;
+
+        case 'anim-ctl':
+          if (typeof op[1] === 'string' && typeof op[2] === 'string') controlled.push([op[1], op[2]]);
           break;
 
         case 'e': {
@@ -354,6 +372,8 @@ export class HostDomPatcher {
     }
 
     for (const [id, prop, val] of afterTree) this.applyProperty(id, prop, val);
+    for (const [key, id, frames, timing] of started) this.startAnimation(key, id, frames, timing);
+    for (const [key, action] of controlled) this.controlAnimation(key, action);
 
     // A stylesheet link whose sheet is in, or could not be read: the script that added it is
     // told, as a browser tells it. A bundler's loader waits for exactly this before it runs
@@ -822,6 +842,106 @@ export class HostDomPatcher {
     img.src = address;
   }
 
+  /**
+   * Run an animation the app's script asked for on one of its elements, and tell the script
+   * when it ends. Its keyframes are CSS in all but name, so each value is read by the
+   * stylesheet's rule (an address in one is the app's own file or a site it was granted, or
+   * it is gone), and its timing is the few words a timing has.
+   */
+  private startAnimation(key: string, id: number, rawFrames: unknown, rawTiming: unknown): void {
+    const ended = (state: 'finished' | 'cancelled') => {
+      if (!this.disposed) this.callbacks.onEvent(-1, 'softn:animation', { id: key, state }, []);
+    };
+    // Those of elements that have left the page are let go.
+    for (const [other, kept] of this.animations) if (!kept.el.isConnected) this.animations.delete(other);
+    const node = id === 1 ? this.viewportEl : this.nodes.get(id);
+    if (!(node instanceof Element) || typeof node.animate !== 'function' || this.animations.has(key) || this.animations.size >= MAX_ANIMATIONS) {
+      // Nothing to run it on (or no more room): it ends at once, so whatever waits on it goes on.
+      queueMicrotask(() => ended('finished'));
+      return;
+    }
+    const css = (value: string) => sanitizeContainerCss(value.slice(0, 2000), this.entryPath, this.archive, this.permissions, this.netGranted);
+    const value = (raw: unknown): string | number | null => (typeof raw === 'number' && Number.isFinite(raw) ? raw : typeof raw === 'string' ? css(raw) : null);
+    const frame = (raw: unknown): Keyframe | null => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const out: Keyframe = {};
+      for (const [name, v] of Object.entries(raw as Record<string, unknown>).slice(0, 64)) {
+        if (!/^[A-Za-z][A-Za-z-]{0,63}$/.test(name)) continue;
+        if (name === 'offset') {
+          if (typeof v === 'number' && v >= 0 && v <= 1) out.offset = v;
+        } else if (name === 'easing' || name === 'composite') {
+          if (typeof v === 'string' && v.length <= 128 && !/[(]\s*["']?\s*[a-z]+:|url|\\/i.test(v)) (out as Record<string, unknown>)[name] = v;
+        } else {
+          const clean = value(v);
+          if (clean !== null) out[name] = clean;
+        }
+      }
+      return out;
+    };
+    let frames: Keyframe[] | PropertyIndexedKeyframes;
+    if (Array.isArray(rawFrames)) {
+      frames = rawFrames.slice(0, MAX_KEYFRAMES).map(frame).filter((f): f is Keyframe => f !== null);
+    } else if (rawFrames && typeof rawFrames === 'object') {
+      // Each property with the list of its values.
+      const byProperty: PropertyIndexedKeyframes = {};
+      for (const [name, list] of Object.entries(rawFrames as Record<string, unknown>).slice(0, 64)) {
+        if (!/^[A-Za-z][A-Za-z-]{0,63}$/.test(name) || name === 'easing' || name === 'composite' || name === 'offset') continue;
+        const values = (Array.isArray(list) ? list : [list]).slice(0, MAX_KEYFRAMES).map(value).filter((v): v is string | number => v !== null);
+        if (values.length > 0) (byProperty as Record<string, unknown>)[name] = values.map(String);
+      }
+      frames = byProperty;
+    } else {
+      frames = [];
+    }
+    const given = rawTiming && typeof rawTiming === 'object' ? (rawTiming as Record<string, unknown>) : {};
+    const timing: KeyframeAnimationOptions = {};
+    const time = (name: 'duration' | 'delay' | 'endDelay' | 'iterationStart') => {
+      const v = given[name];
+      if (typeof v === 'number' && Number.isFinite(v)) timing[name] = Math.max(name === 'delay' ? -MAX_ANIMATION_MS : 0, Math.min(MAX_ANIMATION_MS, v));
+    };
+    time('duration');
+    time('delay');
+    time('endDelay');
+    time('iterationStart');
+    if (given.iterations === 'infinite') timing.iterations = Infinity;
+    else if (typeof given.iterations === 'number' && given.iterations >= 0) timing.iterations = given.iterations;
+    if (typeof given.easing === 'string' && given.easing.length <= 128 && !/url|\\/i.test(given.easing)) timing.easing = given.easing;
+    if (given.direction === 'normal' || given.direction === 'reverse' || given.direction === 'alternate' || given.direction === 'alternate-reverse') timing.direction = given.direction;
+    if (given.fill === 'none' || given.fill === 'forwards' || given.fill === 'backwards' || given.fill === 'both' || given.fill === 'auto') timing.fill = given.fill;
+    if (given.composite === 'replace' || given.composite === 'add' || given.composite === 'accumulate') timing.composite = given.composite;
+    let animation: Animation;
+    try {
+      animation = node.animate(frames, timing);
+    } catch {
+      // Keyframes the page will not take: nothing runs, and whatever waits on it goes on.
+      queueMicrotask(() => ended('finished'));
+      return;
+    }
+    this.animations.set(key, { el: node, animation });
+    animation.addEventListener('finish', () => ended('finished'));
+    animation.addEventListener('cancel', () => {
+      // Cancelled by the page (not asked for by the script, which is not told what it did itself).
+      if (this.animations.delete(key)) ended('cancelled');
+    });
+  }
+
+  /** What the app's script asks of an animation it started. */
+  private controlAnimation(key: string, action: string): void {
+    const kept = this.animations.get(key);
+    if (!kept) return;
+    try {
+      if (action === 'cancel') {
+        this.animations.delete(key);
+        kept.animation.cancel();
+      } else if (action === 'finish') kept.animation.finish();
+      else if (action === 'pause') kept.animation.pause();
+      else if (action === 'play') kept.animation.play();
+      else if (action === 'reverse') kept.animation.reverse();
+    } catch {
+      // One that cannot be finished (it runs forever), or is already over.
+    }
+  }
+
   private resolveDrawableImage(ref: string): CanvasImageSource | null {
     if (ref.startsWith('node:')) {
       const id = Number(ref.slice(5));
@@ -1096,6 +1216,7 @@ export class HostDomPatcher {
     this.resizeObserver = null;
     this.nodes.clear();
     this.imageCache.clear();
+    this.animations.clear();
     this.styleSheets.clear();
     this.links.clear();
     this.pendingProperties.clear();
