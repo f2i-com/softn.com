@@ -205,7 +205,7 @@ function cacheControl(file) {
     return 'no-cache, max-age=0, must-revalidate';
   if (/\.(?:html?|json|webmanifest|softn)$/.test(base))
     return 'no-cache, max-age=0, must-revalidate';
-  if (/-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$/.test(base)) {
+  if (/-(?:[A-Za-z0-9_-]{8}|[0-9a-f]{12})\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$/.test(base)) {
     return 'public, max-age=31536000, immutable';
   }
   return 'public, max-age=3600';

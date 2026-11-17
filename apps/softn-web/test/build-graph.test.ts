@@ -321,12 +321,21 @@ describe.skipIf(!built)('softn-web build graph', () => {
     return routes.find((route) => new RegExp(route.pattern, route.flags).test(`/${file}`))?.handler;
   }
 
-  /** The URLs sw.js precaches, as scripts/build/pwa.mjs writes them ahead of the worker (one JSON line). */
+  /**
+   * The files sw.js precaches, as scripts/build/pwa.mjs writes them ahead of the worker (one
+   * JSON line), each by its name in this build. A build made for the site (the last
+   * `build:site` leaves one here) lists what it built at its address in the site's one
+   * folder of built files (scripts/build/shared-assets.mjs): the same files, so the same
+   * policy, read here under the names the build's own manifest uses.
+   */
   function precachedUrls(): Set<string> {
     const sw = readFileSync(resolve(dist, 'sw.js'), 'utf8');
     const list = /^self\.__SOFTN_PRECACHE=(\[.*\]);$/m.exec(sw);
     expect(list, 'sw.js has no precache list').not.toBeNull();
-    const precached = new Set((JSON.parse(list![1]) as Array<{ url: string }>).map((entry) => entry.url));
+    const shared = '/shared/assets/';
+    const precached = new Set(
+      (JSON.parse(list![1]) as Array<{ url: string }>).map((entry) => (entry.url.startsWith(shared) ? `assets/${entry.url.slice(shared.length)}` : entry.url))
+    );
     expect(precached.size).toBeGreaterThan(0);
     return precached;
   }

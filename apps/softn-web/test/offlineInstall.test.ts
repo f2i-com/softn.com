@@ -413,6 +413,63 @@ describe('installAppOffline', () => {
       }
     });
 
+    it('a wasm glue’s own default path that names no file is not the install’s failure; a file named outright still is', async () => {
+      const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
+      // As core's model worker is built: the glue is bundled into the worker, so its default
+      // (`gguf_wasm_bg.wasm` beside itself) points one folder above the file the worker names.
+      const model = {
+        [`${ROOT}runtime/model-worker.js`]:
+          's===void 0&&(s=new URL("gguf_wasm_bg.wasm",import.meta.url));await init({module_or_path:new URL("./models/gguf_wasm_bg.wasm",import.meta.url)});',
+        [`${ROOT}runtime/models/gguf_wasm_bg.wasm`]: '\0asm',
+      };
+      Object.assign(files, model);
+      try {
+        const fetch = serve();
+        const result = await installAppOffline(
+          app({ capabilities: ['ai'] }),
+          host(registry, { fetch: fetch as unknown as typeof globalThis.fetch, baseUrl: '/web/', preloadAI: async () => {} })
+        );
+        expect(result.workerAssets).toBe('installed');
+        expect(result.ready).toBe(true);
+        // The default was asked for (a build may keep the file there) and its 404 passed over.
+        expect(fetch.mock.calls.map(([input]) => String(input)).sort()).toEqual(
+          [...Object.keys(model), `${ROOT}runtime/gguf_wasm_bg.wasm`].sort()
+        );
+
+        // The file the worker does name is needed: without it the app is not ready.
+        const without = await installAppOffline(
+          app({ capabilities: ['ai'] }),
+          host(registry, { fetch: serve([`${ROOT}runtime/models/gguf_wasm_bg.wasm`]) as unknown as typeof globalThis.fetch, baseUrl: '/web/', preloadAI: async () => {} })
+        );
+        expect(without.workerAssets).toBe('unavailable');
+        expect(without.ready).toBe(false);
+
+        // A default and an outright name for one address: the name decides, whichever is read first.
+        files[`${ROOT}runtime/model-worker.js`] =
+          's===void 0&&(s=new URL("local_bg.wasm",import.meta.url));import "./second.js";';
+        files[`${ROOT}runtime/second.js`] = 'const w=new URL("./local_bg.wasm",import.meta.url);';
+        const named = await installAppOffline(
+          app({ capabilities: ['ai'] }),
+          host(registry, { fetch: serve() as unknown as typeof globalThis.fetch, baseUrl: '/web/', preloadAI: async () => {} })
+        );
+        expect(named.workerAssets).toBe('unavailable');
+        // A failure that is not "no such file" is a failure, default or not.
+        files[`${ROOT}runtime/model-worker.js`] = 's===void 0&&(s=new URL("gguf_wasm_bg.wasm",import.meta.url));';
+        const refused = vi.fn(async (input: RequestInfo | URL) =>
+          String(input).endsWith('_bg.wasm')
+            ? ({ ok: false, status: 503, text: async () => '' } as unknown as Response)
+            : ({ ok: true, status: 200, text: async () => files[String(input)] ?? '' } as unknown as Response)
+        );
+        const down = await installAppOffline(
+          app({ capabilities: ['ai'] }),
+          host(registry, { fetch: refused as unknown as typeof globalThis.fetch, baseUrl: '/web/', preloadAI: async () => {} })
+        );
+        expect(down.workerAssets).toBe('unavailable');
+      } finally {
+        for (const key of [...Object.keys(model), `${ROOT}runtime/second.js`]) delete files[key];
+      }
+    });
+
     it('is not needed for an app that runs on the main thread', async () => {
       const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
       const fetch = serve();

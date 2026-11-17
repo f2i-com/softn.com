@@ -5,6 +5,7 @@ import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker
 import { docsDevPlugin } from '../../scripts/dev/dev-docs.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
+import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -51,6 +52,9 @@ export default defineConfig(({ mode }) => {
         ['/demos', demoProxy],
       ]),
     },
+    // In the site build, what this builds is kept with the apps' own, in the one
+    // shared folder (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
+    experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
     build: {
       target: 'es2022',
       // In a development build only (scripts/build/sourcemaps.mjs).

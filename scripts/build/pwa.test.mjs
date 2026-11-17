@@ -79,6 +79,114 @@ test('a path route matches the path of a request to this origin with no query', 
   assert.ok(fonts instanceof RegExp && fonts.test('https://fonts.googleapis.com/css2?family=x'));
 });
 
+test('a page answered in place of a file is told from the file', async () => {
+  const { isPageInPlaceOfFile } = await import('./sw-route-match.js');
+  const answered = (type) => new Response('x', type ? { headers: { 'content-type': type } } : undefined);
+  // The app's own page, where a script or an engine was asked for.
+  assert.ok(isPageInPlaceOfFile('https://softn.test/web/app/~x/assets/a.js', answered('text/html; charset=utf-8')));
+  assert.ok(isPageInPlaceOfFile('https://softn.test/shared/container-runtime/e03138f892dd/engines/zipp-typescript.wasm', answered('TEXT/HTML')));
+  assert.ok(isPageInPlaceOfFile('https://softn.test/web/assets/EditPane-1a2b3c4d.css', answered(' text/html')));
+  // The file itself, whatever a host calls a script.
+  assert.ok(!isPageInPlaceOfFile('https://softn.test/web/assets/a.js', answered('text/javascript')));
+  assert.ok(!isPageInPlaceOfFile('https://softn.test/web/assets/a.js', answered('application/javascript; charset=utf-8')));
+  assert.ok(!isPageInPlaceOfFile('https://softn.test/shared/assets/zipp_wasm_bg-1a2b3c4d.wasm', answered('application/wasm')));
+  // No type at all (an opaque answer has none) is not known to be a page.
+  assert.ok(!isPageInPlaceOfFile('https://softn.test/web/assets/a.js', new Response(null)));
+  // A page asked for as a page is a page.
+  assert.ok(!isPageInPlaceOfFile('https://softn.test/docs/index.html', answered('text/html')));
+  assert.ok(!isPageInPlaceOfFile('https://softn.test/docs/guide.HTM', answered('text/html')));
+});
+
+// On a host that answers every unknown address with the app's page, any app could fill a
+// route's cache with that page (an <img src> needs no permission), pushing out the real
+// chunks and the container's engines; and a chunk asked for mid-deployment was kept as the
+// page for thirty days. Run in the built worker, with Workbox's own strategies.
+test('a route keeps the file it was asked for, and never the page a host gave in its place', async () => {
+  const code = await buildWorker(
+    [{ url: 'index.html', revision: 'a' }],
+    workerConfig({
+      registerType: 'autoUpdate',
+      workbox: { runtimeCaching: [{ urlPattern: /\/assets\/[^/?#]+\.js$/, handler: 'CacheFirst', options: { cacheName: 'chunks', cacheableResponse: { statuses: [0, 200] } } }] },
+    })
+  );
+  const stores = new Map();
+  const store = (name) => stores.get(name) ?? stores.set(name, new Map()).get(name);
+  const keyOf = (request) => (typeof request === 'string' ? request : request.url);
+  const caches = {
+    open: async (name) => ({
+      match: async (request) => store(name).get(keyOf(request))?.clone(),
+      put: async (request, response) => void store(name).set(keyOf(request), response),
+      keys: async () => [...store(name).keys()].map((url) => new Request(url)),
+      delete: async (request) => store(name).delete(keyOf(request)),
+    }),
+    keys: async () => [...stores.keys()],
+    has: async (name) => stores.has(name),
+    delete: async (name) => stores.delete(name),
+    // As Workbox asks: one cache, by name.
+    match: async (request, options = {}) => {
+      for (const name of options.cacheName ? [options.cacheName] : [...stores.keys()]) {
+        const found = store(name).get(keyOf(request));
+        if (found) return found.clone();
+      }
+      return undefined;
+    },
+  };
+  const asked = [];
+  const answers = {
+    '/web/assets/feature-1a2b3c4d.js': () => new Response('export const feature = 1;', { headers: { 'content-type': 'text/javascript' } }),
+    // What a single-page host answers for an address it has no file for.
+    '/web/app/~x/assets/a.js': () => new Response('<!doctype html><title>SoftN Web</title>', { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+  };
+  const fetch = async (request) => {
+    const path = new URL(keyOf(request)).pathname;
+    asked.push(path);
+    return answers[path]();
+  };
+  class ExtendableEvent {}
+  class FetchEvent extends ExtendableEvent {}
+  const listeners = {};
+  const self = {
+    location: new URL('https://softn.test/web/sw.js'),
+    registration: { scope: 'https://softn.test/web/' },
+    addEventListener: (type, listener) => (listeners[type] ??= []).push(listener),
+    skipWaiting: () => {},
+    clients: { claim: () => {} },
+    importScripts: () => {},
+  };
+  self.self = self;
+  vm.runInNewContext(code, Object.assign(self, { URL, Request, Response, Headers, console, caches, fetch, ExtendableEvent, FetchEvent, setTimeout, clearTimeout }));
+
+  const ask = async (href) => {
+    let answer;
+    const work = [];
+    const event = Object.assign(new FetchEvent(), {
+      request: new Request(href),
+      respondWith: (promise) => {
+        answer = promise;
+      },
+      waitUntil: (promise) => work.push(promise),
+    });
+    for (const listener of listeners.fetch) if (!answer) listener(event);
+    assert.ok(answer, `${href} is answered by a route`);
+    const response = await answer;
+    await Promise.all(work);
+    return response.text();
+  };
+
+  // The chunk: fetched once, kept, and answered from the copy after.
+  assert.equal(await ask('https://softn.test/web/assets/feature-1a2b3c4d.js'), 'export const feature = 1;');
+  assert.equal(await ask('https://softn.test/web/assets/feature-1a2b3c4d.js'), 'export const feature = 1;');
+  assert.deepEqual(asked, ['/web/assets/feature-1a2b3c4d.js']);
+  assert.deepEqual([...store('chunks').keys()], ['https://softn.test/web/assets/feature-1a2b3c4d.js']);
+
+  // The page under a chunk's name: handed on as it came (the request fails as it would with
+  // no worker), and not kept, so it is asked for again and pushes nothing out.
+  assert.match(await ask('https://softn.test/web/app/~x/assets/a.js'), /<title>SoftN Web<\/title>/);
+  assert.deepEqual([...store('chunks').keys()], ['https://softn.test/web/assets/feature-1a2b3c4d.js']);
+  await ask('https://softn.test/web/app/~x/assets/a.js');
+  assert.deepEqual(asked, ['/web/assets/feature-1a2b3c4d.js', '/web/app/~x/assets/a.js', '/web/app/~x/assets/a.js']);
+});
+
 test('the worker carries its list as one JSON line and imports its scripts before any fetch listener', async () => {
   const precache = [{ url: 'index.html', revision: 'abc' }, { url: 'assets/a-12345678.js', revision: null }];
   const code = await buildWorker(precache, workerConfig({ registerType: 'autoUpdate', workbox: { importScripts: ['coi.js'] } }));

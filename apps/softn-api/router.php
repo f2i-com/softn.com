@@ -137,6 +137,21 @@ if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts
 // and the release smoke test (scripts/release/smoke-site.mjs) checks that it does.
 foreach (['web', 'builder', 'studio'] as $app) {
     if (preg_match("#^/$app(/|$)#", $path) && is_file("$root/$app/index.html")) {
+        // As the deployed rules have it: a file that is not there is a 404, never
+        // the app's page. Under assets/ or demos/ whatever it is called, and
+        // anywhere else when the path ends in an extension; not under /web/app/,
+        // where an app opened from a file is at ~<its name> ("Notes v1.2").
+        // This server used to answer all of them with the page at 200, so what
+        // asked for a script or a .wasm that no build ships was told it had one:
+        // the runtime's offline install passed here and failed on every host.
+        $asset = (bool) preg_match("#^/$app/(?:assets|demos)(?:/|$)#", $path);
+        $file = !str_starts_with($path, '/web/app/') && preg_match('#/[^/]*\.[^/]+$#', $path);
+        if ($asset || $file) {
+            http_response_code(404);
+            header('Content-Type: text/plain');
+            echo 'Not found';
+            return true;
+        }
         header('Content-Type: text/html; charset=utf-8');
         header('Cross-Origin-Opener-Policy: same-origin');
         header('Cross-Origin-Embedder-Policy: credentialless');

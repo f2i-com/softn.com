@@ -19,7 +19,7 @@
  * says what a partial-fetch design would need instead.
  */
 
-import type { BundleArchive } from '@softn/core';
+import { ScopedWorker, type BundleArchive } from '@softn/core';
 import type { ZipWorkerRequest, ZipWorkerResponse } from './zipWorker';
 
 /**
@@ -47,11 +47,22 @@ function mark(name: string): void {
  * not answer, a step that never comes back — rejects the pending step, after
  * which `BundleArchive.warm` reads the rest itself.
  */
+/**
+ * The worker, started behind the page's service worker wherever the build keeps its script
+ * (core's module-worker.ts). The bundler builds the script where it reads exactly
+ * `new Worker(new URL(…, import.meta.url))`, so the call keeps that spelling and the name is
+ * bound, in here alone, to the starter.
+ */
+function startZipWorker(): Worker {
+  const Worker = ScopedWorker;
+  return new Worker(new URL('./zipWorker.ts', import.meta.url), { type: 'module' });
+}
+
 function createWorkerInflater(bytes: Uint8Array): Inflater | undefined {
   if (typeof Worker !== 'function') return undefined;
   let worker: Worker;
   try {
-    worker = new Worker(new URL('./zipWorker.ts', import.meta.url), { type: 'module' });
+    worker = startZipWorker();
   } catch {
     return undefined;
   }

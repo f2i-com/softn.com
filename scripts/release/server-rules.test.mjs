@@ -61,7 +61,64 @@ const FILES = [
   ['assets/index-1a2b3c4d.js', Buffer.from('export const answer = 42;\n'.repeat(200)), /^(?:text|application)\/javascript\b/],
   ['assets/index-1a2b3c4d.css', Buffer.from('main { display: grid; }\n'.repeat(200)), /^text\/css\b/],
   ['shared/assets/zipp_wasm_bg-1a2b3c4d.wasm', Buffer.concat([WASM_HEADER, Buffer.alloc(8192, 7)]), /^application\/wasm\b/],
+  // What the site's builds emit, in the one folder for all of them, with the runtime's workers beside their chunk.
+  ['shared/assets/index-Zy9_xW-1.js', Buffer.from('export const shared = 1;\n'.repeat(200)), /^(?:text|application)\/javascript\b/],
+  ['shared/assets/core-runtime/runtime/script-worker.js', Buffer.from('import "../chunk-5QGRTX5M.js";\n'.repeat(200)), /^(?:text|application)\/javascript\b/],
+  ['shared/assets/core-runtime/chunk-5QGRTX5M.js', Buffer.from('export const chunk = 1;\n'.repeat(200)), /^(?:text|application)\/javascript\b/],
+  ['shared/assets/core-runtime/zipp_torch.wasm', Buffer.concat([WASM_HEADER, Buffer.alloc(8192, 3)]), /^application\/wasm\b/],
+  // The web container's files, whose names never change, under a folder named by the digest of what is in it.
+  ['shared/container-runtime/e03138f892dd/container-worker.js', Buffer.from('self.onmessage = () => {};\n'.repeat(200)), /^(?:text|application)\/javascript\b/],
+  ['shared/container-runtime/e03138f892dd/engines/zipp-typescript.wasm', Buffer.concat([WASM_HEADER, Buffer.alloc(8192, 5)]), /^application\/wasm\b/],
+  ['shared/container-runtime/e03138f892dd/engines/zipp-python-base.glue.js', Buffer.from('export const glue = 1;\n'.repeat(200)), /^(?:text|application)\/javascript\b/],
+  // The documentation's own, fingerprinted with twelve hexadecimal characters.
+  ['docs/_assets/docs-39bd5556f2fe.js', Buffer.from('document.title;\n'.repeat(200)), /^(?:text|application)\/javascript\b/],
 ];
+
+/** How long a browser may keep each address without asking again. */
+const YEAR = /^public, max-age=31536000, immutable$/;
+const HOUR = /^public, max-age=3600$/;
+const ASK = /^no-cache, max-age=0, must-revalidate$/;
+const KEPT = [
+  // Named by their contents: for good.
+  ['/assets/index-1a2b3c4d.js', YEAR],
+  ['/assets/index-1a2b3c4d.css', YEAR],
+  ['/shared/assets/zipp_wasm_bg-1a2b3c4d.wasm', YEAR],
+  ['/shared/assets/index-Zy9_xW-1.js', YEAR],
+  ['/shared/assets/core-runtime/chunk-5QGRTX5M.js', YEAR],
+  ['/docs/_assets/docs-39bd5556f2fe.js', YEAR],
+  // In a folder named by the digest of what it holds: for good, whatever the file is called.
+  ['/shared/container-runtime/e03138f892dd/container-worker.js', YEAR],
+  ['/shared/container-runtime/e03138f892dd/engines/zipp-typescript.wasm', YEAR],
+  ['/shared/container-runtime/e03138f892dd/engines/zipp-python-base.glue.js', YEAR],
+  // A name that stays the same from release to release: an hour. The workers above all, and
+  // the icons that "eight or more characters after a hyphen" took for fingerprinted.
+  ['/shared/assets/core-runtime/runtime/script-worker.js', HOUR],
+  ['/shared/assets/core-runtime/zipp_torch.wasm', HOUR],
+  ['/apple-touch-icon.png', HOUR],
+  ['/web/pwa-maskable-512x512.png', HOUR],
+  ['/web/pwa-192x192.png', HOUR],
+  ['/docs/_assets/fonts/ibm-plex-sans-latin-400-normal.woff2', HOUR],
+  ['/web/favicon.svg', HOUR],
+  // A page, and the worker that decides what a page gets: asked for every time.
+  ['/', ASK],
+  ['/web/', ASK],
+  ['/web/sw.js', ASK],
+  ['/web/coi.js', ASK],
+  ['/web/manifest.webmanifest', ASK],
+];
+/** The fixed-name files above that carry no twin, served as they are. */
+const FIXED_NAMES = ['apple-touch-icon.png', 'web/pwa-maskable-512x512.png', 'web/pwa-192x192.png', 'docs/_assets/fonts/ibm-plex-sans-latin-400-normal.woff2', 'web/favicon.svg', 'web/sw.js', 'web/coi.js', 'web/manifest.webmanifest'];
+
+async function checkKept(port) {
+  for (const [url, policy] of KEPT) {
+    // Whichever twin the client takes, the same address is kept the same way.
+    for (const accept of ['br, gzip, deflate', 'gzip, deflate', null]) {
+      const res = await get(port, url, accept ? { 'Accept-Encoding': accept } : {});
+      assert.equal(res.status, 200, url);
+      assert.match(res.headers['cache-control'] ?? '', policy, `${url} for Accept-Encoding: ${accept ?? '(none)'}`);
+    }
+  }
+}
 
 /** What every planted file says, which no answer may hold. */
 const NOT_FOR_VISITORS = 'not for visitors';
@@ -101,6 +158,7 @@ function fixture(t) {
   });
   plant(root, SITE_PRIVATE);
   plant(root, [CHALLENGE], 'the challenge');
+  plant(root, FIXED_NAMES, 'a file whose name does not change');
   return { dir, root, files };
 }
 
@@ -258,6 +316,7 @@ test('Apache serves each twin under its original type, through the shipped .htac
   const port = await freePort();
   await withApache(dir, root, port, async () => {
     await checkTwins(port, files, { brotli: true });
+    await checkKept(port);
     // The front door is index.html's twin too, and a missing asset stays a 404.
     const front = await get(port, '/', { 'Accept-Encoding': 'gzip' });
     assert.equal(front.headers['content-encoding'], 'gzip');
@@ -288,6 +347,7 @@ test('nginx starts on the shipped config without ngx_brotli, and serves each .gz
   assert.ok(server.includes(`listen 127.0.0.1:${port};`) && server.includes(`root ${root};`), 'the example still has the listen and root it is installed by changing');
   await withNginx(dir, port, server, async () => {
     await checkTwins(port, files, { brotli: false });
+    await checkKept(port);
     await checkPrivate(port);
     await checkAddresses(port);
     // The API's addresses are routes. PHP-FPM is not here: a 502 is one that reached the location for it.

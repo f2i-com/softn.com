@@ -93,9 +93,9 @@ export function precacheEntries(outDir, { globPatterns = [], globIgnores = [], m
     // assets/core-runtime/ keep their names from build to build. The
     // container's files sit under a folder named by their digest
     // (assets/container-runtime/<digest>/), so their addresses change with
-    // them too. In the site build the engine and the QR decoder are held at
-    // their shared copy (shared-assets.mjs), which this worker may cache
-    // though it is outside its scope.
+    // them too. In the site build everything the app built is held at its
+    // address in the site's one folder of built files (shared-assets.mjs),
+    // which this worker may cache though it is outside its scope.
     const hashed = file.startsWith('assets/') && !file.startsWith('assets/core-runtime/');
     entries.push({ url: sharedPrecacheUrl(file), revision: hashed ? null : createHash('md5').update(bytes).digest('hex') });
   }

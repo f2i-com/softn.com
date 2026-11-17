@@ -6,6 +6,7 @@ import { appHears, setAppElement, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 import { isWorkerPlaceholderId } from './script-worker-bridges';
 import { debug } from './debug';
+import { startModuleWorker } from './module-worker';
 
 type ImportResolver = (path: string) => Promise<string | null>;
 import type {
@@ -347,7 +348,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // then 404s and the worker dies with a bare `worker_error`.
     const workerPath = './core-runtime/runtime/script-worker.js';
     this.workerUrl = new URL(workerPath, import.meta.url);
-    this.worker = new Worker(this.workerUrl, { type: 'module' });
+    // Behind the page's service worker wherever the build keeps the file (module-worker.ts).
+    this.worker = startModuleWorker(this.workerUrl);
     // The engine the worker runs is the page's, compiled once and posted as
     // soon as it is ready (a module is shared, not copied, when it is
     // posted): there is no copy beside the worker to fetch. The worker's

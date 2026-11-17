@@ -12,8 +12,8 @@ export default defineConfig({
   // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
   plugins: [react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin(), scriptPolicyPlugin()],
   resolve: { dedupe: ['react', 'react-dom'] },
-  // In the site build, the engine and the QR decoder by their one shared copy
-  // (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
+  // In the site build, what this builds by its address in the site's one folder of
+  // built files (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
   experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
   build: {
     sourcemap: false,

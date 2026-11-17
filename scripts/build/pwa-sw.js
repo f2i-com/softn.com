@@ -14,7 +14,7 @@ import { CacheFirst, NetworkFirst } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { clientsClaim } from 'workbox-core';
-import { routeMatcher } from './sw-route-match.js';
+import { isPageInPlaceOfFile, routeMatcher } from './sw-route-match.js';
 
 const config = self.__SOFTN_SW__;
 
@@ -38,8 +38,13 @@ precacheAndRoute(self.__SOFTN_PRECACHE);
 cleanupOutdatedCaches();
 registerRoute(new NavigationRoute(createHandlerBoundToURL('index.html')));
 
+// A page answered in place of a script or an engine is not kept by any route (sw-route-match.js).
+const fileNotPage = {
+  cacheWillUpdate: async ({ request, response }) => (response && isPageInPlaceOfFile(request.url, response) ? null : response),
+};
+
 for (const route of config.routes) {
-  const plugins = [];
+  const plugins = [fileNotPage];
   if (route.expiration) plugins.push(new ExpirationPlugin(route.expiration));
   if (route.statuses) plugins.push(new CacheableResponsePlugin({ statuses: route.statuses }));
   const Strategy = route.handler === 'NetworkFirst' ? NetworkFirst : CacheFirst;

@@ -13,10 +13,13 @@
  *   dist/play/       the single-app shell: /play/<slug> is an app's own page,
  *                    rendered by the API with the app's configuration written
  *                    in, so the page fetches the bundle and nothing else first
- *   dist/shared/     what every app above ships alike, once, for all of them:
- *                    the ZIPP engine and the QR decoder (shared-assets.mjs),
- *                    and the web container's Worker and engines
- *                    (container-runtime-assets.mjs)
+ *   dist/shared/     what the site and the apps above are built into, once for
+ *                    all of them: assets/, every script, stylesheet and font,
+ *                    the ZIPP engine, the QR decoder and core's workers
+ *                    (shared-assets.mjs), and container-runtime/, the web
+ *                    container's Worker and engines
+ *                    (container-runtime-assets.mjs). No build keeps an
+ *                    assets/ folder of its own.
  *   dist/docs/       the documentation: static pages generated from
  *                    docs/content/softn-docs.json (docs/scripts/build-docs.mjs),
  *                    with sitemap-docs.xml and robots.txt beside index.html
@@ -135,8 +138,19 @@ ErrorDocument 404 /index.html
   <FilesMatch "\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg|ico)(?:\.(?:br|gz))?$">
     Header set Cache-Control "public, max-age=3600"
   </FilesMatch>
-  <FilesMatch "-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)(?:\.(?:br|gz))?$">
+  #
+  # A fingerprint is exactly what the builds write after the last hyphen: eight
+  # characters (Vite, and the runtime's worker chunks) or twelve hexadecimal
+  # ones (the documentation). "Eight or more" also read apple-touch-icon.png
+  # and pwa-maskable-512x512.png as fingerprinted, so a changed icon did not
+  # reach a returning browser for a year.
+  <FilesMatch "-(?:[A-Za-z0-9_-]{8}|[0-9a-f]{12})\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)(?:\.(?:br|gz))?$">
     Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  # The web container's files keep their names from release to release and are
+  # told apart by their folder, which is named by the digest of what is in it.
+  <FilesMatch "\.(?:js|wasm)(?:\.(?:br|gz))?$">
+    Header set Cache-Control "public, max-age=31536000, immutable" "expr=%{REQUEST_URI} =~ m#/container-runtime/[0-9a-f]{12}/#"
   </FilesMatch>
   <FilesMatch "\.(?:html?|json|webmanifest|softn)(?:\.(?:br|gz))?$">
     Header set Cache-Control "no-cache, max-age=0, must-revalidate"
@@ -311,8 +325,12 @@ map "$sent_http_content_type|$uri" $softn_cache_control {
     ~^application/(?:json|manifest\+json)                          "no-cache, max-age=0, must-revalidate";
     ~*\|.*/(?:registerSW|sw|service-worker|coi)\.js$               "no-cache, max-age=0, must-revalidate";
     ~*\|.*\.softn$                                                "no-cache, max-age=0, must-revalidate";
-    "~*\|.*-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$"
+    # A fingerprint is exactly eight characters after the last hyphen, or twelve
+    # hexadecimal ones: "eight or more" took apple-touch-icon.png for one. The
+    # web container's files are told apart by their folder, named by a digest.
+    "~\|.*-(?:[A-Za-z0-9_-]{8}|[0-9a-f]{12})\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$"
                                                                    "public, max-age=31536000, immutable";
+    "~\|.*/container-runtime/[0-9a-f]{12}/.+\.(?:js|wasm)$"        "public, max-age=31536000, immutable";
 }
 
 server {
@@ -630,7 +648,7 @@ the admin key.
 - \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
-- \`/shared/\` — what every app above ships alike, kept once: the ZIPP engine and the QR decoder, and the web container's files (its Worker and the smaller ZIPP engines it runs plain web apps on)
+- \`/shared/\` — what the site and the apps above are built into, kept once for all of them: \`/shared/assets/\` holds every script, stylesheet and font, the ZIPP engine, the QR decoder and the runtime's workers (no app has an \`assets/\` folder of its own), and \`/shared/container-runtime/\` the web container's files (its Worker and the smaller ZIPP engines it runs plain web apps on)
 ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — a page of download links for those bundles\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
 - \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
@@ -638,7 +656,7 @@ ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/s
 uncommitted changes, and the Zipp revision/hash used by the browser runtime.
 
 After upload, open each app and refresh a deep link. A request for a nonexistent
-asset such as \`/web/assets/missing.js\` must return 404, not an HTML page. A
+asset such as \`/shared/assets/missing.js\` must return 404, not an HTML page. A
 path the site has no page for, such as \`/nothing-here\`, must answer 404 too —
 with the site's own not-found page as the body; only \`/\`, \`/apps\`,
 \`/app/<slug>\` and \`/publish\` are the site's pages. Some demo networking or AI
@@ -854,9 +872,10 @@ run(['run', 'build:core']);
 run(['run', 'build:components']);
 run(['run', 'build', '-w', '@softn/container']);
 
-// Each app refers to the engine and the QR decoder at their one shared copy
-// (shared-assets.mjs), gathered below once the apps are in place, and to the
-// web container's files in the one folder written below for all of them
+// Each build refers to what it emits (its scripts, stylesheets and fonts, the
+// engine, core's workers beside their chunk) in the one folder they are
+// gathered into below once the builds are in place (shared-assets.mjs), and to
+// the web container's files in the one folder written below for all of them
 // (container-runtime-assets.mjs).
 const SHARED_ASSETS = '/shared/assets/';
 const SHARED_CONTAINER_RUNTIME = '/shared/container-runtime/';
@@ -876,11 +895,13 @@ for (const app of [...APPS, PLAY]) {
 console.log('\n> docs (validate, refresh landing data)');
 await buildDocs({ outDir: path.join(root, 'docs/dist') });
 
-// The site links to the apps by path, not by localhost port.
+// The site links to the apps by path, not by localhost port. Its fonts and
+// React are the apps' own, so what it builds goes to the shared folder too.
 run(['run', 'build', '-w', '@softn/site'], {
   VITE_WEB_URL: '/web',
   VITE_BUILDER_URL: '/builder',
   VITE_STUDIO_URL: '/studio',
+  SOFTN_SHARED_ASSETS: SHARED_ASSETS,
 });
 
 fs.rmSync(outDir, { recursive: true, force: true });
@@ -907,12 +928,16 @@ for (const app of APPS) {
 }
 
 {
-  const kept = collectSharedAssets(outDir, [...APPS, PLAY].map((app) => app.into), SHARED_ASSETS);
-  if (!kept.some((name) => name.startsWith('zipp_wasm_bg-'))) throw new Error('No app shipped the ZIPP engine to share');
-  console.log(`\nShared by every app, once: ${kept.join(', ')}`);
   // The web container's Worker and the engines core does not carry: one folder,
-  // named by the digest of what is in it, which every app above was built to ask.
+  // named by the digest of what is in it, which every app above was built to
+  // ask. First, while each app's scripts are still its own to read: an app
+  // built to keep a folder of its own is refused here.
   const runtime = placeSharedContainerRuntime(outDir, [...APPS, PLAY].map((app) => app.into), SHARED_CONTAINER_RUNTIME);
+  // '' is the site's own build, at the root.
+  const kept = collectSharedAssets(outDir, ['', ...[...APPS, PLAY].map((app) => app.into)], SHARED_ASSETS);
+  if (!kept.names.some((name) => name.startsWith('zipp_wasm_bg-'))) throw new Error('No app shipped the ZIPP engine to share');
+  if (!kept.names.some((name) => name.startsWith('core-runtime/'))) throw new Error("No app shipped core's workers to share");
+  console.log(`\nWhat the site and its four apps built, once: ${kept.names.length} files in ${SHARED_ASSETS} (the builds held ${kept.copies} between them)`);
   console.log(`The web container's ${runtime.files.length} files, once: ${runtime.url}`);
 }
 

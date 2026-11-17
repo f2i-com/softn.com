@@ -15,6 +15,8 @@ import { repoRoot as root } from '../lib/paths.mjs';
 import { SHARED_ASSET } from './shared-assets.mjs';
 
 const HEAVY = /three|scene3d|gltf|fbx|stl|postprocessing|zxing/i;
+/** Where the site build keeps what its apps built (scripts/build/build-site.mjs). */
+const SITE_SHARED = '/shared/assets/';
 /** A built file's name without the hash Vite gives it, which can spell anything. */
 const unhashed = (file) => file.replace(/-[\w-]{8}(\.[a-z0-9]+)$/i, '$1');
 
@@ -54,11 +56,13 @@ for (const app of ['softn-studio', 'softn-builder']) {
   const built = fs.existsSync(manifestPath) && fs.existsSync(path.join(dist, 'sw.js'));
 
   test(`${app} installs everything it ships`, { skip: !built && `build apps/${app} first` }, () => {
-    const entries = precache(dist);
-    // Built for the site, the engine and the QR decoder are installed from
-    // their one shared copy (shared-assets.mjs): the same file the app ships.
-    const urls = new Set(entries.map((entry) => (SHARED_ASSET.test(path.posix.basename(entry.url)) ? `assets/${path.posix.basename(entry.url)}` : entry.url)));
+    // Built for the site, what the app built is installed from the site's one
+    // folder of built files (shared-assets.mjs): the same files the app ships,
+    // each at its shared address.
+    const entries = precache(dist).map((entry) => ({ ...entry, url: entry.url.startsWith(SITE_SHARED) ? `assets/${entry.url.slice(SITE_SHARED.length)}` : entry.url }));
+    const urls = new Set(entries.map((entry) => entry.url));
     assert.deepEqual(shipped(dist).filter((file) => !urls.has(file)), []);
+    assert.ok([...urls].some((url) => SHARED_ASSET.test(path.posix.basename(url))), 'the engine is installed');
     for (const wanted of [/^assets\/zipp_wasm_bg-[^/]+\.wasm$/, /^assets\/vendor-three-[^/]+\.js$/, /^assets\/scene3d-[^/]+\.js$/, /^assets\/zxing_reader-[^/]+\.wasm$/, /^assets\/core-runtime\/runtime\/script-worker\.js$/, /^assets\/core-runtime\/zipp_torch\.wasm$/]) {
       assert.ok([...urls].some((url) => wanted.test(url)), `${wanted} is installed`);
     }

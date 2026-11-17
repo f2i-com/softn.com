@@ -1,5 +1,6 @@
 import { zippEngineForWorker } from './zipp-wasm-loader';
 import { zippGlueForWorker } from './zipp-glue';
+import { startModuleWorker } from './module-worker';
 
 /** Worker isolation bounds parsing/native builtins as well as VM fuel. */
 export class SandboxHost {
@@ -25,7 +26,7 @@ export class SandboxHost {
       this.pending=()=>finish({error:'Sandbox cancelled'});
       try {
         const fresh=!this.worker;
-        if(!this.worker){const workerPath='./core-runtime/runtime/sandbox-worker.js';this.worker=new Worker(new URL(workerPath,import.meta.url),{type:'module'});}
+        if(!this.worker){const workerPath='./core-runtime/runtime/sandbox-worker.js';this.worker=startModuleWorker(new URL(workerPath,import.meta.url));}
         const worker=this.worker;
         timer=setTimeout(()=>finish({error:'Sandbox startup timed out'}),10000);
         worker.onmessage=e=>{if(e.data?.ready){clearTimeout(timer);timer=setTimeout(()=>finish({error:'Sandbox execution timed out'}),1500);}else finish(e.data);};

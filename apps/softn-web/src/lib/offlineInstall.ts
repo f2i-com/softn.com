@@ -376,7 +376,7 @@ const SERVICE_WORKER_WAIT_MS = 10_000;
  * resolves false, and the install says so rather than counting a fetch
  * nothing kept.
  */
-async function serviceWorkerControls(): Promise<boolean> {
+export async function serviceWorkerControls(): Promise<boolean> {
   const container = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined;
   if (!container) return false;
   if (container.controller) return true;
@@ -423,8 +423,28 @@ async function serviceWorkerControls(): Promise<boolean> {
 // engine to the worker, the shell's one precached copy, and there is no copy
 // under core-runtime/ to fetch.
 
-/** The copied core dist, relative to the shell's base. */
+/** The copied core dist, relative to the shell's base: where the dev server serves it, and a build of the app alone keeps it. */
 const WORKER_ASSET_ROOT = 'assets/core-runtime/';
+
+/**
+ * The folder the workers' files are in. Core finds them beside its own chunk
+ * (`./core-runtime/`), and in a build this module is a chunk in the same
+ * folder, so it finds them the same way: the app's assets/ when the app is
+ * built alone, the site's one shared folder when the site is
+ * (scripts/build/shared-assets.mjs), where nothing is left under the app's
+ * base to fetch. A given base (a test's) and the dev server, whose modules are
+ * source files, go by the base.
+ */
+function workerAssetRoot(options: OfflineInstallOptions): URL {
+  if (options.baseUrl === undefined && import.meta.env.PROD) {
+    // Not written into the URL() call: Vite would look for the folder as a file to bundle.
+    const beside = './core-runtime/';
+    return new URL(beside, import.meta.url);
+  }
+  const base = options.baseUrl ?? import.meta.env.BASE_URL ?? '/';
+  const page = typeof location !== 'undefined' ? location.href : 'http://localhost/';
+  return new URL(base.replace(/\/?$/, '/') + WORKER_ASSET_ROOT, page);
+}
 /** A bound on the walk: the three workers reach about twenty files today. */
 const WORKER_ASSET_LIMIT = 48;
 
@@ -443,6 +463,17 @@ export function workerEntries(app: Pick<OfflineInstallApp, 'execution' | 'source
 }
 /** The ZIPP engine, which a worker takes from the page rather than fetching. */
 const ENGINE_FILE = /\/zipp_wasm_bg\.wasm$/;
+/**
+ * A wasm-bindgen module's own default: `new URL("gguf_wasm_bg.wasm",
+ * import.meta.url)`, the file beside the glue, used only when the caller names
+ * none. Core's workers always name theirs (`./models/gguf_wasm_bg.wasm`), and
+ * the glue is bundled into a worker one folder up, so the default points at a
+ * file that was never there. Asked for all the same, in case a build does
+ * keep it beside the glue, but its absence is not the install's failure: on a
+ * host that answers a missing asset with a 404 (every real one), it failed
+ * the install of every app that asked for `ai`.
+ */
+const GLUE_DEFAULT = /^[\w.-]+_bg\.wasm$/;
 
 const FROM_SPECIFIER = /\bfrom\s*["']([^"']+)["']/g;
 const BARE_IMPORT = /\bimport\s*["']([^"']+)["']/g;
@@ -480,11 +511,12 @@ export function moduleReferences(text: string): string[] {
 async function installWorkerAssets(options: OfflineInstallOptions, entries: readonly string[]): Promise<boolean> {
   const fetchFn = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined);
   if (!fetchFn) return false;
-  const base = options.baseUrl ?? import.meta.env.BASE_URL ?? '/';
-  const page = typeof location !== 'undefined' ? location.href : 'http://localhost/';
-  const root = new URL(base.replace(/\/?$/, '/') + WORKER_ASSET_ROOT, page);
+  const root = workerAssetRoot(options);
   const queue = entries.map((entry) => new URL(entry, root));
   const seen = new Set<string>();
+  // Files something names outright, and glue defaults found missing (GLUE_DEFAULT).
+  const required = new Set(queue.map((url) => url.href));
+  const absentDefaults = new Set<string>();
   while (queue.length) {
     const url = queue.shift()!;
     if (seen.has(url.href)) continue;
@@ -500,7 +532,13 @@ async function installWorkerAssets(options: OfflineInstallOptions, entries: read
     } catch {
       return false;
     }
-    if (!response.ok) return false;
+    if (!response.ok) {
+      if (response.status === 404 && !required.has(url.href)) {
+        absentDefaults.add(url.href);
+        continue;
+      }
+      return false;
+    }
     // A .wasm is held as fetched; only a module names further files.
     if (!url.pathname.endsWith('.js')) continue;
     let text: string;
@@ -514,7 +552,13 @@ async function installWorkerAssets(options: OfflineInstallOptions, entries: read
       // The copied dist and nothing else: a reference that leaves it is not
       // the worker's to need, and not this install's to fetch. Nor the
       // engine, which the worker is handed (above).
-      if (target.href.startsWith(root.href) && !ENGINE_FILE.test(target.pathname)) queue.push(target);
+      if (!target.href.startsWith(root.href) || ENGINE_FILE.test(target.pathname)) continue;
+      if (!GLUE_DEFAULT.test(ref)) {
+        // Named outright, so needed: also when a glue's default asked for it first and found nothing.
+        if (absentDefaults.has(target.href)) return false;
+        required.add(target.href);
+      }
+      queue.push(target);
     }
   }
   return true;

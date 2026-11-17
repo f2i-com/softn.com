@@ -8,6 +8,19 @@
  * Studio, its Stop button and its autosave with it, for as long as it ran.
  */
 
+import { ScopedWorker } from '@softn/core';
+
+/**
+ * The worker, started behind the page's service worker wherever the build keeps its script
+ * (core's module-worker.ts). The bundler builds the script where it reads exactly
+ * `new Worker(new URL(…, import.meta.url))`, so the call keeps that spelling and the name is
+ * bound, in here alone, to the starter.
+ */
+function startSearchWorker(): Worker {
+  const Worker = ScopedWorker;
+  return new Worker(new URL('./searchWorker.ts', import.meta.url), { type: 'module' });
+}
+
 export interface SearchHits {
   hits: string[];
   /** Matches past the ones listed. */
@@ -46,7 +59,7 @@ export async function searchProject(
   deadlineMs = SEARCH_DEADLINE_MS,
 ): Promise<SearchHits | { timedOut: true }> {
   if (typeof Worker === 'undefined') return searchLines(pattern, flags, files);
-  const worker = new Worker(new URL('./searchWorker.ts', import.meta.url), { type: 'module' });
+  const worker = startSearchWorker();
   try {
     return await new Promise<SearchHits | { timedOut: true }>((resolve, reject) => {
       const timer = setTimeout(() => resolve({ timedOut: true }), deadlineMs);

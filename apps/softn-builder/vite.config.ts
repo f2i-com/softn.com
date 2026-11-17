@@ -95,8 +95,8 @@ export default defineConfig({
     strictPort: true,
   },
   envPrefix: ['VITE_', 'TAURI_'],
-  // In the site build, the engine and the QR decoder by their one shared copy
-  // (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
+  // In the site build, what this builds by its address in the site's one folder of
+  // built files (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
   experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
   build: {
     outDir: isTauri ? 'dist-desktop' : 'dist',

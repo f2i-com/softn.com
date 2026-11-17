@@ -27,11 +27,13 @@
  *
  * The folder is named by the digest of what is in it: `assets/container-runtime/<digest>/`.
  * The files keep their names from release to release (`engines/zipp-javascript-lite.wasm`,
- * `container-worker.js`), and a name like `zipp-javascript-lite.wasm` reads as a fingerprinted
- * file to the cache rule every SoftN deployment ships (`-[A-Za-z0-9_-]{8,}.wasm`: a year,
- * immutable). Under a fixed folder a returning browser would have run the last release's
- * engine with this release's bindings. With the digest in the path the rule is right: what a
- * path names never changes, and a release that changes any file names another folder.
+ * `container-worker.js`), and a name like `zipp-javascript-lite.wasm` read as a fingerprinted
+ * file to the cache rule SoftN's deployments shipped (`-[A-Za-z0-9_-]{8,}.wasm`: a year,
+ * immutable), which a host that deployed an earlier release may still serve under. Under a
+ * fixed folder a returning browser would have run the last release's engine with this
+ * release's bindings. With the digest in the path, what a path names never changes, and a
+ * release that changes any file names another folder; the site's rules now keep the folder
+ * for a year by that digest (build-site.mjs), and a service worker keeps it for good.
  *
  * In the site build (SOFTN_SHARED_CONTAINER_RUNTIME, set by scripts/build/build-site.mjs) no
  * app keeps a folder of its own: all four name the one under /shared/, which build-site

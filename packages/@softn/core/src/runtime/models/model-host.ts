@@ -21,6 +21,7 @@ import type { AIPermissionConfig } from '../ai-manager';
 import { describeNetDestination, type NetPermission } from '../egress-policy';
 import { zippEngineForWorker } from '../zipp-wasm-loader';
 import { zippGlueForWorker } from '../zipp-glue';
+import { startModuleWorker } from '../module-worker';
 import type { ChatMessage } from './chat-template';
 import type { WorkerReply, WorkerRequest } from './model-worker';
 import type { GenerateOptions, GenerateResult, ModelBackend, ModelInfo } from './zipp-model-runner';
@@ -375,7 +376,8 @@ function defaultWorker(): Worker {
   // A variable, as the speech and script workers have it: a literal would be
   // rewritten by Vite into a hashed copy without the modules beside it.
   const path = './core-runtime/runtime/model-worker.js';
-  return new Worker(new URL(path, import.meta.url), { type: 'module' });
+  // Behind the page's service worker wherever the build keeps the file (module-worker.ts).
+  return startModuleWorker(new URL(path, import.meta.url));
 }
 
 const num = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
