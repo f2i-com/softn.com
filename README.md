@@ -14,7 +14,7 @@ A lightweight WebAssembly container runtime, AI studio, and visual builder for s
 
 _Meet **Fieldnotes**: a working app whose form, logic running on ZIPP and XDB records update one dashboard. This is the actual Builder preview. [Read the source](examples/fieldnotes) · [Get the .softn bundle](apps/softn-site/public/examples/Fieldnotes.softn) · [Try the v2 Container Showcase](examples/container-showcase) · [Screenshot details](docs/readme-assets/README.md)._
 
-SoftN packages web applications — interface, code, data seeds, and capability declarations — into portable `.softn` containers. With **SoftN v2 Web App Containers** (`@softn/container`), any standard HTML, CSS, JavaScript, TypeScript, or Python app (including unmodified Vite, React, Vue, or Svelte `dist/` builds) runs inside an isolated [ZIPP](https://github.com/f2i-com/zipp.org) Rust/WebAssembly Worker and closed Shadow DOM, while classic **v1 `.ui` + `.logic` bundles** continue to run with 100% backwards compatibility across the runtime, Studio AI, and the visual Builder.
+SoftN packages web applications — interface, code, data seeds, and capability declarations — into portable `.softn` containers. With **SoftN v2 Web App Containers** (`@softn/container`), an app of plain HTML, CSS, JavaScript, TypeScript, or Python (the `dist/` folder of a React or Vue app built by Vite included) runs inside an isolated [ZIPP](https://github.com/f2i-com/zipp.org) Rust/WebAssembly Worker and closed Shadow DOM, while classic **v1 `.ui` + `.logic` bundles** continue to run with 100% backwards compatibility across the runtime, Studio AI, and the visual Builder.
 
 The project is actively developed. The examples, container microkernel, editors, and runtime are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
 
@@ -33,12 +33,12 @@ The project is actively developed. The examples, container microkernel, editors,
 
 SoftN v2 (`@softn/container` / `<softn-app>`) treats `.softn` archives like **Docker containers for web apps**:
 
-- **Bring your own stack (100% standard DOM):** Write plain HTML + CSS + Vanilla JS/TS, use SoftN's zero-build hosted Preact/HTM modules, or zip any production `dist/` folder from Vite, React, Vue, or Svelte directly into a `.softn` or `.zip` file — no custom DSL or code rewrites needed.
+- **Bring your own code (the standard DOM, no custom DSL):** Write plain HTML + CSS + Vanilla JS/TS, use SoftN's zero-build hosted Preact/HTM modules, or zip the `dist/` folder a bundler wrote into a `.softn` or `.zip` file. **A React or Vue app built by Vite runs as built.** The gate builds one of each (React 18, Vue 3) with Vite's defaults and drives it by mouse and keyboard in a browser: a form the framework controls, a portal or teleport, a part loaded on demand with its own stylesheet, a transition, an error boundary, a router's links. React 19, React Router, emotion, styled-components, zustand, TanStack Query, Vue Router and Pinia were each run the same way by hand, and a smaller page built in Svelte 5, Solid and Preact. The page's script runs in a Worker against the container's own DOM, which covers what such code uses and not all of a browser's: there is no `Blob`, `WebSocket`, `XMLHttpRequest`, `customElements` or `document.createRange`; an element's size is measured by the page and known a moment after it is drawn; an app that formats with `Intl` runs on the full engine, which is chosen for it. An Angular build has not been tried.
 - **Hard Worker + Shadow DOM isolation:** Guest code never touches the host `window` or main thread. It executes inside a dedicated Web Worker on the Rust/WASM ZIPP VM while a lightweight ~23 KB host microkernel applies batched surgical DOM patches inside a closed `ShadowRoot` and enforces `permission.json` network/capability gates.
 - **Split-Realm WebGL2 & Custom Elements:** Guest scripts can write `import * as THREE from 'three'` or render to 2D `<canvas>` while WebGL2 draw calls execute natively on the host GPU without bundling Three.js inside the `.softn` file. Drop `<softn-chart>` or `<softn-datagrid>` into any HTML page to lazy-load rich UI widgets on demand.
 
 ```text
-my-web-app.softn  (or zip any Vite/React/Vue dist/ folder directly)
+my-web-app.softn  (or zip the dist/ folder of a Vite build directly)
 ├── index.html          # Standard HTML5 entry (auto-discovered even without manifest.json)
 ├── app.ts              # ES modules (.js, .mjs, .ts) or Python (.py) run in the ZIPP Worker
 ├── styles.css          # Scoped automatically inside the container's closed ShadowRoot
@@ -994,7 +994,8 @@ dist/web/         web runtime
 dist/play/        the single-app shell; /play/<slug> is an app's play page, rendered by the API
 dist/builder/     visual builder
 dist/studio/      AI studio
-dist/shared/      the ZIPP engine and the QR decoder, kept once for every app above
+dist/shared/      what the site and the apps above are built into, once for all of them: every script,
+                  stylesheet and font, the ZIPP engine and its workers, the web container's files
 dist/docs/        the documentation, generated from docs/content/softn-docs.json
 dist/api/         the directory API (PHP)
 dist/data/        the directory's state; never served
