@@ -104,6 +104,8 @@ export interface ShellSeed {
   url?: string;
   r?: number[];
   v?: ViewportTuple;
+  /** This host draws shadow trees: an element of the app's has `attachShadow`. */
+  shadow?: boolean;
 }
 
 /** Compact 2D `<canvas>` command tuple replayed on the host `<canvas>`. */
@@ -160,6 +162,8 @@ export type ThreeSceneOp =
 /** Batched DOM / Canvas / Scene mutation tuple emitted by the Worker at the end of a turn. */
 export type ShellOp =
   | ['e', number, string, Record<string, string>, ('svg' | 'math')?]
+  /** A shadow root the script attached: the element it is attached to, and the root's own id. */
+  | ['sr', number, number]
   | ['x', number, string]
   | ['m', number]
   | ['a', number, string, string | null]
@@ -176,8 +180,22 @@ export type ShellOp =
   /** An animation of an element (`element.animate`): its key, the element, its keyframes and its timing; and what the script then asks of it. */
   | ['anim', string, number, unknown, unknown]
   | ['anim-ctl', string, string]
+  /** A canvas's picture asked for as a file: a token to answer by, the canvas, the kind of picture and its quality (-1 for the browser's own). */
+  | ['canvas-blob', string, number, string, number]
+  /** A file the script asks to save: the id of a blob it made an address for, and the name it gives the file. */
+  | ['save', string, string]
   | ['k2d', number, number, number, Canvas2DCmd[]]
   | ['3d', number, ThreeSceneOp[]];
+
+/** A file an app asks to save. */
+export interface SaveRequest {
+  /** The name the file is saved under: the app's, with what a file name cannot hold taken out. */
+  name: string;
+  /** The type the app gave the blob. */
+  type: string;
+  size: number;
+  bytes: Uint8Array;
+}
 
 /** Measured bounding rect tuple: [id, x, y, width, height], and how wide and tall what it holds is (scrollWidth, scrollHeight). */
 export type MeasuredBoxTuple = [number, number, number, number, number, number?, number?];
@@ -219,6 +237,19 @@ export interface SoftNContainerOptions {
    * which such a host need not ship.
    */
   hostThree?: () => Promise<unknown>;
+  /**
+   * What happens when the app asks to save a file to the person's disk (a link with
+   * `download` to a blob it made). `'ask'` (the default): a bar drawn by the container, above
+   * the app, names the app and the file, and the file is saved if the person says so.
+   * `'deny'`: nothing is ever saved. Either way only after a click or a key of the person's
+   * in the app just before, and one file for each.
+   */
+  downloads?: 'ask' | 'deny';
+  /**
+   * For a host that asks the person itself: called in place of the container's bar, with
+   * the file as the app made it. The file is saved when this answers true.
+   */
+  onSaveRequest?: (file: SaveRequest) => boolean | Promise<boolean>;
   /** Permission mode: `'prompt'` shows non-blocking consent bar; `'preapproved'` grants declared permissions; `'deny'` denies all. */
   permissionMode?: 'prompt' | 'preapproved' | 'deny';
   /** Override `permission.json` from host deployment configuration. */

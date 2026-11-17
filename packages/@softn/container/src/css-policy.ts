@@ -143,7 +143,7 @@ function skipBalanced(css: string, at: number): number {
  * Rewrite `css`. `mapUrl` is given each address as CSS resolved it and answers the address to
  * put in its place, or null for one the app may not load.
  */
-export function rewriteCss(css: string, mapUrl: (address: string) => string | null): string {
+export function rewriteCss(css: string, mapUrl: (address: string) => string | null, options: { keepHost?: boolean } = {}): string {
   const address = (raw: string): string => cssString(mapUrl(raw.trim()) ?? 'about:blank');
   let out = '';
   let i = 0;
@@ -196,7 +196,10 @@ export function rewriteCss(css: string, mapUrl: (address: string) => string | nu
       if (startsName(css, at)) {
         const pseudo = readName(css, at);
         const lower = pseudo.name.toLowerCase();
-        if (lower === 'host' || lower === 'host-context') {
+        // In a stylesheet of a shadow tree the app attached, `:host` is the app's own element
+        // and is left as written. `:host-context()` asks about what is around the host, all
+        // the way out to the embedding page, and never matches.
+        if ((lower === 'host' && !options.keepHost) || lower === 'host-context') {
           let end = pseudo.end;
           if (css[end] === '(') end = skipBalanced(css, end);
           out += ':not(*)';

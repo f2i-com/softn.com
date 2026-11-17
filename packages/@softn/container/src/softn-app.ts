@@ -11,16 +11,18 @@
 
 import type { Capability } from '@softn/bundle-format/capabilities';
 import { ContainerArchive, resolveVfsPath } from './archive';
-import { renderConsentBar } from './consent-bar';
+import { renderConsentBar, renderSaveBar } from './consent-bar';
 import { HostDomPatcher } from './dom-patcher';
+import { hostFileName, hostLabel, slotsAreContained } from './host-policy';
 import { prepareHtmlDocument } from './sanitize';
-import { SHADOW_HOST_BASE_CSS } from './ui-css';
+import { FRAME_BASE_CSS, PAGE_BASE_CSS } from './ui-css';
 import { ensureUiExtension } from './ui-extensions/registry';
 import { selectEngineTier } from './zipp-loader';
 import type {
   ContainerLimits,
   ContainerManifest,
   HostToWorkerMsg,
+  SaveRequest,
   SoftNContainerOptions,
   ThreeSceneOp,
   WorkerToHostMsg,
@@ -42,8 +44,18 @@ export interface SoftNContainerHandle {
   readonly manifest: ContainerManifest;
   readonly engineTier: ZippEngineTier;
   readonly appId: string;
-  /** Controlled access to the container's ShadowRoot for host tooling & tests. */
+  /**
+   * The root the app's page is drawn in, for host tooling and tests: the app's elements and
+   * its stylesheets, and nothing of the container's own. It is the same root for every page
+   * the app shows.
+   */
   readonly shadowRoot: ShadowRoot;
+  /**
+   * The root the container's own frame is in: the bars it draws above the app (what the app
+   * asks to be allowed, a file it asks to save) and the box the app's page is in. No
+   * stylesheet of the app's is in this root or reaches it.
+   */
+  readonly frameRoot: ShadowRoot;
   /** Navigate to another HTML page inside the same `.softn` container. */
   navigate(path: string): Promise<void>;
   /** Grant or revoke capabilities dynamically. */
@@ -75,10 +87,11 @@ const shadowRootRegistry = new WeakMap<HTMLElement, ShadowRoot>();
 const rootOwners = new WeakMap<ShadowRoot, object>();
 
 /**
- * Inline, important, and after `all: initial`: what the app's stylesheet cannot change. The
- * app's sheet is in the same shadow root as these elements and can select them, but a
- * declaration on the element itself outranks any in a sheet of the same importance, and
- * `all` leaves it no property to reach for.
+ * Inline, important, and after `all: initial`: what no stylesheet can change. The frame and
+ * the bars are in a root no sheet of the app's is in; the app's page is in a root of its own
+ * inside the box (attachPageRoot), and of the container's elements only the page's scroller
+ * is in there with it. A declaration on the element itself outranks any in a sheet of the
+ * same importance, and `all` leaves it no property to reach for.
  */
 const PINNED = 'all:initial!important;box-sizing:border-box!important;font:inherit!important;color:inherit!important;';
 
@@ -105,7 +118,24 @@ const BOX_STYLE = `${PINNED}display:block!important;flex:1 1 auto!important;min-
  */
 const DOCROOT_STYLE = `${PINNED}display:block!important;width:100%!important;height:100%!important;position:relative!important;overflow:auto!important;`;
 
-/** The consent bar's place: above the app's box, in a shadow root of its own that no sheet of the app's reaches. */
+/**
+ * The root the app's page is drawn in, on the box. The app's stylesheets are in it with the
+ * page, and a stylesheet matches only what is in its own root: not the frame, not the bars
+ * above the box, not anything of theirs that only a stylesheet can make (`::before`,
+ * `::after`). They were all in one root, where the app's sheet drew over the bar that asks
+ * the person something, with words of its own. Whatever the app's sheet does make is drawn
+ * inside the box, which clips it. The box has no children of its own, so a `<slot>` in the
+ * app's page has nothing to show.
+ */
+function attachPageRoot(boxEl: HTMLElement): ShadowRoot {
+  try {
+    return boxEl.attachShadow({ mode: 'closed', slotAssignment: 'manual' });
+  } catch {
+    return boxEl.attachShadow({ mode: 'closed' });
+  }
+}
+
+/** The consent bar's place: above the app's box, in a shadow root of its own. */
 const CONSENT_STYLE = `${PINNED}display:block!important;flex:none!important;position:relative!important;z-index:1!important;`;
 
 const ENGINE_FILES: Readonly<Record<ZippEngineTier, string>> = {
@@ -115,6 +145,34 @@ const ENGINE_FILES: Readonly<Record<ZippEngineTier, string>> = {
   python: 'zipp-python-base.wasm',
   'python-torch': 'zipp-python-base.wasm',
 };
+
+/**
+ * Save a file an app made to the person's disk, at their word: as a download of the
+ * embedding page, under the name given and as bytes of no kind (never as a document the
+ * browser would open instead).
+ */
+function saveToDisk(file: SaveRequest): void {
+  if (typeof URL.createObjectURL !== 'function') return;
+  const copy = new Uint8Array(file.bytes.byteLength);
+  copy.set(file.bytes);
+  const url = URL.createObjectURL(new Blob([copy], { type: 'application/octet-stream' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = file.name;
+  link.rel = 'noopener';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Let go once the browser has had time to start reading it.
+  setTimeout(() => {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // Already gone
+    }
+  }, 60_000);
+}
 
 /** Shared page-level compiled WebAssembly.Module cache so multiple Workers share 1 download & 1 compile! */
 const sharedEngineModuleCache = new Map<string, Promise<WebAssembly.Module>>();
@@ -145,7 +203,9 @@ function getSharedCompiledEngine(url: string): Promise<WebAssembly.Module> {
 function getOrAttachClosedShadow(hostEl: HTMLElement): ShadowRoot {
   const existing = shadowRootRegistry.get(hostEl);
   if (existing) return existing;
-  const root = hostEl.attachShadow({ mode: 'closed' });
+  // Slots assigned by hand, and none assigned: a <slot> in the app's page shows nothing of
+  // the embedding page's children of this element (host-policy.ts, slotsAreContained).
+  const root = hostEl.attachShadow(slotsAreContained() ? { mode: 'closed', slotAssignment: 'manual' } : { mode: 'closed' });
   shadowRootRegistry.set(hostEl, root);
   return root;
 }
@@ -368,6 +428,7 @@ export async function mountSoftNContainer(
       engineTier: 'lite',
       appId,
       shadowRoot,
+      frameRoot: shadowRoot,
       navigate: async () => undefined,
       setGrantedCapabilities: () => undefined,
       setActive: () => undefined,
@@ -378,6 +439,21 @@ export async function mountSoftNContainer(
       },
     };
   }
+
+  // The frame, once for the mount: the bars above, the app's box below, and in the box the
+  // root every page of the app is drawn in.
+  const frameStyle = document.createElement('style');
+  frameStyle.textContent = FRAME_BASE_CSS;
+  const frameEl = document.createElement('div');
+  frameEl.setAttribute('data-softn-frame', '');
+  frameEl.style.cssText = FRAME_STYLE;
+  const boxEl = document.createElement('div');
+  boxEl.setAttribute('data-softn-box', '');
+  boxEl.style.cssText = BOX_STYLE;
+  const pageRoot = attachPageRoot(boxEl);
+  frameEl.appendChild(boxEl);
+  /** The bar asking whether to save a file the app made, while one is unanswered. */
+  let saveEl: HTMLElement | null = null;
 
   let disposed = false;
   let currentPatcher: HostDomPatcher | null = null;
@@ -442,7 +518,11 @@ export async function mountSoftNContainer(
     // A mount the element no longer shows draws nothing: the root is the newer mount's.
     if (disposed || !owns()) return;
     teardownPage();
-    shadowRoot.replaceChildren();
+    // The page before, and the bars that were about it.
+    pageRoot.replaceChildren();
+    for (const bar of Array.from(frameEl.children)) if (bar !== boxEl) bar.remove();
+    saveEl = null;
+    if (frameEl.parentNode !== shadowRoot) shadowRoot.replaceChildren(frameStyle, frameEl);
 
     const html = archive.readText(pagePath);
     if (html === null) {
@@ -470,26 +550,19 @@ export async function mountSoftNContainer(
             ? 'dark'
             : 'light';
 
-    // Base + page styles inside closed ShadowRoot
+    // The page's styles, in the page's root.
     const styleEl = document.createElement('style');
-    styleEl.textContent = [SHADOW_HOST_BASE_CSS, ...prepared.styles].join('\n');
-    shadowRoot.appendChild(styleEl);
+    styleEl.textContent = [PAGE_BASE_CSS, ...prepared.styles].join('\n');
+    pageRoot.appendChild(styleEl);
 
-    // The consent bar above, the app's box below: a column whose layout the app's stylesheet
-    // cannot change (see PINNED).
-    const frameEl = document.createElement('div');
-    frameEl.setAttribute('data-softn-frame', '');
-    frameEl.style.cssText = FRAME_STYLE;
-
-    // Non-blocking consent bar when capabilities are requested in `'prompt'` mode. It is drawn
-    // in a shadow root of its own: the app's stylesheet shares the outer root and could
-    // otherwise restyle the bar's words, or hide them and leave the button.
+    // Non-blocking consent bar when capabilities are requested in `'prompt'` mode. It is
+    // above the app's box, in the frame's root and in a shadow root of its own.
     const permissionMode = options.permissionMode ?? 'prompt';
     if (permissionMode === 'prompt' && requestedCaps.length > 0 && grantedCaps.size === 0) {
-      const bar = renderConsentBar(requestedCaps, archive.manifest.name, (allowed) => {
+      const bar = renderConsentBar(requestedCaps, hostLabel(archive.manifest.name) || 'This app', (allowed) => {
         if (allowed) {
           grantedCaps = new Set(requestedCaps);
-          currentPatcher?.updatePermissions(permissions, grantedCaps.has('net'));
+          currentPatcher?.updatePermissions(permissions, grantedCaps.has('net'), grantedCaps.has('files'));
           currentTransport?.post({
             type: 'permissions-updated',
             grantedCapabilities: [...grantedCaps],
@@ -500,7 +573,7 @@ export async function mountSoftNContainer(
       consentEl.setAttribute('data-softn-container-consent', '');
       consentEl.style.cssText = CONSENT_STYLE;
       consentEl.attachShadow({ mode: 'closed' }).appendChild(bar);
-      frameEl.appendChild(consentEl);
+      frameEl.insertBefore(consentEl, boxEl);
     }
 
     const docRootEl = document.createElement('div');
@@ -519,12 +592,7 @@ export async function mountSoftNContainer(
     viewportEl.setAttribute('data-softn-viewport', '');
     viewportEl.setAttribute('data-theme', effectiveTheme);
     docRootEl.appendChild(viewportEl);
-    const boxEl = document.createElement('div');
-    boxEl.setAttribute('data-softn-box', '');
-    boxEl.style.cssText = BOX_STYLE;
-    boxEl.appendChild(docRootEl);
-    frameEl.appendChild(boxEl);
-    shadowRoot.appendChild(frameEl);
+    pageRoot.appendChild(docRootEl);
 
     const handleThreeOps = async (
       canvas: HTMLCanvasElement,
@@ -539,6 +607,8 @@ export async function mountSoftNContainer(
       threeHost.enqueue(canvas, canvasId, ops);
     };
 
+    /** A file the app asked to save is before the person (or the host), unanswered. */
+    let saveAsked = false;
     const patcher = new HostDomPatcher({
       viewportEl,
       docRootEl,
@@ -547,7 +617,47 @@ export async function mountSoftNContainer(
       entryPath: pagePath,
       permissions,
       netGranted: grantedCaps.has('net'),
+      filesGranted: grantedCaps.has('files'),
       callbacks: {
+        onSaveRequest: (file) => {
+          // One question at a time: a file asked for while another is unanswered is not
+          // saved and takes no one's place. (The later one took the place of the earlier, so
+          // the bar a person was about to answer could change its file under their pointer.)
+          if (disposed || options.downloads === 'deny' || saveAsked) return;
+          const request: SaveRequest = { name: hostFileName(file.name), type: file.type, size: file.bytes.byteLength, bytes: file.bytes };
+          saveAsked = true;
+          // A host that asks the person itself is asked; the file is saved at its yes.
+          if (options.onSaveRequest) {
+            const ask = options.onSaveRequest;
+            void Promise.resolve()
+              .then(() => ask(request))
+              .then(
+                (yes) => {
+                  saveAsked = false;
+                  if (yes === true && !disposed) saveToDisk(request);
+                },
+                () => {
+                  saveAsked = false;
+                }
+              );
+            return;
+          }
+          // The container's own bar, above the app's box and out of its stylesheet's reach: it
+          // names the app and the file.
+          const holder = document.createElement('div');
+          holder.setAttribute('data-softn-container-save', '');
+          holder.style.cssText = CONSENT_STYLE;
+          holder.attachShadow({ mode: 'closed' }).appendChild(
+            renderSaveBar(hostLabel(archive.manifest.name) || 'This app', request.name, request.size, (save) => {
+              holder.remove();
+              if (saveEl === holder) saveEl = null;
+              saveAsked = false;
+              if (save && !disposed) saveToDisk(request);
+            })
+          );
+          frameEl.insertBefore(holder, boxEl);
+          saveEl = holder;
+        },
         onEvent: (nodeId, eventType, props, syncChanges, answered) => {
           const tid = turnSeq++;
           if (answered) pendingAnswers.set(tid, answered);
@@ -797,7 +907,8 @@ export async function mountSoftNContainer(
       return activeTier;
     },
     appId,
-    shadowRoot,
+    shadowRoot: pageRoot,
+    frameRoot: shadowRoot,
     async navigate(path: string) {
       const resolved = resolveVfsPath(path, archive.manifest.main);
       if (!resolved || !archive.has(resolved)) {
@@ -807,7 +918,7 @@ export async function mountSoftNContainer(
     },
     setGrantedCapabilities(caps: Capability[]) {
       grantedCaps = new Set(caps);
-      currentPatcher?.updatePermissions(permissions, grantedCaps.has('net'));
+      currentPatcher?.updatePermissions(permissions, grantedCaps.has('net'), grantedCaps.has('files'));
       currentTransport?.post({
         type: 'permissions-updated',
         grantedCapabilities: [...grantedCaps],
@@ -835,6 +946,7 @@ export async function mountSoftNContainer(
       teardownPage();
       archive.dispose();
       // Only what this mount drew: a newer mount into the same element owns the root now.
+      pageRoot.replaceChildren();
       if (owns()) shadowRoot.replaceChildren();
     },
   };

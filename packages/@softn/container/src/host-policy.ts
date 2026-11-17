@@ -20,9 +20,9 @@ export const MATH_NS = 'http://www.w3.org/1998/Math/MathML';
  * Elements that run script, load a document, or reach outside the app's box, by their local
  * name in any namespace: an SVG `script` runs as an HTML one does.
  *
- * `slot` would draw the embedding page's own children of the element inside the app; `portal`
- * and `fencedframe` are documents like `iframe`. (`link` and `style` are not here: each has a
- * rule of its own in the patcher, which reads their CSS before the page does.)
+ * `portal` and `fencedframe` are documents like `iframe`. (`link` and `style` are not here:
+ * each has a rule of its own in the patcher, which reads their CSS before the page does.
+ * `slot` has one below.)
  */
 const FORBIDDEN_ELEMENTS = new Set([
   'script',
@@ -36,8 +36,22 @@ const FORBIDDEN_ELEMENTS = new Set([
   'noscript',
   'portal',
   'fencedframe',
-  'slot',
 ]);
+
+/**
+ * Whether a browser assigns a root's slots by hand (`slotAssignment: 'manual'`), which the
+ * container's own roots ask for where they can.
+ *
+ * A `<slot>` the app makes is the app's alone either way. Its page is in a root of its own,
+ * on a box that has no children: a slot there has nothing of anyone's to show. In a shadow
+ * tree the app attached, a slot is filled with the children of the app's own element, which
+ * is what it is for. (The page was once in the root of the element the app is embedded in,
+ * where a slot would have drawn the embedding page's children of that element, and slots
+ * were given only to a browser that could be told to assign none.)
+ */
+export function slotsAreContained(): boolean {
+  return typeof HTMLSlotElement !== 'undefined' && typeof (HTMLSlotElement.prototype as { assign?: unknown }).assign === 'function';
+}
 
 /**
  * The name to create an element by, or null for one the page does not get.
@@ -65,6 +79,8 @@ export interface HostAttributeContext {
   archive: ContainerArchive;
   permissions: ContainerPermissions;
   netGranted: boolean;
+  /** The element's namespace, when it is not HTML's. */
+  ns?: 'svg' | 'math';
 }
 
 /** Attributes whose value is one address. */
@@ -104,6 +120,10 @@ const TARGETS = new Set(['_blank', '_self']);
 export function hostAttributeValue(tag: string, name: string, value: string, context: HostAttributeContext): string | null {
   const lower = name.toLowerCase();
   if (lower.startsWith('on') || DROPPED_ATTRIBUTES.has(lower)) return null;
+  // No part of a formula is a link. A browser that follows `href` on any MathML element
+  // (Firefox does) follows it by itself: it is no `<a>`, so nothing here hears the click as
+  // a link's, and the page the app is embedded in would go where the app said.
+  if (context.ns === 'math' && (lower === 'href' || lower === 'xlink:href')) return null;
 
   if (lower === 'target') {
     const target = value.trim().toLowerCase();
@@ -167,6 +187,51 @@ export function hostTitle(value: unknown): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, MAX_TITLE_LENGTH);
+}
+
+/**
+ * What is not seen and still takes a place in a line: the format characters (the marks that
+ * turn text around among them), and the letters that are drawn as nothing. A hundred of
+ * them between `report.pdf` and `.exe` put the name's real end where nobody looks.
+ */
+const UNSEEN = /[\p{Cc}\p{Cf}\u115f\u1160\u2800\u3164\uffa0]+/gu;
+
+/** The most characters of an app's name in a bar of the container's own. */
+export const MAX_LABEL_LENGTH = 60;
+
+/**
+ * An app's own name as the container shows it in a bar of its own, beside words of its own:
+ * one line, nothing unseen in it, and short. The name is the app's word about itself; a mark
+ * in it that turns text around would turn the words that follow it in the bar, the name of
+ * the file the person is asked about among them.
+ */
+export function hostLabel(value: unknown): string {
+  return hostTitle(value).replace(UNSEEN, '').replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL_LENGTH);
+}
+
+/** The most characters of a name a file is saved under. */
+export const MAX_FILE_NAME_LENGTH = 120;
+
+/**
+ * The name a file an app made is saved under: the app's word for it, as a file's name and
+ * nothing else. No folder (a name is not a path), nothing a file system refuses, no control
+ * characters, and none of the marks that turn the direction of the text after them: with
+ * one, `report‮fdp.exe` reads as `reportexe.pdf` in the bar that asks the person. A name
+ * with nothing left in it is `download`. Nothing unseen either, and no quotation mark: the
+ * bar shows the name between a pair, and a name with one in it closed the pair early.
+ */
+export function hostFileName(value: unknown): string {
+  const text = typeof value === 'string' ? value : '';
+  const clean = text
+    .replace(UNSEEN, '')
+    // What a file system refuses, and the quotation marks a bar puts a name between.
+    .replace(/[<>:"/\\|?*\u201c-\u201f\u00ab\u00bb]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+/, '')
+    .slice(0, MAX_FILE_NAME_LENGTH)
+    .replace(/[. ]+$/, '');
+  return clean || 'download';
 }
 
 /** A width or height the app asked a canvas for, held to what the page can hold. */

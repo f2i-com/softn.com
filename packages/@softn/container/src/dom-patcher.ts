@@ -6,10 +6,12 @@
  * `<softn-app>`'s closed `ShadowRoot`.
  */
 
-import { ContainerArchive, base64ToBytes, resolveVfsPath } from './archive';
+import { ContainerArchive, base64ToBytes, bytesToBase64, resolveVfsPath } from './archive';
 import {
+  MATH_NS,
   MAX_EVENT_TYPES,
   MAX_HOST_NODES,
+  SVG_NS,
   canvasPropertyAllowed,
   canvasSide,
   createHostElement,
@@ -52,6 +54,51 @@ const TREE_PROPERTIES = new Set(['selectedIndex', 'chosen', 'focus', 'scrollInto
 /** The most images an app has the page load for it that are not on the page (`new Image()`). */
 const MAX_PRELOADED_IMAGES = 2048;
 
+/** The largest picture of a canvas handed back to the app as a file. */
+const MAX_CANVAS_FILE_BYTES = 32 * 1024 * 1024;
+
+/** How long after a click or a key of the person's the app may ask to save a file. */
+const ACTIVATION_MS = 5000;
+
+/** How long after a save was asked for nothing counts as a new word of the person's: what is left of the same press. */
+const SAME_PRESS_MS = 500;
+
+/** The most shadow trees an app has at once, and how many more there must be before those no longer on the page are looked for. */
+const MAX_SHADOW_ROOTS = 8192;
+const SWEEP_ROOTS_EVERY = 256;
+
+/** The most pictures of canvases made for an app at once. */
+const MAX_CANVAS_ENCODES = 4;
+
+/**
+ * Events that leave a shadow tree, by the web's own rule (every one a person's hand or keys
+ * make): heard on the app's page wherever they happened, so a shadow root is not listened
+ * on for them. What is not here (a form sent, a field's change, a picture's load) stays in
+ * its tree, and every root is listened on for it.
+ */
+const COMPOSED_EVENTS = new Set([
+  'click', 'dblclick', 'auxclick', 'contextmenu', 'mousedown', 'mouseup', 'mousemove', 'mouseover', 'mouseout', 'mouseenter', 'mouseleave',
+  'pointerdown', 'pointerup', 'pointermove', 'pointerover', 'pointerout', 'pointerenter', 'pointerleave', 'pointercancel',
+  'touchstart', 'touchend', 'touchmove', 'touchcancel', 'wheel', 'keydown', 'keyup', 'keypress', 'input', 'beforeinput',
+  'focus', 'blur', 'focusin', 'focusout', 'compositionstart', 'compositionupdate', 'compositionend',
+  'dragstart', 'drag', 'dragend', 'dragenter', 'dragleave', 'dragover', 'drop',
+]);
+
+/**
+ * The most files of one file field handed to an app, and the most bytes of them together.
+ *
+ * A megabyte and a half, which is what an app's script can take in one turn: the bytes cross
+ * to it as text and are made bytes again by the script's own engine, a byte at a time, inside
+ * the turn the field's change is heard in. Measured, two megabytes arrive and two and a half
+ * never do (the turn runs out, and the app hears of no change at all); the limit was 32 MB
+ * a file, so every file a person would call large was lost without a word. A file past the
+ * limit is left out and the app is told so. Handing over more needs the bytes kept on the
+ * page and read by the app a part at a time, which is not built.
+ */
+const MAX_PICKED_FILES = 32;
+const MAX_PICKED_BYTES = 1536 * 1024;
+const MAX_PICKED_FILE_BYTES = MAX_PICKED_BYTES;
+
 /** The most animations an app runs at once, the most keyframes in one, and the longest any part of one lasts. */
 const MAX_ANIMATIONS = 2048;
 const MAX_KEYFRAMES = 512;
@@ -93,6 +140,8 @@ export interface DomPatcherCallbacks {
   onNavigate?: (href: string) => void;
   onCustomTag?: (tag: string) => void;
   onThreeOps?: (canvas: HTMLCanvasElement, canvasId: number, ops: ThreeSceneOp[]) => void;
+  /** The app's script asks to save a file it made, just after a click or a key of the person's in the app. */
+  onSaveRequest?: (file: { name: string; type: string; bytes: Uint8Array }) => void;
 }
 
 export class HostDomPatcher {
@@ -103,6 +152,11 @@ export class HostDomPatcher {
   private readonly entryPath: string;
   private permissions: ContainerPermissions;
   private netGranted: boolean;
+  private filesGranted: boolean;
+  /** When the person last clicked or pressed a key in the app: a file is saved only just after. */
+  private lastActivation = Number.NEGATIVE_INFINITY;
+  /** The files of a file field as last read for the app, by the list the page holds for it. */
+  private readonly pickedFiles = new WeakMap<HTMLInputElement, { list: FileList | null; change: Promise<unknown[]> }>();
   private readonly callbacks: DomPatcherCallbacks;
 
   private readonly listenedEvents = new Set<string>();
@@ -129,6 +183,29 @@ export class HostDomPatcher {
   private readonly imageCache = new Map<string, HTMLImageElement>();
   /** Animations the app's script started (`element.animate`), by the key the script knows each by. */
   private readonly animations = new Map<string, { el: Element; animation: Animation }>();
+  /**
+   * The shadow roots the app's script attached to elements of its own. Each is a real one on
+   * the page, so its stylesheets are its own and the browser fills its slots; and each is
+   * listened on as the app's page is, because what does not leave a shadow tree (a form
+   * sent, a field changed) is heard nowhere else.
+   */
+  private readonly shadowRoots = new Set<ShadowRoot>();
+  /** What listens for the app's events: on its page, and on every shadow root attached in it. */
+  private readonly listening: Array<{ type: string; fn: (e: Event) => void; capture: boolean }> = [];
+  /** Stylesheets written in the batch being applied, read again at its end by where each then is. */
+  private readonly writtenSheets = new Set<Element>();
+  /** Stylesheets last written as a shadow tree's own: read again as the page's if one is ever found outside a tree. */
+  private readonly shadowSheets = new Set<Element>();
+  /** Each attached root's id, as the app's document knows it. */
+  private readonly rootIds = new Map<ShadowRoot, number>();
+  /** How many roots there were when those of elements no longer on the page were last let go. */
+  private rootsAtSweep = 0;
+  /** Canvases with a picture from the network drawn into them, which are not the app's to read back. */
+  private readonly unreadable = new WeakSet<HTMLCanvasElement>();
+  /** Pictures of canvases being made for the app. */
+  private encoding = 0;
+  /** Until when no click or key is the person's word for a save: the rest of the press that asked for the last one. */
+  private quietUntil = 0;
   /** A link to a page of the app's that was clicked, held until the app's script has heard the click. */
   private heldLink: { event: Event; href: string } | null = null;
   private disposed = false;
@@ -148,6 +225,8 @@ export class HostDomPatcher {
     entryPath: string;
     permissions: ContainerPermissions;
     netGranted: boolean;
+    /** Whether the person allowed the app files: what they pick in a file field is then read for it. */
+    filesGranted?: boolean;
     callbacks: DomPatcherCallbacks;
   }) {
     this.viewportEl = params.viewportEl;
@@ -156,6 +235,7 @@ export class HostDomPatcher {
     this.entryPath = params.entryPath;
     this.permissions = params.permissions;
     this.netGranted = params.netGranted;
+    this.filesGranted = params.filesGranted === true;
     this.callbacks = params.callbacks;
     if (params.headEl) this.nodes.set(GUEST_HEAD_ID, params.headEl);
 
@@ -163,9 +243,10 @@ export class HostDomPatcher {
     this.installResizeObserver();
   }
 
-  updatePermissions(permissions: ContainerPermissions, netGranted: boolean): void {
+  updatePermissions(permissions: ContainerPermissions, netGranted: boolean, filesGranted = this.filesGranted): void {
     this.permissions = permissions;
     this.netGranted = netGranted;
+    this.filesGranted = filesGranted;
   }
 
   /** Apply a batch of `ShellOp` operations produced by a Worker VM turn. */
@@ -178,6 +259,7 @@ export class HostDomPatcher {
     // which option it shows before it had any (a framework that fills a select and chooses
     // in one turn showed the first), and a field was focused before it was on the page.
     const afterTree: Array<[number, string, unknown]> = [];
+    let treeChanged = false;
     const started: Array<[string, number, unknown, unknown]> = [];
     const controlled: Array<[string, string]> = [];
 
@@ -199,6 +281,33 @@ export class HostDomPatcher {
         case 'blob':
           break;
 
+        case 'sr': {
+          const [, hostId, rootId] = op;
+          if (!Number.isInteger(hostId) || !Number.isInteger(rootId) || hostId <= 1 || rootId <= 1) break;
+          // On an element the app made, never on the page's own (its root, its body).
+          const hostEl = this.nodes.get(hostId);
+          if (!(hostEl instanceof Element) || typeof hostEl.attachShadow !== 'function') break;
+          let root = hostEl.shadowRoot && this.shadowRoots.has(hostEl.shadowRoot) ? hostEl.shadowRoot : null;
+          if (!root) {
+            // As many as a page has a use for, and counted with its nodes.
+            if (this.shadowRoots.size >= MAX_SHADOW_ROOTS || (!this.nodes.has(rootId) && this.nodes.size >= MAX_HOST_NODES)) break;
+            try {
+              // Open, on the page: what is inside is the app's, and the page reads it as it
+              // reads the rest of the app (to find the element an event happened on).
+              root = hostEl.attachShadow({ mode: 'open' });
+            } catch {
+              // An element the browser attaches none to.
+              break;
+            }
+            this.shadowRoots.add(root);
+            // What does not leave a shadow tree is listened for inside it; what does is heard on the page.
+            for (const { type, fn, capture } of this.listening) if (!COMPOSED_EVENTS.has(type)) root.addEventListener(type, fn, capture);
+          }
+          this.rootIds.set(root, rootId);
+          this.nodes.set(rootId, root);
+          break;
+        }
+
         case 'unblob':
           if (typeof op[1] === 'string') this.archive.dropRuntimeBlob(op[1]);
           break;
@@ -215,6 +324,61 @@ export class HostDomPatcher {
         case 'anim-ctl':
           if (typeof op[1] === 'string' && typeof op[2] === 'string') controlled.push([op[1], op[2]]);
           break;
+
+        case 'canvas-blob': {
+          const [, token, id, type, quality] = op;
+          if (typeof token !== 'string') break;
+          const answer = (bytes: Uint8Array | null, kind = '') => {
+            if (!this.disposed) this.callbacks.onEvent(-1, 'softn:canvas', bytes ? { token, base64: bytesToBase64(bytes), kind } : { token }, []);
+          };
+          const canvas = this.nodes.get(id);
+          // A picture of what the app drew from its own files and its own bytes. Not of a
+          // canvas a picture from the network went into: the browser fetched that one with
+          // the person's cookies for its site, and from the embedding page's own site it
+          // would be read back whole (the browser's own rule stops only other sites'). And a
+          // few at a time: each is a picture encoded on the page's thread.
+          if (!(canvas instanceof HTMLCanvasElement) || typeof canvas.toBlob !== 'function' || this.unreadable.has(canvas) || this.encoding >= MAX_CANVAS_ENCODES) {
+            answer(null);
+            break;
+          }
+          const kind = type === 'image/jpeg' || type === 'image/webp' ? type : 'image/png';
+          this.encoding++;
+          let told = false;
+          const tell = (bytes: Uint8Array | null, was = '') => {
+            if (told) return;
+            told = true;
+            this.encoding--;
+            answer(bytes, was);
+          };
+          try {
+            canvas.toBlob(
+              (blob) => {
+                if (!blob || blob.size > MAX_CANVAS_FILE_BYTES) tell(null);
+                else void readFile(blob as File).then((bytes) => tell(bytes, blob.type), () => tell(null));
+              },
+              kind,
+              typeof quality === 'number' && quality >= 0 && quality <= 1 ? quality : undefined
+            );
+          } catch {
+            // A canvas with a picture drawn into it that is not the app's to read back.
+            tell(null);
+          }
+          break;
+        }
+
+        case 'save': {
+          // Only just after a click or a key of the person's in the app, and one file for
+          // each: an app saves nothing by itself, and not a stream of files for one click.
+          if (typeof op[1] !== 'string' || performance.now() - this.lastActivation > ACTIVATION_MS) break;
+          const blob = this.archive.getRuntimeBlob(op[1]);
+          if (!blob) break;
+          this.lastActivation = Number.NEGATIVE_INFINITY;
+          // The press that asked is spent with it: its key going up, the click its pointer
+          // going down ends in, are not a second word for a second file.
+          this.quietUntil = performance.now() + SAME_PRESS_MS;
+          this.callbacks.onSaveRequest?.({ name: typeof op[2] === 'string' ? op[2] : '', type: blob.type, bytes: blob.bytes });
+          break;
+        }
 
         case 'e': {
           const [, id, rawTag, attrs, rawNs] = op;
@@ -246,6 +410,10 @@ export class HostDomPatcher {
             }
           }
           el.setAttribute(NODE_ID_ATTR, String(id));
+          // An element told again (it was moved) is made again: the one before, and the
+          // shadow tree it had, are let go.
+          const before = this.nodes.get(id);
+          if (before instanceof Element && before.shadowRoot && this.shadowRoots.has(before.shadowRoot)) this.dropShadowRoot(before.shadowRoot);
           this.nodes.set(id, el);
           break;
         }
@@ -310,6 +478,12 @@ export class HostDomPatcher {
         case 'c': {
           const [, parentId, childIds] = op;
           if (!Array.isArray(childIds)) break;
+          // The children of the app's body, of its head, of an element or a shadow root it
+          // made. Not of the page's scroller (the document's root, under either id it has
+          // gone by): that holds the head and the body, and what was put beside them was
+          // outside everything the app's page is held by.
+          if (parentId === 0 || parentId === GUEST_HTML_ID) break;
+          treeChanged = true;
           const parent = parentId === 1 ? this.viewportEl : this.nodes.get(parentId);
           if (!parent || (parent.nodeType !== Node.ELEMENT_NODE && parent.nodeType !== Node.DOCUMENT_FRAGMENT_NODE)) {
             break;
@@ -364,11 +538,42 @@ export class HostDomPatcher {
           const [, canvasId, threeOps] = op;
           const node = this.nodes.get(canvasId);
           if (node && node instanceof HTMLCanvasElement) {
+            // A scene's textures are fetched where the scene is drawn: its picture is not read back.
+            this.unreadable.add(node);
             this.callbacks.onThreeOps?.(node, canvasId, threeOps);
           }
           break;
         }
       }
+    }
+
+    // A stylesheet is written as its text arrives, which is before the turn's tree is in
+    // place: one that ended up in a shadow tree is written again as that tree's own.
+    if (this.writtenSheets.size > 0) {
+      const written = [...this.writtenSheets];
+      this.writtenSheets.clear();
+      for (const sheet of written) {
+        if (this.cssScope(sheet) !== 'shadow') continue;
+        const link = this.links.get(sheet);
+        if (link) this.writeLinkedSheet(sheet, link);
+        else if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
+      }
+      this.writtenSheets.clear();
+    }
+    if (treeChanged) {
+      // And the other way: a sheet written as a shadow tree's own that is no longer in one
+      // (the app's document makes an element again when it moves; an operation written by
+      // hand need not) is read again as the page's, where `:host` is not the app's.
+      for (const sheet of [...this.shadowSheets]) {
+        if (this.cssScope(sheet) === 'shadow') continue;
+        this.shadowSheets.delete(sheet);
+        const link = this.links.get(sheet);
+        if (link) this.writeLinkedSheet(sheet, link);
+        else if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
+        else sheet.textContent = '';
+      }
+      this.writtenSheets.clear();
+      if (this.shadowRoots.size >= this.rootsAtSweep + SWEEP_ROOTS_EVERY) this.sweepShadowRoots();
     }
 
     for (const [id, prop, val] of afterTree) this.applyProperty(id, prop, val);
@@ -423,6 +628,7 @@ export class HostDomPatcher {
       archive: this.archive,
       permissions: this.permissions,
       netGranted: this.netGranted,
+      ns: el.namespaceURI === MATH_NS ? 'math' : el.namespaceURI === SVG_NS ? 'svg' : undefined,
     });
     try {
       if (clean === null) el.removeAttribute(name);
@@ -455,7 +661,90 @@ export class HostDomPatcher {
       const node = this.nodes.get(id);
       if (node && node.nodeType === Node.TEXT_NODE) css += node.nodeValue ?? '';
     }
-    sheet.textContent = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted);
+    const scope = this.cssScope(sheet);
+    sheet.textContent = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted, scope);
+    this.writtenSheets.add(sheet);
+    if (scope === 'shadow') this.shadowSheets.add(sheet);
+    else this.shadowSheets.delete(sheet);
+  }
+
+  /** Let go of a shadow tree: emptied, and no longer one of the app's. */
+  private dropShadowRoot(root: ShadowRoot): void {
+    this.shadowRoots.delete(root);
+    this.rootIds.delete(root);
+    root.replaceChildren();
+  }
+
+  /**
+   * Let go of the shadow trees of elements that are no longer on the app's page. Asked at
+   * the end of a batch, when every element the app's document has on its page is on this
+   * one. Each is emptied, and forgotten under the ids it and its element went by, so
+   * nothing can put it back as it was, unlistened to.
+   */
+  private sweepShadowRoots(): void {
+    for (const root of [...this.shadowRoots]) {
+      if (this.owns(root.host)) continue;
+      const hostId = Number(root.host.getAttribute(NODE_ID_ATTR));
+      if (this.nodes.get(hostId) === root.host) this.nodes.delete(hostId);
+      const rootId = this.rootIds.get(root);
+      if (rootId !== undefined && this.nodes.get(rootId) === root) this.nodes.delete(rootId);
+      this.dropShadowRoot(root);
+    }
+    this.rootsAtSweep = this.shadowRoots.size;
+  }
+
+  /** Whether a picture drawn into a canvas is of the app's own bytes: a file of its own, a blob it made, another canvas of such. */
+  private isOwnPicture(source: CanvasImageSource): boolean {
+    if (source instanceof HTMLCanvasElement) return !this.unreadable.has(source);
+    if (source instanceof HTMLImageElement) return /^(?:blob|data):/i.test(source.currentSrc || source.src);
+    return false;
+  }
+
+  /**
+   * The element an event happened on, as the app knows it: the innermost one on the
+   * event's way that is in a tree of the app's own (its page, a shadow tree it attached).
+   * Inside one of the page's own components (a grid's cells, a chart's marks) the element
+   * is the component's, and the app hears of the component.
+   */
+  private originOf(e: Event): Element | null {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    const page = this.docRootEl.getRootNode();
+    for (const node of path) {
+      if (!(node instanceof Element)) continue;
+      const root = node.getRootNode();
+      if (root === page || (root instanceof ShadowRoot && this.shadowRoots.has(root))) return node;
+    }
+    return e.target instanceof Element ? e.target : null;
+  }
+
+  /** Where a stylesheet is: the app's page, or a shadow tree the app attached. */
+  private cssScope(sheet: Element): 'page' | 'shadow' {
+    const root = sheet.getRootNode();
+    return root instanceof ShadowRoot && this.shadowRoots.has(root) ? 'shadow' : 'page';
+  }
+
+  /** Whether a node is the app's: in its page, or in a shadow tree attached in it. */
+  private owns(node: Node | null): boolean {
+    for (let cur = node; cur; cur = this.parentOf(cur)) if (cur === this.docRootEl) return true;
+    return false;
+  }
+
+  /** A node's parent, out of a shadow tree of the app's to the element it is attached to. */
+  private parentOf(node: Node): Node | null {
+    const parent = node.parentNode;
+    if (parent instanceof ShadowRoot) return this.shadowRoots.has(parent) ? parent.host : null;
+    return parent;
+  }
+
+  /**
+   * Listen on the app's page, and for what does not leave a shadow tree on every shadow
+   * root attached in it, now and later. On the page's scroller, which holds the app's head
+   * and its body and so everything the app has put anywhere.
+   */
+  private listen(type: string, fn: (e: Event) => void, capture: boolean): void {
+    this.listening.push({ type, fn, capture });
+    this.docRootEl.addEventListener(type, fn, capture);
+    if (!COMPOSED_EVENTS.has(type)) for (const root of this.shadowRoots) root.addEventListener(type, fn, capture);
   }
 
   /** Fill the `<style>` standing in for a `<link>`: a stylesheet of the app's, by the host's rule, or nothing. */
@@ -464,7 +753,11 @@ export class HostDomPatcher {
     if (/(?:^|\s)stylesheet(?:\s|$)/i.test(link.rel) && link.href.trim()) {
       const path = resolveVfsPath(link.href, this.entryPath);
       const text = path ? this.archive.readText(path) : null;
-      if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted);
+      const scope = this.cssScope(el);
+      if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted, scope);
+      this.writtenSheets.add(el);
+      if (scope === 'shadow') this.shadowSheets.add(el);
+      else this.shadowSheets.delete(el);
       // Only a stylesheet of the app's own is ever read: any other is said to have failed.
       this.linkNews.set(el, path && text !== null ? 'load' : 'error');
     } else {
@@ -478,8 +771,10 @@ export class HostDomPatcher {
     const desiredNodes: Node[] = [];
     const desiredSet = new Set<Node>();
     for (const cid of childIds) {
+      // A node the app made: not the page's own (its scroller, its head, its body), and not a shadow root, which is no one's child.
+      if (!Number.isInteger(cid) || cid <= 1) continue;
       const child = this.nodes.get(cid);
-      if (child && !desiredSet.has(child)) {
+      if (child && child.nodeType !== Node.DOCUMENT_FRAGMENT_NODE && !desiredSet.has(child)) {
         desiredNodes.push(child);
         desiredSet.add(child);
       }
@@ -606,8 +901,12 @@ export class HostDomPatcher {
    * browser; this is what the app's script asks for by itself.)
    */
   private scrollIntoBox(el: Element): void {
-    if (!this.viewportEl.contains(el) || typeof el.getBoundingClientRect !== 'function') return;
-    for (let box: Element | null = el.parentElement; box; box = box.parentElement) {
+    if (!this.owns(el) || typeof el.getBoundingClientRect !== 'function') return;
+    const boxOf = (node: Node): Element | null => {
+      for (let up = this.parentOf(node); up; up = this.parentOf(up)) if (up instanceof Element) return up;
+      return null;
+    };
+    for (let box = boxOf(el); box; box = boxOf(box)) {
       if (box.scrollHeight > box.clientHeight || box.scrollWidth > box.clientWidth) {
         const inner = el.getBoundingClientRect();
         const outer = box.getBoundingClientRect();
@@ -796,6 +1095,7 @@ export class HostDomPatcher {
           const srcRef = cmd[1];
           const source = this.resolveDrawableImage(srcRef);
           if (!source) break;
+          if (!this.isOwnPicture(source)) this.unreadable.add(canvas);
           if (cmd[7] !== undefined && cmd[8] !== undefined && cmd[9] !== undefined) {
             ctx.drawImage(source, cmd[2], cmd[3], cmd[4]!, cmd[5]!, cmd[6]!, cmd[7], cmd[8], cmd[9]);
           } else if (cmd[4] !== undefined && cmd[5] !== undefined) {
@@ -976,21 +1276,23 @@ export class HostDomPatcher {
     // anything else does nothing. v0.0.43 left links out to the browser, `target="_top"`
     // and all.
     const onClickCapture = (e: Event) => {
-      const target = e.target instanceof Element ? e.target : null;
-      const anchor = target?.closest('a[href], area[href]');
-      if (!anchor || !this.viewportEl.contains(anchor)) return;
+      // The link the click is on: the nearest one on its way out, through any shadow tree
+      // of the app's (a link inside one, or one around an element that has one).
+      const anchor = linkOnPath(e);
+      if (!anchor || !this.owns(anchor)) return;
       e.preventDefault();
       const href = (anchor.getAttribute('href') ?? '').trim();
       if (!href) return;
       if (href.startsWith('#')) {
-        const root = this.viewportEl.getRootNode() as ShadowRoot | Document;
+        // A place in the tree the link is in: the app's page, or the shadow tree it is in.
+        const root = anchor.getRootNode() as ShadowRoot | Document;
         let to: Element | null = null;
         try {
           to = href.length > 1 ? root.getElementById?.(decodeURIComponent(href.slice(1))) ?? null : this.viewportEl;
         } catch {
           to = null;
         }
-        if (to && this.viewportEl.contains(to)) to.scrollIntoView({ block: 'start' });
+        if (to && this.owns(to)) to.scrollIntoView({ block: 'start' });
         return;
       }
       if (isExternalHref(href)) {
@@ -1010,22 +1312,41 @@ export class HostDomPatcher {
       this.callbacks.onNavigate?.(href);
     };
     const onInputOrChange = (e: Event) => {
-      const changes = this.extractInputSync(e.target);
-      if (changes.length > 0 && !this.listenedEvents.has(e.type)) {
-        this.callbacks.onSync(changes);
+      const changes = this.extractInputSync(this.originOf(e));
+      if (this.listenedEvents.has(e.type)) return;
+      const field = fileField(this.originOf(e));
+      if (field) {
+        // The files picked go with the field's change: read first, then told together.
+        void this.filesOf(field).then((files) => {
+          if (!this.disposed) this.callbacks.onSync([...changes, ...files]);
+        });
+        return;
       }
+      if (changes.length > 0) this.callbacks.onSync(changes);
+    };
+    // A click or a key of the person's in the app: what a save is allowed just after.
+    const onActivation = () => {
+      const now = performance.now();
+      if (now >= this.quietUntil) this.lastActivation = now;
     };
 
-    this.viewportEl.addEventListener('submit', onSubmitCapture, true);
-    this.viewportEl.addEventListener('click', onClickCapture, false);
-    this.viewportEl.addEventListener('input', onInputOrChange, true);
-    this.viewportEl.addEventListener('change', onInputOrChange, true);
+    // On the app's page and on each shadow root attached in it: a form sent or a field
+    // changed inside a shadow tree does not leave it, and a form the page never heard of
+    // would be sent by the browser, taking the embedding page with it. An event that does
+    // leave (a click) passes more than one of these, and is handled at the first.
+    this.listen('submit', oncePerEvent(onSubmitCapture), true);
+    this.listen('click', oncePerEvent(onClickCapture), false);
+    this.listen('input', oncePerEvent(onInputOrChange), true);
+    this.listen('change', oncePerEvent(onInputOrChange), true);
+    for (const type of ACTIVATIONS) this.listen(type, onActivation, true);
 
     this.cleanupFns.push(() => {
-      this.viewportEl.removeEventListener('submit', onSubmitCapture, true);
-      this.viewportEl.removeEventListener('click', onClickCapture, false);
-      this.viewportEl.removeEventListener('input', onInputOrChange, true);
-      this.viewportEl.removeEventListener('change', onInputOrChange, true);
+      for (const { type, fn, capture } of this.listening) {
+        this.docRootEl.removeEventListener(type, fn, capture);
+        for (const root of this.shadowRoots) root.removeEventListener(type, fn, capture);
+      }
+      this.listening.length = 0;
+      this.shadowRoots.clear();
     });
   }
 
@@ -1057,7 +1378,9 @@ export class HostDomPatcher {
     const useCapture = CAPTURE_ONLY_EVENTS.has(eventType);
 
     const handler = (e: Event) => {
-      const targetEl = e.target instanceof Element ? e.target : null;
+      // The element it happened on, inside whatever shadow tree of the app's: at the app's
+      // page an event that left one reads as its host's.
+      const targetEl = this.originOf(e);
       const nodeId = this.findNearestNodeId(targetEl);
       // A link held for this click (above): followed once the script has heard the click
       // and not cancelled it, or now if the script is not going to hear it.
@@ -1068,13 +1391,14 @@ export class HostDomPatcher {
         return;
       }
 
-      const syncChanges = this.extractInputSync(e.target, eventType === 'click');
+      const syncChanges = this.extractInputSync(targetEl, eventType === 'click');
       // The focused element inside the app's own root. (The document's is the embedding
       // page's `<softn-app>` element, which is none of the app's, so the app's script never
-      // learned where the focus was.)
+      // learned where the focus was.) Inside a shadow tree of the app's, the one in there.
       const root = this.viewportEl.getRootNode() as ShadowRoot | Document;
-      const activeEl = root.activeElement;
-      const activeId = activeEl instanceof Element && this.viewportEl.contains(activeEl) ? this.findNearestNodeId(activeEl) : null;
+      let activeEl = root.activeElement;
+      while (activeEl?.shadowRoot && this.shadowRoots.has(activeEl.shadowRoot) && activeEl.shadowRoot.activeElement) activeEl = activeEl.shadowRoot.activeElement;
+      const activeId = activeEl instanceof Element && this.owns(activeEl) ? this.findNearestNodeId(activeEl) : null;
       if (activeId !== null) syncChanges.push(['f', activeId]);
 
       const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this), this.origin());
@@ -1084,11 +1408,19 @@ export class HostDomPatcher {
           : (eventBits: number) => {
               if (!this.disposed && !(eventBits & 1)) this.callbacks.onNavigate?.(held);
             };
+      // A file field that changed: its files are read (for an app allowed them) and told
+      // with the event, so that input.files is true by the time the script hears of it.
+      const field = eventType === 'change' || eventType === 'input' ? fileField(targetEl) : null;
+      if (field) {
+        void this.filesOf(field).then((files) => {
+          if (!this.disposed) this.callbacks.onEvent(nodeId, eventType, props, [...syncChanges, ...files], answered);
+        });
+        return;
+      }
       this.callbacks.onEvent(nodeId, eventType, props, syncChanges, answered);
     };
 
-    this.viewportEl.addEventListener(eventType, handler, useCapture);
-    this.cleanupFns.push(() => this.viewportEl.removeEventListener(eventType, handler, useCapture));
+    this.listen(eventType, oncePerEvent(handler), useCapture);
 
     // An image of the first page may have loaded before the script asked to hear of it (its
     // script starts a thread away): each one that has is said now, once, so that
@@ -1108,15 +1440,15 @@ export class HostDomPatcher {
   }
 
   private findNearestNodeId(el: Element | null): number | null {
-    let cur: Element | null = el;
-    while (cur) {
+    // Out through a shadow tree of the app's, to the element it is attached to.
+    for (let cur: Node | null = el; cur; cur = this.parentOf(cur)) {
+      if (!(cur instanceof Element)) continue;
       const raw = cur.getAttribute(NODE_ID_ATTR);
       if (raw !== null) {
         const n = Number(raw);
         if (Number.isInteger(n)) return n;
       }
       if (cur === this.viewportEl) return 1;
-      cur = cur.parentElement;
     }
     return null;
   }
@@ -1143,6 +1475,10 @@ export class HostDomPatcher {
       if (target.type === 'checkbox' || target.type === 'radio') {
         if (!clicked) changes.push(['k', id, target.checked]);
         else if (target.type === 'checkbox') changes.push(['k', id, !target.checked]);
+      } else if (target.type === 'file') {
+        // What a file field says of itself is the name of what was picked: the app's to
+        // know when it was allowed files, as the file is.
+        changes.push(['v', id, this.filesGranted ? target.value : '']);
       } else {
         changes.push(['v', id, target.value]);
       }
@@ -1174,6 +1510,43 @@ export class HostDomPatcher {
   private origin(): AppOrigin {
     const box = typeof this.docRootEl.getBoundingClientRect === 'function' ? this.docRootEl.getBoundingClientRect() : null;
     return { left: box?.left ?? 0, top: box?.top ?? 0, scrollLeft: this.docRootEl.scrollLeft || 0, scrollTop: this.docRootEl.scrollTop || 0 };
+  }
+
+  /**
+   * The files the person picked in a file field, as a change for the app's document: read
+   * here, on the page, for an app the person allowed files; for any other the field's
+   * files are none, and the app is told why. Read once for each choice (the field says
+   * both `input` and `change` of it).
+   */
+  private filesOf(field: HTMLInputElement): Promise<unknown[]> {
+    const id = this.findNearestNodeId(field);
+    if (id === null || id <= 1) return Promise.resolve([]);
+    const kept = this.pickedFiles.get(field);
+    if (kept && kept.list === field.files) return kept.change;
+    const list = field.files;
+    const chosen = list ? Array.from(list) : [];
+    const change = (async (): Promise<unknown[]> => {
+      if (!this.filesGranted) return [['F', id, { files: [], refused: chosen.length > 0 }]];
+      const files: Array<{ name: string; type: string; lastModified: number; base64: string }> = [];
+      let skipped = 0;
+      let total = 0;
+      for (const file of chosen) {
+        if (files.length >= MAX_PICKED_FILES || file.size > MAX_PICKED_FILE_BYTES || total + file.size > MAX_PICKED_BYTES) {
+          skipped++;
+          continue;
+        }
+        try {
+          const bytes = await readFile(file);
+          total += bytes.byteLength;
+          files.push({ name: file.name, type: file.type, lastModified: file.lastModified, base64: bytesToBase64(bytes) });
+        } catch {
+          skipped++;
+        }
+      }
+      return [['F', id, skipped > 0 ? { files, skipped } : { files }]];
+    })();
+    this.pickedFiles.set(field, { list, change });
+    return change;
   }
 
   private installResizeObserver(): void {
@@ -1215,12 +1588,50 @@ export class HostDomPatcher {
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.nodes.clear();
+    this.shadowSheets.clear();
+    this.rootIds.clear();
     this.imageCache.clear();
     this.animations.clear();
     this.styleSheets.clear();
     this.links.clear();
     this.pendingProperties.clear();
   }
+}
+
+/** The nearest link on an event's way out, through any shadow tree. */
+function linkOnPath(e: Event): Element | null {
+  const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+  for (const node of path) if (node instanceof Element && node.matches('a[href], area[href]')) return node;
+  const target = e.target instanceof Element ? e.target : null;
+  return target?.closest('a[href], area[href]') ?? null;
+}
+
+/** `fn`, run once for an event however many of the app's roots it passes. */
+function oncePerEvent(fn: (e: Event) => void): (e: Event) => void {
+  const seen = new WeakSet<Event>();
+  return (e) => {
+    if (seen.has(e)) return;
+    seen.add(e);
+    fn(e);
+  };
+}
+
+/** What a person does that an app may save a file just after. */
+const ACTIVATIONS = ['keydown', 'click'] as const;
+
+/** The file field an event is on, if it is one. */
+function fileField(target: EventTarget | null): HTMLInputElement | null {
+  return target instanceof HTMLInputElement && target.type === 'file' ? target : null;
+}
+
+/** A picked file's bytes. Through a FileReader: every page that has file fields has one. */
+function readFile(file: Blob): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () => reject(reader.error ?? new Error('The file could not be read'));
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 /** The corner of the app's box in the window, and how far the box is scrolled. */

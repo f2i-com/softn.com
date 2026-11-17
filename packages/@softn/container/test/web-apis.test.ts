@@ -251,6 +251,471 @@ describe('a request, as the web sends one', () => {
   });
 });
 
+describe('an answer read as it arrives', () => {
+  /** A network whose answer the test writes a piece at a time. */
+  function slowNetwork(type = 'text/plain') {
+    const asked: Array<{ url: string; headers: Record<string, string>; signal: AbortSignal | null }> = [];
+    const writers: Array<{ write: (text: string | Uint8Array) => void; end: () => void }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      asked.push({ url: String(input), headers: Object.fromEntries(new Headers(init?.headers).entries()), signal: init?.signal ?? null });
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      let ended = false;
+      const body = new ReadableStream<Uint8Array>({ start: (c) => { controller = c; } });
+      // A request let go is one the network stops writing to.
+      init?.signal?.addEventListener('abort', () => {
+        if (!ended) controller.error(new DOMException('The operation was aborted.', 'AbortError'));
+        ended = true;
+      });
+      writers.push({
+        write: (text) => { if (!ended) controller.enqueue(typeof text === 'string' ? new TextEncoder().encode(text) : text); },
+        end: () => { if (!ended) controller.close(); ended = true; },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': type } });
+    });
+    return { asked, writers };
+  }
+
+  it('hands the app each piece of an answer as it comes, through response.body', async () => {
+    const { writers } = slowNetwork();
+    const { handle, text } = await open(
+      {
+        ...GRANTED,
+        'index.html': page(
+          '<p id="seen"></p>',
+          `var seen = [];
+          var say = function (what) { seen.push(what); document.getElementById('seen').textContent = seen.join(' '); };
+          fetch('https://api.softn.test/words').then(function (response) {
+            say('head:' + response.status + ':' + (response.body instanceof ReadableStream) + ':' + response.body.locked);
+            var reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+            var read = function () {
+              return reader.read().then(function (step) {
+                if (step.done) { say('end'); return; }
+                say('[' + step.value + ']');
+                return read();
+              });
+            };
+            return read();
+          });`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => writers.length).toBe(1);
+    await expect.poll(() => text('#seen')).toBe('head:200:true:false');
+    // Each piece is the app's before the next is written.
+    writers[0].write('Hel');
+    await expect.poll(() => text('#seen')).toBe('head:200:true:false [Hel]');
+    // A character cut in two by the network arrives whole.
+    const o = new TextEncoder().encode('lo wörld');
+    writers[0].write(o.subarray(0, 5));
+    await expect.poll(() => text('#seen')).toBe('head:200:true:false [Hel] [lo w]');
+    writers[0].write(o.subarray(5));
+    await expect.poll(() => text('#seen')).toBe('head:200:true:false [Hel] [lo w] [örld]');
+    writers[0].end();
+    await expect.poll(() => text('#seen')).toBe('head:200:true:false [Hel] [lo w] [örld] end');
+    handle.dispose();
+  });
+
+  it('still gives the whole of it to code that asks for the whole, and walks it with for await', async () => {
+    const { writers } = slowNetwork('application/json');
+    const { handle, result } = await open(
+      {
+        ...GRANTED,
+        'index.html': page(
+          '',
+          `fetch('https://api.softn.test/whole').then(function (response) { return response.json(); }).then(function (json) {
+            out.whole = json.n;
+            return fetch('https://api.softn.test/walk');
+          }).then(async function (response) {
+            var sizes = [];
+            for await (var piece of response.body) sizes.push(piece.length);
+            out.walked = sizes.join('+');
+            try { await response.text(); out.again = 'read'; } catch (e) { out.again = e.name; }
+            done();
+          });`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => writers.length).toBe(1);
+    writers[0].write('{"n":');
+    writers[0].write('42}');
+    writers[0].end();
+    await expect.poll(() => writers.length).toBe(2);
+    writers[1].write('abc');
+    await settle(40);
+    writers[1].write('de');
+    writers[1].end();
+    // A body walked piece by piece has been read: asked for again whole, it says so, as on the web.
+    expect(await result()).toEqual({ whole: 42, walked: '3+2', again: 'TypeError' });
+    handle.dispose();
+  });
+
+  it('gives a copy its own reading of the answer, and a file of the app’s own a body to read too', async () => {
+    const { writers } = slowNetwork('application/json');
+    const { handle, result } = await open(
+      {
+        ...GRANTED,
+        'notes.txt': 'kept in the app',
+        'index.html': page(
+          '',
+          `fetch('https://api.softn.test/copied').then(function (response) {
+            var copy = response.clone();
+            out.before = [response.bodyUsed, copy.bodyUsed, copy.status, copy.headers.get('content-type')].join('|');
+            return Promise.all([response.text(), copy.json()]).then(function (both) {
+              out.both = both[0] + '|' + both[1].n;
+              out.after = [response.bodyUsed, copy.bodyUsed].join('|');
+              try { response.clone(); out.late = 'copied'; } catch (e) { out.late = e.name; }
+            });
+          }).then(function () { return fetch('notes.txt'); }).then(function (response) {
+            return response.body.pipeThrough(new TextDecoderStream()).getReader().read();
+          }).then(function (step) { out.own = step.value; done(); });`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => writers.length).toBe(1);
+    // Half before the copy is read and half after: each has all of it.
+    writers[0].write('{"n":');
+    await settle(60);
+    writers[0].write('7}');
+    writers[0].end();
+    expect(await result()).toEqual({ before: 'false|false|200|application/json', both: '{"n":7}|7', after: 'true|true', late: 'TypeError', own: 'kept in the app' });
+    handle.dispose();
+  });
+
+  it('lets the network go when the app says stop, or stops reading', async () => {
+    const { asked, writers } = slowNetwork();
+    const { handle, result } = await open(
+      {
+        ...GRANTED,
+        'index.html': page(
+          '',
+          `var stopper = new AbortController();
+          fetch('https://api.softn.test/stopped', { signal: stopper.signal }).then(function (response) {
+            var reader = response.body.getReader();
+            return reader.read().then(function (step) {
+              out.first = new TextDecoder().decode(step.value);
+              stopper.abort();
+              return reader.read();
+            });
+          }).then(function () { out.stopped = 'read on'; }, function (e) { out.stopped = e.name; }).then(function () {
+            return fetch('https://api.softn.test/dropped');
+          }).then(function (response) {
+            var reader = response.body.getReader();
+            return reader.read().then(function () { return reader.cancel(); });
+          }).then(function () { out.dropped = 'let go'; done(); });`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => writers.length).toBe(1);
+    writers[0].write('abc');
+    await expect.poll(() => writers.length).toBe(2);
+    expect(asked[0].signal?.aborted, 'a request the app stopped is ended on the network').toBe(true);
+    writers[1].write('xyz');
+    expect(await result()).toEqual({ first: 'abc', stopped: 'AbortError', dropped: 'let go' });
+    await expect.poll(() => asked[1].signal?.aborted, { message: 'a body the app let go of is ended on the network' }).toBe(true);
+    handle.dispose();
+  });
+
+  it('asks the network for twelve at a time until each is answered, and a feed that stays open keeps no request waiting', async () => {
+    // A network that answers when the test says so, with a body that stays open.
+    const answers: Array<() => void> = [];
+    const bodies: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+    vi.stubGlobal('fetch', async () => {
+      await new Promise<void>((resolve) => answers.push(resolve));
+      return new Response(new ReadableStream<Uint8Array>({ start: (c) => { bodies.push(c); } }), { status: 200, headers: { 'content-type': 'text/plain' } });
+    });
+    const { handle, result } = await open(
+      {
+        ...GRANTED,
+        'index.html': page(
+          '',
+          `var heads = 0;
+          for (var i = 0; i < 15; i++) {
+            fetch('https://api.softn.test/' + i).then(function () {
+              heads++;
+              if (heads === 15) { out.heads = heads; done(); }
+            });
+          }`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => answers.length).toBe(12);
+    await settle(150);
+    expect(answers.length, 'the thirteenth waits for one of the twelve to be answered').toBe(12);
+    // Three are answered, and stay open as a feed does: three more are asked.
+    for (const answer of answers.slice(0, 3)) answer();
+    await expect.poll(() => answers.length).toBe(15);
+    // All fifteen answered and all fifteen open: none of them kept another waiting.
+    for (const answer of answers) answer();
+    expect(await result()).toEqual({ heads: 15 });
+    expect(bodies.length).toBe(15);
+    handle.dispose();
+  });
+
+  it('finishes a request that is under way while the app is not shown', async () => {
+    const { writers } = slowNetwork();
+    const { handle, result } = await open(
+      {
+        ...GRANTED,
+        'index.html': page('', `fetch('https://api.softn.test/behind').then(function (response) { return response.text(); }).then(function (text) { out.text = text; done(); });`),
+      },
+      granted
+    );
+    await expect.poll(() => writers.length).toBe(1);
+    // A tab behind another: its timers wait, the answer it asked for does not.
+    handle.setActive(false);
+    writers[0].write('answered ');
+    writers[0].write('while hidden');
+    writers[0].end();
+    expect(await result()).toEqual({ text: 'answered while hidden' });
+    handle.dispose();
+  });
+
+  it('does not read the network further ahead than a reader keeps up', async () => {
+    // A network that writes for as long as it is read: what stops it is nobody reading.
+    const PIECE = 128 * 1024;
+    let written = 0;
+    vi.stubGlobal('fetch', async () => {
+      const body = new ReadableStream<Uint8Array>({ pull: (controller) => { written++; controller.enqueue(new Uint8Array(PIECE).fill(97)); } }, { highWaterMark: 0 });
+      return new Response(body, { status: 200, headers: { 'content-type': 'application/octet-stream' } });
+    });
+    const { handle, root, text } = await open(
+      {
+        ...GRANTED,
+        'index.html': page(
+          '<p id="seen">…</p><button id="more" type="button">more</button>',
+          `fetch('https://api.softn.test/endless').then(function (response) {
+            var reader = response.body.getReader();
+            var taken = 0;
+            reader.read().then(function (step) {
+              taken += step.value.length;
+              document.getElementById('seen').textContent = 'took ' + taken;
+            });
+            document.getElementById('more').addEventListener('click', function () {
+              var again = function (left) {
+                if (!left) { document.getElementById('seen').textContent = 'took ' + taken; return reader.cancel(); }
+                return reader.read().then(function (step) { taken += step.value.length; return again(left - 1); });
+              };
+              again(40);
+            });
+          });`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => text('#seen'), { timeout: 15_000 }).toBe(`took ${PIECE}`);
+    // The reader stops; so, a few megabytes on, does the reading of the network.
+    let before = -1;
+    await expect
+      .poll(
+        async () => {
+          const was = before;
+          before = written;
+          await settle(400);
+          return written === was;
+        },
+        { timeout: 30_000, interval: 50 }
+      )
+      .toBe(true);
+    const held = written;
+    expect(held * PIECE, 'what waits unread is a few megabytes, not all the network has').toBeLessThan(8 * 1024 * 1024);
+    // The reader reads on: the network is read again.
+    (root.querySelector('#more') as HTMLElement).click();
+    await expect.poll(() => text('#seen'), { timeout: 30_000 }).toBe(`took ${41 * PIECE}`);
+    expect(written).toBeGreaterThan(held);
+    handle.dispose();
+  }, 90_000);
+
+  it('reads a feed the server keeps open a message at a time, and asks for it again from where it left off', async () => {
+    const { asked, writers } = slowNetwork('text/event-stream');
+    const { handle, text } = await open(
+      {
+        ...GRANTED,
+        'index.html': page(
+          '<p id="seen"></p><button id="stop" type="button">stop</button>',
+          `var seen = [];
+          var say = function (what) { seen.push(what); document.getElementById('seen').textContent = seen.join(' '); };
+          var feed = new EventSource('https://api.softn.test/feed');
+          say('state:' + feed.readyState);
+          feed.onopen = function () { say('open:' + feed.readyState); };
+          feed.onmessage = function (e) { say('message:' + e.data.replace(/\\n/g, '/') + ':' + e.lastEventId); };
+          feed.addEventListener('tick', function (e) { say('tick:' + JSON.parse(e.data).n + ':' + (e instanceof MessageEvent)); });
+          feed.onerror = function () { say('error:' + feed.readyState); };
+          document.getElementById('stop').addEventListener('click', function () { feed.close(); say('closed:' + feed.readyState); });`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => writers.length).toBe(1);
+    expect(asked[0].headers.accept).toBe('text/event-stream');
+    await expect.poll(() => text('#seen')).toBe('state:0 open:1');
+    // A message of two lines, cut by the network in the middle of a line; a comment; a named event with an id; the wait before asking again.
+    writers[0].write(': hello\n\ndata: one\ndata: tw');
+    writers[0].write('o\n\nevent: tick\nid: 7\nretry: 100\ndata: {"n":2}\n\n');
+    await expect.poll(() => text('#seen')).toBe('state:0 open:1 message:one/two: tick:2:true');
+    // The feed ends: said, and asked for again after the wait, from the last message it had.
+    writers[0].end();
+    await expect.poll(() => writers.length, { timeout: 5_000 }).toBe(2);
+    expect(asked[1].headers['last-event-id']).toBe('7');
+    await expect.poll(() => text('#seen')).toBe('state:0 open:1 message:one/two: tick:2:true error:0 open:1');
+    writers[1].write('data: three\n\n');
+    await expect.poll(() => text('#seen')).toContain('message:three:7');
+    (handle.shadowRoot.querySelector('#stop') as HTMLElement).click();
+    await expect.poll(() => text('#seen')).toContain('closed:2');
+    // Closed: the end of the feed is not followed by another.
+    writers[1].end();
+    await settle(300);
+    expect(writers.length).toBe(2);
+    handle.dispose();
+  });
+
+  it('asks for a feed as a browser does, and again without its place of a server that will not hear of it', async () => {
+    // A server on another site is asked first about a request that names what a plain one
+    // does not. The feed's first asking names nothing of the kind; the place it left off
+    // does, and a server that answers no to that question is one the request never reaches.
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = Object.fromEntries(new Headers(init?.headers).entries());
+      asked.push(`${Object.keys(headers).sort().join(',')}|${headers['last-event-id'] ?? '-'}|${init?.cache}|${init?.credentials}|${init?.redirect}`);
+      if (headers['last-event-id']) throw new TypeError('Failed to fetch');
+      const first = asked.length === 1;
+      const words = new TextEncoder().encode(first ? 'retry: 100\nid: 9\ndata: one\n\n' : 'data: two\n\n');
+      // The first answer ends; the second stays open.
+      const body = new ReadableStream<Uint8Array>({ start: (c) => { c.enqueue(words); if (first) c.close(); } });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const { handle, text } = await open(
+      {
+        ...GRANTED,
+        'index.html': page(
+          '<p id="seen"></p>',
+          `var seen = [];
+          var feed = new EventSource('https://api.softn.test/feed');
+          feed.onmessage = function (e) { seen.push(e.data + ':' + e.lastEventId); document.getElementById('seen').textContent = seen.join(' '); };`
+        ),
+      },
+      granted
+    );
+    await expect.poll(() => text('#seen'), { timeout: 10_000 }).toBe('one:9 two:9');
+    expect(asked).toEqual(['accept|-|no-store|omit|error', 'accept,last-event-id|9|no-store|omit|error', 'accept|-|no-store|omit|error']);
+    handle.dispose();
+  });
+
+  it('is refused for a site the app was not granted, like any request', async () => {
+    const { asked } = slowNetwork();
+    const { handle, result } = await open(
+      {
+        ...GRANTED,
+        'index.html': page('', `fetch('https://elsewhere.example/x').then(function () { out.elsewhere = 'answered'; done(); }, function (e) { out.elsewhere = e.name + ': ' + /not permitted/.test(e.message); done(); });`),
+      },
+      granted
+    );
+    expect(await result()).toEqual({ elsewhere: 'TypeError: true' });
+    expect(asked).toEqual([]);
+    handle.dispose();
+  });
+});
+
+describe('a canvas’s picture, as a file', () => {
+  it('is read back from the page after the turn’s drawing, and can be saved like any file the app made', async () => {
+    const drawn: string[] = [];
+    const toBlob = HTMLCanvasElement.prototype.toBlob;
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    // This test's page draws nothing: it keeps what it was asked to draw, and hands back a picture of that.
+    const context = (canvas: HTMLCanvasElement) =>
+      new Proxy({}, { get: (_t, name) => (name === 'canvas' ? canvas : (...args: unknown[]) => { if (name === 'fillRect') drawn.push(`rect:${args.join(',')}`); }), set: () => true });
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
+      return context(this);
+    } as unknown as typeof getContext;
+    HTMLCanvasElement.prototype.toBlob = function (callback: BlobCallback, type?: string) {
+      callback(new Blob([`picture of ${drawn.join(';')}`], { type: type ?? 'image/png' }));
+    };
+    const asked: Array<{ name: string; type: string; text: string }> = [];
+    try {
+      const { handle, root, result } = await open(
+        {
+          'index.html': page(
+            '<canvas id="c" width="20" height="10"></canvas><button id="export" type="button">export</button>',
+            `var canvas = document.getElementById('c');
+            document.getElementById('export').addEventListener('click', function () {
+              canvas.getContext('2d').fillRect(1, 2, 3, 4);
+              canvas.toBlob(function (blob) {
+                out.blob = [blob instanceof Blob, blob.type, blob.size > 0].join('|');
+                var link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'drawing.png';
+                link.click();
+                document.createElement('canvas').toBlob(function (none) { out.apart = String(none); done(); });
+              });
+            });`
+          ),
+        },
+        {
+          onSaveRequest: (file: { name: string; type: string; bytes: Uint8Array }) => {
+            asked.push({ name: file.name, type: file.type, text: new TextDecoder().decode(file.bytes) });
+            return false;
+          },
+        }
+      );
+      (root.querySelector('#export') as HTMLElement).click();
+      expect(await result()).toEqual({ blob: 'true|image/png|true', apart: 'null' });
+      // The picture is of what was drawn in the same turn it was asked for.
+      await expect.poll(() => asked).toEqual([{ name: 'drawing.png', type: 'image/png', text: 'picture of rect:1,2,3,4' }]);
+      handle.dispose();
+    } finally {
+      HTMLCanvasElement.prototype.toBlob = toBlob;
+      HTMLCanvasElement.prototype.getContext = getContext;
+    }
+  });
+
+  it('is not read back once a picture from the network has been drawn into it', async () => {
+    // The browser fetches a picture on the page with the person's cookies for its site. An
+    // app may show one from a site it was granted; it may not read one back, and from the
+    // embedding page's own site the browser's own rule would not stop it.
+    const toBlob = HTMLCanvasElement.prototype.toBlob;
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
+      const canvas = () => this;
+      return new Proxy({}, { get: (_t, name) => (name === 'canvas' ? canvas() : () => undefined), set: () => true });
+    } as unknown as typeof getContext;
+    HTMLCanvasElement.prototype.toBlob = function (callback: BlobCallback) {
+      callback(new Blob(['picture'], { type: 'image/png' }));
+    };
+    try {
+      const { handle, result } = await open(
+        {
+          ...GRANTED,
+          'dot.png': new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+          'index.html': page(
+            '<img id="pic" src="https://api.softn.test/account.png"><img id="own" src="dot.png"><canvas id="net"></canvas><canvas id="mine"></canvas><canvas id="copy"></canvas>',
+            `var net = document.getElementById('net'), mine = document.getElementById('mine'), copy = document.getElementById('copy');
+            net.getContext('2d').drawImage(document.getElementById('pic'), 0, 0);
+            mine.getContext('2d').drawImage(document.getElementById('own'), 0, 0);
+            setTimeout(function () {
+              // A canvas drawn from one that is not the app's to read is not either.
+              copy.getContext('2d').drawImage(net, 0, 0);
+              net.toBlob(function (a) { mine.toBlob(function (b) { copy.toBlob(function (c) {
+                out.read = [String(a), b instanceof Blob, String(c)].join('|');
+                done();
+              }); }); });
+            }, 30);`
+          ),
+        },
+        granted
+      );
+      expect(await result()).toEqual({ read: 'null|true|null' });
+      handle.dispose();
+    } finally {
+      HTMLCanvasElement.prototype.toBlob = toBlob;
+      HTMLCanvasElement.prototype.getContext = getContext;
+    }
+  });
+});
+
 describe('XMLHttpRequest', () => {
   it('reads a file of the app’s and a site it was granted, and says each step as a browser’s does', async () => {
     const asked: string[] = [];
@@ -583,7 +1048,7 @@ describe('MessageChannel, a range, and elements of the app’s own making', () =
         });
         out.refused = refused.join(',');
         try { new HTMLElement(); out.plain = 'made'; } catch (e) { out.plain = e.name; }
-        out.shadow = typeof first.attachShadow;
+        out.shadow = typeof first.attachShadow + ':' + String(first.shadowRoot);
         ready.then(function (ctor) {
           out.ready = ctor === UserCard;
           setTimeout(function () {
@@ -602,7 +1067,7 @@ describe('MessageChannel, a range, and elements of the app’s own making', () =
       constructed: 'user-card|true',
       refused: 'SyntaxError,NotSupportedError,NotSupportedError,NotSupportedError',
       plain: 'TypeError',
-      shadow: 'undefined',
+      shadow: 'function:null',
       ready: true,
     });
     expect(said.log).toBe(
@@ -613,6 +1078,305 @@ describe('MessageChannel, a range, and elements of the app’s own making', () =
     expect(root.querySelector('#third .name')?.textContent).toBe('nobody');
     expect(root.querySelector('#second')).toBeNull();
     handle.dispose();
+  });
+});
+
+describe('walking the tree, and a document read from text', () => {
+  it('walks the page with a TreeWalker and a NodeIterator, by what is shown and what a filter says', async () => {
+    const { handle, result } = await open({
+      'index.html': page(
+        '<div id="root"><p id="a">one<b id="b">two</b></p><ul id="c"><li id="d">three</li><li id="e" class="skip"><i id="f">four</i></li></ul></div>',
+        `var root = document.getElementById('root');
+        // A mark of the script's own making, as a template library leaves them.
+        document.getElementById('a').insertBefore(document.createComment('mark'), document.getElementById('b'));
+        var ids = function (walker) { var seen = []; for (var n = walker.nextNode(); n; n = walker.nextNode()) seen.push(n.id || n.nodeValue); return seen.join(','); };
+        out.elements = ids(document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT));
+        out.text = ids(document.createTreeWalker(root, NodeFilter.SHOW_TEXT));
+        out.marks = ids(document.createTreeWalker(root, NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_ELEMENT));
+        // Rejected: it and all inside it. Skipped: it alone.
+        out.rejected = ids(document.createTreeWalker(root, 1, function (n) { return n.id === 'e' ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; }));
+        out.skipped = ids(document.createTreeWalker(root, 1, { acceptNode: function (n) { return n.id === 'e' ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT; } }));
+        var walker = document.createTreeWalker(root, 1);
+        walker.currentNode = document.getElementById('f');
+        out.back = [walker.previousNode().id, walker.previousNode().id, walker.parentNode().id, walker.firstChild().id, walker.nextSibling().id, walker.lastChild().id, String(walker.previousSibling())].join(',');
+        out.kinds = [walker instanceof TreeWalker, walker.root === root, walker.whatToShow].join('|');
+        var each = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
+        var list = [];
+        for (var n = each.nextNode(); n; n = each.nextNode()) list.push(n.id);
+        out.each = list.join(',') + ' <- ' + each.previousNode().id + ',' + each.previousNode().id;
+        done();`
+      ),
+    });
+    expect(await result()).toEqual({
+      elements: 'a,b,c,d,e,f',
+      text: 'one,two,three,four',
+      marks: 'a,mark,b,c,d,e,f',
+      rejected: 'a,b,c,d',
+      skipped: 'a,b,c,d,f',
+      // The last: an only child has no sibling, and its parent is shown, so there is none to go to.
+      back: 'e,d,c,d,e,f,null',
+      kinds: 'true|true|1',
+      each: 'root,a,b,c,d,e,f <- f,e',
+    });
+    handle.dispose();
+  });
+
+  it('reads markup, a drawing and XML into a document of its own, which draws nothing on the page', async () => {
+    const { handle, root, result } = await open({
+      'index.html': page(
+        '<div id="into"></div>',
+        `var html = new DOMParser().parseFromString('<title>Read</title><p class="x">one</p><p class="x" id="two">two <b>bold</b></p><script>window.ran = 1</scr' + 'ipt>', 'text/html');
+        out.html = [html.nodeType, html.title, html.body.children.length, html.querySelectorAll('.x').length, html.getElementById('two').textContent, html.documentElement.localName, html.head.firstChild.localName].join('|');
+        out.ran = typeof window.ran;
+        out.apart = [html.body.isConnected, document.querySelector('.x') === null].join('|');
+        var svg = new DOMParser().parseFromString('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle r="1"/></svg>', 'image/svg+xml');
+        out.svg = [svg.documentElement.localName, svg.documentElement.namespaceURI, svg.querySelector('circle').getAttribute('r'), svg.documentElement.getAttribute('viewBox')].join('|');
+        var feed = new DOMParser().parseFromString('<?xml version="1.0"?><rss><channel><title>News</title><item><title>First</title><link href="a"/></item><item><title>Second</title></item></channel></rss>', 'application/xml');
+        out.feed = [feed.documentElement.localName, feed.querySelectorAll('item').length, feed.querySelector('item title').textContent, feed.getElementsByTagName('link')[0].getAttribute('href'),
+          Array.prototype.map.call(feed.querySelectorAll('item'), function (item) { return item.children.length; }).join('+')].join('|');
+        out.empty = new DOMParser().parseFromString('just words', 'text/xml').documentElement.localName;
+        try { new DOMParser().parseFromString('x', 'text/plain'); out.kind = 'read'; } catch (e) { out.kind = e.name; }
+        var made = document.implementation.createHTMLDocument('Made');
+        made.body.innerHTML = '<em>in a document of its own</em>';
+        out.made = [made.title, made.body.firstChild.localName, made.querySelector('em').textContent].join('|');
+        out.text = new XMLSerializer().serializeToString(html.getElementById('two'));
+        // Put on the page by the app, it is the page's.
+        document.getElementById('into').appendChild(document.importNode(html.getElementById('two'), true));
+        done();`
+      ),
+    });
+    expect(await result()).toEqual({
+      // The script is in the document as an element, and ran nowhere.
+      html: '9|Read|3|2|two bold|html|title',
+      ran: 'undefined',
+      apart: 'false|true',
+      svg: 'svg|http://www.w3.org/2000/svg|1|0 0 2 2',
+      feed: 'rss|2|First|a|2+1',
+      empty: 'parsererror',
+      kind: 'TypeError',
+      made: 'Made|em|in a document of its own',
+      text: '<p class="x" id="two">two <b>bold</b></p>',
+    });
+    expect(root.querySelector('#into #two')?.textContent).toBe('two bold');
+    expect(root.querySelectorAll('.x').length).toBe(1);
+    handle.dispose();
+  });
+});
+
+describe('saving a file the app made', () => {
+  /** What the page was asked to save, by the app's own name for it and as the page would save it. */
+  const SAVER = `var kinds = {
+      csv: function () {
+        var link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob(['a,b\\n1,2'], { type: 'text/csv' }));
+        link.download = 'table.csv';
+        link.click();
+      },
+      named: function () {
+        var link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob(['x']));
+        link.setAttribute('download', '../../evil\\u202Efdp.exe');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      },
+      twice: function () { kinds.csv(); kinds.csv(); },
+      held: function () {
+        var link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob(['x']));
+        link.download = 'held.txt';
+        link.addEventListener('click', function (e) { e.preventDefault(); });
+        link.click();
+      },
+    };
+    Object.keys(kinds).forEach(function (kind) { document.getElementById(kind).addEventListener('click', kinds[kind]); });
+    // By itself, as the page starts: nobody clicked anything.
+    kinds.csv();`;
+  const BUTTONS = '<button id="csv" type="button">csv</button><button id="named" type="button">named</button><button id="twice" type="button">twice</button><button id="held" type="button">held</button>' +
+    '<a id="inline" href="data:text/plain;base64,aGVsbG8=" download="hello.txt">save hello</a><a id="plain" href="data:text/plain,not%20this">no download on it</a>';
+
+  type Asked = { name: string; type: string; size: number; text: string };
+
+  async function saver(extra: Record<string, unknown> = {}) {
+    const asked: Asked[] = [];
+    const opened = await open(
+      { 'index.html': page(BUTTONS, SAVER) },
+      {
+        onSaveRequest: (file: { name: string; type: string; size: number; bytes: Uint8Array }) => {
+          asked.push({ name: file.name, type: file.type, size: file.size, text: new TextDecoder().decode(file.bytes) });
+          return false;
+        },
+        ...extra,
+      }
+    );
+    const click = (selector: string) => (opened.root.querySelector(selector) as HTMLElement).click();
+    return { ...opened, asked, click };
+  }
+
+  it('asks the host, just after the person’s click, for one file, by a name that is a file’s name', async () => {
+    const { handle, asked, click } = await saver();
+    await settle(120);
+    // Nothing for the save the script made by itself as the page started.
+    expect(asked).toEqual([]);
+    click('#csv');
+    await expect.poll(() => asked).toEqual([{ name: 'table.csv', type: 'text/csv', size: 7, text: 'a,b\n1,2' }]);
+    // A click that comes with the one that asked (what is left of the same press) asks for nothing more.
+    click('#named');
+    await settle(150);
+    expect(asked.length).toBe(1);
+    // No folder, nothing a file system refuses, and no mark that turns the text around.
+    await settle(500);
+    click('#named');
+    await expect.poll(() => asked.at(-1)?.name).toBe('_.._evilfdp.exe');
+    // One click, one file.
+    await settle(600);
+    click('#twice');
+    await settle(150);
+    expect(asked.length).toBe(3);
+    // A click the script cancelled saves nothing.
+    await settle(500);
+    click('#held');
+    await settle(150);
+    expect(asked.length).toBe(3);
+    // A link in the page, with its data written into its address, clicked by the person.
+    click('#inline');
+    await expect.poll(() => asked.at(-1)).toEqual({ name: 'hello.txt', type: 'text/plain', size: 5, text: 'hello' });
+    // Without download on it, a link to data is not a file to save.
+    click('#plain');
+    await settle(150);
+    expect(asked.length).toBe(4);
+    handle.dispose();
+  });
+
+  it('asks the person in a bar of its own, and saves at their word as a download of the page', async () => {
+    // The bar is in a shadow root nothing on the page reaches: kept here as it is attached.
+    const roots: ShadowRoot[] = [];
+    const attach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (this: Element, init: ShadowRootInit) {
+      const made = attach.call(this, init);
+      roots.push(made);
+      return made;
+    };
+    const saved: Array<{ name: string; href: string }> = [];
+    const clickLink = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+      if (this.hasAttribute('download') && this.ownerDocument === document && !this.getRootNode({ composed: false }).toString().includes('ShadowRoot')) saved.push({ name: this.download, href: this.href });
+    };
+    try {
+      const { handle, root, click } = await saver({ onSaveRequest: undefined });
+      const bar = () => roots.filter((r) => r.host.isConnected).map((r) => r.querySelector('[data-softn-save-bar]')).find(Boolean) ?? null;
+      click('#csv');
+      await expect.poll(() => bar()?.textContent ?? '').toContain('wants to save a file to this device: “table.csv” (7 bytes)');
+      // Above the app's box, in the frame's root: not in the root the app's stylesheets are in.
+      expect(handle.frameRoot.querySelector('[data-softn-container-save]')).not.toBeNull();
+      expect(root.querySelector('[data-softn-container-save]')).toBeNull();
+      expect(saved).toEqual([]);
+      // Another file asked for while this one is unanswered takes no one's place: the bar
+      // the person is reading does not change its file under them.
+      await settle(600);
+      click('#named');
+      await settle(150);
+      expect(bar()?.textContent).toContain('“table.csv”');
+      // A click already on its way when the bar appeared is not a yes.
+      const early = await saver({ onSaveRequest: undefined });
+      early.click('#csv');
+      await expect.poll(() => roots.map((r) => r.querySelectorAll('[data-softn-save-bar]').length).reduce((a, b) => a + b, 0)).toBe(2);
+      for (const r of roots) for (const button of r.querySelectorAll('[data-softn-save-allow]')) if (r.host.isConnected && early.handle.frameRoot.contains(r.host)) (button as HTMLElement).click();
+      expect(saved).toEqual([]);
+      early.handle.dispose();
+      // Not now: nothing is saved, and the bar goes.
+      (bar()!.querySelector('[data-softn-save-deny]') as HTMLElement).click();
+      expect(bar()).toBeNull();
+      expect(saved).toEqual([]);
+      // Asked again, and allowed.
+      await settle(600);
+      click('#csv');
+      await expect.poll(() => bar() !== null).toBe(true);
+      await settle(450);
+      (bar()!.querySelector('[data-softn-save-allow]') as HTMLElement).click();
+      expect(saved.length).toBe(1);
+      expect(saved[0].name).toBe('table.csv');
+      expect(saved[0].href).toMatch(/^blob:/);
+      // As bytes of no kind: never a document the browser would open in place of saving it.
+      const file = await fetch(saved[0].href);
+      expect(file.headers.get('content-type')).toBe('application/octet-stream');
+      expect(await file.text()).toBe('a,b\n1,2');
+      expect(handle.frameRoot.querySelector('[data-softn-container-save]')).toBeNull();
+      handle.dispose();
+
+      // A host that saves nothing for its apps.
+      const never = await saver({ onSaveRequest: undefined, downloads: 'deny' });
+      never.click('#csv');
+      await settle(150);
+      expect(never.handle.frameRoot.querySelector('[data-softn-container-save]')).toBeNull();
+      never.handle.dispose();
+    } finally {
+      Element.prototype.attachShadow = attach;
+      HTMLAnchorElement.prototype.click = clickLink;
+    }
+  });
+});
+
+describe('a file the person picked in a file field', () => {
+  const PICKER = page(
+    '<form id="form"><input id="pick" type="file" name="upload" multiple><input name="note" value="hi"></form><p id="seen"></p>',
+    `var pick = document.getElementById('pick');
+    out.before = [pick.files instanceof FileList, pick.files.length, document.querySelector('[name=note]').files].join('|');
+    pick.addEventListener('change', function () {
+      var files = pick.files;
+      var names = Array.prototype.map.call(files, function (file) { return file.name + ':' + file.type + ':' + file.size + ':' + (file instanceof File); });
+      var form = new FormData(document.getElementById('form'));
+      var sent = form.getAll('upload').map(function (file) { return file instanceof File ? file.name : typeof file; });
+      Promise.all(Array.prototype.map.call(files, function (file) { return file.text(); })).then(function (texts) {
+        out.picked = names.join(' ');
+        out.texts = texts.join('|');
+        out.form = sent.join(',') + '+' + form.get('note');
+        done();
+      });
+    });`
+  );
+  const pickFiles = (root: ShadowRoot, more: File[] = []) => {
+    const field = root.querySelector('#pick') as HTMLInputElement;
+    const files = [new File(['a,b'], 'table.csv', { type: 'text/csv' }), ...more, new File(['hello'], 'note.txt', { type: 'text/plain' })];
+    Object.defineProperty(field, 'files', { configurable: true, value: files });
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const FILES = { 'permission.json': JSON.stringify({ permissions: { files: { enabled: true } } }) };
+
+  it('is read for an app that was allowed files, and is in the form’s data', async () => {
+    const { handle, root, result } = await open({ ...FILES, 'index.html': PICKER }, granted);
+    await settle();
+    pickFiles(root);
+    expect(await result()).toEqual({
+      before: 'true|0|',
+      picked: 'table.csv:text/csv:3:true note.txt:text/plain:5:true',
+      texts: 'a,b|hello',
+      form: 'table.csv,note.txt+hi',
+    });
+    handle.dispose();
+  });
+
+  it('leaves out a file past what an app’s script can take in a turn, and says so, with the others handed over', async () => {
+    // Past about two megabytes the turn the change is heard in runs out, and the app heard
+    // of no change at all: a file past the limit is left out in words, and the rest arrive.
+    const { handle, root, said, result } = await open({ ...FILES, 'index.html': PICKER }, granted);
+    await settle();
+    pickFiles(root, [new File([new Uint8Array(2 * 1024 * 1024)], 'film.bin')]);
+    expect(await result()).toMatchObject({ picked: 'table.csv:text/csv:3:true note.txt:text/plain:5:true', texts: 'a,b|hello' });
+    expect(said.filter((line) => line.includes('1 of the files picked were left out')).length).toBe(1);
+    handle.dispose();
+  });
+
+  it('is not read for an app that was not: one that never asked, and one the person has not answered', async () => {
+    for (const source of [{ 'index.html': PICKER }, { ...FILES, 'index.html': PICKER }]) {
+      const { handle, root, said, result } = await open(source);
+      await settle();
+      pickFiles(root);
+      expect(await result()).toMatchObject({ picked: '', texts: '' });
+      expect(said.filter((line) => line.includes('has not been allowed to read files')).length).toBe(1);
+      handle.dispose();
+    }
   });
 });
 

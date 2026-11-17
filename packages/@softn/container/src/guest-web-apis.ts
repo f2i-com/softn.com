@@ -221,6 +221,8 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       if (!isBlob(blob)) throw new TypeError("Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
       var id = 'b' + (++blobSeq).toString(36) + '-' + Math.floor(Math.random() * 0x7fffffff).toString(36);
       blobUrls[id] = blob;
+      // An app that makes an address for a blob may put it on a link to save it by.
+      if (typeof g.__softnWatchSaves === 'function') g.__softnWatchSaves();
       if (push && blob.size <= MAX_BLOB_URL_BYTES) push(['blob', id, blob.type, toBase64(blob._softnBytes)]);
       return BLOB_PREFIX + id;
     };
@@ -232,6 +234,164 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       delete blobUrls[id];
       if (push) push(['unblob', id]);
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 3b. Saving a file, and reading one the person picked
+  // ---------------------------------------------------------------------------
+  // A link with download on it, to a blob or to data written into the address, followed:
+  // by the person's click, or by the script's own (a.click(), how an export button saves
+  // what it made). The script only asks. The page it is drawn in names the app and the file
+  // to the person and saves it if they say so, and not at all without a click of theirs just
+  // before.
+  var AnchorClass = g.HTMLAnchorElement;
+  if (doc && push && typeof AnchorClass === 'function') {
+    var saveSeq = 0;
+    var askToSave = function (anchor) {
+      if (!anchor || typeof anchor.hasAttribute !== 'function' || !anchor.hasAttribute('download')) return false;
+      var address = String(anchor.getAttribute('href') || '');
+      var name = String(anchor.getAttribute('download') || '');
+      if (blobAt(address)) {
+        push(['save', address.slice(BLOB_PREFIX.length), name]);
+        return true;
+      }
+      var data = /^data:([^,;]*)((?:;[^,;]*)*),([\s\S]*)$/i.exec(address);
+      if (!data) return false;
+      var bytes;
+      try { bytes = /;base64$/i.test(data[2]) ? fromBase64(data[3].replace(/\s+/g, '')) : utf8(decodeURIComponent(data[3])); } catch (e) { return false; }
+      var id = 's' + (++saveSeq).toString(36) + '-' + Math.floor(Math.random() * 0x7fffffff).toString(36);
+      push(['blob', id, data[1] || 'text/plain', toBase64(bytes)]);
+      push(['save', id, name]);
+      push(['unblob', id]);
+      return true;
+    };
+    // The person's click on such a link, and the script's click on one that is on the page.
+    var listening = false;
+    var listenForSaves = function () {
+      if (listening) return;
+      listening = true;
+      doc.addEventListener('click', function (event) {
+        if (event.defaultPrevented || event._softnSaved) return;
+        var at = event.target && typeof event.target.closest === 'function' ? event.target.closest('a[download]') : null;
+        if (at && askToSave(at)) event._softnSaved = true;
+      });
+    };
+    // Listened for only by an app that has such a link: one that makes an address for a
+    // blob, sets download on a link, or has one in its markup.
+    g.__softnWatchSaves = listenForSaves;
+    var anchorProto = AnchorClass.prototype;
+    var anchorSet = g.Element && g.Element.prototype.setAttribute;
+    if (typeof anchorSet === 'function') {
+      anchorProto.setAttribute = function (name, value) {
+        if (String(name).toLowerCase() === 'download') listenForSaves();
+        return anchorSet.call(this, name, value);
+      };
+    }
+    var downloadOf = Object.getOwnPropertyDescriptor(g.HTMLElement.prototype, 'download');
+    if (downloadOf && downloadOf.set) {
+      Object.defineProperty(anchorProto, 'download', { configurable: true, get: downloadOf.get, set: function (value) { listenForSaves(); downloadOf.set.call(this, value); } });
+    }
+    doc.addEventListener('DOMContentLoaded', function () { if (doc.querySelector('a[download]')) listenForSaves(); });
+    // The script's click on a link that is on no page (made, clicked and dropped).
+    var plainClick = anchorProto.click;
+    if (typeof plainClick === 'function') {
+      anchorProto.click = function () {
+        var cancelled = false;
+        var saved = false;
+        var watch = function (event) { cancelled = !!event.defaultPrevented; saved = !!event._softnSaved; };
+        // Heard last, on the link itself: by then every listener has had its say.
+        this.addEventListener('click', watch);
+        try { return plainClick.apply(this, arguments); } finally {
+          this.removeEventListener('click', watch);
+          if (!cancelled && !saved && !this.isConnected) askToSave(this);
+        }
+      };
+    }
+  }
+
+  // A file the person picked in a file field. The page reads it for an app that was allowed
+  // files (it declares "files", and the person said yes), and hands it over with the change.
+  var InputClass = g.HTMLInputElement;
+  if (doc && typeof InputClass === 'function' && typeof WeakMap === 'function') {
+    // What was picked in each field, by the field's id as the page knows it: the field may
+    // be anywhere, in a shadow tree as well as on the page. Kept as it came, and made files
+    // when the app first asks for them.
+    var given = new Map();
+    var filesOf = function (field) {
+      var entry = given.get(field.__softnNode);
+      if (!entry) return null;
+      if (!entry.list) {
+        entry.list = listOf(entry.files.map(function (file) {
+          return new File([fromBase64(String(file.base64 || ''))], String(file.name || ''), { type: String(file.type || ''), lastModified: Number(file.lastModified) || 0 });
+        }));
+        entry.files = [];
+      }
+      return entry.list;
+    };
+    var listOf = function (files) {
+      var list = files.slice();
+      Object.defineProperty(list, 'item', { value: function (i) { return this[i] || null; }, enumerable: false });
+      Object.defineProperty(list, '_softnFileList', { value: true, enumerable: false });
+      return list;
+    };
+    var empty = listOf([]);
+    var warned = false;
+    var plainSync = g.__softnDocSync;
+    if (typeof plainSync === 'function') {
+      g.__softnDocSync = function (changes) {
+        for (var i = 0; i < changes.length; i++) {
+          var change = changes[i];
+          if (!change || change[0] !== 'F') continue;
+          var told = change[2] || {};
+          if (told.refused && !warned) {
+            warned = true;
+            g.console.warn('[SoftN] A file was picked, and this app has not been allowed to read files: declare "files" in permission.json. input.files is empty.');
+          }
+          var files = Array.isArray(told.files) ? told.files : [];
+          // A field says both input and change of one choice: the same files, told twice, are kept once.
+          var mark = JSON.stringify([files.map(function (file) { return [file.name, file.lastModified, String(file.base64 || '').length]; }), told.skipped || 0]);
+          var before = given.get(change[1]);
+          if (before && before.mark === mark) continue;
+          if (told.skipped) g.console.warn('[SoftN] ' + told.skipped + ' of the files picked were left out: a file field hands an app 1.5 MB at a time here, and they were past it.');
+          given.set(change[1], { mark: mark, files: files, list: null });
+        }
+        return plainSync(changes);
+      };
+    }
+    if (!('files' in InputClass.prototype)) {
+      Object.defineProperty(InputClass.prototype, 'files', {
+        configurable: true,
+        get: function () { return String(this.type || '').toLowerCase() === 'file' ? filesOf(this) || empty : null; },
+      });
+    }
+    if (typeof g.FileList === 'undefined') {
+      var FileListClass = function () { throw new TypeError('Illegal constructor'); };
+      try { Object.defineProperty(FileListClass, Symbol.hasInstance, { value: function (value) { return !!value && value._softnFileList === true; } }); } catch (e) {}
+      define('FileList', FileListClass);
+    }
+    // A form's data has the files of its file fields in it.
+    var FormBase = g.FormData;
+    if (typeof FormBase === 'function' && !FormBase._softnPicked) {
+      var FormWithFiles = function (form) {
+        var data = form === undefined ? new FormBase() : new FormBase(form);
+        if (form && typeof form.querySelectorAll === 'function') {
+          var fileFields = form.querySelectorAll('input[name]');
+          for (var i = 0; i < fileFields.length; i++) {
+            if (String(fileFields[i].type || '').toLowerCase() !== 'file') continue;
+            var files = filesOf(fileFields[i]);
+            var name = fileFields[i].getAttribute('name');
+            data.delete(name);
+            if (!files || files.length === 0) data.append(name, new File([], '', { type: 'application/octet-stream' }));
+            else for (var f = 0; f < files.length; f++) data.append(name, files[f]);
+          }
+        }
+        return data;
+      };
+      FormWithFiles.prototype = FormBase.prototype;
+      FormWithFiles._softnPicked = true;
+      try { Object.defineProperty(FormWithFiles, 'name', { value: 'FormData', configurable: true }); } catch (e) {}
+      try { g.FormData = FormWithFiles; } catch (e) {}
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -329,7 +489,8 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         ? Promise.resolve(new g.Response({ ok: true, status: 200, statusText: 'OK', headers: { 'content-type': blob.type || 'application/octet-stream', 'content-length': String(blob.size) }, base64: toBase64(blob._softnBytes) }, String(address)))
         : String(address).indexOf('blob:') === 0
           ? Promise.reject(new TypeError('Failed to fetch'))
-          : plainFetch(address, options);
+          // The network is read as it arrives; a file of the app's own, where it is.
+          : (typeof g.__softnReadNetwork === 'function' && g.__softnReadNetwork(address, options)) || plainFetch(address, options);
       if (!signal || typeof signal.addEventListener !== 'function') return sent;
       // The wait ends when the app says so; what was asked of the network is let finish.
       return new Promise(function (resolve, reject) {
@@ -355,6 +516,462 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         });
       };
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 4b. An answer read as it arrives
+  // ---------------------------------------------------------------------------
+  // A request to the network was answered whole: the app waited for the last byte before it
+  // had the first, and response.body was not there at all. An answer that is written out a
+  // piece at a time (a model's words as it makes them, a feed that stays open) is one the
+  // app reads a piece at a time: the Worker reads the network and hands over what has come
+  // each time the app asks, under the rule every request is held to.
+  if (typeof g.ReadableStream === 'undefined') {
+    var sizeOfPiece = function (piece) { return piece && typeof piece.length === 'number' ? piece.length : 1; };
+    // The stream itself: what an underlying source enqueues, read by one reader.
+    var Stream = function (source) {
+      if (!(this instanceof Stream)) throw new TypeError("Failed to construct 'ReadableStream': Please use the 'new' operator.");
+      var self = this;
+      this.locked = false;
+      this._queue = [];
+      this._waiting = [];
+      this._state = 'readable';
+      this._error = undefined;
+      this._source = source || {};
+      this._pulling = false;
+      // What is here unread, in bytes (or characters), and whether any of it was ever read.
+      this._softnSize = 0;
+      this._softnRead = false;
+      this._softnOnTake = null;
+      this._controller = {
+        enqueue: function (chunk) {
+          if (self._state !== 'readable') return;
+          if (self._waiting.length) self._waiting.shift()[0]({ value: chunk, done: false });
+          else { self._queue.push(chunk); self._softnSize += sizeOfPiece(chunk); }
+        },
+        close: function () {
+          if (self._state !== 'readable') return;
+          self._state = 'closed';
+          while (self._waiting.length) self._waiting.shift()[0]({ value: undefined, done: true });
+        },
+        error: function (reason) {
+          if (self._state !== 'readable') return;
+          self._state = 'errored';
+          self._error = reason;
+          while (self._waiting.length) self._waiting.shift()[1](reason);
+        },
+        get desiredSize() { return 1 - self._queue.length; },
+      };
+      if (typeof this._source.start === 'function') { try { this._source.start(this._controller); } catch (e) { this._controller.error(e); } }
+    };
+    Stream.prototype._read = function () {
+      var self = this;
+      this._softnRead = true;
+      if (this._queue.length) {
+        var piece = this._queue.shift();
+        this._softnSize -= sizeOfPiece(piece);
+        if (typeof this._softnOnTake === 'function') this._softnOnTake();
+        return Promise.resolve({ value: piece, done: false });
+      }
+      if (this._state === 'closed') return Promise.resolve({ value: undefined, done: true });
+      if (this._state === 'errored') return Promise.reject(this._error);
+      var answer = new Promise(function (resolve, reject) { self._waiting.push([resolve, reject]); });
+      this._pull();
+      return answer;
+    };
+    // Ask the source for more, one asking at a time, for as long as a reader is waiting.
+    Stream.prototype._pull = function () {
+      var self = this;
+      if (this._pulling || typeof this._source.pull !== 'function' || this._state !== 'readable') return;
+      this._pulling = true;
+      Promise.resolve().then(function () { return self._source.pull(self._controller); }).then(function () {
+        self._pulling = false;
+        if (self._waiting.length) self._pull();
+      }, function (e) { self._pulling = false; self._controller.error(e); });
+    };
+    Stream.prototype.cancel = function (reason) {
+      if (this._state === 'readable') {
+        this._state = 'closed';
+        this._queue.length = 0;
+        this._softnSize = 0;
+        while (this._waiting.length) this._waiting.shift()[0]({ value: undefined, done: true });
+        if (typeof this._source.cancel === 'function') { try { this._source.cancel(reason); } catch (e) {} }
+      }
+      return Promise.resolve();
+    };
+    Stream.prototype.getReader = function () {
+      if (this.locked) throw new TypeError("Failed to execute 'getReader' on 'ReadableStream': ReadableStreamDefaultReader constructor can only accept readable streams that are not yet locked to a reader");
+      var stream = this;
+      var held = true;
+      this.locked = true;
+      return {
+        read: function () { return held ? stream._read() : Promise.reject(new TypeError('This reader has let the stream go.')); },
+        cancel: function (reason) { return stream.cancel(reason); },
+        releaseLock: function () { held = false; stream.locked = false; },
+        get closed() { return new Promise(function () {}); },
+      };
+    };
+    // Through a decoder: bytes in, text out.
+    Stream.prototype.pipeThrough = function (transform) {
+      if (!transform || typeof transform._softnTransform !== 'function') throw new TypeError('Only a TextDecoderStream can be piped through here.');
+      var reader = this.getReader();
+      var change = transform._softnTransform();
+      return new Stream({
+        pull: function (controller) {
+          return reader.read().then(function (step) {
+            if (step.done) { var rest = change(null); if (rest) controller.enqueue(rest); controller.close(); return; }
+            var text = change(step.value);
+            if (text) controller.enqueue(text);
+            else return this.pull(controller);
+          }.bind(this));
+        },
+        cancel: function (reason) { return reader.cancel(reason); },
+      });
+    };
+    Stream.prototype.tee = function () { throw failure('A stream is read once here: read it into what you need, or clone the response before it is read.', 'NotSupportedError'); };
+    if (typeof Symbol === 'function' && Symbol.asyncIterator) {
+      Stream.prototype[Symbol.asyncIterator] = function () {
+        var reader = this.getReader();
+        return {
+          next: function () { return reader.read(); },
+          return: function () { reader.cancel(); return Promise.resolve({ value: undefined, done: true }); },
+        };
+      };
+    }
+    try { Object.defineProperty(Stream, 'name', { value: 'ReadableStream', configurable: true }); } catch (e) {}
+    define('ReadableStream', Stream);
+
+    if (typeof g.TextDecoderStream === 'undefined') {
+      // Text may be cut anywhere by the network, a character's bytes included: what is left
+      // of one at the end of a piece is kept for the next.
+      var DecoderStream = function () {};
+      DecoderStream.prototype._softnTransform = function () {
+        var kept = new Uint8Array(0);
+        return function (chunk) {
+          if (chunk === null) { var last = kept.length ? fromUtf8(kept) : ''; kept = new Uint8Array(0); return last; }
+          var bytes = concat([kept, chunk]);
+          var end = bytes.length;
+          // Back over the bytes of a character that has not all arrived.
+          for (var back = 1; back <= 3 && back <= end; back++) {
+            var b = bytes[end - back];
+            if ((b & 0xc0) === 0x80) continue;
+            var need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1;
+            if (need > back) end -= back;
+            break;
+          }
+          kept = bytes.slice(end);
+          return fromUtf8(bytes.subarray(0, end));
+        };
+      };
+      try { Object.defineProperty(DecoderStream, 'name', { value: 'TextDecoderStream', configurable: true }); } catch (e) {}
+      define('TextDecoderStream', DecoderStream);
+    }
+  }
+
+  // An answer that is already whole (a file of the app's own, a blob) has a body to read too: in one piece.
+  if (typeof g.Response === 'function' && g.Response.prototype && typeof g.ReadableStream === 'function' && !('body' in g.Response.prototype)) {
+    Object.defineProperty(g.Response.prototype, 'body', {
+      configurable: true,
+      get: function () {
+        var response = this;
+        if (!this._softnWhole) {
+          Object.defineProperty(this, '_softnWhole', {
+            enumerable: false,
+            value: new g.ReadableStream({
+              pull: function (controller) {
+                return response.bytes().then(function (bytes) { if (bytes.length) controller.enqueue(bytes); controller.close(); });
+              },
+            }),
+          });
+        }
+        return this._softnWhole;
+      },
+    });
+  }
+
+  // A request to the network, answered as it arrives.
+  var streamSeq = 0;
+  // Twelve are asked of the network at once and not yet answered, and the rest in their
+  // turn. A request that has its answer and is still being read (a feed, a long download)
+  // is no longer one of the twelve: a page that listens to twelve feeds is not a page that
+  // can ask for nothing else. Forty-eight are open at all; the Worker holds a limit of its
+  // own above that one, which an app is never to meet.
+  var MAX_UNANSWERED = 12;
+  var MAX_OPEN_REQUESTS = 48;
+  var MAX_UNREAD_BYTES = 2 * 1024 * 1024;
+  var unanswered = 0;
+  var openRequests = 0;
+  var inTurn = [];
+  var takeTurns = function () { while (unanswered < MAX_UNANSWERED && openRequests < MAX_OPEN_REQUESTS && inTurn.length) inTurn.shift()(); };
+  var readNetwork = function (address, init) {
+    var options = init || {};
+    var headers = {};
+    if (options.headers) {
+      var given = typeof g.Headers === 'function' && options.headers instanceof g.Headers ? options.headers : new g.Headers(options.headers);
+      given.forEach(function (value, key) { headers[key] = value; });
+    }
+    var request = Object.assign({ method: options.method ? String(options.method).toUpperCase() : 'GET', headers: headers }, options.body === undefined || options.body === null ? {} : g.__softnEncodeBody(options.body, headers));
+    // Whether the browser's own copy of an earlier answer will do: the app's to say.
+    if (typeof options.cache === 'string') request.cache = options.cache;
+    var signal = options.signal && typeof options.signal.addEventListener === 'function' ? options.signal : null;
+    var id = String(++streamSeq);
+    return new Promise(function (resolve, reject) {
+      var head = null;      // the answer's first lines, once they have come
+      var began = false;    // asked of the Worker, and one of those open
+      var awaited = false;  // one of those not yet answered
+      var over = false;     // nothing more will come
+      var problem = null;   // how it failed, if it did
+      var asking = false;   // the Worker has been asked for what comes next
+      var branches = [];    // the answer's body, and one more for each copy made of it
+      var whole = null;
+      var finished = new Promise(function (done, fail) { whole = [done, fail]; });
+      finished.then(undefined, function () {});
+      var answered = function () { if (awaited) { awaited = false; unanswered--; } };
+      // The end, however it came: once.
+      var settle = function (error) {
+        if (over) return;
+        over = true;
+        problem = error || null;
+        for (var i = 0; i < branches.length; i++) {
+          if (error) branches[i].controller.error(error);
+          else branches[i].controller.close();
+        }
+        if (error) { if (!head) reject(error); whole[1](error); }
+        else whole[0]();
+        answered();
+        if (began) { began = false; openRequests--; }
+        takeTurns();
+      };
+      // Ended from this side (the app let it go, or its signal said stop): the Worker stops reading.
+      var stop = function (error) {
+        if (over) return;
+        if (began) bridge.call('stream.close', [id]);
+        settle(error);
+      };
+      // More is asked for while something is there to take it: code that asked for the
+      // whole, a body nobody has begun to read piece by piece (all of it is taken, as it
+      // always was), or a reader that keeps up. Behind a reader that has fallen behind, a
+      // couple of megabytes wait here unread, the asking stops, and so does the Worker's
+      // reading of the network.
+      var wanted = function () {
+        if (!head) return true;
+        for (var i = 0; i < branches.length; i++) {
+          var b = branches[i];
+          if (b.gone) continue;
+          if (b.whole || !(b.body.locked || b.body._softnRead)) return true;
+          if (!(b.body._softnSize > MAX_UNREAD_BYTES)) return true;
+        }
+        return false;
+      };
+      var next = function () {
+        if (over || asking || !began || !wanted()) return;
+        asking = true;
+        bridge.call('stream.next', [id], function (reply) {
+          asking = false;
+          var events = reply && reply.events ? reply.events : [];
+          for (var i = 0; i < events.length; i++) heard(events[i]);
+          if (!reply || reply.error) { settle(new TypeError(reply && reply.error ? String(reply.error) : 'Failed to fetch')); return; }
+          next();
+        });
+      };
+      var branch = function (kept) {
+        var b = { parts: kept ? kept.slice() : [], controller: null, body: null, gone: false, whole: false };
+        b.body = new g.ReadableStream({
+          start: function (c) { b.controller = c; },
+          cancel: function () {
+            b.gone = true;
+            b.parts.length = 0;
+            // Let go by everything that was reading it: the network is let go too.
+            for (var i = 0; i < branches.length; i++) if (!branches[i].gone) { next(); return; }
+            stop(null);
+          },
+        });
+        b.body._softnOnTake = next;
+        for (var i = 0; i < b.parts.length; i++) b.controller.enqueue(b.parts[i]);
+        if (over) { if (problem) b.controller.error(problem); else b.controller.close(); }
+        branches.push(b);
+        return b;
+      };
+      var respond = function (b) {
+        var response = new g.Response({ ok: !!head.ok, status: head.status, statusText: head.statusText, headers: head.headers || {} }, String(address));
+        var taken = false;
+        var used = function () { return taken || !!b.body.locked || !!b.body._softnRead; };
+        try { Object.defineProperty(response, 'bodyUsed', { configurable: true, enumerable: true, get: used, set: function (value) { taken = !!value; } }); } catch (e) {}
+        // Whole, for code that asks for all of it.
+        var all = function () {
+          if (used()) return Promise.reject(new TypeError('The body of this response has already been read.'));
+          taken = true;
+          b.whole = true;
+          next();
+          return finished.then(function () { return concat(b.parts); });
+        };
+        Object.defineProperty(response, 'body', { configurable: true, get: function () { return b.body; } });
+        response.bytes = all;
+        response.text = function () { return all().then(fromUtf8); };
+        // A copy to read apart from this one: given what has come, and each piece as it comes.
+        response.clone = function () {
+          if (used()) throw new TypeError("Failed to execute 'clone' on 'Response': Response body is already used");
+          return respond(branch(b.parts));
+        };
+        return response;
+      };
+      var heard = function (event) {
+        if (over) return;
+        if (event.t === 'head') {
+          if (head) return;
+          head = event;
+          answered();
+          takeTurns();
+          resolve(respond(branch(null)));
+        } else if (event.t === 'chunk') {
+          var bytes = fromBase64(event.base64);
+          for (var i = 0; i < branches.length; i++) {
+            var b = branches[i];
+            if (b.gone) continue;
+            // Kept for text() and its like until a reader takes the stream; then the reader's alone.
+            if (b.body.locked || b.body._softnRead) b.parts.length = 0;
+            else b.parts.push(bytes);
+            b.controller.enqueue(bytes);
+          }
+        } else if (event.t === 'end') {
+          settle(null);
+        } else if (event.t === 'error') {
+          settle(new TypeError(event.message ? String(event.message) : 'Failed to fetch'));
+        }
+      };
+      if (signal) {
+        var stopped = function () { return signal.reason !== undefined ? signal.reason : failure('The operation was aborted.', 'AbortError'); };
+        if (signal.aborted) { reject(stopped()); return; }
+        signal.addEventListener('abort', function () { stop(stopped()); });
+      }
+      inTurn.push(function () {
+        if (over) return;
+        began = true;
+        openRequests++;
+        awaited = true;
+        unanswered++;
+        bridge.call('stream.open', [id, String(address), JSON.stringify(request)], function (reply) {
+          if (over) return;
+          if (!reply || reply.error) {
+            // Refused, not failed: a site the app was not granted is refused again when asked again.
+            var refused = new TypeError(reply && reply.error ? String(reply.error) : 'Network fetch denied or failed');
+            if (reply && reply.denied) refused._softnRefused = true;
+            settle(refused);
+            return;
+          }
+          next();
+        });
+      });
+      takeTurns();
+    });
+  };
+  var streams = !!(bridge && typeof bridge.call === 'function' && typeof g.ReadableStream === 'function' && typeof g.Response === 'function');
+  // Which addresses are the network's: not the app's own files, which are read where they are.
+  var isNetwork = function (address, init) {
+    var text = String(address);
+    var method = init && init.method ? String(init.method).toUpperCase() : 'GET';
+    if (text.indexOf('blob:') === 0 || text.indexOf('data:') === 0) return false;
+    var own = method === 'GET' && (text.indexOf(ORIGIN + '/') === 0 || !/^[a-zA-Z][a-zA-Z0-9+.-]*:|^\/\//.test(text));
+    return !own;
+  };
+  g.__softnReadNetwork = streams ? function (address, init) { return isNetwork(address, init) ? readNetwork(address, init) : null; } : null;
+
+  // EventSource: a feed the server keeps open, read a message at a time, and asked for again when it ends.
+  if (Target && streams && typeof g.EventSource === 'undefined') {
+    var Source = class extends Target {
+      constructor(address, init) {
+        super();
+        try { this.url = new g.URL(String(address), g.location ? g.location.href : ORIGIN + '/').href; } catch (e) { throw failure("Failed to construct 'EventSource': Cannot open an EventSource to '" + address + "'. The URL is invalid.", 'SyntaxError'); }
+        this.withCredentials = !!(init && init.withCredentials);
+        this.readyState = 0;
+        this._last = '';
+        this._wait = 3000;
+        this._reader = null;
+        this._bare = false;
+        this._open();
+      }
+      _open() {
+        var self = this;
+        if (this.readyState === 2) return;
+        this.readyState = 0;
+        // Asked for as a browser asks: with nothing a server on another site must first be
+        // asked about. The place it left off is the exception (a browser's own EventSource
+        // names it freely; a request made for an app cannot), so a server that will not hear
+        // of it is asked again without it, and the feed goes on from now.
+        var headers = { accept: 'text/event-stream' };
+        var placed = !!this._last && !this._bare;
+        if (placed) headers['last-event-id'] = this._last;
+        var answered = false;
+        // close() lets the request go wherever it has got to, answered yet or not.
+        var stopper = typeof g.AbortController === 'function' ? new g.AbortController() : null;
+        this._stop = stopper;
+        readNetwork(this.url, { headers: headers, cache: 'no-store', signal: stopper ? stopper.signal : undefined }).then(function (response) {
+          answered = true;
+          if (self.readyState === 2) { response.body.cancel(); return; }
+          if (!response.ok || String(response.headers.get('content-type') || '').toLowerCase().indexOf('text/event-stream') !== 0) {
+            // Not a feed: said, and not asked for again.
+            response.body.cancel();
+            self.readyState = 2;
+            tell(self, 'error', {});
+            return;
+          }
+          self.readyState = 1;
+          tell(self, 'open', {});
+          var reader = response.body.pipeThrough(new g.TextDecoderStream()).getReader();
+          self._reader = reader;
+          var buffer = '';
+          var data = [];
+          var name = '';
+          var line = function (text) {
+            if (text === '') {
+              // A blank line ends a message.
+              if (data.length) tell(self, name || 'message', { data: data.join('\n'), lastEventId: self._last, origin: self.url.replace(/^([a-z]+:\/\/[^/]+).*$/i, '$1') }, g.MessageEvent);
+              data = [];
+              name = '';
+              return;
+            }
+            if (text.charAt(0) === ':') return;
+            var colon = text.indexOf(':');
+            var field = colon < 0 ? text : text.slice(0, colon);
+            var value = colon < 0 ? '' : text.slice(colon + 1).replace(/^ /, '');
+            if (field === 'data') data.push(value);
+            else if (field === 'event') name = value;
+            else if (field === 'id') { if (value.indexOf('\u0000') < 0) self._last = value; }
+            else if (field === 'retry' && /^\d+$/.test(value)) self._wait = Math.max(100, Number(value));
+          };
+          var read = function () {
+            return reader.read().then(function (step) {
+              if (self.readyState === 2) return;
+              if (step.done) throw new Error('ended');
+              buffer += step.value;
+              var lines = buffer.split(/\r\n|\n|\r/);
+              buffer = lines.pop();
+              for (var i = 0; i < lines.length; i++) line(lines[i]);
+              return read();
+            });
+          };
+          return read();
+        }).then(undefined, function (problem) {
+          if (self.readyState === 2) return;
+          // Refused (a site the app was not granted): said, and not asked for again.
+          if (problem && problem._softnRefused) { self.readyState = 2; tell(self, 'error', {}); return; }
+          // Never answered: with its place named, the next asking leaves it out, and the other way about.
+          if (!answered && self._last) self._bare = placed;
+          // The feed ended or failed: said, and asked for again after the wait the server gave.
+          self.readyState = 0;
+          tell(self, 'error', {});
+          g.setTimeout(function () { self._open(); }, self._wait);
+        });
+      }
+      close() {
+        this.readyState = 2;
+        if (this._reader) { try { this._reader.cancel(); } catch (e) {} this._reader = null; }
+        if (this._stop) { try { this._stop.abort(); } catch (e) {} this._stop = null; }
+      }
+    };
+    ['CONNECTING', 'OPEN', 'CLOSED'].forEach(function (name, value) { Source[name] = value; Source.prototype[name] = value; });
+    try { Object.defineProperty(Source, 'name', { value: 'EventSource', configurable: true }); } catch (e) {}
+    define('EventSource', Source);
   }
 
   // ---------------------------------------------------------------------------
@@ -716,6 +1333,43 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   }
 
   // ---------------------------------------------------------------------------
+  // 8b. A canvas's picture, as a file
+  // ---------------------------------------------------------------------------
+  // The picture is on the page, where the canvas is drawn: the page is asked for it, after
+  // the turn's drawing, and answers with its bytes. (toDataURL answers at once, which a
+  // picture a thread away cannot: it is still empty, and toBlob is the one to use.)
+  var CanvasProto = g.HTMLElement && g.HTMLElement.prototype;
+  if (doc && push && CanvasProto && typeof CanvasProto.toBlob !== 'function') {
+    var pictures = Object.create(null);
+    var pictureSeq = 0;
+    var asked = [];
+    CanvasProto.toBlob = function (callback, type, quality) {
+      if (String(this.localName || '').toLowerCase() !== 'canvas') throw new TypeError("Failed to execute 'toBlob': this element is not a canvas.");
+      if (typeof callback !== 'function') throw new TypeError("Failed to execute 'toBlob' on 'HTMLCanvasElement': parameter 1 is not of type 'Function'.");
+      var id = this.__softnNode;
+      if (!(typeof id === 'number' && id > 0) || this.isConnected === false) { later(function () { callback(null); }); return; }
+      var token = String(++pictureSeq);
+      pictures[token] = callback;
+      asked.push(['canvas-blob', token, id, type === undefined ? 'image/png' : String(type), typeof quality === 'number' ? quality : -1]);
+    };
+    var takeDrawn = g.__softnDocTake;
+    if (typeof takeDrawn === 'function') {
+      g.__softnDocTake = function (failed) {
+        var out = takeDrawn(failed);
+        if (asked.length === 0) return out;
+        var asks = asked.splice(0);
+        return out ? out.concat(asks) : asks;
+      };
+    }
+    doc.addEventListener('softn:canvas', function (event) {
+      var callback = pictures[event.token];
+      delete pictures[event.token];
+      if (!callback) return;
+      try { callback(typeof event.base64 === 'string' ? new BlobClass([fromBase64(event.base64)], { type: event.kind || 'image/png' }) : null); } catch (e) { g.console.error(e); }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // 9. A range of the document
   // ---------------------------------------------------------------------------
   // Enough for code that marks a place in the page, parses markup through one
@@ -793,6 +1447,264 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     Range.START_TO_START = 0; Range.START_TO_END = 1; Range.END_TO_END = 2; Range.END_TO_START = 3;
     define('Range', Range);
     try { doc.constructor.prototype.createRange = function () { return new Range(); }; } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // 9a. Walking the tree, and a document read from text
+  // ---------------------------------------------------------------------------
+  // createTreeWalker and createNodeIterator (a template library finds its marks with one),
+  // DOMParser and document.implementation (a sanitiser reads markup into a document of its
+  // own, a feed reader reads XML), XMLSerializer. A document read from text is the tree it
+  // was read into, apart from the page: nothing in it is drawn until the app puts it there.
+  if (doc && typeof g.NodeFilter === 'undefined') {
+    var NodeFilter = {
+      FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3, SHOW_ALL: 0xffffffff, SHOW_ELEMENT: 1, SHOW_ATTRIBUTE: 2, SHOW_TEXT: 4,
+      SHOW_CDATA_SECTION: 8, SHOW_ENTITY_REFERENCE: 16, SHOW_ENTITY: 32, SHOW_PROCESSING_INSTRUCTION: 64, SHOW_COMMENT: 128,
+      SHOW_DOCUMENT: 256, SHOW_DOCUMENT_TYPE: 512, SHOW_DOCUMENT_FRAGMENT: 1024, SHOW_NOTATION: 2048,
+    };
+    define('NodeFilter', NodeFilter);
+    var verdict = function (walker, node) {
+      if (!((walker.whatToShow >>> 0) & (1 << (node.nodeType - 1)))) return 3;
+      var filter = walker.filter;
+      if (!filter) return 1;
+      return Number(typeof filter === 'function' ? filter(node) : filter.acceptNode(node)) || 3;
+    };
+    var Walker = function (root, show, filter) {
+      this.root = root;
+      this.whatToShow = show === undefined || show === null ? 0xffffffff : show >>> 0;
+      this.filter = filter || null;
+      this.currentNode = root;
+    };
+    Walker.prototype.nextNode = function () {
+      var node = this.currentNode;
+      var result = 1;
+      for (;;) {
+        while (result !== 2 && node.firstChild) {
+          node = node.firstChild;
+          result = verdict(this, node);
+          if (result === 1) { this.currentNode = node; return node; }
+        }
+        var sibling = null;
+        for (var at = node; at; at = at.parentNode) {
+          if (at === this.root) return null;
+          sibling = at.nextSibling;
+          if (sibling) break;
+        }
+        if (!sibling) return null;
+        node = sibling;
+        result = verdict(this, node);
+        if (result === 1) { this.currentNode = node; return node; }
+      }
+    };
+    Walker.prototype.previousNode = function () {
+      var node = this.currentNode;
+      while (node !== this.root) {
+        var sibling = node.previousSibling;
+        while (sibling) {
+          node = sibling;
+          var result = verdict(this, node);
+          while (result !== 2 && node.lastChild) { node = node.lastChild; result = verdict(this, node); }
+          if (result === 1) { this.currentNode = node; return node; }
+          sibling = node.previousSibling;
+        }
+        if (node === this.root || !node.parentNode) return null;
+        node = node.parentNode;
+        if (verdict(this, node) === 1) { this.currentNode = node; return node; }
+      }
+      return null;
+    };
+    Walker.prototype.parentNode = function () {
+      for (var node = this.currentNode; node && node !== this.root; ) {
+        node = node.parentNode;
+        if (node && verdict(this, node) === 1) { this.currentNode = node; return node; }
+      }
+      return null;
+    };
+    // The first (or last) of a node's children that is shown: one that is skipped is looked inside.
+    var childOf = function (walker, parent, last) {
+      for (var node = last ? parent.lastChild : parent.firstChild; node; node = last ? node.previousSibling : node.nextSibling) {
+        var result = verdict(walker, node);
+        if (result === 1) return node;
+        if (result === 3) { var inner = childOf(walker, node, last); if (inner) return inner; }
+      }
+      return null;
+    };
+    Walker.prototype.firstChild = function () { var node = childOf(this, this.currentNode, false); if (node) this.currentNode = node; return node; };
+    Walker.prototype.lastChild = function () { var node = childOf(this, this.currentNode, true); if (node) this.currentNode = node; return node; };
+    var siblingOf = function (walker, last) {
+      var node = walker.currentNode;
+      if (node === walker.root) return null;
+      for (;;) {
+        for (var sibling = last ? node.previousSibling : node.nextSibling; sibling; sibling = last ? sibling.previousSibling : sibling.nextSibling) {
+          var result = verdict(walker, sibling);
+          if (result === 1) { walker.currentNode = sibling; return sibling; }
+          if (result === 3) { var inner = childOf(walker, sibling, last); if (inner) { walker.currentNode = inner; return inner; } }
+        }
+        node = node.parentNode;
+        if (!node || node === walker.root || verdict(walker, node) === 1) return null;
+      }
+    };
+    Walker.prototype.nextSibling = function () { return siblingOf(this, false); };
+    Walker.prototype.previousSibling = function () { return siblingOf(this, true); };
+    define('TreeWalker', Walker);
+
+    // One node after another, in the order of the document, from the root on.
+    var after = function (node, root) {
+      if (node.firstChild) return node.firstChild;
+      for (; node && node !== root; node = node.parentNode) if (node.nextSibling) return node.nextSibling;
+      return null;
+    };
+    var before = function (node, root) {
+      if (node === root) return null;
+      var sibling = node.previousSibling;
+      if (!sibling) return node.parentNode;
+      while (sibling.lastChild) sibling = sibling.lastChild;
+      return sibling;
+    };
+    var Iterator = function (root, show, filter) {
+      this.root = root;
+      this.whatToShow = show === undefined || show === null ? 0xffffffff : show >>> 0;
+      this.filter = filter || null;
+      this.referenceNode = root;
+      this.pointerBeforeReferenceNode = true;
+    };
+    Iterator.prototype.nextNode = function () {
+      var node = this.referenceNode;
+      var beforeNode = this.pointerBeforeReferenceNode;
+      for (;;) {
+        if (beforeNode) beforeNode = false;
+        else { node = after(node, this.root); if (!node) return null; }
+        if (verdict(this, node) === 1) { this.referenceNode = node; this.pointerBeforeReferenceNode = false; return node; }
+      }
+    };
+    Iterator.prototype.previousNode = function () {
+      var node = this.referenceNode;
+      var beforeNode = this.pointerBeforeReferenceNode;
+      for (;;) {
+        if (!beforeNode) beforeNode = true;
+        else { node = before(node, this.root); if (!node) return null; }
+        if (verdict(this, node) === 1) { this.referenceNode = node; this.pointerBeforeReferenceNode = true; return node; }
+      }
+    };
+    Iterator.prototype.detach = function () {};
+    define('NodeIterator', Iterator);
+
+    var docProto9 = doc.constructor.prototype;
+    if (typeof doc.createTreeWalker !== 'function') docProto9.createTreeWalker = function (root, show, filter) { return new Walker(root, show, filter); };
+    if (typeof doc.createNodeIterator !== 'function') docProto9.createNodeIterator = function (root, show, filter) { return new Iterator(root, show, filter); };
+
+    var SVG = 'http://www.w3.org/2000/svg';
+    // A document read from text: its tree, and what code asks a document for.
+    var documentOf = function (root, kind, parts) {
+      var within = function (selector, all) {
+        var found = [];
+        try { if (root.matches && root.matches(selector)) found.push(root); } catch (e) {}
+        var inner = root.querySelectorAll(selector);
+        for (var i = 0; i < inner.length; i++) found.push(inner[i]);
+        return all ? found : found[0] || null;
+      };
+      var read = {
+        nodeType: 9, nodeName: '#document', contentType: kind, characterSet: 'UTF-8', compatMode: 'CSS1Compat', readyState: 'complete',
+        documentElement: root, head: parts ? parts.head : null, body: parts ? parts.body : null,
+        defaultView: null, location: null, ownerDocument: null, parentNode: null, nextSibling: null, previousSibling: null,
+        firstChild: root, lastChild: root, firstElementChild: root, lastElementChild: root, childNodes: [root], children: [root],
+        querySelector: function (selector) { return within(selector, false); },
+        querySelectorAll: function (selector) { return within(selector, true); },
+        getElementById: function (id) { var all = within('[id]', true); for (var i = 0; i < all.length; i++) if (all[i].getAttribute('id') === String(id)) return all[i]; return null; },
+        getElementsByTagName: function (name) { return within(String(name) === '*' ? '*' : String(name), true); },
+        getElementsByTagNameNS: function (ns, name) { return within(String(name) === '*' ? '*' : String(name), true); },
+        getElementsByClassName: function (names) { return within(String(names).trim().split(/\s+/).map(function (name) { return '.' + name; }).join(''), true); },
+        contains: function (node) { return node === read || root.contains(node); },
+        createElement: function (name, options) { return doc.createElement(name, options); },
+        createElementNS: function (ns, name) { return doc.createElementNS(ns, name); },
+        createTextNode: function (text) { return doc.createTextNode(text); },
+        createComment: function (text) { return doc.createComment(text); },
+        createDocumentFragment: function () { return doc.createDocumentFragment(); },
+        createTreeWalker: function (from, show, filter) { return new Walker(from, show, filter); },
+        createNodeIterator: function (from, show, filter) { return new Iterator(from, show, filter); },
+        createRange: function () { return doc.createRange(); },
+        importNode: function (node, deep) { return doc.importNode(node, deep); },
+        adoptNode: function (node) { return doc.adoptNode(node); },
+        addEventListener: function () {}, removeEventListener: function () {}, dispatchEvent: function () { return true; },
+      };
+      Object.defineProperty(read, 'title', {
+        enumerable: true,
+        get: function () { var el = within('title', false); return el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : ''; },
+        set: function (text) {
+          var el = within('title', false);
+          if (!el && read.head) { el = doc.createElement('title'); read.head.appendChild(el); }
+          if (el) el.textContent = String(text);
+        },
+      });
+      Object.defineProperty(read, 'textContent', { enumerable: true, get: function () { return null; } });
+      read.implementation = implementation;
+      return read;
+    };
+    var htmlDocument = function (markup) {
+      var html = doc.createElement('html');
+      var head = doc.createElement('head');
+      var body = doc.createElement('body');
+      html.appendChild(head);
+      html.appendChild(body);
+      if (markup) {
+        var holder = doc.createElement('template');
+        holder.innerHTML = String(markup);
+        var nodes = Array.prototype.slice.call(holder.content.childNodes);
+        for (var i = 0; i < nodes.length; i++) {
+          var name = nodes[i].nodeType === 1 ? String(nodes[i].localName).toLowerCase() : '';
+          (name === 'title' || name === 'meta' || name === 'base' ? head : body).appendChild(nodes[i]);
+        }
+      }
+      return documentOf(html, 'text/html', { head: head, body: body });
+    };
+    var implementation = {
+      createHTMLDocument: function (title) { var made = htmlDocument(''); if (title !== undefined) made.title = String(title); return made; },
+      createDocument: function (ns, name) { return documentOf(name ? doc.createElementNS(ns, name) : doc.createElement('root'), 'application/xml', null); },
+      createDocumentType: function () { return null; },
+      hasFeature: function () { return true; },
+    };
+    if (!('implementation' in doc)) { try { Object.defineProperty(docProto9, 'implementation', { configurable: true, get: function () { return implementation; } }); } catch (e) {} }
+
+    if (typeof g.DOMParser === 'undefined') {
+      var Parser = function () {};
+      Parser.prototype.parseFromString = function (markup, kind) {
+        var type = String(kind || 'text/html').toLowerCase();
+        var text = String(markup);
+        if (type === 'text/html') return htmlDocument(text);
+        if (type !== 'image/svg+xml' && type !== 'application/xml' && type !== 'text/xml' && type !== 'application/xhtml+xml') {
+          throw new TypeError("Failed to execute 'parseFromString' on 'DOMParser': The provided value '" + kind + "' is not a valid enum value of type SupportedType.");
+        }
+        // Without its declaration and comments ahead of the root, and with an element written as closed (<a/>) closed.
+        text = text.replace(/^\uFEFF?\s*(?:<\?[\s\S]*?\?>\s*|<!DOCTYPE[^>]*>\s*|<!--[\s\S]*?-->\s*)*/i, '');
+        var holder;
+        if (type === 'image/svg+xml') { holder = doc.createElementNS(SVG, 'svg'); holder.innerHTML = text; }
+        else {
+          holder = doc.createElement('template');
+          holder.innerHTML = text.replace(/<([A-Za-z_][\w:.-]*)((?:\s+[^<>]*?)?)\/>/g, '<$1$2></$1>');
+          holder = holder.content;
+        }
+        var root = null;
+        for (var node = holder.firstChild; node; node = node.nextSibling) if (node.nodeType === 1) { root = node; break; }
+        if (!root) {
+          // As a browser answers text that is not a document: a document that says so.
+          root = doc.createElement('parsererror');
+          root.textContent = 'This text is not a document: it has no root element.';
+        } else if (root.parentNode) root.parentNode.removeChild(root);
+        return documentOf(root, type, null);
+      };
+      define('DOMParser', Parser);
+    }
+    if (typeof g.XMLSerializer === 'undefined') {
+      var Serializer = function () {};
+      Serializer.prototype.serializeToString = function (node) {
+        if (!node) throw new TypeError("Failed to execute 'serializeToString' on 'XMLSerializer': parameter 1 is not of type 'Node'.");
+        if (node.nodeType === 9) return node.documentElement ? node.documentElement.outerHTML : '';
+        if (node.nodeType === 1) return node.outerHTML;
+        if (node.nodeType === 11) return Array.prototype.map.call(node.childNodes, function (child) { return child.nodeType === 1 ? child.outerHTML : String(child.nodeValue || ''); }).join('');
+        return node.nodeType === 8 ? '<!--' + String(node.nodeValue || '') + '-->' : String(node.nodeValue || '');
+      };
+      define('XMLSerializer', Serializer);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -910,9 +1822,9 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   // ---------------------------------------------------------------------------
   // 10. customElements
   // ---------------------------------------------------------------------------
-  // An element of the app's own making, by a name with a hyphen in it. It draws in the page's
-  // own tree: there is no shadow root to attach here (attachShadow is not defined, so a
-  // library that needs one says so instead of drawing nothing).
+  // An element of the app's own making, by a name with a hyphen in it: one in the markup,
+  // one the script makes, one made with new, on the page or inside a shadow tree (a
+  // component that draws other components in its own).
   var NativeHTML = g.HTMLElement;
   if (doc && typeof NativeHTML === 'function' && typeof g.customElements === 'undefined' && typeof Object.setPrototypeOf === 'function') {
     var definitions = Object.create(null);
@@ -970,17 +1882,44 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       joined.delete(el);
       if (typeof el.disconnectedCallback === 'function') guard(function () { el.disconnectedCallback(); });
     };
+    // The shadow root of each element that has one, open or closed: what is in it is
+    // looked through with the element, and watched as the page is.
+    var rootsOf = typeof WeakMap === 'function' ? new WeakMap() : null;
+    var watched = typeof WeakSet === 'function' ? new WeakSet() : null;
+    var observer = null;
+    var WATCH = { childList: true, subtree: true, attributes: true, attributeOldValue: true };
+    var inside = function (el, fn) {
+      var root = rootsOf && rootsOf.get(el);
+      if (!root) return;
+      if (observer && watched && !watched.has(root)) { watched.add(root); observer.observe(root, WATCH); }
+      each(root, fn);
+    };
     var each = function (root, fn) {
       if (!root || root.nodeType !== 1 && root.nodeType !== 11 && root.nodeType !== 9) return;
-      if (root.nodeType === 1 && nameOf(root).indexOf('-') > 0) fn(root);
+      if (root.nodeType === 1) {
+        if (nameOf(root).indexOf('-') > 0) fn(root);
+        inside(root, fn);
+      }
       if (typeof root.querySelectorAll !== 'function') return;
       var all = root.querySelectorAll('*');
-      for (var i = 0; i < all.length; i++) if (nameOf(all[i]).indexOf('-') > 0) fn(all[i]);
+      for (var i = 0; i < all.length; i++) {
+        if (nameOf(all[i]).indexOf('-') > 0) fn(all[i]);
+        inside(all[i], fn);
+      }
     };
+    var plainAttach = g.Element && g.Element.prototype.attachShadow;
+    if (typeof plainAttach === 'function' && rootsOf) {
+      g.Element.prototype.attachShadow = function (init) {
+        var root = plainAttach.call(this, init);
+        rootsOf.set(this, root);
+        if (observer && watched) { watched.add(root); observer.observe(root, WATCH); }
+        return root;
+      };
+    }
     var watch = function () {
       if (watching || typeof g.MutationObserver !== 'function') return;
       watching = true;
-      new g.MutationObserver(function (records) {
+      observer = new g.MutationObserver(function (records) {
         for (var i = 0; i < records.length; i++) {
           var record = records[i];
           if (record.type === 'childList') {
@@ -990,7 +1929,8 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
             changed(record.target, record.attributeName, record.oldValue);
           }
         }
-      }).observe(doc, { childList: true, subtree: true, attributes: true, attributeOldValue: true });
+      });
+      observer.observe(doc, WATCH);
       // An element that is not on the page is not watched: an attribute set on one is told
       // as it is set (a framework sets a new element's attributes before it places it).
       var elementProto = g.Element && g.Element.prototype;

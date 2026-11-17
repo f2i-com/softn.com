@@ -158,7 +158,9 @@ export function sanitizeContainerCss(
   basePath: string,
   archive: ContainerArchive,
   permissions: ContainerPermissions,
-  netGranted: boolean
+  netGranted: boolean,
+  /** Where the sheet is: the app's page, or a shadow tree the app attached to an element of its own. */
+  scope: 'page' | 'shadow' = 'page'
 ): string {
   let out = rewriteCss(css, (target) => {
     // An empty address is the page's own: the embedding page, fetched again as an image.
@@ -176,10 +178,11 @@ export function sanitizeContainerCss(
     if (vfs && archive.has(vfs)) return archive.getBlobUrl(vfs);
     if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
     return null;
-  });
+  }, { keepHost: scope === 'shadow' });
 
-  // Scope top-level `html` / `body` / `:root` selectors to the container viewport inside ShadowRoot
-  out = out.replace(/(^|[},])\s*(?::root|html|body)(?=[\s.{:#[,>~+])/gi, '$1 [data-softn-viewport]');
+  // Scope top-level `html` / `body` / `:root` selectors to the container viewport inside ShadowRoot.
+  // (Not in a shadow tree's own sheet: none of the three is in there to be matched.)
+  if (scope === 'page') out = out.replace(/(^|[},])\s*(?::root|html|body)(?=[\s.{:#[,>~+])/gi, '$1 [data-softn-viewport]');
   return out;
 }
 
@@ -404,7 +407,7 @@ export function prepareHtmlDocument(
     const seedAttrs: Record<string, string> = {};
     const hostAttrs: Record<string, string> = {};
     const inlineHandlers: Record<string, string> = {};
-    const context = { entryPath, archive, permissions, netGranted };
+    const context = { entryPath, archive, permissions, netGranted, ns };
 
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name;
@@ -496,6 +499,7 @@ export function prepareHtmlDocument(
     url: `${VIRTUAL_ORIGIN}/${entryPath.replace(/(^|\/)index\.html?$/i, '$1')}`,
     r: randomCryptoSeed(),
     v: currentViewport(),
+    shadow: true,
   };
 
   const mountInitialDom = (

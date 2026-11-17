@@ -43,6 +43,42 @@ interface OpenSocket {
   over: boolean;
 }
 
+/** A request as the app's side hands it over: a body of bytes comes as base64, the bridge carries text. */
+interface StreamRequest {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  bodyBase64?: string;
+  cache?: string;
+}
+
+/**
+ * What an app may say about the browser's copy of an earlier answer: not to use it. Never to
+ * use it more than a request does by itself (`force-cache`, `only-if-cached`): the copy may
+ * be one the embedding page fetched with the person's cookies, and a request made for an
+ * app goes without them.
+ */
+const CACHE_MODES: Readonly<Record<string, RequestCache>> = { 'no-store': 'no-store', reload: 'reload', 'no-cache': 'reload' };
+
+/** A request the Worker is reading for the app as it arrives, and what has arrived that the app has not taken yet. */
+interface OpenStream {
+  events: Array<Record<string, unknown>>;
+  bytes: number;
+  waiting: number | null;
+  over: boolean;
+  abort: AbortController;
+  /** Called when the app has taken what was waiting: the read goes on. */
+  drained: (() => void) | null;
+}
+
+/**
+ * The most requests one app has open at once, and the most kept for it unread on one before
+ * the read waits. The app's own side has forty-eight open at most and queues the rest, so
+ * this one is not met by an app that asks as the web's own `fetch` does.
+ */
+const MAX_STREAMS = 64;
+const MAX_STREAM_QUEUE_BYTES = 2 * 1024 * 1024;
+
 /** The most sockets one app holds open, and the most that is kept for it unread on one. */
 const MAX_SOCKETS = 8;
 const MAX_SOCKET_QUEUE_BYTES = 16 * 1024 * 1024;
@@ -116,6 +152,7 @@ export class ContainerWorkerSession {
   /** The host says the app is not on screen: its timers wait (`heldTimers`: timer id to its callback), and no frame is asked for. */
   private paused = false;
   private readonly sockets = new Map<string, OpenSocket>();
+  private readonly streams = new Map<string, OpenStream>();
   private readonly heldTimers = new Map<number, number>();
   private disposed = false;
 
@@ -643,6 +680,59 @@ export class ContainerWorkerSession {
         return;
       }
 
+      case 'stream.open': {
+        const id = args[0] ?? '';
+        const url = args[1] ?? '';
+        let opts: StreamRequest = {};
+        try {
+          const parsed: unknown = JSON.parse(args[2] ?? '{}');
+          if (parsed && typeof parsed === 'object') opts = parsed as StreamRequest;
+        } catch {
+          opts = {};
+        }
+        if (!isExternalUrlAllowed(url, this.permissions.permissions?.net, this.grantedCapabilities.has('net'))) {
+          this.resolveCallbackAndFlush(callId, { error: `Network access to ${url} is not permitted by this container`, denied: true });
+          return;
+        }
+        if (this.streams.has(id) || this.streams.size >= MAX_STREAMS) {
+          this.resolveCallbackAndFlush(callId, { error: `This container has ${MAX_STREAMS} requests open already` });
+          return;
+        }
+        const stream: OpenStream = { events: [], bytes: 0, waiting: null, over: false, abort: new AbortController(), drained: null };
+        this.streams.set(id, stream);
+        this.resolveCallbackAndFlush(callId, { ok: true });
+        void this.readStream(id, stream, url, opts);
+        return;
+      }
+
+      case 'stream.next': {
+        const id = args[0] ?? '';
+        const stream = this.streams.get(id);
+        if (!stream) {
+          this.resolveCallbackAndFlush(callId, { error: 'No such request' });
+          return;
+        }
+        stream.waiting = callId;
+        this.pumpStream(id);
+        return;
+      }
+
+      case 'stream.close': {
+        const stream = this.streams.get(args[0] ?? '');
+        if (!stream) return;
+        stream.over = true;
+        this.streams.delete(args[0] ?? '');
+        stream.abort.abort();
+        stream.drained?.();
+        // What the app was waiting on is answered, with nothing: it is not left waiting for good.
+        if (stream.waiting !== null) {
+          const waiting = stream.waiting;
+          stream.waiting = null;
+          this.resolveCallbackAndFlush(waiting, { events: [] });
+        }
+        return;
+      }
+
       case 'ws.open': {
         const id = args[0] ?? '';
         const url = args[1] ?? '';
@@ -749,6 +839,70 @@ export class ContainerWorkerSession {
       default:
         this.resolveCallbackAndFlush(callId, { error: `Unsupported host call: ${kind}` });
     }
+  }
+
+  /**
+   * Read a request's answer as it arrives, for the app to take a piece at a time: the head
+   * first, then each piece, then the end. Held to the rule every request is (no credentials
+   * of the page's, no redirect followed), and not read further ahead than the app keeps up.
+   */
+  private async readStream(id: string, stream: OpenStream, url: string, opts: StreamRequest): Promise<void> {
+    const push = (event: Record<string, unknown>, size = 0) => {
+      if (this.streams.get(id) !== stream) return;
+      stream.events.push(event);
+      stream.bytes += size;
+      this.pumpStream(id);
+    };
+    try {
+      const resp = await fetch(url, {
+        method: opts.method ?? 'GET',
+        headers: opts.headers,
+        body: typeof opts.bodyBase64 === 'string' ? base64ToBytes(opts.bodyBase64) : opts.body,
+        cache: typeof opts.cache === 'string' && Object.hasOwn(CACHE_MODES, opts.cache) ? CACHE_MODES[opts.cache] : undefined,
+        credentials: 'omit',
+        redirect: 'error',
+        signal: stream.abort.signal,
+      });
+      const headers: Record<string, string> = {};
+      resp.headers.forEach((v, k) => {
+        headers[k] = v;
+      });
+      push({ t: 'head', ok: resp.ok, status: resp.status, statusText: resp.statusText, headers });
+      const reader = resp.body?.getReader();
+      while (reader && !stream.over) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength > 0) push({ t: 'chunk', base64: bytesToBase64(value) }, value.byteLength * 2);
+        // Not read ahead of the app without end: wait for it to take what is here.
+        while (stream.bytes > MAX_STREAM_QUEUE_BYTES && !stream.over) {
+          await new Promise<void>((resolve) => {
+            stream.drained = resolve;
+          });
+        }
+      }
+      push({ t: 'end' });
+    } catch (err) {
+      push({ t: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+    stream.over = true;
+  }
+
+  /** Hand a request's waiting pieces to the app, when it has asked for them and is shown. */
+  private pumpStream(id: string): void {
+    const stream = this.streams.get(id);
+    // Whether the app is shown or not: a request under way finishes, as it always has. (Its
+    // timers and its frames wait while it is not shown; an answer it asked for does not.)
+    if (!stream || stream.waiting === null || stream.events.length === 0 || this.disposed) return;
+    const callId = stream.waiting;
+    stream.waiting = null;
+    const events = stream.events;
+    stream.events = [];
+    stream.bytes = 0;
+    if (events.some((event) => event.t === 'end' || event.t === 'error')) this.streams.delete(id);
+    const drained = stream.drained;
+    stream.drained = null;
+    drained?.();
+    this.resolveCallbackAndFlush(callId, { events });
   }
 
   /** Hand a socket's waiting events to the app, when it has asked for them and is shown. */
@@ -1106,6 +1260,12 @@ export class ContainerWorkerSession {
       }
     }
     this.sockets.clear();
+    for (const stream of this.streams.values()) {
+      stream.over = true;
+      stream.abort.abort();
+      stream.drained?.();
+    }
+    this.streams.clear();
     if (this.engine) {
       try {
         this.engine.dispose();

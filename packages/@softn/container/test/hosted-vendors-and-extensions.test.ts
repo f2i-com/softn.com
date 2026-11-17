@@ -221,8 +221,14 @@ describe('Hosted /runtime/vendor/ Libraries, Zero-Build TypeScript, softn:db & <
     await flushAsync(25);
     // The bar has a place above the app's box, and is drawn in a shadow root of its own, out
     // of reach of the app's stylesheet (and of this test).
-    expect(handle.shadowRoot.querySelector('[data-softn-container-consent]')).not.toBeNull();
-    expect(handle.shadowRoot.querySelector('[data-softn-consent-bar]')).toBeNull();
+    expect(handle.frameRoot.querySelector('[data-softn-container-consent]')).not.toBeNull();
+    expect(handle.frameRoot.querySelector('[data-softn-consent-bar]')).toBeNull();
+    // And not in the root the app's page and its stylesheets are in: a stylesheet matches
+    // only what is in its own root, so no rule of the app's reaches the bar's place, the
+    // frame or the box, or anything a rule could draw on them.
+    expect(handle.shadowRoot.querySelector('[data-softn-container-consent], [data-softn-frame], [data-softn-box]')).toBeNull();
+    expect(handle.shadowRoot.querySelector('[data-softn-docroot]')).not.toBeNull();
+    expect([...handle.frameRoot.querySelectorAll('style')].map((sheet) => sheet.textContent ?? '').join('')).not.toContain('softn-viewport');
     expect(handle.shadowRoot.querySelector('#hello')?.textContent).toBe('App Ready');
     handle.dispose();
 

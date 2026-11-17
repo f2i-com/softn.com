@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { mountSoftNContainer } from '../src/index';
 import { savePersistedDbCollection, storageWriteFits } from '../src/softn-app';
 import { rewriteCss } from '../src/css-policy';
-import { canvasPropertyAllowed, canvasSide, hostElementName, hostTitle, isDeclaredElementProperty } from '../src/host-policy';
+import { canvasPropertyAllowed, canvasSide, hostElementName, hostFileName, hostLabel, hostTitle, isDeclaredElementProperty } from '../src/host-policy';
+import { shownFileName } from '../src/consent-bar';
 import { transformEsModule } from '../src/esm-linker';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -50,12 +51,41 @@ describe('what an app may put into the page that embeds it', () => {
     (globalThis as Record<string, unknown>).__HOST_PWNED__ = false;
   });
 
+  it('saves a file under a name that is a file’s name and nothing else', () => {
+    expect(hostFileName('report.pdf')).toBe('report.pdf');
+    // Not a path: a name with a folder in it is one name.
+    expect(hostFileName('../../etc/passwd')).toBe('_.._etc_passwd');
+    expect(hostFileName('C:\\Users\\me\\x.txt')).toBe('C_Users_me_x.txt');
+    // The mark that turns the text after it around: "report" + RLO + "fdp.exe" reads as reportexe.pdf.
+    expect(hostFileName('report\u202Efdp.exe')).toBe('reportfdp.exe');
+    // Nothing a file system refuses, no control characters, no dot or space at either end.
+    expect(hostFileName('a<b>c:"d"|e?f*.txt')).toBe('a_b_c_d_e_f_.txt');
+    expect(hostFileName('line\none\ttwo\u0000.txt')).toBe('lineonetwo.txt');
+    expect(hostFileName('  ..hidden.  ')).toBe('hidden');
+    expect(hostFileName('x'.repeat(300) + '.txt').length).toBe(120);
+    // Nothing left of it, or not text at all.
+    for (const name of ['', '   ', '...', '\u202E', null, undefined, 7, {}]) expect(hostFileName(name), String(name)).toBe('download');
+    // Nothing unseen between the name and its real end, and no mark that closes the bar's own quotation early.
+    expect(hostFileName('report.pdf' + '\u2800'.repeat(40) + '\u200b\u00ad\u3164.exe')).toBe('report.pdf.exe');
+    expect(hostFileName('notes.txt\u201d (1 KB) and \u201cx.exe')).toBe('notes.txt_ (1 KB) and _x.exe');
+    // A long name is shown by both its ends: the end says what the file is.
+    const long = 'a'.repeat(100) + '.pdf.exe';
+    expect(shownFileName(long)).toBe('a'.repeat(39) + '\u2026' + 'a'.repeat(16) + '.pdf.exe');
+    expect(shownFileName('short.txt')).toBe('short.txt');
+    // The app's own name in a bar of the container's: one line, nothing unseen, nothing that turns the words after it.
+    expect(hostLabel('Notes\u202E\u200b\n  app')).toBe('Notes app');
+    expect(hostLabel('x'.repeat(200)).length).toBe(60);
+    expect(hostLabel(7)).toBe('');
+  });
+
   it('names an element by what follows a prefix, in any namespace', () => {
     // createElementNS(svg, 'svg:script') makes an SVG `script`, which runs.
     expect(hostElementName('svg:script', 'svg')).toBeNull();
     expect(hostElementName('x:SCRIPT', undefined)).toBeNull();
     expect(hostElementName('script', 'svg')).toBeNull();
-    for (const tag of ['iframe', 'frame', 'object', 'embed', 'base', 'portal', 'fencedframe', 'slot', 'noscript']) expect(hostElementName(tag, undefined), tag).toBeNull();
+    for (const tag of ['iframe', 'frame', 'object', 'embed', 'base', 'portal', 'fencedframe', 'noscript']) expect(hostElementName(tag, undefined), tag).toBeNull();
+    // A slot is the app's: its page is in a root on a box with no children, so a slot there has nothing of anyone's to show.
+    expect(hostElementName('slot', undefined)).toBe('slot');
     // Not a name at all.
     for (const tag of ['', 'a b', 'img/onerror=1', '1up', 'div>']) expect(hostElementName(tag, undefined), tag).toBeNull();
     expect(hostElementName('DIV', undefined)).toBe('div');

@@ -421,6 +421,12 @@ export class ContainerArchive {
     return kept.url;
   }
 
+  /** A kept blob's bytes and type, for the host to save at the person's word; null for one that is not kept. */
+  getRuntimeBlob(id: string): { bytes: Uint8Array; type: string } | null {
+    const kept = this.runtimeBlobs.get(id);
+    return kept && !this.disposed ? { bytes: kept.bytes, type: kept.type } : null;
+  }
+
   /** Let a kept blob go (`URL.revokeObjectURL`). */
   dropRuntimeBlob(id: string): void {
     const kept = this.runtimeBlobs.get(id);

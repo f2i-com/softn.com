@@ -6,7 +6,8 @@
  * `<link rel="stylesheet" href="softn:ui.css">` get the full ~4 KB token & utility sheet.
  */
 
-export const SHADOW_HOST_BASE_CSS = `
+/** The container's own element, styled from the root its frame is in: no sheet of the app's is in that root. */
+export const FRAME_BASE_CSS = `
 :host {
   display: block;
   position: relative;
@@ -17,12 +18,18 @@ export const SHADOW_HOST_BASE_CSS = `
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: inherit;
 }
+`;
+
+/** The app's page, in the root the page is drawn in. */
+export const PAGE_BASE_CSS = `
 [data-softn-viewport] {
   width: 100%;
   min-height: 100%;
   box-sizing: border-box;
 }
 `;
+
+export const SHADOW_HOST_BASE_CSS = FRAME_BASE_CSS + PAGE_BASE_CSS;
 
 export const SOFTN_UI_CSS = `
 :host, [data-softn-viewport] {
