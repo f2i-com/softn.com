@@ -44,6 +44,18 @@ describe('describePreviousBuild', () => {
     expect(describePreviousBuild(v1, { permissions: { net: { enabled: true } } })).toMatchObject({ capabilities: ['net'], sameDeclaration: false });
   });
 
+  it('reads a build that was zipped as its folder through the folder', () => {
+    const wrapped = cached({
+      bundleData: zipSync({
+        'dist/index.html': strToU8('<!doctype html><p>site</p>'),
+        'dist/permission.json': strToU8(JSON.stringify({ permissions: { net: { enabled: true, allowed_hosts: ['api.weather.gov'] } } })),
+      }),
+    });
+    expect(describePreviousBuild(wrapped, { permissions: { net: { enabled: true, allowed_hosts: ['api.weather.gov'] } } })).toMatchObject({ capabilities: ['net'], sameDeclaration: true });
+    // It read as declaring nothing, so an update that asked for the same was "not the same".
+    expect(describePreviousBuild(wrapped, { permissions: {} })).toMatchObject({ sameDeclaration: false });
+  });
+
   it('does not say either way of a build it cannot read', () => {
     expect(describePreviousBuild(cached({ bundleData: strToU8('not a zip'), requestedCapabilities: ['net'] }), { permissions: { net: { enabled: true } } }))
       .toEqual({ version: '1.0.0', capabilities: ['net'], sameDeclaration: undefined });

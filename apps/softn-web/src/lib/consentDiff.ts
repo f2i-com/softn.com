@@ -13,6 +13,7 @@
 import type { BundleArchive, PermissionConfig } from '@softn/core';
 import { extractPermissions, readZip, requestedCapabilities, type BundleManifest } from '@softn/runtime-shell/bundleProcessor';
 import { declarationKey, type PreviousBuild } from '@softn/runtime-shell/consent';
+import { unwrapContainerZipEntries } from '@softn/runtime-shell/containerBundle';
 import type { CachedApp } from './appCache';
 
 export { diffCapabilities } from '@softn/runtime-shell/consent';
@@ -40,9 +41,13 @@ function permissionsOf(bundleData: Uint8Array): PermissionConfig | null | undefi
   try {
     const zip = readZip(bundleData);
     archive = zip.archive;
-    const manifestText = zip.textFiles.get('manifest.json');
+    // As the runtime reads the build when it opens it: through the folder it was zipped as,
+    // where there is one. Read at the top alone, a build zipped as its folder declared
+    // nothing here, and the bar compared the update against that.
+    const { textFiles } = unwrapContainerZipEntries(zip.textFiles, zip.binaryFiles);
+    const manifestText = textFiles.get('manifest.json');
     const manifest = (manifestText ? JSON.parse(manifestText) : {}) as BundleManifest;
-    return extractPermissions(zip.textFiles, manifest) ?? null;
+    return extractPermissions(textFiles, manifest) ?? null;
   } catch {
     return undefined;
   } finally {
