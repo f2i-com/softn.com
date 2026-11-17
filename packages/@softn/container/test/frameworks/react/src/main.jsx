@@ -54,6 +54,7 @@ function App() {
   const [hovered, setHovered] = useState(false);
   const [at, setAt] = useState(null);
   const [sprite, setSprite] = useState('loading');
+  const [faded, setFaded] = useState('not yet');
   const [blobUrl, setBlobUrl] = useState('');
   const [focused, setFocused] = useState(false);
   const [data, setData] = useState('loading');
@@ -144,6 +145,10 @@ function App() {
         <svg id="icon" width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="red" /></svg>
         <div id="hover" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>hover</div>
         <span id="hovered">{hovered ? 'yes' : 'no'}</span>
+        {/* An animation the script starts and waits on (how Svelte's transitions and AutoAnimate move things). */}
+        <button id="fade-now" type="button" onClick={() => document.getElementById('faded-box').animate([{ opacity: 1 }, { opacity: 0.25 }], { duration: 60, fill: 'forwards' }).finished.then(() => setFaded('faded'))}>Fade</button>
+        <div id="faded-box">fades</div>
+        <span id="faded">{faded}</span>
         {/* A thing put where the pointer was, as a menu or a tooltip is: fixed, at the click's own coordinates. */}
         <div id="pad" style={{ height: 60, background: 'rgb(238, 238, 238)' }} onClick={(e) => setAt({ x: e.clientX, y: e.clientY })}>pad</div>
         {at ? <div id="marker" style={{ position: 'fixed', left: at.x, top: at.y, width: 6, height: 6, background: 'rgb(255, 0, 0)' }} /> : null}

@@ -222,6 +222,13 @@ for (const framework of ['react', 'vue'] as const) {
       await expect.poll(async () => Math.abs((await seeIn(page, '#pad'))!.top - padBefore), { message: 'the page scrolled under the pointer' }).toBeGreaterThan(20);
       expect(Math.abs((await seeIn(page, '#marker'))!.top - marker.top), 'the marker did not move with the page').toBeLessThanOrEqual(1);
 
+      // An animation the script starts is run by the page, ends, and leaves the element as its
+      // last keyframe has it; the script's wait on it ends when the page says it has.
+      expect((await seeIn(page, '#faded-box'))?.opacity).toBe('1');
+      await clickIn(page, '#fade-now');
+      await shows(page, '#faded', 'faded');
+      expect((await seeIn(page, '#faded-box'))?.opacity).toBe('0.25');
+
       await clickIn(page, '#focus-me');
       await shows(page, '#focused', 'yes');
       expect((await seeIn(page, '#focus-me'))?.focused).toBe(true);

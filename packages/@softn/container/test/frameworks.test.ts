@@ -210,6 +210,11 @@ describe('React and Vue apps built by Vite, run as their dist/ folder', () => {
       expect(find('#marker').style.left).toBe('30px');
       expect(find('#marker').style.top).toBe('25px');
 
+      // An animation the script starts and waits on. (This page runs none: it ends at once,
+      // and what waited on it goes on. A browser runs it: the e2e spec.)
+      click('#fade-now');
+      await shows('#faded', 'faded');
+
       find('#focus-me').focus();
       await shows('#focused', 'yes');
       find('#focus-me').blur();

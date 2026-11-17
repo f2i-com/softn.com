@@ -26,6 +26,8 @@ const caught = ref('');
 const hovered = ref(false);
 const at = ref(null);
 const sprite = ref('loading');
+const faded = ref('not yet');
+const fadedBox = ref(null);
 const blobUrl = ref('');
 const focused = ref(false);
 const data = ref('loading');
@@ -76,6 +78,9 @@ function show(to) {
 function dark() {
   document.documentElement.classList.toggle('dark');
 }
+function fade() {
+  fadedBox.value.animate([{ opacity: 1 }, { opacity: 0.25 }], { duration: 60, fill: 'forwards' }).finished.then(() => { faded.value = 'faded'; });
+}
 function toLine() {
   document.getElementById('line-3').scrollIntoView();
 }
@@ -125,6 +130,10 @@ function toLine() {
     <svg id="icon" width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="red" /></svg>
     <div id="hover" @mouseenter="hovered = true" @mouseleave="hovered = false">hover</div>
     <span id="hovered">{{ hovered ? 'yes' : 'no' }}</span>
+    <!-- An animation the script starts and waits on (how Svelte's transitions and AutoAnimate move things). -->
+    <button id="fade-now" type="button" @click="fade">Fade</button>
+    <div id="faded-box" ref="fadedBox">fades</div>
+    <span id="faded">{{ faded }}</span>
     <!-- A thing put where the pointer was, as a menu or a tooltip is: fixed, at the click's own coordinates. -->
     <div id="pad" style="height: 60px; background: rgb(238, 238, 238)" @click="at = { x: $event.clientX, y: $event.clientY }">pad</div>
     <div v-if="at" id="marker" :style="{ position: 'fixed', left: at.x + 'px', top: at.y + 'px', width: '6px', height: '6px', background: 'rgb(255, 0, 0)' }" />

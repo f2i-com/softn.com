@@ -78,6 +78,7 @@ export interface Seen {
   display: string;
   letterSpacing: string;
   color: string;
+  opacity: string;
   /** How far it has been scrolled, how tall what it holds is, and how much of that shows. */
   scrollTop: number;
   scrollHeight: number;
@@ -116,6 +117,7 @@ export function seeIn(page: Page, selector: string): Promise<Seen | null> {
       display: style.display,
       letterSpacing: style.letterSpacing,
       color: style.color,
+      opacity: style.opacity,
       scrollTop: first.scrollTop,
       scrollHeight: first.scrollHeight,
       clientHeight: first.clientHeight,
