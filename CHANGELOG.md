@@ -6,7 +6,7 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.45
 
 - Upgrading from v0.0.44: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again, and every protocol number in `softn-formlogic-runtime` is v0.0.44's. A site should deploy this in place of the last release, not over it: the apps' built files moved (below), and the folders they were in (`assets/`, `web/assets/`, `studio/assets/`, `builder/assets/`, `play/assets/`) are no longer written or read.
 - A smaller website: the archive is 30.5 MB where v0.0.44's was 41.4, in 1,082 files where it had 1,859. The single-app archives are as they were (7.1 and 7.5 MB).
