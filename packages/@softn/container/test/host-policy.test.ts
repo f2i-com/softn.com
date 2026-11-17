@@ -11,8 +11,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mountSoftNContainer } from '../src/index';
+import { savePersistedDbCollection, storageWriteFits } from '../src/softn-app';
 import { rewriteCss } from '../src/css-policy';
-import { canvasPropertyAllowed, canvasSide, hostElementName, isDeclaredElementProperty } from '../src/host-policy';
+import { canvasPropertyAllowed, canvasSide, hostElementName, hostTitle, isDeclaredElementProperty } from '../src/host-policy';
 import { transformEsModule } from '../src/esm-linker';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -235,6 +236,40 @@ describe('what an app may put into the page that embeds it', () => {
     handle.dispose();
   });
 
+  it('draws an SVG written into an address where it is a picture, and nowhere it would be a document', async () => {
+    // What a bundler writes for every small SVG an app imports (Vite's default under 4 KB).
+    const SVG = "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%208%208'%3e%3crect%20width='8'%20height='8'/%3e%3c/svg%3e";
+    const { handle } = await mount({
+      'index.html': `<!doctype html><html><head><style>.tick{background-image:url("${SVG}")} .evil{background:url(data:text/html,<script>1</script>)}</style></head><body>
+        <img id="still" src="${SVG}" alt="">
+        <a id="link" href="${SVG}">open</a>
+        <form id="form" action="${SVG}"></form>
+        <svg id="drawing"><image id="inner" href="${SVG}" width="8" height="8"/><use id="use" href="${SVG}#x"/></svg>
+        <img id="page" src="data:text/html,<p>hello</p>" alt="">
+        <p class="tick evil" id="p">p</p>
+        <script>
+          var made = document.createElement('img'); made.id = 'made'; made.src = ${JSON.stringify(SVG)}; document.body.appendChild(made);
+          var a = document.createElement('a'); a.id = 'made-link'; a.href = ${JSON.stringify(SVG)}; a.textContent = 'x'; document.body.appendChild(a);
+        </script></body></html>`,
+    });
+    const root = handle.shadowRoot;
+    // A picture: the first page's, one the script made, and an SVG's own <image>.
+    expect(root.querySelector('#still')?.getAttribute('src')).toBe(SVG);
+    expect(root.querySelector('#made')?.getAttribute('src')).toBe(SVG);
+    expect(root.querySelector('#inner')?.getAttribute('href')).toBe(SVG);
+    // Not a link, a form's address or a <use>, each of which reads a document.
+    expect(root.querySelector('#link')?.hasAttribute('href')).toBe(false);
+    expect(root.querySelector('#made-link')?.hasAttribute('href')).toBe(false);
+    expect(root.querySelector('#form')?.hasAttribute('action')).toBe(false);
+    expect(root.querySelector('#use')?.hasAttribute('href')).toBe(false);
+    // And no other kind of document in an address, wherever it is written.
+    expect(root.querySelector('#page')?.hasAttribute('src')).toBe(false);
+    const css = [...root.querySelectorAll('style')].map((el) => el.textContent ?? '').join('\n');
+    expect(css).toContain('data:image/svg+xml,');
+    expect(css).not.toContain('data:text/html');
+    handle.dispose();
+  });
+
   it('opens a link out in a tab of its own, whatever target the app wrote and in whatever order', async () => {
     const { handle } = await mount({
       'index.html': `<!doctype html><html><body>
@@ -409,6 +444,93 @@ describe('what an app may put into the page that embeds it', () => {
     expect(refused).not.toBe('');
     const stored = localStorage.getItem('softn-v2:quota-app:db') ?? '';
     expect(stored.length * 2).toBeLessThanOrEqual(20_000);
+    handle.dispose();
+  });
+
+  it('holds what an app keeps to one quota: its localStorage and its records together', async () => {
+    const { handle } = await mount(
+      {
+        'index.html': `<!doctype html><html><body><pre id="o">…</pre><script type="module">
+          import { db } from 'softn:db';
+          // A little over half the quota, kept through localStorage.
+          localStorage.setItem('big', 'x'.repeat(5500));
+          let kept = 0, refused = '';
+          try { for (let i = 0; i < 400; i++) { db.create('notes', { text: 'y'.repeat(200) }); kept++; } } catch (e) { refused = String(e.message); }
+          // The record that did not fit is not left in the app's own copy, and a delete still works.
+          const held = db.query('notes').length;
+          let deleted = 'yes';
+          try { db.delete(db.query('notes')[0].id); } catch { deleted = 'no'; }
+          // A value written over with one its own size is no growth.
+          let rewritten = 'yes';
+          try { localStorage.setItem('big', 'z'.repeat(5500)); } catch { rewritten = 'no'; }
+          // The records take from the same quota, so there is no room for as much again.
+          let more = 'kept';
+          try { localStorage.setItem('more', 'w'.repeat(5500)); } catch { more = 'refused'; }
+          document.getElementById('o').textContent = [kept, held, refused === '' ? 'no-error' : 'error', deleted, rewritten, more].join('|');
+        </script></body></html>`,
+      },
+      { appId: 'one-quota', limits: { storageQuotaBytes: 20_000 } }
+    );
+    await settle(200);
+    const [kept, held, refused, deleted, rewritten, more] = (handle.shadowRoot.querySelector('#o')?.textContent ?? '').split('|');
+    expect(Number(kept)).toBeGreaterThan(0);
+    expect(Number(kept)).toBeLessThan(400);
+    expect(refused).toBe('error');
+    // What the app reads back is what was kept, no more.
+    expect(Number(held)).toBe(Number(kept));
+    expect(deleted).toBe('yes');
+    expect(rewritten).toBe('yes');
+    expect(more).toBe('refused');
+    // In the page: both stores, added up, within the quota; v0.0.44 held each to the whole of it.
+    const big = localStorage.getItem('softn-v2:one-quota:ls:big') ?? '';
+    const records = localStorage.getItem('softn-v2:one-quota:db') ?? '';
+    expect(big).toBe('z'.repeat(5500));
+    expect(localStorage.getItem('softn-v2:one-quota:ls:more')).toBeNull();
+    expect(records.length).toBeGreaterThan(0);
+    expect((3 + big.length) * 2 + records.length * 2).toBeLessThanOrEqual(20_000);
+    handle.dispose();
+  });
+
+  it('the page decides what it keeps, whatever a Worker sends: one quota for both stores', () => {
+    const base = 'softn-v2:forged:';
+    const quota = 10_000;
+    // Records first, to most of the quota.
+    expect(savePersistedDbCollection(base, 'notes', [{ id: 'a', text: 'r'.repeat(3500) }], quota)).toBe(true);
+    const recordBytes = (localStorage.getItem(`${base}db`) ?? '').length * 2;
+    expect(recordBytes).toBeGreaterThan(7000);
+    // A value that fits what is left, and one that does not though it is under the whole quota.
+    expect(storageWriteFits(base, 'k', 'v'.repeat(1000), quota)).toBe(true);
+    expect(storageWriteFits(base, 'k', 'v'.repeat(2000), quota)).toBe(false);
+    localStorage.setItem(`${base}ls:k`, 'v'.repeat(1000));
+    // Written over with as much: nothing more is taken. With more than is left: refused.
+    expect(storageWriteFits(base, 'k', 'u'.repeat(1000), quota)).toBe(true);
+    expect(storageWriteFits(base, 'k', 'u'.repeat(1500), quota)).toBe(false);
+    // And the records are held to what the localStorage has left, not to the whole quota.
+    const left = quota - (1 + 1000) * 2;
+    // (Under the whole quota by itself, and over what is left of it.)
+    expect(savePersistedDbCollection(base, 'notes', [{ id: 'a', text: 'r'.repeat(4100) }], left)).toBe(false);
+    expect((localStorage.getItem(`${base}db`) ?? '').length * 2).toBe(recordBytes);
+    // A collection named for an object's own machinery is not kept under that name.
+    expect(savePersistedDbCollection(base, '__proto__', [{ id: 'x' }], quota)).toBe(true);
+    expect(JSON.parse(localStorage.getItem(`${base}db`) ?? '{}')).toEqual({ notes: [{ id: 'a', text: 'r'.repeat(3500) }] });
+  });
+
+  it('hands a host the app’s title as one line of text, no longer than a title is', async () => {
+    expect(hostTitle('  Notes \n for\tToday  ')).toBe('Notes for Today');
+    expect(hostTitle('x'.repeat(5000))).toHaveLength(120);
+    // Control characters and the marks that turn the text after them around are not the app's to place in a host's chrome.
+    expect(hostTitle('safe‮exe.fdp\u0000\u0007 end')).toBe('safe exe.fdp end');
+    expect(hostTitle('a⁦b⁩c‏d')).toBe('a b c d');
+    for (const notText of [undefined, null, 7, {}, ['x']]) expect(hostTitle(notText)).toBe('');
+
+    const titles: string[] = [];
+    const { handle } = await mount(
+      { 'index.html': `<!doctype html><html><head><title>Start</title></head><body><script>document.title = 'Inbox (3)\\n' + 'x'.repeat(400);</script></body></html>` },
+      { onTitleChange: (title: string) => titles.push(title) }
+    );
+    await settle(100);
+    expect(titles.length).toBeGreaterThan(0);
+    expect(titles.at(-1)).toBe(`Inbox (3) ${'x'.repeat(110)}`);
     handle.dispose();
   });
 

@@ -79,7 +79,7 @@ function randomKey(): number[] | undefined {
 
 /** What the shell tells the host after a turn of the engine. */
 export type ShellOp =
-  | ['e', number, string, Record<string, string>]
+  | ['e', number, string, Record<string, string>, ('svg' | 'math')?]
   | ['x', number, string]
   | ['m', number]
   | ['a', number, string, string | null]

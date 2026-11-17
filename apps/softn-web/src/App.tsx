@@ -19,7 +19,8 @@ import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn
 import { carryAppSync, debug, forgetAppSync } from '@softn/core';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
-import { installAppOffline } from './lib/offlineInstall';
+import { installAppOffline, type OfflineInstallResult } from './lib/offlineInstall';
+import { installContainerOffline } from './lib/containerOfflineInstall';
 import { whenIdle } from './lib/idle';
 import {
   getCachedApp,
@@ -433,15 +434,8 @@ function App(): React.ReactElement {
    * Home ("Offline ready", "Installing…", "Needs connection"). The tab owns
    * the run; closing it aborts, and an aborted run records nothing.
    */
-  const beginOfflineInstall = useCallback(
-    (
-      tabId: string,
-      record: CachedApp,
-      source: string,
-      execution: 'worker' | 'main' | undefined,
-      capabilities: string[],
-      pythonPackages?: readonly string[]
-    ): void => {
+  const runOfflineInstall = useCallback(
+    (tabId: string, record: CachedApp, install: (signal: AbortSignal) => Promise<OfflineInstallResult>): void => {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
       if (isOfflineReady(record)) return;
       const controller = new AbortController();
@@ -453,14 +447,7 @@ function App(): React.ReactElement {
       // QR decoder) are parsed and run after the app's own opening work
       // rather than between its steps.
       void whenIdle(controller.signal)
-        .then(() =>
-          controller.signal.aborted
-            ? null
-            : installAppOffline(
-                { id: record.id, source, execution, capabilities, pythonPackages },
-                { signal: controller.signal }
-              )
-        )
+        .then(() => (controller.signal.aborted ? null : install(controller.signal)))
         .then(async (result) => {
           if (!result || controller.signal.aborted) return;
           const why = result.ready
@@ -498,6 +485,29 @@ function App(): React.ReactElement {
     []
   );
 
+  /** A SoftN app: the components its documents can reach, its workers, its runtimes (lib/offlineInstall.ts). */
+  const beginOfflineInstall = useCallback(
+    (
+      tabId: string,
+      record: CachedApp,
+      source: string,
+      execution: 'worker' | 'main' | undefined,
+      capabilities: string[],
+      pythonPackages?: readonly string[]
+    ): void =>
+      runOfflineInstall(tabId, record, (signal) =>
+        installAppOffline({ id: record.id, source, execution, capabilities, pythonPackages }, { signal })
+      ),
+    [runOfflineInstall]
+  );
+
+  /** A web container: the container's Worker, the engines its pages start on, what it draws with (lib/containerOfflineInstall.ts). */
+  const beginContainerInstall = useCallback(
+    (tabId: string, record: CachedApp, archive: Uint8Array): void =>
+      runOfflineInstall(tabId, record, (signal) => installContainerOffline({ id: record.id, source: archive }, { signal })),
+    [runOfflineInstall]
+  );
+
   /**
    * What an open of a bundle's bytes (lib/openBundle.ts) needs of this
    * component: the tabs, what is on screen, the error card, the "Opening…"
@@ -519,8 +529,9 @@ function App(): React.ReactElement {
       appsChanged: setApps,
       notify: setAppNotice,
       installOffline: beginOfflineInstall,
+      installContainerOffline: beginContainerInstall,
     }),
-    [beginOfflineInstall]
+    [beginOfflineInstall, beginContainerInstall]
   );
 
   /** Open a bundle's bytes as a tab. Resolves with the app's name, or null if it did not open. */

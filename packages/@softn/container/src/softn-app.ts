@@ -27,11 +27,15 @@ import type {
   ZippEngineTier,
 } from './types';
 import type { SplitRealmSceneHost } from './vendor/webgl-scene-host';
+import { startModuleWorker } from './worker-start';
 
 const DEFAULT_LIMITS: Required<ContainerLimits> = {
   instructionsPerTurn: 100_000_000,
   turnTimeoutMs: 15_000,
-  storageQuotaBytes: 10 * 1024 * 1024,
+  // What an app may keep, of the roughly 10 MB a browser gives the embedding page for
+  // everything it stores this way: its own keys and every other app's. The default was the
+  // whole of it, so one app could leave the page, and the apps beside it, unable to save.
+  storageQuotaBytes: 5 * 1024 * 1024,
 };
 
 export interface SoftNContainerHandle {
@@ -44,6 +48,13 @@ export interface SoftNContainerHandle {
   navigate(path: string): Promise<void>;
   /** Grant or revoke capabilities dynamically. */
   setGrantedCapabilities(caps: Capability[]): void;
+  /**
+   * Whether the app is on screen. While it is not (a tab behind another, a preview that is
+   * covered) it is asked for no frames and its timers wait, so an animation or a poll that
+   * nobody is looking at costs nothing; what came due runs when it is shown again. A request
+   * already under way finishes. An app is active until told otherwise.
+   */
+  setActive(active: boolean): void;
   /** Tear down the Worker, revoke `blob:` URLs, and clean up DOM listeners. */
   dispose(): void;
 }
@@ -76,11 +87,23 @@ const FRAME_STYLE = `${PINNED}display:flex!important;flex-direction:column!impor
 
 /**
  * The app's box: everything the app draws is inside it. It is the containing block of the
- * app's `position: fixed` elements and clips what they draw, scrolls the app's page, and is
- * a stacking context of its own below the consent bar: whatever `z-index` the app picks, it
- * draws under the bar and never over the embedding page.
+ * app's `position: fixed` elements and clips what they draw, and is a stacking context of
+ * its own below the consent bar: whatever `z-index` the app picks, it draws under the bar
+ * and never over the embedding page.
+ *
+ * It does not scroll: the app's page does, inside it (DOCROOT_STYLE). One element was both,
+ * and what an app fixed in place then scrolled away with its page: a dialog opened further
+ * down was drawn at the top of the page, out of sight, and a bar fixed to the top left with
+ * the first scroll.
  */
-const DOCROOT_STYLE = `${PINNED}display:block!important;flex:1 1 auto!important;min-height:0!important;width:100%!important;position:relative!important;overflow:auto!important;contain:layout paint!important;isolation:isolate!important;z-index:0!important;`;
+const BOX_STYLE = `${PINNED}display:block!important;flex:1 1 auto!important;min-height:0!important;width:100%!important;position:relative!important;overflow:hidden!important;contain:layout paint!important;isolation:isolate!important;z-index:0!important;`;
+
+/**
+ * The app's page, which scrolls inside the box. It is where the app's absolutely placed
+ * elements are placed from (they scroll with it), and nothing here makes it the containing
+ * block of a fixed one (no containment, no transform): that is the box around it.
+ */
+const DOCROOT_STYLE = `${PINNED}display:block!important;width:100%!important;height:100%!important;position:relative!important;overflow:auto!important;`;
 
 /** The consent bar's place: above the app's box, in a shadow root of its own that no sheet of the app's reaches. */
 const CONSENT_STYLE = `${PINNED}display:block!important;flex:none!important;position:relative!important;z-index:1!important;`;
@@ -212,7 +235,7 @@ function loadPersistedDb(base: string): Record<string, unknown[]> {
  * the Worker counts too, but what is written to the embedding page's storage is decided
  * here, where the app's script has no say.
  */
-function savePersistedDbCollection(base: string, collection: string, records: unknown[], quotaBytes: number): boolean {
+export function savePersistedDbCollection(base: string, collection: string, records: unknown[], quotaBytes: number): boolean {
   if (typeof localStorage === 'undefined') return false;
   // The name is the app's word, and a key of an object here: not one that is the object's own
   // machinery (`__proto__` would replace what the records are kept in).
@@ -236,6 +259,33 @@ function persistedStorageBytes(base: string): number {
   let bytes = 0;
   for (const [key, value] of Object.entries(loadPersistedStorage(base))) bytes += (key.length + value.length) * 2;
   return bytes;
+}
+
+/** The bytes the app's kept records take there. */
+function persistedDbBytes(base: string): number {
+  if (typeof localStorage === 'undefined') return 0;
+  try {
+    return (localStorage.getItem(`${base}db`)?.length ?? 0) * 2;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Whether keeping `value` under `key` leaves the app within its quota: what it keeps through
+ * localStorage and its records together, since both are kept in the embedding page's one
+ * storage. The two were each held to the whole quota and never added up, so an app kept twice
+ * its quota; and a value written over was counted as if the old one stayed.
+ */
+export function storageWriteFits(base: string, key: string, value: string, quotaBytes: number): boolean {
+  let replaced = 0;
+  try {
+    const old = typeof localStorage === 'undefined' ? null : localStorage.getItem(`${base}ls:${key}`);
+    if (old !== null) replaced = (key.length + old.length) * 2;
+  } catch {
+    replaced = 0;
+  }
+  return persistedStorageBytes(base) + persistedDbBytes(base) - replaced + (key.length + value.length) * 2 <= quotaBytes;
 }
 
 /**
@@ -320,6 +370,7 @@ export async function mountSoftNContainer(
       shadowRoot,
       navigate: async () => undefined,
       setGrantedCapabilities: () => undefined,
+      setActive: () => undefined,
       dispose() {
         legacyHandle.dispose();
         archive.dispose();
@@ -337,6 +388,8 @@ export async function mountSoftNContainer(
   let activeTier: ZippEngineTier = 'lite';
   let turnSeq = 1;
   const pendingWatchdogs = new Map<number, ReturnType<typeof setTimeout>>();
+  /** What waits for the script's answer to an event it was handed, by the event's turn. */
+  const pendingAnswers = new Map<number, (eventBits: number) => void>();
 
   const clearRaf = () => {
     if (rafHandle !== null) {
@@ -349,7 +402,17 @@ export async function mountSoftNContainer(
     }
   };
 
+  // The host says the app is not on screen (`setActive(false)`: a tab behind another): no
+  // frame is asked for and the Worker holds the app's timers until it is shown again. A
+  // frame the app wanted meanwhile is remembered and asked for then.
+  let paused = false;
+  let frameOwed = false;
+
   const scheduleNextRaf = () => {
+    if (paused) {
+      frameOwed = true;
+      return;
+    }
     if (rafHandle !== null || disposed) return;
     const step = (ts: number) => {
       rafHandle = null;
@@ -366,6 +429,7 @@ export async function mountSoftNContainer(
     clearRaf();
     for (const wd of pendingWatchdogs.values()) clearTimeout(wd);
     pendingWatchdogs.clear();
+    pendingAnswers.clear();
     currentTransport?.terminate();
     currentTransport = null;
     currentPatcher?.dispose();
@@ -393,7 +457,7 @@ export async function mountSoftNContainer(
       grantedCaps.has('net')
     );
 
-    const { textFiles, binaryFilesBase64 } = archive.exportWorkerVfs();
+    const { textFiles, binaryFiles } = archive.exportWorkerVfs();
     activeTier = selectEngineTier(prepared.scripts, textFiles, archive.manifest.pythonPackages);
 
     // Resolve theme (`options.theme` -> `manifest.theme` -> system)
@@ -443,11 +507,23 @@ export async function mountSoftNContainer(
     docRootEl.setAttribute('data-softn-docroot', '');
     docRootEl.style.cssText = DOCROOT_STYLE;
 
+    // What the app's script puts in its <head>: its stylesheets apply from here, and nothing
+    // in it is drawn, as nothing in a document's head is.
+    const headEl = document.createElement('div');
+    headEl.setAttribute('data-softn-head', '');
+    headEl.hidden = true;
+    headEl.style.cssText = 'display:none !important';
+    docRootEl.appendChild(headEl);
+
     const viewportEl = document.createElement('div');
     viewportEl.setAttribute('data-softn-viewport', '');
     viewportEl.setAttribute('data-theme', effectiveTheme);
     docRootEl.appendChild(viewportEl);
-    frameEl.appendChild(docRootEl);
+    const boxEl = document.createElement('div');
+    boxEl.setAttribute('data-softn-box', '');
+    boxEl.style.cssText = BOX_STYLE;
+    boxEl.appendChild(docRootEl);
+    frameEl.appendChild(boxEl);
     shadowRoot.appendChild(frameEl);
 
     const handleThreeOps = async (
@@ -466,13 +542,15 @@ export async function mountSoftNContainer(
     const patcher = new HostDomPatcher({
       viewportEl,
       docRootEl,
+      headEl,
       archive,
       entryPath: pagePath,
       permissions,
       netGranted: grantedCaps.has('net'),
       callbacks: {
-        onEvent: (nodeId, eventType, props, syncChanges) => {
+        onEvent: (nodeId, eventType, props, syncChanges, answered) => {
           const tid = turnSeq++;
+          if (answered) pendingAnswers.set(tid, answered);
           if (useWorkerIsolation) {
             const wd = setTimeout(() => {
               pendingWatchdogs.delete(tid);
@@ -553,6 +631,15 @@ export async function mountSoftNContainer(
             if (msg.wantsRaf) {
               scheduleNextRaf();
             }
+            // Whoever waited for the script's answer to this event has it now, after what
+            // the script drew in answering.
+            if (msg.turnId !== undefined) {
+              const answered = pendingAnswers.get(msg.turnId);
+              if (answered) {
+                pendingAnswers.delete(msg.turnId);
+                answered(typeof msg.eventBits === 'number' ? msg.eventBits : 0);
+              }
+            }
             break;
 
           case 'console':
@@ -567,19 +654,19 @@ export async function mountSoftNContainer(
 
           case 'storage-write':
             if (!persistStorage) break;
-            // A value that would take the app's kept localStorage past its quota is not
-            // kept: the Worker refuses it first, and this holds whatever the Worker sends.
-            if (
-              msg.op === 'set' &&
-              persistedStorageBytes(storageBase) + ((msg.key?.length ?? 0) + (msg.value?.length ?? 0)) * 2 > limits.storageQuotaBytes
-            ) {
+            // A value that would take what the app keeps past its quota is not kept: the
+            // Worker refuses it first, and this holds whatever the Worker sends.
+            if (msg.op === 'set' && (typeof msg.key !== 'string' || typeof msg.value !== 'string' || !storageWriteFits(storageBase, msg.key, msg.value, limits.storageQuotaBytes))) {
               break;
             }
             storageKept(applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value));
             break;
 
           case 'db-write':
-            if (persistStorage) storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes));
+            // Its records take what its localStorage has left of the one quota.
+            if (persistStorage) {
+              storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes - persistedStorageBytes(storageBase)));
+            }
             break;
 
           case 'error': {
@@ -623,7 +710,7 @@ export async function mountSoftNContainer(
           seed: prepared.seed,
           scripts: prepared.scripts,
           textFiles,
-          binaryFilesBase64,
+          binaryFiles,
           // Always the runtime folder: the tier's bindings and the hosted vendor modules are
           // read from it whichever engine runs. (An engine named by address used to be sent
           // here in its place, and the Worker then looked for `engines/` beneath a .wasm.)
@@ -640,7 +727,8 @@ export async function mountSoftNContainer(
 
         if (useWorkerIsolation) {
           const workerUrl = `${runtimeUrl}container-worker.js`;
-          const worker = new Worker(workerUrl, { type: 'module', name: `softn:${appId}` });
+          // Behind the embedding page's service worker wherever the folder is (worker-start.ts).
+          const worker = startModuleWorker(workerUrl, { name: `softn:${appId}` });
           worker.addEventListener('message', (ev: MessageEvent<WorkerToHostMsg>) => {
             onWorkerMessage(ev.data);
           });
@@ -664,6 +752,8 @@ export async function mountSoftNContainer(
             },
           };
           worker.postMessage(initMsg);
+          // A page the app moved to while it was not on screen starts as the last one was left.
+          if (paused) worker.postMessage({ type: 'pause' } satisfies HostToWorkerMsg);
         } else {
           const { ContainerWorkerSession } = await import('./worker-runtime');
           const inlineSession = new ContainerWorkerSession(
@@ -678,6 +768,7 @@ export async function mountSoftNContainer(
             terminate: () => inlineSession.dispose(),
           };
           await inlineSession.handleMessage(initMsg);
+          if (paused) void inlineSession.handleMessage({ type: 'pause' });
         }
       };
 
@@ -721,6 +812,22 @@ export async function mountSoftNContainer(
         type: 'permissions-updated',
         grantedCapabilities: [...grantedCaps],
       });
+    },
+    setActive(active: boolean) {
+      if (disposed || paused === !active) return;
+      paused = !active;
+      if (paused) {
+        // A frame already asked of the browser is taken back, and owed.
+        if (rafHandle !== null) frameOwed = true;
+        clearRaf();
+        currentTransport?.post({ type: 'pause' });
+      } else {
+        currentTransport?.post({ type: 'resume' });
+        if (frameOwed) {
+          frameOwed = false;
+          scheduleNextRaf();
+        }
+      }
     },
     dispose() {
       if (disposed) return;

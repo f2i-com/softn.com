@@ -27,6 +27,14 @@ export function declaredCapabilities(content: string | Uint8Array | undefined): 
 const NO_DECLARATION = /\b([a-z][\w-]*) access not permitted: this bundle ships no permission\.json/i;
 /** Its words for one made under a declaration that does not grant it, which is what a check hands it. */
 const NOT_GRANTED = /\bnot permitted\. Add ([a-z][\w-]*)\.enabled to permission\.json/i;
+/** The web container's words for a request made with the network not granted (its only capability). */
+const CONTAINER_NET = /\bNetwork access to \S+ is not permitted by this container\b/i;
+
+/** The capability a line says was refused, or undefined for any other line. */
+function refusedCapability(line: string): string | undefined {
+  const named = (NO_DECLARATION.exec(line) ?? NOT_GRANTED.exec(line))?.[1].toLowerCase();
+  return named ?? (CONTAINER_NET.test(line) ? 'net' : undefined);
+}
 
 /**
  * Lines the runtime printed during a check, with what it says of a call that
@@ -50,7 +58,7 @@ export function explainUngrantedCalls(lines: string[], permissionJson: string | 
   const said = new Set<string>();
   const out: string[] = [];
   for (const line of lines) {
-    const capability = (NO_DECLARATION.exec(line) ?? NOT_GRANTED.exec(line))?.[1].toLowerCase();
+    const capability = refusedCapability(line);
     if (!capability || !declared.has(capability)) {
       out.push(line);
       continue;

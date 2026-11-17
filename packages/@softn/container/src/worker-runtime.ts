@@ -13,13 +13,14 @@
  */
 
 import { shellPrelude } from '../../core/src/document-shell/shell-source';
-import { mimeTypeFor, resolveVfsPath, VIRTUAL_ORIGIN } from './archive';
+import { bytesToBase64, mimeTypeFor, resolveVfsPath, VIRTUAL_ORIGIN } from './archive';
 import {
   ESM_REGISTRY_PREAMBLE,
   resolveModuleSpecifier,
   transformEsModule,
 } from './esm-linker';
 import { GUEST_EXTENSIONS_SOURCE } from './guest-canvas-and-ext';
+import { GUEST_BROWSER_GLOBALS_SOURCE } from './guest-browser-globals';
 import { isExternalUrlAllowed } from './sanitize';
 import { loadZippEngine, type ZippEngineInstance } from './zipp-loader';
 import type {
@@ -43,6 +44,13 @@ const DB_SYNC_OPS = [
   'db.getSavedSyncRoom',
 ];
 
+/**
+ * What `console.warn` writes ahead of its line, between two invisible separators, so that a
+ * warning can be told from an error on the one stream the engine gives both. An app that
+ * writes it itself only calls its own error a warning.
+ */
+const WARNING_MARK = '⁣softn:warn⁣';
+
 const LS_SYNC_OPS = ['ls.getItem', 'ls.setItem', 'ls.removeItem', 'ls.clear'];
 const APP_SYNC_OPS = ['app.esm.resolve', 'app.vfs.fetch'];
 
@@ -60,14 +68,16 @@ export class ContainerWorkerSession {
 
   private engine: ZippEngineInstance | null = null;
   private textFiles: Record<string, string> = {};
-  private binaryFilesBase64: Record<string, string> = {};
+  private binaryFiles: Record<string, Uint8Array> = {};
   private importMap: Record<string, string> = {};
   private vendorModules: Record<string, string> = {};
   private runtimeUrl = '/runtime/';
   private permissions: ContainerPermissions = {};
   private grantedCapabilities = new Set<Capability>();
   private instructionsPerTurn = 100_000_000;
-  private storageQuotaBytes = 10 * 1024 * 1024;
+  private storageQuotaBytes = 5 * 1024 * 1024;
+  /** What the app's records take of that quota, as last kept (`recordBytes()` then). */
+  private recordBytesKept = 0;
   private language: 'javascript' | 'typescript' | 'python' = 'javascript';
 
   private readonly localStore = new Map<string, string>();
@@ -77,6 +87,9 @@ export class ContainerWorkerSession {
 
   private readonly definedModules = new Set<string>();
   private readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** The host says the app is not on screen: its timers wait (`heldTimers`: timer id to its callback), and no frame is asked for. */
+  private paused = false;
+  private readonly heldTimers = new Map<number, number>();
   private disposed = false;
 
   constructor(
@@ -106,6 +119,12 @@ export class ContainerWorkerSession {
       case 'permissions-updated':
         this.grantedCapabilities = new Set(msg.grantedCapabilities);
         break;
+      case 'pause':
+        this.paused = true;
+        break;
+      case 'resume':
+        this.resume();
+        break;
       case 'dispose':
         this.dispose();
         break;
@@ -113,8 +132,9 @@ export class ContainerWorkerSession {
   }
 
   private async handleInit(msg: Extract<HostToWorkerMsg, { type: 'init' }>): Promise<void> {
-    this.textFiles = { ...msg.textFiles };
-    this.binaryFilesBase64 = { ...msg.binaryFilesBase64 };
+    // No prototype: a file may be called `constructor`, and `in` below asks about the app's files alone.
+    this.textFiles = Object.assign(Object.create(null), msg.textFiles);
+    this.binaryFiles = Object.assign(Object.create(null), msg.binaryFiles);
     this.importMap = { ...msg.manifest.importMap };
     this.vendorModules = { ...(msg.vendorModules ?? {}) };
     this.runtimeUrl = msg.runtimeUrl || '/runtime/';
@@ -131,6 +151,8 @@ export class ContainerWorkerSession {
 
     // Seed DB from `.xdb` files inside the bundle + persisted host DB records
     this.seedDatabase(msg.initialDbRecords);
+    // What the page holds of the app's records already, which its localStorage shares a quota with.
+    this.recordBytesKept = Object.keys(msg.initialDbRecords).length > 0 ? JSON.stringify(msg.initialDbRecords).length * 2 : 0;
 
     try {
       const bindings = await loadZippEngine({
@@ -232,15 +254,22 @@ export class ContainerWorkerSession {
         ESM_REGISTRY_PREAMBLE,
         shellPrelude(seedJson),
         GUEST_EXTENSIONS_SOURCE,
+        // After both: `window` becomes the global object, with what each of them put on it.
+        GUEST_BROWSER_GLOBALS_SOURCE,
         `__softnHydrateInlineHandlers(${JSON.stringify(msg.seed.body)});`,
         ...factoryBlocks,
         // Top-level entry slots callable via `engine.callFunction(name, args)` in O(1)
         `function __softnContainerTake(failed) { return globalThis.__softnDocTake(failed); }`,
         `function __softnContainerSync(changes) { return globalThis.__softnDocSync(changes); }`,
-        `function __softnContainerEvent(id, type, props) { return globalThis.__softnDocEvent(id, type, props, []); }`,
+        // The last argument: a box the code's cancelling unticks is told to the page, which
+        // ticked it a thread away and hears the answer too late to hold it back.
+        `function __softnContainerEvent(id, type, props) { return globalThis.__softnDocEvent(id, type, props, [], true); }`,
         `function __softnContainerRaf(ts) { return globalThis.__softnRunRaf(ts); }`,
         `function __softnContainerWantsRaf() { return globalThis.__softnWantsRaf(); }`,
         `function __softnScriptFailed(err) { console.error('[SoftN] Script startup error:', err && err.stack ? err.stack : String(err)); }`,
+        // A warning and an error are one stream to the engine. A warning is written with a
+        // mark in front, which drainConsole reads and takes off, so a host hears each as it is.
+        `(function () { var c = globalThis.console; if (!c || typeof c.error !== 'function') return; var error = c.error; c.warn = function () { var a = Array.prototype.slice.call(arguments); a.unshift(${JSON.stringify(WARNING_MARK)}); return error.apply(c, a); }; })();`,
         `var __softnBoot = Promise.resolve();`,
         ...bootSteps,
         `__softnBoot.then(function () { globalThis.__softnDocReady(); }, function (err) { __softnScriptFailed(err); globalThis.__softnDocReady(); });`,
@@ -334,6 +363,22 @@ export class ContainerWorkerSession {
     }
   }
 
+  /**
+   * The app is shown again: the timers that came due while it was not are run, in the order
+   * they were set. A repeating timer is armed again by its own turn, so one that ran every
+   * 16 ms for an hour unseen runs once here, not 225,000 times.
+   */
+  private resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    const held = [...this.heldTimers.values()];
+    this.heldTimers.clear();
+    for (const callId of held) {
+      if (this.disposed || this.paused) break;
+      this.resolveCallbackAndFlush(callId, { ok: true });
+    }
+  }
+
   private handleRaf(timestamp: number): void {
     if (!this.engine || this.language === 'python') return;
     try {
@@ -399,7 +444,9 @@ export class ContainerWorkerSession {
         const delayMs = Math.max(0, Math.min(Number(args[1]) || 0, 86_400_000));
         const handle = setTimeout(() => {
           this.timers.delete(timerId);
-          this.resolveCallbackAndFlush(callId, { ok: true });
+          // Due while the app is not shown: kept, and run when it is shown again.
+          if (this.paused) this.heldTimers.set(timerId, callId);
+          else this.resolveCallbackAndFlush(callId, { ok: true });
         }, delayMs);
         this.timers.set(timerId, handle);
         return;
@@ -412,6 +459,7 @@ export class ContainerWorkerSession {
           clearTimeout(existing);
           this.timers.delete(timerId);
         }
+        this.heldTimers.delete(timerId);
         return;
       }
 
@@ -591,7 +639,11 @@ export class ContainerWorkerSession {
         const val = String(valRaw ?? '');
         const prev = this.localStore.get(key);
         const delta = (key.length + val.length) * 2 - (prev !== undefined ? (key.length + prev.length) * 2 : 0);
-        if (this.localStoreBytes + delta > this.storageQuotaBytes) {
+        // One quota for what the app keeps: its records take from it too (`recordBytesKept`).
+        // They were left out here, so an app with its records at the quota could keep as much
+        // again this way; the page now refuses that, and the app must be told, not left
+        // believing a value was kept that is gone at the next visit.
+        if (this.localStoreBytes + delta + this.recordBytesKept > this.storageQuotaBytes) {
           throw new Error('QuotaExceededError: container localStorage quota exceeded');
         }
         this.localStore.set(key, val);
@@ -625,17 +677,31 @@ export class ContainerWorkerSession {
     };
     // The app's records count against the same quota as its localStorage: both are kept in
     // the embedding page's storage, which is the page's to run out of. (Only localStorage was
-    // counted, so an app could write records until the page's own keys had no room.)
+    // counted, so an app could write records until the page's own keys had no room.) Counted
+    // as the page counts them, by the one text they are kept as, so that the two agree on
+    // the write that does not fit.
     const persistCollection = (name: string) => {
-      let bytes = this.localStoreBytes;
-      for (const col of this.dbCollections.values()) {
-        for (const rec of col.values()) bytes += JSON.stringify(rec).length * 2;
-      }
-      if (bytes > this.storageQuotaBytes) {
+      const records = this.recordBytes();
+      if (this.localStoreBytes + records > this.storageQuotaBytes) {
         throw new Error('QuotaExceededError: container storage quota exceeded');
       }
+      this.recordBytesKept = records;
       const col = getCollection(name);
       this.postToHost({ type: 'db-write', collection: name, records: [...col.values()] });
+    };
+    /**
+     * Keep a change to a collection, or take it back: a change the quota refuses is undone
+     * before the app hears of it. It used to stay in the Worker's own copy, where the app
+     * went on reading a record the page had not kept, and where every later change, a
+     * delete included, was refused in turn because the copy was still over the quota.
+     */
+    const commit = (name: string, undo: () => void): void => {
+      try {
+        persistCollection(name);
+      } catch (err) {
+        undo();
+        throw err;
+      }
     };
 
     engine.setDbBridge({
@@ -676,8 +742,13 @@ export class ContainerWorkerSession {
             ? data.id
             : `rec_${Date.now().toString(36)}_${(this.dbRecordSeq++).toString(36)}`;
         const rec: DbRecord = { ...data, id, created_at: now, updated_at: now };
-        getCollection(collection).set(id, rec);
-        persistCollection(collection);
+        const col = getCollection(collection);
+        const before = col.get(id);
+        col.set(id, rec);
+        commit(collection, () => {
+          if (before) col.set(id, before);
+          else col.delete(id);
+        });
         return rec;
       },
       update: (idRaw: unknown, dataRaw: unknown) => {
@@ -698,7 +769,7 @@ export class ContainerWorkerSession {
               updated_at: new Date().toISOString(),
             };
             col.set(id, updated);
-            persistCollection(colName);
+            commit(colName, () => col.set(id, existing));
             return updated;
           }
         }
@@ -709,9 +780,9 @@ export class ContainerWorkerSession {
         for (const [colName, col] of this.dbCollections) {
           const existing = col.get(id);
           if (existing) {
-            existing._deleted = true;
-            existing.updated_at = new Date().toISOString();
-            persistCollection(colName);
+            // A new record in the old one's place, so that the old one is there to put back.
+            col.set(id, { ...existing, _deleted: true, updated_at: new Date().toISOString() });
+            commit(colName, () => col.set(id, existing));
             break;
           }
         }
@@ -719,7 +790,8 @@ export class ContainerWorkerSession {
       hardDelete: (collectionRaw: unknown, idRaw: unknown) => {
         const collection = String(collectionRaw ?? '');
         const col = getCollection(collection);
-        if (col.delete(String(idRaw ?? ''))) persistCollection(collection);
+        const existing = col.get(String(idRaw ?? ''));
+        if (existing && col.delete(existing.id)) commit(collection, () => col.set(existing.id, existing));
       },
       startSync: () => undefined,
       stopSync: () => undefined,
@@ -762,13 +834,14 @@ export class ContainerWorkerSession {
               body: this.textFiles[vfsPath],
             };
           }
-          if (vfsPath in this.binaryFilesBase64) {
+          if (vfsPath in this.binaryFiles) {
             return {
               ok: true,
               status: 200,
               statusText: 'OK',
               headers: { 'content-type': mimeTypeFor(vfsPath) },
-              base64: this.binaryFilesBase64[vfsPath],
+              // Written out here, off the page's thread, and only for a file a script reads.
+              base64: bytesToBase64(this.binaryFiles[vfsPath]),
             };
           }
           return { ok: false, status: 404, statusText: 'Not Found', headers: {} };
@@ -776,6 +849,18 @@ export class ContainerWorkerSession {
         throw new Error(`Unknown sync app operation: ${kind}`);
       },
     });
+  }
+
+  /**
+   * What the app's records take in the embedding page's storage, in bytes: the one text the
+   * page keeps them all as (softn-app.ts's savePersistedDbCollection), counted the same way.
+   */
+  private recordBytes(): number {
+    if (this.dbCollections.size === 0) return 0;
+    // No prototype: a collection may be called `__proto__`, and is counted like any other.
+    const all: Record<string, DbRecord[]> = Object.create(null);
+    for (const [name, col] of this.dbCollections) all[name] = [...col.values()];
+    return JSON.stringify(all).length * 2;
   }
 
   private seedDatabase(persisted: Record<string, unknown[]>): void {
@@ -823,11 +908,14 @@ export class ContainerWorkerSession {
       const entries = this.engine.takeConsole();
       if (!Array.isArray(entries) || entries.length === 0) break;
       for (const entry of entries) {
-        const lvl =
-          entry.level === 'error' || entry.level === 'warn' || entry.level === 'info'
-            ? entry.level
-            : 'log';
-        this.postToHost({ type: 'console', level: lvl, text: entry.text });
+        // The engine says which stream a line was written to, not which console method wrote
+        // it: `{ stream: "stdout" | "stderr", text }`. This read a `level` the engine never
+        // gave, so every line an app printed, its errors too, reached the host as a plain
+        // log: nothing a host shows or counts as an error (Studio's check of an app) saw one.
+        const text = String(entry.text ?? '');
+        if (entry.stream !== 'stderr') this.postToHost({ type: 'console', level: 'log', text });
+        else if (text.startsWith(WARNING_MARK)) this.postToHost({ type: 'console', level: 'warn', text: text.slice(WARNING_MARK.length).replace(/^ /, '') });
+        else this.postToHost({ type: 'console', level: 'error', text });
       }
     }
   }
@@ -839,7 +927,8 @@ export class ContainerWorkerSession {
         const entries = this.engine.takeFailedConsole();
         if (!Array.isArray(entries) || entries.length === 0) break;
         for (const entry of entries) {
-          this.postToHost({ type: 'console', level: 'error', text: entry.text });
+          const text = String(entry.text ?? '');
+          this.postToHost({ type: 'console', level: 'error', text: text.startsWith(WARNING_MARK) ? text.slice(WARNING_MARK.length).replace(/^ /, '') : text });
         }
       }
     } catch {

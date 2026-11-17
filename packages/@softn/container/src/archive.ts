@@ -388,19 +388,29 @@ export class ContainerArchive {
     return url;
   }
 
-  /** Export all text files and eager binary base64 map for the Worker VFS. */
-  exportWorkerVfs(): { textFiles: Record<string, string>; binaryFilesBase64: Record<string, string> } {
-    const textFiles: Record<string, string> = {};
-    const binaryFilesBase64: Record<string, string> = {};
+  /**
+   * The app's files as the Worker holds them: text as text, everything else as its bytes.
+   *
+   * The bytes are the archive's own, not copies: a Worker is sent copies by `postMessage`,
+   * and a session in the page reads them where they are. They used to be written out as
+   * base64 here, on the page's thread and again for every page the app showed: an app with
+   * 20 MB of pictures cost the embedding page 27 MB of text each time, for files its script
+   * almost never reads (a picture is drawn from the archive by the page). The Worker now
+   * makes the text when a script asks for a file.
+   */
+  exportWorkerVfs(): { textFiles: Record<string, string>; binaryFiles: Record<string, Uint8Array> } {
+    // No prototype: a file may be called `constructor` or `__proto__`.
+    const textFiles: Record<string, string> = Object.create(null);
+    const binaryFiles: Record<string, Uint8Array> = Object.create(null);
     for (const name of this.normalizedNames) {
       if (this.textCache.has(name)) {
         textFiles[name] = this.textCache.get(name)!;
       } else {
         const bytes = this.readBytes(name);
-        if (bytes) binaryFilesBase64[name] = bytesToBase64(bytes);
+        if (bytes) binaryFiles[name] = bytes;
       }
     }
-    return { textFiles, binaryFilesBase64 };
+    return { textFiles, binaryFiles };
   }
 
   dispose(): void {

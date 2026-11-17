@@ -35,9 +35,9 @@ export function pageBundle({ id, name, html, permissions = {} }: { id: string; n
  * is, with no manifest unless one is among the files. An archive with an `index.html` at its
  * root and no manifest is a web container (@softn/container), as a zipped `dist/` is.
  */
-export function containerBundle(files: Record<string, string>): Buffer {
+export function containerBundle(files: Record<string, string | Uint8Array>): Buffer {
   const zipped = zipSync(
-    Object.fromEntries(Object.entries(files).map(([file, text]) => [file, strToU8(text)])),
+    Object.fromEntries(Object.entries(files).map(([file, text]) => [file, typeof text === 'string' ? strToU8(text) : text])),
     { level: 6, mtime: new Date('2026-09-25T00:00:00.000Z') }
   );
   return Buffer.from(zipped);

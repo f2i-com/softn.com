@@ -19,7 +19,7 @@
  * folder the build did not write or ask the folder for an engine it does not hold.
  */
 import { zippEngineForWorker } from '@softn/core';
-import type { SoftNContainerOptions } from '@softn/container';
+import type { SoftNContainerOptions, ZippEngineTier } from '@softn/container';
 
 interface HostEnv {
   BASE_URL?: string;
@@ -75,4 +75,38 @@ export function hostedContainerOptions(): Required<Pick<SoftNContainerOptions, '
     engineWasm: { javascript: coreEngine, python: coreEngine, 'python-torch': coreEngine },
     hostThree: ownThree,
   };
+}
+
+/** The tiers given core's engine above, and what that engine says it is (the container picks its bindings by it). */
+const CORE_ENGINE_TIERS: ReadonlySet<ZippEngineTier> = new Set(['javascript', 'python', 'python-torch']);
+const CORE_ENGINE_META = { variant: 'javascript-python-base' };
+
+/**
+ * The files of the container's folder an app on `tiers` is run with, as whole addresses: the
+ * Worker, each tier's bindings, and the engine of a tier whose engine is the folder's. A tier
+ * that runs on core's engine has no engine here to fetch (the page has core's already) and
+ * runs under that engine's bindings.
+ *
+ * For a host that installs an app before the network goes (the runtime's offline install).
+ * The two functions are the container's own, handed in so that this module, which the shell
+ * loads at once, does not bring the container with it.
+ */
+export function hostedContainerFiles(
+  tiers: readonly ZippEngineTier[],
+  container: {
+    engineFileFor: (tier: ZippEngineTier) => string;
+    glueFileFor: (tier: ZippEngineTier, meta: Record<string, unknown> | null) => string;
+  },
+  runtimeUrl: string = containerRuntimeUrl()
+): string[] {
+  const files = new Set<string>(['container-worker.js']);
+  for (const tier of tiers) {
+    if (CORE_ENGINE_TIERS.has(tier)) {
+      files.add(`engines/${container.glueFileFor(tier, CORE_ENGINE_META)}`);
+    } else {
+      files.add(`engines/${container.engineFileFor(tier)}`);
+      files.add(`engines/${container.glueFileFor(tier, null)}`);
+    }
+  }
+  return [...files].map((file) => runtimeUrl + file);
 }

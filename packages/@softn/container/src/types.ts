@@ -180,7 +180,7 @@ export interface ContainerLimits {
   instructionsPerTurn?: number;
   /** Wall-clock timeout in ms before terminating a hung Worker turn (default 15,000). */
   turnTimeoutMs?: number;
-  /** App localStorage + DB byte quota (default 10 MB). */
+  /** What the app may keep, its localStorage and its records together, in bytes (default 5 MB: half of what a browser gives the page). */
   storageQuotaBytes?: number;
 }
 
@@ -258,7 +258,8 @@ export type HostToWorkerMsg =
       seed: ShellSeed;
       scripts: ExtractedScript[];
       textFiles: Record<string, string>;
-      binaryFilesBase64: Record<string, string>;
+      /** Every other file of the app, as its bytes; the Worker writes one out as base64 when a script reads it. */
+      binaryFiles: Record<string, Uint8Array>;
       runtimeUrl: string;
       engineTier: ZippEngineTier;
       /** The engine to run: a compiled module or bytes; an address only for a session in the page itself. */
@@ -298,6 +299,9 @@ export type HostToWorkerMsg =
       result?: unknown;
       error?: string;
     }
+  /** The app is not on screen (`pause`) or is again (`resume`): its timers wait meanwhile. */
+  | { type: 'pause' }
+  | { type: 'resume' }
   | {
       type: 'dispose';
     };

@@ -61,6 +61,20 @@ function stripAsciiControlAndSpace(input: string): string {
   return out;
 }
 
+/** An SVG written into a `data:` address. */
+const SVG_DATA = /^data:image\/svg\+xml[;,]/i;
+
+/**
+ * Whether `attr` of a `tag` element (its lower-cased local name) names a picture to draw: an
+ * image, a picture's or an image set's candidate, a video's poster, an SVG `<image>`. Not a
+ * link, a form's address, or an SVG `<use>`, which reads a document.
+ */
+function drawsAPicture(tag: string, attr: string): boolean {
+  if (attr === 'poster') return tag === 'video';
+  if (attr === 'src') return tag === 'img' || tag === 'source' || tag === 'input' || tag === 'image';
+  return (attr === 'href' || attr === 'xlink:href') && (tag === 'image' || tag === 'feimage');
+}
+
 export function sanitizeHostAssetUrl(
   attrName: string,
   rawValue: string,
@@ -85,6 +99,11 @@ export function sanitizeHostAssetUrl(
     if (/^data:(?:image\/(?:png|jpeg|gif|webp|avif|bmp|x-icon)|audio\/(?:wav|mpeg|ogg)|font\/)/i.test(trimmed)) {
       return originalTrimmed;
     }
+    // A drawing written into the address, where the page draws it as a picture. A bundler
+    // writes every small SVG an app imports this way (Vite's default, under 4 KB), and the
+    // container hands an SVG file of the app's to the page in this same form (archive.ts).
+    // As a picture it runs no script and loads nothing; anywhere else it is refused.
+    if (SVG_DATA.test(trimmed) && drawsAPicture(tagName, attrName)) return originalTrimmed;
     return null;
   }
 
@@ -138,6 +157,10 @@ export function sanitizeContainerCss(
     // A fragment alone names something in this document (an SVG filter, clip or gradient).
     if (target.startsWith('#')) return target;
     if (/^data:(?:image\/(?:png|jpeg|gif|webp|avif)|font\/|application\/font)/i.test(target)) return target;
+    // A drawing in the address: a stylesheet draws it as a picture (a background, a mask, a
+    // list's marker), where it runs nothing. The arrows and ticks of every CSS framework's
+    // form controls are written this way.
+    if (SVG_DATA.test(target)) return target;
     const vfs = resolveVfsPath(target, basePath);
     if (vfs && archive.has(vfs)) return archive.getBlobUrl(vfs);
     if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
@@ -456,7 +479,10 @@ export function prepareHtmlDocument(
     ...(Object.keys(htmlAttrs).length ? { htmlAttrs } : {}),
     ...(Object.keys(bodyAttrs).length ? { bodyAttrs } : {}),
     title: parsed.title || archive.manifest.name,
-    url: `${VIRTUAL_ORIGIN}/${entryPath}`,
+    // A folder's index page is at the folder's address, as every web server gives it: a
+    // router matches location.pathname, and an app opened at "/index.html" started on its
+    // "no such page" page. A page of any other name is at its own address.
+    url: `${VIRTUAL_ORIGIN}/${entryPath.replace(/(^|\/)index\.html?$/i, '$1')}`,
     r: randomCryptoSeed(),
     v: currentViewport(),
   };

@@ -41,6 +41,11 @@ const GLUE_FILE_BY_VARIANT: Readonly<Record<string, string>> = {
   'javascript-python-base': 'zipp-python-base.glue.js',
 };
 
+/** A tier's engine file in `engines/`, where the host does not supply the tier's engine itself. */
+export function engineFileFor(tier: ZippEngineTier): string {
+  return ENGINE_FILENAMES[tier];
+}
+
 /** The bindings file in `engines/` for the engine that was compiled, whatever tier asked for it. */
 export function glueFileFor(tier: ZippEngineTier, meta: Record<string, unknown> | null): string {
   const variant = typeof meta?.variant === 'string' ? meta.variant : '';
@@ -116,8 +121,9 @@ export interface ZippEngineInstance {
   callFunction?(name: string, args: unknown[]): unknown;
   drainPendingHostCalls(): Array<{ id: number; kind: string; args: string[] }>;
   resolveHostCallback(id: number, result: unknown): unknown;
-  takeConsole(): Array<{ level?: string; text: string }>;
-  takeFailedConsole(): Array<{ level?: string; text: string }>;
+  /** The lines printed so far, each with the stream it was written to (the engine's own form). */
+  takeConsole(): Array<{ stream?: 'stdout' | 'stderr'; text: string }>;
+  takeFailedConsole(): Array<{ stream?: 'stdout' | 'stderr'; text: string }>;
   takeOutput(): string[];
   pump(): void;
   dispose(): void;

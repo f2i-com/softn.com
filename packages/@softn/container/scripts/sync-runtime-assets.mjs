@@ -157,9 +157,17 @@ function copyFirstExisting(candidates, destDir, destName) {
   return null;
 }
 
-async function extractGlueForWasm(wasmPath, fallbackGluePath) {
-  if (!wasmPath || !fs.existsSync(wasmPath)) return;
+/**
+ * An engine's bindings, written beside it: the ones it carries (`zipp.glue`), or `ownGlue`, the
+ * bindings file of that same engine where an install keeps them apart (core's). Never another
+ * engine's, and never none: an engine that carried no bindings was given whichever of core's
+ * was at hand (the TypeScript engine got the Python engine's, which import what it does not
+ * have) or left without, and the build passed either way; the tier then failed where it ran.
+ */
+async function extractGlueForWasm(wasmPath, ownGlue) {
+  const name = path.basename(wasmPath);
   const glueDest = wasmPath.replace(/\.wasm$/, '.glue.js');
+  let why = 'it carries no zipp.glue section';
   try {
     const raw = fs.readFileSync(wasmPath);
     const mod = await WebAssembly.compile(new Uint8Array(raw));
@@ -171,12 +179,15 @@ async function extractGlueForWasm(wasmPath, fallbackGluePath) {
       return;
     }
   } catch (err) {
-    console.warn(`[container] Could not extract zipp.glue from ${path.basename(wasmPath)}:`, err);
+    why = `it could not be read as WebAssembly (${err.message})`;
   }
-  if (fallbackGluePath && fs.existsSync(fallbackGluePath)) {
-    fs.copyFileSync(fallbackGluePath, glueDest);
-    console.log(`[container] Copied fallback ${path.basename(glueDest)}`);
+  if (ownGlue && fs.existsSync(ownGlue)) {
+    fs.copyFileSync(ownGlue, glueDest);
+    console.log(`[container] ${path.basename(glueDest)} is ${path.relative(REPO_ROOT, ownGlue)}, the bindings installed with that engine`);
+    return;
   }
+  console.error(`[container] ${name} has no bindings: ${why}, and no bindings of its own are installed beside it. The tier cannot run without them.`);
+  process.exit(1);
 }
 
 const coreJsWasm = path.join(CORE_DIR, 'wasm-zipp-web', 'zipp_wasm_bg.wasm');
@@ -221,9 +232,12 @@ copyFirstExisting([pyBrSrc], ENGINES_DIR, 'zipp-python-base.wasm.br');
 copyFirstExisting([coreTorchWasm], ENGINES_DIR, 'zipp-torch.wasm');
 copyFirstExisting([torchBrSrc], ENGINES_DIR, 'zipp-torch.wasm.br');
 
-await extractGlueForWasm(stagedLite, fs.existsSync(coreJsGlue) ? coreJsGlue : corePyGlue);
-await extractGlueForWasm(stagedJs, fs.existsSync(coreJsGlue) ? coreJsGlue : corePyGlue);
-await extractGlueForWasm(stagedTs, corePyGlue);
+// The two engines core installs have core's own bindings file to fall back on, each its own;
+// the two only the container has must carry theirs.
+const jsIsCores = !(jsWasmSrc && fs.existsSync(jsWasmSrc));
+await extractGlueForWasm(stagedLite, null);
+await extractGlueForWasm(stagedJs, jsIsCores ? coreJsGlue : null);
+await extractGlueForWasm(stagedTs, null);
 await extractGlueForWasm(stagedPy, corePyGlue);
 
 // Stage externally hosted vendor libraries (`/runtime/vendor/three.js`)

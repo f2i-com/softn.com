@@ -15,6 +15,7 @@ import {
   createHostElement,
   hostAttributeValue,
   hostElementName,
+  hostTitle,
   isDeclaredElementProperty,
   isExternalHref,
   isLinkElement,
@@ -35,6 +36,19 @@ import type {
  */
 const ROOT_ATTRIBUTE = /^(?:class|lang|dir|role|title|data-[\w.-]+|aria-[\w-]+)$/;
 
+/**
+ * Properties whose effect depends on the element's place in the page or on its children:
+ * applied after the tree a turn built (see applyOps).
+ */
+/**
+ * The ids the app's document gives its own `<html>` and `<head>` (core's shell-source.ts,
+ * `init`). Its `<body>` is 1: the viewport.
+ */
+const GUEST_HTML_ID = -2;
+const GUEST_HEAD_ID = -3;
+
+const TREE_PROPERTIES = new Set(['selectedIndex', 'chosen', 'focus', 'scrollIntoView', 'scrollTop', 'scrollLeft']);
+
 const CAPTURE_ONLY_EVENTS = new Set([
   'focus',
   'blur',
@@ -48,11 +62,16 @@ const CAPTURE_ONLY_EVENTS = new Set([
 ]);
 
 export interface DomPatcherCallbacks {
+  /**
+   * An event for the app's script. `answered`, when given, is called once the script has
+   * heard it, with what it said: bit 1 when it cancelled the event (`preventDefault()`).
+   */
   onEvent: (
     nodeId: number,
     eventType: string,
     props: Record<string, unknown>,
-    syncChanges: unknown[]
+    syncChanges: unknown[],
+    answered?: (eventBits: number) => void
   ) => void;
   onSync: (changes: unknown[]) => void;
   onTitleChange?: (title: string) => void;
@@ -85,17 +104,29 @@ export class HostDomPatcher {
    * (prefetch, preload, an icon) does nothing.
    */
   private readonly links = new Map<Element, { rel: string; href: string }>();
+  /** Stylesheet links read (or not found) in the batch being applied, for the app's script to hear of. */
+  private readonly linkNews = new Map<Element, 'load' | 'error'>();
   /** Structured values for a `<softn-*>` element whose class has not arrived yet. */
   private readonly pendingProperties = new Map<Element, Array<[string, unknown]>>();
   private readonly measuredIds = new Set<number>();
   private resizeObserver: ResizeObserver | null = null;
   private measureScheduled = false;
   private readonly imageCache = new Map<string, HTMLImageElement>();
+  /** A link to a page of the app's that was clicked, held until the app's script has heard the click. */
+  private heldLink: { event: Event; href: string } | null = null;
   private disposed = false;
 
   constructor(params: {
     viewportEl: HTMLElement;
     docRootEl: HTMLElement;
+    /**
+     * Where what the app's script puts in its `<head>` is kept: stylesheets apply from
+     * there, and nothing in it is drawn. Without one the head's children go nowhere, as
+     * they did: a `<style>` or a stylesheet `<link>` added to `document.head` (how every
+     * library that styles from script adds its rules, and how a bundler adds the
+     * stylesheet of a part of the app loaded later) never reached the page.
+     */
+    headEl?: HTMLElement;
     archive: ContainerArchive;
     entryPath: string;
     permissions: ContainerPermissions;
@@ -109,6 +140,7 @@ export class HostDomPatcher {
     this.permissions = params.permissions;
     this.netGranted = params.netGranted;
     this.callbacks = params.callbacks;
+    if (params.headEl) this.nodes.set(GUEST_HEAD_ID, params.headEl);
 
     this.installCoreInputSync();
     this.installResizeObserver();
@@ -122,6 +154,13 @@ export class HostDomPatcher {
   /** Apply a batch of `ShellOp` operations produced by a Worker VM turn. */
   applyOps(ops: readonly ShellOp[]): void {
     if (this.disposed) return;
+
+    // What is asked of an element that depends on where it is and what is in it, kept until
+    // the turn's tree is in place. The app's document tells each parent's children at the end
+    // of a turn, after every property set in it: applied as they came, a select was told
+    // which option it shows before it had any (a framework that fills a select and chooses
+    // in one turn showed the first), and a field was focused before it was on the page.
+    const afterTree: Array<[number, string, unknown]> = [];
 
     for (const op of ops) {
       switch (op[0]) {
@@ -189,10 +228,15 @@ export class HostDomPatcher {
           const [, id, name, val] = op;
           if (typeof name !== 'string') break;
           const value = typeof val === 'string' ? val : null;
-          if (id === 0 || id === 1) {
+          // The head is the host's own element, kept out of sight: nothing of it is the app's to set.
+          if (id === GUEST_HEAD_ID) break;
+          if (id === 0 || id === GUEST_HTML_ID || id === 1) {
             // The document's root and its body are the host's own elements: the app names
             // their classes and the like, and the body's style, and nothing else of them.
-            const root = id === 0 ? this.docRootEl : this.viewportEl;
+            // (The root is told by the id the app's document gives its <html>. It was looked
+            // for under 0, which nothing sends: a class or a data-theme the script set on
+            // document.documentElement, as a dark mode does, never arrived.)
+            const root = id === 1 ? this.viewportEl : this.docRootEl;
             const lowerName = name.toLowerCase();
             if (ROOT_ATTRIBUTE.test(lowerName)) {
               if (value === null) root.removeAttribute(lowerName);
@@ -231,7 +275,8 @@ export class HostDomPatcher {
 
         case 'p': {
           const [, id, prop, val] = op;
-          this.applyProperty(id, prop, val);
+          if (TREE_PROPERTIES.has(prop)) afterTree.push([id, prop, val]);
+          else this.applyProperty(id, prop, val);
           break;
         }
 
@@ -242,7 +287,10 @@ export class HostDomPatcher {
         }
 
         case 't': {
-          this.callbacks.onTitleChange?.(op[1]);
+          // The app's word for itself, which a host may show in its own chrome or the
+          // browser's tab: one line of text and no longer than a title is. It was passed on
+          // as it came, whatever it was and however long.
+          this.callbacks.onTitleChange?.(hostTitle(op[1]));
           break;
         }
 
@@ -268,6 +316,20 @@ export class HostDomPatcher {
           }
           break;
         }
+      }
+    }
+
+    for (const [id, prop, val] of afterTree) this.applyProperty(id, prop, val);
+
+    // A stylesheet link whose sheet is in, or could not be read: the script that added it is
+    // told, as a browser tells it. A bundler's loader waits for exactly this before it runs
+    // the part of the app the stylesheet belongs to (Vite, for a chunk loaded on demand).
+    if (this.linkNews.size > 0) {
+      const news = [...this.linkNews];
+      this.linkNews.clear();
+      for (const [el, type] of news) {
+        const id = Number(el.getAttribute(NODE_ID_ATTR));
+        if (Number.isInteger(id) && id > 1 && this.nodes.get(id) === el) this.callbacks.onEvent(id, type, {}, []);
       }
     }
 
@@ -349,6 +411,10 @@ export class HostDomPatcher {
       const path = resolveVfsPath(link.href, this.entryPath);
       const text = path ? this.archive.readText(path) : null;
       if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted);
+      // Only a stylesheet of the app's own is ever read: any other is said to have failed.
+      this.linkNews.set(el, path && text !== null ? 'load' : 'error');
+    } else {
+      this.linkNews.delete(el);
     }
     el.textContent = css;
   }
@@ -408,11 +474,23 @@ export class HostDomPatcher {
           (el as HTMLSelectElement).selectedIndex = val;
         }
         break;
+      case 'chosen':
+        // A select of several: the options chosen, by their place among its options.
+        if (el instanceof HTMLSelectElement && Array.isArray(val)) {
+          const chosen = new Set(val.filter((at) => Number.isInteger(at)));
+          for (let at = 0; at < el.options.length; at++) el.options[at].selected = chosen.has(at);
+        }
+        break;
+      case 'scrollIntoView':
+        this.scrollIntoBox(el);
+        break;
+      // The page's own scroll (window.scrollTo, the body's scrollTop) is the app's box, which
+      // is what scrolls; the viewport inside it grows with what it holds.
       case 'scrollTop':
-        if (typeof val === 'number') el.scrollTop = val;
+        if (typeof val === 'number') (id === 1 ? this.docRootEl : el).scrollTop = val;
         break;
       case 'scrollLeft':
-        if (typeof val === 'number') el.scrollLeft = val;
+        if (typeof val === 'number') (id === 1 ? this.docRootEl : el).scrollLeft = val;
         break;
       case 'focus':
         // Only where it takes the focus from nobody: when it is already inside the app, or
@@ -463,6 +541,30 @@ export class HostDomPatcher {
         // in the embedding page.
         if (typeof prop === 'string' && el.localName.startsWith('softn-')) this.setElementProperty(el, prop, val);
         break;
+    }
+  }
+
+  /**
+   * Bring `el` into view inside the app's box, by scrolling what scrolls between it and the
+   * box and nothing further out. The browser's own `scrollIntoView` scrolls every ancestor,
+   * the embedding page among them: an app would move the page it is drawn in whenever it
+   * liked. (A link to a place on the page, which the person followed, is scrolled to by the
+   * browser; this is what the app's script asks for by itself.)
+   */
+  private scrollIntoBox(el: Element): void {
+    if (!this.viewportEl.contains(el) || typeof el.getBoundingClientRect !== 'function') return;
+    for (let box: Element | null = el.parentElement; box; box = box.parentElement) {
+      if (box.scrollHeight > box.clientHeight || box.scrollWidth > box.clientWidth) {
+        const inner = el.getBoundingClientRect();
+        const outer = box.getBoundingClientRect();
+        // As little as shows it: nothing when it is in view already.
+        if (inner.top < outer.top) box.scrollTop -= outer.top - inner.top;
+        else if (inner.bottom > outer.bottom) box.scrollTop += Math.min(inner.bottom - outer.bottom, inner.top - outer.top);
+        if (inner.left < outer.left) box.scrollLeft -= outer.left - inner.left;
+        else if (inner.right > outer.right) box.scrollLeft += Math.min(inner.right - outer.right, inner.left - outer.left);
+      }
+      // The app's box is the last that scrolls for the app: past it is the embedding page.
+      if (box === this.docRootEl) break;
     }
   }
 
@@ -708,6 +810,16 @@ export class HostDomPatcher {
         if (typeof window !== 'undefined' && typeof window.open === 'function') window.open(href, '_blank', 'noopener,noreferrer');
         return;
       }
+      // A link inside the app. Where the app's script listens for clicks, the link is its to
+      // cancel, as in a browser: a router's link is followed by the script (pushState, and
+      // the page it draws), and the page it names is not one to load. The script is a
+      // thread away, so the page waits for its answer (the listener below hands the click
+      // over and follows the link if it was not cancelled). It was followed at once: the
+      // "Home" link of a single-page app loaded the app again from the start.
+      if (this.listenedEvents.has('click')) {
+        this.heldLink = { event: e, href };
+        return;
+      }
       this.callbacks.onNavigate?.(href);
     };
     const onInputOrChange = (e: Event) => {
@@ -760,9 +872,16 @@ export class HostDomPatcher {
     const handler = (e: Event) => {
       const targetEl = e.target instanceof Element ? e.target : null;
       const nodeId = this.findNearestNodeId(targetEl);
-      if (nodeId === null) return;
+      // A link held for this click (above): followed once the script has heard the click
+      // and not cancelled it, or now if the script is not going to hear it.
+      const held = this.heldLink && this.heldLink.event === e ? this.heldLink.href : null;
+      if (held !== null) this.heldLink = null;
+      if (nodeId === null) {
+        if (held !== null) this.callbacks.onNavigate?.(held);
+        return;
+      }
 
-      const syncChanges = this.extractInputSync(e.target);
+      const syncChanges = this.extractInputSync(e.target, eventType === 'click');
       // The focused element inside the app's own root. (The document's is the embedding
       // page's `<softn-app>` element, which is none of the app's, so the app's script never
       // learned where the focus was.)
@@ -771,8 +890,14 @@ export class HostDomPatcher {
       const activeId = activeEl instanceof Element && this.viewportEl.contains(activeEl) ? this.findNearestNodeId(activeEl) : null;
       if (activeId !== null) syncChanges.push(['f', activeId]);
 
-      const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this));
-      this.callbacks.onEvent(nodeId, eventType, props, syncChanges);
+      const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this), this.origin());
+      const answered =
+        held === null
+          ? undefined
+          : (eventBits: number) => {
+              if (!this.disposed && !(eventBits & 1)) this.callbacks.onNavigate?.(held);
+            };
+      this.callbacks.onEvent(nodeId, eventType, props, syncChanges, answered);
     };
 
     this.viewportEl.addEventListener(eventType, handler, useCapture);
@@ -793,7 +918,19 @@ export class HostDomPatcher {
     return null;
   }
 
-  private extractInputSync(target: EventTarget | null): unknown[] {
+  /**
+   * What the person did to the field an event is on, for the app's document to know before
+   * the event is heard.
+   *
+   * `clicked`: a click is heard after the page has ticked the box, and the app's document
+   * ticks its own when it hears the click (and unticks it when the code cancels). Told how
+   * the box is now, it ticked a box already ticked back off: `event.target.checked` read
+   * false in the click of a box just ticked, and a framework that asks on the click whether
+   * the box changed (React) heard no change at all. So for a click the document is told how
+   * the box was; a radio button, whose earlier state the page no longer has, is left as the
+   * document has it.
+   */
+  private extractInputSync(target: EventTarget | null, clicked = false): unknown[] {
     const changes: unknown[] = [];
     if (!(target instanceof Element)) return changes;
     const id = this.findNearestNodeId(target);
@@ -801,7 +938,8 @@ export class HostDomPatcher {
 
     if (target instanceof HTMLInputElement) {
       if (target.type === 'checkbox' || target.type === 'radio') {
-        changes.push(['k', id, target.checked]);
+        if (!clicked) changes.push(['k', id, target.checked]);
+        else if (target.type === 'checkbox') changes.push(['k', id, !target.checked]);
       } else {
         changes.push(['v', id, target.value]);
       }
@@ -822,6 +960,19 @@ export class HostDomPatcher {
     return changes;
   }
 
+  /**
+   * Where the app's box is in the window, and how far it is scrolled. The box is the app's
+   * window: its `position: fixed` elements are placed from the box's corner, and its page
+   * scrolls inside it. So the pointer's place and an element's measured box are told from
+   * that corner. They were told from the window's: a menu an app put at the pointer was
+   * drawn as far off as the app was from the window's corner, and an app learned where in
+   * the embedding page it had been put.
+   */
+  private origin(): AppOrigin {
+    const box = typeof this.docRootEl.getBoundingClientRect === 'function' ? this.docRootEl.getBoundingClientRect() : null;
+    return { left: box?.left ?? 0, top: box?.top ?? 0, scrollLeft: this.docRootEl.scrollLeft || 0, scrollTop: this.docRootEl.scrollTop || 0 };
+  }
+
   private installResizeObserver(): void {
     if (typeof ResizeObserver !== 'function') return;
     this.resizeObserver = new ResizeObserver(() => {
@@ -836,11 +987,12 @@ export class HostDomPatcher {
       this.measureScheduled = false;
       if (this.disposed || this.measuredIds.size === 0) return;
       const boxes: MeasuredBoxTuple[] = [];
+      const origin = this.origin();
       for (const id of this.measuredIds) {
         const node = this.nodes.get(id);
         if (node instanceof Element && node.isConnected) {
           const rect = node.getBoundingClientRect();
-          boxes.push([id, rect.left, rect.top, rect.width, rect.height]);
+          boxes.push([id, rect.left - origin.left, rect.top - origin.top, rect.width, rect.height]);
         }
       }
       if (boxes.length > 0) {
@@ -866,10 +1018,19 @@ export class HostDomPatcher {
   }
 }
 
+/** The corner of the app's box in the window, and how far the box is scrolled. */
+interface AppOrigin {
+  left: number;
+  top: number;
+  scrollLeft: number;
+  scrollTop: number;
+}
+
 function serializeDomEvent(
   e: Event,
   targetEl: Element | null,
-  findId: (el: Element | null) => number | null
+  findId: (el: Element | null) => number | null,
+  origin: AppOrigin
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if ('key' in e) {
@@ -885,10 +1046,11 @@ function serializeDomEvent(
   }
   if ('clientX' in e) {
     const me = e as MouseEvent;
-    out.clientX = me.clientX;
-    out.clientY = me.clientY;
-    out.pageX = me.pageX;
-    out.pageY = me.pageY;
+    // From the corner of the app's box, and in the app's page from that page's corner (see origin()).
+    out.clientX = me.clientX - origin.left;
+    out.clientY = me.clientY - origin.top;
+    out.pageX = me.clientX - origin.left + origin.scrollLeft;
+    out.pageY = me.clientY - origin.top + origin.scrollTop;
     out.button = me.button;
     out.buttons = me.buttons;
     out.ctrlKey = me.ctrlKey;

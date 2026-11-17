@@ -139,4 +139,46 @@ describe('SoftN Studio v2 Web App Containers', () => {
     expect(report.renderedHeadless).toBe(true);
     expect(report.rendered).toContain('Ready from ZIPP TypeScript');
   });
+
+  // The page was read 30 ms after it started, whatever it was doing: an app that draws once a
+  // timer has run, or once its data has loaded, was reported as showing nothing or as still starting.
+  it('reads a v2 page once it has stopped changing, not a moment after it starts', async () => {
+    const vfs = toVfsMap([
+      { path: 'manifest.json', content: JSON.stringify({ engine: 2, name: 'Late', version: '1.0.0', main: 'index.html' }) },
+      { path: 'permission.json', content: JSON.stringify({ permissions: {} }) },
+      {
+        path: 'index.html',
+        content: `<!DOCTYPE html><html><body><p id="state"></p><script>
+          setTimeout(function () { document.getElementById('state').textContent = 'Loading…'; }, 60);
+          setTimeout(function () { document.getElementById('state').textContent = 'Three notes loaded'; }, 220);
+        </script></body></html>`,
+      },
+    ]);
+    const report = await browserEnvironment.checkApp(vfs, { blueprint: null });
+    expect(report.errors).toEqual([]);
+    expect(report.rendered).toBe('Three notes loaded');
+    expect(report.warnings.join('\n')).not.toMatch(/no visible text/);
+  }, 30_000);
+
+  // A check grants nothing, and the container's own words for a refused request read as a fault.
+  it('says a request the check did not grant as what it is, for a v2 app that declares the network', async () => {
+    const app = (permission: string) =>
+      toVfsMap([
+        { path: 'manifest.json', content: JSON.stringify({ engine: 2, name: 'Fetcher', version: '1.0.0', main: 'index.html' }) },
+        { path: 'permission.json', content: permission },
+        {
+          path: 'index.html',
+          content: `<!DOCTYPE html><html><body><p id="state">Starting</p><script>
+            fetch('https://api.example.test/notes.json').then(function () { document.getElementById('state').textContent = 'Loaded'; }, function (error) { console.error(String(error && error.message || error)); });
+          </script></body></html>`,
+        },
+      ]);
+    const declared = await browserEnvironment.checkApp(app(JSON.stringify({ permissions: { net: { enabled: true, allowed_hosts: ['api.example.test'] } } })), { blueprint: null });
+    const said = [...declared.errors, ...declared.warnings].join('\n');
+    expect(said).toMatch(/already declares net/);
+    expect(said).not.toMatch(/not permitted by this container/);
+    // Not declared: the container's line stands, since declaring it is what is missing.
+    const undeclared = await browserEnvironment.checkApp(app(JSON.stringify({ permissions: {} })), { blueprint: null });
+    expect([...undeclared.errors, ...undeclared.warnings].join('\n')).toMatch(/not permitted by this container/);
+  }, 30_000);
 });

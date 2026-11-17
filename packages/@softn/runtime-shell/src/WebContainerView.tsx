@@ -33,6 +33,12 @@ export interface WebContainerViewProps {
   onTitleChange?: (title: string) => void;
   /** Optional console listener. */
   onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
+  /**
+   * Whether the app is on screen (default `true`). A host that keeps several apps open and shows
+   * one passes `false` for the others: such an app is asked for no frames and its timers wait
+   * until it is shown again, as a hidden SoftN app's loops do.
+   */
+  active?: boolean;
 }
 
 /**
@@ -54,6 +60,7 @@ export function WebContainerView({
   onReady,
   onTitleChange,
   onConsole,
+  active = true,
 }: WebContainerViewProps): React.ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<SoftNContainerHandle | null>(null);
@@ -68,6 +75,8 @@ export function WebContainerView({
   onConsoleRef.current = onConsole;
   const grantedRef = useRef(grantedCapabilities);
   grantedRef.current = grantedCapabilities;
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   useEffect(() => {
     const el = hostRef.current;
@@ -116,6 +125,7 @@ export function WebContainerView({
         handleRef.current = mounted;
         // Whatever changed while it started (the person pressed Allow during the boot).
         mounted.setGrantedCapabilities(grantedRef.current as Capability[]);
+        mounted.setActive(activeRef.current);
         if (initialPage && initialPage !== mounted.manifest.main) {
           await mounted.navigate(initialPage).catch(() => undefined);
         }
@@ -140,6 +150,11 @@ export function WebContainerView({
   useEffect(() => {
     handleRef.current?.setGrantedCapabilities(grantedCapabilities as Capability[]);
   }, [grantedCapabilities]);
+
+  // Shown or not: an app behind another tab runs nothing until it is in front again.
+  useEffect(() => {
+    handleRef.current?.setActive(active);
+  }, [active]);
 
   if (fatalError && renderError) {
     return <>{renderError(fatalError)}</>;

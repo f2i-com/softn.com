@@ -48,7 +48,9 @@ async function page(code: string, seed: object = SEED) {
       return all;
     },
     takePage,
-    event: (id: number, type: string, props: Record<string, unknown> = {}) => run.callFunction(SHELL_EVENT, [id, type, props]) as number,
+    // told: as a host whose page is a thread away asks (a web container), which is told of a box the code's cancelling unticks.
+    event: (id: number, type: string, props: Record<string, unknown> = {}, told = false) =>
+      run.callFunction(SHELL_EVENT, told ? [id, type, props, [], true] : [id, type, props]) as number,
     sync: (changes: unknown[]) => run.callFunction(SHELL_SYNC, [changes]),
     ready: () => run.callFunction(SHELL_READY, []),
     call: (name: string, ...args: unknown[]) => run.callFunction(name, args),
@@ -246,6 +248,29 @@ describe('the document a page’s code is given', () => {
     expect(doc.take()).toEqual([]);
     doc.call('go');
     expect(doc.take()).toEqual([['n', 'about.html']]);
+  });
+
+  // The window's own listeners for these are kept by the document, not by the engine's
+  // window, and an event the page's code sent the window went to the engine's alone: a
+  // router that says it has moved with a popstate of its own was not heard, nor a chart
+  // told to lay itself out again with a resize.
+  it('hears an event the page’s own code sends the window: popstate, hashchange, resize, and any other', async () => {
+    const doc = await page(`
+      const heard = [];
+      window.addEventListener('popstate', (e) => heard.push('popstate:' + (e.state ? e.state.page : e.state)));
+      window.addEventListener('hashchange', () => heard.push('hashchange'));
+      window.addEventListener('resize', () => heard.push('resize'));
+      window.addEventListener('ping', () => heard.push('ping'));
+      const gone = () => heard.push('gone');
+      window.addEventListener('popstate', gone);
+      window.removeEventListener('popstate', gone);
+      function send() {
+        const pop = new Event('popstate');
+        pop.state = { page: 2 };
+        const sent = [window.dispatchEvent(pop), window.dispatchEvent(new Event('hashchange')), window.dispatchEvent(new Event('resize')), window.dispatchEvent(new Event('ping'))];
+        return [heard.slice(), sent];
+      }`);
+    expect(doc.call('send')).toEqual([['popstate:2', 'hashchange', 'resize', 'ping'], [true, true, true, true]]);
   });
 });
 
@@ -454,6 +479,81 @@ describe('a click on a box', () => {
     expect(doc.call('state')).toEqual([true, true, false]);
     expect(doc.call('read')).toEqual(['r2:true:false']);
   });
+
+  // A host that hears the answer in time holds the box back itself. One whose page is a
+  // thread away (a web container) has ticked it already, and asks to be told.
+  it('tells a host that asks of the box a cancelled click unticks, and of the radio it gives back', async () => {
+    const doc = await page(BOXES);
+    const ops = doc.take();
+    const c = idOf(ops, 'c');
+    doc.call('click', 'c', true);
+    doc.call('read');
+    doc.take();
+    // Not asked: nothing is told, as before.
+    expect(doc.event(c, 'click') & 1).toBe(1);
+    expect(doc.take()).toEqual([]);
+    // Asked: the box is told as it now is, and so is the group's radio that was on.
+    expect(doc.event(c, 'click', {}, true) & 1).toBe(1);
+    expect(doc.take()).toEqual([['p', c, 'checked', false]]);
+    expect(doc.event(idOf(ops, 'r2'), 'click', {}, true) & 1).toBe(1);
+    expect(doc.take()).toEqual([
+      ['p', idOf(ops, 'r2'), 'checked', false],
+      ['p', idOf(ops, 'r1'), 'checked', true],
+    ]);
+    expect(doc.call('state')).toEqual([false, true, false]);
+    // A click the code lets through is told to nobody: the page already shows it.
+    doc.call('click', 'c', false);
+    doc.call('read');
+    doc.take();
+    expect(doc.event(c, 'click', {}, true)).toBe(0);
+    expect(doc.take()).toEqual([]);
+  });
+});
+
+describe('a select, and where the choice is told', () => {
+  const SELECT = `
+    function make(id, multiple) {
+      const s = document.createElement('select');
+      s.id = id;
+      if (multiple) s.multiple = true;
+      for (const v of ['s', 'm', 'l']) { const o = document.createElement('option'); o.value = v; o.textContent = v; s.appendChild(o); }
+      return s;
+    }`;
+
+  // A framework fills a select and chooses before it puts either on the page. What was
+  // chosen while the select was apart was told to no one, and the page showed the first.
+  it('tells a choice made while the select was apart, when it joins the page', async () => {
+    const doc = await page(`${SELECT}
+      function build() {
+        const one = make('one'); one.selectedIndex = 2;
+        const many = make('many', true); many.options[0].selected = true; many.options[2].selected = true;
+        const plain = make('plain');
+        const list = document.getElementById('list');
+        list.appendChild(one); list.appendChild(many); list.appendChild(plain);
+        return [one.value, many.selectedOptions.length, plain.value];
+      }`);
+    doc.take();
+    expect(doc.call('build')).toEqual(['l', 2, 's']);
+    const ops = doc.take();
+    const told = ops.filter((op) => op[0] === 'p');
+    expect(told).toEqual([
+      ['p', idOf(ops, 'one'), 'selectedIndex', 2],
+      ['p', idOf(ops, 'many'), 'chosen', [0, 2]],
+    ]);
+  });
+
+  it('tells it again when the select is taken off the page and put back', async () => {
+    const doc = await page(`${SELECT}
+      const s = make('moved');
+      document.getElementById('list').appendChild(s);
+      s.value = 'm';
+      function move() { document.body.appendChild(s); }`);
+    const first = doc.take();
+    expect(first.filter((op) => op[0] === 'p')).toEqual([['p', idOf(first, 'moved'), 'selectedIndex', 1]]);
+    doc.call('move');
+    const again = doc.take();
+    expect(again.filter((op) => op[0] === 'p')).toEqual([['p', idOf(again, 'moved'), 'selectedIndex', 1]]);
+  });
 });
 
 describe('style, as CSS reads it', () => {
@@ -544,8 +644,40 @@ describe('HTML the code writes, read as a browser reads it', () => {
     const ops = doc.take();
     const tags = ops.filter((op) => op[0] === 'e').map((op) => op[2]);
     expect(tags).toEqual(['svg', 'card', 'linearGradient']);
+    // Each is told as an element of a drawing: a host that makes real elements cannot tell
+    // a drawing's <a> or <title> from the page's by its name.
+    expect(ops.filter((op) => op[0] === 'e').map((op) => op[4])).toEqual(['svg', 'svg', 'svg']);
     const names = ops.flatMap((op) => (op[0] === 'e' ? Object.keys(op[3] as object) : op[0] === 'a' ? [op[2] as string] : []));
     expect(names.sort()).toEqual(['data-x', 'preserveAspectRatio', 'viewBox']);
+  });
+
+  // A host that makes real elements (a web container) says which of the markup's elements
+  // are a drawing's. They were HTML elements of the same name here.
+  it('keeps a drawing in the page’s own markup a drawing: its namespace, its class and the case of its names', async () => {
+    const doc = await page(
+      `
+      function read() {
+        const svg = document.getElementById('art');
+        const circle = svg.firstElementChild;
+        svg.setAttribute('viewBox', '0 0 2 2');
+        circle.setAttribute('pathLength', '2');
+        document.getElementById('title').setAttribute('DATA-Case', 'x');
+        return [svg.namespaceURI, svg instanceof SVGElement, svg instanceof HTMLElement, circle.namespaceURI, circle.tagName,
+          document.getElementById('title').namespaceURI, document.getElementById('title') instanceof HTMLElement];
+      }`,
+      {
+        ...SEED,
+        body: [...SEED.body, { i: 15, t: 'svg', ns: 'svg', a: { id: 'art', viewBox: '0 0 1 1' }, c: [{ i: 16, t: 'circle', ns: 'svg', a: { r: '1' } }] }],
+      }
+    );
+    doc.take();
+    expect(doc.call('read')).toEqual(['http://www.w3.org/2000/svg', true, false, 'http://www.w3.org/2000/svg', 'circle', 'http://www.w3.org/1999/xhtml', true]);
+    // The drawing's names as written; the page's own in lower case, as always.
+    expect(doc.take()).toEqual([
+      ['a', 15, 'viewBox', '0 0 2 2'],
+      ['a', 16, 'pathLength', '2'],
+      ['a', 2, 'data-case', 'x'],
+    ]);
   });
 
   // What a <template> was given went into the template, where the page found

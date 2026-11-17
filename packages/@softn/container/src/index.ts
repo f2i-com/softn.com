@@ -13,7 +13,8 @@ if (typeof window !== 'undefined' && typeof customElements !== 'undefined') {
 
 export { defineSoftNAppElement, mountSoftNContainer, type SoftNContainerHandle } from './softn-app';
 export { ContainerArchive, resolveVfsPath, mimeTypeFor, VIRTUAL_ORIGIN, isLegacySoftNMarkup } from './archive';
-export { selectEngineTier, loadZippEngine } from './zipp-loader';
+export { selectEngineTier, loadZippEngine, engineFileFor, glueFileFor } from './zipp-loader';
+export { containerRuntimeNeeds, preloadContainerFeatures, type ContainerRuntimeNeeds } from './runtime-needs';
 export { transformEsModule, resolveModuleSpecifier, DEFAULT_VENDOR_IMPORT_MAP } from './esm-linker';
 export { registerUiExtension, ensureUiExtension } from './ui-extensions/registry';
 export { prepareHtmlDocument, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';

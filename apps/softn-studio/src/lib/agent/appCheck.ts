@@ -669,11 +669,19 @@ async function renderV2ContainerHeadless(
       if (targetPage !== handle.manifest.main) {
         await handle.navigate(targetPage).catch((e) => errors.push(e instanceof Error ? e.message : String(e)));
       }
-      await new Promise((r) => setTimeout(r, 30));
+      // Read once what the page shows has stopped changing, as a SoftN page is (settle above).
+      // It was read 30 ms after the mount, whatever the app was doing: one that draws after a
+      // timer, or once its own files have loaded, was reported as rendering no visible text.
       const viewport = handle.shadowRoot.querySelector('[data-softn-viewport]') ?? handle.shadowRoot;
-      const text = (viewport.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const shown = () => (viewport.textContent ?? '').replace(/\s+/g, ' ').trim();
+      await settle(shown, () => true, 300, 4_000, 300);
+      const text = shown();
       const snapshot = describeDom(viewport as unknown as Element);
-      return { errors, warnings, text, snapshot };
+      // A request the check did not grant is said as what it is for this project: the
+      // container's own line reads as something to fix, and for an app that declares `net`
+      // there is nothing to fix.
+      const permissionJson = files.get('permission.json')?.content;
+      return { errors: explainUngrantedCalls(errors, permissionJson), warnings: explainUngrantedCalls(warnings, permissionJson), text, snapshot };
     } finally {
       handle.dispose();
     }

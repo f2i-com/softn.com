@@ -65,6 +65,20 @@ describe('a line of the runtime about a call that was not granted', () => {
     const lines = ['[SoftN] Error executing function add: x is not defined', 'storage access not permitted yet: this app has asked for it and you have not allowed it.'];
     expect(explainUngrantedCalls(lines, DECLARES(['storage']))).toEqual(lines);
   });
+
+  // A web container's check grants nothing either, and its own words for a refused request
+  // read as something to fix: an app that loads its data as it starts was told so at every check.
+  it('says the same of a web container’s refused request, when the project declares the network', () => {
+    const line = 'Uncaught (in promise) Error: Network access to https://api.example.com/data.json is not permitted by this container';
+    const out = explainUngrantedCalls([line, 'something else', line.replace('data.json', 'more.json')], DECLARES(['net']));
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatch(/A call to net did not run in this check/);
+    expect(out[0]).toMatch(/already declares net/);
+    expect(out[1]).toBe('something else');
+    // Not declared: the container's line stands, since the declaration is what is missing.
+    expect(explainUngrantedCalls([line], DECLARES(['storage']))).toEqual([line]);
+    expect(explainUngrantedCalls([line], undefined)).toEqual([line]);
+  });
 });
 
 describe('the check of an app that reads its storage as it starts', () => {

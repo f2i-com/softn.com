@@ -130,11 +130,17 @@ var __softnShell = (function (win) {
       if (id) idIndex(id, r.node, true);
     }
     if (r.type === 1 && !r.island) {
-      ops.push(['e', r.id, hostTag(r), attrsOf(r)]);
+      // An element of a drawing or of a formula is told with which it is: a host that makes
+      // real elements cannot tell a drawing's <a> or <title> from the page's by its name.
+      ops.push(r.ns ? ['e', r.id, hostTag(r), attrsOf(r), r.ns] : ['e', r.id, hostTag(r), attrsOf(r)]);
       for (var i = 0; i < r.kids.length; i++) announce(rec(r.kids[i]));
       childrenChanged(r);
       if (r.value !== undefined) ops.push(['p', r.id, 'value', r.value]);
       if (r.checked !== undefined) ops.push(['p', r.id, 'checked', r.checked]);
+      // A select's choice, made while it was apart (a framework fills a select and chooses
+      // before it puts either on the page) or before it was taken off and put back.
+      if (r.chosen !== undefined) ops.push(['p', r.id, 'chosen', r.chosen]);
+      else if (r.selectedIndex !== undefined) ops.push(['p', r.id, 'selectedIndex', r.selectedIndex]);
     } else if (r.type === 3) {
       ops.push(['x', r.id, r.text]);
     } else if (r.type === 8 && !r.island) {
@@ -4413,7 +4419,11 @@ var __softnShell = (function (win) {
     if (seed.x !== undefined) node = makeText(seed.x, seed.i);
     else if (seed.o && !seed.t) node = makeComment('', seed.i, true);
     else {
-      node = makeElement(seed.t, seed.i, !!seed.o && !seed.tpl);
+      // An element of a drawing or a formula in the page's own markup is one here too, where
+      // the host says so (ns): its names keep their case (viewBox, linearGradient) and it is
+      // an SVGElement to code that asks. It was an HTML element of the same name, and an
+      // attribute the code set on it reached the page in lower case, where it means nothing.
+      node = makeElement(seed.t, seed.i, !!seed.o && !seed.tpl, seed.ns === 'svg' || seed.ns === 'math' ? seed.ns : undefined);
       var r = rec(node);
       // A handler written in the markup as code is the page's to run, with
       // the element as this and the event as event, as a browser runs it.
@@ -4464,7 +4474,8 @@ var __softnShell = (function (win) {
   var pageSize = PAGE;
   var sent = null;
   function opSize(op) {
-    var last = op[op.length - 1];
+    // A new element's attributes are its fourth part, whether or not a namespace follows.
+    var last = op[0] === 'e' ? op[3] : op[op.length - 1];
     var n = op.length + 1;
     if (last !== null && typeof last === 'object') n += Array.isArray(last) ? last.length : 2 * Object.keys(last).length;
     return n;
@@ -4559,7 +4570,10 @@ var __softnShell = (function (win) {
     return node;
   }
 
-  function event(id, type, props, path) {
+  // told: the host does not hear the answer before its page has moved on (a web container's
+  // page is another thread's), so a box the code's cancelling unticks is told to it as any
+  // change the code makes is.
+  function event(id, type, props, path, told) {
     if (type === 'softn:viewport') {
       // innerWidth and matchMedia() follow; a resize is heard as one.
       if (viewportChanged(props.v)) toResize();
@@ -4588,7 +4602,7 @@ var __softnShell = (function (win) {
     // heard, so the box is ticked here too, and unticked if the code cancels it.
     var undo = type === 'click' && !(path && path.length) ? preActivate(target, true) : null;
     dispatch(target, e);
-    if (undo && e.defaultPrevented) undoActivation(undo, true);
+    if (undo && e.defaultPrevented) undoActivation(undo, !told);
     // A form of a dialog's (method="dialog") closes it, with its button's value.
     if (type === 'submit' && !e.defaultPrevented && rec(target) && (getAttr(rec(target), 'method') || '').toLowerCase() === 'dialog') {
       var dialog = target.closest('dialog');
@@ -4670,6 +4684,23 @@ var __softnShell = (function (win) {
         if (list) { var at = list.indexOf(fn); if (at >= 0) list.splice(at, 1); return; }
         if (typeof engineRemove === 'function') return engineRemove.call(win, type, fn, options);
       };
+      // An event the page's own code sends the window reaches the listeners kept here: a
+      // router says it has moved with dispatchEvent(new PopStateEvent('popstate')), and a
+      // chart is told to lay itself out again with dispatchEvent(new Event('resize')). Each
+      // went to the engine's window, which holds none of those listeners.
+      var engineDispatch = win.dispatchEvent;
+      win.dispatchEvent = function (e) {
+        var type = e && e.type;
+        if (type === 'hashchange' || type === 'popstate') { toWindow(type, e); return !e.defaultPrevented; }
+        if (type === 'resize') {
+          var heard = resizeListeners.slice();
+          for (var i = 0; i < heard.length; i++) {
+            try { heard[i].call(win, e); } catch (error) { console.error('[SoftN] A resize listener failed: ' + (error && error.message ? error.message : error)); }
+          }
+          return !e.defaultPrevented;
+        }
+        return typeof engineDispatch === 'function' ? engineDispatch.call(win, e) : true;
+      };
     } catch (error) {
       warnOnce('window-load', 'window.addEventListener("load") is not heard on this engine; use document.addEventListener("DOMContentLoaded").');
     }
@@ -4705,7 +4736,7 @@ var __softnShell = (function (win) {
 
 function __softnDocTake(failed) { return __softnShell.take(failed); }
 function __softnDocSync(changes) { __softnShell.sync(changes); }
-function __softnDocEvent(id, type, props, path) { return __softnShell.event(id, type, props, path); }
+function __softnDocEvent(id, type, props, path, told) { return __softnShell.event(id, type, props, path, told); }
 function __softnDocReady() { __softnShell.ready(); }
 `.replace('@ENTITIES@', entityTable());
 

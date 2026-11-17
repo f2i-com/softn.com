@@ -151,6 +151,24 @@ export const MAX_EVENT_TYPES = 256;
 /** A canvas's side in pixels: no more than a page can hold without stopping. */
 export const MAX_CANVAS_SIDE = 8192;
 
+/** The most characters of an app's title a host is handed. */
+export const MAX_TITLE_LENGTH = 120;
+
+/**
+ * An app's title as a host is handed it: text, on one line (control characters, the marks
+ * that turn the direction of the text after them, and runs of space become one space), and
+ * no longer than a title is. A host shows it in its own chrome, beside words of its own.
+ */
+export function hostTitle(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    // eslint-disable-next-line no-control-regex -- control characters are what is being taken out
+    .replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_TITLE_LENGTH);
+}
+
 /** A width or height the app asked a canvas for, held to what the page can hold. */
 export function canvasSide(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(MAX_CANVAS_SIDE, Math.floor(value))) : 0;

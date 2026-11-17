@@ -418,6 +418,8 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                 initialPage={initialPage}
                 declaredPermissions={consent?.config ?? permissionConfig}
                 grantedCapabilities={containerGrants}
+                // A tab behind another draws no frames and runs no timers until it is in front.
+                active={active}
                 theme={themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto'}
                 onReady={onReady}
                 loading={

@@ -21,6 +21,7 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 import { containerBundle } from '../helpers/bundle';
 import { watchConsole } from '../helpers/console';
+import { centreOf, keepShadowRoots, openBundle, shown } from '../helpers/container';
 
 const SHARED_FOLDER = /^\/shared\/container-runtime\/[0-9a-f]{12}\//;
 
@@ -74,47 +75,6 @@ document.getElementById('out')!.textContent = 'Total: ' + total(lines) / 100;
 
 const PYTHON = page_('Python Hello', '<h1>Python Hello</h1>\n<p id="out">The page is plain HTML.</p>', 'print("python says", 6 * 7)', 'text/python');
 
-/**
- * The container draws into a closed shadow root, which nothing on the page can reach. The
- * spec keeps each root as it is attached, before any of the page's own scripts run.
- */
-async function keepShadowRoots(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const attach = Element.prototype.attachShadow;
-    const roots: ShadowRoot[] = [];
-    (window as unknown as { __softnRoots: ShadowRoot[] }).__softnRoots = roots;
-    Element.prototype.attachShadow = function (this: Element, init: ShadowRootInit): ShadowRoot {
-      const root = attach.call(this, init);
-      roots.push(root);
-      return root;
-    };
-  });
-}
-
-/** What the containers on the page show, as text. */
-const shown = (page: Page): Promise<string> =>
-  page.evaluate(() =>
-    ((window as unknown as { __softnRoots?: ShadowRoot[] }).__softnRoots ?? [])
-      .map((root) => root.querySelector('[data-softn-viewport]')?.textContent ?? '')
-      .join('\n')
-  );
-
-/** The middle of an element inside a container, for a real click on it. */
-async function centreOf(page: Page, selector: string): Promise<{ x: number; y: number }> {
-  const box = await page.evaluate((sel) => {
-    for (const root of (window as unknown as { __softnRoots?: ShadowRoot[] }).__softnRoots ?? []) {
-      const el = root.querySelector(sel);
-      if (el) {
-        const r = el.getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-      }
-    }
-    return null;
-  }, selector);
-  expect(box, `${selector} is drawn in the container`).not.toBeNull();
-  return box!;
-}
-
 interface Fetched {
   path: string;
   status: number;
@@ -132,15 +92,6 @@ function watchRuntimeRequests(page: Page): Fetched[] {
     if (wanted(request)) fetched.push({ path: new URL(request.url()).pathname, status: 0 });
   });
   return fetched;
-}
-
-/** Open `buffer` through the workspace's "Open a .softn file" button. */
-async function openBundle(page: Page, name: string, buffer: Buffer): Promise<void> {
-  await page.goto('/web/');
-  await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
-  const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open a .softn file', exact: true }).click();
-  await (await chooser).setFiles({ name, mimeType: 'application/octet-stream', buffer });
 }
 
 const ofFolder = (fetched: Fetched[]) => fetched.filter((entry) => entry.path.includes('container-runtime'));
@@ -260,7 +211,7 @@ test('a 3D scene is drawn by the runtime’s own Three.js: the folder ships no s
     await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Scene drawn');
     // Three.js came from the runtime's own chunk, and nothing asked the folder for one.
     await expect
-      .poll(() => scripts.some((entry) => /^\/web\/assets\/vendor-three-[\w-]+\.js$/.test(entry.path) && entry.status === 200), { timeout: 30_000 })
+      .poll(() => scripts.some((entry) => /^\/shared\/assets\/vendor-three-[\w-]+\.js$/.test(entry.path) && entry.status === 200), { timeout: 30_000 })
       .toBe(true);
     // The page's side of the scene, where this browser can draw one at all (a machine with
     // no graphics may not): the canvas is a WebGL one once the renderer has it, at the size
@@ -288,6 +239,70 @@ test('a 3D scene is drawn by the runtime’s own Three.js: the folder ships no s
     expect(log.uncaught).toEqual([]);
   } finally {
     await log.attach('orbit');
+  }
+});
+
+// A second page that formats a number, so the app starts on two engines: the lite one, and the
+// runtime's own.
+const TWO_PAGES_HOME = page_(
+  'Offline Shop',
+  '<h1>Offline Shop</h1>\n<p id="out">Starting…</p>\n<button id="add" type="button">Add one</button>\n<a id="prices" href="./prices.html">Prices</a>',
+  `let count = 0;
+const out = document.getElementById('out');
+document.getElementById('add').addEventListener('click', () => {
+  count += 1;
+  out.textContent = 'Basket: ' + count;
+});
+out.textContent = 'Basket: 0';`
+);
+const TWO_PAGES_PRICES = page_(
+  'Prices',
+  '<h1>Prices</h1>\n<p id="out">…</p>',
+  `document.getElementById('out').textContent = 'Total: ' + new Intl.NumberFormat('en-US').format(1234567.891);`
+);
+
+test('a web container opened once online is installed, and opens from Home and runs with the network gone', async ({ page, context }, testInfo) => {
+  test.setTimeout(240_000);
+  const log = watchConsole(page, testInfo);
+  await keepShadowRoots(page);
+  const NAME = 'Offline Shop';
+  try {
+    await page.goto('/web/');
+    await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
+    // The install waits for the service worker to control the page; so does this.
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller), null, { timeout: 60_000 });
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Open a .softn file', exact: true }).click();
+    await (await chooser).setFiles({
+      name: 'OfflineShop.softn',
+      mimeType: 'application/octet-stream',
+      buffer: containerBundle({ 'index.html': TWO_PAGES_HOME, 'prices.html': TWO_PAGES_PRICES }),
+    });
+    await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Basket: 0');
+
+    // Home says when the install has everything: no card of a container ever did.
+    await page.locator('.softn-frame-home').first().click();
+    const card = page.getByRole('button', { name: `Open ${NAME}`, exact: true });
+    await expect(card.locator('.softn-launcher-offline')).toHaveAttribute('data-state', 'ready', { timeout: 120_000 });
+
+    await context.setOffline(true);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole('button', { name: `Open ${NAME}`, exact: true }).click();
+    // The Worker, the lite engine and its bindings, all from what the service worker kept.
+    await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Basket: 0');
+    const add = await centreOf(page, '#add');
+    await page.mouse.click(add.x, add.y);
+    await expect.poll(() => shown(page)).toContain('Basket: 1');
+    // The other page starts on the runtime's own engine, whose bindings were installed too
+    // though no page had asked for them yet.
+    const prices = await centreOf(page, '#prices');
+    await page.mouse.click(prices.x, prices.y);
+    await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Total: 1,234,567.891');
+    expect(log.uncaught).toEqual([]);
+  } finally {
+    await context.setOffline(false);
+    await log.attach('offline-container');
   }
 });
 
@@ -364,7 +379,10 @@ test('an app cannot run script in the runtime’s page, reach an origin it was n
 test('the shared folder is served as files that may be kept: found, typed, and missing ones are 404s', async ({ request }) => {
   // The folder's address, from the runtime's own script: whatever digest this build has.
   const html = await (await request.get('/web/')).text();
-  const scripts = [...html.matchAll(/(?:src|href)="(\/web\/assets\/[^"]+\.js)"/g)].map((match) => match[1]);
+  // The runtime's scripts are in the site's one folder of built files, with every other app's.
+  const scripts = [...html.matchAll(/(?:src|href)="(\/shared\/assets\/[^"]+\.js)"/g)].map((match) => match[1]);
+  expect(scripts.length, 'the runtime page names its scripts in /shared/assets/').toBeGreaterThan(0);
+  expect(html).not.toMatch(/\/web\/assets\//);
   let folder = '';
   for (const src of scripts) {
     const found = /\/shared\/container-runtime\/[0-9a-f]{12}\//.exec(await (await request.get(src)).text());
@@ -376,7 +394,7 @@ test('the shared folder is served as files that may be kept: found, typed, and m
   // The entry reaches it through a chunk; any of the runtime's scripts may be the one that names it.
   if (!folder) {
     const listing = await (await request.get('/web/sw.js')).text();
-    for (const chunk of [...listing.matchAll(/assets\/[\w.-]+\.js/g)].map((match) => `/web/${match[0]}`)) {
+    for (const chunk of [...new Set([...listing.matchAll(/\/shared\/assets\/[\w.-]+\.js/g)].map((match) => match[0]))]) {
       const found = /\/shared\/container-runtime\/[0-9a-f]{12}\//.exec(await (await request.get(chunk)).text());
       if (found) {
         folder = found[0];
@@ -400,10 +418,19 @@ test('the shared folder is served as files that may be kept: found, typed, and m
   for (const file of ['engines/zipp-python-base.wasm', 'engines/zipp-javascript.wasm', 'engines/zipp-torch.wasm', 'softn.js']) {
     expect((await request.get(folder + file)).status(), file).toBe(404);
   }
-  // No app keeps a folder of its own: nothing there is a script. (A host answers 404; the
-  // server these specs run on answers an app's unknown addresses with the app's page.)
+  // No app keeps a folder of its own, and a file that is not there is a 404, not the app's page.
   for (const app of ['web', 'studio', 'builder', 'play']) {
-    const response = await request.get(`/${app}/assets/container-runtime/container-worker.js`);
-    expect(response.status() === 404 || /^text\/html/.test(response.headers()['content-type'] ?? ''), app).toBe(true);
+    for (const file of ['container-runtime/container-worker.js', 'core-runtime/runtime/script-worker.js', 'index-00000000.js']) {
+      expect((await request.get(`/${app}/assets/${file}`)).status(), `${app} ${file}`).toBe(404);
+    }
+  }
+  // Core's workers and the torch package are beside the chunks that start them, once for every app.
+  for (const [file, type] of [
+    ['core-runtime/runtime/script-worker.js', /javascript/],
+    ['core-runtime/zipp_torch.wasm', /^application\/wasm/],
+  ] as const) {
+    const response = await request.get(`/shared/assets/${file}`);
+    expect(response.status(), file).toBe(200);
+    expect(response.headers()['content-type'] ?? '', file).toMatch(type);
   }
 });
