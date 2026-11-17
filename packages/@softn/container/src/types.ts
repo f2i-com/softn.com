@@ -168,11 +168,16 @@ export type ShellOp =
   | ['l', string]
   | ['t', string]
   | ['n', string]
+  /** A blob the script made an address for: its id, its type, its bytes in base64; and one let go. */
+  | ['blob', string, string, string]
+  | ['unblob', string]
+  /** An image that is not on the page, for the host to load and say when it has: a token to answer by, and the address. */
+  | ['img', string, string]
   | ['k2d', number, number, number, Canvas2DCmd[]]
   | ['3d', number, ThreeSceneOp[]];
 
-/** Measured bounding rect tuple: [id, x, y, width, height]. */
-export type MeasuredBoxTuple = [number, number, number, number, number];
+/** Measured bounding rect tuple: [id, x, y, width, height], and how wide and tall what it holds is (scrollWidth, scrollHeight). */
+export type MeasuredBoxTuple = [number, number, number, number, number, number?, number?];
 
 /** Resource & execution limits applied to each container Worker. */
 export interface ContainerLimits {

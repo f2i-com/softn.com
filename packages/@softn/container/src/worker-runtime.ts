@@ -21,6 +21,7 @@ import {
 } from './esm-linker';
 import { GUEST_EXTENSIONS_SOURCE } from './guest-canvas-and-ext';
 import { GUEST_BROWSER_GLOBALS_SOURCE } from './guest-browser-globals';
+import { GUEST_WEB_APIS_SOURCE } from './guest-web-apis';
 import { isExternalUrlAllowed } from './sanitize';
 import { loadZippEngine, type ZippEngineInstance } from './zipp-loader';
 import type {
@@ -30,6 +31,31 @@ import type {
   WorkerToHostMsg,
 } from './types';
 import type { Capability } from '@softn/bundle-format/capabilities';
+
+/** A socket the Worker holds open for the app, and what has arrived on it that the app has not taken yet. */
+interface OpenSocket {
+  ws: WebSocket;
+  events: Array<Record<string, unknown>>;
+  bytes: number;
+  /** The app's standing call for the next events, answered when there are some. */
+  waiting: number | null;
+  /** Closed, or being closed for holding too much: nothing more is taken from it. */
+  over: boolean;
+}
+
+/** The most sockets one app holds open, and the most that is kept for it unread on one. */
+const MAX_SOCKETS = 8;
+const MAX_SOCKET_QUEUE_BYTES = 16 * 1024 * 1024;
+const MAX_SOCKET_QUEUE_EVENTS = 10_000;
+/** The longest message an app sends, in characters as the bridge carries it (text, or base64). */
+const MAX_SOCKET_MESSAGE_CHARS = 8 * 1024 * 1024;
+
+function base64ToBytes(text: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(text);
+  const out = new Uint8Array(new ArrayBuffer(bin.length));
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
 const DB_SYNC_OPS = [
   'db.query',
@@ -89,6 +115,7 @@ export class ContainerWorkerSession {
   private readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
   /** The host says the app is not on screen: its timers wait (`heldTimers`: timer id to its callback), and no frame is asked for. */
   private paused = false;
+  private readonly sockets = new Map<string, OpenSocket>();
   private readonly heldTimers = new Map<number, number>();
   private disposed = false;
 
@@ -256,6 +283,8 @@ export class ContainerWorkerSession {
         GUEST_EXTENSIONS_SOURCE,
         // After both: `window` becomes the global object, with what each of them put on it.
         GUEST_BROWSER_GLOBALS_SOURCE,
+        // Blob, XMLHttpRequest, WebSocket, images, customElements: over what the three above set up.
+        GUEST_WEB_APIS_SOURCE,
         `__softnHydrateInlineHandlers(${JSON.stringify(msg.seed.body)});`,
         ...factoryBlocks,
         // Top-level entry slots callable via `engine.callFunction(name, args)` in O(1)
@@ -377,6 +406,8 @@ export class ContainerWorkerSession {
       if (this.disposed || this.paused) break;
       this.resolveCallbackAndFlush(callId, { ok: true });
     }
+    // What arrived on its sockets while it was not shown.
+    for (const id of [...this.sockets.keys()]) this.pumpSocket(id);
   }
 
   private handleRaf(timestamp: number): void {
@@ -579,10 +610,12 @@ export class ContainerWorkerSession {
           return;
         }
         try {
+          // A body of bytes (a blob, a form with a file in it) comes as base64: the bridge carries text.
+          const bodyBase64 = (rawOpts as { bodyBase64?: unknown }).bodyBase64;
           const resp = await fetch(url, {
             method: rawOpts.method ?? 'GET',
             headers: rawOpts.headers,
-            body: rawOpts.body,
+            body: typeof bodyBase64 === 'string' ? base64ToBytes(bodyBase64) : rawOpts.body,
             credentials: 'omit',
             redirect: 'error',
           });
@@ -610,9 +643,125 @@ export class ContainerWorkerSession {
         return;
       }
 
+      case 'ws.open': {
+        const id = args[0] ?? '';
+        const url = args[1] ?? '';
+        let protocols: string[] = [];
+        try {
+          const parsed: unknown = JSON.parse(args[2] ?? '[]');
+          if (Array.isArray(parsed)) protocols = parsed.filter((p): p is string => typeof p === 'string').slice(0, 16);
+        } catch {
+          protocols = [];
+        }
+        // The rule a request is held to: the network granted, and a host the app declared.
+        // A socket's scheme is read as the page scheme it is carried over (wss as https).
+        const asPage = /^wss:/i.test(url) ? `https:${url.slice(4)}` : /^ws:/i.test(url) ? `http:${url.slice(3)}` : '';
+        if (!asPage || !isExternalUrlAllowed(asPage, this.permissions.permissions?.net, this.grantedCapabilities.has('net'))) {
+          this.resolveCallbackAndFlush(callId, { error: `Network access to ${url} is not permitted by this container` });
+          return;
+        }
+        if (this.sockets.has(id) || this.sockets.size >= MAX_SOCKETS) {
+          this.resolveCallbackAndFlush(callId, { error: `This container has ${MAX_SOCKETS} sockets open already` });
+          return;
+        }
+        if (typeof WebSocket !== 'function') {
+          this.resolveCallbackAndFlush(callId, { error: 'There are no sockets here' });
+          return;
+        }
+        let ws: WebSocket;
+        try {
+          ws = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+        } catch (err) {
+          this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        ws.binaryType = 'arraybuffer';
+        const socket: OpenSocket = { ws, events: [], bytes: 0, waiting: null, over: false };
+        this.sockets.set(id, socket);
+        const heard = (event: Record<string, unknown>, size = 0) => {
+          if (socket.over) return;
+          socket.events.push(event);
+          socket.bytes += size;
+          // An app that is not listening (or is hidden for a long while) is not kept bytes for without end.
+          if (socket.bytes > MAX_SOCKET_QUEUE_BYTES || socket.events.length > MAX_SOCKET_QUEUE_EVENTS) {
+            socket.events = [{ t: 'close', code: 1009, reason: 'Too much arrived unread', wasClean: false }];
+            socket.over = true;
+            try {
+              ws.close();
+            } catch {
+              // Already closing
+            }
+          }
+          this.pumpSocket(id);
+        };
+        ws.onopen = () => heard({ t: 'open', protocol: ws.protocol, extensions: ws.extensions });
+        ws.onmessage = (e: MessageEvent) => {
+          if (typeof e.data === 'string') heard({ t: 'message', data: e.data }, e.data.length * 2);
+          else if (e.data instanceof ArrayBuffer) heard({ t: 'message', base64: bytesToBase64(new Uint8Array(e.data)) }, e.data.byteLength * 2);
+        };
+        ws.onerror = () => heard({ t: 'error' });
+        ws.onclose = (e: CloseEvent) => {
+          heard({ t: 'close', code: e.code, reason: e.reason, wasClean: e.wasClean });
+          socket.over = true;
+        };
+        this.resolveCallbackAndFlush(callId, { ok: true });
+        return;
+      }
+
+      case 'ws.next': {
+        const id = args[0] ?? '';
+        const socket = this.sockets.get(id);
+        if (!socket) {
+          this.resolveCallbackAndFlush(callId, { error: 'No such socket' });
+          return;
+        }
+        socket.waiting = callId;
+        this.pumpSocket(id);
+        return;
+      }
+
+      case 'ws.send': {
+        const socket = this.sockets.get(args[0] ?? '');
+        if (!socket || socket.ws.readyState !== 1) return;
+        const data = args[2] ?? '';
+        if (data.length > MAX_SOCKET_MESSAGE_CHARS) return;
+        try {
+          socket.ws.send(args[1] === 'base64' ? base64ToBytes(data) : data);
+        } catch {
+          // The socket closed between the check and the send: its close is told as it comes.
+        }
+        return;
+      }
+
+      case 'ws.close': {
+        const socket = this.sockets.get(args[0] ?? '');
+        if (!socket) return;
+        const code = Number(args[1]);
+        try {
+          if (Number.isInteger(code) && (code === 1000 || (code >= 3000 && code <= 4999))) socket.ws.close(code, (args[2] ?? '').slice(0, 123));
+          else socket.ws.close();
+        } catch {
+          // Already closed
+        }
+        return;
+      }
+
       default:
         this.resolveCallbackAndFlush(callId, { error: `Unsupported host call: ${kind}` });
     }
+  }
+
+  /** Hand a socket's waiting events to the app, when it has asked for them and is shown. */
+  private pumpSocket(id: string): void {
+    const socket = this.sockets.get(id);
+    if (!socket || socket.waiting === null || socket.events.length === 0 || this.paused || this.disposed) return;
+    const callId = socket.waiting;
+    socket.waiting = null;
+    const events = socket.events;
+    socket.events = [];
+    socket.bytes = 0;
+    if (events.some((event) => event.t === 'close')) this.sockets.delete(id);
+    this.resolveCallbackAndFlush(callId, { events });
   }
 
   private resolveCallbackAndFlush(callId: number, result: unknown): void {
@@ -948,6 +1097,15 @@ export class ContainerWorkerSession {
     this.disposed = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
+    for (const socket of this.sockets.values()) {
+      socket.over = true;
+      try {
+        socket.ws.close();
+      } catch {
+        // Already closed
+      }
+    }
+    this.sockets.clear();
     if (this.engine) {
       try {
         this.engine.dispose();

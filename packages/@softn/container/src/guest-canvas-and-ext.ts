@@ -403,7 +403,14 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
         h.forEach(function (v, k) { reqOpts.headers[k] = v; });
       }
       if (init && init.body !== undefined && init.body !== null) {
-        reqOpts.body = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
+        // FormData, URLSearchParams, a blob, bytes: each as the web sends it (guest-web-apis.ts).
+        if (typeof g.__softnEncodeBody === 'function') {
+          var sent = g.__softnEncodeBody(init.body, reqOpts.headers);
+          if (sent.bodyBase64 !== undefined) reqOpts.bodyBase64 = sent.bodyBase64;
+          else reqOpts.body = sent.body;
+        } else {
+          reqOpts.body = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
+        }
       }
 
       host.call('net.fetch', [rawUrl, JSON.stringify(reqOpts)], function (reply) {

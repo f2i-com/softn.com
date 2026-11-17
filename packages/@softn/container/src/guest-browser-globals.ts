@@ -379,6 +379,8 @@ export const GUEST_BROWSER_GLOBALS_SOURCE = String.raw`
   eventClass('PopStateEvent', 'Event', { state: null });
   eventClass('StorageEvent', 'Event', { key: null, oldValue: null, newValue: null, url: '', storageArea: null });
   eventClass('ProgressEvent', 'Event', { lengthComputable: false, loaded: 0, total: 0 });
+  eventClass('MessageEvent', 'Event', { data: null, origin: '', lastEventId: '', source: null, ports: [] });
+  eventClass('CloseEvent', 'Event', { code: 0, reason: '', wasClean: false });
 
   // A list of nodes is an array here: asked whether it is a NodeList, it says what it is.
   ['NodeList', 'HTMLCollection'].forEach(function (name) {
@@ -418,6 +420,19 @@ export const GUEST_BROWSER_GLOBALS_SOURCE = String.raw`
     var n = Number(value);
     if (!(n === n) || !push) return;
     n = Math.max(0, n);
+    // "To the end", as a chat does it after every message (el.scrollTop = el.scrollHeight).
+    // What the element holds is known from when the page last measured it, a moment ago;
+    // at or past the end of that is the end, however much the element holds by now.
+    if (el !== doc.body && el !== doc.documentElement) {
+      var held = Number(axis === 'top' ? el.scrollHeight : el.scrollWidth) || 0;
+      var shown = Number(axis === 'top' ? el.clientHeight : el.clientWidth) || 0;
+      if (held > shown && n >= held - shown) {
+        scrollOf(el)[axis] = held - shown;
+        var endId = el.__softnNode;
+        if (typeof endId === 'number' && endId > 0 && el.isConnected !== false) push(['p', endId, axis === 'top' ? 'scrollTop' : 'scrollLeft', 1e9]);
+        return;
+      }
+    }
     scrollOf(el)[axis] = n;
     var id = el === doc.body || el === doc.documentElement ? 1 : el.__softnNode;
     if (typeof id === 'number' && id > 0 && el.isConnected !== false) push(['p', id, axis === 'top' ? 'scrollTop' : 'scrollLeft', n]);

@@ -510,6 +510,25 @@ describe('a click on a box', () => {
   });
 });
 
+describe('what an element holds, as the host measured it', () => {
+  // A box that scrolls holds more than it shows. scrollHeight was the box's own height, so a
+  // list of messages that kept itself at its end (el.scrollTop = el.scrollHeight) had no
+  // end to go to.
+  it('reads scrollHeight and scrollWidth as what the element holds where the host says, and as its box where it does not', async () => {
+    const doc = await page(`
+      function read() {
+        const list = document.getElementById('list');
+        const title = document.getElementById('title');
+        return [list.clientHeight, list.scrollHeight, list.scrollWidth, title.clientHeight, title.scrollHeight, title.scrollWidth];
+      }`);
+    doc.take();
+    // Asked once, the host is asked to measure; nothing is known yet.
+    expect(doc.call('read')).toEqual([0, 0, 0, 0, 0, 0]);
+    doc.sync([['B', [[4, 0, 0, 300, 100, 320, 900], [2, 0, 0, 300, 40]]]]);
+    expect(doc.call('read')).toEqual([100, 900, 320, 40, 40, 300]);
+  });
+});
+
 describe('a select, and where the choice is told', () => {
   const SELECT = `
     function make(id, multiple) {

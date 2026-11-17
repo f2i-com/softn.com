@@ -20,7 +20,7 @@ import {
   isExternalHref,
   isLinkElement,
 } from './host-policy';
-import { NODE_ID_ATTR, sanitizeContainerCss } from './sanitize';
+import { NODE_ID_ATTR, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
 import type {
   Canvas2DCmd,
   ContainerPermissions,
@@ -37,19 +37,29 @@ import type {
 const ROOT_ATTRIBUTE = /^(?:class|lang|dir|role|title|data-[\w.-]+|aria-[\w-]+)$/;
 
 /**
- * Properties whose effect depends on the element's place in the page or on its children:
- * applied after the tree a turn built (see applyOps).
- */
-/**
  * The ids the app's document gives its own `<html>` and `<head>` (core's shell-source.ts,
  * `init`). Its `<body>` is 1: the viewport.
  */
 const GUEST_HTML_ID = -2;
 const GUEST_HEAD_ID = -3;
 
+/**
+ * Properties whose effect depends on the element's place in the page or on its children:
+ * applied after the tree a turn built (see applyOps).
+ */
 const TREE_PROPERTIES = new Set(['selectedIndex', 'chosen', 'focus', 'scrollIntoView', 'scrollTop', 'scrollLeft']);
 
+/** The most images an app has the page load for it that are not on the page (`new Image()`). */
+const MAX_PRELOADED_IMAGES = 2048;
+
+/**
+ * Events that do not bubble: heard on their way down to the element. `load` and `error` are an
+ * image's (and a video's): listened for as they bubble, they were never heard, and an image's
+ * `onload` never ran.
+ */
 const CAPTURE_ONLY_EVENTS = new Set([
+  'load',
+  'error',
   'focus',
   'blur',
   'scroll',
@@ -162,8 +172,32 @@ export class HostDomPatcher {
     // in one turn showed the first), and a field was focused before it was on the page.
     const afterTree: Array<[number, string, unknown]> = [];
 
+    // A blob the script made an address for is kept before anything else in the turn is
+    // read: the same turn that makes the address sets it on an image.
+    for (const op of ops) {
+      if (op[0] !== 'blob') continue;
+      const [, id, type, base64] = op;
+      if (typeof id !== 'string' || typeof base64 !== 'string') continue;
+      try {
+        this.archive.putRuntimeBlob(id, typeof type === 'string' ? type : '', base64ToBytes(base64));
+      } catch {
+        // Not base64: nothing is kept, and the address names nothing.
+      }
+    }
+
     for (const op of ops) {
       switch (op[0]) {
+        case 'blob':
+          break;
+
+        case 'unblob':
+          if (typeof op[1] === 'string') this.archive.dropRuntimeBlob(op[1]);
+          break;
+
+        case 'img':
+          if (typeof op[1] === 'string' && typeof op[2] === 'string') this.preloadImage(op[1], op[2]);
+          break;
+
         case 'e': {
           const [, id, rawTag, attrs, rawNs] = op;
           if (!Number.isInteger(id) || id <= 1 || typeof rawTag !== 'string') break;
@@ -755,6 +789,39 @@ export class HostDomPatcher {
     }
   }
 
+  /**
+   * Load an image that is on no page (`new Image()`, a game's sprites, a preloader), and tell
+   * the app's script when it has loaded or cannot be. Its address is held to the rule an
+   * `<img>` on the page is: a file of the app's, a blob it made, or a site it was granted.
+   * Kept by the address as written, which is how a canvas then asks to draw it.
+   */
+  private preloadImage(token: string, src: string): void {
+    const answer = (ok: boolean, width = 0, height = 0) => {
+      if (!this.disposed) this.callbacks.onEvent(-1, 'softn:image', { token, src, ok, width, height }, []);
+    };
+    const kept = this.imageCache.get(src);
+    if (kept) {
+      if (kept.complete) answer(kept.naturalWidth > 0, kept.naturalWidth, kept.naturalHeight);
+      else {
+        kept.addEventListener('load', () => answer(true, kept.naturalWidth, kept.naturalHeight), { once: true });
+        kept.addEventListener('error', () => answer(false), { once: true });
+      }
+      return;
+    }
+    const address = typeof Image === 'function' && this.imageCache.size < MAX_PRELOADED_IMAGES
+      ? sanitizeHostAssetUrl('src', src, 'img', this.entryPath, this.archive, this.permissions, this.netGranted)
+      : null;
+    if (!address) {
+      answer(false);
+      return;
+    }
+    const img = new Image();
+    img.addEventListener('load', () => answer(true, img.naturalWidth, img.naturalHeight), { once: true });
+    img.addEventListener('error', () => answer(false), { once: true });
+    this.imageCache.set(src, img);
+    img.src = address;
+  }
+
   private resolveDrawableImage(ref: string): CanvasImageSource | null {
     if (ref.startsWith('node:')) {
       const id = Number(ref.slice(5));
@@ -902,6 +969,22 @@ export class HostDomPatcher {
 
     this.viewportEl.addEventListener(eventType, handler, useCapture);
     this.cleanupFns.push(() => this.viewportEl.removeEventListener(eventType, handler, useCapture));
+
+    // An image of the first page may have loaded before the script asked to hear of it (its
+    // script starts a thread away): each one that has is said now, once, so that
+    // img.complete and the sizes the script reads are true from the start.
+    if (eventType === 'load') {
+      queueMicrotask(() => {
+        if (this.disposed) return;
+        for (const img of Array.from(this.viewportEl.querySelectorAll('img'))) {
+          if (!img.complete || !img.getAttribute('src')) continue;
+          const id = this.findNearestNodeId(img);
+          if (id === null || id <= 1 || this.nodes.get(id) !== img) continue;
+          const ok = img.naturalWidth > 0;
+          this.callbacks.onEvent(id, ok ? 'load' : 'error', ok ? { naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight } : {}, []);
+        }
+      });
+    }
   }
 
   private findNearestNodeId(el: Element | null): number | null {
@@ -992,7 +1075,8 @@ export class HostDomPatcher {
         const node = this.nodes.get(id);
         if (node instanceof Element && node.isConnected) {
           const rect = node.getBoundingClientRect();
-          boxes.push([id, rect.left - origin.left, rect.top - origin.top, rect.width, rect.height]);
+          // With how much it holds, for scrollHeight: a box and what scrolls inside it differ.
+          boxes.push([id, rect.left - origin.left, rect.top - origin.top, rect.width, rect.height, node.scrollWidth, node.scrollHeight]);
         }
       }
       if (boxes.length > 0) {
@@ -1062,6 +1146,11 @@ function serializeDomEvent(
       out.offsetX = me.clientX - rect.left;
       out.offsetY = me.clientY - rect.top;
     }
+  }
+  // An image that loaded says how large its picture is.
+  if (e.type === 'load' && targetEl instanceof HTMLImageElement) {
+    out.naturalWidth = targetEl.naturalWidth;
+    out.naturalHeight = targetEl.naturalHeight;
   }
   if ('pointerId' in e) {
     const pe = e as PointerEvent;

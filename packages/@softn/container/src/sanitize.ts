@@ -12,7 +12,7 @@
  *   and enforces `net.allowed_hosts` egress policy on external URLs
  */
 
-import { ContainerArchive, resolveVfsPath, VIRTUAL_ORIGIN } from './archive';
+import { ContainerArchive, resolveVfsPath, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
 import { rewriteCss } from './css-policy';
 import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement } from './host-policy';
 import { SOFTN_UI_CSS } from './ui-css';
@@ -94,6 +94,15 @@ export function sanitizeHostAssetUrl(
   // Block dangerous executable schemes unconditionally
   if (/^(?:javascript|vbscript|file):/i.test(trimmed)) return null;
 
+  // A blob the app's script made an address for: the page loads it from an address the host
+  // mints, by the rule for the app's own files. Not in a link: followed, a blob is a
+  // document, or a file saved to the person's disk, and neither is done here.
+  const runtimeBlob = RUNTIME_BLOB_URL.exec(trimmed);
+  if (runtimeBlob) {
+    if (tagName === 'a' || tagName === 'area' || attrName === 'action' || attrName === 'formaction') return null;
+    return archive.getRuntimeBlobUrl(runtimeBlob[1]);
+  }
+
   // Safe inline data: images/audio/svg-free media
   if (/^data:/i.test(trimmed)) {
     if (/^data:(?:image\/(?:png|jpeg|gif|webp|avif|bmp|x-icon)|audio\/(?:wav|mpeg|ogg)|font\/)/i.test(trimmed)) {
@@ -161,6 +170,8 @@ export function sanitizeContainerCss(
     // list's marker), where it runs nothing. The arrows and ticks of every CSS framework's
     // form controls are written this way.
     if (SVG_DATA.test(target)) return target;
+    const runtimeBlob = RUNTIME_BLOB_URL.exec(target);
+    if (runtimeBlob) return archive.getRuntimeBlobUrl(runtimeBlob[1]);
     const vfs = resolveVfsPath(target, basePath);
     if (vfs && archive.has(vfs)) return archive.getBlobUrl(vfs);
     if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;

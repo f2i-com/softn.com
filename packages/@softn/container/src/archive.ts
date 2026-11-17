@@ -14,6 +14,13 @@ import type { ContainerManifest, ContainerMode, ContainerPermissions } from './t
 
 export const VIRTUAL_ORIGIN = 'https://app.softn.local';
 
+/** The address of a blob the app's script made (`URL.createObjectURL`), and the id in it. */
+export const RUNTIME_BLOB_URL = /^blob:https:\/\/app\.softn\.local\/([\w-]{1,64})$/;
+
+/** The most blobs an app may have an address for at once, and the most bytes they may hold together. */
+const MAX_RUNTIME_BLOBS = 512;
+const MAX_RUNTIME_BLOB_BYTES = 64 * 1024 * 1024;
+
 const TEXT_EXTENSIONS = new Set([
   'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'mts', 'tsx', 'jsx',
   'py', 'json', 'importmap', 'svg', 'txt', 'md', 'csv', 'xml', 'ui',
@@ -192,6 +199,9 @@ export class ContainerArchive {
   private readonly textCache = new Map<string, string>();
   private readonly binaryCache = new Map<string, Uint8Array>();
   private readonly blobUrls = new Map<string, string>();
+  /** Blobs the app's script made an address for (`URL.createObjectURL`), by the address's id. */
+  private readonly runtimeBlobs = new Map<string, { bytes: Uint8Array; type: string; url: string | null }>();
+  private runtimeBlobBytes = 0;
   private disposed = false;
 
   private constructor(params: {
@@ -374,18 +384,56 @@ export class ContainerArchive {
     if (existing) return existing;
     const bytes = this.readBytes(resolved);
     if (!bytes) return null;
-    const type = mimeTypeFor(resolved);
-    let url: string;
-    if (/^image\/svg\+xml/i.test(type)) {
-      url = `data:image/svg+xml;base64,${bytesToBase64(bytes)}`;
-    } else {
-      const copy = new Uint8Array(bytes.byteLength);
-      copy.set(bytes);
-      const inert = /^(?:text\/html|application\/xhtml\+xml|application\/xml|text\/xml)/i.test(type) ? 'text/plain; charset=utf-8' : type;
-      url = URL.createObjectURL(new Blob([copy], { type: inert }));
-    }
+    const url = this.mintUrl(bytes, mimeTypeFor(resolved));
     this.blobUrls.set(resolved, url);
     return url;
+  }
+
+  /** An address the page can load `bytes` from, by the rule above: never one a browser would open as a document. */
+  private mintUrl(bytes: Uint8Array, type: string): string {
+    if (/^image\/svg\+xml/i.test(type)) return `data:image/svg+xml;base64,${bytesToBase64(bytes)}`;
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    const inert = /^(?:text\/html|application\/xhtml\+xml|application\/xml|text\/xml)/i.test(type) ? 'text/plain; charset=utf-8' : type;
+    return URL.createObjectURL(new Blob([copy], { type: inert }));
+  }
+
+  /**
+   * Keep a blob the app's script made an address for. It is the page's memory, so there is
+   * a most of them and a most of their bytes together; past either the blob is not kept, and
+   * its address names nothing.
+   */
+  putRuntimeBlob(id: string, type: string, bytes: Uint8Array): boolean {
+    if (this.disposed || !/^[\w-]{1,64}$/.test(id) || this.runtimeBlobs.has(id)) return false;
+    if (this.runtimeBlobs.size >= MAX_RUNTIME_BLOBS || this.runtimeBlobBytes + bytes.byteLength > MAX_RUNTIME_BLOB_BYTES) return false;
+    // Its type as a type and nothing else: it ends up in an address.
+    const clean = /^[\w.+-]+\/[\w.+-]+$/.test(type) ? type.toLowerCase() : 'application/octet-stream';
+    this.runtimeBlobs.set(id, { bytes, type: clean, url: null });
+    this.runtimeBlobBytes += bytes.byteLength;
+    return true;
+  }
+
+  /** The address the page loads a kept blob from, minted when first asked for; null for one that is not kept. */
+  getRuntimeBlobUrl(id: string): string | null {
+    const kept = this.runtimeBlobs.get(id);
+    if (!kept || this.disposed || typeof URL.createObjectURL !== 'function') return null;
+    if (kept.url === null) kept.url = this.mintUrl(kept.bytes, kept.type);
+    return kept.url;
+  }
+
+  /** Let a kept blob go (`URL.revokeObjectURL`). */
+  dropRuntimeBlob(id: string): void {
+    const kept = this.runtimeBlobs.get(id);
+    if (!kept) return;
+    this.runtimeBlobs.delete(id);
+    this.runtimeBlobBytes -= kept.bytes.byteLength;
+    if (kept.url && kept.url.startsWith('blob:') && typeof URL.revokeObjectURL === 'function') {
+      try {
+        URL.revokeObjectURL(kept.url);
+      } catch {
+        // Ignore revoke errors
+      }
+    }
   }
 
   /**
@@ -426,6 +474,7 @@ export class ContainerArchive {
       }
     }
     this.blobUrls.clear();
+    for (const id of [...this.runtimeBlobs.keys()]) this.dropRuntimeBlob(id);
     this.binaryCache.clear();
     this.zipArchive?.release();
   }

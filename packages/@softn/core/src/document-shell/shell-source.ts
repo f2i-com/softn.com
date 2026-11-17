@@ -2425,8 +2425,8 @@ var __softnShell = (function (win) {
     get offsetLeft() { var box = measured(this); return box ? Math.round(box.x) : 0; }
     get clientWidth() { var box = measured(this); return box ? Math.round(box.w) : 0; }
     get clientHeight() { var box = measured(this); return box ? Math.round(box.h) : 0; }
-    get scrollWidth() { var box = measured(this); return box ? Math.round(box.w) : 0; }
-    get scrollHeight() { var box = measured(this); return box ? Math.round(box.h) : 0; }
+    get scrollWidth() { var box = measured(this); return box ? Math.round(box.sw !== undefined ? box.sw : box.w) : 0; }
+    get scrollHeight() { var box = measured(this); return box ? Math.round(box.sh !== undefined ? box.sh : box.h) : 0; }
   }
   mix(Element.prototype, PARENT_METHODS);
   mix(Element.prototype, CHILD_METHODS);
@@ -4228,6 +4228,10 @@ var __softnShell = (function (win) {
       var r = node && rec(node);
       if (!r) continue;
       r.box = { x: list[i][1], y: list[i][2], w: list[i][3], h: list[i][4] };
+      // How wide and tall what it holds is, where the host measured that too: a box that
+      // scrolls holds more than it shows, and scrollHeight is the first of the two.
+      if (typeof list[i][5] === 'number') r.box.sw = list[i][5];
+      if (typeof list[i][6] === 'number') r.box.sh = list[i][6];
       changed.push(node);
     }
     for (var o = 0; o < resizeObservers.slice().length; o++) {
