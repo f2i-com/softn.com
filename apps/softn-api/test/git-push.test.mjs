@@ -1534,6 +1534,32 @@ test('an app in a folder of a larger repository: the refusal names the folder, a
   assert.equal((await versions(app.app.slug)).length, 4);
 });
 
+// A folder of plain web files with a page at its top is an app with no manifest (a web container), which the upload
+// form and the API take as it is. A push of one was refused for having no manifest.json in its top folder.
+test('a site with a page at its top and no manifest is published by a push, as it is by an upload', skip, async () => {
+  const app = await published('plain-site');
+  const dir = path.join(scratch, `repo-${++made}`);
+  fs.mkdirSync(dir);
+  git(dir, ['init', '-q', '-b', 'main', '.']);
+  write(dir, { 'index.html': '<!doctype html><html><head><title>Plain Site</title></head><body><p>a site</p><script src="./app.js"></script></body></html>\n', 'app.js': 'document.title = "ran";\n', 'assets/style.css': 'p { color: teal; }\n' });
+  commit(dir, 'A plain site');
+  const site = push(dir, app.app.slug, app.editKey);
+  assert.equal(site.status, 0, site.out);
+  assert.match(site.out, /Published version 2/, site.out);
+  assert.deepEqual(Object.keys(await bundleFiles(app.app.slug)).sort(), ['app.js', 'assets/style.css', 'index.html']);
+  // Still an app's folder that is asked for: files and no page is not one.
+  fs.rmSync(path.join(dir, 'index.html'));
+  commit(dir, 'No page');
+  assert.match(push(dir, app.app.slug, app.editKey).out, /This commit has no manifest\.json in its top folder, which is where an app has it\./);
+  // A page of some other name at the top, beside a folder that is an app of its own (a repository's README.html next
+  // to app/): the folder is what was meant, and is said, as it was before any page was taken.
+  write(dir, { 'README.html': '<!doctype html><p>about this repository</p>\n', 'app/manifest.json': JSON.stringify(MANIFEST), 'app/ui/main.ui': '<App />\n' });
+  commit(dir, 'A readme beside the app');
+  const beside = push(dir, app.app.slug, app.editKey);
+  assert.match(beside.out, /no manifest\.json in its top folder, and app\/ has one\./, beside.out);
+  assert.match(beside.out, /git push softn "HEAD:app:refs\/heads\/main"/, beside.out);
+});
+
 test('a folder name that is not plain is named, and never put in a command to paste', skip, async () => {
   const app = await published('folder-name');
   const blob = Buffer.from(JSON.stringify(MANIFEST));

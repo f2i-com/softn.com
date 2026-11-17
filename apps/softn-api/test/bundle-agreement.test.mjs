@@ -360,6 +360,16 @@ test('publishing and a new version answer a refused archive with the reason', sk
     assert.equal(detail.manifest?.main, 'main.ui');
     const play = await fetch(`${s.base}/play/${lit.json.app.slug}`);
     assert.match(await play.text(), /background:#f5f5f8/);
+
+    // A bundle zipped as its folder is published and runs, and the same two readers find
+    // its manifest inside the folder. Asked for by the bare name, it had none to either:
+    // the app's page showed no summary, and the play page booted dark for a light app.
+    const folder = new FormData();
+    folder.append('bundle', new Blob([craftZip([{ name: 'app/manifest.json', data: manifest('Folder Notes', { config: { theme: { mode: 'light' } } }) }, { ...MAIN, name: `app/${MAIN.name}` }])]), 'folder.softn');
+    const wrapped = await s.api('POST', '/api/apps', { body: folder, headers: { 'X-Admin-Key': s.adminKey } });
+    assert.equal(wrapped.status, 201, wrapped.text);
+    assert.equal((await s.api('GET', `/api/apps/${wrapped.json.app.slug}`)).json.app.manifest?.main, 'main.ui');
+    assert.match(await (await fetch(`${s.base}/play/${wrapped.json.app.slug}`)).text(), /background:#f5f5f8/);
   } finally {
     s.stop();
   }

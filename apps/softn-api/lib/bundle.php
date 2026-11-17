@@ -141,7 +141,8 @@ final class Bundle
                 if ($secrets !== null && ($kind = Secrets::named($name)) !== null) throw new SecretFound($name, $kind);
             }
             // Normalize a single top-level wrapper folder (e.g. `dist/index.html`) when root lacks manifest/entry.
-            if (!isset($files['manifest.json']) && !isset($files['index.html']) && !isset($files['app.html']) && $files !== []) {
+            // Not ui/: with a main.ui in it that is a SoftN bundle's own folder of pages, as the runtime reads it.
+            if (!isset($files['manifest.json']) && !isset($files['index.html']) && !isset($files['app.html']) && !isset($files['ui/main.ui']) && $files !== []) {
                 // As strings: PHP makes an all-digit name ("2024") an integer key, and this
                 // file is strict about types, so such a bundle was answered with a 500.
                 $fileNames = array_map('strval', array_keys($files));
@@ -278,6 +279,31 @@ final class Bundle
      * bundle every browser runs. One is dropped here too, and only one, as
      * there.
      */
+    /**
+     * The name of an archive's manifest.json as it is in the archive: at the top, or inside the one folder the whole
+     * archive was zipped as, which is the folder inspect() reads through. Null when it has none. For a reader that
+     * opens a stored bundle for its manifest alone: asked for by the bare name, a bundle zipped as its folder had no
+     * manifest to such a reader, though it was published and runs.
+     */
+    public static function manifestName(ZipArchive $zip): ?string
+    {
+        if ($zip->locateName('manifest.json') !== false) return 'manifest.json';
+        foreach (['index.html', 'app.html', 'ui/main.ui'] as $entry) if ($zip->locateName($entry) !== false) return null;
+        $prefix = null;
+        $count = min($zip->numFiles, 20000);
+        for ($i = 0; $i < $count; $i++) {
+            $name = (string) $zip->getNameIndex($i);
+            // A folder's own entry is not a file of the archive.
+            if ($name === '' || str_ends_with($name, '/')) continue;
+            $slash = strpos($name, '/');
+            if ($slash === false || $slash === 0) return null;
+            $head = substr($name, 0, $slash + 1);
+            if ($prefix === null) $prefix = $head;
+            elseif ($prefix !== $head) return null;
+        }
+        return $prefix !== null && $zip->locateName($prefix . 'manifest.json') !== false ? $prefix . 'manifest.json' : null;
+    }
+
     public static function jsonText(string $bytes): string
     {
         return str_starts_with($bytes, "\xEF\xBB\xBF") ? substr($bytes, 3) : $bytes;

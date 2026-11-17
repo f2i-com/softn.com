@@ -307,7 +307,9 @@ final class Apps
             $ver = self::version($slug, $version);
             $zip = new ZipArchive();
             if ($zip->open(self::dir($slug) . '/' . $ver['file'], ZipArchive::RDONLY) !== true) return null;
-            $text = $zip->getFromName('manifest.json');
+            // Where the bundle keeps it: at the top, or in the folder the bundle was zipped as.
+            $name = Bundle::manifestName($zip);
+            $text = $name === null ? false : $zip->getFromName($name, Bundle::MAX_MANIFEST_BYTES);
             $zip->close();
             $m = is_string($text) ? json_decode(Bundle::jsonText($text), true) : null;
             if (!is_array($m)) return null;

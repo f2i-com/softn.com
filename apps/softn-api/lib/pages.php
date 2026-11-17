@@ -196,9 +196,12 @@ final class Pages
             // folder for an app that has none, on a page view.
             if ($zip->open(Config::dataDir() . '/apps/' . $slug . '/' . (string) $ver['file'], ZipArchive::RDONLY) !== true) return null;
             try {
-                $stat = $zip->statName('manifest.json');
+                // Where the bundle keeps it: at the top, or in the folder the bundle was zipped as.
+                $name = Bundle::manifestName($zip);
+                if ($name === null) return null;
+                $stat = $zip->statName($name);
                 if ($stat === false || (int) $stat['size'] > Bundle::MAX_MANIFEST_BYTES) return null;
-                $text = $zip->getFromName('manifest.json', Bundle::MAX_MANIFEST_BYTES);
+                $text = $zip->getFromName($name, Bundle::MAX_MANIFEST_BYTES);
             } finally {
                 $zip->close();
             }

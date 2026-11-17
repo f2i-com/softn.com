@@ -978,8 +978,18 @@ final class GitRemote
     private static function requireManifest(GitPack $pack, string $tree): void
     {
         if ($pack->type($tree) !== 'tree' || $pack->size($tree) > self::MAX_TREE) return;
-        foreach (self::entries($pack, $tree) as [$mode, $name]) if ($name === 'manifest.json' && !self::isFolder($mode)) return;
+        // A manifest, or a page: a folder of plain web files with a page at its top is an app with no manifest (a
+        // web container), which every other way of publishing takes. It was refused here for having none.
+        $page = false;
+        foreach (self::entries($pack, $tree) as [$mode, $name]) {
+            if (self::isFolder($mode)) continue;
+            if ($name === 'manifest.json' || $name === 'index.html' || $name === 'app.html') return;
+            if (preg_match('/\.html?$/i', $name) === 1) $page = true;
+        }
         $folders = self::appFolders($pack, $tree);
+        // A page of some other name at the top is the app's page when no folder below is an app of its own. Beside
+        // one that is (a repository's README.html next to app/), the folder is what was meant, and is said.
+        if ($page && $folders === []) return;
         if ($folders === []) throw new GitRefused('This commit has no manifest.json in its top folder, which is where an app has it.');
         $words = 'This commit has no manifest.json in its top folder, and ' . implode(', ', array_map(static fn($f) => "$f/", array_slice($folders, 0, 3))) . (count($folders) > 1 ? ' have one.' : ' has one.');
         // A folder's name goes into a command to be pasted, inside double quotes, so only a plain one: no $, `, \, ",
