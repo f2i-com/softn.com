@@ -1,0 +1,6 @@
+:root { font-family: system-ui, sans-serif; }
+body { margin: 0; padding: 16px; }
+.app { max-width: 640px; min-height: 1400px; }
+.agreed { outline: 2px solid rgb(0, 128, 0); }
+#count { font-weight: 700; }
+.dark #count { color: rgb(200, 200, 0); }
