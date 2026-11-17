@@ -53,6 +53,8 @@ function App() {
   const [armed, setArmed] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [at, setAt] = useState(null);
+  const [sprite, setSprite] = useState('loading');
+  const [blobUrl, setBlobUrl] = useState('');
   const [focused, setFocused] = useState(false);
   const [data, setData] = useState('loading');
   const [measured, setMeasured] = useState('no');
@@ -73,6 +75,17 @@ function App() {
     return () => { live = false; };
   }, []);
   useLayoutEffect(() => { if (box.current && typeof box.current.getBoundingClientRect === 'function') setMeasured('yes'); }, []);
+  // As a list of messages keeps itself at its end.
+  useEffect(() => { scroller.current.scrollTop = scroller.current.scrollHeight; }, []);
+  useEffect(() => {
+    const image = new Image();
+    image.onload = () => setSprite(image.naturalWidth + 'x' + image.naturalHeight);
+    image.onerror = () => setSprite('failed');
+    image.src = '/dot.png';
+    let address = '';
+    fetch('/dot.png').then((r) => r.blob()).then((blob) => { address = URL.createObjectURL(blob); setBlobUrl(address); });
+    return () => { if (address) URL.revokeObjectURL(address); };
+  }, []);
   useEffect(() => {
     const onPop = () => setPath(location.pathname);
     window.addEventListener('popstate', onPop);
@@ -146,7 +159,10 @@ function App() {
         <a id="home-link" href="/" onClick={(e) => { e.preventDefault(); history.pushState({}, '', '/'); window.scrollTo(0, 0); setPath(location.pathname); }}>Home</a>
         <a id="team-link" href="/team" onClick={(e) => { e.preventDefault(); history.pushState({}, '', '/team'); window.scrollTo(0, 0); setPath(location.pathname); }}>Team</a>
         <span id="path">{path}</span>
-        <button id="to-end" type="button" onClick={() => { scroller.current.scrollTop = 100000; }}>To the end</button>
+        <button id="to-end" type="button" onClick={() => { scroller.current.scrollTop = scroller.current.scrollHeight; }}>To the end</button>
+        {/* A picture loaded before it is anywhere on the page, and one drawn from bytes the script holds. */}
+        <span id="sprite">{sprite}</span>
+        {blobUrl ? <img id="from-blob" src={blobUrl} alt="" width="12" height="12" /> : null}
         <button id="to-line" type="button" onClick={() => document.getElementById('line-3').scrollIntoView()}>To line 3</button>
         <div id="scroller" ref={scroller} style={{ height: 120, overflow: 'auto' }}>
           {Array.from({ length: 25 }, (_, i) => <p key={i} id={'line-' + i} className="static">Static line {i}</p>)}

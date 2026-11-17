@@ -25,6 +25,8 @@ const armed = ref(false);
 const caught = ref('');
 const hovered = ref(false);
 const at = ref(null);
+const sprite = ref('loading');
+const blobUrl = ref('');
 const focused = ref(false);
 const data = ref('loading');
 const measured = ref('no');
@@ -47,6 +49,13 @@ onMounted(() => {
   if (box.value && typeof box.value.getBoundingClientRect === 'function') measured.value = 'yes';
   fetch('/data.json').then((r) => r.json()).then((json) => { data.value = json.greeting; }, (e) => { data.value = 'failed: ' + e.message; });
   window.addEventListener('popstate', onPop);
+  // As a list of messages keeps itself at its end.
+  scroller.value.scrollTop = scroller.value.scrollHeight;
+  const image = new Image();
+  image.onload = () => { sprite.value = image.naturalWidth + 'x' + image.naturalHeight; };
+  image.onerror = () => { sprite.value = 'failed'; };
+  image.src = '/dot.png';
+  fetch('/dot.png').then((r) => r.blob()).then((blob) => { blobUrl.value = URL.createObjectURL(blob); });
 });
 onUnmounted(() => window.removeEventListener('popstate', onPop));
 
@@ -131,7 +140,10 @@ function toLine() {
     <a id="home-link" href="/" @click.prevent="show('/')">Home</a>
     <a id="team-link" href="/team" @click.prevent="show('/team')">Team</a>
     <span id="path">{{ path }}</span>
-    <button id="to-end" type="button" @click="scroller.scrollTop = 100000">To the end</button>
+    <button id="to-end" type="button" @click="scroller.scrollTop = scroller.scrollHeight">To the end</button>
+    <!-- A picture loaded before it is anywhere on the page, and one drawn from bytes the script holds. -->
+    <span id="sprite">{{ sprite }}</span>
+    <img v-if="blobUrl" id="from-blob" :src="blobUrl" alt="" width="12" height="12">
     <button id="to-line" type="button" @click="toLine">To line 3</button>
     <span id="ticked">{{ ticked }}</span>
     <button id="toggle" type="button" @click="shown = !shown">Toggle</button>

@@ -92,6 +92,12 @@ for (const framework of ['react', 'vue'] as const) {
       expect(circle?.width).toBeGreaterThan(0);
       await expect.poll(async () => (await seeIn(page, '#mark'))?.loaded, { message: 'the image Vite wrote into the script loads' }).toBe(true);
       await expect.poll(async () => (await seeIn(page, '#logo'))?.loaded, { message: 'the image from public/ loads' }).toBe(true);
+      // A picture the script loads before it is anywhere on the page (new Image(), a game's
+      // sprites): its onload runs, with the picture's size. And one drawn from bytes the
+      // script holds, through an address it made for them (URL.createObjectURL).
+      await shows(page, '#sprite', '1x1');
+      await expect.poll(async () => (await seeIn(page, '#from-blob'))?.loaded, { message: 'the image at a blob address loads' }).toBe(true);
+      expect((await seeIn(page, '#from-blob'))?.attrs.src).toMatch(/^blob:http/);
 
       // Real clicks.
       await clickIn(page, '#inc');
