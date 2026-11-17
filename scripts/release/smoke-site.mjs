@@ -147,6 +147,16 @@ const json = (text) => {
   }
 };
 
+/**
+ * Where the builds put what they emit: one folder for the site and each of its apps. (Each
+ * had a folder of its own, `/assets/`, `/web/assets/`, `/play/assets/`, and this looked in
+ * those: once the builds shared a folder, a sound archive failed here for having nothing
+ * where nothing is written any more.)
+ */
+const BUILT = '/shared/assets/';
+/** The first built file of one of `kinds` (`js`, `js|css`) a page names. */
+const builtFile = (page, kinds) => page.match(new RegExp(`(?:src|href)="(${BUILT}[^"]+\\.(?:${kinds}))"`))?.[1];
+
 await waitForServer();
 
 // ── The pages ──────────────────────────────────────────────────────────
@@ -239,9 +249,9 @@ if (firstSlug) {
     },
   });
   if (play) {
-    const asset = play.match(/(?:src|href)="(\/play\/assets\/[^"]+\.js)"/)?.[1];
+    const asset = builtFile(play, 'js');
     if (asset) await check('play shell asset', asset, { accept: '*/*', isolated: true, type: 'text/javascript' });
-    else failures.push('play shell asset: the play page references nothing under /play/assets/');
+    else failures.push(`play shell asset: the play page references nothing under ${BUILT}`);
   }
 }
 await check('play page for an unknown app is a 404', '/play/no-such-app-here', { status: 404, type: 'text/html' });
@@ -267,18 +277,21 @@ if (firstDemo) {
   });
 }
 if (landing) {
-  const asset = landing.match(/(?:src|href)="(\/assets\/[^"]+\.(?:js|css))"/)?.[1];
+  const asset = builtFile(landing, 'js|css');
   if (asset) {
     await check('hashed asset', asset, { accept: '*/*', isolated: true, type: asset.endsWith('.css') ? 'text/css' : 'text/javascript' });
   } else {
-    failures.push('hashed asset: index.html references nothing under /assets/');
+    failures.push(`hashed asset: index.html references nothing under ${BUILT}`);
   }
 }
 if (runtime) {
-  const asset = runtime.match(/(?:src|href)="(\/web\/assets\/[^"]+\.js)"/)?.[1];
+  const asset = builtFile(runtime, 'js');
   if (asset) await check('runtime asset', asset, { accept: '*/*', isolated: true, type: 'text/javascript' });
+  else failures.push(`runtime asset: /web/ references nothing under ${BUILT}`);
 }
-await check('missing asset is a 404, not a shell', '/assets/does-not-exist.js', { status: 404 });
+await check('missing asset is a 404, not a shell', `${BUILT}does-not-exist.js`, { status: 404 });
+// Where the builds wrote before they shared a folder: nothing is there, and nothing answers for it.
+await check('the folders the builds no longer write are not served', '/assets/does-not-exist.js', { status: 404 });
 // A file that is there: every built root has data/README.txt (package-site.mjs
 // refuses to package one without it). Asking for data/directory.sqlite, which
 // the root never holds, was a 404 from any server at all, refusing or not.
