@@ -80,6 +80,8 @@ export const SHELL_GLOBAL_NAMES: ReadonlySet<string> = new Set([
   'DragEvent',
   'DataTransfer',
   'SVGElement',
+  'ShadowRoot',
+  'HTMLSlotElement',
 ]);
 
 /**

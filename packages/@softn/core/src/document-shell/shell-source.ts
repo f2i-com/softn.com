@@ -84,8 +84,16 @@ var __softnShell = (function (win) {
   function isConnected(r) {
     while (r) {
       if (r.type === 9) return true;
-      r = r.parent ? rec(r.parent) : null;
+      // A shadow root is on the page when the element it is attached to is.
+      r = r.parent ? rec(r.parent) : r.host ? rec(r.host) : null;
     }
+    return false;
+  }
+
+  // Whether a node is inside a shadow tree: what is in one is not the document's to find
+  // by id, nor a document-wide query's.
+  function inShadow(r) {
+    for (; r; r = r.parent ? rec(r.parent) : null) if (r.host) return true;
     return false;
   }
 
@@ -127,7 +135,7 @@ var __softnShell = (function (win) {
     if (!r.island) BY_ID[r.id] = r.node;
     if (r.type === 1) {
       var id = getAttr(r, 'id');
-      if (id) idIndex(id, r.node, true);
+      if (id && !inShadow(r)) idIndex(id, r.node, true);
     }
     if (r.type === 1 && !r.island) {
       // An element of a drawing or of a formula is told with which it is: a host that makes
@@ -141,11 +149,20 @@ var __softnShell = (function (win) {
       // before it puts either on the page) or before it was taken off and put back.
       if (r.chosen !== undefined) ops.push(['p', r.id, 'chosen', r.chosen]);
       else if (r.selectedIndex !== undefined) ops.push(['p', r.id, 'selectedIndex', r.selectedIndex]);
+      // Its shadow tree, with it: the root, then what is in the root.
+      if (r.shadow) announceShadow(r);
     } else if (r.type === 3) {
       ops.push(['x', r.id, r.text]);
     } else if (r.type === 8 && !r.island) {
       ops.push(['m', r.id]);
     }
+  }
+
+  function announceShadow(r) {
+    var sr = rec(r.shadow);
+    ops.push(['sr', r.id, sr.id]);
+    for (var i = 0; i < sr.kids.length; i++) announce(rec(sr.kids[i]));
+    childrenChanged(sr);
   }
 
   function kidIds(r) {
@@ -205,6 +222,8 @@ var __softnShell = (function (win) {
   function kidsChanged(r) {
     r.kidsVersion = (r.kidsVersion || 0) + 1;
     treeVersion++;
+    // The children of an element with a shadow tree are what its slots are filled with.
+    if (r.shadow) slotsChanged(r);
   }
 
   function propChanged(r, name, value) {
@@ -239,6 +258,10 @@ var __softnShell = (function (win) {
       if (id) idIndex(id, r.node, false);
     }
     for (var i = 0; i < r.kids.length; i++) forget(rec(r.kids[i]));
+    if (r.shadow) {
+      var sr = rec(r.shadow);
+      for (var s = 0; s < sr.kids.length; s++) forget(rec(sr.kids[s]));
+    }
   }
 
   function newRecord(type, id) {
@@ -1810,12 +1833,15 @@ var __softnShell = (function (win) {
     Object.defineProperty(this, '_stop', { value: 0, writable: true, enumerable: false });
     Object.defineProperty(this, '_captureStop', { value: false, writable: true, enumerable: false });
     Object.defineProperty(this, '_passive', { value: false, writable: true, enumerable: false });
+    Object.defineProperty(this, '_path', { value: null, writable: true, enumerable: false });
   }
   // A passive listener's preventDefault() does nothing, as a browser has it.
   Event.prototype.preventDefault = function () { if (this.cancelable && !this._passive) this.defaultPrevented = true; };
   Event.prototype.stopPropagation = function () { if (this._stop < 1) this._stop = 1; };
   Event.prototype.stopImmediatePropagation = function () { this._stop = 2; };
   Event.prototype.composedPath = function () {
+    // While it is being heard: the way it takes, out of any shadow tree it leaves.
+    if (this._path) return this._path.slice();
     var path = [];
     for (var n = this.target; n; n = rec(n).parent) path.push(n);
     return path;
@@ -1939,17 +1965,45 @@ var __softnShell = (function (win) {
 
   function dispatch(target, event) {
     if (!(event instanceof Event)) throw new TypeError('Failed to execute \'dispatchEvent\': parameter 1 is not of type \'Event\'.');
+    // The way the event takes, and what its target reads as at each step. An event that
+    // leaves a shadow tree (one that is composed: a click, a key) goes on from the tree's
+    // host, and from there on its target is the host: what is inside a shadow tree is not
+    // shown to what is outside it.
     var path = [];
-    for (var n = target; n; n = rec(n).parent) path.push(n);
+    var seenAs = [];
+    var shown = target;
+    for (var n = target; n; ) {
+      path.push(n);
+      seenAs.push(shown);
+      var nr = rec(n);
+      if (nr.parent) n = nr.parent;
+      else if (nr.host && event.composed) { n = nr.host; shown = n; }
+      else n = null;
+    }
+    event._path = path;
     event.target = target;
     event._stop = 0;
-    for (var i = path.length - 1; i > 0 && event._stop === 0; i--) { event.eventPhase = 1; invoke(path[i], event, true); }
+    for (var i = path.length - 1; i > 0 && event._stop === 0; i--) {
+      event.target = seenAs[i];
+      event.eventPhase = seenAs[i] === path[i] ? 2 : 1;
+      invoke(path[i], event, true);
+    }
+    event.target = target;
     // At the target, its capture listeners run first, then the rest, as
     // browsers run them now; a stop in the first keeps the rest from running.
     if (event._stop === 0) { event.eventPhase = 2; invoke(target, event, true); }
     event._captureStop = event._stop !== 0;
     if (event._stop === 0) { event.eventPhase = 2; invoke(target, event, false); }
-    if (event.bubbles) for (var j = 1; j < path.length && event._stop === 0; j++) { event.eventPhase = 3; invoke(path[j], event, false); }
+    for (var j = 1; j < path.length && event._stop === 0; j++) {
+      // A host is the target of what comes out of its tree: it hears it whether or not it bubbles.
+      var atHost = seenAs[j] === path[j];
+      if (!event.bubbles && !atHost) continue;
+      event.target = seenAs[j];
+      event.eventPhase = atHost ? 2 : 3;
+      invoke(path[j], event, false);
+    }
+    event.target = target;
+    event._path = null;
     event.eventPhase = 0;
     event.currentTarget = null;
     return !event.defaultPrevented;
@@ -2043,10 +2097,10 @@ var __softnShell = (function (win) {
   // An element by id in the tree node is in: the page, or a part of it the
   // code holds apart.
   function findById(node, id) {
-    var r = rec(node);
-    if (isConnected(r)) return doc.getElementById(id);
     var root = node;
     while (rec(root).parent) root = rec(root).parent;
+    // In the document, the document's own index. In a shadow tree or a tree apart, that tree.
+    if (rec(root).type === 9) return doc.getElementById(id);
     var found = null;
     if (rec(root).type === 1 && getAttr(rec(root), 'id') === id) return root;
     walk(rec(root), function (n, k) { if (getAttr(k, 'id') === id) { found = n; return false; } return true; });
@@ -2122,7 +2176,13 @@ var __softnShell = (function (win) {
     }
     hasChildNodes() { return rec(this).kids.length > 0; }
     contains(other) { return !!other && !!rec(other) && contains(this, other); }
-    getRootNode() { var n = this; while (rec(n).parent) n = rec(n).parent; return n; }
+    getRootNode(options) {
+      var n = this;
+      while (rec(n).parent) n = rec(n).parent;
+      // Through a shadow root, when asked for the root of everything.
+      if (options && options.composed && rec(n).host) return rec(n).host.getRootNode(options);
+      return n;
+    }
     cloneNode(deep) { return clone(this, !!deep); }
     isSameNode(other) { return other === this; }
     // Adjacent texts made one, and empty ones taken out.
@@ -3194,6 +3254,102 @@ var __softnShell = (function (win) {
   }
   mix(DocumentFragment.prototype, PARENT_METHODS);
   defineGetters(DocumentFragment.prototype, PARENT_GETTERS);
+
+  // A shadow root: a tree of its own attached to an element, which the page draws in the
+  // element's place. A host that makes real elements (a web container) attaches a real one,
+  // so its styles are its own and its slots are filled by the browser; the code here keeps
+  // the tree, and what code asks of it.
+  class ShadowRoot extends DocumentFragment {
+    get host() { return rec(this).host; }
+    get mode() { return rec(this).mode; }
+    get delegatesFocus() { return !!rec(this).delegatesFocus; }
+    get activeElement() { return null; }
+    get styleSheets() { return nodeList([]); }
+    get adoptedStyleSheets() { var r = rec(this); return r.sheets || (r.sheets = []); }
+    set adoptedStyleSheets(list) { rec(this).sheets = Array.prototype.slice.call(list || []); }
+    get innerHTML() {
+      var r = rec(this);
+      var out = '';
+      for (var i = 0; i < r.kids.length; i++) out += serialize(rec(r.kids[i]));
+      return out;
+    }
+    set innerHTML(html) { replaceAllChildren(this, parseHTML(html === null || html === undefined ? '' : html, rec(this).host)); }
+  }
+  // The elements a shadow root may be attached to, beside those with a name of the page's own.
+  var SHADOW_HOSTS = set('article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span');
+  function attachShadow(host, init) {
+    var hr = rec(host);
+    if (!init || (init.mode !== 'open' && init.mode !== 'closed')) {
+      throw new TypeError('Failed to execute \'attachShadow\' on \'Element\': The provided value is not a valid enum value of type ShadowRootMode.');
+    }
+    if (hr.ns || hr.island || !(SHADOW_HOSTS[hr.tag] || /^[a-z][a-z0-9._]*-/.test(hr.tag))) throw domError('NotSupportedError', 'This element does not support attachShadow');
+    if (hr.shadow) throw domError('NotSupportedError', 'Shadow root cannot be created on a host which already hosts a shadow tree.');
+    var node = Object.create(ShadowRoot.prototype);
+    var r = newRecord(11);
+    r.host = host;
+    r.mode = init.mode;
+    r.delegatesFocus = !!init.delegatesFocus;
+    register(node, r);
+    hr.shadow = node;
+    if (isConnected(hr)) ops.push(['sr', hr.id, r.id]);
+    return node;
+  }
+  // Only for a host that draws shadow trees (it says so in the seed): elsewhere an element
+  // has no attachShadow, and code that asks whether it has is told the truth.
+  function enableShadowTrees() {
+    Element.prototype.attachShadow = function (init) { return attachShadow(this, init); };
+    Object.defineProperty(Element.prototype, 'shadowRoot', {
+      configurable: true,
+      get: function () { var s = rec(this).shadow; return s && rec(s).mode === 'open' ? s : null; },
+    });
+    Object.defineProperty(Element.prototype, 'assignedSlot', {
+      configurable: true,
+      get: function () {
+        var p = rec(this).parent;
+        var root = p && rec(p).shadow;
+        if (!root || rec(root).mode !== 'open') return null;
+        var name = getAttr(rec(this), 'slot') || '';
+        var slots = query(root, 'slot', true);
+        for (var i = 0; i < slots.length; i++) if ((getAttr(rec(slots[i]), 'name') || '') === name) return slots[i];
+        return null;
+      },
+    });
+  }
+
+  // <slot>: what the host's own children fill it with. The page does the filling; this
+  // answers code that asks which nodes those are.
+  class HTMLSlotElement extends HTMLElement {
+    assignedNodes(options) {
+      var root = this.getRootNode();
+      var host = rec(root).host;
+      var mine = [];
+      if (host) {
+        var name = getAttr(rec(this), 'name') || '';
+        var kids = rec(host).kids;
+        for (var i = 0; i < kids.length; i++) {
+          var k = rec(kids[i]);
+          if (k.type === 1 ? (getAttr(k, 'slot') || '') === name : k.type === 3 && name === '') mine.push(kids[i]);
+        }
+      }
+      // With nothing given it, a slot shows what is written inside it.
+      if (mine.length === 0 && options && options.flatten) return rec(this).kids.slice();
+      return mine;
+    }
+    assignedElements(options) { return this.assignedNodes(options).filter(function (n) { return rec(n).type === 1; }); }
+    assign() {}
+  }
+  ELEMENT_CLASSES.slot = HTMLSlotElement;
+  // The children of a shadow host changed: its slots say so, once, after the code has run.
+  function slotsChanged(hostRecord) {
+    if (hostRecord.slotsDue || !hostRecord.shadow) return;
+    hostRecord.slotsDue = true;
+    queueMicrotask(function () {
+      hostRecord.slotsDue = false;
+      if (!hostRecord.shadow) return;
+      var slots = query(hostRecord.shadow, 'slot', true);
+      for (var i = 0; i < slots.length; i++) dispatch(slots[i], new Event('slotchange', { bubbles: true }));
+    });
+  }
 
   // A name createElement() refuses, as a browser does.
   function checkTagName(name) {
@@ -4464,6 +4620,7 @@ var __softnShell = (function (win) {
     entryAt = 0;
     if (seed.r && seed.r.length >= 32) randomKey = seed.r.slice(0, 32);
     if (seed.v) viewportChanged(seed.v);
+    if (seed.shadow) enableShadowTrees();
     ops = [];
     // What the markup itself listens for: its handlers, its dialogs.
     for (var heard in listening) ops.push(['l', heard]);
@@ -4548,6 +4705,9 @@ var __softnShell = (function (win) {
   });
   var OWN_EVENT_FIELDS = set('type target currentTarget bubbles cancelable defaultPrevented eventPhase isTrusted timeStamp srcElement cancelBubble returnValue');
   var NOT_BUBBLING = set('focus blur mouseenter mouseleave load error scroll toggle invalid');
+  // What stays inside the shadow tree it happened in, as a browser has it: the rest (a
+  // click, a key, the focus) is heard outside too, as an event on the tree's host.
+  var NOT_COMPOSED = set('change submit reset load error scroll scrollend toggle select close cancel invalid slotchange');
 
   // An event that happened on the page, on the element with this id (or on
   // the document): 1 when it was cancelled, 2 when it went no further.
@@ -4591,7 +4751,7 @@ var __softnShell = (function (win) {
       for (var p = path.length - 1; p >= 0; p--) target = seenElement(path[p], target);
     }
     var Kind = EVENT_KINDS[type] || Event;
-    var e = new Kind(type, { bubbles: !NOT_BUBBLING[type], cancelable: true });
+    var e = new Kind(type, { bubbles: !NOT_BUBBLING[type], cancelable: true, composed: !NOT_COMPOSED[type] });
     for (var key in props || {}) {
       if (OWN_EVENT_FIELDS[key]) continue;
       e[key] = props[key];
@@ -4732,7 +4892,7 @@ var __softnShell = (function (win) {
     MutationObserver: MutationObserver, ResizeObserver: ResizeObserver, IntersectionObserver: IntersectionObserver,
     matchMedia: matchMedia, history: history, HTMLOutputElement: HTMLOutputElement,
     HTMLTemplateElement: HTMLTemplateElement, HTMLDialogElement: HTMLDialogElement, DataTransfer: DataTransfer,
-    SVGElement: SVGElement,
+    SVGElement: SVGElement, ShadowRoot: ShadowRoot, HTMLSlotElement: HTMLSlotElement,
     viewport: function () { return viewport; },
   };
   return api;

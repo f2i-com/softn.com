@@ -510,6 +510,133 @@ describe('a click on a box', () => {
   });
 });
 
+describe('a shadow tree', () => {
+  // For a host that draws them (a web container says so in the seed). Elsewhere an
+  // element has no attachShadow, and code that asks is told the truth.
+  const SHADOW = { ...SEED, shadow: true };
+  const CARD = `
+    const cardEl = document.createElement('user-card');
+    cardEl.id = 'card';
+    cardEl.innerHTML = '<span slot="name" id="given">Ada</span><em id="rest">and the rest</em>';
+    const root = cardEl.attachShadow({ mode: 'open' });
+    root.innerHTML = '<style>:host { display: block }</style><p class="inner" id="inside"><slot name="name"></slot><button id="go">go</button><input id="field"></p><slot id="default"></slot>';
+    function place() { document.getElementById('list').appendChild(cardEl); }`;
+
+  it('is not offered by a host that does not draw one', async () => {
+    const doc = await page(`function ask() { const el = document.createElement('div'); return [typeof el.attachShadow, 'shadowRoot' in el, typeof ShadowRoot]; }`);
+    expect(doc.call('ask')).toEqual(['undefined', false, 'function']);
+  });
+
+  it('is told to the host with its element: the root, what is in it, and what is put in it later', async () => {
+    const doc = await page(`${CARD}
+      function grow() { const more = document.createElement('b'); more.id = 'more'; root.appendChild(more); return root.childNodes.length; }`, SHADOW);
+    doc.take();
+    doc.call('place');
+    const ops = doc.take();
+    const card = idOf(ops, 'card');
+    const told = ops.find((op) => op[0] === 'sr') as [string, number, number];
+    expect(told.slice(0, 2)).toEqual(['sr', card]);
+    const rootId = told[2];
+    // The element's own children are its own; the tree's are the root's.
+    const kids = (id: number) => (ops.find((op) => op[0] === 'c' && op[1] === id) as [string, number, number[]])[2];
+    expect(kids(card)).toEqual([idOf(ops, 'given'), idOf(ops, 'rest')]);
+    expect(kids(rootId).length).toBe(3);
+    expect(kids(rootId)).toContain(idOf(ops, 'inside'));
+    // Put in later, on the page: told as any element is.
+    expect(doc.call('grow')).toBe(4);
+    const later = doc.take();
+    expect(later.some((op) => op[0] === 'e' && (op[3] as Record<string, string>).id === 'more')).toBe(true);
+    expect((later.find((op) => op[0] === 'c' && op[1] === rootId) as [string, number, number[]])[2].length).toBe(4);
+  });
+
+  it('keeps what is in it out of the document’s reach, and in its own', async () => {
+    const doc = await page(`${CARD}
+      function read() {
+        place();
+        const inside = root.querySelector('.inner');
+        const closed = document.createElement('div');
+        const hidden = closed.attachShadow({ mode: 'closed' });
+        const refused = [];
+        for (const make of [() => cardEl.attachShadow({ mode: 'open' }), () => document.createElement('input').attachShadow({ mode: 'open' }), () => document.createElement('div').attachShadow({})]) {
+          try { make(); refused.push('made'); } catch (e) { refused.push(e.name); }
+        }
+        return [
+          document.querySelector('.inner') === null, document.getElementById('inside') === null, document.querySelectorAll('button').length,
+          root.getElementById('inside') === inside, cardEl.shadowRoot === root, root.host === cardEl, root.mode, root instanceof ShadowRoot, root instanceof DocumentFragment,
+          inside.getRootNode() === root, inside.getRootNode({ composed: true }) === document, inside.isConnected, cardEl.contains(inside),
+          closed.shadowRoot, hidden.mode, refused.join(','), cardEl.innerHTML.includes('inner'), root.innerHTML.startsWith('<style>'),
+        ];
+      }`, SHADOW);
+    expect(doc.call('read')).toEqual([
+      true, true, 1,
+      true, true, true, 'open', true, true,
+      true, true, true, false,
+      null, 'closed', 'NotSupportedError,NotSupportedError,TypeError', false, true,
+    ]);
+  });
+
+  it('lets an event that leaves it be heard outside as its host’s, and keeps one that does not inside', async () => {
+    const doc = await page(`${CARD}
+      place();
+      const heard = [];
+      const say = (where) => (e) => heard.push(where + ':' + e.type + ':' + (e.target.id || e.target.tagName) + ':' + e.eventPhase + ':' + e.composedPath().length);
+      const go = root.getElementById('go');
+      go.addEventListener('click', say('button'));
+      root.addEventListener('click', say('root'));
+      cardEl.addEventListener('click', say('host'));
+      document.addEventListener('click', say('document'));
+      document.addEventListener('click', say('capture'), true);
+      root.getElementById('field').addEventListener('change', say('field'));
+      root.addEventListener('change', say('root'));
+      cardEl.addEventListener('change', say('host'));
+      cardEl.addEventListener('focus', say('host'));
+      function read() { const out = heard.slice(); heard.length = 0; return out; }
+      function own() {
+        go.click();
+        root.getElementById('field').dispatchEvent(new Event('change', { bubbles: true }));
+        go.dispatchEvent(new CustomEvent('saved', { bubbles: true, composed: true }));
+        return read();
+      }
+      document.addEventListener('saved', say('document'));`, SHADOW);
+    const ops = doc.take();
+    // The code's own: a click leaves the tree, a change does not, and an event the code says leaves it does.
+    expect(doc.call('own')).toEqual([
+      'capture:click:card:1:8', 'button:click:go:2:8', 'root:click:go:3:8', 'host:click:card:2:8', 'document:click:card:3:8',
+      'field:change:field:2:3', 'root:change:field:3:3',
+      'document:saved:card:3:8',
+    ]);
+    // The person's, from the page: the same.
+    expect(doc.event(idOf(ops, 'go'), 'click')).toBe(0);
+    expect(doc.call('read')).toEqual(['capture:click:card:1:8', 'button:click:go:2:8', 'root:click:go:3:8', 'host:click:card:2:8', 'document:click:card:3:8']);
+    doc.event(idOf(ops, 'field'), 'change');
+    expect(doc.call('read')).toEqual(['field:change:field:2:3', 'root:change:field:3:3']);
+    // The focus does not bubble, and its host hears it all the same: it is the host's, seen from outside.
+    doc.event(idOf(ops, 'field'), 'focus');
+    expect(doc.call('read')).toEqual(['host:focus:card:2:8']);
+  });
+
+  it('answers which of the host’s children fill a slot, and says when they change', async () => {
+    const doc = await page(`${CARD}
+      place();
+      const changes = [];
+      root.addEventListener('slotchange', (e) => changes.push(e.target.id || e.target.getAttribute('name')));
+      function slots() {
+        const named = root.querySelector('slot[name=name]');
+        const rest = root.getElementById('default');
+        return [named instanceof HTMLSlotElement, named.assignedElements().map((n) => n.id).join(','), rest.assignedNodes().map((n) => n.id || n.nodeValue).join(','),
+          document.getElementById('given').assignedSlot === named, rest.assignedNodes({ flatten: true }).length];
+      }
+      function add() { cardEl.appendChild(document.createTextNode('more')); return root.getElementById('default').assignedNodes().length; }
+      function read() { return changes.slice(); }`, SHADOW);
+    expect(doc.call('slots')).toEqual([true, 'given', 'rest', true, 1]);
+    expect(doc.call('add')).toBe(2);
+    // Told after the code has run, once for each slot.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    engine!.callFunction('read', []);
+    expect(doc.call('read')).toEqual(['name', 'default']);
+  });
+});
+
 describe('what an element holds, as the host measured it', () => {
   // A box that scrolls holds more than it shows. scrollHeight was the box's own height, so a
   // list of messages that kept itself at its end (el.scrollTop = el.scrollHeight) had no
