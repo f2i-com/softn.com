@@ -15,14 +15,18 @@
 
 import { useMemo } from 'react';
 import { useFilesStore } from '../stores/filesStore';
-import { useProjectStore } from '../stores/projectStore';
+import { useProjectStore, type RetainedSource } from '../stores/projectStore';
 import type { AssetFile, ProjectFileNode } from '../types/builder';
 
 export function currentAssets(
   files: { assetFiles: Map<string, AssetFile>; nodes: Map<string, ProjectFileNode> },
-  project: { assets: AssetFile[]; source: { manifest: unknown } }
+  project: { assets: AssetFile[]; source: Pick<RetainedSource, 'manifest' | 'manifestBytes' | 'mainFileId'> }
 ): AssetFile[] {
-  if (project.source.manifest === null && files.assetFiles.size === 0) return project.assets;
+  // Adding backend settings to a project made here creates its first manifest.
+  // That operation does not migrate its old project-store assets to the file tree.
+  const { manifest, manifestBytes, mainFileId } = project.source;
+  const imported = manifest && (manifestBytes || mainFileId || manifest.main || manifest.entry);
+  if (!imported && files.assetFiles.size === 0) return project.assets;
   return [...files.assetFiles.entries()].map(([id, asset]) => ({ ...asset, bundlePath: files.nodes.get(id)?.path ?? asset.bundlePath }));
 }
 

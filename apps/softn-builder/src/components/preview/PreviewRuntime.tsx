@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
-import { createEphemeralXDBScope, SoftNWithXDB, type SoftNWithXDBProps, type XDBRecord } from '@softn/core';
+import { createEphemeralXDBScope, type SoftNWithXDBProps, type XDBRecord } from '@softn/core';
+import { ClassicPreviewRenderer } from '@softn/runtime-shell/ClassicPreviewRenderer';
 import type { CollectionDef, AssetFile } from '../../types/builder';
 import { createPreviewAssets } from '../../utils/previewBundle';
 
@@ -63,7 +64,7 @@ export function PreviewRuntime({ projectId, records, assets = EMPTY_ASSETS, ...p
   if (!session || session.projectId !== projectId || session.records !== records || !assetSession) return <>{props.loading}</>;
   // The problem list and the stop screen say what fails here, and Restart starts it
   // again: a bar's Reload would reload the Builder.
-  return <SoftNWithXDB {...props} key={session.scope.appId} appId={session.scope.appId}
+  return <ClassicPreviewRenderer {...props} key={session.scope.appId} appId={session.scope.appId}
     assetResolver={assetSession.resolver}
     functions={functions}
     failureNotices={false}

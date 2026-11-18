@@ -37,9 +37,9 @@
 import { Inflate, inflateSync } from 'fflate';
 
 export const MAX_ZIP_INPUT_BYTES = 200 * 1024 * 1024; // 200 MB
-const MAX_ZIP_ENTRIES = 10_000;
+export const MAX_ZIP_ENTRIES = 10_000;
 const MAX_ZIP_TOTAL_BYTES = 500 * 1024 * 1024; // 500 MB
-const MAX_ZIP_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+export const MAX_ZIP_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
 
 /**
  * How much of a deflate stream is inflated before what it has produced is

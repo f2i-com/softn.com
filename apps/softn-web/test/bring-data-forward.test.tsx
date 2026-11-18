@@ -99,6 +99,7 @@ describe('the offer on Home', () => {
           running={[]}
           onResume={vi.fn()}
           onOpenFile={vi.fn()}
+          onOpenFolder={vi.fn()}
           onOpenCached={vi.fn()}
           onRemove={vi.fn()}
           onExportData={vi.fn()}

@@ -3,7 +3,7 @@
  * first load. softn-web spreads these into its PWA's `globIgnores` and
  * `runtimeCaching`, so its precache is the shell and each app it opens is
  * installed by itself (apps/softn-web/src/lib/offlineInstall.ts); Studio and
- * the Builder take only the chunk group, and install everything they ship.
+ * the Builder install the shared full engine on demand as well.
  * docs/engineering/COMPONENT_LOADING.md has the whole policy; the build-graph
  * tests hold each app's manifest to it.
  *
@@ -11,8 +11,8 @@
  * registerRuntimeComponents() (@softn/components/lazy): the start-up set
  * eagerly, every other component as a loader, so a feature is a chunk of its
  * own that nothing imports statically. What is left in softn-web's precache
- * is the shell: the entry, what it imports statically, the engine and the
- * XDB module every app opens.
+ * is the shell: the entry, what it imports statically, and shared archive
+ * support. XDB is retained with the classic renderer.
  */
 
 /**
@@ -24,12 +24,9 @@
 export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games', 'wasm'];
 
 /**
- * The light component groups, each a chunk of its own like a feature, but
- * kept in softn-web's precache with the shell: they were in the shell until
- * 2026-10-22, and an app that uses one works offline as it did. A page
- * fetches the ones it draws (its first draw waits for them, a moment from the
- * precache), so a page that draws none parses none of their code. Not in
- * `featureChunks`, which the precache ignores.
+ * The light classic component groups. A classic page's first draw waits for
+ * the groups it uses. Its offline installer keeps those groups and their
+ * shared chunks using the production manifest (classic-assets.mjs).
  */
 export const componentGroupChunks = ['controls', 'feedback', 'data', 'display', 'navigation'];
 
@@ -43,8 +40,7 @@ export const componentGroupChunks = ['controls', 'feedback', 'data', 'display', 
  * zipp_torch.wasm is a worker asset); `wasm-host-*` what runs an app's
  * WebAssembly modules (softn.wasm, <WasmApp>), whose worker is made from it
  * as a `blob:`. Each is a dynamic import in core, so each is a chunk of its
- * own. `xdb-*` alone — the XDB module every app opens —
- * is not in this list and stays precached.
+ * own. The XDB loader itself is part of the classic renderer's offline group.
  */
 export const onDemandRuntimeChunks = [
   'ai-manager',
@@ -99,11 +95,25 @@ export const threeAddonChunks = [
  */
 export const vendorThreeGroup = { name: 'vendor-three', test: /node_modules[\\/]three[\\/]build[\\/]/ };
 
+/** Core's shared JavaScript/Python engine. Vite fingerprints the same file under
+ * /assets/ in a standalone build and /shared/assets/ on the combined site. */
+export const fullEngineGlob = '**/assets/zipp_wasm_bg-*.wasm';
+export const fullEngineRuntimeCaching = {
+  urlPattern: /\/assets\/zipp_wasm_bg-[\w-]+\.wasm$/,
+  handler: 'CacheFirst',
+  options: {
+    cacheName: 'softn-full-engine',
+    expiration: { maxEntries: 8 },
+    cacheableResponse: { statuses: [200] },
+  },
+};
+
 /**
  * The precache leaves these out. The QR decoder (<QRReader>), ~0.9 MB, is
  * emitted from the host's build; only a scanning app needs it.
  */
 export const onDemandGlobIgnores = [
+  fullEngineGlob,
   '**/assets/zxing_reader-*.wasm',
   '**/assets/vendor-three-*.js',
   ...featureChunks.map((name) => `**/assets/${name}-*.js`),
@@ -116,6 +126,7 @@ export const onDemandGlobIgnores = [
  * offline after its first use.
  */
 export const onDemandRuntimeCaching = [
+  fullEngineRuntimeCaching,
   {
     // Every script under assets/ is hashed, so a copy is right for as long as
     // anything references it and a new release references new names:

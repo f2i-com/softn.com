@@ -14,6 +14,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useFilesStore } from '../stores/filesStore';
+import { useProjectStore } from '../stores/projectStore';
 import { ToastContainer } from './feedback/ToastContainer';
 
 interface StatusBarProps {
@@ -31,6 +32,8 @@ export function StatusBar({ onShortcuts, modalOpen = false }: StatusBarProps) {
   // The page's own <App> is not one of its elements: an empty page said "1 element".
   const elementCount = useCanvasStore((state) => state.elements.size - (state.elements.has(state.rootId) ? 1 : 0));
   const activePath = useFilesStore((state) => (state.activeFileId ? state.nodes.get(state.activeFileId)?.path : undefined));
+  const webProject = useProjectStore((state) => state.projectFormat === 'web');
+  const fileCount = useFilesStore((state) => state.uiFiles.size + state.logicFiles.size + state.assetFiles.size);
   const hidden = modalOpen || undefined;
 
   // How far the top of the bar is from the bottom of the window: the strip a
@@ -63,12 +66,18 @@ export function StatusBar({ onShortcuts, modalOpen = false }: StatusBarProps) {
   return (
     <div ref={barRef} className="bl-status" data-modal={modalOpen ? '' : undefined}>
       <span className="bl-status-counts" aria-hidden={hidden}>
-        <span>
-          <strong>{elementCount}</strong> {elementCount === 1 ? 'element' : 'elements'}
-        </span>
-        <span>
-          <strong>{selectedCount}</strong> selected
-        </span>
+        {webProject ? (
+          <span><strong>{fileCount}</strong> {fileCount === 1 ? 'file' : 'files'}</span>
+        ) : (
+          <>
+            <span>
+              <strong>{elementCount}</strong> {elementCount === 1 ? 'element' : 'elements'}
+            </span>
+            <span>
+              <strong>{selectedCount}</strong> selected
+            </span>
+          </>
+        )}
       </span>
       {activePath && (
         <span className="bl-status-path" title={activePath} aria-hidden={hidden}>{activePath}</span>

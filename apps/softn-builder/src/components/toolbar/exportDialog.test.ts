@@ -183,7 +183,7 @@ describe('the export dialog', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     const lines = [...container.querySelectorAll('[data-report="unseen"] > span')].map((line) => line.textContent ?? '');
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain('Server logic the Builder does not show');
+    expect(lines[0]).toContain('includes private backend source');
     expect(lines[0]).toContain('api/handlers.logic, server/admin.logic');
     expect(lines[1]).toContain('Files the Builder does not show');
     expect(lines[1]).toContain('hidden/payload.js');

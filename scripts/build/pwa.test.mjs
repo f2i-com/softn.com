@@ -104,10 +104,14 @@ test('a page answered in place of a file is told from the file', async () => {
 test('a route keeps the file it was asked for, and never the page a host gave in its place', async () => {
   const code = await buildWorker(
     [{ url: 'index.html', revision: 'a' }],
-    workerConfig({
-      registerType: 'autoUpdate',
-      workbox: { runtimeCaching: [{ urlPattern: /\/assets\/[^/?#]+\.js$/, handler: 'CacheFirst', options: { cacheName: 'chunks', cacheableResponse: { statuses: [0, 200] } } }] },
-    })
+    {
+      ...workerConfig({
+        registerType: 'autoUpdate',
+        workbox: { runtimeCaching: [{ urlPattern: /\/assets\/[^/?#]+\.js$/, handler: 'CacheFirst', options: { cacheName: 'chunks', cacheableResponse: { statuses: [0, 200] } } }] },
+      }),
+      classicAssets: { renderer: ['workers/script-worker.js'] },
+      classicRevisions: { 'workers/script-worker.js': 'v2' },
+    }
   );
   const stores = new Map();
   const store = (name) => stores.get(name) ?? stores.set(name, new Map()).get(name);
@@ -134,6 +138,7 @@ test('a route keeps the file it was asked for, and never the page a host gave in
   const asked = [];
   const answers = {
     '/web/assets/feature-1a2b3c4d.js': () => new Response('export const feature = 1;', { headers: { 'content-type': 'text/javascript' } }),
+    '/web/workers/script-worker.js': () => new Response('worker v2', { headers: { 'content-type': 'text/javascript' } }),
     // What a single-page host answers for an address it has no file for.
     '/web/app/~x/assets/a.js': () => new Response('<!doctype html><title>SoftN Web</title>', { headers: { 'content-type': 'text/html; charset=utf-8' } }),
   };
@@ -185,6 +190,16 @@ test('a route keeps the file it was asked for, and never the page a host gave in
   assert.deepEqual([...store('chunks').keys()], ['https://softn.test/web/assets/feature-1a2b3c4d.js']);
   await ask('https://softn.test/web/app/~x/assets/a.js');
   assert.deepEqual(asked, ['/web/assets/feature-1a2b3c4d.js', '/web/app/~x/assets/a.js', '/web/app/~x/assets/a.js']);
+
+  // The previous and active workers can answer their respective releases at
+  // the same public URL, including during a prompt-mode editor's update.
+  const worker = 'https://softn.test/web/workers/script-worker.js';
+  const classic = store('softn-classic-assets-https://softn.test/web/');
+  classic.set(worker + '?__WB_REVISION__=v1', new Response('worker v1'));
+  assert.equal(await ask(worker), 'worker v2');
+  delete answers['/web/workers/script-worker.js'];
+  assert.equal(await ask(worker), 'worker v2');
+  assert.deepEqual([...classic.keys()], [worker + '?__WB_REVISION__=v1', worker + '?__WB_REVISION__=v2']);
 });
 
 test('the worker carries its list as one JSON line and imports its scripts before any fetch listener', async () => {

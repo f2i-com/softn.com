@@ -28,7 +28,7 @@
  * reasons rather than writing the lossy model back.
  */
 
-import { parse, tokenize, TokenType } from '@softn/core';
+import { parse, tokenize, TokenType } from '@softn/core/authoring';
 import type {
   Expression,
   PropValue,

@@ -246,10 +246,11 @@ to at install.
 `tsup` copies `zipp_torch.wasm` into core's `dist/` and its
 `dist/core-runtime/` mirror, and bundles the loader as a chunk of its own
 (`zipp_torch-<hash>.js`); an app's `coreWorkerAssetPlugin` copies it to
-`assets/core-runtime/zipp_torch.wasm`. The PWAs precache the engine (6.58 MB,
-under their 8 MiB caps) and not the package: `assets/core-runtime/` is in
-every PWA's `globIgnores`. An app carries the engine once, as its hashed
-asset: the page compiles it (`zippEngineForWorker` in `zipp-wasm-loader.ts`)
+`assets/core-runtime/zipp_torch.wasm`. Runtime, Studio and Builder cache
+the full engine (6.58 MB) on demand. Runtime also leaves the torch package
+to apps that declare it. The editors precache the package with their offline
+tools. When an app needs the full engine, the page compiles its hashed asset
+(`zippEngineForWorker` in `zipp-wasm-loader.ts`)
 and posts the module to every worker it starts, the script, sandbox and
 local-model workers, which therefore fetch and compile none, and
 `assets/core-runtime/` holds no engine. A host that configures the engine's
@@ -260,7 +261,7 @@ must be the recorded one.
 | | raw | gzip -9 | Brotli-11 |
 | --- | ---: | ---: | ---: |
 | `javascript-python` engine (torch built in; not taken) | 8,617,556 | 2,700,237 | 2,022,547 |
-| `javascript-python-base` engine (every app) | 6,580,459 | 2,225,461 | 1,645,970 |
+| `javascript-python-base` engine (apps that need the full engine) | 6,580,459 | 2,225,461 | 1,645,970 |
 | `zipp_torch.wasm` (apps that declare torch) | 2,163,109 | 499,396 | 403,192 |
 
 These are ZIPP v0.0.35's files as published, each module with its `zipp.meta`
@@ -289,12 +290,17 @@ zip bundles before 0.0.26, under names starting `web`): `javascript-python`
 `javascript-typescript` (that one with TypeScript read as well, since 0.0.31)
 and `javascript-lite` (ZIPP Lite: the JavaScript core without `Intl` and
 `Temporal`).
-Softn's engine is `javascript-python-base` and its torch package is
-`torch-package` (above); it does not take `javascript-python`,
-`javascript-typescript` or `javascript-lite`. The `javascript` module is installed BESIDE it, into `packages/@softn/core/wasm-zipp-web/`, as a verified
-variant — not as an engine Softn's own apps, editors or PWAs ever load, but so
-the FormLogic runtime archive can carry it as a top-level `zipp-web/` tree for a
-FormLogic that lets an app's owner choose the smaller `zipp-web` engine.
+Runtime, Studio and Builder run ordinary web starters on `javascript-lite`.
+The web container checks the scripts in each packaged page. TypeScript selects
+the `javascript-typescript` module. Locale-aware JavaScript and Python use
+the host's full `javascript-python-base` engine on demand. The separate torch
+package serves apps that declare it. Runtime's offline installer saves the
+engine tiers a particular app needs, including its secondary pages.
+
+FormLogic also offers a JavaScript-only host engine. The release installer
+verifies the `javascript` module in `packages/@softn/core/wasm-zipp-web/`.
+The FormLogic runtime archive ships that module under `zipp-web/`, where a
+host can select it for a workspace.
 
 What makes it a variant rather than a second engine is provenance, and
 `fetch-zipp-release.mjs` refuses the whole install unless every part holds:

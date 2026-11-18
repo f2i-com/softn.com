@@ -5,7 +5,7 @@
  */
 
 import type { IDBPDatabase, IDBPObjectStore } from 'idb';
-import { carryAppSync, debug } from '@softn/core';
+import { carryAppSync, debug } from '@softn/core/web-host';
 import type { CachedApp, SoftNAppDB } from './appCacheDb';
 import { SHORT_ORIGIN_LENGTH, computeAppOrigin, isSecureAppOrigin } from './appCacheIdentity';
 import { migrateAppStorage } from './appCacheStorage';

@@ -9,19 +9,17 @@ import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { debug } from '../../utils/debug';
+import { entryFileId } from '../../utils/logicFiles';
 import { buildPermissionJson } from '../../utils/permissions';
 import type { CollectionDef } from '../../types/builder';
 import { previewSourceFor, undeclaredPythonPackage } from '../../utils/previewSource';
-import { type AppUpdateResult, inspectDeclaration, type PermissionConfig } from '@softn/core';
+import { type AppUpdateResult, inspectDeclaration, type PermissionConfig } from '@softn/core/authoring';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
 import type { ContainerPreviewRuntimeProps } from './ContainerPreviewRuntime';
 import { PreviewProblems } from './PreviewProblems';
+import { ensureUiRuntimeRegistered } from '../../utils/uiRuntimeLoader';
 import { previewThemeProps } from '../../utils/previewTheme';
-// The theme entry alone: the package's root would bring every component,
-// Three.js included, where main.tsx registers them to be fetched as a page
-// draws them.
-import { ThemeProvider } from '@softn/components/theme';
 
 /** Nothing declared: the preview enforces, and grants nothing, as a runtime would. */
 const NOTHING_DECLARED: PermissionConfig = Object.freeze({ permissions: Object.freeze({}) }) as PermissionConfig;
@@ -67,15 +65,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--ink)',
   },
   header: {
-    minHeight: 44,
-    padding: '6px 16px',
     borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     background: 'var(--ink-2)',
     flexWrap: 'wrap',
-    gap: 8,
   },
   title: {
     display: 'inline-flex',
@@ -197,38 +192,39 @@ function StoppedInPlace({ onShown, children }: { onShown: (shown: boolean) => vo
   return <>{children}</>;
 }
 
-type DevicePreset = 'desktop' | 'tablet' | 'mobile';
-
-const DEVICE_LABELS: Record<DevicePreset, string> = { desktop: 'Desktop', tablet: 'Tablet', mobile: 'Phone' };
-
-const deviceDimensions: Record<DevicePreset, { width: number; height: number }> = {
+const deviceDimensions = {
   desktop: { width: 1440, height: 900 },
   tablet: { width: 768, height: 1024 },
   mobile: { width: 390, height: 844 },
 };
+
+const devices = ['responsive', 'desktop', 'tablet', 'mobile'] as const;
+type PreviewDevice = (typeof devices)[number];
+const deviceLabels: Record<PreviewDevice, string> = { responsive: 'Fit', desktop: 'Desktop', tablet: 'Tablet', mobile: 'Phone' };
 
 // Threshold for warning (very large UIs)
 const WARN_ELEMENTS_THRESHOLD = 500;
 const WARN_SOURCE_LENGTH_THRESHOLD = 100000;
 
 interface DeviceViewportProps {
-  width: number;
-  height: number;
+  device: PreviewDevice;
   children: ReactNode;
 }
 
-function DeviceViewport({ width, height, children }: DeviceViewportProps) {
+function DeviceViewport({ device, children }: DeviceViewportProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [scale, setScale] = useState(1);
   const [mountNode, setMountNode] = useState<HTMLElement | null>(null);
+  const dimensions = device === 'responsive' ? null : deviceDimensions[device];
 
   useEffect(() => {
+    if (!dimensions) return;
     const updateScale = () => {
       const container = containerRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
-      const nextScale = Math.min(rect.width / width, rect.height / height, 1);
+      const nextScale = Math.min(rect.width / dimensions.width, rect.height / dimensions.height, 1);
       setScale(Number.isFinite(nextScale) && nextScale > 0 ? nextScale : 1);
     };
 
@@ -243,7 +239,7 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
       observer?.disconnect();
       window.removeEventListener('resize', updateScale);
     };
-  }, [width, height]);
+  }, [dimensions]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -291,25 +287,22 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
       }}
     >
       <div
+        className="bl-device-frame"
+        data-responsive={!dimensions}
         style={{
-          width: `${Math.round(width * scale)}px`,
-          height: `${Math.round(height * scale)}px`,
-          borderRadius: 12,
-          overflow: 'hidden',
-          border: '1px solid var(--line)',
-          boxShadow: '0 16px 32px rgba(15, 23, 42, 0.16)',
-          background: '#fff',
-          flexShrink: 0,
+          width: dimensions ? Math.round(dimensions.width * scale) : '100%',
+          height: dimensions ? Math.round(dimensions.height * scale) : '100%',
         }}
       >
         <iframe
           ref={iframeRef}
           title="Device Preview"
           style={{
-            width: `${width}px`,
-            height: `${height}px`,
+            display: 'block',
+            width: dimensions?.width ?? '100%',
+            height: dimensions?.height ?? '100%',
             border: 0,
-            transform: `scale(${scale})`,
+            transform: dimensions ? `scale(${scale})` : undefined,
             transformOrigin: 'top left',
           }}
         />
@@ -339,10 +332,9 @@ export function useSettled<T>(value: T, ms: number): [T, boolean] {
 }
 
 interface LivePreviewProps {
-  initialDevice?: DevicePreset;
   /**
    * Beside the canvas, in Design. The header is the one row a pane has room
-   * for: whether the app is running, and the three devices; the pane is put
+   * for: whether the app is running, and its viewport size; the pane is put
    * away by the button that brought it, at the end of the row of tabs. And
    * the app is handed the page after a pause in the editing
    * ({@link useSettled}).
@@ -358,7 +350,7 @@ interface LivePreviewProps {
  */
 const SETTLE_MS = 200;
 
-export function LivePreview({ initialDevice = 'desktop', beside = false }: LivePreviewProps) {
+export function LivePreview({ beside = false }: LivePreviewProps) {
   const { elements, rootId } = useCanvasStore();
   const { name: projectName, version: projectVersion, projectFormat, projectId, logicSource, collections: projectCollections, themeMode, permissions, pythonPackages, setPythonPackages, source: retainedSource, assets: projectAssets } = useProjectStore();
   // The preview runs under the project's own declaration, as the runtime
@@ -393,11 +385,12 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
       ? [...assetFiles.entries()].map(([id, asset]) => [nodes.get(id)?.path ?? asset.bundlePath ?? asset.name, asset] as const)
       : projectAssets.map((asset) => [asset.bundlePath ?? `assets/${asset.name}`, asset] as const)
   ), [retainedSource.manifest, assetFiles, nodes, projectAssets]);
-  const [device, setDevice] = useState<DevicePreset>(initialDevice);
+  const [device, setDevice] = useState<PreviewDevice>('responsive');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [forceRender, setForceRender] = useState(false);
   const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<PreviewRuntimeProps> | null>(null);
+  const [ThemeProvider, setThemeProvider] = useState<typeof import('@softn/components/theme').ThemeProvider | null>(null);
   const [ContainerComponent, setContainerComponent] = useState<React.ComponentType<ContainerPreviewRuntimeProps> | null>(null);
   const [previewRecordsFor, setPreviewRecordsFor] = useState<typeof import('./PreviewRuntime').previewRecordsFor | null>(null);
   const [sourceInfo, setSourceInfo] = useState<string | null>(null);
@@ -455,32 +448,34 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
   }, [entities, seedData, recordIdentity, projectCollections]);
   const previewRecords = useMemo(() => previewRecordsFor?.(collections) ?? {}, [previewRecordsFor, collections]);
 
-  const containerFiles = useMemo<Record<string, string | Uint8Array>>(() => {
-    if (projectFormat !== 'web') return {};
+  const { files: containerFiles, entry: webEntryPath } = useMemo(() => {
     const out: Record<string, string | Uint8Array> = {};
     let mainHtmlPath = 'index.html';
-    const declaredMain = retainedSource.manifest && typeof retainedSource.manifest.main === 'string'
-      ? retainedSource.manifest.main.replace(/^\/+/, '')
-      : null;
+    if (projectFormat !== 'web') return { files: out, entry: mainHtmlPath };
+    const entryId = entryFileId(uiFiles, retainedSource);
     for (const [id, ui] of uiFiles) {
       const p = ui.path.replace(/^\/+/, '');
+      if (p.startsWith('server/')) continue;
       out[p] = ui.originalSource ?? '';
-      if (id === retainedSource.mainFileId || (declaredMain && p === declaredMain)) {
-        mainHtmlPath = p;
-      }
+      if (id === entryId) mainHtmlPath = p;
     }
     if (!(mainHtmlPath in out)) {
       const firstHtml = Object.keys(out).find((k) => /\.html?$/i.test(k));
       if (firstHtml) mainHtmlPath = firstHtml;
     }
     for (const [, lf] of logicFiles) {
-      out[lf.path.replace(/^\/+/, '')] = lf.content;
+      const path = lf.path.replace(/^\/+/, '');
+      if (!path.startsWith('server/')) out[path] = lf.content;
     }
     for (const [assetPath, asset] of previewAssets) {
-      out[assetPath.replace(/^\/+/, '')] = asset.data;
+      const path = assetPath.replace(/^\/+/, '');
+      if (!path.startsWith('server/')) out[path] = asset.data;
     }
+    const xdb: string[] = [];
     for (const col of collections) {
       const xdbPath = retainedSource.xdbPaths.get(col.name) ?? `xdb/${col.name}.xdb`;
+      if (xdbPath.startsWith('server/')) continue;
+      xdb.push(xdbPath);
       out[xdbPath] = JSON.stringify({
         collection: col.name,
         records: col.fullRecords ?? col.seedData ?? [],
@@ -492,6 +487,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
       name: projectName || 'Untitled App',
       version: projectVersion || '1.0.0',
       main: mainHtmlPath,
+      files: { xdb },
       config: {
         execution: 'worker',
         ...(pythonPackages.length > 0 ? { python: { packages: pythonPackages } } : {}),
@@ -499,7 +495,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
     });
     const permJson = buildPermissionJson(permissions);
     if (permJson) out['permission.json'] = permJson;
-    return out;
+    return { files: out, entry: mainHtmlPath };
   }, [projectFormat, uiFiles, logicFiles, previewAssets, collections, retainedSource, projectName, projectVersion, pythonPackages, permissions]);
 
   // Get source - prioritize ui/main.ui for stable preview behavior.
@@ -508,9 +504,9 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
   const previewStateNow = useMemo(
     () => {
       if (projectFormat === 'web') {
-        const firstHtml = [...uiFiles.values()].find((f) => f.path.replace(/^\/+/, '') === 'index.html') ?? [...uiFiles.values()][0];
+        const entry = containerFiles[webEntryPath];
         return {
-          source: firstHtml?.originalSource ?? '',
+          source: typeof entry === 'string' ? entry : '',
           error: null,
           info: null,
           composition: undefined,
@@ -518,7 +514,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
       }
       return previewSourceFor({ elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages });
     },
-    [projectFormat, elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages]
+    [projectFormat, containerFiles, webEntryPath, elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource, pythonPackages]
   );
   const [settledState] = useSettled(previewStateNow, beside ? SETTLE_MS : 0);
   // A web container's files settle as a SoftN app's state does, while a file is being typed
@@ -547,10 +543,11 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
   const updating = previewStateNow.source !== source;
 
   // Sync error and info from the pure useMemo result into component state.
+  const webPreviewFiles = projectFormat === 'web' ? settledContainerFiles : null;
   useEffect(() => {
     setError(previewState.error);
     setSourceInfo(previewState.info);
-  }, [previewState.error, previewState.info]);
+  }, [previewState.error, previewState.info, webPreviewFiles]);
 
   // Dynamically import SoftN renderer and ThemeProvider
   useEffect(() => {
@@ -563,9 +560,10 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
           if (!active) return;
           setContainerComponent(() => mod.ContainerPreviewRuntime);
         } else {
-          const preview = await import('./PreviewRuntime');
+            const [preview] = await Promise.all([import('./ClassicPreviewSurface'), ensureUiRuntimeRegistered()]);
           if (!active) return;
           setPreviewComponent(() => preview.PreviewRuntime);
+            setThemeProvider(() => preview.ThemeProvider);
           setPreviewRecordsFor(() => preview.previewRecordsFor);
         }
       } catch (e) {
@@ -584,8 +582,6 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
       active = false;
     };
   }, [projectFormat]);
-
-  const dimensions = deviceDimensions[device];
 
   const renderError = (err: Error) => (
     <StoppedInPlace onShown={setFailedInPlace}>
@@ -658,7 +654,9 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
         <div style={styles.emptyState}>
           <div>
             <div style={{ fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--paper)', marginBottom: 6 }}>Nothing to preview yet</div>
-            <div>This app has no UI file to run. Add <code style={{ fontFamily: 'var(--mono)', color: 'var(--coral)' }}>ui/main.ui</code> in Files.</div>
+            {projectFormat === 'web'
+              ? <div>Add HTML to <code>{webEntryPath}</code> in Code to see your page here.</div>
+              : <div>This app has no UI file to run. Add <code>ui/main.ui</code> in Files.</div>}
           </div>
         </div>
       );
@@ -699,7 +697,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
     if (projectFormat === 'web' && ContainerComponent) {
       const startKey = `web-${run}`;
       return (
-        <DeviceViewport width={dimensions.width} height={dimensions.height}>
+        <DeviceViewport device={device}>
           <PreviewErrorBoundary key={startKey} fallback={renderError}>
             <ContainerComponent
               key={startKey}
@@ -717,7 +715,7 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
       );
     }
 
-    if (PreviewComponent && shouldRender) {
+    if (PreviewComponent && ThemeProvider && shouldRender) {
       // The canonical parser handles comments. Regex removal also removes
       // comment-looking text inside strings, changing the running program.
       const cleanSource = source;
@@ -777,10 +775,8 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
       );
 
       return (
-        <DeviceViewport width={dimensions.width} height={dimensions.height}>
+        <DeviceViewport device={device}>
           <PreviewErrorBoundary key={startKey} fallback={renderError}>
-            {/* The project's theme as its declaration, as a runtime is
-                handed it, and not as an editor's switch (utils/previewTheme.ts). */}
             <ThemeProvider {...previewThemeProps(themeMode)}>{preview}</ThemeProvider>
           </PreviewErrorBoundary>
         </DeviceViewport>
@@ -814,11 +810,11 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
   };
 
   return (
-    <div style={styles.container} data-preview-pane={beside ? 'beside' : 'view'}>
-      <div style={beside ? { ...styles.header, minHeight: 36, padding: '4px 8px' } : styles.header} className={beside ? 'bl-preview-beside' : undefined}>
+    <div style={styles.container} className="bl-live-preview" data-preview-pane={beside ? 'beside' : 'view'}>
+      <div style={styles.header} className="bl-preview-header">
         <span style={styles.title}>
           {/* Beside the canvas the button that opened the pane names it, just above. */}
-          {!beside && 'Preview'}
+          {!beside && <span className="bl-preview-title">Preview</span>}
           {!error && !isLoading && source.trim() && !stopped && !failedInPlace && !updating && (
             <span style={styles.live} data-preview-live="true">
               <span style={styles.liveDot} aria-hidden="true" />
@@ -844,21 +840,21 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
           )}
         </span>
         <div style={styles.controls}>
-          {!beside && (
-            <span style={styles.size} aria-hidden="true">
+          {!beside && device !== 'responsive' && (
+            <span style={styles.size} className="bl-preview-size" aria-hidden="true">
               {deviceDimensions[device].width} × {deviceDimensions[device].height}
             </span>
           )}
           <div className="bl-seg" role="group" aria-label="Preview device">
-            {(['desktop', 'tablet', 'mobile'] as DevicePreset[]).map((d) => (
+            {devices.map((d) => (
               <button
                 key={d}
                 type="button"
                 aria-pressed={device === d}
-                title={`${DEVICE_LABELS[d]}, ${deviceDimensions[d].width} × ${deviceDimensions[d].height}`}
+                title={d === 'responsive' ? 'Fit to the workspace at actual size' : `${deviceLabels[d]}, ${deviceDimensions[d].width} × ${deviceDimensions[d].height}`}
                 onClick={() => setDevice(d)}
               >
-                {DEVICE_LABELS[d]}
+                {deviceLabels[d]}
               </button>
             ))}
           </div>

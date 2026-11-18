@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sharedPrecacheUrl } from './shared-assets.mjs';
+import { classicAssetGroups, sourceCompilerAssets } from './classic-assets.mjs';
 
 const SW_TEMPLATE = fileURLToPath(new URL('./pwa-sw.js', import.meta.url));
 const VIRTUAL = 'virtual:softn-pwa/react';
@@ -230,8 +231,67 @@ export function softnPwa(options) {
         fs.writeFileSync(path.join(outDir, 'registerSW.js'),
           `if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('${base}sw.js', { scope: '${base}' })})}`);
       }
-      const precache = precacheEntries(outDir, options.workbox, { warn: (message) => this.warn(message) });
-      fs.writeFileSync(path.join(outDir, 'sw.js'), await buildWorker(precache, workerConfig(options)));
+      const config = workerConfig(options);
+      let workbox = options.workbox;
+      if (workbox?.classicRoots?.length) {
+        const graph = JSON.parse(fs.readFileSync(path.join(outDir, '.vite/manifest.json'), 'utf8'));
+        const groups = classicAssetGroups(graph, workbox.classicRoots, workbox.classicSharedRoots, workbox.classicRuntime);
+        if (!workbox.classicRuntime) {
+          // The web container has its own worker and bindings. These modules
+          // belong to classic script, sandbox and local-model workers. Keep
+          // them when a classic project is opened so it can be edited offline.
+          const root = 'assets/core-runtime/';
+          groups.renderer.push(...walk(path.join(outDir, root))
+            .filter((file) => /\.(?:js|mjs|wasm|json)$/.test(file) && file !== 'zipp_torch.wasm')
+            .map((file) => root + file));
+        }
+        const workerEntries = path.join(outDir, 'workers');
+        if (fs.existsSync(workerEntries)) {
+          // A classic worker's in-scope import must be available after an upgrade,
+          // including one installed before these entries existed. The ZIP reader is
+          // shared by both app formats and its entry stays with the shell.
+          const workerGroup = workbox.classicRuntime ? groups.script : groups.renderer;
+          workerGroup.push(...fs.readdirSync(workerEntries).filter((file) => file.endsWith('-worker.js')).map((file) => 'workers/' + file));
+        }
+        const onDemand = new Set(Object.values(groups).flat());
+        if (workbox.sourceCompilers) {
+          const compilers = sourceCompilerAssets(graph, groups);
+          config.sourceCompilers = Object.fromEntries(Object.entries(compilers).map(([format, files]) => {
+            for (const file of files) onDemand.add(file);
+            return [format, files.map((file) => sharedPrecacheUrl(file))];
+          }));
+        }
+        // Core's worker entries and model binaries have stable public names.
+        // Keep each release's bytes under a separate key while the new worker
+        // waits, just as the shell precache does for its fixed-name files.
+        const mutable = [...onDemand].filter((file) => file.startsWith('workers/') ||
+          (file.startsWith('assets/core-runtime/') && !/-[A-Z0-9]{8}\.m?js$/.test(file)));
+        config.classicRevisions = Object.fromEntries(mutable.map((file) => [
+          sharedPrecacheUrl(file), createHash('sha256').update(fs.readFileSync(path.join(outDir, file))).digest('hex').slice(0, 16),
+        ]));
+        workbox = { ...workbox, globIgnores: [...(workbox.globIgnores ?? []), ...onDemand] };
+        config.classicAssets = Object.fromEntries(Object.entries(groups).map(([group, paths]) =>
+          [group, paths.map((file) => sharedPrecacheUrl(file))]));
+        if (workbox.classicRuntime) {
+          const { lazyComponentRegistrations } = await import('@softn/components/lazy');
+          config.classicTags = Object.fromEntries(Object.entries(lazyComponentRegistrations).map(([tag, { feature }]) => [tag, feature]));
+          const engine = Object.values(graph).find(({ file }) => /\/zipp_wasm_bg-[\w-]+\.wasm$/.test(file));
+          if (!engine) throw new Error('Runtime has no full engine for previously installed classic apps');
+          config.fullEngine = sharedPrecacheUrl(engine.file);
+          const { build } = await import('esbuild');
+          const { outputFiles } = await build({
+            entryPoints: [fileURLToPath(new URL('./classic-upgrade-scan.ts', import.meta.url))],
+            bundle: true, format: 'iife', globalName: 'softnClassicUpgrade', target: 'es2022', minify: true, write: false,
+          });
+          const code = outputFiles[0].contents;
+          const hash = createHash('sha256').update(code).digest('hex').slice(0, 12);
+          config.classicUpgrade = `classic-upgrade-${hash}.js`;
+          fs.writeFileSync(path.join(outDir, config.classicUpgrade), code);
+          workbox.globIgnores.push(config.classicUpgrade);
+        }
+      }
+      const precache = precacheEntries(outDir, workbox, { warn: (message) => this.warn(message) });
+      fs.writeFileSync(path.join(outDir, 'sw.js'), await buildWorker(precache, config));
     },
   };
 }

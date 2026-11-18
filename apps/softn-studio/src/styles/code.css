@@ -93,6 +93,12 @@
   padding: 0.375rem 0;
 }
 
+.st-fileedit .st-codeview-bar {
+  flex-wrap: wrap;
+  row-gap: 0.25rem;
+  padding-block: 0.25rem;
+}
+
 /* A save that was refused: what happened, and what can be done. */
 .st-fileedit-refused {
   display: flex;

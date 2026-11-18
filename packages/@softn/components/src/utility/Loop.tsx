@@ -115,6 +115,7 @@ function timerTicker(interval: number, tick: (dt: number) => void | Promise<void
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let inFlight = false;
   let lastTickTime = clock();
+  let nextDue = lastTickTime + interval;
 
   const scheduleNext = (delayMs: number) => {
     if (stopped || paused) return;
@@ -141,7 +142,10 @@ function timerTicker(interval: number, tick: (dt: number) => void | Promise<void
       .finally(() => {
         inFlight = false;
         if (stopped) return;
-        scheduleNext(interval - (clock() - startedAt));
+        const now = clock();
+        nextDue += interval;
+        if (now > nextDue + interval) nextDue = now + interval;
+        scheduleNext(nextDue - now);
       });
   };
 
@@ -162,6 +166,7 @@ function timerTicker(interval: number, tick: (dt: number) => void | Promise<void
       paused = false;
       // The time away is not a step: the next tick is one interval long.
       lastTickTime = clock();
+      nextDue = lastTickTime + interval;
       // A tick still running schedules the next one itself when it ends.
       if (!inFlight) scheduleNext(interval);
     },

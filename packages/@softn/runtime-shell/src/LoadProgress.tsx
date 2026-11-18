@@ -16,7 +16,8 @@
  */
 
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
-import { loadProgressItems, subscribeLoadProgress, type LoadProgressItem } from '@softn/core';
+import { loadProgressItems, subscribeLoadProgress } from '@softn/core/web-host';
+import type { LoadProgressItem } from '@softn/core';
 
 /** What each on-demand feature of @softn/components is, as a person would name it. */
 export const FEATURE_LABELS: Readonly<Record<string, string>> = {

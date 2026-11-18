@@ -28,7 +28,7 @@
  * back.
  */
 
-import { UI_IMPORT_PATTERN } from '@softn/core';
+import { UI_IMPORT_PATTERN } from '@softn/core/authoring';
 import type { CanvasElement, UIFileState, UIImport } from '../types/builder';
 import { componentRegistry } from './componentRegistry';
 import { relativeImportPath, resolveImportPath } from './logicFiles';

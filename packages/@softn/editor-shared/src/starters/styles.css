@@ -1,0 +1,55 @@
+* { box-sizing: border-box; }
+body { margin: 0; }
+.page {
+  --surface: #fffdf8;
+  --canvas: #ecf1e6;
+  --ink: #21372d;
+  --accent: #256041;
+  --rule: #bccabb;
+  --on-accent: white;
+  min-height: 100vh;
+  padding: clamp(1rem, 7vw, 5rem);
+  background: var(--canvas);
+  color: var(--ink);
+  font: 1rem/1.5 'DM Sans', system-ui, sans-serif;
+}
+.page.react {
+  --canvas: #edf1f8;
+  --ink: #172641;
+  --accent: #334a96;
+  --rule: #bfc8dc;
+}
+.page.vue {
+  --canvas: #f4ede7;
+  --ink: #452a2d;
+  --accent: #8c3949;
+  --rule: #dac0c0;
+}
+.page[data-theme="dark"] {
+  --surface: #20282a; --canvas: #171d1e; --ink: #f4f2e9; --accent: #e2ebbf; --on-accent: #172018; --rule: #4d5c57;
+}
+@media (prefers-color-scheme: dark) {
+  .page[data-theme="system"] {
+    --surface: #20282a; --canvas: #171d1e; --ink: #f4f2e9; --accent: #e2ebbf; --on-accent: #172018; --rule: #4d5c57;
+  }
+}
+.card {
+  max-width: 31rem;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 5vw, 3rem);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-top: .4rem solid var(--accent);
+  border-radius: .75rem;
+}
+h1 { margin: 0; font: 600 clamp(2rem, 7vw, 3.6rem)/1.05 Georgia, serif; letter-spacing: -.04em; overflow-wrap: anywhere; }
+.react h1 { font-family: 'DM Sans', system-ui, sans-serif; font-weight: 750; }
+header p { margin: .8rem 0 0; }
+.counter { margin: 1.75rem 0 1.25rem; padding: 1.25rem 0; border-block: 1px solid var(--rule); }
+h2 { margin: 0; font-family: inherit; font-weight: 600; font-size: .9375rem; line-height: 1.4; }
+output { display: block; margin-top: .15rem; font: 600 3.25rem/1.1 'DM Sans', system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+.actions { display: flex; flex-wrap: wrap; gap: .55rem; }
+button { min-height: 2.75rem; padding: .6rem 1.1rem; border: 1px solid var(--rule); border-radius: .4rem; background: transparent; color: var(--ink); font: inherit; font-weight: 650; cursor: pointer; }
+#increment { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+button:disabled { opacity: .55; cursor: default; }

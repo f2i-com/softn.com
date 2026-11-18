@@ -2,9 +2,10 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
 const entry = (name: string) => fileURLToPath(new URL(`./${name}.html`, import.meta.url));
 export default defineConfig({
-  base: './', plugins: [react(), coreWorkerAssetPlugin()],
+  base: './', plugins: [react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin()],
   resolve: { dedupe: ['react', 'react-dom'] },
   // Two documents, one shell. `host.html` is `index.html` with one attribute,
   // and the attribute is why it is a separate file: it serves the `host-js`

@@ -1,10 +1,7 @@
 import { createRoot } from 'react-dom/client';
-import { registerRuntimeComponents } from '@softn/components/lazy';
-import { SingleApp, type ConfigSource } from '@softn/single-shell';
+import { SingleApp } from '@softn/single-shell/SingleApp';
+import type { ConfigSource } from '@softn/single-shell/load';
 import '@softn/single-shell/style.css';
-// The same registration as softn-web: the start-up set eagerly, every other
-// built-in as a loader the registry runs when a document first needs it.
-registerRuntimeComponents();
 /**
  * A page rendered by a directory for one of its apps carries the app's
  * configuration in the document; a standalone deployment reads the file

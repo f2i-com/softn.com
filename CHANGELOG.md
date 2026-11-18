@@ -6,6 +6,15 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.46
+
+- Studio and Builder can create Vanilla JavaScript, React and Vue apps and open them straight in Preview. Both editors keep the original JSX and Vue single-file components in the project. They load the source tools when needed and export runnable modules alongside the source, so a recipient can run the app offline or reopen it for editing.
+- The web runtime opens an app folder or archive and downloads the engine and renderer the app uses. The three web starters run on the lite engine. Opening a classic app loads its renderer and components on demand. Open an app online and wait for **Offline ready** in Runtime Home before disconnecting. The landing page includes three downloadable examples with editable source.
+- Web apps can work with database records through the host bridge. Studio and Builder expose database design and backend source alongside the app files. When embedded in FormLogic, the editors use the database and backend capabilities advertised by the host. Web forms now submit on a button click or Enter.
+- Studio's final chat reply describes what the assistant found or changed. App edits include the affected files and the saved change. Studio and Builder also have revised project creation, database and preview screens.
+- PHP backends recognize same-origin requests when a trusted reverse proxy preserves the default HTTPS port. The private single-app host now detects a replacement archive even if its size and timestamp match the old one. Its local preview routes requests through PHP. The website build accepts a separate output directory so hosts can stage an upgrade while preserving live data.
+- This release uses the same ZIPP engine as v0.0.45, **v0.0.35**.
+
 ## v0.0.45
 
 - Upgrading from v0.0.44: the engine is still ZIPP v0.0.35 and the parser's version is unchanged, so nothing is rebuilt or parsed again, and every protocol number in `softn-formlogic-runtime` is v0.0.44's. A site should deploy this in place of the last release, not over it: the apps' built files moved (below), and the folders they were in (`assets/`, `web/assets/`, `studio/assets/`, `builder/assets/`, `play/assets/`) are no longer written or read.

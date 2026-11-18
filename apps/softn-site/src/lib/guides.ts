@@ -15,6 +15,9 @@ export const PUBLISHING_GUIDE_HREF = '/docs/publishing/';
 /** Hosting an app with accounts, a shared database and server code. */
 export const FORMLOGIC_GUIDE_HREF = '/docs/formlogic/';
 
+export const HOSTING_GUIDE_HREF = '/docs/hosting/';
+export const PRIVATE_BACKEND_GUIDE_HREF = '/docs/private-backend/';
+
 /** Where an app's data is kept. */
 export const DATA_GUIDE_HREF = '/docs/offline-local-data/';
 

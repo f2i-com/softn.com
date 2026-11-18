@@ -15,7 +15,7 @@
  */
 
 import { manifestRunsInContainer, zeroConfigEntry } from '@softn/bundle-format/engine';
-import { logicImportPaths, pageLogicSources, resolveBundlePath } from '@softn/core';
+import { logicImportPaths, pageLogicSources, resolveBundlePath } from '@softn/core/authoring';
 
 const ASSETS = /^assets\//i;
 
@@ -32,6 +32,26 @@ export function isJavaScriptLogicPath(path: string): boolean {
 /** Logic in any language the runtime runs. */
 export function isLogicPath(path: string): boolean {
   return isJavaScriptLogicPath(path) || (/\.py$/i.test(path) && !ASSETS.test(path));
+}
+
+/** A direct editing shortcut for pages with one local entry script. */
+export function pageScriptToEdit(page: string, html: string, files: ReadonlyMap<string, { content: string | Uint8Array }>): string | null {
+  const sources = pageLogicSources(html);
+  if (sources.length !== 1) return null;
+  try {
+    const path = resolveBundlePath(page, sources[0]);
+    const entry = files.get(path)?.content;
+    if (typeof entry !== 'string') return null;
+    // A Vue entry often just mounts its root component. Offer that source directly.
+    if (/\.m?js$/i.test(path)) {
+      const imports = entry.matchAll(/^\s*import\s+[\w$]+\s+from\s+['"](\.{1,2}\/[^'"]+\.(?:jsx|vue))['"]/gm);
+      const components = [...imports].map((match) => resolveBundlePath(path, match[1])).filter((file) => typeof files.get(file)?.content === 'string');
+      if (components.length === 1) return components[0];
+    }
+    return path;
+  } catch {
+    return null;
+  }
 }
 
 /**

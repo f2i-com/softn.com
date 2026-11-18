@@ -1,4 +1,7 @@
-import { inspectDeclaration, responseBodyLength, sha256Hex, trackLoad, type PermissionConfig } from '@softn/core';
+import { inspectDeclaration } from '@softn/bundle-format/capabilities';
+import { sha256Hex } from '@softn/bundle-format/crypto';
+import { responseBodyLength, trackLoad } from '@softn/core/web-host';
+import type { PermissionConfig } from '@softn/core';
 import { readBoundedBody } from '@softn/runtime-shell/net';
 /**
  * Where the app came from, when a directory served this shell for it: the

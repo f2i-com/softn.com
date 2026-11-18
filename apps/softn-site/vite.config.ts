@@ -5,7 +5,7 @@ import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker
 import { docsDevPlugin } from '../../scripts/dev/dev-docs.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
-import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
+import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -39,7 +39,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
-    plugins: [retireServiceWorkersPlugin(), docsDevPlugin(), react(), scriptPolicyPlugin()],
+    plugins: [retireServiceWorkersPlugin(), docsDevPlugin(), woff2OnlyFontsPlugin(), react(), scriptPolicyPlugin()],
     server: {
       port: env.VITE_PORT ? Number(env.VITE_PORT) : 1421,
       strictPort: true,

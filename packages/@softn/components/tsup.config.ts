@@ -22,6 +22,7 @@ export default defineConfig({
     scene3d: 'src/entries/scene3d.ts',
     charts: 'src/entries/charts.ts',
     editors: 'src/entries/editors.ts',
+    'code-editor': 'src/editors/CodeEditor.tsx',
     highlight: 'src/entries/highlight.ts',
     smart: 'src/entries/smart.ts',
     media: 'src/entries/media.ts',

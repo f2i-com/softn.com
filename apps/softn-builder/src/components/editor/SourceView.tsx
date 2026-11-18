@@ -43,6 +43,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
     minWidth: 0,
+    maxWidth: '100%',
   },
   hint: {
     fontSize: 11.5,
@@ -138,8 +139,12 @@ export function SourceView() {
           {projectFormat === 'web' && (
             <span className="bl-badge" data-tone="code">HTML</span>
           )}
-          <span style={styles.title}>
-            {isFromBundle ? activeFile?.path || (projectFormat === 'web' ? 'index.html' : 'Source (.ui)') : 'Source (.ui)'}
+          <span className="bl-source-path" title={activeFile?.path} style={styles.title}>
+            {projectFormat === 'web'
+              ? activeFile?.path || 'index.html'
+              : isFromBundle
+                ? activeFile?.path || 'Source (.ui)'
+                : 'Source (.ui)'}
           </span>
           {isDirty && <span className="bl-dirty-dot" title="Unsaved changes" role="img" aria-label="Unsaved changes" />}
           {fidelity && (
@@ -157,7 +162,7 @@ export function SourceView() {
             </span>
           )}
         </div>
-        <span style={styles.hint}>Edits here update the canvas and the preview</span>
+        {projectFormat !== 'web' && <span className="bl-editor-hint" style={styles.hint}>Edits update the canvas and preview</span>}
       </div>
       <EditorWayOut style={{ display: 'block', padding: '3px 16px', borderBottom: '1px solid var(--line-soft)' }} />
       {(sourceOnly || blocked) && (

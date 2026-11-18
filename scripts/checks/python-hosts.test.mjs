@@ -36,6 +36,6 @@ for (const { file, forwards } of HOSTS) {
 }
 
 test('processBundle is declared as the whole composition, not a subset of its fields', () => {
-  const source = fs.readFileSync(path.join(root, 'packages/@softn/runtime-shell/src/bundleProcessor.ts'), 'utf8');
+  const source = fs.readFileSync(path.join(root, 'packages/@softn/runtime-shell/src/classicBundle.ts'), 'utf8');
   assert.match(source, /export function processBundle\([^)]*\): ComposedBundleSource \{/s);
 });

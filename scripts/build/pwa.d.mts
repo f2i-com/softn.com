@@ -9,6 +9,14 @@ export interface SoftnPwaOptions {
   manifest: Record<string, unknown>;
   workbox?: {
     globPatterns?: string[];
+    /** Vite manifest keys for the classic renderer; install its dependency graph per app. */
+    classicRoots?: string[];
+    /** Editor-only JSX and Vue source tools retained separately on first use. */
+    sourceCompilers?: boolean;
+    /** Runtime's classic script modules and migration from its older offline app records. */
+    classicRuntime?: boolean;
+    /** Additional entries the host itself needs offline, e.g. its own source editor. */
+    classicSharedRoots?: string[];
     globIgnores?: string[];
     maximumFileSizeToCacheInBytes?: number;
     /** Installed too, by address: files outside the app's own output. No revision for an address that changes with its content. */

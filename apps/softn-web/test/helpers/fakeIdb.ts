@@ -158,6 +158,11 @@ export async function openDB(
     put: (store: string, value: Row) => writing(found(store)).store.put(value),
     delete: (store: string, key: unknown) => writing(found(store)).store.delete(key),
     getFromIndex: (store: string, index: string, value: unknown) => reading(found(store)).index(index).get(value),
+    getKeyFromIndex: async (store: string, index: string, value: unknown) => {
+      const current = found(store);
+      const row = await reading(current).index(index).get(value);
+      return row?.[current.keyPath];
+    },
     getAllFromIndex: (store: string, index: string, value: unknown) => reading(found(store)).index(index).getAll(value),
     transaction: (store: string, mode: 'readonly' | 'readwrite' = 'readonly') => {
       if (mode !== 'readwrite') return { objectStore: (named: string = store) => reading(found(named)), done: Promise.resolve() };

@@ -1,17 +1,10 @@
 import React, { Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import {
-  SoftNWithXDB,
-  XDBStorageNotice,
-  inspectDeclaration,
-  type ComposedBundleSource,
-  type PermissionConfig,
-  type PythonProject,
+import { inspectDeclaration } from '@softn/bundle-format/capabilities';
+import type {
+  ComposedBundleSource,
+  PermissionConfig,
+  PythonProject,
 } from '@softn/core';
-// The theme entry, not the root barrel: the barrel is the eager path, and
-// keeping Scene3D out of this shell would then rest on the bundler
-// tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
-import { ThemeProvider } from '@softn/components/theme';
-import { createImportResolver } from '@softn/runtime-shell/bundleProcessor';
 // The consent rule, bar and dialog the web runtime and the desktop loader
 // use too, so a bundle is asked in the same words on a single-app page.
 import { hasSavedGrant, saveGrant, withheldPermissions } from '@softn/runtime-shell/consent';
@@ -24,7 +17,7 @@ import { watchForStall } from './stall';
 import type { DirectoryConfig, SingleConfig } from './config';
 import { installFavicon } from './favicon';
 import { loadHost, type HostBackendCall } from './host';
-import { bundlePageAt, composePage, mainPage, pageTitle } from './pages';
+import { getLoadedUiSurface, preloadUiSurface, type LoadedUiSurface } from './uiSurfaceLoader';
 // The slim bar the runtime draws over every app, for the pages a directory
 // serves through this shell; drawn from the shared tokens, which come along.
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
@@ -249,13 +242,29 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     observer.observe(element);
     return () => observer.disconnect();
   }, [answer, chromeHidden, framed]);
+  const [uiRuntime, setUiRuntime] = useState<LoadedUiSurface | null>(() =>
+    app.webContainer ? null : getLoadedUiSurface()
+  );
+  useEffect(() => {
+    if (app.webContainer || uiRuntime) return;
+    let active = true;
+    void preloadUiSurface().then((loaded) => {
+      if (active) setUiRuntime(loaded);
+    });
+    return () => {
+      active = false;
+    };
+  }, [app.webContainer, uiRuntime]);
   // Made again when access is granted, and not when the bar is put away or
   // brought back: nothing from the network is read either way until then.
   const imports = useMemo(
-    () => createImportResolver(app.textFiles, granted ? app.declared : withheldPermissions(app.declared)),
-    [app, granted]
+    () =>
+      !app.webContainer && uiRuntime
+        ? uiRuntime.createImportResolver(app.textFiles, granted ? app.declared : withheldPermissions(app.declared))
+        : null,
+    [app, granted, uiRuntime]
   );
-  useEffect(() => () => imports.dispose(), [imports]);
+  useEffect(() => () => imports?.dispose(), [imports]);
   const counted = useRef(false);
   const runsUrl = app.config.directory?.runs;
   const onLoad = useMemo(
@@ -284,7 +293,10 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   // main page, run afresh as a browser runs a page it goes to, with the
   // app's records as they were. The way back is the browser's: each page
   // shown is an entry in its history.
-  const main = useMemo(() => mainPage(app.textFiles), [app]);
+  const main = useMemo(
+    () => (!app.webContainer && uiRuntime ? uiRuntime.mainPage(app.textFiles) : null),
+    [app, uiRuntime]
+  );
   // What a web container is mounted from, the same object for as long as the app is the same:
   // a new one each render (as a host served the app's files without its archive made) started
   // the container again whenever anything here re-rendered, Allow among them, and the app
@@ -295,6 +307,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   const [page, setPage] = useState<{ path: string; composed: ComposedBundleSource } | null>(null);
   const show = useCallback(
     (path: string | null): boolean => {
+      if (!uiRuntime) return false;
       if (path === null || path === main) {
         setPage(null);
         document.title = app.config.title;
@@ -302,22 +315,22 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
       }
       let composed: ComposedBundleSource;
       try {
-        composed = composePage(app.textFiles, path);
+        composed = uiRuntime.composePage(app.textFiles, path);
       } catch (error) {
         console.warn(`[SoftN] ${path} cannot be shown:`, error instanceof Error ? error.message : error);
         return false;
       }
       setPage({ path, composed });
-      document.title = pageTitle(app.textFiles, path) ?? app.config.title;
+      document.title = uiRuntime.pageTitle(app.textFiles, path) ?? app.config.title;
       return true;
     },
-    [app, main]
+    [app, main, uiRuntime]
   );
   const followLink = useCallback(
     (href: string): boolean => {
-      if (app.followsLinks === false || main === null) return false;
+      if (!uiRuntime || app.followsLinks === false || main === null) return false;
       const from = page?.path ?? main;
-      const path = bundlePageAt(app.textFiles, from, href);
+      const path = uiRuntime.bundlePageAt(app.textFiles, from, href);
       if (path === null) return false;
       if (path === from) return true;
       if (!show(path)) return false;
@@ -329,10 +342,10 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
       content.current?.scrollTo?.(0, 0);
       return true;
     },
-    [app, main, page, show]
+    [app, main, page, show, uiRuntime]
   );
   useEffect(() => {
-    if (app.followsLinks === false) return;
+    if (app.webContainer || app.followsLinks === false) return;
     const back = (event: PopStateEvent) => {
       const path = (event.state as { softnPage?: unknown } | null)?.softnPage;
       // A move to a fragment of the page showing says no page: it stays.
@@ -346,109 +359,98 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   const showTitle = useCallback((title: string) => {
     document.title = title;
   }, []);
-  return (
-    // The project's declared side over the deployment's `theme`, which stays
-    // the default; the rule that weighs them is the provider's. The box named
-    // here is where a side that is not the deployment's is written, with a
-    // ground of its own: this page's is dark whatever the theme (style.css).
-    <ThemeProvider
-      defaultDarkMode={app.config.theme === 'dark'}
-      declaredMode={app.themeMode}
-      box={THEME_BOX}
-      followHost={framed}
-      followSystem={framed}
+  const body = (
+    <div
+      ref={layout}
+      className={answer === 'pending' ? 'application-layout consenting' : 'application-layout'}
+      style={{ '--softn-tab-bar-height': `${barHeight}px` } as React.CSSProperties}
     >
-      <div
-        ref={layout}
-        className={answer === 'pending' ? 'application-layout consenting' : 'application-layout'}
-        style={{ '--softn-tab-bar-height': `${barHeight}px` } as React.CSSProperties}
-      >
-        {framed && chromeHidden && (
-          <button
-            type="button"
-            className="chrome-peek"
-            onClick={() => setChromeHidden(false)}
-            title="Show the bar"
+      {framed && chromeHidden && (
+        <button
+          type="button"
+          className="chrome-peek"
+          onClick={() => setChromeHidden(false)}
+          title="Show the bar"
+        >
+          {app.config.title}
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
           >
-            {app.config.title}
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-          </button>
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+      )}
+      <div ref={chrome} className="application-chrome">
+        {framed && !chromeHidden && (
+          <FrameBar
+            tab={{ id: slug!, name: app.config.title, icon: app.icon, directorySlug: slug }}
+            // The site this directory is: its own host, which is softn.com
+            // only on softn.com.
+            homeLabel={window.location.host}
+            homeTitle="Back to the directory. This leaves the app."
+            closeTitle="Stop the app and go back to its page"
+            onHome={() => window.location.assign('/apps')}
+            onClose={() => window.location.assign(`/app/${encodeURIComponent(slug!)}`)}
+            onHide={() => setChromeHidden(true)}
+            fullscreenTarget={layout}
+            onDownload={() =>
+              window.location.assign(`/api/apps/${encodeURIComponent(slug!)}/bundle.softn?download=1`)
+            }
+          />
         )}
-        <div ref={chrome} className="application-chrome">
-          {framed && !chromeHidden && (
-            <FrameBar
-              tab={{ id: slug!, name: app.config.title, icon: app.icon, directorySlug: slug }}
-              // The site this directory is: its own host, which is softn.com
-              // only on softn.com.
-              homeLabel={window.location.host}
-              homeTitle="Back to the directory. This leaves the app."
-              closeTitle="Stop the app and go back to its page"
-              onHome={() => window.location.assign('/apps')}
-              onClose={() => window.location.assign(`/app/${encodeURIComponent(slug!)}`)}
-              onHide={() => setChromeHidden(true)}
-              fullscreenTarget={layout}
-              onDownload={() =>
-                window.location.assign(`/api/apps/${encodeURIComponent(slug!)}/bundle.softn?download=1`)
+        {answer === 'pending' && (
+          <PermissionBar
+            className="permission-bar"
+            appName={app.config.title}
+            appIcon={app.icon}
+            config={app.declared}
+            capabilities={requested}
+            appRootRef={content}
+            onAllow={allow}
+            onAsking={setAsking}
+            waiting={consentStatus.waiting}
+            restartOnAllow={consentStatus.restartOnAllow}
+          />
+        )}
+        {/* Nothing here says it is saving, so a record that is not kept is
+            the news: a browser that refuses site data, a full budget. In
+            this bar, which is measured, and outside the app's reach. */}
+        {!app.webContainer && uiRuntime && <uiRuntime.XDBStorageNotice appId={app.appId} problemsOnly />}
+      </div>
+      {/* What is still arriving once the app is drawn: on a first visit,
+          the script engine its taps wait for; later, a page's 3D. */}
+      <LoadProgress variant="bar" top="var(--softn-tab-bar-height)" />
+      <div className="application-content" ref={content} tabIndex={-1} data-softn-theme-box={THEME_BOX}>
+        <Boundary>
+          {app.webContainer && containerSource ? (
+            <WebContainerView
+              source={containerSource}
+              appId={app.appId}
+              declaredPermissions={app.declared}
+              grantedCapabilities={containerGrants}
+              theme={
+                app.themeMode === 'dark' || app.themeMode === 'light'
+                  ? app.themeMode
+                  : app.config.theme
               }
+              onReady={onLoad}
+              onTitleChange={showTitle}
+              loading={<Loading text={app.config.loadingText} />}
+              error={(error: Error) => {
+                reportFailure(error);
+                return <Failure error={error} />;
+              }}
             />
-          )}
-          {answer === 'pending' && (
-            <PermissionBar
-              className="permission-bar"
-              appName={app.config.title}
-              appIcon={app.icon}
-              config={app.declared}
-              capabilities={requested}
-              appRootRef={content}
-              onAllow={allow}
-              onAsking={setAsking}
-              waiting={consentStatus.waiting}
-              restartOnAllow={consentStatus.restartOnAllow}
-            />
-          )}
-          {/* Nothing here says it is saving, so a record that is not kept is
-              the news: a browser that refuses site data, a full budget. In
-              this bar, which is measured, and outside the app's reach. */}
-          <XDBStorageNotice appId={app.appId} problemsOnly />
-        </div>
-        {/* What is still arriving once the app is drawn: on a first visit,
-            the script engine its taps wait for; later, a page's 3D. */}
-        <LoadProgress variant="bar" top="var(--softn-tab-bar-height)" />
-        <div className="application-content" ref={content} tabIndex={-1} data-softn-theme-box={THEME_BOX}>
-          <Boundary>
-            {app.webContainer && containerSource ? (
-              <WebContainerView
-                source={containerSource}
-                appId={app.appId}
-                declaredPermissions={app.declared}
-                grantedCapabilities={containerGrants}
-                theme={
-                  app.themeMode === 'dark' || app.themeMode === 'light'
-                    ? app.themeMode
-                    : app.config.theme
-                }
-                onReady={onLoad}
-                onTitleChange={showTitle}
-                loading={<Loading text={app.config.loadingText} />}
-                error={(error: Error) => {
-                  reportFailure(error);
-                  return <Failure error={error} />;
-                }}
-              />
-            ) : (
-            <SoftNWithXDB
+          ) : uiRuntime && imports ? (
+            <uiRuntime.SoftNWithXDB
               key={page?.path ?? ''}
               source={shown.source}
               onLink={followLink}
@@ -473,11 +475,30 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
                 return <Failure error={error} />;
               }}
             />
-            )}
-          </Boundary>
-        </div>
+          ) : (
+            <Loading text={app.config.loadingText} />
+          )}
+        </Boundary>
       </div>
-    </ThemeProvider>
+    </div>
+  );
+  if (app.webContainer || !uiRuntime) {
+    return body;
+  }
+  return (
+    // The project's declared side over the deployment's `theme`, which stays
+    // the default; the rule that weighs them is the provider's. The box named
+    // here is where a side that is not the deployment's is written, with a
+    // ground of its own: this page's is dark whatever the theme (style.css).
+    <uiRuntime.ThemeProvider
+      defaultDarkMode={app.config.theme === 'dark'}
+      declaredMode={app.themeMode}
+      box={THEME_BOX}
+      followHost={framed}
+      followSystem={framed}
+    >
+      {body}
+    </uiRuntime.ThemeProvider>
   );
 }
 /**

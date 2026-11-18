@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRegisterSW } from 'virtual:softn-pwa/react';
 import { useNoticeSlot } from './NoticeSlot';
+import { useCompilerOfflineNotice } from '@softn/editor-shared/useCompilerOfflineNotice';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -35,6 +36,8 @@ export const PWAPrompt: React.FC = () => {
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
   /** Why Studio could not be installed for offline use, until dismissed. */
   const [offlineFailure, setOfflineFailure] = useState<string | null>(null);
+  const [compilerNotice, setCompilerNotice] = useState<string | null>(null);
+  useCompilerOfflineNotice('studio', setCompilerNotice);
 
   const {
     needRefresh: [needRefresh, setNeedRefresh],
@@ -75,6 +78,12 @@ export const PWAPrompt: React.FC = () => {
   }, [offlineReady, setOfflineReady]);
 
   useEffect(() => {
+    if (!compilerNotice) return;
+    const timer = window.setTimeout(() => setCompilerNotice(null), READY_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [compilerNotice]);
+
+  useEffect(() => {
     const onBeforeInstallPrompt = (event: Event) => {
       // Chrome shows its own mini-infobar unless the event is cancelled, and
       // the event object is the only handle on the prompt, so it is kept.
@@ -112,9 +121,11 @@ export const PWAPrompt: React.FC = () => {
 
   const notice = offlineFailure
     ? { text: `Studio could not be installed for offline use: ${offlineFailure.replace(/[.\s]+$/, '')}. It still works while you are online; reload to try again.`, dismiss: () => setOfflineFailure(null) }
-    : offlineReady
-      ? { text: 'Studio is ready to work offline.', dismiss: () => setOfflineReady(false) }
-      : null;
+    : compilerNotice
+      ? { text: compilerNotice, dismiss: () => setCompilerNotice(null) }
+      : offlineReady
+        ? { text: 'Studio is ready to work offline. Preview a classic app or an app that uses the full engine online first to save its runtime files.', dismiss: () => setOfflineReady(false) }
+        : null;
 
   const dock = (
     // Where the dock sits is in styles/studio.css (.st-pwa-dock): it depends on what is under it.

@@ -11,20 +11,18 @@ import { Stars } from './Stars';
  * app's own colour; an app with neither gets its initial on that colour, so
  * a grid of them still reads as a shelf of apps and not a shelf of holes.
  */
-export function Thumb({ app, className = '' }: { app: AppCardData; className?: string }): React.ReactElement {
+export function Thumb({ app, className = '', loading = 'lazy' }: {
+  app: AppCardData;
+  className?: string;
+  loading?: 'eager' | 'lazy';
+}): React.ReactElement {
+  const [failedUrl, setFailedUrl] = React.useState<string>();
   const tint = app.primary ?? '#2a3040';
   const ground = { background: `linear-gradient(135deg, ${tint}, color-mix(in srgb, ${tint} 55%, #000))` };
-  if (app.thumbnailKind === 'image') {
+  if (app.thumbnail && app.thumbnail !== failedUrl && (app.thumbnailKind === 'image' || app.thumbnailKind === 'icon')) {
     return (
-      <div className={`thumb thumb-image ${className}`}>
-        <img src={app.thumbnail} alt="" loading="lazy" decoding="async" />
-      </div>
-    );
-  }
-  if (app.thumbnailKind === 'icon') {
-    return (
-      <div className={`thumb thumb-icon ${className}`} style={ground}>
-        <img src={app.thumbnail} alt="" loading="lazy" decoding="async" />
+      <div className={`thumb thumb-${app.thumbnailKind} ${className}`} style={ground}>
+        <img src={app.thumbnail} alt="" loading={loading} decoding="async" onError={() => setFailedUrl(app.thumbnail)} />
       </div>
     );
   }
@@ -215,44 +213,34 @@ export function pickFeatured(apps: AppCardData[], count = 5): AppCardData[] {
   return [...apps].sort((x, y) => score(y) - score(x)).slice(0, count);
 }
 
-/** The mosaic's shape while the apps are on their way, so the page does not jump. */
+/** Reserve the same shelf layout while the directory is loading. */
 export function FeaturedSkeleton(): React.ReactElement {
   return (
-    <div className="featured-grid" aria-hidden="true">
-      <div className="featured-card featured-lead featured-skeleton" />
-      {Array.from({ length: 4 }, (_, i) => (
-        <div key={i} className="featured-card featured-skeleton" />
-      ))}
+    <div aria-hidden="true">
+      <p className="featured-heading">Featured apps</p>
+      <div className="featured-grid">
+        <div className="featured-card featured-lead featured-skeleton" />
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className="featured-card featured-pick featured-skeleton" />
+        ))}
+      </div>
     </div>
   );
 }
 
-/**
- * The best of the directory, as a mosaic: one app large, with room to say
- * what it is and a Play button, and the next four small beside it. Every
- * tile is a picture first, because a picture is how a visitor tells a game
- * from a spreadsheet at a glance. Three apps make a smaller mosaic; fewer
- * than three is not a shelf, and nothing is drawn.
- */
-export function Featured({ apps, categories, heading = 'Featured' }: { apps: AppCardData[]; categories: Category[]; heading?: React.ReactNode | null }): React.ReactElement | null {
+/** A featured app and up to four more picks, each with its own direct Play link. */
+export function Featured({ apps, categories }: { apps: AppCardData[]; categories: Category[] }): React.ReactElement | null {
   const shown = shelfApps(apps);
   if (shown.length === 0) return null;
   const byId = new Map(categories.map((c) => [c.id, c]));
   const [lead, ...small] = shown;
   const leadCategory = byId.get(lead.category);
   return (
-    <section className="featured" aria-labelledby={heading ? 'featured-title' : undefined} aria-label={heading ? undefined : 'Featured apps'}>
-      {heading && (
-        <div className="directory-section-head">
-          <h2 id="featured-title" className="directory-section-title">
-            {heading}
-          </h2>
-          <p className="directory-section-note">The most played and best rated, with pictures.</p>
-        </div>
-      )}
-      <div className={`featured-grid ${small.length === 2 ? 'featured-grid-three' : ''}`}>
+    <section className="featured" aria-labelledby="featured-title">
+      <h2 id="featured-title" className="featured-heading">Featured apps</h2>
+      <div className="featured-grid">
         <article className="featured-card featured-lead">
-          <Thumb app={lead} />
+          <Thumb app={lead} loading="eager" />
           <div className="featured-shade" aria-hidden="true" />
           <div className="featured-body">
             {leadCategory && (
@@ -281,13 +269,8 @@ export function Featured({ apps, categories, heading = 'Featured' }: { apps: App
           </div>
         </article>
         {small.map((app) => (
-          <article key={app.slug} className="featured-card">
+          <article key={app.slug} className="featured-card featured-pick">
             <Thumb app={app} />
-            <div className="featured-shade" aria-hidden="true" />
-            <PlayLink app={app} className="featured-play featured-play-small">
-              <PlayGlyph size={14} />
-              Play
-            </PlayLink>
             <div className="featured-body">
               <a className="featured-link featured-name" href={app.urls.page}>
                 {app.name}
@@ -297,6 +280,9 @@ export function Featured({ apps, categories, heading = 'Featured' }: { apps: App
                 {app.runs > 0 && <> · {runsLabel(app.runs)}</>}
               </span>
             </div>
+            <PlayLink app={app} className="featured-play featured-play-small">
+              <PlayGlyph size={16} />
+            </PlayLink>
           </article>
         ))}
       </div>

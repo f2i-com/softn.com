@@ -13,6 +13,8 @@ export interface CachedApp {
   name: string;
   version: string;
   description?: string;
+  /** Recorded by Runtime when it opens the archive. Older records acquire it on their next open. */
+  format?: 'web' | 'classic';
   bundleData: Uint8Array;
   cachedAt: number;
   lastOpened: number;
@@ -72,6 +74,8 @@ export interface CachedApp {
 
 /** What the last offline install of a record established. */
 export interface OfflineState {
+  /** The component list covers the main document and its linked classic pages. */
+  allPages?: boolean;
   /** Everything the app can reach was fetched through the service worker. */
   ready: boolean;
   /** The lazy component names the install covered, plus the sync runtime when the app asked for it. */

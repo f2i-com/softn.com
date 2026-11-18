@@ -14,9 +14,10 @@ export function Footer(): React.ReactElement {
               softn
             </a>
             <p className="foot-blurb">
-              A directory of self-contained apps, a UI language, a component library, a sandboxed engine for JavaScript
-              and Python, and a local-first database. Write it yourself or have a model write it — either way it runs anywhere a browser does,
-              and anyone can read it.
+              A directory of self-contained apps, a capability-sandboxed Web App Container and engine for JavaScript
+              and Python, a local-first database, and an optional lightweight <code>.ui</code> interface language whose
+              components load only when an app uses them. Write it yourself or have a model write it — either way it runs
+              anywhere a browser does, and anyone can read it.
             </p>
           </div>
 

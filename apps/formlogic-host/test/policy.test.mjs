@@ -94,8 +94,8 @@ test('host.html is index.html with one attribute, and nothing else', () => {
   assert.equal(host.replace(' data-softn-logic-engine="host-js"', ''), index);
   // Both documents run the same shell; the attribute is all it reads to tell
   // which one it is in.
-  assert.ok(index.includes('<script type="module" src="/src/main.tsx"></script>'));
-  assert.ok(host.includes('<script type="module" src="/src/main.tsx"></script>'));
+  assert.ok(index.includes('<script type="module" src="/src/entry.ts"></script>'));
+  assert.ok(host.includes('<script type="module" src="/src/entry.ts"></script>'));
 });
 
 test('host JavaScript is turned on in the host entry, and only there', () => {
@@ -127,12 +127,12 @@ test('host JavaScript is turned on in the host entry, and only there', () => {
   assert.ok(!/^import .* from '\.\/hostEngine'/m.test(main), 'never statically');
 });
 
-test('the shell decides the document before it writes the policy', () => {
-  const main = fs.readFileSync(path.join(app, 'src/main.tsx'), 'utf8');
-  const attribute = main.indexOf('data-softn-logic-engine');
-  const written = main.indexOf('policy.content');
-  assert.ok(attribute > 0 && written > attribute, 'the attribute is read before the policy is written');
-  // The relaxed policy belongs to the document, not to a message: nothing the
-  // parent sends may reach `framePolicy`.
-  assert.ok(!/framePolicy\([^)]*event\.data/.test(main));
+test('the document sets its policy before loading either renderer', () => {
+  const entry = fs.readFileSync(path.join(app, 'src/entry.ts'), 'utf8');
+  const attribute = entry.indexOf('data-softn-logic-engine');
+  const written = entry.indexOf('document.head.appendChild(policy)');
+  assert.ok(attribute > 0 && written > attribute);
+  assert.ok(entry.indexOf("import('./web')") > written);
+  assert.ok(entry.indexOf("import('./main')") > written);
+  assert.match(entry, /framePolicy\([^\n]+documentEngines\(engine\)\)/);
 });

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -15,7 +16,7 @@ const env = (globalThis as { process?: { env?: Record<string, string | undefined
 // reach and no app runtime may carry (scripts/checks/host-js-isolation.test.mjs).
 
 export default defineConfig({
-  plugins: [react(), coreWorkerAssetPlugin()],
+  plugins: [woff2OnlyFontsPlugin(), react(), coreWorkerAssetPlugin()],
   clearScreen: false,
   server: {
     port: 1431,

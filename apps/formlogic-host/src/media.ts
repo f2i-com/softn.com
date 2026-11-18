@@ -49,7 +49,7 @@ function typeOf(types: Readonly<Record<string, string>>, path: string): string |
  * they came, so a parent need not turn a file into text and back (main.tsx tells it the frame
  * takes them). Anything else is no file.
  */
-function bytesOf(value: unknown): Uint8Array | null {
+export function bytesOf(value: unknown): Uint8Array | null {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (typeof value !== 'string') return null;

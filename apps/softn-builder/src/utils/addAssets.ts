@@ -18,7 +18,7 @@
  * the name coming out the same. Replacing keeps the path and swaps the bytes.
  */
 
-import { ASSET_CLASSIFICATIONS, classifyAsset } from '@softn/core';
+import { ASSET_CLASSIFICATIONS, classifyAsset } from '@softn/core/authoring';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useFilesStore } from '../stores/filesStore';
 import type { ProjectFileNode } from '../types/builder';

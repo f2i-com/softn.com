@@ -223,7 +223,7 @@ export const PACKAGES = [
       'Unzip. Upload the **contents** of `webroot/` into your public folder (with the hidden `.htaccess`). Upload `private/` next to the public folder, not inside it.',
       'Replace `private/app.softn` with your app.',
       'Edit `private/serve.config.php`: title, theme, description, and anything to withhold.',
-      'Give the PHP user write access to `private/` once, so it can create `secret.key` and `digest.cache` (or set them by hand as the guide shows).',
+      'Give the PHP user write access to `private/` once to create `secret.key`, or configure the viewer secret for a read-only deployment.',
       'Open the page. If `private/` cannot sit beside the public folder, set `$private` at the top of `index.php` to its absolute path. Read `DEPLOYMENT.md` for the rest.',
     ],
     requirements: [

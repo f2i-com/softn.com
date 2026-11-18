@@ -24,7 +24,7 @@ export { buildSyncCacheKey } from './sync-cache-key';
 export { bindSyncOptions } from './host-bound-sync-options';
 export { retryableSingleFlight } from './retryable-single-flight';
 export { awaitZippGlue, configureZippGlue, missingGlueExports, ZIPP_GLUE_EXPORTS, type ZippGlueSource } from './zipp-glue';
-export { awaitZippWasmSource, configureZippTorchSource, configureZippWasmSource, preloadZippTorch, zippEngineForWorker, zippLanguages, zippTorchWasmUrl } from './zipp-wasm-loader';
+export { awaitZippWasmSource, cacheUncontrolledZippEngine, configureZippTorchSource, configureZippWasmSource, preloadZippTorch, zippEngineBytes, zippEngineForWorker, zippLanguages, zippTorchWasmUrl, zippWasmUrl } from './zipp-wasm-loader';
 export { outsideServiceWorkerScope, ScopedWorker, startModuleWorker } from './module-worker';
 export {
   countResponse,

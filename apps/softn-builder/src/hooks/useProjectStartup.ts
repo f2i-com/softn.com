@@ -11,7 +11,9 @@ import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
  * Synchronous restore/refusal prompts, however, must only run once. So must a
  * start that has to do with Studio: nothing aborts it, and it goes on by itself.
  */
-export function useProjectStartup(run: (action: StartupAction) => void | (() => void)): void {
+export function useProjectStartup(
+  run: (action: StartupAction) => void | (() => void),
+): void {
   const actionRef = useRef<StartupAction | null>(null);
   const runRef = useRef(run);
   runRef.current = run;

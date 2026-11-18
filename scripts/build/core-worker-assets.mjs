@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { copyWorkerFiles } from '../../packages/@softn/core/scripts/worker-files.mjs';
+import { copyWorkerFiles, WORKER_ENTRIES } from '../../packages/@softn/core/scripts/worker-files.mjs';
+import { sharedAssetsBase } from './shared-assets.mjs';
 
 const defaultCoreRoot = fileURLToPath(new URL('../../packages/@softn/core/dist/', import.meta.url));
 const MIME_TYPES = new Map([
@@ -18,11 +19,17 @@ function inside(root, candidate) {
 }
 
 /** Serve/copy the adjacent assets required by the script and local-model workers. */
-export function coreWorkerAssetPlugin({ coreDistRoot = defaultCoreRoot } = {}) {
+export function coreWorkerAssetPlugin({ coreDistRoot = defaultCoreRoot, env = process.env } = {}) {
   const sourceRoot = path.resolve(coreDistRoot);
+  const shared = sharedAssetsBase(env);
   let outputRoot;
   return {
     name: 'core-worker-asset',
+    config(config, { command }) {
+      if (command === 'build' && shared) {
+        return { define: { __SOFTN_WORKER_PATHS__: JSON.stringify({ shared, entries: (config.base ?? '/').replace(/\/?$/, '/') + 'workers/' }) } };
+      }
+    },
     configResolved(config) {
       outputRoot = path.resolve(config.root, config.build.outDir);
     },
@@ -64,6 +71,19 @@ export function coreWorkerAssetPlugin({ coreDistRoot = defaultCoreRoot } = {}) {
       const target = path.join(destination, 'assets', 'core-runtime');
       fs.rmSync(target, { recursive: true, force: true });
       copyWorkerFiles(sourceRoot, target);
+      if (shared) {
+        // One small static import in the owning service worker's scope. The worker
+        // implementation and every relative import still live in the shared folder.
+        const assets = path.join(destination, 'assets');
+        const scripts = WORKER_ENTRIES.filter((entry) => fs.existsSync(path.join(target, entry)))
+          .map((entry) => 'core-runtime/' + entry);
+        const zipWorkers = fs.readdirSync(assets).filter((name) => /^zipWorker-[\w-]+\.js$/.test(name));
+        const entries = path.join(destination, 'workers');
+        fs.mkdirSync(entries, { recursive: true });
+        for (const entry of [...scripts, ...zipWorkers]) {
+          fs.writeFileSync(path.join(entries, path.basename(entry)), `import ${JSON.stringify(shared + entry)};\n`);
+        }
+      }
     },
   };
 }

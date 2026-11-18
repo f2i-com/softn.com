@@ -23,7 +23,8 @@ export const AIChat: React.FC<{
     draftMessage: input, setDraftMessage: setInput,
   } = useAIStore();
   const readiness = useAIReadiness();
-  const { blueprint } = useWorkspaceStore();
+  const { blueprint, brief } = useWorkspaceStore();
+  const hasExistingPages = blueprint?.pages.some((page) => page.layout === 'imported');
   // A turn that committed files did so as one VFS transaction under the
   // message's transactionId. The message offers to revert it — the whole
   // turn, by id, not "whatever the AI did last" — from the undo journal saved
@@ -109,7 +110,6 @@ export const AIChat: React.FC<{
     }
   };
 
-  const { brief } = useWorkspaceStore();
   // Ready means a provider and a model: sending with less opens the setup
   // for what is missing, and keeps the message as it was typed.
   const hasProvider = readiness.state === 'ready';
@@ -121,6 +121,12 @@ export const AIChat: React.FC<{
 
   const sendSuggestedPrompt = (text: string) => {
     if (agentState !== 'idle') return;
+    // With a draft in progress, leave the combined request in the composer for review.
+    if (input.trim() && input !== text) {
+      if (!input.endsWith(`\n\n${text}`)) setInput(`${input}\n\n${text}`);
+      inputRef.current?.focus();
+      return;
+    }
     if (!hasProvider) { setInput(text); openSettings(); return; }
     const msg: ChatMessage = {
       id: randomUUID(),
@@ -139,7 +145,11 @@ export const AIChat: React.FC<{
   const buildOffer = brief ? `Build ${brief.appName} as the brief describes` : '';
   const buildTheBrief = () => {
     if (agentState !== 'idle') return;
-    if (!hasProvider) { setInput(buildOffer); openSettings(); return; }
+    if (!hasProvider) {
+      if (!input.trim()) setInput(buildOffer);
+      openSettings();
+      return;
+    }
     if (!buildFromBrief()) sendSuggestedPrompt(buildOffer);
     // The offer may be waiting in the box from a press made before there was a provider.
     else if (input === buildOffer) setInput('');
@@ -217,15 +227,13 @@ export const AIChat: React.FC<{
                 <Icon name="ai" size={32} color="var(--studio-accent)" />
               </div>
             )}
-            {/* A brief and a plan with nothing said yet is a project the brief wizard has just laid
-                out. It used to be greeted as an import ("Imported app ready: this bundle is loaded
-                into Studio"), which it never is: an import and an example each open with a message
-                of their own, so they never reach this state. */}
             <p style={styles.emptyTitle}>
-              {brief && blueprint ? 'Ready to build' : brief ? 'Ready to generate' : 'Describe your app'}
+              {hasExistingPages ? 'What would you like to change?' : brief && blueprint ? 'Ready to build' : brief ? 'Ready to generate' : 'Describe your app'}
             </p>
             {!needsSetup && <p style={styles.emptyDesc}>
-              {brief && blueprint
+              {hasExistingPages
+                ? 'Ask about the existing source, change a screen, or add a feature.'
+                : brief && blueprint
                 ? 'The pages are laid out and waiting for their content. Ask the AI to build the app, or tell it what to change.'
                 : brief
                 ? 'Your brief is loaded. Send a message to start generating, or refine the details.'
@@ -259,7 +267,7 @@ export const AIChat: React.FC<{
             )}
             {blueprint && messages.length === 0 && (
               <div style={styles.suggestions}>
-                {brief && (
+                {brief && !hasExistingPages && (
                   <button onClick={buildTheBrief} className="st-tap" style={styles.suggestionBtn}>
                     {buildOffer}
                   </button>
@@ -416,7 +424,7 @@ export const AIChat: React.FC<{
           onKeyDown={handleKeyDown}
           placeholder={waitingRun ? 'Answer the question above…' : blueprint ? 'Ask the AI to change your app…' : 'Describe the app you want to build…'}
           style={styles.textarea}
-          rows={1}
+          rows={Math.min(5, input.split('\n', 5).length)}
           disabled={agentState !== 'idle'}
         />
         {agentState === 'building' ? (
@@ -753,6 +761,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   textarea: {
     flex: 1,
+    minWidth: 0,
+    fieldSizing: 'content',
     background: 'var(--studio-bg)',
     border: '1px solid var(--studio-border)',
     borderRadius: 10,

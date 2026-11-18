@@ -1,4 +1,4 @@
-import { extractPermissions, inspectDeclaration, type PermissionConfig } from '@softn/core';
+import { extractPermissions, inspectDeclaration, type PermissionConfig } from '@softn/core/authoring';
 
 /**
  * What Studio's preview runs an app under: what its permission.json asks

@@ -47,6 +47,21 @@ afterEach(() => {
 
 const dock = () => host.querySelector<HTMLElement>('.st-pwa-dock')!;
 
+it('announces an offline compiler only after acknowledgement, once per syntax in this tab', () => {
+  act(() => root.render(<PWAPrompt />));
+  const saved = (format: string) => act(() => {
+    window.dispatchEvent(new CustomEvent('softn:compiler-offline-ready', { detail: format }));
+  });
+  expect(dock().textContent).not.toContain('edit offline');
+  saved('jsx');
+  expect(dock().querySelector('[role="status"]')?.textContent).toContain('JSX is ready to edit offline.');
+  act(() => dock().querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')!.click());
+  saved('jsx');
+  expect(dock().textContent).not.toContain('edit offline');
+  saved('vue');
+  expect(dock().textContent).toContain('Vue components are ready to edit offline.');
+});
+
 describe('the notices’ dock', () => {
   it('floats in its corner on a page that has no place for it', () => {
     act(() => root.render(<><main>the page</main><PWAPrompt /></>));

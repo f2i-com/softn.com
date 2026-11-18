@@ -28,6 +28,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import starters from '../../examples/offline-web-apps/catalog.json' with { type: 'json' };
 
 const args = process.argv.slice(2);
 const opt = (name) => {
@@ -44,9 +45,8 @@ function fail(message) {
 for (const required of ['index.html', 'web/index.html', 'play/index.html', 'api/index.php', 'api/router.php', '.htaccess', 'BUILD-INFO.json']) {
   if (!fs.existsSync(path.join(root, required))) fail(`${root} has no ${required}; is it a built site?`);
 }
-// The default build ships no example bundles and the directory starts empty;
-// `--with-demos` ships them and the API seeds the directory. BUILD-INFO.json
-// says which this is, so the checks below expect the right one.
+// Landing-page starters ship in every build. The optional /demos catalogue
+// supplies directory listings when the build uses --with-demos.
 const buildInfo = JSON.parse(fs.readFileSync(path.join(root, 'BUILD-INFO.json'), 'utf8'));
 const bundled = Number(buildInfo?.examples?.bundled ?? 0);
 if (bundled > 0 && !fs.existsSync(path.join(root, 'demos/index.json'))) fail(`${root} claims ${bundled} example bundles but has no demos/index.json`);
@@ -264,6 +264,12 @@ await check('api 404 is JSON', '/api/apps/no-such-app-here', {
 });
 
 // ── Static files, with the isolation headers ───────────────────────────
+for (const starter of starters) {
+  await check(starter.name + ' starter', '/examples/' + starter.file + '.softn', {
+    accept: '*/*', type: 'application/octet-stream', isolated: true,
+    body: (t) => (t.startsWith('PK') ? true : 'not a zip'),
+  });
+}
 const demoIndex = bundled > 0 ? json(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8')) : null;
 const firstDemo = Array.isArray(demoIndex) && demoIndex.length > 0 ? demoIndex[0].file : null;
 if (bundled > 0) await check('demo index', '/demos/index.json', { accept: 'application/json', type: 'application/json', isolated: true });

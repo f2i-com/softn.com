@@ -559,12 +559,16 @@ export const SettingsPanel: React.FC = () => {
             </section>
             <section className="st-settings-section">
               <h3 className="st-settings-heading">Saving and the bar</h3>
+              {isHostedEditor() ? (
+                <p className="st-settings-note">Save your draft to FormLogic for review. <strong>Download ZIP</strong> keeps a local copy of the editable files.</p>
+              ) : <>
               <p className="st-settings-note">
                 <strong>Save project</strong> happens on its own after each change, to this browser only; the bar shows Saved, Saving or Not saved. Browser storage is not a backup.
               </p>
               <p className="st-settings-note">
                 <strong>Preview</strong> is the canvas. <strong>Run</strong> opens the bundle in the SoftN runtime. <strong>Export bundle</strong> downloads a .softn file. <strong>Publish</strong> sends the bundle to the directory’s publish page.
               </p>
+              </>}
             </section>
             <section className="st-settings-section">
               <h3 className="st-settings-heading">Keyboard</h3>

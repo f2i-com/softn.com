@@ -60,6 +60,14 @@ const TOOLS = [{ name: 'read_file', description: 'Read a file.', inputSchema: { 
 afterEach(() => { vi.useRealTimers(); });
 
 describe('hosted AI: capability', () => {
+  it('announces ZIP download support only for editors offering their own download', async () => {
+    hostedLocation();
+    const mod = await loadModule();
+    const dispose = mod.connectHostedEditor({ open: async () => {}, export: () => new Uint8Array() }, { projectZip: true });
+    expect(window.parent.postMessage).toHaveBeenCalledWith(expect.objectContaining({ projectZip: true }), location.origin);
+    dispose();
+  });
+
   it('the editor announces aiTools in its ready message and keeps the bridge protocol at 1', async () => {
     hostedLocation();
     const mod = await loadModule();

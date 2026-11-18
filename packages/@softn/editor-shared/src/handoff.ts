@@ -53,7 +53,7 @@ export function destinationLabel(to: HandoffDestination): string {
 export interface PrepareHandoffOptions {
   to: HandoffDestination;
   /** The bundle bytes, or how to build them (a build failure is a message, not a throw). */
-  bundle: Uint8Array | (() => Uint8Array);
+  bundle: Uint8Array | (() => Uint8Array | Promise<Uint8Array>);
   name: string;
   /** Which editor is staging, recorded with the hand-off. */
   source: HandoffSource;
@@ -85,7 +85,7 @@ export async function prepareHandoff(options: PrepareHandoffOptions): Promise<Ha
   }
   let bytes: Uint8Array;
   try {
-    bytes = typeof options.bundle === 'function' ? options.bundle() : options.bundle;
+    bytes = typeof options.bundle === 'function' ? await options.bundle() : options.bundle;
   } catch (err) {
     return { ok: false, message: `The bundle could not be built: ${err instanceof Error ? err.message : String(err)}` };
   }

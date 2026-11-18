@@ -6,6 +6,18 @@
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+@keyframes softn-shell-spin {
+  to { transform: rotate(360deg); }
+}
+.softn-shell-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2.5px solid var(--line);
+  border-top-color: var(--mint);
+  animation: softn-shell-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
 /* An app that failed while running. Drawn from the shared tokens, like the
    shell's own error card; danger marks only the icon. */
 .softn-runner-error-wrap {

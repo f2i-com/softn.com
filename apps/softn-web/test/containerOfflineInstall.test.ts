@@ -61,14 +61,23 @@ describe('installing a web container for offline use', () => {
     for (const [, init] of fetch.mock.calls) expect(init).toMatchObject({ cache: 'reload', credentials: 'same-origin' });
   });
 
-  it('fetches no engine for a tier that runs on the engine the shell already holds: its bindings alone', async () => {
+  it('installs the shared full engine once across pages needing JavaScript and Python', async () => {
     const fetch = serve();
+    const installFullEngine = vi.fn(async () => {});
     const result = await installContainerOffline(
       app('formats'),
-      options(container({ tiers: ['javascript', 'python'] }), { fetch: fetch as unknown as typeof globalThis.fetch })
+      options(container({ tiers: ['javascript', 'python'] }), { fetch: fetch as unknown as typeof globalThis.fetch, installFullEngine })
     );
     expect(result.ready).toBe(true);
+    expect(installFullEngine).toHaveBeenCalledOnce();
     expect(asked(fetch)).toEqual(['container-worker.js', 'engines/zipp-python-base.glue.js']);
+  });
+
+  it('reports the full engine when it could not be installed, and retries the next time', async () => {
+    const install = vi.fn().mockRejectedValueOnce(new Error('storage unavailable')).mockResolvedValue(undefined);
+    const setup = options(container({ tiers: ['lite', 'javascript'] }), { fetch: serve(), installFullEngine: install });
+    expect(await installContainerOffline(app('mixed'), setup)).toMatchObject({ ready: false, missing: ['engine:full'] });
+    expect(await installContainerOffline(app('mixed'), setup)).toMatchObject({ ready: true, missing: [] });
   });
 
   it('holds every tier a page of the app starts on', async () => {

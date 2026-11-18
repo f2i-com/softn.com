@@ -7,3 +7,5 @@ export declare const threeAddonChunks: string[];
 export declare const vendorThreeGroup: { name: string; test: RegExp };
 export declare const onDemandGlobIgnores: string[];
 export declare const onDemandRuntimeCaching: NonNullable<NonNullable<SoftnPwaOptions['workbox']>['runtimeCaching']>;
+export declare const fullEngineGlob: string;
+export declare const fullEngineRuntimeCaching: (typeof onDemandRuntimeCaching)[number];

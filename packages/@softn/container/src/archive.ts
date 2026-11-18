@@ -9,6 +9,8 @@
  */
 
 import { openBundleArchive, sha256Hex, type BundleArchive } from '@softn/bundle-format';
+import { readWebImportMap } from '@softn/bundle-format/web-imports';
+import { checkSourceModules, compiledSourcePath, GENERATED_SOURCE_HEADER } from '@softn/bundle-format/source-modules';
 import { inspectDeclaration, type Capability } from '@softn/bundle-format/capabilities';
 import type { ContainerManifest, ContainerMode, ContainerPermissions } from './types';
 
@@ -22,7 +24,7 @@ const MAX_RUNTIME_BLOBS = 512;
 const MAX_RUNTIME_BLOB_BYTES = 64 * 1024 * 1024;
 
 const TEXT_EXTENSIONS = new Set([
-  'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'mts', 'tsx', 'jsx',
+  'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'mts', 'tsx', 'jsx', 'vue',
   'py', 'json', 'importmap', 'svg', 'txt', 'md', 'csv', 'xml', 'ui',
   'logic', 'xdb', 'wgsl', 'glsl', 'vert', 'frag', 'obj', 'mtl', 'gltf',
 ]);
@@ -37,6 +39,7 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   ts: 'text/typescript; charset=utf-8',
   tsx: 'text/tsx; charset=utf-8',
   jsx: 'text/jsx; charset=utf-8',
+  vue: 'text/plain; charset=utf-8',
   py: 'text/x-python; charset=utf-8',
   json: 'application/json; charset=utf-8',
   svg: 'image/svg+xml',
@@ -76,6 +79,15 @@ export function mimeTypeFor(path: string): string {
 
 export function isTextPath(path: string): boolean {
   return TEXT_EXTENSIONS.has(extOf(path));
+}
+
+/** Only script loading substitutes compiled JavaScript. Reading the file as data returns its authored source. */
+export function readRunnableModule(path: string, read: (file: string) => string | null | undefined): string | null {
+  const original = read(path);
+  if (original == null) return null;
+  const sidecar = compiledSourcePath(path);
+  const generated = sidecar && read(sidecar);
+  return generated?.startsWith(GENERATED_SOURCE_HEADER) ? generated : original;
 }
 
 /** Normalize a relative or virtual-origin URL to a clean VFS path (`assets/app.js`), or `null` if external/escaped. */
@@ -158,10 +170,15 @@ function detectSingleRootPrefix(names: readonly string[]): string {
     if (candidate === null) candidate = prefix;
     else if (candidate !== prefix) return '';
   }
-  return candidate ?? '';
+  return candidate && !isServerFile(candidate) ? candidate : '';
 }
 
-function extractHtmlHeadMeta(html: string): { title?: string; icon?: string; importMap: Record<string, string> } {
+/** Backend sources and SQLite migrations belong to the owner project, outside the guest VFS. */
+function isServerFile(path: string): boolean {
+  return /^(?:__softn_generated__\/)?(?:server|backend|private)\//i.test(path) || /\.sql$/i.test(path);
+}
+
+function extractHtmlHeadMeta(html: string): { title?: string; icon?: string } {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
   const title = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : undefined;
 
@@ -169,22 +186,7 @@ function extractHtmlHeadMeta(html: string): { title?: string; icon?: string; imp
     ?? /<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["'](?:shortcut\s+)?icon["'][^>]*>/i.exec(html);
   const icon = iconMatch ? iconMatch[1].trim() : undefined;
 
-  const importMap: Record<string, string> = {};
-  const mapRegex = /<script\b[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = mapRegex.exec(html)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1]) as { imports?: Record<string, unknown> };
-      if (parsed && typeof parsed.imports === 'object' && parsed.imports !== null) {
-        for (const [k, v] of Object.entries(parsed.imports)) {
-          if (typeof v === 'string') importMap[k] = v;
-        }
-      }
-    } catch {
-      // Malformed importmap ignored safely.
-    }
-  }
-  return { title, icon, importMap };
+  return { title, icon };
 }
 
 export class ContainerArchive {
@@ -243,7 +245,7 @@ export class ContainerArchive {
 
       for (const rawName of rawNames) {
         const norm = rawPrefix && rawName.startsWith(rawPrefix) ? rawName.slice(rawPrefix.length) : rawName;
-        if (!norm) continue;
+        if (!norm || isServerFile(norm)) continue;
         normalizedNames.add(norm);
         if (isTextPath(norm)) {
           const entryBytes = zipArchive.read(rawName);
@@ -254,6 +256,7 @@ export class ContainerArchive {
         }
       }
 
+      await checkSourceModules(initialText);
       const { manifest, permissions, requestedCapabilities } = buildContainerMeta(
         normalizedNames,
         initialText,
@@ -288,21 +291,23 @@ export class ContainerArchive {
       const cleanKey = origKey.replace(/\\/g, '/').replace(/^\/+/, '');
       const norm = rawPrefix && cleanKey.startsWith(rawPrefix) ? cleanKey.slice(rawPrefix.length) : cleanKey;
       if (!norm) continue;
+      // Preserve the identity used for storage when the author includes server files.
+      hashParts.push(`${norm}:${typeof val === 'string' ? val.length : val.byteLength}`);
+      if (isServerFile(norm)) continue;
       normalizedNames.add(norm);
       if (typeof val === 'string') {
         initialText.set(norm, val);
-        hashParts.push(`${norm}:${val.length}`);
       } else {
         if (isTextPath(norm)) {
           initialText.set(norm, decoder.decode(val));
         } else {
           initialBinary.set(norm, val);
         }
-        hashParts.push(`${norm}:${val.byteLength}`);
       }
     }
 
     const digest = await sha256Hex(encoder.encode(hashParts.sort().join('|')));
+    await checkSourceModules(initialText);
     const { manifest, permissions, requestedCapabilities } = buildContainerMeta(
       normalizedNames,
       initialText,
@@ -504,7 +509,7 @@ export function isLegacySoftNMarkup(source: string): boolean {
 
 function buildContainerMeta(
   names: ReadonlySet<string>,
-  texts: ReadonlyMap<string, string>,
+  texts: Map<string, string>,
   digest: string,
   fallbackName: string
 ): {
@@ -519,6 +524,10 @@ function buildContainerMeta(
       const parsed = JSON.parse(manifestText) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         rawManifest = parsed as Record<string, unknown>;
+        if (Object.hasOwn(rawManifest, 'server')) {
+          delete rawManifest.server;
+          texts.set('manifest.json', JSON.stringify(rawManifest));
+        }
       }
     } catch {
       throw new Error('Malformed manifest.json in .softn container');
@@ -557,14 +566,8 @@ function buildContainerMeta(
       ? 'legacy-ui'
       : 'web';
   const entryHtml = mode === 'web' ? rawEntryText : '';
-  const htmlMeta = entryHtml ? extractHtmlHeadMeta(entryHtml) : { importMap: {} };
-
-  const manifestImports: Record<string, string> = { ...htmlMeta.importMap };
-  if (rawManifest?.imports && typeof rawManifest.imports === 'object' && !Array.isArray(rawManifest.imports)) {
-    for (const [k, v] of Object.entries(rawManifest.imports as Record<string, unknown>)) {
-      if (typeof v === 'string') manifestImports[k] = v;
-    }
-  }
+  const htmlMeta = entryHtml ? extractHtmlHeadMeta(entryHtml) : {};
+  const manifestImports = readWebImportMap(entryHtml, rawManifest?.imports);
 
   const config =
     rawManifest?.config && typeof rawManifest.config === 'object'

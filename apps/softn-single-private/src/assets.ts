@@ -1,4 +1,4 @@
-import { assetObjectUrl } from '@softn/core';
+import { assetObjectUrl } from '@softn/core/web-host';
 import type { AssetResolver } from '@softn/single-shell';
 
 /**

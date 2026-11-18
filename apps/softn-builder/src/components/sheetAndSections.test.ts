@@ -19,6 +19,8 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Sheet } from './Sheet';
+import { FileNavigator } from './files/FileNavigator';
+import { useFilesStore } from '../stores/filesStore';
 import { TreeView } from './panels/TreeView';
 import { DataPanel } from './panels/DataPanel';
 import { useCanvasStore } from '../stores/canvasStore';
@@ -43,11 +45,15 @@ afterEach(() => {
 });
 
 describe('a sheet over the canvas', () => {
-  const open = (onClose: () => void) =>
+  const open = (
+    onClose: () => void,
+    title = 'Components',
+    content: React.ReactNode = React.createElement('button', { type: 'button', 'data-inside': '' }, 'Hide'),
+  ) =>
     act(() =>
       root.render(
         // The third argument is the sheet's content; its type asks for it among the props as well.
-        React.createElement(Sheet, { title: 'Components', onClose } as React.ComponentProps<typeof Sheet>, React.createElement('button', { type: 'button', 'data-inside': '' }, 'Hide'))
+        React.createElement(Sheet, { title, onClose } as React.ComponentProps<typeof Sheet>, content)
       )
     );
 
@@ -66,20 +72,16 @@ describe('a sheet over the canvas', () => {
     expect(closed).toBe(1);
   });
 
-  it('says where it was pressed, for a panel whose rows put it away', () => {
-    // The Files sheet goes away when a file is picked in it (App.tsx): the press is told with what was pressed.
-    const pressed: string[] = [];
-    act(() =>
-      root.render(
-        React.createElement(
-          Sheet,
-          { title: 'Files', onClose: () => undefined, onPress: (event) => { pressed.push((event.target as HTMLElement).getAttribute('data-file-row') ?? ''); } } as React.ComponentProps<typeof Sheet>,
-          React.createElement('div', { 'data-file-row': 'main.ui' }, 'main.ui')
-        )
-      )
-    );
-    act(() => void host.querySelector<HTMLElement>('[data-file-row]')!.click());
-    expect(pressed).toEqual(['main.ui']);
+  it('notifies the Files sheet when a keyboard or pointer opens a file', () => {
+    useFilesStore.getState().reset();
+    let opened = 0;
+    const onFileOpened = () => { opened += 1; };
+    open(() => {}, 'Files', React.createElement(FileNavigator, { onFileOpened }));
+    const file = host.querySelector<HTMLElement>('[role="treeitem"][aria-selected]')!;
+    act(() => file.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    act(() => file.click());
+    act(() => host.querySelector<HTMLElement>('[role="treeitem"][aria-expanded]')!.click());
+    expect(opened).toBe(2);
   });
 
   // The canvas says what was done ("Deleted Heading.") in a region a screen reader reads out.

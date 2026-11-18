@@ -9,9 +9,10 @@
  * Why a lexical token scanner rather than regexes or Acorn?
  * - Regexes corrupt strings, template literals, comments, and regex literals in minified bundles.
  * - Bundling Acorn adds ~120 KB and fails on TypeScript syntax (`interface`, `type`, `: Type`).
- * - A ~250-line JS/TS lexical scanner handles minified JS, JSX, and TypeScript cleanly at ~0.2 ms/MB.
+ * - The scanner handles minified JavaScript and TypeScript without adding a parser to the worker.
  */
 
+import { generatedFrameworkPath } from '@softn/bundle-format/source-modules';
 import { resolveVfsPath, VIRTUAL_ORIGIN } from './archive';
 
 export type ResolvedSpecifier =
@@ -28,6 +29,8 @@ export const DEFAULT_VENDOR_IMPORT_MAP: Readonly<Record<string, string>> = {
   htm: 'softn-vendor:htm',
   preact: 'softn-vendor:preact',
   'preact/hooks': 'softn-vendor:preact/hooks',
+  'preact/jsx-runtime': 'softn-vendor:preact/jsx-runtime',
+  'preact/jsx-dev-runtime': 'softn-vendor:preact/jsx-dev-runtime',
 };
 
 /** Resolve an ES module specifier from `importerPath` using importMap, VFS, `softn:*`, and `/runtime/vendor/`. */
@@ -48,6 +51,15 @@ export function resolveModuleSpecifier(
         break;
       }
     }
+  }
+  // An editor export carries these libraries locally, including for imported component
+  // sources that use npm names. Explicit project import maps always take precedence.
+  if (!mapped && hasVfsFile && (raw === 'react' || raw === 'react-dom/client' || raw === 'vue')) {
+    const framework = raw === 'vue' ? 'vue' : 'react';
+    const local = 'vendor/' + framework + '.js';
+    const generated = generatedFrameworkPath(framework);
+    if (hasVfsFile(local)) mapped = '/' + local;
+    else if (hasVfsFile(generated)) mapped = '/' + generated;
   }
   // 2. Check SoftN default hosted vendor catalog
   if (!mapped) {
@@ -86,7 +98,7 @@ export function resolveModuleSpecifier(
     if (vfsCandidate) {
       let finalPath = vfsCandidate;
       if (hasVfsFile && !hasVfsFile(finalPath)) {
-        for (const ext of ['.js', '.mjs', '.ts', '.tsx', '.jsx', '/index.js', '/index.ts']) {
+        for (const ext of ['.js', '.mjs', '.ts', '.tsx', '.jsx', '/index.js', '/index.ts', '.vue', '/index.jsx', '/index.vue']) {
           if (hasVfsFile(finalPath + ext)) {
             finalPath = finalPath + ext;
             break;
@@ -368,7 +380,9 @@ export interface TransformedModule {
  * registration, preserving line structure where practical and supporting all ES2025 import/export forms.
  */
 export function transformEsModule(code: string, moduleUrl: string): TransformedModule {
-  const tokens = tokenizeTopLevel(code);
+  // Bundlers often emit a self-contained script even when the HTML uses type="module".
+  // Only a keyword can require a rewrite. A match in a string or comment falls back to the scanner.
+  const tokens = /\b(?:import|export)\b/.test(code) ? tokenizeTopLevel(code) : [];
   const edits: Array<{ start: number; end: number; replacement: string }> = [];
   const exportGetters = new Map<string, string>(); // exportedName -> localExpr
   const staticImports: string[] = [];

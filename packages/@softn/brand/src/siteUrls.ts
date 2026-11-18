@@ -33,50 +33,37 @@ export interface SiteUrls {
   STUDIO_URL: string;
   BUILDER_URL: string;
   PUBLISH_URL: string;
-  /** The product bar's addresses when they are not the defaults (desktop); undefined otherwise. */
+  /** Overrides for the header when the products live at different addresses. */
   PRODUCT_URLS: ProductUrls | undefined;
 }
 
 const PRODUCTION = 'https://softn.com';
 
 export function resolveSiteUrls(input: SiteUrlInputs): SiteUrls {
-  if (input.desktop) {
-    const site = `${PRODUCTION}/`;
-    const urls: SiteUrls = {
-      SITE_URL: site,
-      RUNTIME_URL: `${PRODUCTION}${DEFAULT_URLS.runtime}`,
-      STUDIO_URL: `${PRODUCTION}${DEFAULT_URLS.studio}`,
-      BUILDER_URL: `${PRODUCTION}${DEFAULT_URLS.builder}`,
-      PUBLISH_URL: `${PRODUCTION}${DEFAULT_URLS.publish}`,
-      PRODUCT_URLS: undefined,
-    };
-    urls.PRODUCT_URLS = {
-      home: urls.SITE_URL,
-      apps: `${PRODUCTION}${DEFAULT_URLS.apps}`,
-      runtime: urls.RUNTIME_URL,
-      studio: urls.STUDIO_URL,
-      builder: urls.BUILDER_URL,
-      publish: urls.PUBLISH_URL,
-      docs: `${PRODUCTION}${DEFAULT_URLS.docs}`,
-      repo: DEFAULT_URLS.repo,
-    };
-    return urls;
-  }
   // The integrated dev launcher serves an editor under its public path. Its
   // private Vite port is not a receiving site and cannot share staged bundles.
   const sharedOrigin = /^\/(?:studio|builder|web)\/?$/.test(input.baseUrl ?? '/');
   const standaloneDev = input.dev && !sharedOrigin;
-  const configured = (key: string): string => {
+  const address = (key: string, deployed: string, devPort: number): string => {
+    if (input.desktop) return PRODUCTION + deployed;
     const value = input.env[key];
-    return typeof value === 'string' ? value : '';
+    if (typeof value === 'string' && value) return value;
+    return standaloneDev ? `http://localhost:${devPort}` : deployed;
   };
-  const SITE_URL = configured('VITE_SITE_URL') || (standaloneDev ? 'http://localhost:1421' : DEFAULT_URLS.home);
+  const SITE_URL = address('VITE_SITE_URL', DEFAULT_URLS.home, 1421);
+  const RUNTIME_URL = address('VITE_WEB_URL', DEFAULT_URLS.runtime, 1420);
+  const STUDIO_URL = address('VITE_STUDIO_URL', DEFAULT_URLS.studio, 1423);
+  const BUILDER_URL = address('VITE_BUILDER_URL', DEFAULT_URLS.builder, 1422);
+  const siteBase = SITE_URL.replace(/\/+$/, '');
+  const PUBLISH_URL = siteBase + DEFAULT_URLS.publish;
+  const needsOverrides = SITE_URL !== DEFAULT_URLS.home || RUNTIME_URL !== DEFAULT_URLS.runtime
+    || STUDIO_URL !== DEFAULT_URLS.studio || BUILDER_URL !== DEFAULT_URLS.builder;
   return {
-    SITE_URL,
-    RUNTIME_URL: configured('VITE_WEB_URL') || (standaloneDev ? 'http://localhost:1420' : DEFAULT_URLS.runtime),
-    STUDIO_URL: configured('VITE_STUDIO_URL') || (standaloneDev ? 'http://localhost:1423' : DEFAULT_URLS.studio),
-    BUILDER_URL: configured('VITE_BUILDER_URL') || (standaloneDev ? 'http://localhost:1422' : DEFAULT_URLS.builder),
-    PUBLISH_URL: `${SITE_URL.replace(/\/+$/, '')}${DEFAULT_URLS.publish}`,
-    PRODUCT_URLS: undefined,
+    SITE_URL, RUNTIME_URL, STUDIO_URL, BUILDER_URL, PUBLISH_URL,
+    PRODUCT_URLS: needsOverrides ? {
+      home: SITE_URL, apps: siteBase + DEFAULT_URLS.apps, runtime: RUNTIME_URL,
+      studio: STUDIO_URL, builder: BUILDER_URL, publish: PUBLISH_URL,
+      docs: siteBase + DEFAULT_URLS.docs, repo: DEFAULT_URLS.repo,
+    } : undefined,
   };
 }

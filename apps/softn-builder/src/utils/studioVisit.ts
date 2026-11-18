@@ -40,7 +40,7 @@
  * on with.
  */
 
-import { readBundleEntries } from '@softn/core';
+import { readBundleEntries } from '@softn/core/authoring';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import { useProjectStore } from '../stores/projectStore';

@@ -13,7 +13,7 @@ import { CodeEditor, highlightLanguage } from './CodeEditor';
 
 // The editor is a chunk of its own, fetched the first time one is drawn; it is here before the tests draw one.
 beforeAll(async () => {
-  await import('@softn/components/editors');
+  await import('@softn/components/code-editor');
 });
 
 declare global {

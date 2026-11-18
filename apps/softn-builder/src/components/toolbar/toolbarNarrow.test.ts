@@ -37,7 +37,7 @@ declare global {
 }
 
 // By its path: under this DOM `import.meta.url` is an http address.
-const css = readFileSync(resolve(__dirname, '../../styles/builder.css'), 'utf8');
+const css = readFileSync(resolve(__dirname, '../../styles/builder.css'), 'utf8').replace(/\r\n/g, '\n');
 let host: HTMLDivElement;
 let root: Root;
 

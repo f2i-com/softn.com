@@ -27,7 +27,7 @@
  *    piece of markup that loads one (see withoutFetches below).
  */
 
-import { cssResourceReferences, isSafeUrl, parse, sanitizeSvg } from '@softn/core';
+import { cssResourceReferences, isSafeUrl, parse, sanitizeSvg } from '@softn/core/authoring';
 import type { Expression } from '@softn/core';
 import { TEXT_NODE_TYPE } from '../types/builder';
 import type { CanvasElement, ComponentMeta } from '../types/builder';

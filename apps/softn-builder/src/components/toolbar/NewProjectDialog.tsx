@@ -1,8 +1,8 @@
-import React, { useEffect, useId, useState } from 'react';
-import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { hostedWebContainersEnabled, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
+import { COMPONENT_STARTERS, WEB_STARTERS, createWebStarter, type StarterFile } from '@softn/editor-shared/webStarters';
 import type { LogicLanguage } from '../../utils/logicFiles';
-import { dialogStyles } from './dialogStyles';
 
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
 export type NewProjectFormat = 'ui' | 'web';
@@ -13,348 +13,285 @@ export interface NewProjectConfig {
   description: string;
   theme: 'light' | 'dark' | 'system';
   template: StarterTemplate;
-  /** `'web'` for SoftN v2 Web App Containers (HTML + CSS + JS/TS/Python); `'ui'` (default) for visual `.ui` apps. */
   format?: NewProjectFormat;
-  /**
-   * The language of the app's logic. An app has one: the runtime refuses a
-   * bundle whose logic mixes the two, so it is chosen when the app is made.
-   */
   language: NewProjectLanguage;
-  /**
-   * The Python packages the app asks for (`config.python.packages`): torch
-   * or nothing. Only a Python app has any.
-   */
   pythonPackages: string[];
 }
 
 interface NewProjectDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (config: NewProjectConfig) => void;
+  onCreate: (config: NewProjectConfig, starterFiles?: StarterFile[]) => void;
 }
 
-
-// Buttons, the overlay, the dialog frame and the choice cards are classes in
-// styles/builder.css, and what the dialogs share is in dialogStyles.ts; what
-// is left here is this form's own layout.
-const styles: Record<string, React.CSSProperties> = {
-  dialog: {
-    width: 620,
-  },
-  header: {
-    ...dialogStyles.header,
-    padding: '14px 12px 14px 20px',
-  },
-  body: {
-    padding: 20,
-    overflowY: 'auto',
-    minHeight: 0,
-    display: 'grid',
-    gap: 18,
-  },
-  label: dialogStyles.label,
-  fieldset: {
-    border: 'none',
-    padding: 0,
-    margin: 0,
-    minWidth: 0,
-  },
-  input: dialogStyles.input,
-  textarea: {
-    ...dialogStyles.textarea,
-    maxHeight: 180,
-  },
-  select: {
-    width: '100%',
-    padding: '9px 10px',
-    borderRadius: 8,
-    fontSize: 14,
-  },
-  cards: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-    gap: 10,
-  },
-  cardTitle: {
-    display: 'block',
-    fontSize: 13.5,
-    fontWeight: 600,
-    color: 'var(--paper)',
-    marginBottom: 4,
-  },
-  cardDesc: {
-    display: 'block',
-    fontSize: 12,
-    color: 'var(--dim)',
-    lineHeight: 1.45,
-  },
-  cardPath: {
-    display: 'block',
-    fontFamily: 'var(--mono)',
-    fontSize: 11.5,
-    color: 'var(--coral)',
-    marginTop: 6,
-  },
-  // A native radio, kept for the keyboard and the screen reader, drawn by the card.
-  radio: {
-    position: 'absolute',
-    opacity: 0,
-    width: 1,
-    height: 1,
-    margin: 0,
-  },
-  option: {
-    display: 'flex',
-    gap: 10,
-    alignItems: 'flex-start',
-    marginTop: 10,
-    padding: '10px 12px',
-    borderRadius: 8,
-    border: '1px solid var(--line-soft)',
-    background: 'var(--ink)',
-    fontSize: 13,
-    color: 'var(--paper)',
-    cursor: 'pointer',
-  },
-  hint: {
-    display: 'block',
-    marginTop: 2,
-    fontSize: 12,
-    lineHeight: 1.45,
-    color: 'var(--dim)',
-  },
-  footer: {
-    ...dialogStyles.footer,
-    padding: '12px 20px',
-  },
-};
-
-/** The starters the dialog offers. Each is held to the components' own props (utils/newProject.test.ts). */
 export const TEMPLATES: { key: StarterTemplate; title: string; description: string }[] = [
-  { key: 'blank', title: 'Blank', description: 'An empty page. Start from zero.' },
-  { key: 'landing', title: 'Landing page', description: 'A centred heading, an intro and a call-to-action button.' },
-  { key: 'dashboard', title: 'Dashboard', description: 'A heading, stat tiles, cards and a list, with example rows to replace.' },
+  { key: 'blank', title: 'Blank', description: 'An empty page to build from scratch.' },
+  { key: 'landing', title: 'Landing page', description: 'A heading, a short introduction and a call to action.' },
+  { key: 'dashboard', title: 'Dashboard', description: 'Stat tiles, cards and a list with editable sample data.' },
 ];
 
-const FORMATS: { key: NewProjectFormat; title: string; description: string; path: string }[] = [
-  {
-    key: 'ui',
-    title: 'Visual Components',
-    description: 'Drag-and-drop SoftN components with reactive bindings.',
-    path: 'ui/main.ui',
-  },
-  {
-    key: 'web',
-    title: 'Web Container (v2)',
-    description: '100% standard HTML, CSS, and ES modules in a sandboxed Worker.',
-    path: 'index.html + app.ts',
-  },
-];
+const PROJECT_TYPES = [
+  { id: 'starter', label: 'Web starter' },
+  { id: 'web', label: 'Web layout' },
+  { id: 'ui', label: 'Classic SoftN' },
+] as const;
+type ProjectType = (typeof PROJECT_TYPES)[number]['id'];
 
-const UI_LANGUAGES: { key: NewProjectLanguage; title: string; description: string; path: string }[] = [
-  { key: 'javascript', title: 'JavaScript', description: 'Runs in a sandboxed VM. The default.', path: 'logic/main.logic' },
-  { key: 'python', title: 'Python', description: 'Runs on the ZIPP engine, with optional machine learning.', path: 'logic/main.py' },
-];
+const LANGUAGES = [
+  { id: 'javascript', label: 'JavaScript', file: 'app.js', classicFile: 'logic/main.logic' },
+  { id: 'typescript', label: 'TypeScript', file: 'app.ts', classicFile: null },
+  { id: 'python', label: 'Python', file: 'main.py', classicFile: 'logic/main.py' },
+] as const;
 
-const WEB_LANGUAGES: { key: NewProjectLanguage; title: string; description: string; path: string }[] = [
-  { key: 'typescript', title: 'TypeScript', description: 'Transpiled on demand inside the ZIPP Worker.', path: 'app.ts' },
-  { key: 'javascript', title: 'JavaScript', description: 'Standard ES modules on zipp-javascript-lite.', path: 'app.js' },
-  { key: 'python', title: 'Python', description: 'Runs on the ZIPP Python engine, with optional torch.', path: 'main.py' },
-];
+function StarterIllustration({ framework }: { framework: (typeof WEB_STARTERS)[number]['id'] }) {
+  return (
+    <svg viewBox="0 0 110 52" aria-hidden="true" className="bl-starter-illustration" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round">
+      {framework === 'vanilla' && <>
+        <circle cx="69" cy="12" r="4" fill="currentColor" stroke="none" />
+        <path d="m14 37 22-25 14 15L62 16l33 21H14Z" fill="currentColor" opacity=".13" />
+        <path d="m14 37 22-25 14 15 12-11 33 21M27 23l6 1 3-4 5 2" />
+        <path d="M20 41h20c18 0 25-3 17-5s-3-4 8-6" strokeDasharray="4 4" />
+      </>}
+      {framework === 'react' && <>
+        <path d="M40 8h30a18 18 0 0 1 0 36H40a18 18 0 0 1 0-36Z" fill="currentColor" opacity=".13" />
+        <rect x="22" y="8" width="66" height="36" rx="18" />
+        <rect x="27" y="13" width="56" height="26" rx="13" />
+        <rect x="32" y="18" width="46" height="16" rx="8" />
+        <path d="M57 8v10m4-10v10" />
+      </>}
+      {framework === 'vue' && <>
+        <path d="M55 16c-8-6-17-7-29-6v28c11-1 21 0 29 6 8-6 18-7 29-6V10c-12-1-21 0-29 6Z" fill="currentColor" opacity=".12" />
+        <path d="M55 16c-8-6-17-7-29-6v28c11-1 21 0 29 6 8-6 18-7 29-6V10c-12-1-21 0-29 6Zm0 0v28M22 14v28c14-1 23-1 33 4 10-5 19-5 33-4V14" />
+        <path d="M68 12v15l4-3 4 1V10" fill="currentColor" />
+      </>}
+    </svg>
+  );
+}
 
-export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialogProps) {
-  const dialogRef = useModalFocus(isOpen, onClose, 'input');
+function moveBetweenChoices(event: KeyboardEvent<HTMLDivElement>) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const buttons = Array.from(event.currentTarget.querySelectorAll('button'));
+  const index = buttons.indexOf(event.target as HTMLButtonElement);
+  if (index < 0) return;
+  let next: number;
+  switch (event.key) {
+    case 'ArrowRight': next = (index + 1) % buttons.length; break;
+    case 'ArrowLeft': next = (index + buttons.length - 1) % buttons.length; break;
+    case 'Home': next = 0; break;
+    case 'End': next = buttons.length - 1; break;
+    default: return;
+  }
+  event.preventDefault();
+  buttons[next].focus();
+  buttons[next].click();
+}
+
+export function NewProjectDialog({ isOpen, ...props }: NewProjectDialogProps) {
+  return isOpen ? <NewProjectForm {...props} /> : null;
+}
+
+function NewProjectForm({ onClose, onCreate }: Omit<NewProjectDialogProps, 'isOpen'>) {
+  const supportsWeb = !isHostedEditor() || hostedWebContainersEnabled();
   const fieldId = useId();
-  const [name, setName] = useState('Untitled App');
-  const [description, setDescription] = useState('');
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
-  const [template, setTemplate] = useState<StarterTemplate>('blank');
-  const [format, setFormat] = useState<NewProjectFormat>('ui');
-  const [language, setLanguage] = useState<NewProjectLanguage>('javascript');
+  const [projectType, setProjectType] = useState<ProjectType>(supportsWeb ? 'starter' : 'ui');
+  const [framework, setFramework] = useState<(typeof WEB_STARTERS)[number]>(WEB_STARTERS[0]);
+  const [useComponent, setUseComponent] = useState(false);
+  const [template, setTemplate] = useState(TEMPLATES[0]);
+  const [language, setLanguage] = useState<(typeof LANGUAGES)[number]>(LANGUAGES[0]);
+  const [name, setName] = useState<string | null>(null);
+  const [description, setDescription] = useState<string | null>(null);
+  const [theme, setTheme] = useState<NewProjectConfig['theme']>('system');
   const [torch, setTorch] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const errorMessage = useRef<HTMLParagraphElement>(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    setName('Untitled App');
-    setDescription('');
-    setTheme('system');
-    setTemplate('blank');
-    setFormat('ui');
-    setLanguage('javascript');
-    setTorch(false);
-  }, [isOpen]);
+  const request = useRef(0);
+  const close = () => { request.current += 1; onClose(); };
+  const dialogRef = useModalFocus(true, close, supportsWeb ? 'input[type="radio"]:checked' : 'button[aria-pressed="true"]');
+  useEffect(() => () => { request.current += 1; }, []);
+  useEffect(() => { if (error) errorMessage.current?.focus(); }, [error]);
 
-  if (!isOpen) return null;
+  const classic = projectType === 'ui';
+  const component = framework.id === 'vanilla' ? null : COMPONENT_STARTERS[framework.id];
+  const starter = projectType === 'starter' ? (useComponent && component ? component : framework) : null;
+  const selectedLanguage = starter ? LANGUAGES[0] : language;
+  const scriptFile = starter?.sourceFile ?? (classic ? selectedLanguage.classicFile : selectedLanguage.file);
+  const defaultName = starter?.name ?? 'Untitled App';
+  const defaultDescription = starter?.description ?? '';
 
-  const languageOptions = format === 'web' ? WEB_LANGUAGES : UI_LANGUAGES;
+  function chooseType(next: ProjectType) {
+    setProjectType(next);
+    if (next === 'ui' && !language.classicFile) setLanguage(LANGUAGES[0]);
+    setError('');
+  }
 
-  const handleCreate = () => {
-    onCreate({
-      name: name.trim() || 'Untitled App',
-      description: description.trim(),
+  async function handleCreate() {
+    if (creating) return;
+    const generation = ++request.current;
+    const config: NewProjectConfig = {
+      name: name?.trim() || defaultName,
+      description: description?.trim() ?? defaultDescription,
       theme,
-      template,
-      ...(format === 'web' ? { format: 'web' as const } : {}),
-      language,
-      pythonPackages: language === 'python' && torch ? ['torch'] : [],
-    });
-  };
+      template: starter ? 'blank' : template.key,
+      ...(classic ? {} : { format: 'web' as const }),
+      language: selectedLanguage.id,
+      pythonPackages: selectedLanguage.id === 'python' && torch ? ['torch'] : [],
+    };
+    setError('');
+    try {
+      if (starter) {
+        cancelButton.current?.focus();
+        setCreating(true);
+        const files = await createWebStarter(starter.id, config);
+        if (generation === request.current) onCreate(config, files);
+      } else {
+        onCreate(config);
+      }
+    } catch (cause) {
+      if (generation === request.current) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (generation === request.current) setCreating(false);
+    }
+  }
 
   return (
-    <div className="bl-overlay" style={{ zIndex: 1200 }} onClick={onClose}>
-      <div ref={dialogRef} className="bl-dialog" style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`${fieldId}-title`} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.header}>
-          <h2 id={`${fieldId}-title`} className="bl-dialog-title">Create a new app</h2>
-          <button type="button" className="bl-close" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </div>
+    <div className="bl-overlay bl-create-overlay" onClick={close}>
+      <div ref={dialogRef} className="bl-dialog bl-create" role="dialog" aria-modal="true" aria-labelledby={fieldId + '-title'} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
+        <header className="bl-create-head">
+          <h2 id={fieldId + '-title'} className="bl-dialog-title">Create a new app</h2>
+          <button type="button" className="bl-close" onClick={close} aria-label="Close">×</button>
+        </header>
 
-        <form style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }} onSubmit={(event) => { event.preventDefault(); handleCreate(); }}>
-        <div style={styles.body}>
-          <div>
-            <label style={styles.label} htmlFor={`${fieldId}-name`}>Name</label>
-            <input
-              id={`${fieldId}-name`}
-              style={styles.input}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Untitled App"
-            />
-          </div>
-
-          <div>
-            <label style={styles.label} htmlFor={`${fieldId}-description`}>Description <span style={{ fontWeight: 400, color: 'var(--dim)' }}>(optional)</span></label>
-            <textarea
-              id={`${fieldId}-description`}
-              style={styles.textarea}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What the app is for, in a sentence"
-            />
-          </div>
-
-          <fieldset style={styles.fieldset}>
-            <legend style={styles.label}>App runtime</legend>
-            <div style={styles.cards}>
-              {/* A host's Builder (FormLogic's) offers what the host runs: its build carries no
-                  container runtime, and its frame runs SoftN apps. */}
-              {FORMATS.filter((option) => option.key === 'ui' || !isHostedEditor()).map((option) => (
-                <label
-                  key={option.key}
-                  className="bl-choice"
-                  data-checked={format === option.key}
-                  style={{ position: 'relative', display: 'block' }}
-                >
-                  <input
-                    type="radio"
-                    name={`${fieldId}-format`}
-                    value={option.key}
-                    checked={format === option.key}
-                    onChange={() => {
-                      setFormat(option.key);
-                      if (option.key === 'ui' && language === 'typescript') {
-                        setLanguage('javascript');
-                      } else if (option.key === 'web' && language === 'javascript') {
-                        setLanguage('typescript');
-                      }
-                    }}
-                    style={styles.radio}
-                  />
-                  <span style={styles.cardTitle}>{option.title}</span>
-                  <span style={styles.cardDesc}>{option.description}</span>
-                  <span style={styles.cardPath}>{option.path}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          {/* One language per app: the runtime refuses a bundle whose logic
-              mixes the two, so this is the moment to choose. */}
-          <fieldset style={styles.fieldset}>
-            <legend style={styles.label}>Logic language</legend>
-            <div style={styles.cards}>
-              {languageOptions.map((option) => (
-                <label
-                  key={option.key}
-                  className="bl-choice"
-                  data-checked={language === option.key}
-                  style={{ position: 'relative', display: 'block' }}
-                >
-                  <input
-                    type="radio"
-                    name={`${fieldId}-language`}
-                    value={option.key}
-                    checked={language === option.key}
-                    onChange={() => setLanguage(option.key)}
-                    style={styles.radio}
-                  />
-                  <span style={styles.cardTitle}>{option.title}</span>
-                  <span style={styles.cardDesc}>{option.description}</span>
-                  <span style={styles.cardPath}>{option.path}</span>
-                </label>
-              ))}
-            </div>
-            {language === 'python' && (
-              <label style={styles.option}>
-                <input
-                  type="checkbox"
-                  checked={torch}
-                  onChange={(e) => setTorch(e.target.checked)}
-                  style={{ marginTop: 3 }}
-                  data-setting="python-torch"
-                />
-                <span>
-                  Machine learning (torch)
-                  <span style={styles.hint}>
-                    Lets the app import torch: tensors, autograd, torch.nn and optimizers. You can change this later in Export.
-                  </span>
-                </span>
-              </label>
+        <form onSubmit={(event) => { event.preventDefault(); void handleCreate(); }}>
+          <div className="bl-create-body" {...(creating ? { inert: '' } : {})}>
+            {supportsWeb && (
+              <fieldset>
+                <legend className="bl-create-label">Project type</legend>
+                <div className="bl-create-types">
+                  {PROJECT_TYPES.map(({ id, label }) => (
+                    <label key={id} className="bl-create-type" data-selected={projectType === id}>
+                      <input className="bl-create-radio" type="radio" name={fieldId + '-type'} value={id}
+                        checked={projectType === id} onChange={() => chooseType(id)} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
             )}
-          </fieldset>
 
-          <div>
-            <span id={`${fieldId}-templates`} style={styles.label}>Start from</span>
-            <div style={styles.cards} role="group" aria-labelledby={`${fieldId}-templates`}>
-              {TEMPLATES.map(({ key, title, description: text }) => (
-                <button
-                  key={key}
-                  type="button"
-                  className="bl-choice"
-                  aria-pressed={template === key}
-                  onClick={() => setTemplate(key)}
-                >
-                  <span style={styles.cardTitle}>{title}</span>
-                  <span style={styles.cardDesc}>{text}</span>
-                </button>
-              ))}
+            {starter ? (
+              <fieldset>
+                <legend className="bl-create-label">Framework</legend>
+                <div className="bl-starter-options" role="toolbar" aria-label="Choose framework" onKeyDown={moveBetweenChoices}>
+                  {WEB_STARTERS.map((option) => (
+                    <button key={option.id} type="button" className="bl-choice bl-framework-option"
+                      aria-label={option.label} aria-pressed={framework.id === option.id} tabIndex={framework.id === option.id ? 0 : -1}
+                      aria-describedby={fieldId + '-starter-' + option.id}
+                      onClick={() => { if (option.id !== framework.id) setUseComponent(false); setFramework(option); setError(''); }}>
+                      <span className="bl-framework-sample" data-framework={option.id} aria-hidden="true">
+                        <StarterIllustration framework={option.id} />
+                      </span>
+                      <span className="bl-framework-caption">
+                        <strong>{option.label}</strong>
+                        <span id={fieldId + '-starter-' + option.id}>{option.name}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {component && (
+                  <fieldset className="bl-starter-format">
+                    <legend className="bl-create-label">Source format</legend>
+                    <div className="bl-language-options">
+                      <label className="bl-choice bl-language-option" data-checked={!useComponent}>
+                        <input type="radio" className="bl-create-radio" name={fieldId + '-source'} value="js"
+                          checked={!useComponent} onChange={() => { setUseComponent(false); setError(''); }} />
+                        <strong>JavaScript</strong>
+                        <code>{framework.sourceFile}</code>
+                      </label>
+                      <label className="bl-choice bl-language-option" data-checked={useComponent}>
+                        <input type="radio" className="bl-create-radio" name={fieldId + '-source'} value={component.id}
+                          checked={useComponent} onChange={() => { setUseComponent(true); setError(''); }} />
+                        <strong>{component.format}</strong>
+                        <code>{component.sourceFile}</code>
+                      </label>
+                    </div>
+                  </fieldset>
+                )}
+                <p className="bl-choice-detail" aria-live="polite">{starter.description}{!component && <> Edit <code>{scriptFile}</code> to change its behavior.</>}</p>
+              </fieldset>
+            ) : (
+              <>
+                <fieldset>
+                  <legend className="bl-create-label">Page layout</legend>
+                  <div className="bl-starter-options" role="toolbar" aria-label="Choose page layout" onKeyDown={moveBetweenChoices}>
+                    {TEMPLATES.map((option) => (
+                      <button key={option.key} type="button" className="bl-choice bl-starter-tile"
+                        aria-pressed={template.key === option.key} tabIndex={template.key === option.key ? 0 : -1} onClick={() => setTemplate(option)}>
+                        <span className="bl-starter-thumbnail" data-template={option.key} aria-hidden="true"><i /><i /><i /></span>
+                        {option.title}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="bl-choice-detail" aria-live="polite">{template.description}</p>
+                </fieldset>
+                <fieldset>
+                  <legend className="bl-create-label">Logic language</legend>
+                  <div className="bl-language-options">
+                    {LANGUAGES.filter((item) => !classic || item.classicFile).map((item) => (
+                      <label key={item.id} className="bl-choice bl-language-option" data-checked={language.id === item.id}>
+                        <input className="bl-create-radio" type="radio" name={fieldId + '-language'} value={item.id}
+                          checked={language.id === item.id} onChange={() => setLanguage(item)} />
+                        {item.label}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="bl-choice-detail" aria-live="polite">
+                    {classic ? 'Design the page in ' : 'Edit the page in '}<code>{classic ? 'ui/main.ui' : 'index.html'}</code> and its logic in <code>{scriptFile}</code>.
+                  </p>
+                  {language.id === 'python' && (
+                    <label className="bl-create-torch">
+                      <input type="checkbox" checked={torch} onChange={(event) => setTorch(event.target.checked)} data-setting="python-torch" />
+                      Include torch for machine learning
+                    </label>
+                  )}
+                </fieldset>
+              </>
+            )}
+
+            <div>
+              <label className="bl-create-label" htmlFor={fieldId + '-name'}>Name</label>
+              <input id={fieldId + '-name'} className="bl-create-field" value={name ?? defaultName}
+                onChange={(event) => setName(event.target.value)} placeholder={defaultName} onFocus={(event) => event.target.select()} />
             </div>
+            <details className="bl-project-details">
+              <summary>Description and theme</summary>
+              <div>
+                <div>
+                  <label className="bl-create-label" htmlFor={fieldId + '-description'}>Description <span>(optional)</span></label>
+                  <textarea id={fieldId + '-description'} className="bl-create-field" value={description ?? defaultDescription}
+                    onChange={(event) => setDescription(event.target.value)} placeholder="What the app is for" />
+                </div>
+                <div>
+                  <label className="bl-create-label" htmlFor={fieldId + '-theme'}>App theme</label>
+                  <select id={fieldId + '-theme'} className="bl-create-field" value={theme}
+                    onChange={(event) => setTheme(event.target.value as NewProjectConfig['theme'])}>
+                    <option value="system">Match the device</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                </div>
+              </div>
+            </details>
+            {error && <p ref={errorMessage} tabIndex={-1} role="alert" className="bl-create-error">{error}</p>}
           </div>
 
-          <div>
-            <label style={styles.label} htmlFor={`${fieldId}-theme`}>App theme</label>
-            <select
-              id={`${fieldId}-theme`}
-              style={{ ...styles.select, maxWidth: 280 }}
-              value={theme}
-              onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'system')}
-            >
-              <option value="system">Match the device</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={styles.footer}>
-          <button type="button" className="bl-btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="bl-btn bl-btn-primary">
-            Create app
-          </button>
-        </div>
+          <footer className="bl-create-footer">
+            <span role="status">{creating ? <>Loading <strong>{framework.label}</strong> starter…</> : <>Opens in <strong>{starter ? 'Preview' : classic ? 'Design' : 'Code'}</strong></>}</span>
+            <button ref={cancelButton} type="button" className="bl-btn" onClick={close}>Cancel</button>
+            <button type="submit" className="bl-btn bl-btn-primary" disabled={creating}>{creating ? 'Creating…' : 'Create app'}</button>
+          </footer>
         </form>
       </div>
     </div>

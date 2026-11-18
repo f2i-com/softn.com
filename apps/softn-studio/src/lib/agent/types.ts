@@ -99,6 +99,8 @@ export type RunEntry =
       at: number;
       /** A write: the transaction to undo this step by, and what it changed. */
       transactionId?: string;
+      /** A short description of a text replacement the editor actually applied. */
+      changeSummary?: string;
       undone?: boolean;
       diff?: LineDiff[];
       check?: CheckReport;
@@ -160,7 +162,7 @@ export interface AgentRunRecord {
   protocol: ToolProtocol;
   /** The reply being streamed right now, if one is. */
   live?: LiveReply;
-  /** The model's finish summary. */
+  /** The answer to a question, or a summary of the changes the editor applied. */
   summary?: string;
   question?: PendingQuestion;
   /**

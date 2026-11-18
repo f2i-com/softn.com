@@ -57,6 +57,7 @@ function fakeIdb(rows: Row[] = []) {
     put: store.put,
     delete: store.delete,
     getFromIndex: async (_s: string, index: string, key: string) => byIndex(index, key)[0],
+    getKeyFromIndex: async (_s: string, index: string, key: string) => byIndex(index, key)[0]?.id,
     getAllFromIndex: async (_s: string, index: string, key: string) => byIndex(index, key),
     transaction: () => ({ objectStore: () => store, done: Promise.resolve() }),
     close: () => {},

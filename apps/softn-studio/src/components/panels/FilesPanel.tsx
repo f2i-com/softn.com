@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { assetObjectUrl } from '@softn/core';
+import { assetObjectUrl } from '@softn/core/authoring';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../../stores';
 import { useFilesPanelStore, type FileClip } from '../../stores/filesPanelStore';
 import { mediaKindFor } from '../canvas/MediaView';
@@ -44,6 +44,8 @@ import {
   type TreeRow,
 } from './fileTree';
 import '../../styles/files.css';
+
+const StudioProjectTools = React.lazy(() => import('./StudioDatabase'));
 
 /**
  * The project's files, as a file manager.
@@ -164,6 +166,12 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 export const FilesPanel: React.FC = () => {
+  const [projectTool, setProjectTool] = useState<'backend' | 'database' | null>(null);
+  function openProjectTool(button: HTMLButtonElement, tool: 'backend' | 'database') {
+    // WebKit does not focus a button on pointer activation. Give the modal a return target.
+    button.focus();
+    setProjectTool(tool);
+  }
   const files = useVFSStore((s) => s.files);
   const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
   const setActiveFilePath = useWorkspaceStore((s) => s.setActiveFilePath);
@@ -189,6 +197,7 @@ export const FilesPanel: React.FC = () => {
   const [memoryOf, setMemoryOf] = useState(projectId);
   if (memoryOf !== projectId) {
     setMemoryOf(projectId);
+    setProjectTool(null);
     setMemory(loadTreeMemory(projectId));
     setCursor(null);
     setMenu(null);
@@ -962,7 +971,8 @@ export const FilesPanel: React.FC = () => {
 
   const summary = (
     <p className="st-files-foot">
-      <span className="num">{bundle.files}</span> file{bundle.files !== 1 ? 's' : ''} in the bundle, <span className="num">{sizeWords(bundle.bytes)}</span>.
+      <span className="num">{bundle.files}</span> {bundle.componentSource ? 'project files' : `file${bundle.files !== 1 ? 's' : ''} in the bundle`}, <span className="num">{sizeWords(bundle.bytes)}</span>.
+      {bundle.componentSource && ' Export includes ready-to-run JavaScript alongside your source.'}
       {bundle.privateFiles > 0 && ` ${bundle.privateFiles} more under builder/ ${bundle.privateFiles === 1 ? 'is' : 'are'} Studio’s notes: kept with the project, not exported.`}
     </p>
   );
@@ -985,6 +995,12 @@ export const FilesPanel: React.FC = () => {
         }}
       />
       {bar}
+      {files.has('manifest.json') && <div className="st-files-project-tools" role="group" aria-label="Project tools">
+        <button type="button" className="st-btn st-btn-sm" aria-haspopup="dialog" disabled={busy} onClick={e => openProjectTool(e.currentTarget, 'database')}>Database</button>
+        <button type="button" className="st-btn st-btn-sm" aria-haspopup="dialog" disabled={busy} onClick={e => openProjectTool(e.currentTarget, 'backend')}>Backend</button>
+      </div>}
+      {projectTool && <React.Suspense fallback={null}><StudioProjectTools tool={projectTool} onClose={() => setProjectTool(null)}
+        onCreated={path => { if (confirmShowing(path)) setActiveFilePath(path); }} /></React.Suspense>}
       {busy && (
         <p className="st-files-busy" role="status">
           <span><strong>The AI is working.</strong> Files can be opened, copied and downloaded. Adding, renaming, moving and deleting wait until the run stops.</span>

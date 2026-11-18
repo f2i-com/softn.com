@@ -17,7 +17,7 @@ import { AIChat } from '../src/components/ai/AIChat';
 import { buildFromBrief } from '../src/lib/agent/buildFromBrief';
 import { sessionUse } from '../src/lib/agent/sessionUse';
 import { runAgentTurn } from '../src/lib/agentOrchestrator';
-import { generateBlueprintFromBrief } from '../src/lib/studioProject';
+import { generateBlueprintFromBrief, inferBlueprintFromFiles } from '../src/lib/studioProject';
 import { useAIStore, useWorkspaceStore } from '../src/stores';
 import type { ProjectBrief } from '../src/types/studio';
 
@@ -73,6 +73,36 @@ describe('the chat of a project laid out from a brief, before anything is said',
   // line now, there only when it has something to say.
   const header = () => container.querySelector('[data-chat-header]');
   const READY = { providers: [{ id: 'local', type: 'custom' as const, name: 'Local', apiKey: '', modelId: 'test' }], activeProviderId: 'local' };
+
+  it('offers edits when the plan describes pages that already exist in the source', () => {
+    const file = { path: 'index.html', content: '<h1>Practice set</h1>', mimeType: 'text/html', version: 1, lastModifiedBy: 'user' as const, lastModified: 0 };
+    useWorkspaceStore.setState({ blueprint: inferBlueprintFromFiles('Practice set', new Map([[file.path, file]])) });
+    act(() => root.render(<AIChat />));
+    expect(container.querySelector('[role="log"]')?.textContent).toContain('What would you like to change?');
+    expect(offer()).toBeUndefined();
+  });
+
+  it.each([true, false])('adds a suggestion to an existing draft for review (provider connected: %s)', (connected) => {
+    useAIStore.setState({ ...(connected ? READY : {}), draftMessage: 'Keep the high-contrast theme.' });
+    act(() => root.render(<AIChat />));
+    const text = 'Improve the main page and make it feel more polished';
+    const button = [...container.querySelectorAll('button')].find((item) => item.textContent === text)!;
+    act(() => button.click());
+    act(() => button.click());
+    expect(useAIStore.getState().draftMessage).toBe(`Keep the high-contrast theme.\n\n${text}`);
+    expect(document.activeElement).toBe(container.querySelector('textarea'));
+    expect(useAIStore.getState().setupDialog).toBeNull();
+    expect(runAgentTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps a separate draft when a build needs provider setup', () => {
+    useAIStore.setState({ draftMessage: 'Save this thought for later.' });
+    act(() => root.render(<AIChat />));
+    act(() => offer()!.click());
+    expect(useAIStore.getState().draftMessage).toBe('Save this thought for later.');
+    expect(useAIStore.getState().setupDialog).not.toBeNull();
+    expect(buildFromBrief).not.toHaveBeenCalled();
+  });
 
   it('has no header at all with no provider and nothing used: the setup card is the top', () => {
     act(() => root.render(<AIChat />));

@@ -61,8 +61,8 @@ describe('building a new app (Anthropic tool_use)', () => {
 
     const { run, message } = lastRun();
     expect(run.status).toBe('finished');
-    expect(run.summary).toBe('Built a task list with a counter.');
-    expect(message.content).toBe('Built a task list with a counter.');
+    expect(run.summary).toBe('Created manifest.json.\nCreated ui/main.ui.\nCreated logic/main.logic.');
+    expect(message.content).toBe(run.summary);
     expect(run.plan.map((p) => p.status)).toEqual(['done', 'done']);
     expect(text('ui/main.ui')).toBe(APP.ui);
     expect(text('logic/main.logic')).toBe(APP.logic);
@@ -272,6 +272,19 @@ describe('tool calls that arrive without an id', () => {
 describe('reading a file', () => {
   beforeEach(() => seedApp());
 
+  it('returns source a model can copy directly from a line range into an exact edit', async () => {
+    const path = 'app.js';
+    const line = '      return "Finish a round";';
+    useVFSStore.getState().createFile(path, ['function label() {', line, '}'].join('\n'));
+    const context = { seen: new Map() as SuppliedFiles, env: nodeEnvironment, blueprint: null, newTransactionId: () => crypto.randomUUID() };
+    const read = await executeTool({ id: 'r', name: 'read_file', input: { path, start_line: 2, end_line: 2 } }, context);
+    const copied = read.content.split('\n').slice(1).join('\n');
+    expect(copied).toBe(line);
+    const edit = await executeTool({ id: 'e', name: 'edit_file', input: { path, old_string: copied, new_string: copied.replace('Finish', 'Log') } }, context);
+    expect(edit.isError).toBe(false);
+    expect(useVFSStore.getState().files.get(path)?.content).toContain('      return "Log a round";');
+  });
+
   it('cuts one very long line at the size cap and says so, and does not count it as read whole', async () => {
     // The cap kept at least one line, so a file that is one line — a compact .xdb, a minified
     // script — came back whole: hundreds of thousands of characters into the conversation,
@@ -295,6 +308,33 @@ describe('reading a file', () => {
 
 describe('the changeset rules, as tool errors', () => {
   beforeEach(() => seedApp());
+
+  it('designs a local collection and a hosted table as separate undoable changes', async () => {
+    const seen: SuppliedFiles = new Map();
+    const ctx = { seen, env: nodeEnvironment, blueprint: null, newTransactionId: () => crypto.randomUUID() };
+    const call = (name: string, input: Record<string, unknown>) => executeTool({ id: 'db', name, input }, ctx);
+    const local = { target: 'local', name: 'notes', fields: [{ name: 'title', type: 'string', required: true }] };
+    const manifest = text('manifest.json');
+    expect((await call('design_database', local)).isError).toBe(true);
+    expect(text('manifest.json')).toBe(manifest);
+    await call('read_file', { path: 'manifest.json' });
+    const created = await call('design_database', local);
+    expect(created.changed).toBe(true);
+    expect(JSON.parse(text('xdb/notes.xdb')!).schema.fields[0]).toMatchObject(local.fields[0]);
+    const duplicate = await call('design_database', local);
+    expect(duplicate.isError).toBe(true);
+    const beforeHosted = text('manifest.json');
+    const hosted = await call('design_database', { ...local, target: 'formlogic' });
+    expect(hosted.changed).toBe(true);
+    const server = JSON.parse(text('manifest.json')!).server;
+    expect(text(server.entry)).toContain('function getStatus');
+    expect(server.database.migrations).toEqual(['server/migrations/001.sql']);
+    expect(text(server.database.migrations[0])).toContain('"title" TEXT NOT NULL');
+    expect(useVFSStore.getState().revertTransaction(hosted.transactionId!).ok).toBe(true);
+    expect(useVFSStore.getState().files.has(server.entry)).toBe(false);
+    expect(text('manifest.json')).toBe(beforeHosted);
+    expect(useVFSStore.getState().files.has('xdb/notes.xdb')).toBe(true);
+  });
 
   it('refuses private state, escapes, binaries, bad Python module names, and replacing an unread file — writing nothing', async () => {
     const before = new Map(useVFSStore.getState().files);
@@ -511,7 +551,7 @@ describe('the automatic check and repair', () => {
     await startAgentRun();
     const { run } = lastRun();
     expect(run.status).toBe('finished');
-    expect(run.summary).toBe('Fixed and done.');
+    expect(run.summary).toBe('Created ui/broken.ui.');
     expect(provider.count()).toBe(2);
     expect(toolEntries().filter((e) => e.auto).map((e) => e.check?.ok)).toEqual([false, true]);
   });
@@ -772,7 +812,7 @@ describe('stopping and limits', () => {
     const answered = blocks.filter((b) => b.type === 'tool_result').map((b) => b.tool_use_id);
     expect(answered).toHaveLength(2);
     expect(new Set(answered).size).toBe(2);
-    expect(lastRun().run.summary).toBe('Resumed and done.');
+    expect(lastRun().run.summary).toBe('Created ui/late.ui.');
   });
 
   it('refuses a request the session budget cannot cover', async () => {
@@ -1188,6 +1228,72 @@ describe('protocol fallback', () => {
 });
 
 describe('a model that answers in text instead of calling tools', () => {
+  it('keeps the finding from a read when the closing tool claims an unrelated edit', async () => {
+    seedApp();
+    fakeProvider('anthropic', [
+      { text: 'I will read the logic.', calls: [{ name: 'read_file', input: { path: 'logic/main.logic' } }] },
+      { text: 'The counter starts at zero.' },
+      { calls: [{ name: 'finish', input: { summary: 'I built a new app.' } }] },
+    ]);
+    say('What is the initial count?');
+    await startAgentRun();
+    expect(lastRun().message.content).toBe('The counter starts at zero.');
+    expect(lastRun().run.transactions).toEqual([]);
+  });
+
+  it('uses the answer accompanying a finish and leaves preceding progress updates in the timeline', async () => {
+    seedApp();
+    fakeProvider('anthropic', [
+      { text: 'I will read the logic.', calls: [{ name: 'read_file', input: { path: 'logic/main.logic' } }] },
+      { text: 'Zero.', calls: [{ name: 'finish', input: { summary: 'Done.' } }] },
+    ]);
+    say('What is the initial count?');
+    await startAgentRun();
+    expect(lastRun().run.summary).toBe('Zero.');
+  });
+
+  it('describes the applied replacement even when the model reports a different change', async () => {
+    seedApp();
+    fakeProvider('anthropic', [
+      { calls: [{ name: 'read_file', input: { path: 'logic/main.logic' } }] },
+      { calls: [{ name: 'edit_file', input: { path: 'logic/main.logic', old_string: 'count = 0', new_string: 'count = 3' } }] },
+      { calls: [{ name: 'finish', input: { summary: 'Deleted the main page.' } }] },
+    ]);
+    say('Start the counter at three.');
+    await startAgentRun();
+    expect(text('logic/main.logic')).toContain('count = 3');
+    expect(lastRun().run.summary).toBe('Replaced “count = 0” with “count = 3” in logic/main.logic.');
+    expect(text('ui/main.ui')).toBe(APP.ui);
+  });
+
+  it('reports the refusal when the model claims a write the editor rejected', async () => {
+    seedApp();
+    fakeProvider('anthropic', [
+      { calls: [{ name: 'edit_file', input: { path: 'missing.js', old_string: 'x', new_string: 'y' } }] },
+      { calls: [{ name: 'finish', input: { summary: 'Updated missing.js.' } }] },
+    ]);
+    say('Update missing.js.');
+    await startAgentRun();
+    expect(lastRun().run.summary).toMatch(/^No files changed\./);
+    expect(lastRun().run.transactions).toEqual([]);
+  });
+
+  it.each(['edit_file', 'write_file'])('summarizes the changed button label when %s replaces an entire React source line', async (tool) => {
+    seedApp();
+    const before = "      h('button', { id: 'increment', type: 'button', onClick: () => save(rounds + 1) }, 'Finish a round'),";
+    const after = before.replace('Finish a round', 'Log a practice round');
+    useVFSStore.getState().createFile('app.js', before, 'user');
+    fakeProvider('anthropic', [
+      { calls: [{ name: 'read_file', input: { path: 'app.js' } }] },
+      { calls: [{ name: tool, input: tool === 'edit_file' ? { path: 'app.js', old_string: before, new_string: after } : { path: 'app.js', content: after } }] },
+      { calls: [{ name: 'finish', input: { summary: 'All set.' } }] },
+    ]);
+    say('Change the button label to Log a practice round.');
+    await startAgentRun();
+    expect(text('app.js')).toBe(after);
+    expect(lastRun().run.summary).toBe('Replaced “Finish a round” with “Log a practice round” in app.js.');
+  });
+
   it('does not report a build that wrote nothing as done', async () => {
     useWorkspaceStore.getState().setBrief({
       appName: 'Counter', description: 'A counter', target: 'web', pages: ['Home'], collections: [], authNeeded: false, style: 'clean', referenceImages: [],
@@ -1208,7 +1314,7 @@ describe('a model that answers in text instead of calling tools', () => {
     say('What does this app do?');
     await startAgentRun();
     expect(lastRun().run.status).toBe('finished');
-    expect(lastRun().run.summary).toBe('Nothing to change.');
+    expect(lastRun().run.summary).toBe('The app counts tasks.');
   });
 });
 

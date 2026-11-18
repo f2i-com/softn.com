@@ -108,6 +108,15 @@ describe('hosted agent runs: the brief', () => {
     s.dispose();
   });
 
+  it('opens a starter in Preview without an AI request', async () => {
+    hostedLocation();
+    const s = session(await loadModule(), { editorAgentRuns: false });
+    s.open({ preview: true });
+    await flush(); await flush();
+    expect(s.opened).toEqual([{ name: 'Notes', options: { brief: null, preview: true } }]);
+    s.dispose();
+  });
+
   it('reads an empty or malformed brief as none, an unknown kind as build, and caps its length', () => {
     return loadModule().then((mod) => {
       expect(mod.readHostedBrief(undefined)).toBeNull();

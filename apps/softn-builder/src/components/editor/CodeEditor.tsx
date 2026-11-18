@@ -3,9 +3,8 @@
  *
  * A real `<textarea>` laid over a highlighted copy of its text, so the browser
  * keeps caret, selection, IME, undo and screen readers, and the highlighting
- * is only paint. It is fetched the first time a code panel opens, with the
- * other editors of @softn/components (about 30 KB): the canvas registers
- * components to load as they are drawn, so nothing else brings it in. Monaco,
+ * is only paint. A separate package entry loads it when a code panel opens,
+ * keeping the Markdown and rich-text components with the apps that use them. Monaco,
  * which this used to wrap, was 99 MB of node_modules and several megabytes of
  * every Builder install (its TypeScript worker alone 5.8 MB) for two panels.
  *
@@ -16,9 +15,9 @@
  */
 
 import { lazy, Suspense } from 'react';
-import type { CodeEditorProps } from '@softn/components/editors';
+import type { CodeEditorProps } from '@softn/components/code-editor';
 
-const SoftnCodeEditor = lazy(() => import('@softn/components/editors').then((m) => ({ default: m.CodeEditor })));
+const SoftnCodeEditor = lazy(() => import('@softn/components/code-editor').then((m) => ({ default: m.CodeEditor })));
 
 interface Props {
   value: string;
@@ -26,6 +25,7 @@ interface Props {
   /** `xml`/`html` for a page's source; `javascript` or `python` for logic. */
   language?: string;
   readOnly?: boolean;
+  path?: string;
   height?: string | number;
 }
 
@@ -48,7 +48,7 @@ export function highlightLanguage(language: string | undefined): NonNullable<Cod
   }
 }
 
-export function CodeEditor({ value, onChange, language = 'javascript', readOnly = false, height = '100%' }: Props) {
+export function CodeEditor({ value, onChange, language = 'javascript', readOnly = false, path, height = '100%' }: Props) {
   const size = typeof height === 'number' ? `${height}px` : height;
   return (
     <Suspense fallback={<div className="bl-code-editor" role="status" aria-label="Opening the editor" style={{ height: size }} />}>
@@ -62,7 +62,7 @@ export function CodeEditor({ value, onChange, language = 'javascript', readOnly 
         minHeight={size}
         maxHeight={size}
         placeholder=""
-        aria-label={language === 'xml' || language === 'html' ? 'Page source' : 'Logic'}
+        aria-label={path ? `Edit ${path}` : language === 'xml' || language === 'html' ? 'Page source' : 'Logic'}
         style={{ height: size, border: 0, borderRadius: 0, boxShadow: 'none' }}
       />
     </Suspense>

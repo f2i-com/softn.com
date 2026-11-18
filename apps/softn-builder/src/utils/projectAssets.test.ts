@@ -8,6 +8,7 @@ import { useFilesStore } from '../stores/filesStore';
 import { useProjectStore } from '../stores/projectStore';
 import type { AssetFile } from '../types/builder';
 import { assetPath, currentAssets } from './projectAssets';
+import { applyBuilderBackendFiles } from './backendFiles';
 
 const bytes = new Uint8Array([1, 2, 3]);
 const asset = (path: string): AssetFile => ({ bundlePath: path, name: path.replace(/^assets\//, ''), type: 'image/png', data: bytes });
@@ -50,6 +51,8 @@ describe('the project’s assets', () => {
 
   it('are the list a project was given when it has no files of its own', () => {
     useFilesStore.getState().reset();
+    expect(paths()).toEqual(['assets/banner.png', 'assets/hero.png', 'assets/logo.png']);
+    applyBuilderBackendFiles({ 'manifest.json': JSON.stringify({ formatVersion: '1.0', server: { entry: 'server/main.logic' } }) });
     expect(paths()).toEqual(['assets/banner.png', 'assets/hero.png', 'assets/logo.png']);
   });
 });

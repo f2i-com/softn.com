@@ -11,7 +11,7 @@
  * person's, and writing it is also how a project with no file is saved.
  */
 
-import { parse } from '@softn/core';
+import { parse } from '@softn/core/authoring';
 import type { UIFileState } from '../types/builder';
 
 export interface PageDiagnostic {

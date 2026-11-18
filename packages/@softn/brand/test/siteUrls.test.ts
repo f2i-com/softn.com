@@ -11,6 +11,7 @@ describe('resolveSiteUrls', () => {
   it('points at the standalone dev ports only when the app is its own origin', () => {
     expect(resolveSiteUrls({ dev: true, baseUrl: '/', env: {} })).toMatchObject({
       SITE_URL: 'http://localhost:1421', RUNTIME_URL: 'http://localhost:1420', STUDIO_URL: 'http://localhost:1423', BUILDER_URL: 'http://localhost:1422',
+      PRODUCT_URLS: { home: 'http://localhost:1421', apps: 'http://localhost:1421/apps', studio: 'http://localhost:1423', builder: 'http://localhost:1422' },
     });
     // The integrated launcher serves the editor under the public path: same origin again.
     expect(resolveSiteUrls({ dev: true, baseUrl: '/studio/', env: {} })).toMatchObject({ SITE_URL: '/', PUBLISH_URL: '/publish', RUNTIME_URL: '/web/' });

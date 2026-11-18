@@ -4,7 +4,7 @@ Two kinds of writing live here, and they are kept apart on purpose.
 
 | Path | What it is | Who it is for |
 | --- | --- | --- |
-| `content/softn-docs.json` | **The guides softn.com publishes at `/docs/`**: thirty-one pages, from "What is SoftN?" to hosting, authored in one structured JSON file. The generator below turns it into static HTML. | People using SoftN |
+| `content/softn-docs.json` | Guides published at `/docs/`, covering web starters, classic apps, the editors, runtime and hosting. The generator renders them as static HTML. | People using SoftN |
 | `engineering/` | Design notes, hosting recipes and audit responses for people working on this repository. Plain Markdown, linked from the root README. | Contributors |
 | `rfcs/` | Proposals not yet implemented. | Contributors |
 | `readme-assets/` | The screenshots the root README shows. | — |
@@ -18,6 +18,7 @@ second copy of any article text in JSX, Markdown or generated HTML.
 ```sh
 npm run docs:validate   # schema and cross-reference checks
 npm run docs:build      # writes docs/dist/ (ignored) and refreshes generated/landing.json
+npm run generate:knowledge -w @softn/studio  # refreshes Studio's built-in guide reference
 npm run docs:test       # the generator's own tests (also part of `npm test`)
 npm run docs:preview    # build, then serve http://127.0.0.1:4173/docs/
 ```
@@ -63,12 +64,9 @@ rejects missing references, duplicate routes, duplicate titles and unknown
 fields.
 
 `engineering/VALIDATION_REPORT.md` records how the edition of 25 September 2026
-was checked against the repository source, what passed and what was not
-checked. The content's `review` block names the commit the guides were last
-checked against and what was checked then (on 27 October 2026, corrections
-against the `dev` branch, not a second full comparison);
-when you revise a guide against newer source, update that block, the page's
-`updatedAt` and its `sources` entries together.
+was checked against the repository source. The content's `review` block
+records the base commit and scope of later reviews. When revising a guide,
+update that block, the page's `updatedAt` and the relevant `sources` entries.
 
 ## The engineering notes
 

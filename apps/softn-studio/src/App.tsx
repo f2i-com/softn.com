@@ -1,9 +1,11 @@
 import React, { lazy, useState, useCallback, useEffect, useRef } from 'react';
 import { ProductBar, currentTheme, subscribeTheme } from '@softn/brand';
+import { PRODUCT_URLS } from './lib/siteUrls';
 import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
 import { LeftRail } from './components/layout/LeftRail';
-import { VisualCanvas } from './components/canvas/VisualCanvas';
+import { VisualCanvas, writeCanvasViewMode } from './components/canvas/VisualCanvas';
+import { createWebStarter, type WebStarter } from '@softn/editor-shared/webStarters';
 import { BottomDrawer } from './components/layout/BottomDrawer';
 import { StatusBar } from './components/layout/StatusBar';
 import { Icon } from './components/common/Icon';
@@ -32,7 +34,7 @@ import { abortAgentTurn } from './lib/agentOrchestrator';
 import { buildFromBrief } from './lib/agent/buildFromBrief';
 import { reportAgentStatusToHost, startRunFromBrief } from './lib/agent/hostedAgent';
 import { rememberAppliedMigrations } from './lib/agent/appliedMigrations';
-import { exportAsBundle, buildBundle } from './lib/exportBundle';
+import { exportAsBundle, buildRunnableBundle } from './lib/exportBundle';
 import { connectHostedEditor, hostedAiLabel, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import {
   askStoreAgain,
@@ -225,17 +227,21 @@ const App: React.FC = () => {
     setView('brief');
   }, [checkpointBeforeReplace]);
 
-  /**
-   * Open a bundled example as a new project: the same ownership and
-   * checkpoint steps as an import, without the decode, since the files
-   * are already here.
-   */
-  const handleOpenExample = useCallback(async (example?: ExampleProject) => {
+  /** Both the bundled examples and web starters open a new, editable project. */
+  const openFromCatalog = useCallback(async (item: ExampleProject | WebStarter) => {
     const generation = beginReplacingProject();
     if (generation === null) return;
     if (!(await checkpointBeforeReplace())) return;
     if (!ownsWorkspace(generation)) return;
-    openExampleInStores(example);
+    if ('files' in item) {
+      openExampleInStores(item);
+    } else {
+      const files = await createWebStarter(item.id);
+      if (!ownsWorkspace(generation)) return;
+      openExampleInStores({ ...item, files }, 'starter');
+      writeCanvasViewMode('preview');
+      setMobilePanel('canvas');
+    }
     setView('editor');
     void refreshRecent();
   }, [checkpointBeforeReplace, refreshRecent]);
@@ -346,7 +352,7 @@ const App: React.FC = () => {
       open: async (bytes, name, { brief }) => {
         // The host opens the app under its own name for it, which stays the project's name
         // here whatever the bundle's manifest calls the app.
-        const result = await handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.softn`, { type: 'application/zip' }), undefined, name);
+        const result = await handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.zip`, { type: 'application/zip' }), undefined, name);
         if (!result.ok) throw new Error(result.message);
         // The host installed this project: every migration it came with has run on its database.
         rememberAppliedMigrations(useVFSStore.getState().files);
@@ -362,9 +368,9 @@ const App: React.FC = () => {
       },
       export: () => {
         if (useAIStore.getState().agentState === 'building') throw new Error('Wait for the AI to finish, or stop generating before reviewing changes.');
-        return buildBundle(useVFSStore.getState().getSnapshot());
+        return buildRunnableBundle(useVFSStore.getState().getSnapshot());
       },
-    }, { agentRuns: true });
+    }, { agentRuns: true, projectZip: true });
     const stopReporting = reportAgentStatusToHost();
     return () => { stopReporting(); disconnect(); };
   }, []);
@@ -543,7 +549,7 @@ const App: React.FC = () => {
     const record = await loadProjectRecord(id);
     if (!record) return { ok: false, message: 'there is no saved copy of it in this browser.' };
     try {
-      exportAsBundle(recordFilesAsMap(record), record.workspace.projectName);
+      await exportAsBundle(recordFilesAsMap(record), record.workspace.projectName);
       return { ok: true };
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) };
@@ -569,7 +575,7 @@ const App: React.FC = () => {
 
   // The same bar as the site, the runtime and Builder, over every view: the
   // way between them.
-  const bar = isHostedEditor() ? null : <ProductBar current="studio" />;
+  const bar = isHostedEditor() ? null : <ProductBar current="studio" urls={PRODUCT_URLS} />;
   // The AI setup, over any view: every prompt to connect a provider opens it.
   const setupDialog = isHostedEditor() ? null : <ProviderSetupDialog />;
 
@@ -591,8 +597,9 @@ const App: React.FC = () => {
   if (view === 'dashboard') {
     return (
       <div style={styles.root}>
+        <SkipToMain />
         {bar}
-        <div style={styles.fill}>
+        <main style={styles.fill} id={MAIN_ID} tabIndex={-1} aria-label="Studio home">
           <Dashboard
             onNewProject={handleNewProject}
             onImportProject={handleImportProject}
@@ -601,7 +608,8 @@ const App: React.FC = () => {
             onDeleteProject={handleDeleteProject}
             onExportProject={handleExportProject}
             onRenameProject={handleRenameProject}
-            onOpenExample={(example) => void handleOpenExample(example)}
+            onOpenExample={(example) => void openFromCatalog(example)}
+            onCreateStarter={isHostedEditor() ? undefined : openFromCatalog}
             recentProjects={recentProjects}
             storeSilent={storeSilent}
             onRetryStore={handleRetryStore}
@@ -610,7 +618,7 @@ const App: React.FC = () => {
               onSkip: () => useAIStore.getState().setSetupSkipped(true),
             }}
           />
-        </div>
+        </main>
         {setupDialog}
       </div>
     );
@@ -623,10 +631,11 @@ const App: React.FC = () => {
     const revising = Boolean(blueprint) && !blueprintApproved;
     return (
       <div style={styles.root}>
+        <SkipToMain />
         {bar}
-        <div style={styles.fill}>
+        <main style={styles.fill} id={MAIN_ID} tabIndex={-1} aria-label="Project brief">
           <Deferred><BriefWizard revising={revising} onBack={revising ? () => setView('editor') : handleBackToDashboard} onSubmit={() => setView('editor')} /></Deferred>
-        </div>
+        </main>
         {setupDialog}
       </div>
     );

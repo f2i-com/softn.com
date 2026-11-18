@@ -6,11 +6,23 @@ import { countResponse, responseBodyLength, trackLoad } from './load-progress';
 
 /** The engine's size in bytes, written in by core's build (tsup.config.ts); absent where core runs from source. */
 declare const __SOFTN_ENGINE_BYTES__: number | undefined;
-const ENGINE_BYTES: number | undefined = typeof __SOFTN_ENGINE_BYTES__ === 'number' ? __SOFTN_ENGINE_BYTES__ : undefined;
+export const zippEngineBytes: number | undefined = typeof __SOFTN_ENGINE_BYTES__ === 'number' ? __SOFTN_ENGINE_BYTES__ : undefined;
 
 let suppliedSource: BufferSource | WebAssembly.Module | undefined;
 let awaitedSource: Promise<BufferSource | WebAssembly.Module | null> | undefined;
 let initializationStarted = false;
+let uncontrolledCacheName: string | undefined;
+
+/** The URL Vite emits for this build's engine, also used to install it for offline use. */
+export function zippWasmUrl(): URL {
+  return new URL('zipp_wasm_bg.wasm', import.meta.url);
+}
+
+/** An installable editor can run a preview before its service worker controls this page.
+ * Keep the first successful engine download in the same cache the worker will use. */
+export function cacheUncontrolledZippEngine(cacheName: string): void {
+  uncontrolledCacheName = cacheName;
+}
 
 /** A source as this realm keeps it: a module as given, bytes copied so later caller mutations cannot change the engine. */
 function keptSource(source: BufferSource | WebAssembly.Module): BufferSource | WebAssembly.Module {
@@ -66,7 +78,7 @@ export function adoptZippWasmSource(source: BufferSource | WebAssembly.Module): 
 
 /**
  * Whether the browser can answer for `url` without the network: its HTTP
- * cache, or a service worker that holds it (SoftN Web's precache). Asked
+ * cache, or a service worker that holds it. Asked
  * with `only-if-cached`, which never goes to the network, and the body is
  * not read. A miss is a network error (the fetch rejects), so a rejection
  * is "not here"; so is an engine on another origin, which the option cannot
@@ -82,6 +94,12 @@ async function onThisDevice(url: URL): Promise<boolean> {
   }
 }
 
+function compileResponse(response: Response): Promise<WebAssembly.Module> {
+  return typeof WebAssembly.compileStreaming === 'function' && response.headers.get('Content-Type') === 'application/wasm'
+    ? WebAssembly.compileStreaming(response)
+    : response.arrayBuffer().then((bytes) => WebAssembly.compile(bytes));
+}
+
 /** The engine compiled once for this realm: from the configured source, or fetched from beside this chunk. */
 const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
   if (suppliedSource === undefined && awaitedSource) {
@@ -91,19 +109,35 @@ const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
   if (suppliedSource instanceof WebAssembly.Module) return suppliedSource;
   if (suppliedSource !== undefined) return WebAssembly.compile(suppliedSource);
   // The engine beside this chunk: the glue's own default, which a Vite build
-  // rewrites into the app's one hashed, precached copy. A worker is never left
+  // rewrites into the app's one hashed copy. A worker is never left
   // to fetch it from beside its own chunk in core-runtime/, where there is no
   // copy: the page compiles the engine once and posts the module to every
   // worker it starts (`zippEngineForWorker`), so one file serves them all.
-  const url = new URL('zipp_wasm_bg.wasm', import.meta.url);
+  const url = zippWasmUrl();
+  const cache = uncontrolledCacheName && typeof caches !== 'undefined' &&
+    typeof navigator !== 'undefined' && navigator.serviceWorker && !navigator.serviceWorker.controller
+    ? await caches.open(uncontrolledCacheName).catch(() => undefined) : undefined;
+  // On a first visit to a different editor its worker may not control the page yet,
+  // even though another SoftN app has already kept the same hashed URL.
+  const cached = await cache?.match(url.href).catch(() => undefined);
+  if (cached && cache) {
+    try {
+      return await compileResponse(cached);
+    } catch {
+      await cache.delete(url.href).catch(() => {});
+    }
+  }
   const local = await onThisDevice(url);
   let response: Response;
   try {
     response = await fetch(url);
+    if (!response.ok) throw new Error(`answered ${response.status}`);
   } catch (error) {
-    throw new Error(`The ZIPP engine (${url.pathname}) could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new Error('This app needs the full engine. Open it once while online to download it.');
+    }
+    throw new Error(`The ZIPP engine (${url.pathname}) ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!response.ok) throw new Error(`The ZIPP engine (${url.pathname}) answered ${response.status}`);
   // A download, counted for a host's progress bar (load-progress.ts) from a
   // clone, so the response compiled below is the one fetched, address and
   // all. Not a copy already on this device: reading a clone beside the
@@ -111,12 +145,16 @@ const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
   // a wait no one sees. Its size is the server's when it says it plainly,
   // else the engine this build carries, which a compressed answer's length
   // is not.
-  if (!local) countResponse(response, trackLoad('engine', 'engine', { total: responseBodyLength(response) ?? ENGINE_BYTES }));
+  if (!local) countResponse(response, trackLoad('engine', 'engine', { total: responseBodyLength(response) ?? zippEngineBytes }));
   // Streaming only for a server that labels the file as WebAssembly, which
   // compileStreaming insists on; any other label still serves the right bytes.
-  return typeof WebAssembly.compileStreaming === 'function' && response.headers.get('Content-Type') === 'application/wasm'
-    ? WebAssembly.compileStreaming(response)
-    : WebAssembly.compile(await response.arrayBuffer());
+  const keep = cache ? response.clone() : undefined;
+  const compiled = await compileResponse(response);
+  if (cache && keep) {
+    // Refused storage or a full disk still lets the online preview use its module.
+    await cache.put(url.href, keep).catch(() => {});
+  }
+  return compiled;
 });
 
 const initialize = retryableSingleFlight<InitOutput>(async () => {

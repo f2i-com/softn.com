@@ -12,7 +12,7 @@
  *   and enforces `net.allowed_hosts` egress policy on external URLs
  */
 
-import { ContainerArchive, resolveVfsPath, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
+import { ContainerArchive, readRunnableModule, resolveVfsPath, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
 import { rewriteCss } from './css-policy';
 import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement } from './host-policy';
 import { SOFTN_UI_CSS } from './ui-css';
@@ -295,7 +295,7 @@ export function prepareHtmlDocument(
       if (classified) {
         if (srcAttr) {
           const resolvedSrc = resolveVfsPath(srcAttr, entryPath);
-          const code = resolvedSrc ? archive.readText(resolvedSrc) : null;
+          const code = resolvedSrc ? readRunnableModule(resolvedSrc, (path) => archive.readText(path)) : null;
           if (code !== null && resolvedSrc) {
             scripts.push({
               id: scriptSeq++,

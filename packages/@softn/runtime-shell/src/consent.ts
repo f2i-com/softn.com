@@ -13,7 +13,8 @@
  * tests (the loader's do) needs nothing else from it to load this module.
  */
 
-import { inspectDeclaration, type PermissionConfig } from '@softn/core';
+import { inspectDeclaration } from '@softn/bundle-format/capabilities';
+import type { PermissionConfig } from '@softn/core';
 
 /** Every capability a declaration asks for — the list the bar names and a grant covers. */
 export function requestedCapabilities(config: PermissionConfig): string[] {

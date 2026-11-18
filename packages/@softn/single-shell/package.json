@@ -1,6 +1,6 @@
 {
   "name": "@softn/single-shell",
-  "version": "0.0.45",
+  "version": "0.0.46",
   "private": true,
   "description": "The single-app shell both standalone hosts render: one bundle, its permission bar, the directory's frame, and the load pipeline the archive-served (apps/softn-single) and PHP-served (apps/softn-single-private) variants share.",
   "license": "Apache-2.0",
@@ -14,6 +14,8 @@
     "./host": "./src/host.ts",
     "./headMetas": "./src/headMetas.ts",
     "./load": "./src/load.ts",
+    "./page": "./src/page.ts",
+    "./stall": "./src/stall.ts",
     "./style.css": "./src/style.css",
     "./package.json": "./package.json"
   },
@@ -22,6 +24,7 @@
   },
   "dependencies": {
     "@softn/brand": "*",
+    "@softn/bundle-format": "*",
     "@softn/components": "*",
     "@softn/container": "*",
     "@softn/core": "*",

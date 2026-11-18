@@ -32,13 +32,15 @@ export function codeLanguageFor(path: string | undefined): CodeEditorLanguage {
   if (/\.(?:tsx?|mts)$/.test(lower)) return 'typescript';
   if (lower.endsWith('.css')) return 'css';
   if (lower.endsWith('.json') || lower.endsWith('.xdb')) return 'json';
-  if (/\.(?:html?|ui)$/.test(lower)) return 'html';
+  if (/\.(?:html?|ui|vue)$/.test(lower)) return 'html';
   if (/\.(?:md|txt)$/.test(lower)) return 'plain';
   return 'javascript';
 }
 
 /** Human-readable badge label for a file's syntax mode. */
 export function codeLanguageLabelFor(path: string | undefined): string {
+  if (path && /\.jsx$/i.test(path)) return 'React JSX';
+  if (path && /\.vue$/i.test(path)) return 'Vue component';
   switch (codeLanguageFor(path)) {
     case 'python':
       return 'Python';

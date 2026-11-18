@@ -3,19 +3,21 @@ import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
-import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
+import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
+import { vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 export default defineConfig({
   // Relative by default, so a standalone deployment works from any directory.
   // The site build sets VITE_BASE to where the shell lands under softn.com
   // (`/play/`), where the directory serves it for every app in the catalogue.
   base: process.env.VITE_BASE || './',
   // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
-  plugins: [react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin(), scriptPolicyPlugin()],
+  plugins: [woff2OnlyFontsPlugin(), react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin(), scriptPolicyPlugin()],
   resolve: { dedupe: ['react', 'react-dom'] },
   // In the site build, what this builds by its address in the site's one folder of
   // built files (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
   experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
   build: {
+    target: 'es2022',
     sourcemap: false,
     // dist/.vite/manifest.json: the entry's static import closure, which
     // test/build-graph.test.ts holds free of Three.js and the model loaders.
@@ -28,21 +30,7 @@ export default defineConfig({
       output: {
         entryFileNames: (chunk) => (chunk.name === 'page' ? 'softn-page.js' : 'assets/[name]-[hash].js'),
         codeSplitting: {
-          groups: [
-            // Three.js itself — `three/build/` — under one name. It is reached
-            // only through the scene3d feature's dynamic import, so this names
-            // a chunk that is already asynchronous; it is not what makes it so
-            // — registerRuntimeComponents() in main.tsx does that at the
-            // source. The addons under `three/examples/jsm/` are deliberately
-            // not in the group: Scene3D reaches each loader, the controls, the
-            // environment and the post-processing set through its own
-            // import(), so each is a chunk of its own, fetched the first time
-            // a scene needs it. A test over `node_modules/three/` swept them
-            // all into this chunk — measured at 740 KB against 712 KB for
-            // Three.js alone — so a scene with one model and no effects
-            // downloaded the bloom pass and three loaders it never used.
-            { name: 'vendor-three', test: /node_modules[\\/]three[\\/]build[\\/]/ },
-          ],
+          groups: [vendorThreeGroup],
         },
       },
     },

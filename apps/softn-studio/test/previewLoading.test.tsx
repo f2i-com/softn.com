@@ -9,6 +9,8 @@ import { READING_LIST } from '../src/examples/readingList';
 import { READING_LIST_PYTHON } from '../src/examples/readingListPython';
 
 const { register, rendered, themed } = vi.hoisted(() => ({ register: vi.fn(), rendered: [] as SoftNRendererProps[], themed: [] as Array<Record<string, unknown>> }));
+const mountWeb = vi.hoisted(() => vi.fn());
+vi.mock('@softn/container', () => ({ mountSoftNContainer: mountWeb }));
 // The preview registers components as the runtimes do (@softn/components/lazy)
 // and takes the theme provider from the theme entry.
 vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents: register }));
@@ -49,6 +51,23 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 
 describe('Studio preview initialization', () => {
+  it('starts a fresh web preview after a source edit fixes a failed mount', async () => {
+    const files = useVFSStore.getState();
+    files.openFiles([
+      { path: 'manifest.json', content: JSON.stringify({ engine: 2, main: 'index.html' }) },
+      { path: 'index.html', content: '<main></main><script src="./app.js" type="module"></script>' },
+      { path: 'app.js', content: 'broken(' },
+    ]);
+    mountWeb.mockRejectedValueOnce(new Error('Could not start this version'));
+    mountWeb.mockResolvedValueOnce({ manifest: { main: 'index.html' }, dispose() {}, setGrantedCapabilities() {} });
+    await act(async () => { root.render(<VisualCanvas />); await vi.dynamicImportSettled(); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not start this version');
+    await act(async () => { files.updateFile('app.js', 'const value = 1;', 'user'); await vi.dynamicImportSettled(); });
+    expect(mountWeb).toHaveBeenCalledTimes(2);
+    expect(mountWeb.mock.lastCall?.[1].source['app.js']).toBe('const value = 1;');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it('shows a concise live loading state instead of the source while the renderer starts', async () => {
     act(() => root.render(<VisualCanvas />));
     expect(container.querySelector('[role="status"]')?.textContent).toContain('Preparing preview…');

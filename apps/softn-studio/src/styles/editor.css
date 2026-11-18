@@ -513,6 +513,18 @@
   flex: 1 1 5rem;
 }
 
+.st-preview-where:has(.st-preview-script) {
+  flex-basis: 15rem;
+}
+
+.st-preview-script {
+  display: block;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .st-preview-chrome > :last-child {
   margin-left: auto;
 }
@@ -1906,6 +1918,11 @@ button.st-status-item[aria-expanded='true'] {
   font-weight: 600;
   color: var(--studio-text-muted);
   margin-bottom: 0.25rem;
+}
+
+.st-run-summary-meta {
+  margin-left: auto;
+  font-weight: 400;
 }
 
 .st-run-summary p {

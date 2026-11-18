@@ -12,6 +12,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import {
   CAPABILITIES,
@@ -22,10 +23,10 @@ import {
   type BundleInspection,
   type Capability,
   type StoragePolicy,
-} from '@softn/core';
+} from '@softn/core/authoring';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
-import { isPythonLogicPath } from '@softn/core';
+import { isPythonLogicPath } from '@softn/core/authoring';
 import { toast } from '../../stores/notificationStore';
 import { buildProjectBundle, bundleFileName, gatherCollections } from '../../utils/buildProjectBundle';
 import type { PermissionDeclaration } from '../../utils/permissions';
@@ -219,7 +220,7 @@ interface ExportDialogProps {
   exportProject?: () => Promise<SaveOutcome>;
 }
 
-const exportWithNoFile = (): Promise<SaveOutcome> => saveProject({ as: 'export', view: 'design', existingHandle: null });
+const exportWithNoFile = (): Promise<SaveOutcome> => saveProject({ as: 'export', view: 'design', existingHandle: null, hosted: isHostedEditor() });
 
 function readAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -231,6 +232,7 @@ function readAsDataUrl(file: File): Promise<string> {
 }
 
 export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile }: ExportDialogProps) {
+  const hosted = isHostedEditor();
   const {
     name,
     version,
@@ -429,7 +431,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
           const outcome = await exportProject();
           if (outcome.kind === 'cancelled') return;
           if (outcome.kind === 'failed') throw outcome.error;
-          const said = exportMessage(outcome, bundleFileName(name));
+          const said = exportMessage(outcome, bundleFileName(name, hosted));
           if (current()) setDone(said);
           // A copy that leaves changes unsaved is news, not a success to wave through.
           if (outcome.copy?.unsaved || outcome.stale || outcome.projectChanged) toast.warning(said);
@@ -478,7 +480,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
         if (current()) setBusy(null);
       }
     },
-    [name, onClose, exportProject]
+    [name, onClose, exportProject, hosted]
   );
 
   if (!isOpen) return null;
@@ -504,7 +506,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
       >
         <div style={styles.header}>
           <h2 id="export-dialog-title" className="bl-dialog-title">
-            Export, run or publish
+            {hosted ? 'Export project' : 'Export, run or publish'}
           </h2>
           <button type="button" className="bl-close" onClick={onClose} aria-label="Close">
             ×
@@ -794,7 +796,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
                         <span data-report="unseen" style={{ display: 'contents' }}>
                           {unseen.server.length > 0 && (
                             <span style={styles.reportWarn}>
-                              △ Server logic the Builder does not show goes into the bundle as it came, and runs on the app’s server: {namePaths(unseen.server)}. Look at it before you publish.
+                              This project export includes private backend source ({namePaths(unseen.server)}). Anyone with the archive can read those files.
                             </span>
                           )}
                           {unseen.other.length > 0 && (
@@ -834,6 +836,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
             <button type="button" className="bl-btn bl-btn-ghost" onClick={onClose}>
               Cancel
             </button>
+            {!hosted && <>
             <button
               type="button"
               className="bl-btn"
@@ -852,6 +855,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
             >
               Publish…
             </button>
+            </>}
             <button
               type="button"
               className="bl-btn bl-btn-primary"
@@ -859,7 +863,7 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
               disabled={bundleProblem != null}
               title={bundleProblem ? 'Fix what the check found first' : undefined}
             >
-              Export .softn
+              {hosted ? 'Download ZIP' : 'Export .softn'}
             </button>
           </div>
         )}

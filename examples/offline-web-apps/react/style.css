@@ -1,0 +1,17 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: #201c1c; color: #fff1d4; font-family: "DM Sans", system-ui, sans-serif; }
+.recipe { width: min(100%, 44rem); padding: clamp(1rem, 5vw, 3rem); margin: clamp(1rem, 5vw, 4rem) auto; }
+header { border-top: .6rem solid #f8ac79; padding: 1.25rem 0 2rem; }
+h1 { font-size: clamp(4rem, 14vw, 7rem); line-height: .98; letter-spacing: -.075em; margin: .35rem 0 0; }
+header p, h2 { font-size: .82rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; margin: 0; }
+header p { color: #f8ac79; }
+.dose, .water { padding: clamp(1.25rem, 5vw, 2.5rem); }
+.dose { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; border: 1px solid #847167; }
+.stepper { display: flex; gap: .7rem; align-items: center; }
+.stepper output { min-width: 3.4rem; text-align: center; font: 600 1.2rem/1 "IBM Plex Mono", monospace; }
+button { border: 1px solid #9f897c; background: #312927; color: #fff1d4; border-radius: 50%; width: 2.8rem; height: 2.8rem; font: 1.6rem/1 system-ui, sans-serif; cursor: pointer; }
+button:disabled { opacity: .45; }
+button:focus-visible { outline: 3px solid #ffe09c; outline-offset: 3px; }
+.water { margin-top: .8rem; background: #f8ac79; color: #361e16; }
+.water output { display: block; font-size: clamp(3.4rem, 11vw, 6.2rem); font-weight: 700; letter-spacing: -.06em; line-height: 1.15; margin: .6rem 0; }
+.water p { margin: 0; font-size: .9rem; }

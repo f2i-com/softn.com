@@ -32,7 +32,7 @@
  * skipped.
  */
 
-import { readBundleEntries } from '@softn/core';
+import { readBundleEntries } from '@softn/core/authoring';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { sha256Hex } from '@softn/bundle-format/crypto';
 import { create } from 'zustand';

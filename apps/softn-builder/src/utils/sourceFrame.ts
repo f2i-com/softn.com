@@ -20,7 +20,7 @@
  * element to stay with, and such a file is still edited as source.
  */
 
-import { tokenize, TokenType } from '@softn/core';
+import { tokenize, TokenType } from '@softn/core/authoring';
 import type { SoftNDocument, TemplateNode, Token } from '@softn/core';
 import type { CanvasComment, CanvasElement } from '../types/builder';
 import { generateSource } from './sourceGenerator';

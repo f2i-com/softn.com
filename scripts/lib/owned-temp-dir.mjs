@@ -28,13 +28,22 @@ export function isRunning(pid) {
  */
 export function removeOrphans(prefix, dir = os.tmpdir(), running = isRunning) {
   const removed = [];
-  for (const name of fs.readdirSync(dir)) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const name = entry.name;
     if (!name.startsWith(prefix)) continue;
     const owner = /^(\d+)-/.exec(name.slice(prefix.length));
     if (!owner) continue;
     const pid = Number(owner[1]);
     if (pid === process.pid || running(pid)) continue;
-    fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    try {
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    } catch (error) {
+      // Another test server may be cleaning the same directory, or its PHP
+      // process may still hold an open file on Windows. Try again next run.
+      if (['ENOENT', 'EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) continue;
+      throw error;
+    }
     removed.push(name);
   }
   return removed;

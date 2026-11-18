@@ -199,7 +199,9 @@ export function containerRuntimeAssetPlugin({ runtimeDistRoot = defaultContainer
       // Absolute for the site's shared folder; otherwise relative to the app's base, which
       // the app puts in front (a single-app build's base is `./`).
       const folder = sharedBase ? `${sharedBase}${digest}/` : `${CONTAINER_RUNTIME_DIR}/${digest}/`;
-      return { define: { [`import.meta.env.${CONTAINER_RUNTIME_ENV}`]: JSON.stringify(folder) } };
+      const define = { [`import.meta.env.${CONTAINER_RUNTIME_ENV}`]: JSON.stringify(folder) };
+      if (sharedBase) define['import.meta.env.VITE_SOFTN_CONTAINER_WORKER'] = JSON.stringify(`container-worker-${digest}.js`);
+      return { define };
     },
     configResolved(config) {
       outputRoot = path.resolve(config.root, config.build.outDir);
@@ -208,6 +210,11 @@ export function containerRuntimeAssetPlugin({ runtimeDistRoot = defaultContainer
       server.middlewares.use((req, res, next) => {
         const match = String(req.url || '').match(/(?:^|\/)assets\/container-runtime\/([^?#]*)/);
         if (!match) return next();
+        // These files finish here before Vite's static middleware applies server.headers.
+        // In particular, a module Worker must receive the embedding page's COEP to start.
+        for (const [name, value] of Object.entries(server.config.server.headers ?? {})) {
+          if (value !== undefined) res.setHeader(name, value);
+        }
         try {
           const relative = decodeURIComponent(match[1]);
           if (
@@ -247,10 +254,17 @@ export function containerRuntimeAssetPlugin({ runtimeDistRoot = defaultContainer
       });
     },
     writeBundle(options) {
-      // The site keeps one folder for all its apps, written once by build-site.mjs.
-      if (sharedBase) return;
       const destination = options.dir || outputRoot;
       if (!destination) throw new Error('Container runtime assets need a Vite output directory');
+      if (sharedBase) {
+        // Firefox selects a dedicated worker's controller by its own script URL. A
+        // blob worker importing the shared module can still go to the network offline.
+        // The local entry and its shared imports all run under this host's worker.
+        const worker = `container-worker-${digest}.js`;
+        fs.mkdirSync(destination, { recursive: true });
+        fs.writeFileSync(path.join(destination, worker), `import ${JSON.stringify(`${sharedBase}${digest}/container-worker.js`)};\n`);
+        return;
+      }
       const own = path.join(destination, ...CONTAINER_RUNTIME_DIR.split('/'));
       // The whole of it, so a folder a previous build named does not stay beside this one's.
       fs.rmSync(own, { recursive: true, force: true });

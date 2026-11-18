@@ -1,6 +1,6 @@
 {
   "name": "@softn/components",
-  "version": "0.0.45",
+  "version": "0.0.46",
   "description": "SoftN Built-in Component Library",
   "license": "Apache-2.0",
   "repository": {
@@ -71,6 +71,10 @@
     "./editors": {
       "types": "./dist/editors.d.ts",
       "default": "./dist/editors.js"
+    },
+    "./code-editor": {
+      "types": "./dist/code-editor.d.ts",
+      "default": "./dist/code-editor.js"
     },
     "./highlight": {
       "types": "./dist/highlight.d.ts",

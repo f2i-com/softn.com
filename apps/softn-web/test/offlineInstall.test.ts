@@ -80,6 +80,7 @@ const host = (
   // unless a test says otherwise: the real ones are Three.js and core's chunks.
   componentExtras: () => undefined,
   preloadAI: async () => {},
+  installFullEngine: async () => {},
   ...extra,
 });
 
@@ -96,6 +97,20 @@ describe('requiredFeatures', () => {
 });
 
 describe('installAppOffline', () => {
+  it('installs the full engine for scripts and linked pages with inline browser handlers', async () => {
+    const installFullEngine = vi.fn().mockResolvedValue(undefined);
+    const setup = host(registryWith({}), { installFullEngine });
+    const entry = '<a href="clock.html">Clock</a>';
+    const files = new Map([['manifest.json', '{"name":"Clock","main":"index.html"}'], ['index.html', entry]]);
+    expect((await installAppOffline(app({ source: entry, textFiles: files }), setup)).features).toEqual([]);
+    expect(installFullEngine).not.toHaveBeenCalled();
+    files.set('clock.html', '<button onclick="this.textContent = Date.now()">Clock</button>');
+    expect((await installAppOffline(app({ source: entry, textFiles: files }), setup)).features).toContain('engine:full');
+    expect(installFullEngine).toHaveBeenCalledOnce();
+    installFullEngine.mockRejectedValueOnce(new Error('offline'));
+    expect(await installAppOffline(app({ source: '<logic>let value = 1</logic><Text>{value}</Text>' }), setup))
+      .toMatchObject({ ready: false, missing: ['engine:full'] });
+  });
   it('loads in the background, off the download progress of the app on screen', async () => {
     resetLoadProgressForTests();
     let failing = true;

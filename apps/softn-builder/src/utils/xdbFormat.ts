@@ -37,7 +37,7 @@
  *    be taken back until the next data edit.
  */
 
-import { seedId } from '@softn/core';
+import { seedId } from '@softn/core/authoring';
 import type { SchemaField } from '../types/builder';
 import { isObject } from './values';
 

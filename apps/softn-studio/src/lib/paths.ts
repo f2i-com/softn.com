@@ -33,7 +33,7 @@
  * because the spelling is settled before the question is asked.
  */
 
-import { isUnsafeEntryName } from '@softn/core';
+import { isUnsafeEntryName } from '@softn/core/authoring';
 
 const PRIVATE_PREFIX = 'builder/';
 

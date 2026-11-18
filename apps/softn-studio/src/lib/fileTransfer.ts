@@ -5,7 +5,7 @@
  */
 
 import { zipSync } from 'fflate';
-import { classifyAsset } from '@softn/core';
+import { classifyAsset } from '@softn/core/authoring';
 import type { IncomingFile } from './fileOps';
 import { MAX_APP_FILES, nameOf, pastedName } from './fileRules';
 import type { VFSFile } from '../types/studio';

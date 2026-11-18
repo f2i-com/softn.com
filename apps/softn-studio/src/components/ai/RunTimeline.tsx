@@ -6,6 +6,7 @@ import type { AgentRunRecord, LiveReply, RunEntry } from '../../lib/agent/types'
 import type { LineDiff } from '../../lib/agent/diff';
 import { runEffective } from '../../lib/agent/budget';
 import {
+  activeAgentRunId,
   answerAgentQuestion,
   continueAgentRun,
   continueInterruptedRun,
@@ -292,7 +293,8 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
   // A run saved mid-way by an earlier session cannot be driven from here.
   // A run saved mid-way by a page that has since reloaded: its conversation is gone, its record is not.
   const interrupted = wasInterrupted(run);
-  const status: AgentRunRecord['status'] = interrupted ? 'stopped' : run.status;
+  const savingResult = run.status === 'finished' && agentState === 'building' && activeAgentRunId() === run.id;
+  const status: AgentRunRecord['status'] = savingResult ? 'running' : interrupted ? 'stopped' : run.status;
   const running = status === 'running';
   const busy = agentState === 'building';
   const canContinue = ((live && (status === 'stopped' || status === 'failed' || status === 'paused')) || interrupted) && !busy;
@@ -354,7 +356,9 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
       )}
 
       <ol className="st-run-steps" aria-label="Steps" aria-live="off">
-        {run.entries.filter((entry) => !(entry.kind === 'tool' && entry.name === 'finish' && entry.status === 'ok')).map((entry) =>
+        {run.entries.filter((entry) => entry.kind === 'text'
+          ? status !== 'finished' || entry.text !== run.summary
+          : entry.name !== 'finish' || entry.status !== 'ok').map((entry) =>
           entry.kind === 'text' ? (
             <li key={entry.id} className="st-run-text">{entry.text}</li>
           ) : (
@@ -376,10 +380,14 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
       {status === 'waiting' && run.question && live && <AskBox run={run} />}
 
       {run.summary && status === 'finished' && (
-        <div className="st-run-summary">
-          <div className="st-run-summary-head"><Icon name="check" size={13} /> Done</div>
+        <section className="st-run-summary" aria-label="Run result">
+          <div className="st-run-summary-head">
+            <Icon name="check" size={14} />
+            {run.transactions.length ? 'Change summary' : 'Answer'}
+            {!run.transactions.length && <span className="st-run-summary-meta">No files changed</span>}
+          </div>
           <p>{run.summary}</p>
-        </div>
+        </section>
       )}
       {reason && status !== 'running' && status !== 'finished' && <p className={`st-run-reason${status === 'failed' ? ' is-error' : ''}`}>{reason}</p>}
       {elsewhere && <p className="st-run-reason">{elsewhereNote}</p>}

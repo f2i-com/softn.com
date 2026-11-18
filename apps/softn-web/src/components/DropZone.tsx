@@ -75,7 +75,7 @@ function handledByApp(event: React.DragEvent): boolean {
 }
 
 /**
- * Full-page drag-and-drop overlay for .softn files.
+ * Full-page drag-and-drop overlay for app archives.
  * Wraps its children and shows a visual overlay when dragging.
  */
 export function DropZone({ onFile, onError, children }: DropZoneProps): React.ReactElement {
@@ -159,7 +159,7 @@ export function DropZone({ onFile, onError, children }: DropZoneProps): React.Re
               marginBottom: '0.5rem',
               letterSpacing: '-0.02em',
             }}>
-              Drop your .softn file
+              Drop your .softn or .zip file
             </div>
             <div style={{
               color: 'var(--dim)',

@@ -370,7 +370,7 @@ describe('Export, which writes the same bundle Save does', () => {
     const storage = memoryStorage();
     const outcome = (await saveProject({
       as: 'export', hosted: true, view: 'design', existingHandle: null, storage,
-      writeExport: async () => null,
+      writeExport: async (_bytes, name) => { expect(name).toBe('project-a.zip'); return null; },
     })) as Extract<SaveOutcome, { kind: 'saved' }>;
     expect(outcome.copy).toEqual({ of: null, unsaved: true });
     expect(useProjectStore.getState().isDirty).toBe(true);

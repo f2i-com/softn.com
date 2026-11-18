@@ -116,6 +116,14 @@ test('a page on this site may call its API without listing its own origin; other
   ]);
   assert.equal(own,'https://app.example');assert.equal(plain,'http://app.example:8080');
   assert.equal(proxied,'https://app.example');assert.equal(unproxied,'http://app.example');assert.equal(badHost,null);
+  const origins=php([
+    ['softn_own_origin',{HTTP_HOST:'app.example:443',HTTPS:'on'},false],
+    ['softn_own_origin',{HTTP_HOST:'app.example:80'},false],
+    ['softn_own_origin',{HTTP_HOST:'[::1]:443',HTTP_X_FORWARDED_PROTO:'https'},true],
+    ['softn_own_origin',{HTTP_HOST:'app.example:8443',HTTPS:'on'},false],
+    ['softn_own_origin',{HTTP_HOST:'app.example:443'},false],
+  ]);
+  assert.deepEqual(origins,['https://app.example','http://app.example','https://[::1]','https://app.example:8443','http://app.example:443']);
   const allowed=php([
     ['softn_origin_allowed',null,[],own],
     ['softn_origin_allowed','https://app.example',[],own],
@@ -200,6 +208,7 @@ nodeTest('OPTIONS is always a 204, as on the Rust host, and only an allowed Orig
   const allowed=cgi('OPTIONS','https://app.example',t);
   assert.equal(allowed.status,204);
   assert.equal(allowed.headers['access-control-allow-origin'],'https://app.example');
+  assert.match(allowed.headers['access-control-allow-methods'],/\bHEAD\b/);
   assert.match(allowed.headers['access-control-allow-methods'],/DELETE/);
   // A foreign page's preflight gets no Allow-Origin, so its browser stops there; the Rust host's CORS layer answers it the same way.
   const foreign=cgi('OPTIONS','https://evil.example',t);
@@ -221,6 +230,7 @@ nodeTest('a method a path does not declare is 405, a path nobody declared is 404
   assert.equal(wrong.status,405,JSON.stringify(wrong));
   assert.deepEqual(JSON.parse(wrong.body),{error:'Method not allowed.',code:'method_not_allowed'});
   assert.equal(wrong.headers.allow,'GET, HEAD');
+  assert.match(wrong.headers['access-control-expose-headers'],/\bAllow\b/);
   assert.equal(ask('DELETE','/api/save').headers.allow,'POST, PUT');
   assert.equal(ask('PATCH','/api/ping').status,405);
   // The host's own /api/meta is a GET.

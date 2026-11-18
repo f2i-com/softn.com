@@ -120,7 +120,7 @@ export const StatusBar: React.FC = () => {
           <span className="num">{bundle.files}</span> file{bundle.files === 1 ? '' : 's'}
         </span>
         <span className="st-status-item">
-          Bundle <span className="num">{sizeLabel}</span>
+          {bundle.componentSource ? 'Project files' : 'Bundle'} <span className="num">{sizeLabel}</span>
         </span>
         <span className="st-status-item st-status-hide-narrow">
           {target.charAt(0).toUpperCase() + target.slice(1)} target

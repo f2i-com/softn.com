@@ -1,22 +1,29 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { softnPwa } from '../../scripts/build/pwa.mjs';
+import { starterVendorsPlugin } from '../../scripts/build/starter-vendors.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 import { containerRuntimeAssetPlugin, sharedContainerPrecache } from '../../scripts/build/container-runtime-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
+import { exampleBundlesPlugin } from '../../scripts/dev/example-bundles.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
-import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
-import { vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
+import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
+import { fullEngineGlob, fullEngineRuntimeCaching, vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
 export default defineConfig({
   plugins: [
+    starterVendorsPlugin(),
     retireServiceWorkersPlugin(),
+    exampleBundlesPlugin(),
+    woff2OnlyFontsPlugin(),
     react(),
     coreWorkerAssetPlugin(),
-    ...(env.VITE_FORMLOGIC_EDITOR === '1' ? [] : [containerRuntimeAssetPlugin()]),
+    containerRuntimeAssetPlugin(env.VITE_FORMLOGIC_EDITOR === '1'
+      ? { env: { SOFTN_SHARED_CONTAINER_RUNTIME: '/hosted-runtime/assets/container-runtime/' } }
+      : {}),
     // What runs as script: this deployment's files only (scripts/build/script-policy.mjs).
     scriptPolicyPlugin(),
     softnPwa({
@@ -55,16 +62,20 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // `wasm` is not optional: the scripting engine is a .wasm, so without
-        // it nothing the studio generates runs offline. It is also larger than
-        // Workbox's 2 MiB default cap, which would silently skip the file.
+        // Install the editor tools and lite previews for offline use. A preview that needs
+        // the full engine fetches it once, into the same runtime cache as SoftN Web.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
-        // A complete install: everything Studio ships, so an installed Studio
-        // works offline with every feature. The preview still loads each one
-        // (charts, editors, Scene3D with Three.js, the QR decoder, the workers'
-        // files under core-runtime/) only when a page draws or asks for it, so
-        // this is what installing downloads, not what a page loads.
-        globIgnores: [],
+        globIgnores: [fullEngineGlob],
+        sourceCompilers: true,
+        // Full-tier web previews import this helper even when the project has
+        // never used a classic component. Its JS must be available offline.
+        classicSharedRoots: ['../../packages/@softn/core/dist/web-host.js'],
+        classicRoots: [
+          '../../packages/@softn/runtime-shell/src/ClassicPreviewRenderer.tsx',
+          '../../packages/@softn/components/dist/theme.js',
+          '../../packages/@softn/components/dist/lazy.js',
+        ],
+        runtimeCaching: [fullEngineRuntimeCaching],
         // What a web-container preview runs on (@softn/container's Worker, the engines
         // core does not carry, the vendor modules): under assets/ in a build of Studio
         // alone, where the globs find it; in the site build in the one folder all four

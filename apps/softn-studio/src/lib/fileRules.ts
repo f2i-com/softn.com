@@ -15,7 +15,7 @@
  * numbered (`logo-2.png`) and never written over.
  */
 
-import { MAX_ZIP_INPUT_BYTES, classifyAsset, pythonModuleName } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, classifyAsset, pythonModuleName } from '@softn/core/authoring';
 import { keptAsBytes } from './fileKinds';
 import { bundleNameProblem, canonicalKey, isPrivatePath } from './paths';
 import { isTextEntry, namedAsText } from './projectImport';
@@ -215,7 +215,7 @@ export function keptContent(path: string, bytes: Uint8Array): KeptContent {
  * something the app shows or serves, and goes with the assets.
  */
 export function belongsAtTheTop(path: string): boolean {
-  return isPagePath(path) || isLogicPath(path) || /\.(css|json|xdb|sql|ts|tsx|jsx)$/i.test(path);
+  return isPagePath(path) || isLogicPath(path) || /\.(css|json|xdb|sql|ts|tsx|jsx|vue)$/i.test(path);
 }
 
 /** What a new text file starts as: valid JSON for a file that has to be JSON, and nothing otherwise. */

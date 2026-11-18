@@ -11,12 +11,17 @@
 export type WorkspaceView = 'design' | 'data' | 'preview' | 'code';
 
 const ALL_VIEWS: readonly WorkspaceView[] = ['design', 'data', 'preview', 'code'];
+const WEB_VIEWS: readonly WorkspaceView[] = ['design', 'data', 'preview'];
 const LOGIC_VIEWS: readonly WorkspaceView[] = ['design', 'preview'];
 const DESIGN_ONLY: readonly WorkspaceView[] = ['design'];
 
-export function viewsFor(fileType: 'ui' | 'logic' | 'asset' | null | undefined): readonly WorkspaceView[] {
-  if (fileType === 'logic') return LOGIC_VIEWS;
+export function viewsFor(
+  fileType: 'ui' | 'logic' | 'asset' | null | undefined,
+  projectFormat: 'ui' | 'web' = 'ui',
+): readonly WorkspaceView[] {
   if (fileType === 'asset') return DESIGN_ONLY;
+  if (projectFormat === 'web') return WEB_VIEWS;
+  if (fileType === 'logic') return LOGIC_VIEWS;
   return ALL_VIEWS;
 }
 

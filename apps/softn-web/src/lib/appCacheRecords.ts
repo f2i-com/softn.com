@@ -62,7 +62,7 @@ export function groupByApp(apps: CachedApp[]): AppVersions[] {
 /** Cache a new app, or update the one with these exact contents. */
 export async function cacheApp(
   bundleData: Uint8Array,
-  manifest: { name: string; version: string; description?: string },
+  manifest: { name: string; version: string; description?: string; format?: CachedApp['format'] },
   icon?: string,
   directorySlug?: string,
   requestedCapabilities?: string[],
@@ -83,7 +83,9 @@ export async function cacheApp(
     // checked inside the transaction before it is acted on.
     let adoption: Adoption | null = null;
     let legacyUpgrade: (Adoption & { toOrigin: string }) | null = null;
-    const already = await db.getFromIndex('softn-apps', 'by-origin', origin);
+    // An existence check needs only the key. Reading the record would also
+    // clone the entire archive before the transaction reads it again below.
+    const already = await db.getKeyFromIndex('softn-apps', 'by-origin', origin);
     if (!already) {
       adoption = (await findShortOriginAdoption(db, origin)) ?? (await findLegacyAdoption(db, manifest.name, origin));
       if (!adoption) legacyUpgrade = await findLegacyUpgrade(db, manifest.name);
@@ -109,6 +111,7 @@ export async function cacheApp(
         origin,
         version: manifest.version,
         description,
+        format: manifest.format ?? existing.format,
         bundleData,
         lastOpened: Date.now(),
         icon: icon ?? existing.icon,
@@ -137,6 +140,7 @@ export async function cacheApp(
       name: manifest.name,
       version: manifest.version,
       description,
+      format: manifest.format,
       bundleData,
       cachedAt: Date.now(),
       lastOpened: Date.now(),

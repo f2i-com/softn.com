@@ -2,11 +2,10 @@
  * Guest Web API Extensions & Hosted Vendor Shims injected inside the ZIPP Sandbox.
  *
  * Extends `shellPrelude` with:
- * 1. Hydration of inline HTML event attributes (`onclick="..."`, `onsubmit="..."`) from `SeedNode.h`
- * 2. Full `HTMLCanvasElement.prototype.getContext('2d')` (`CanvasRenderingContext2D`) command recorder
- * 3. Virtual-origin `fetch()` (`https://app.softn.local/...` + binary `arrayBuffer()`/`blob()`)
- * 4. Standard `setTimeout` / `setInterval` / `performance.now()` Worker timer bridge
- * 5. Built-in hosted `/runtime/vendor/` libraries (`three` Split-Realm proxy, `marked`, `htm`, `preact`)
+ * - Full `HTMLCanvasElement.prototype.getContext('2d')` (`CanvasRenderingContext2D`) command recorder
+ * - Virtual-origin `fetch()` (`https://app.softn.local/...` + binary `arrayBuffer()`/`blob()`)
+ * - Standard `setTimeout` / `setInterval` / `performance.now()` Worker timer bridge
+ * - Built-in hosted `/runtime/vendor/` libraries (`three` Split-Realm proxy, `marked`, `htm`, `preact`)
  *    and `softn:*` capability modules (`softn:db`, `softn:net`, `softn:storage`)
  */
 
@@ -112,31 +111,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   };
 
   // ---------------------------------------------------------------------------
-  // 2. Hydrate inline HTML event attributes ('onclick="..."', 'onsubmit="..."')
-  // ---------------------------------------------------------------------------
-  g.__softnHydrateInlineHandlers = function (nodes) {
-    if (!Array.isArray(nodes) || !doc) return;
-    var byId = Object.create(null);
-    var all = doc.querySelectorAll('*');
-    for (var i = 0; i < all.length; i++) {
-      if (all[i].__softnNode) byId[all[i].__softnNode] = all[i];
-    }
-    function visit(list) {
-      for (var j = 0; j < list.length; j++) {
-        var item = list[j];
-        if (item.h && byId[item.i]) {
-          for (var attr in item.h) {
-            try { byId[item.i].setAttribute(attr, item.h[attr]); } catch (_) {}
-          }
-        }
-        if (item.c) visit(item.c);
-      }
-    }
-    visit(nodes);
-  };
-
-  // ---------------------------------------------------------------------------
-  // 3. HTMLCanvasElement & CanvasRenderingContext2D Command Buffer
+  // 2. HTMLCanvasElement & CanvasRenderingContext2D Command Buffer
   // ---------------------------------------------------------------------------
   var __extraOps = [];
   var __dirtyCanvases = [];
@@ -330,7 +305,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   };
 
   // ---------------------------------------------------------------------------
-  // 4. Virtual-Origin 'fetch()' & Binary 'Response' ('arrayBuffer()', 'blob()')
+  // 3. Virtual-Origin 'fetch()' & Binary 'Response' ('arrayBuffer()', 'blob()')
   // ---------------------------------------------------------------------------
   function b64ToBytes(b64) {
     var bin = g.atob(b64);
@@ -428,13 +403,92 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   }
 
   // ---------------------------------------------------------------------------
-  // 5. Built-in 'softn:*' Capabilities & Hosted Vendor Modules
+  // 4. Built-in 'softn:*' Capability Bridges (vendor shims load on demand)
   // ---------------------------------------------------------------------------
+  var listeners = new Map();
+  g.db.subscribe = function (name, listener) {
+    if (typeof name !== 'string' || !name || typeof listener !== 'function') {
+      throw new TypeError('db.subscribe requires a collection name and listener');
+    }
+    var group = listeners.get(name);
+    if (!group) {
+      group = new Set();
+      listeners.set(name, group);
+      host.callSync('xdb.watch', name, '1');
+    }
+    var handler = function () { listener(); };
+    group.add(handler);
+    return function () {
+      if (group.delete(handler) && group.size === 0) {
+        listeners.delete(name);
+        host.callSync('xdb.watch', name, '0');
+      }
+    };
+  };
+  g.__softnDbChanged = function (names) {
+    names.forEach(function (name) {
+      var group = listeners.get(name);
+      if (group) Array.from(group).forEach(function (listener) {
+        try { if (group.has(listener)) listener(); }
+        catch (error) { console.error(error && error.message ? error.message : String(error)); }
+      });
+    });
+  };
+
+  var backend = {
+    call: function (action, input, callback) {
+      var promise = new Promise(function (resolve) {
+        host.call('backend.call', [String(action), JSON.stringify(input === undefined ? {} : input)], resolve);
+      });
+      return typeof callback === 'function' ? promise.then(function (reply) { callback(reply); return reply; }) : promise;
+    }
+  };
+  g.softn = g.softn || {};
+  g.softn.backend = backend;
+  if (g.window) g.window.softn = g.softn;
+
   if (typeof __softnModules !== 'undefined') {
     // 'softn:db' — Synchronous Worker-local XDB backed by host persistence
     __softnModules.define('softn:db', async function (__exports) {
       __exports.db = g.db;
+      __exports.subscribe = g.db.subscribe;
       __exports.default = g.db;
+    });
+
+    __softnModules.define('softn:backend', async function (__exports) {
+      __exports.backend = backend;
+      __exports.default = backend;
+    });
+
+    __softnModules.define('softn:api', async function (__exports) {
+      var api = {
+        fetch: async function (path, init) {
+          if (typeof path !== 'string' || !/^\/api\//.test(path)) throw new TypeError('Expected an app route under /api/.');
+          var opts = init || {};
+          var options = { method: String(opts.method || 'GET').toUpperCase() };
+          if (opts.headers) {
+            options.headers = {};
+            new g.Headers(opts.headers).forEach(function (v, k) { options.headers[k] = v; });
+          }
+          if (opts.body !== undefined) {
+            var contentType = options.headers && options.headers['content-type'];
+            options.body = typeof opts.body === 'string' && contentType && /\bjson\b/i.test(contentType)
+              ? JSON.parse(opts.body) : opts.body;
+          }
+          var reply = await backend.call('nativeRequest', { url: path, options: options });
+          if (!reply || reply.error || !reply.result) throw new TypeError(reply && reply.error || 'Backend request failed.');
+          var result = reply.result;
+          return new ContainerResponse({
+            ok: result.status >= 200 && result.status < 300,
+            status: result.status,
+            headers: result.headers || { 'content-type': 'application/json' },
+            body: JSON.stringify(result.body)
+          }, path);
+        }
+      };
+      __exports.api = api;
+      __exports.fetch = api.fetch;
+      __exports.default = api;
     });
 
     // 'softn:storage' — App-scoped localStorage
@@ -447,437 +501,6 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     __softnModules.define('softn:net', async function (__exports) {
       __exports.fetch = g.fetch;
       __exports.default = { fetch: g.fetch };
-    });
-
-    // 'softn-vendor:marked' — Hosted zero-bundle Markdown renderer
-    __softnModules.define('softn-vendor:marked', async function (__exports) {
-      var inlineCodeRe = new RegExp('\\x60([^\\x60]+)\\x60', 'g');
-      function escapeMd(s) {
-        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      }
-      function inlineMd(s) {
-        return escapeMd(s)
-          .replace(inlineCodeRe, '<code>$1</code>')
-          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-          .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-          .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noopener noreferrer" target="_blank">$1</a>');
-      }
-      function parseMarkdown(md) {
-        var lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
-        var out = [];
-        var inList = false;
-        for (var i = 0; i < lines.length; i++) {
-          var line = lines[i];
-          if (/^\s*[-*]\s+/.test(line)) {
-            if (!inList) { out.push('<ul>'); inList = true; }
-            out.push('<li>' + inlineMd(line.replace(/^\s*[-*]\s+/, '')) + '</li>');
-            continue;
-          }
-          if (inList) { out.push('</ul>'); inList = false; }
-          var hm = /^(#{1,6})\s+(.*)$/.exec(line);
-          if (hm) {
-            var lvl = hm[1].length;
-            out.push('<h' + lvl + '>' + inlineMd(hm[2]) + '</h' + lvl + '>');
-          } else if (line.trim() !== '') {
-            out.push('<p>' + inlineMd(line) + '</p>');
-          }
-        }
-        if (inList) out.push('</ul>');
-        return out.join('\n');
-      }
-      __exports.marked = { parse: parseMarkdown };
-      __exports.parse = parseMarkdown;
-      __exports.default = { parse: parseMarkdown };
-    });
-
-    // 'softn-vendor:preact' & 'softn-vendor:preact/hooks' & 'softn-vendor:htm'
-    // Hosted zero-build reactive VDOM library (~3 KB) running directly against Guest DOM!
-    __softnModules.define('softn-vendor:preact', async function (__exports) {
-      var currentComponent = null;
-      function h(type, props) {
-        var children = [];
-        for (var i = 2; i < arguments.length; i++) {
-          var c = arguments[i];
-          if (Array.isArray(c)) {
-            for (var j = 0; j < c.length; j++) children.push(c[j]);
-          } else {
-            children.push(c);
-          }
-        }
-        return { type: type, props: Object.assign({}, props || {}, { children: children }) };
-      }
-      function Fragment(props) { return props.children; }
-
-      function mountVNode(vnode) {
-        if (vnode === null || vnode === undefined || typeof vnode === 'boolean') {
-          return doc.createComment('');
-        }
-        if (typeof vnode === 'string' || typeof vnode === 'number') {
-          return doc.createTextNode(String(vnode));
-        }
-        if (Array.isArray(vnode)) {
-          var frag = doc.createDocumentFragment();
-          for (var i = 0; i < vnode.length; i++) frag.appendChild(mountVNode(vnode[i]));
-          return frag;
-        }
-        if (typeof vnode.type === 'function') {
-          var inst = { hooks: [], hookIdx: 0, vnode: vnode, container: null, dom: null, rerender: null };
-          var wrapper = doc.createElement('div');
-          wrapper.style.display = 'contents';
-          inst.rerender = function () {
-            inst.hookIdx = 0;
-            var prev = currentComponent;
-            currentComponent = inst;
-            var rendered;
-            try { rendered = vnode.type(vnode.props); } finally { currentComponent = prev; }
-            while (wrapper.firstChild) wrapper.removeChild(wrapper.firstChild);
-            wrapper.appendChild(mountVNode(rendered));
-          };
-          inst.rerender();
-          return wrapper;
-        }
-        var el = doc.createElement(String(vnode.type));
-        var p = vnode.props || {};
-        for (var k in p) {
-          if (k === 'children' || k === 'key') continue;
-          var val = p[k];
-          if (k === 'className' || k === 'class') {
-            if (val) el.setAttribute('class', String(val));
-          } else if (k === 'style' && val && typeof val === 'object') {
-            for (var sk in val) el.style[sk] = val[sk];
-          } else if (k.toLowerCase().indexOf('on') === 0 && typeof val === 'function') {
-            el.addEventListener(k.slice(2).toLowerCase(), val);
-          } else if (k === 'value') {
-            el.value = val == null ? '' : String(val);
-          } else if (k === 'checked') {
-            el.checked = !!val;
-          } else if (val !== false && val != null) {
-            el.setAttribute(k, val === true ? '' : String(val));
-          }
-        }
-        var kids = p.children || [];
-        for (var ci = 0; ci < kids.length; ci++) el.appendChild(mountVNode(kids[ci]));
-        return el;
-      }
-
-      function render(vnode, container) {
-        if (!container) return;
-        while (container.firstChild) container.removeChild(container.firstChild);
-        container.appendChild(mountVNode(vnode));
-      }
-
-      g.__softnPreactCurrent = function () { return currentComponent; };
-      __exports.h = h;
-      __exports.createElement = h;
-      __exports.Fragment = Fragment;
-      __exports.render = render;
-      __exports.default = { h: h, createElement: h, Fragment: Fragment, render: render };
-    });
-
-    __softnModules.define('softn-vendor:preact/hooks', async function (__exports) {
-      function getInst() {
-        var inst = g.__softnPreactCurrent && g.__softnPreactCurrent();
-        if (!inst) throw new Error('Hooks can only be called inside a component');
-        return inst;
-      }
-      function useState(initial) {
-        var inst = getInst();
-        var idx = inst.hookIdx++;
-        if (inst.hooks.length <= idx) {
-          inst.hooks.push(typeof initial === 'function' ? initial() : initial);
-        }
-        var setState = function (next) {
-          var cur = inst.hooks[idx];
-          var resolved = typeof next === 'function' ? next(cur) : next;
-          if (!Object.is(cur, resolved)) {
-            inst.hooks[idx] = resolved;
-            inst.rerender();
-          }
-        };
-        return [inst.hooks[idx], setState];
-      }
-      function useRef(initial) {
-        var inst = getInst();
-        var idx = inst.hookIdx++;
-        if (inst.hooks.length <= idx) inst.hooks.push({ current: initial });
-        return inst.hooks[idx];
-      }
-      function useEffect(fn, deps) {
-        var inst = getInst();
-        var idx = inst.hookIdx++;
-        var prev = inst.hooks[idx];
-        var changed = !prev || !deps || deps.some(function (d, i) { return !Object.is(d, prev.deps[i]); });
-        if (changed) {
-          inst.hooks[idx] = { deps: deps, cleanup: null };
-          Promise.resolve().then(function () {
-            if (prev && typeof prev.cleanup === 'function') prev.cleanup();
-            var c = fn();
-            if (typeof c === 'function') inst.hooks[idx].cleanup = c;
-          });
-        }
-      }
-      function useMemo(fn, deps) {
-        var inst = getInst();
-        var idx = inst.hookIdx++;
-        var prev = inst.hooks[idx];
-        if (!prev || !deps || deps.some(function (d, i) { return !Object.is(d, prev.deps[i]); })) {
-          var val = fn();
-          inst.hooks[idx] = { deps: deps, val: val };
-          return val;
-        }
-        return prev.val;
-      }
-      __exports.useState = useState;
-      __exports.useRef = useRef;
-      __exports.useEffect = useEffect;
-      __exports.useMemo = useMemo;
-    });
-
-    __softnModules.define('softn-vendor:htm', async function (__exports) {
-      // Tagged template literal builder compatible with 'htm.bind(h)'
-      function buildHtm(h, strings, values) {
-        var marker = 'htm-slot-';
-        var raw = '';
-        var map = Object.create(null);
-        for (var i = 0; i < strings.length; i++) {
-          raw += strings[i];
-          if (i < values.length) {
-            var key = marker + i + '-end';
-            map[key] = values[i];
-            raw += key;
-          }
-        }
-        raw = raw.replace(/<(htm-slot-\d+-end)([^>]*?)\/>/g, '<$1$2></$1>');
-        var tpl = doc.createElement('template');
-        tpl.innerHTML = raw.trim();
-        function toVNode(node) {
-          if (node.nodeType === 3) {
-            var txt = node.nodeValue || '';
-            var parts = txt.split(/(htm-slot-\d+-end)/g);
-            var res = [];
-            for (var p = 0; p < parts.length; p++) {
-              if (!parts[p]) continue;
-              if (parts[p] in map) res.push(map[parts[p]]);
-              else res.push(parts[p]);
-            }
-            return res.length === 1 ? res[0] : res;
-          }
-          if (node.nodeType !== 1) return null;
-          var props = {};
-          var attrs = node.attributes;
-          for (var a = 0; a < attrs.length; a++) {
-            var aname = attrs[a].name;
-            var aval = attrs[a].value;
-            props[aname] = aval in map ? map[aval] : aval;
-          }
-          var children = [];
-          var childNodes = node.childNodes;
-          for (var c = 0; c < childNodes.length; c++) {
-            var cv = toVNode(childNodes[c]);
-            if (Array.isArray(cv)) children.push.apply(children, cv);
-            else if (cv !== null) children.push(cv);
-          }
-          var tag = node.tagName.toLowerCase();
-          return h.apply(null, [tag in map ? map[tag] : tag, props].concat(children));
-        }
-        var top = tpl.content.childNodes;
-        if (top.length === 1) return toVNode(top[0]);
-        var arr = [];
-        for (var t = 0; t < top.length; t++) {
-          var v = toVNode(top[t]);
-          if (v !== null) arr.push(v);
-        }
-        return arr;
-      }
-      var htm = {
-        bind: function (h) {
-          return function (strings) {
-            var vals = Array.prototype.slice.call(arguments, 1);
-            return buildHtm(h, strings, vals);
-          };
-        },
-      };
-      __exports.default = htm;
-      __exports.htm = htm;
-    });
-
-    // 'softn-vendor:three' — Split-Realm Hosted Three.js Scene-Graph Proxy!
-    // Batches scene mutations per frame to the host's lazy-loaded WebGL2 Three.js renderer.
-    __softnModules.define('softn-vendor:three', async function (__exports) {
-      var nextObjId = 2; // 1 reserved for Scene
-      function Vec3(x, y, z, onChange) {
-        this._x = x || 0; this._y = y || 0; this._z = z || 0; this._cb = onChange;
-      }
-      ['x', 'y', 'z'].forEach(function (k) {
-        var p = '_' + k;
-        Object.defineProperty(Vec3.prototype, k, {
-          get: function () { return this[p]; },
-          set: function (v) { this[p] = Number(v) || 0; if (this._cb) this._cb(); },
-        });
-      });
-      Vec3.prototype.set = function (x, y, z) {
-        this._x = Number(x) || 0; this._y = Number(y) || 0; this._z = Number(z) || 0;
-        if (this._cb) this._cb();
-        return this;
-      };
-      Vec3.prototype.toArray = function () { return [this._x, this._y, this._z]; };
-
-      function Color(c) { this.value = c !== undefined ? c : 0xffffff; }
-      Color.prototype.set = function (c) { this.value = c; return this; };
-
-      function Object3D(id) {
-        var self = this;
-        this._id = id || nextObjId++;
-        this._dirty = true;
-        this.children = [];
-        var mark = function () { self._dirty = true; };
-        this.position = new Vec3(0, 0, 0, mark);
-        this.rotation = new Vec3(0, 0, 0, mark);
-        this.scale = new Vec3(1, 1, 1, mark);
-      }
-      Object3D.prototype.add = function () {
-        for (var i = 0; i < arguments.length; i++) {
-          var child = arguments[i];
-          if (child && child._id) {
-            this.children.push(child);
-            this._pendingAdds = this._pendingAdds || [];
-            this._pendingAdds.push(['add', this._id, child._id]);
-          }
-        }
-        return this;
-      };
-      Object3D.prototype.remove = function (child) {
-        if (!child || !child._id) return this;
-        this.children = this.children.filter(function (c) { return c !== child; });
-        this._pendingAdds = this._pendingAdds || [];
-        this._pendingAdds.push(['remove', this._id, child._id]);
-        return this;
-      };
-      Object3D.prototype.lookAt = function (x, y, z) {
-        if (x && typeof x === 'object') {
-          this._lookAt = [Number(x.x) || 0, Number(x.y) || 0, Number(x.z) || 0];
-        } else {
-          this._lookAt = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
-        }
-        this._dirty = true;
-        return this;
-      };
-
-      function Scene() { Object3D.call(this, 1); this._kind = 'scene'; }
-      Scene.prototype = Object.create(Object3D.prototype);
-      function Group() { Object3D.call(this); this._kind = 'group'; }
-      Group.prototype = Object.create(Object3D.prototype);
-
-      function PerspectiveCamera(fov, aspect, near, far) {
-        Object3D.call(this);
-        this._kind = 'camera';
-        this._camType = 'perspective';
-        this.fov = fov || 60; this.aspect = aspect || 1; this.near = near || 0.1; this.far = far || 1000;
-      }
-      PerspectiveCamera.prototype = Object.create(Object3D.prototype);
-      PerspectiveCamera.prototype.updateProjectionMatrix = function () { this._dirty = true; };
-
-      function BoxGeometry(w, h, d) { this._geo = ['box', w || 1, h || 1, d || 1]; }
-      function SphereGeometry(r, ws, hs) { this._geo = ['sphere', r || 1, ws || 24, hs || 16]; }
-      function PlaneGeometry(w, h, ws, hs) { this._geo = ['plane', w || 1, h || 1, ws || 1, hs || 1]; }
-      function CylinderGeometry(rt, rb, h, rs) { this._geo = ['cylinder', rt || 1, rb || 1, h || 1, rs || 24]; }
-      function TorusGeometry(r, t, rs, ts) { this._geo = ['torus', r || 1, t || 0.4, rs || 16, ts || 32]; }
-
-      function MeshStandardMaterial(opts) { this._mat = Object.assign({ kind: 'standard' }, opts || {}); }
-      function MeshBasicMaterial(opts) { this._mat = Object.assign({ kind: 'basic' }, opts || {}); }
-
-      function Mesh(geo, mat) {
-        Object3D.call(this);
-        this._kind = 'mesh';
-        this.geometry = geo || new BoxGeometry(1, 1, 1);
-        this.material = mat || new MeshStandardMaterial({});
-      }
-      Mesh.prototype = Object.create(Object3D.prototype);
-
-      function AmbientLight(color, intensity) {
-        Object3D.call(this);
-        this._kind = 'light'; this._lightKind = 'ambient'; this.color = color; this.intensity = intensity;
-      }
-      AmbientLight.prototype = Object.create(Object3D.prototype);
-      function DirectionalLight(color, intensity) {
-        Object3D.call(this);
-        this._kind = 'light'; this._lightKind = 'directional'; this.color = color; this.intensity = intensity;
-      }
-      DirectionalLight.prototype = Object.create(Object3D.prototype);
-      function PointLight(color, intensity) {
-        Object3D.call(this);
-        this._kind = 'light'; this._lightKind = 'point'; this.color = color; this.intensity = intensity;
-      }
-      PointLight.prototype = Object.create(Object3D.prototype);
-
-      function WebGLRenderer(opts) {
-        opts = opts || {};
-        this.domElement = opts.canvas || doc.createElement('canvas');
-        this._ops = [['init', { antialias: opts.antialias !== false, alpha: !!opts.alpha }]];
-        this._created = Object.create(null);
-      }
-      WebGLRenderer.prototype.setSize = function (w, h) {
-        this.domElement.width = w;
-        this.domElement.height = h;
-        this._ops.push(['resize', w, h, 1]);
-      };
-      WebGLRenderer.prototype.setPixelRatio = function (dpr) {
-        this._dpr = dpr;
-      };
-      WebGLRenderer.prototype.setClearColor = function (color, alpha) {
-        this._ops.push(['clearColor', color instanceof Color ? color.value : color, alpha !== undefined ? alpha : 1]);
-      };
-      WebGLRenderer.prototype._syncTree = function (obj) {
-        if (!this._created[obj._id]) {
-          this._created[obj._id] = true;
-          if (obj._kind === 'scene' || obj._kind === 'group') this._ops.push(['group', obj._id]);
-          else if (obj._kind === 'camera') this._ops.push(['camera', obj._id, obj._camType, [obj.fov, obj.aspect, obj.near, obj.far]]);
-          else if (obj._kind === 'mesh') this._ops.push(['mesh', obj._id, { geo: obj.geometry._geo, mat: obj.material._mat }]);
-          else if (obj._kind === 'light') this._ops.push(['light', obj._id, obj._lightKind, { color: obj.color, intensity: obj.intensity, pos: obj.position.toArray() }]);
-          else if (obj._kind === 'gltf') this._ops.push(['gltf', obj._id, obj._src]);
-        }
-        // Recursively create/sync children BEFORE emitting parent->child 'add' ops so child IDs exist on host!
-        for (var i = 0; i < obj.children.length; i++) this._syncTree(obj.children[i]);
-        if (obj._pendingAdds && obj._pendingAdds.length) {
-          for (var a = 0; a < obj._pendingAdds.length; a++) this._ops.push(obj._pendingAdds[a]);
-          obj._pendingAdds.length = 0;
-        }
-        if (obj._dirty) {
-          obj._dirty = false;
-          this._ops.push(['xform', obj._id, obj.position.toArray(), obj.rotation.toArray(), obj.scale.toArray()]);
-          if (obj._lookAt) {
-            this._ops.push(['lookAt', obj._id, obj._lookAt]);
-          }
-        }
-      };
-      WebGLRenderer.prototype.render = function (scene, camera) {
-        this._syncTree(scene);
-        this._syncTree(camera);
-        this._ops.push(['render', scene._id, camera._id]);
-        var cid = this.domElement && this.domElement.__softnNode;
-        if (cid) {
-          g.__softnPushExtraOp(['3d', cid, this._ops.splice(0, this._ops.length)]);
-        }
-      };
-
-      function loadGLTF(path) {
-        var grp = new Object3D();
-        grp._kind = 'gltf';
-        grp._src = String(path);
-        return grp;
-      }
-
-      var api = {
-        Scene: Scene, Group: Group, Object3D: Object3D,
-        PerspectiveCamera: PerspectiveCamera,
-        BoxGeometry: BoxGeometry, SphereGeometry: SphereGeometry, PlaneGeometry: PlaneGeometry,
-        CylinderGeometry: CylinderGeometry, TorusGeometry: TorusGeometry,
-        MeshStandardMaterial: MeshStandardMaterial, MeshBasicMaterial: MeshBasicMaterial,
-        Mesh: Mesh, AmbientLight: AmbientLight, DirectionalLight: DirectionalLight, PointLight: PointLight,
-        WebGLRenderer: WebGLRenderer, Vector3: Vec3, Color: Color, loadGLTF: loadGLTF,
-      };
-      Object.assign(__exports, api);
-      __exports.default = api;
     });
   }
 })();

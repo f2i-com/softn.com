@@ -2,19 +2,37 @@
 
 # SoftN
 
-### Docker for Sandboxed Web Apps — Build, Package, and Run Anywhere.
+Build, edit and run sandboxed JavaScript apps with a lightweight WebAssembly runtime.
 
-A lightweight WebAssembly container runtime, AI studio, and visual builder for sandboxed web and desktop apps.
-
-[Explore apps](https://softn.com) · [Web Containers (v2)](#softn-v2-web-app-containers) · [Get started](#get-started) · [FormLogic integration](#connect-to-formlogic) · [Documentation](#documentation)
+[Choose a starter](https://softn.com/#create) · [AI Studio](https://softn.com/studio/) · [Builder](https://softn.com/builder/) · [Runtime](https://softn.com/web/) · [Run locally](#get-started) · [Hosting options](#choose-where-it-runs)
 
 </div>
 
-![Fieldnotes running inside the real SoftN Builder, with a task dashboard, editable form and live preview](docs/readme-assets/builder-preview.jpg)
+SoftN runs Vanilla JavaScript, React and Vue apps from a folder or ZIP. A Web Worker runs the app in the ZIPP WebAssembly VM and renders its interface in a closed shadow root. A portable `.softn` archive can carry the editable project, local assets, data seeds and permission declarations. Classic `.ui` apps use a renderer and component library loaded on demand. [How the container works](#softn-v2-web-app-containers)
 
-_Meet **Fieldnotes**: a working app whose form, logic running on ZIPP and XDB records update one dashboard. This is the actual Builder preview. [Read the source](examples/fieldnotes) · [Get the .softn bundle](apps/softn-site/public/examples/Fieldnotes.softn) · [Try the v2 Container Showcase](examples/container-showcase) · [Screenshot details](docs/readme-assets/README.md)._
+## Create an app from a starter
 
-SoftN packages web applications — interface, code, data seeds, and capability declarations — into portable `.softn` containers. With **SoftN v2 Web App Containers** (`@softn/container`), an app of plain HTML, CSS, JavaScript, TypeScript, or Python (the `dist/` folder of a React or Vue app built by Vite included) runs inside an isolated [ZIPP](https://github.com/f2i-com/zipp.org) Rust/WebAssembly Worker and closed Shadow DOM, while classic **v1 `.ui` + `.logic` bundles** continue to run with 100% backwards compatibility across the runtime, Studio AI, and the visual Builder.
+Choose **Vanilla JS**, **React** or **Vue** on the website to open a working example directly in Studio, Builder or Runtime. Try packing an item in **Trail Pack**, changing the coffee dose in **Ratio Bar**, or choosing a palette in **Swatchbook**. Their downloads carry the original `app.js`, `main.jsx` or `App.vue`. [Example source](examples/offline-web-apps)
+
+To create your own project, pick a framework on **Studio**’s welcome screen or dashboard. In **Builder**, choose **New**, select a starter and choose **Create app**. Each opens directly in Preview and works without an AI provider.
+
+Plain JavaScript starters keep editable `index.html`, `styles.css` and `app.js`. For component syntax, choose **React JSX** or **Vue SFC** in Studio, or pick the source format under **React** or **Vue** in Builder. Edit `App.jsx` or `App.vue`, then use **Save & preview** in Studio or **Preview** in Builder. Vue supports JavaScript, templates and plain or scoped CSS.
+
+Preview each component format once online in the editor you’ll use offline. Wait for the message confirming that JSX or Vue components are ready to edit offline. Export keeps your source files byte-for-byte alongside generated JavaScript and the local framework library. Reopening the bundle in an editor lets you change the original source again. Runtime runs the generated JavaScript with its usual sandbox and needs no authoring compiler.
+
+Use **Export bundle** in Studio or **Export → Export .softn** in Builder. Open the download in Runtime and wait for **Offline ready** on its Home card. Web starters use the lite engine. Opening a classic `.ui` app downloads its renderer, and offline installation saves the component groups its pages can use.
+
+## Open your own web app
+
+1. Keep `index.html`, your JavaScript, stylesheets and local dependencies together. For JSX or Vue single-file components, export the project from Studio or Builder. You can also bring the output from your own build.
+2. On **Runtime Home**, choose **Open folder** and select the folder containing the runnable `index.html` (usually `dist/` for a project with a build step). SoftN opens a local copy in the sandbox. Open the folder again to pick up edits.
+3. To share a standard app, zip the folder containing `index.html`. The recipient can use **Open file** to open a `.zip` or `.softn` archive. This also works in browsers that offer only the file picker.
+
+A basic app needs only an HTML entry and its local assets. Bundle framework dependencies with the app. If the app calls an external API, declare the host in `permission.json` so Runtime can ask for access.
+
+For offline use, open the app online and wait for **Offline ready** on its Runtime Home card. The card shows which engine was saved. Try this with the [vanilla hiking checklist, React coffee calculator and Vue palette picker](examples/offline-web-apps). Each keeps your last choice when you disconnect and reopen it.
+
+When sharing a ZIP of a progressive web app, use `manifest.webmanifest` for its Web App Manifest and update the HTML link to match. SoftN archives reserve a root `manifest.json` for the SoftN manifest. The folder picker also recognises common Web App Manifests at that path and adapts its local copy.
 
 The project is actively developed. The examples, container microkernel, editors, and runtime are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
 
@@ -23,11 +41,11 @@ The project is actively developed. The examples, container microkernel, editors,
 | Capability                     | What it gives you                                                                                                                                                                              |
 | :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Web App Containers (v2)**    | Package 100% standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip an existing compiled `dist/` build — into a `.softn` container with zero custom template syntax required.     |
-| **Pay-as-you-go WASM engines** | Boots on `zipp-javascript-lite.wasm` (~760 KB Brotli) by default. An app that needs `Intl`/`Temporal`, TypeScript or Python runs on the engine that has it; the JavaScript-and-Python one is the engine SoftN's own apps run on, so a deployment carries it once. |
-| **Hosted zero-bundle imports** | Import the container's own small `'preact'` (`h`, `render`, `Fragment`), `'preact/hooks'` (`useState`, `useEffect`, `useRef`, `useMemo`), `'htm'` and `'marked'` (`parse`), Split-Realm WebGL2 `'three'`, `<softn-chart>`, and `<softn-datagrid>` at 0 KB of bundle weight. |
-| **Visual `.ui` compatibility** | Classic `.ui` + `.logic` bundles and all 107 built-in components remain fully supported across SoftN Web, Single-App hosts, Studio AI, and the drag-and-drop visual Builder.                   |
+| **Pay-as-you-go WASM engines** | Vanilla, React and Vue apps can run and install offline with the lite JavaScript engine (~760 KB Brotli). Runtime checks the app’s pages when preparing it offline. An app using `Intl` or Python, for example, downloads the full engine on demand. Studio and Builder cache that same binary on first use. |
+| **Hosted zero-bundle imports** | Import `'preact'` (`h`, `render`, `Fragment`), `'preact/hooks'` (`useState`, `useEffect`, `useRef`, `useMemo`), `'htm'`, `'marked'` (`parse`), Split-Realm WebGL2 `'three'`, `<softn-chart>`, and `<softn-datagrid>` on demand — evaluated only when imported, so plain JS/Vite apps pay zero shim overhead. |
+| **Optional `.ui` language**    | Runtime loads the classic renderer for a classic app and keeps the component groups its pages need for offline use. |
 | **AI-assisted creation**       | Studio turns a brief into a v2 Web App Container or a v1 `.ui` app using your OpenAI, Anthropic, local (Ollama / LM Studio), or custom provider — verified headlessly inside the ZIPP sandbox. |
-| **Local-first XDB & security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage. A v2 web container acts on the network grant today; the others are v1 apps'. |
+| **Local data and permissions** | Web apps can read and write app-scoped records through `softn:db` and ship seed records in `xdb/*.xdb`. Declare external hosts in `permission.json` so users can review network access before granting it. [Permissions guide](https://softn.com/docs/permissions/) |
 
 ## SoftN v2 Web App Containers
 
@@ -97,6 +115,8 @@ The design proposal the container was built from is [`docs/rfcs/softn-v2-contain
 
 ## See an app powered by ZIPP
 
+![Fieldnotes running inside SoftN Builder, with editable fields and a live task dashboard](docs/readme-assets/builder-preview.jpg)
+
 Fieldnotes is a small task planner you can use, inspect and change. Add a task,
 mark it complete and watch the list and totals update. Its `.logic` executes on
 [ZIPP](https://github.com/f2i-com/zipp.org); SoftN renders the interface and connects
@@ -112,14 +132,14 @@ Open the same bundle in Studio, Builder or Runtime. Change a heading visually,
 edit the logic, switch themes or export the result as your own app. Builder's
 preview has its own test records; use Data view to edit the seeds you ship.
 
-**[Explore Fieldnotes](examples/fieldnotes/README.md)** · **[Run it locally](#get-started)** · **[Explore games, emulators and more](#demos)**
+**[Explore Fieldnotes](examples/fieldnotes/README.md)** · **[Download the bundle](apps/softn-site/public/examples/Fieldnotes.softn)** · **[Screenshot details](docs/readme-assets/README.md)** · **[Explore games, emulators and more](#demos)**
 
 ## From an idea to an app
 
-1. **Start with a brief or a bundle.** Use Studio with your own AI provider, create a project in Builder, or open an existing `.softn` app.
-2. **Shape the experience.** Edit pages, navigation, `.logic` behavior and the data model. Keep complex source intact in Code view.
-3. **Try the whole flow.** Preview at desktop, tablet and mobile sizes, and use sample records to exercise forms and dashboards.
-4. **Export and choose a host.** Run the bundle locally, publish it in the directory, deploy a single app, or host it through FormLogic.
+1. **Open a project.** Import an existing bundle from Studio’s welcome screen or choose a starter in either editor. To work from a brief, connect an AI provider in Studio. For LM Studio, choose **Local model → LM Studio**, enter the address of your running server, connect and select its model.
+2. **Ask or edit.** Ask Studio which file stores a value, or ask it to change a button label. At the end of a run, **Answer** keeps what the model found and **Change summary** reports the file changes Studio committed. The result is saved in the project’s conversation history.
+3. **Check the result.** In Builder, **Fit** previews the app at the workspace’s actual width. Switch to **Desktop**, **Tablet** or **Phone** to check the same running app at a fixed size.
+4. **Export and choose a host.** Open the bundle in Runtime, publish it in the directory, deploy a single-app website or save it through FormLogic’s embedded editor.
 
 <details>
 <summary><strong>Inspect the collection behind the form</strong></summary>
@@ -170,10 +190,10 @@ Open the origin printed by the launcher, normally `http://localhost:1420`:
 
 | Path        | Start here to…                                           |
 | :---------- | :------------------------------------------------------- |
-| `/`         | Learn the workflow and try the editable Fieldnotes app.  |
+| `/`         | Choose a working Vanilla JS, React or Vue example, or try classic Fieldnotes. |
 | `/apps`     | Search and browse the full app directory.                |
 | `/builder/` | Create or reopen an app, edit its schema and preview it. |
-| `/studio/`  | Configure your AI provider and turn a brief into an app. |
+| `/studio/`  | Open a starter, import a bundle or connect an AI provider. |
 | `/web/`     | Open bundles, explore directory apps and return to your saved library. |
 | `/docs/`    | Read the guides; they rebuild as `docs/content/softn-docs.json` is edited. |
 | `/demos/`   | The example bundles the directory and Runtime link to.  |
@@ -196,7 +216,19 @@ SoftN supplies the editable app and runtime. [FormLogic](https://formlogic.com) 
 
 Use the editable [FormLogic workspace](examples/formlogic-workspace) and [Aokie workspace](examples/aokie-workspace) as examples of connected dashboards. Aokie's app brings calls, appointments, messages, follow-ups and transcripts into one interface; its communication services run through the host integration.
 
-For an app with custom backend `.logic` and SQLite, configure those server resources in the hosting platform and expose the actions the client needs. Keep private scripts, credentials and databases on the server. Downloading the client bundle does not copy a live backend or grant access to it.
+For app-local data in vanilla JS, React or Vue, import `{ db } from 'softn:db'`. Create a collection in **Builder → Data** or **Studio → Files → Database**. Read fields with `db.query('notes').map(row => row.data.title)`. Subscribe with `db.subscribe('notes', refresh)`, and call the returned function when the view unmounts. Local records remain available offline.
+
+When FormLogic enables web containers, its embedded Studio and Builder also offer web starters. In hosted Studio, the database designer starts with **FormLogic table** for shared records. Each new table adds a numbered SQLite migration. Open **Backend** in Studio’s Files panel or **API** in Builder’s Files panel to add routes and edit private JavaScript handlers. New backends allow same-origin calls by default. Import the full project into FormLogic or save it through the embedded editor. The owner archive carries the editable backend sources. FormLogic applies the migrations and serves the client with the private files removed.
+
+```js
+import { api } from 'softn:api';
+
+const response = await api.fetch('/api/status');
+if (!response.ok) throw new Error('Could not reach the app backend');
+const status = await response.json();
+```
+
+The example calls the read-only route created by **Add backend** on FormLogic. A hosted API call needs a connection to its server. Each handler is responsible for authorizing access to the data it returns or changes.
 
 The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explains schema mapping and export boundaries. The host source and workspace examples above show the connected runtime; [private backend deployment](apps/softn-host-rust/PRIVATE_BACKEND.md) covers SoftN's own server host.
 
@@ -972,9 +1004,10 @@ them shows the engine's debug readout.
 | **softn-loader**  | Tauri desktop runtime with `.softn` file association and XDB/SQLite                                                                                                         |
 | **softn-api**     | The directory behind softn.com: PHP and folder-based JSON, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
 
-The three browser apps are installable PWAs: each ships a web app manifest and a
-service worker that precaches the runtime, the component library and the
-WebAssembly engine, so they keep working with the network off.
+Each of the three browser apps is an installable PWA. Runtime saves its shell
+and prepares each opened app for offline use. Studio and Builder install their
+editing tools and lite preview engines. All three cache the full WebAssembly
+engine when first needed and share its cached copy on a standard site deployment.
 
 ### Deploying softn.com
 
@@ -982,9 +1015,11 @@ WebAssembly engine, so they keep working with the network off.
 npm run build:site
 ```
 
-Builds the packages, then each app with the `VITE_BASE` matching where it will be
-served, and assembles a single uploadable tree. Upload `dist/` to one domain; no
-subdomains or cross-origin configuration are required:
+This builds the packages and apps for their deployment paths and assembles them
+in `dist/`. Upload the contents to one domain. If your local site already stores
+apps in `dist/data/`, build into a new directory with
+`npm run build:site -- --out-dir ../softn-site-preview`. The build creates that
+directory and keeps the running site's data in place.
 
 ```
 dist/             landing page and app directory
@@ -1071,10 +1106,11 @@ php -S 127.0.0.1:5500 -t dist apps/softn-api/router.php
 
 The router does what the deployed `.htaccess` does: `/api/` to PHP, `/data/`
 refused, `/app/<slug>` a share page with Open Graph tags, and every static
-file served with the isolation headers. By default the build ships no example
-apps and the directory starts empty: drop `.softn` files on any page to publish
-them (a folder at once, with the admin key from `data/config.json` for the site
-owner). `npm run build:site -- --with-demos` fetches the pinned softn-Examples
+file served with the isolation headers. Every website build includes the three
+landing-page starters under `/examples/`. The public app directory starts empty
+by default. Drop `.softn` files on any page to publish them individually or by
+folder. The site owner's admin key is in `data/config.json`.
+`npm run build:site -- --with-demos` fetches the pinned softn-Examples
 release, ships the bundles under `/demos/` with a download page at
 `/softn-files/`, and has the directory seed itself from them on the first
 request — the shape softn.com itself deploys. Demo changes are refreshed while `seedDemos` is enabled.

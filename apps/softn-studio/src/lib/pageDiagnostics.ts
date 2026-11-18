@@ -13,7 +13,7 @@
  * person cannot find in any file.
  */
 
-import { parse, resolveBundlePath, UI_IMPORT_PATTERN } from '@softn/core';
+import { parse, resolveBundlePath, UI_IMPORT_PATTERN } from '@softn/core/authoring';
 import type { ValidationError, VFSFile } from '../types/studio';
 import { isPrivatePath } from './paths';
 import { isPagePath } from './sourceKinds';

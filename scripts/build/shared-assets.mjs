@@ -71,6 +71,25 @@ export function sharedPrecacheUrl(file, base = sharedAssetsBase()) {
   return sharedUrl(file, base) ?? file;
 }
 
+/**
+ * `@fontsource` stylesheets list both WOFF2 and legacy WOFF (`url(...woff2) format('woff2'),
+ * url(...woff) format('woff')`). Every browser that runs WebAssembly and ES2022 supports WOFF2,
+ * so Vite's asset pipeline otherwise emits 28 dead `.woff` files (~320 KB) alongside `.woff2`.
+ * Stripping the `.woff` fallback ahead of Vite's CSS plugin keeps only `.woff2`.
+ */
+export function woff2OnlyFontsPlugin() {
+  return {
+    name: 'softn-woff2-only-fonts',
+    enforce: 'pre',
+    transform(code, id) {
+      const cleanId = id.split('?')[0];
+      if (!/@fontsource(?:-variable)?[\\/].*\.css$/.test(cleanId) || !code.includes('.woff')) return null;
+      const next = code.replace(/,\s*url\([^)]+\.woff['"]?\)\s*format\(['"]woff['"]\)/g, '');
+      return next === code ? null : { code: next, map: null };
+    },
+  };
+}
+
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 /** Every file under `dir`, as forward-slashed paths relative to it. */

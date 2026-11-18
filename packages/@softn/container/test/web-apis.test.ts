@@ -63,6 +63,59 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('form activation in a container', () => {
+  it('submits exactly once with the chosen button, including Enter; honors validation and cancellation', async () => {
+    const { handle, root, text } = await open({ 'index.html': page(
+      '<form id="f"><input id="field" required><button id="first"><span id="caption">Save</span></button><button id="cancel">Cancel</button></form><button form="f" id="outside" formnovalidate>Save draft</button>',
+      `var submissions = [];
+      document.getElementById('f').addEventListener('submit', function(e) {
+        e.preventDefault(); submissions.push(e.submitter && e.submitter.id); document.getElementById('out').textContent = submissions.join(',');
+      });
+      document.getElementById('cancel').addEventListener('click', function(e) { e.preventDefault(); });
+      document.getElementById('field').addEventListener('keydown', function(e) { if (e.shiftKey) e.preventDefault(); });
+      document.getElementById('out').textContent = 'ready';`,
+    ) });
+    try {
+      const field = root.querySelector<HTMLInputElement>('#field')!;
+      const click = (id: string) => root.querySelector<HTMLElement>(id)!.click();
+      const enter = (shiftKey = false) => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, shiftKey }));
+      const saw = (value: string) => expect.poll(() => text('#out')).toBe(value);
+      await saw('ready');
+      click('#caption'); // Invalid. The external submitter may bypass validation.
+      click('#outside');
+      await saw('outside');
+      field.value = 'Margin Notes';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      click('#caption');
+      await saw('outside,first');
+      click('#cancel');
+      enter(true);
+      enter();
+      await saw('outside,first,first');
+      await settle();
+      expect(text('#out')).toBe('outside,first,first');
+    } finally { handle.dispose(); }
+  });
+
+  it('submits a single text field with a null submitter and leaves ambiguous forms alone', async () => {
+    const { handle, root, text } = await open({ 'index.html': page(
+      '<form id="one"><input id="alone"></form><form id="two"><input id="a"><input id="b"></form><form id="disabled"><input id="c"><button disabled>First</button><button>Second</button></form>',
+      `document.addEventListener('submit', function(e) {
+        e.preventDefault(); document.getElementById('out').textContent += ':' + e.target.id + '/' + e.submitter;
+      }); document.getElementById('out').textContent = 'ready';`,
+    ) });
+    try {
+      await expect.poll(() => text('#out')).toBe('ready');
+      for (const id of ['a', 'c', 'alone']) {
+        root.querySelector('#' + id)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      }
+      await expect.poll(() => text('#out')).toBe('ready:one/null');
+      await settle();
+      expect(text('#out')).toBe('ready:one/null');
+    } finally { handle.dispose(); }
+  });
+});
+
 describe('bytes with a type: Blob, File, FileReader', () => {
   it('are made, sliced and read as the web has them', async () => {
     const { handle, result } = await open({

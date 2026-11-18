@@ -1,8 +1,8 @@
 {
   "name": "softn",
-  "version": "0.0.45",
+  "version": "0.0.46",
   "private": true,
-  "description": "SoftN UI Language and Engine",
+  "description": "Sandboxed web app runtime, Studio and Builder",
   "license": "Apache-2.0",
   "workspaces": [
     "packages/@softn/*",

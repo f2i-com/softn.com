@@ -7,18 +7,16 @@
  * a bundle that opens on one host opens on the other, with the same grant
  * scope and the same refusal message.
  */
-import { ManifestError, type PermissionConfig } from '@softn/core';
-import {
-  extractPermissions,
-  loadXDBData,
-  processBundle,
-  type BundleManifest,
-} from '@softn/runtime-shell/bundleProcessor';
+import { ManifestError } from '@softn/core/web-host';
+import type { PermissionConfig } from '@softn/core';
+import { extractPermissions, type BundleManifest } from '@softn/runtime-shell/bundleFiles';
+import type { processBundle } from '@softn/runtime-shell/bundleProcessor';
 import {
   WEB_CONTAINER_SOURCE_SENTINEL,
   detectWebContainer,
 } from '@softn/runtime-shell/containerBundle';
 import { digest, parsePermissions } from './config';
+import { preloadUiSurface } from './uiSurfaceLoader';
 
 /**
  * Startup phase boundaries on the performance timeline, `softn:<phase>:start`
@@ -103,11 +101,14 @@ export async function assembleApplication(input: AssembleInput): Promise<Assembl
       languages: [],
     };
   } else {
+    const classic = await preloadUiSurface();
+    signal.throwIfAborted();
+    classic.preloadRememberedFirstDraw(appId);
     mark('softn:compose:start');
-    source = processBundle(textFiles, raw);
+    source = classic.processBundle(textFiles, raw);
     mark('softn:compose:end');
     mark('softn:xdb-seed:start');
-    await loadXDBData(textFiles, raw, appId);
+    await classic.loadXDBData(textFiles, raw, appId);
     mark('softn:xdb-seed:end');
   }
   signal.throwIfAborted();

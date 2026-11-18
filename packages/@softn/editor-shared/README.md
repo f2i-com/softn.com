@@ -1,7 +1,12 @@
 # @softn/editor-shared
 
-What Builder and Studio share and neither owns. No engine; React only for
-the focus hook.
+Builder and Studio share these project and workspace tools.
+
+- `webStarters` supplies the project picker and creates editable vanilla JS,
+  React and Vue projects. `createWebStarter(id, options)` returns the manifest,
+  HTML, CSS and JavaScript as path/content pairs. React and Vue projects
+  include their own local production library. The editors build those
+  libraries with `starterVendorsPlugin()` and cache them for offline creation.
 
 - `handoff` — staging a bundle for the runtime or the publish page and
   handing back the address that claims it (desktop builds export instead;

@@ -1,16 +1,12 @@
 import React, { Component, useCallback, useEffect, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
-import { SoftNWithXDB, XDBStorageNotice, bundlePageAt, composePage, mainPage, type AppAssetResolver, type AppUpdateResult, type ComposedBundleSource, type EditMarks, type LiveApp, type PythonProject } from '@softn/core';
-// From the minimal and theme entries, not the root barrel: the barrel is the
-// eager path, and keeping Scene3D out of the shell would then rest on the
-// bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
-import { Spinner, Box, Text } from '@softn/components/essentials';
-import { ThemeProvider } from '@softn/components/theme';
+import type { AppAssetResolver, AppUpdateResult, ComposedBundleSource, EditMarks, LiveApp, PythonProject } from '@softn/core';
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
-import { requestedCapabilities } from '@softn/runtime-shell/bundleProcessor';
+import { requestedCapabilities } from '@softn/runtime-shell/consent';
 import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
 import { LoadProgress } from '@softn/runtime-shell/LoadProgress';
 import { containerStoragePrefix } from '../lib/appCacheStorage';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
+import { getLoadedUiAppSurface, preloadUiAppSurface, type LoadedUiAppSurface } from '../lib/uiSurfaceLoader';
 import { SlowOpen } from './SlowOpen';
 import './AppRunner.css';
 
@@ -183,14 +179,27 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   // records as they were. Without this a link was an address the host page has
   // no such file at, and the person left the app, here and on a directory's
   // play page. The tab is this runner's alone, so nothing goes in the history.
+  const [uiSurface, setUiSurface] = useState<LoadedUiAppSurface | null>(() =>
+    webContainer ? null : getLoadedUiAppSurface()
+  );
+  useEffect(() => {
+    if (webContainer || !source || uiSurface) return;
+    let activeLoad = true;
+    void preloadUiAppSurface().then((loaded) => {
+      if (activeLoad) setUiSurface(loaded);
+    });
+    return () => {
+      activeLoad = false;
+    };
+  }, [webContainer, source, uiSurface]);
   const [page, setPage] = useState<{ path: string; composed: ComposedBundleSource } | null>(null);
   const followLink = useCallback(
     (href: string): boolean => {
-      if (!textFiles) return false;
-      const main = mainPage(textFiles);
+      if (!textFiles || !uiSurface) return false;
+      const main = uiSurface.mainPage(textFiles);
       if (main === null) return false;
       const from = page?.path ?? main;
-      const path = bundlePageAt(textFiles, from, href);
+      const path = uiSurface.bundlePageAt(textFiles, from, href);
       if (path === null) return false;
       if (path === from) return true;
       if (path === main) {
@@ -198,14 +207,14 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
         return true;
       }
       try {
-        setPage({ path, composed: composePage(textFiles, path) });
+        setPage({ path, composed: uiSurface.composePage(textFiles, path) });
       } catch (problem) {
         console.warn(`[SoftN] ${path} cannot be shown:`, problem instanceof Error ? problem.message : problem);
         return false;
       }
       return true;
     },
-    [page, textFiles]
+    [page, textFiles, uiSurface]
   );
   // The files changed under a page a link put on screen (the runtime's editor
   // hands the tab a newer set): that page is composed from them again, and
@@ -218,14 +227,14 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
     const showing = pageRef.current;
     if (composedFrom.current === textFiles) return;
     composedFrom.current = textFiles;
-    if (!showing || !textFiles) return;
+    if (!showing || !textFiles || !uiSurface) return;
     try {
-      const composed = composePage(textFiles, showing.path);
+      const composed = uiSurface.composePage(textFiles, showing.path);
       setPage((current) => (current && current.path === showing.path ? { path: current.path, composed } : current));
     } catch (problem) {
       console.warn(`[SoftN] ${showing.path} cannot be shown as changed:`, problem instanceof Error ? problem.message : problem);
     }
-  }, [textFiles]);
+  }, [textFiles, uiSurface]);
   // An app opened afresh in this tab (the runtime's editor does that for a
   // change the running app cannot take) opens at its main page, like any
   // open: the page a link had put on screen was the run before's.
@@ -320,37 +329,61 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           outline: 'none',
         }}
       >
-        <ThemeProvider followHost followSystem>
-          <Box
-            className="softn-runner-loading"
-            style={{
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-              height: '100%',
-              flexDirection: 'column',
-              gap: '1rem',
-              background: 'var(--ink)',
-            }}
-          >
-            <Spinner size="lg" />
-            <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
-              <span role="status">Opening {appName}…</span>
-            </Text>
-            {/* What is downloading once the wait has gone on: the bundle,
-                then the engine and the first screen's components. */}
-            <div style={LOAD_PROGRESS_STYLE}>
-              <LoadProgress />
-            </div>
-            {/* And, when it has gone on long enough to wonder, that it is
-                still waiting and how to stop. Only where this tab is the one
-                on screen: every tab stays mounted. */}
-            {active && <SlowOpen onCancel={onCancelOpen} />}
-          </Box>
-        </ThemeProvider>
+        <div
+          className="softn-runner-loading"
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            height: '100%',
+            flexDirection: 'column',
+            gap: '1rem',
+            background: 'var(--ink)',
+          }}
+        >
+          <span className="softn-shell-spinner" aria-hidden="true" />
+          <span style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }} role="status">
+            Opening {appName}…
+          </span>
+          {/* What is downloading once the wait has gone on: the bundle,
+              then the engine and the first screen's components. */}
+          <div style={LOAD_PROGRESS_STYLE}>
+            <LoadProgress />
+          </div>
+          {/* And, when it has gone on long enough to wonder, that it is
+              still waiting and how to stop. Only where this tab is the one
+              on screen: every tab stays mounted. */}
+          {active && <SlowOpen onCancel={onCancelOpen} />}
+        </div>
       </div>
     );
   }
+
+  const startingScreen = (withLoadProgress: boolean) => (
+    <div
+      className="softn-runner-loading"
+      style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        height: '100%',
+        minHeight: '300px',
+        flexDirection: 'column',
+        gap: '1rem',
+        background: 'var(--ink)',
+      }}
+    >
+      <span className="softn-shell-spinner" aria-hidden="true" />
+      <span style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }} role="status">
+        Starting {appName}…
+      </span>
+      {withLoadProgress && (
+        <div style={LOAD_PROGRESS_STYLE}>
+          <LoadProgress />
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -391,7 +424,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           is the news: a browser that refuses site data, a full budget. Here,
           for the reason the bar above is: the app cannot paint or hide it. */}
       <div ref={noticeRef}>
-        <XDBStorageNotice appId={runtimeAppId} problemsOnly />
+        {!webContainer && uiSurface && <uiSurface.XDBStorageNotice appId={runtimeAppId} problemsOnly />}
       </div>
       {/* The app's own box, below the bar and never over it. Without
           containment a bundle's `position: fixed` element was positioned
@@ -407,125 +440,86 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
           by the renderer.) */}
       <div className="softn-runner-app" style={APP_BOX_STYLE} data-softn-theme-box={themeBox}>
         <RunnerErrorBoundary>
-          <ThemeProvider followHost followSystem declaredMode={themeMode} box={themeBox}>
-            {webContainer && containerSource && (bundleData || textFiles) ? (
-              <WebContainerView
-                source={containerSource}
-                appId={runtimeAppId}
-                // With the build's other data, so Home counts it, Remove clears it and an
-                // update can bring it forward (lib/appCacheStorage.ts).
-                storagePrefix={containerStoragePrefix(runtimeAppId)}
-                initialPage={initialPage}
-                declaredPermissions={consent?.config ?? permissionConfig}
-                grantedCapabilities={containerGrants}
-                // A tab behind another draws no frames and runs no timers until it is in front.
-                active={active}
-                theme={themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto'}
-                onReady={onReady}
-                loading={
-                  <Box
-                    className="softn-runner-loading"
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      height: '100%',
-                      minHeight: '300px',
-                      flexDirection: 'column',
-                      gap: '1rem',
-                      background: 'var(--ink)',
-                    }}
-                  >
-                    <Spinner size="lg" />
-                    <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
-                      <span role="status">Starting {appName}…</span>
-                    </Text>
-                  </Box>
-                }
-                error={(err) => (
-                  <div className="softn-runner-error-wrap" role="alert">
-                    <RunnerErrorCard
-                      title="This app couldn’t start"
-                      hint="The container runtime could not open or execute this web app. Check the technical reason below."
-                      detail={err.message}
-                    />
-                  </div>
-                )}
-              />
-            ) : (
-            <SoftNWithXDB
-              // Another page is another run, and so is another identity: an
-              // app the person's first edit made their own copy of starts
-              // again as that copy, on its own saved data.
-              key={`${runtimeAppId}\n${page?.path ?? ''}`}
-              source={shown.source}
-              onLink={followLink}
-              pagesOnly
-              initialState={initialState}
-              permissions={permissions}
-              importResolver={importResolver}
-              functions={
-                assetResolver
-                  ? { asset: (...args: unknown[]) => assetResolver(String(args[0] ?? '')) }
-                  : undefined
-              }
-              logicBasePath={shown.logicBasePath}
-              preIncludedLogicPaths={shown.preIncludedLogicPaths}
-              python={shown.python}
-              parseProblem={shown.parseProblem}
-              executionPreference={executionPreference}
-              permissionConfig={permissionConfig}
-              onConsentStatus={setConsentStatus}
-              // Another page of the bundle is another app run afresh (the key
-              // above), and not a newer version of this one.
-              app={page ? undefined : live}
-              onUpdate={onUpdate}
-              editMarks={editMarks}
+          {webContainer && containerSource && (bundleData || textFiles) ? (
+            <WebContainerView
+              source={containerSource}
               appId={runtimeAppId}
-              // Every tab stays mounted; only this says which one is on screen.
+              // With the build's other data, so Home counts it, Remove clears it and an
+              // update can bring it forward (lib/appCacheStorage.ts).
+              storagePrefix={containerStoragePrefix(runtimeAppId)}
+              initialPage={initialPage}
+              declaredPermissions={consent?.config ?? permissionConfig}
+              grantedCapabilities={containerGrants}
+              // A tab behind another draws no frames and runs no timers until it is in front.
               active={active}
-              assetResolver={assetResolver}
-              onPageChange={onPageChange}
-              onLoad={onReady}
-              serverUrl={serverUrl}
-              serverToken={serverToken}
-              serverCollections={serverCollections}
-              storageEndpoint={storageEndpoint}
-              loading={
-                <Box
-                  className="softn-runner-loading"
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    height: '100%',
-                    minHeight: '300px',
-                    flexDirection: 'column',
-                    gap: '1rem',
-                    background: 'var(--ink)',
-                  }}
-                >
-                  <Spinner size="lg" />
-                  <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
-                    <span role="status">Starting {appName}…</span>
-                  </Text>
-                  <div style={LOAD_PROGRESS_STYLE}>
-                    <LoadProgress />
-                  </div>
-                </Box>
-              }
+              theme={themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto'}
+              onReady={onReady}
+              loading={startingScreen(false)}
               error={(err) => (
                 <div className="softn-runner-error-wrap" role="alert">
                   <RunnerErrorCard
                     title="This app couldn’t start"
-                    hint="The runtime could not run this app’s markup or logic. If you made it, the reason below says where; otherwise tell whoever shared it."
+                    hint="The container runtime could not open or execute this web app. Check the technical reason below."
                     detail={err.message}
                   />
                 </div>
               )}
             />
-            )}
-          </ThemeProvider>
+          ) : uiSurface ? (
+            <uiSurface.ThemeProvider followHost followSystem declaredMode={themeMode} box={themeBox}>
+              <uiSurface.SoftNWithXDB
+                // Another page is another run, and so is another identity: an
+                // app the person's first edit made their own copy of starts
+                // again as that copy, on its own saved data.
+                key={`${runtimeAppId}\n${page?.path ?? ''}`}
+                source={shown.source}
+                onLink={followLink}
+                pagesOnly
+                initialState={initialState}
+                permissions={permissions}
+                importResolver={importResolver}
+                functions={
+                  assetResolver
+                    ? { asset: (...args: unknown[]) => assetResolver(String(args[0] ?? '')) }
+                    : undefined
+                }
+                logicBasePath={shown.logicBasePath}
+                preIncludedLogicPaths={shown.preIncludedLogicPaths}
+                python={shown.python}
+                parseProblem={shown.parseProblem}
+                executionPreference={executionPreference}
+                permissionConfig={permissionConfig}
+                onConsentStatus={setConsentStatus}
+                // Another page of the bundle is another app run afresh (the key
+                // above), and not a newer version of this one.
+                app={page ? undefined : live}
+                onUpdate={onUpdate}
+                editMarks={editMarks}
+                appId={runtimeAppId}
+                // Every tab stays mounted; only this says which one is on screen.
+                active={active}
+                assetResolver={assetResolver}
+                onPageChange={onPageChange}
+                onLoad={onReady}
+                serverUrl={serverUrl}
+                serverToken={serverToken}
+                serverCollections={serverCollections}
+                storageEndpoint={storageEndpoint}
+                loading={startingScreen(true)}
+                error={(err) => (
+                  <div className="softn-runner-error-wrap" role="alert">
+                    <RunnerErrorCard
+                      title="This app couldn’t start"
+                      hint="The runtime could not run this app’s markup or logic. If you made it, the reason below says where; otherwise tell whoever shared it."
+                      detail={err.message}
+                    />
+                  </div>
+                )}
+              />
+            </uiSurface.ThemeProvider>
+          ) : (
+            startingScreen(true)
+          )}
         </RunnerErrorBoundary>
       </div>
       {/* What is still arriving once the app is drawn (on a first visit, the

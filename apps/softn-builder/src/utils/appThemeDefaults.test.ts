@@ -78,6 +78,7 @@ it('defaults the New App dialog to inheritance while retaining an explicit user 
     act(() => root.render(React.createElement(NewProjectDialog, { isOpen: true, onClose: () => {}, onCreate })));
     const select = container.querySelector('select')!;
     const form = container.querySelector('form')!;
+    act(() => container.querySelector<HTMLInputElement>('input[value=web]')!.click());
     expect(select.value).toBe('system');
     act(() => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     expect(onCreate).toHaveBeenLastCalledWith(expect.objectContaining({ theme: 'system' }));

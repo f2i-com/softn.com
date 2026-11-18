@@ -14,7 +14,8 @@
  * `wss://h//sync`. One copy now, judged by core's own rule.
  */
 
-import { describeNetDestination, type EgressVerdict, type PermissionConfig } from '@softn/core';
+import { describeNetDestination } from '@softn/core/web-host';
+import type { EgressVerdict, PermissionConfig } from '@softn/core';
 
 // ── Remote imports ───────────────────────────────────────────────────
 

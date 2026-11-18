@@ -8,7 +8,7 @@
  * Studio, its Stop button and its autosave with it, for as long as it ran.
  */
 
-import { ScopedWorker } from '@softn/core';
+import { ScopedWorker } from '@softn/core/authoring';
 
 /**
  * The worker, started behind the page's service worker wherever the build keeps its script

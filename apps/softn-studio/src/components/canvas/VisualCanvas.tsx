@@ -2,8 +2,10 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useAIStore, useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { declarePythonPackage, getBundleEntryPath, MAIN_PAGE_PATH, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
-import { createEphemeralXDBScope, SoftNWithXDB, type AppUpdateResult, type SoftNRendererProps, type XDBService } from '@softn/core';
+import { createEphemeralXDBScope, type AppUpdateResult, type SoftNRendererProps, type XDBService } from '@softn/core/authoring';
 import { hostedContainerOptions } from '@softn/runtime-shell/containerHost';
+import { webPreviewEntries } from '@softn/editor-shared/prepareWebSource';
+import { containerSource } from '../../lib/containerSource';
 import type { DevicePreset, ValidationError, VFSFile } from '../../types/studio';
 import { PreviewError } from './PreviewError';
 import { PAGE_PARSE, pageAndImports, pageParseProblems } from '../../lib/pageDiagnostics';
@@ -13,12 +15,11 @@ import { createPreviewAssetResolver } from '../../lib/previewAssets';
 import { previewDeclaration, previewPermissionConfig } from '../../lib/previewPermissions';
 import { CodeFile, FileEditor } from './FileEditor';
 import { useEditStore } from '../../stores/editStore';
-import { confirmLeaveDraft, confirmShowing } from '../../lib/handEdit';
+import { beginHandEdit, confirmLeaveDraft, confirmShowing, handEditRefusal } from '../../lib/handEdit';
 import { askAgentToFix } from '../../lib/agentOrchestrator';
 import { listenToConsoleErrors, notePreviewFault, readAppFault, readAppLog, type AppFault } from '../../lib/previewFaults';
 import { MediaView, mediaKindFor } from './MediaView';
-import { isLogicPath, isPagePath, projectContainerMode } from '../../lib/sourceKinds';
-import { isPrivatePath } from '../../lib/paths';
+import { isLogicPath, isPagePath, pageScriptToEdit, projectContainerMode } from '../../lib/sourceKinds';
 import {
   buildPreviewXDBState,
   composePreviewProject,
@@ -75,15 +76,8 @@ const StudioWebContainerPreview: React.FC<{
 }> = ({ files, activePage, theme, declaredPermissions, grantedCapabilities, onConsole, onError }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<import('@softn/container').SoftNContainerHandle | null>(null);
-  const [bootError, setBootError] = useState<string | null>(null);
 
-  const vfsSource = useMemo(() => {
-    const out: Record<string, string | Uint8Array> = {};
-    for (const [p, f] of files) {
-      if (!isPrivatePath(p)) out[p] = f.content;
-    }
-    return out;
-  }, [files]);
+  const vfsSource = useMemo(() => containerSource(files), [files]);
 
   const onConsoleRef = useRef(onConsole);
   onConsoleRef.current = onConsole;
@@ -98,14 +92,13 @@ const StudioWebContainerPreview: React.FC<{
     const el = hostRef.current;
     if (!el) return;
     let cancelled = false;
-    setBootError(null);
 
     void (async () => {
       try {
-        const { mountSoftNContainer } = await import('@softn/container');
+        const [{ mountSoftNContainer }, source] = await Promise.all([import('@softn/container'), webPreviewEntries(vfsSource)]);
         if (cancelled) return;
         const mounted = await mountSoftNContainer(el, {
-          source: vfsSource,
+          source,
           // The build's own folder and core's engine for the Python tiers.
           ...hostedContainerOptions(),
           theme,
@@ -115,8 +108,8 @@ const StudioWebContainerPreview: React.FC<{
           permissionMode: 'deny',
           initialGrantedCapabilities: grantedRef.current as import('@softn/bundle-format/capabilities').Capability[],
           permissionsOverride: (declaredPermissions ?? undefined) as import('@softn/container').ContainerPermissions | undefined,
-          onConsole: (level, text) => onConsoleRef.current(level, text),
-          onError: (err) => onErrorRef.current(err),
+          onConsole: (level, text) => { if (!cancelled) onConsoleRef.current(level, text); },
+          onError: (err) => { if (!cancelled) onErrorRef.current(err); },
         });
         if (cancelled) {
           mounted.dispose();
@@ -131,7 +124,6 @@ const StudioWebContainerPreview: React.FC<{
       } catch (err) {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
-        setBootError(msg);
         onErrorRef.current(err instanceof Error ? err : new Error(msg));
       }
     })();
@@ -154,15 +146,8 @@ const StudioWebContainerPreview: React.FC<{
     }
   }, [activePage]);
 
-  if (bootError) {
-    return (
-      <div className="st-state-panel" role="alert" style={{ margin: 16 }}>
-        <h3 className="st-state-title">Container preview error</h3>
-        <p className="st-state-message">{bootError}</p>
-      </div>
-    );
-  }
-
+  // The canvas displays errors beside the host. Keep it available so the next
+  // source edit can start a fresh container after a failed mount.
   return <div ref={hostRef} style={{ width: '100%', height: '100%', flex: '1 1 auto', minHeight: 0 }} />;
 };
 
@@ -189,7 +174,7 @@ export function readCanvasViewMode(): CanvasViewMode {
   }
 }
 
-function writeCanvasViewMode(mode: CanvasViewMode): void {
+export function writeCanvasViewMode(mode: CanvasViewMode): void {
   try {
     window.sessionStorage.setItem(VIEW_MODE_KEY, mode);
   } catch {
@@ -422,6 +407,7 @@ export function StablePreviewSurface({
 
 export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShowChat }) => {
   const {
+    brief,
     blueprint,
     devicePreset,
     activePageId,
@@ -546,11 +532,23 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   );
   const isManifestFile = activeVFSFile === 'manifest.json';
   const isSoftNUIFile = activeVFSFile ? isPagePath(activeVFSFile) : false;
+  const isV2Container = useMemo(() => projectContainerMode(files, brief) === 'web', [files, brief]);
   // A page is both something to look at and source: it gets Preview | Code.
   const canSwitchView = (isSoftNUIFile || isHtmlFile) && previewFileContent !== null;
   const showCode = canSwitchView && viewMode === 'code';
+  const entryScript = useMemo(() => {
+    if (!isV2Container || !isSoftNUIFile || !activeVFSFile || !previewFileContent) return null;
+    return pageScriptToEdit(activeVFSFile, previewFileContent, files);
+  }, [isV2Container, isSoftNUIFile, activeVFSFile, previewFileContent, files]);
+  const webEntry = isV2Container ? getBundleEntryPath(files) : null;
+  const previewWebApp = webEntry && /\.html?$/i.test(webEntry) ? () => {
+    if (!confirmShowing(webEntry)) return;
+    setActiveFilePath(webEntry);
+    setViewMode('preview');
+  } : undefined;
 
   useEffect(() => {
+    if (isV2Container || files.size === 0) return;
     let mounted = true;
     const loadRenderer = async () => {
       try {
@@ -558,9 +556,10 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
         // every other component (the light groups, charts, editors, Scene3D
         // and Three.js, the QR reader and its decoder) fetched the first time
         // a page draws it, so a preview loads only what the page uses.
-        const [{ registerRuntimeComponents }, theme] = await Promise.all([
+        const [{ registerRuntimeComponents }, theme, renderer] = await Promise.all([
           import('@softn/components/lazy'),
           import('@softn/components/theme'),
+          import('@softn/runtime-shell/ClassicPreviewRenderer'),
         ]);
         if (!mounted) return;
         registerRuntimeComponents();
@@ -569,7 +568,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
         // preview's store (seeded below), under the names, filters, order and limits it gives
         // them. The plain renderer was handed every record under its collection's name, which
         // showed a collection read as another name as empty, and ignored filter, sort and limit.
-        setPreviewComponent(() => SoftNWithXDB);
+        setPreviewComponent(() => renderer.ClassicPreviewRenderer);
       } catch (error) {
         if (mounted) setRendererError(error instanceof Error ? error.message : 'The preview renderer could not load.');
       }
@@ -579,7 +578,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     return () => {
       mounted = false;
     };
-  }, [rendererRetry]);
+  }, [rendererRetry, isV2Container, files.size]);
 
   // The preview-data reset policy (see previewDataKey in lib/previewProject.ts):
   // the disposable XDB collections are reseeded from source only when an .xdb
@@ -612,6 +611,10 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   // page is drawn once it is there.
   const [previewStore, setPreviewStore] = useState<ReturnType<typeof createEphemeralXDBScope> | null>(null);
   useEffect(() => {
+    if (isV2Container || files.size === 0) {
+      setPreviewStore(null);
+      return;
+    }
     sweepPersistedPreviewStores();
     const store = createEphemeralXDBScope();
     setPreviewStore(store);
@@ -620,7 +623,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
       forgetPreviewScriptStorage(store.appId);
       setPreviewStore((current) => (current === store ? null : current));
     };
-  }, [previewAppId]);
+  }, [previewAppId, isV2Container, files.size]);
 
   useEffect(() => {
     if (!previewStore) return;
@@ -670,7 +673,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   // runtime would refuse is an error shown in the preview, not a page that
   // renders without the logic Run will then fail on.
   const preview = useMemo(() => {
-    if (!isSoftNUIFile || !activeVFSFile || !previewFileContent) return null;
+    if (isV2Container || !isSoftNUIFile || !activeVFSFile || !previewFileContent) return null;
     const result = composePreviewProject(files, activeVFSFile);
     if (!result.ok) return result;
     const { composition } = result;
@@ -679,7 +682,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     // runtime loads; asset() and the asset resolver below are what resolve a bundle file.
     const source = stripTemplateComments(composition.source);
     return { ok: true as const, composition, source };
-  }, [isSoftNUIFile, activeVFSFile, previewFileContent, files]);
+  }, [isV2Container, isSoftNUIFile, activeVFSFile, previewFileContent, files]);
   // A project that cannot be composed for a moment (a file half written, an
   // include of a page not saved yet) does not take the running app off the
   // canvas: the last composition that worked stays, for the same page and the
@@ -731,12 +734,14 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     if (next !== null && next !== current) vfs.updateFile('manifest.json', next, 'user');
   }, []);
   /** The app is mounted and its logic can run, whether the frame shows it or its code. */
-  const appMounted = Boolean(isSoftNUIFile && softNSource && PreviewComponent);
+  const appMounted = Boolean(!isV2Container && isSoftNUIFile && softNSource && PreviewComponent);
+  const containerMounted = Boolean(isV2Container && isSoftNUIFile && previewFileContent !== null);
 
   // One run of the app: this source, since this start. A stop belongs to the run it happened
   // in, so a changed file or a restart is a new run with nothing stopped, and a late line from
   // the run before it is not taken for this one's.
-  const run = useMemo(() => ({ source: softNSource, start: refreshKey, file: activeVFSFile }), [softNSource, refreshKey, activeVFSFile]);
+  const webRunFiles = isV2Container ? files : null;
+  const run = useMemo(() => ({ source: softNSource, webRunFiles, start: refreshKey, file: activeVFSFile }), [softNSource, webRunFiles, refreshKey, activeVFSFile]);
   const [stop, setStop] = useState<{ run: object; reason: string } | null>(null);
   const stoppedBecause = stop && stop.run === run ? stop.reason : null;
 
@@ -839,7 +844,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   /** A page that does not parse, or logic that does not compile, in what the frame is showing. */
   const brokenBy = useMemo(() => previewBrokenBy(checkProblems, files, isSoftNUIFile ? activeVFSFile : null), [checkProblems, files, isSoftNUIFile, activeVFSFile]);
   /** The app is actually rendering in the frame as written, and answering: the one thing the chrome marks as live. */
-  const isLive = Boolean(appMounted && !showCode && !stoppedBecause && !brokenBy);
+  const isLive = Boolean((appMounted || containerMounted) && !showCode && !stoppedBecause && !brokenBy);
 
   // An .html file of the project is shown from its text (`srcdoc`), never
   // from an address. It was a blob: URL, which has Studio's origin: the
@@ -901,8 +906,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
       );
     }
 
-    const codeView = activeVFSFile ? <CodeFile path={activeVFSFile} source={previewFileContent} /> : null;
-    const isV2Container = projectContainerMode(files) === 'web';
+    const codeView = activeVFSFile ? <CodeFile path={activeVFSFile} source={previewFileContent} onPreview={previewWebApp} /> : null;
 
     if (isV2Container && isSoftNUIFile) {
       const requested = declaration.requested;
@@ -1290,6 +1294,12 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                     {selectedSurfaceLabel}
                   </span>
                   {isLive && <span className="st-live">Running</span>}
+                  {!showCode && entryScript && !handEditRefusal(entryScript, files.get(entryScript)) && (
+                    <button type="button" className="st-btn st-btn-sm st-preview-script" title={`Edit ${entryScript}`}
+                      onClick={() => { if (beginHandEdit(entryScript) === null) setActiveFilePath(entryScript); }}>
+                      Edit {entryScript.split('/').pop()}
+                    </button>
+                  )}
                   {appMounted && !showCode && !stoppedBecause && brokenBy && (
                     <span className="st-preview-stopped" title={`${brokenBy.file}${brokenBy.line ? `:${brokenBy.line}` : ''}: ${brokenBy.message}`}>
                       {brokenBy.type === LOGIC_SYNTAX ? 'Does not compile' : 'Does not parse'}
@@ -1301,6 +1311,9 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                 {/* A phone draws the page at its own width, whichever is chosen: no switch there. */}
                 {(isSoftNUIFile || isHtmlFile) && !showCode && !isMobile && <DeviceSwitch preset={devicePreset} onChange={setDevicePreset} />}
                 {canSwitchView && <ViewSwitch mode={viewMode} onChange={setViewMode} />}
+                {!canSwitchView && previewWebApp && (
+                  <button type="button" className="st-btn st-btn-sm" onClick={previewWebApp}>Preview app</button>
+                )}
                 <div className="st-preview-tools" role="toolbar" aria-label="Preview controls">
                   {[
                     { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },

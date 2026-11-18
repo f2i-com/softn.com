@@ -8,7 +8,9 @@
  * in, the sandbox worker its code calls, and the AI runtime with the model
  * worker. The model is the app's own file, so it loads offline too.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from '../helpers/offlineSite';
+import { cachedWasm, fullEngine } from '../helpers/engines';
 import { strToU8, zipSync } from 'fflate';
 import { tinyQwen3 } from '../../packages/@softn/core/test/helpers/tiny-gguf';
 import { watchConsole } from '../helpers/console';
@@ -95,16 +97,16 @@ async function usesEverything(page: Page): Promise<void> {
   await expect(app.locator('canvas').first()).toBeAttached({ timeout: 30_000 });
 }
 
-test('an app opened once online opens from Home and works with the network gone', async ({ page, context }, testInfo) => {
+test('an app opened once online opens from Home and works with the network gone', async ({ page, offlineSite }, testInfo) => {
   test.setTimeout(240_000);
   const log = watchConsole(page, testInfo);
   try {
-    await page.goto('/web/');
+    await page.goto(offlineSite.origin + '/web/');
     await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
     // The install waits for the service worker to control the page; so does this.
     await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller), null, { timeout: 60_000 });
     const chooser = page.waitForEvent('filechooser');
-    await page.getByRole('button', { name: 'Open a .softn file', exact: true }).click();
+    await page.getByRole('button', { name: 'Open file', exact: true }).click();
     await (await chooser).setFiles({ name: 'OfflineEverything.softn', mimeType: 'application/octet-stream', buffer: bundle() });
     await usesEverything(page);
 
@@ -112,15 +114,18 @@ test('an app opened once online opens from Home and works with the network gone'
     await page.locator('.softn-frame-home').first().click();
     const card = page.getByRole('button', { name: `Open ${NAME}`, exact: true });
     await expect(card.locator('.softn-launcher-offline')).toHaveAttribute('data-state', 'ready', { timeout: 120_000 });
+    expect(await cachedWasm(page)).toContainEqual(expect.stringMatching(fullEngine));
 
-    await context.setOffline(true);
+    for (const group of ['charts', 'scene3d']) {
+      expect([...offlineSite.requestedPaths].some(path => path.includes('/' + group + '-'))).toBe(true);
+    }
+    offlineSite.disconnect();
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
     await page.getByRole('button', { name: `Open ${NAME}`, exact: true }).click();
     await usesEverything(page);
     expect(log.uncaught).toEqual([]);
   } finally {
-    await context.setOffline(false);
     await log.attach('offline-app');
   }
 });

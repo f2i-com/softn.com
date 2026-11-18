@@ -34,6 +34,20 @@ test('a new folder carries this process id, and a run sees it as its own', (t) =
   assert.equal(fs.existsSync(made), true);
 });
 
+test('a locked orphan can be retried after another preview starts', (t) => {
+  const dir = scratch(t);
+  const locked = path.join(dir, 'p-4242-locked');
+  fs.mkdirSync(locked);
+  const remove = fs.rmSync;
+  const lock = t.mock.method(fs, 'rmSync', (target, options) => {
+    if (target === locked) throw Object.assign(new Error('File in use'), { code: 'EPERM' });
+    return remove(target, options);
+  });
+  assert.deepEqual(removeOrphans('p-', dir, () => false), []);
+  lock.mock.restore();
+  assert.deepEqual(removeOrphans('p-', dir, () => false), ['p-4242-locked']);
+});
+
 test('this process is running, and an id no process has is not', () => {
   assert.equal(isRunning(process.pid), true);
   assert.equal(isRunning(2 ** 31 - 2), false);

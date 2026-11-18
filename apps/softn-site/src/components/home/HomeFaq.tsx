@@ -16,11 +16,32 @@ const FAQ: Answer[] = [
     q: 'Is this HTML?',
     a: (
       <>
-        Yes. A SoftN v2 container runs standard HTML, CSS, JavaScript, TypeScript, and Python inside an isolated WebAssembly
-        Worker and Shadow DOM viewport, with optional hosted modules (<code>preact</code>, <code>htm</code>,{' '}
-        <code>three</code>, <code>marked</code>), <code>softn:db</code>, and on-demand <code>&lt;softn-*&gt;</code>{' '}
-        elements — while remaining backwards-compatible with SoftN <code>.ui</code> templates.{' '}
-        <a href={HTML_GUIDE_HREF}>HTML and SoftN</a>
+        Yes. A web container draws HTML and CSS and runs your app’s scripts in a WebAssembly Worker. You can
+        also use SoftN’s optional <code>.ui</code> templates. <a href={HTML_GUIDE_HREF}>HTML and SoftN</a>
+      </>
+    ),
+  },
+  {
+    q: 'What does Runtime download for offline use?',
+    a: (
+      <>
+        Open the app online once. Runtime saves its files and the engine its code needs. Many vanilla JavaScript,
+        React and Vue apps use the lite engine. Python and code that uses <code>Intl</code> need the full engine.
+        A classic <code>.ui</code> app also installs its renderer and the components its pages use.
+        Runtime Home shows when an app is ready to reopen offline. External services still need a connection.{' '}
+        <a href={DATA_GUIDE_HREF}>Offline use and local data</a>
+      </>
+    ),
+  },
+  {
+    q: 'Can I edit the React or Vue starter after exporting it?',
+    a: (
+      <>
+        Yes. Reopen its <code>.softn</code> file in Studio or Builder and edit <code>app.js</code>,{' '}
+        <code>App.jsx</code> or <code>App.vue</code>. Preview runs your change. Each editor downloads the
+        JSX or Vue tools when you first preview that format, then keeps them for offline editing. If you
+        import a compiled site, you can edit the files you included in the upload.
+        {' '}<a href={HTML_GUIDE_HREF}>Working with web apps</a>
       </>
     ),
   },
@@ -39,9 +60,8 @@ const FAQ: Answer[] = [
     q: 'Can I edit someone else’s app?',
     a: (
       <>
-        You can change your own copy. An app published to the directory as a bundle shows its source: open it in Studio
-        or Builder, change it, and publish it as a remix, which credits the original. The original stays as its author published it — only
-        their edit key changes it.
+        Open a directory bundle in Studio or Builder to edit your own copy of its files. Publishing your changes
+        as a remix credits the original author. Updating their original listing requires their edit key.
       </>
     ),
   },

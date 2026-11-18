@@ -217,6 +217,6 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
 }
 
 /** The file name a bundle of this project downloads as. */
-export function bundleFileName(name: string): string {
-  return `${name.replace(/\s+/g, '-').toLowerCase() || 'untitled'}.softn`;
+export function bundleFileName(name: string, hosted = false): string {
+  return `${name.replace(/\s+/g, '-').toLowerCase() || 'untitled'}.${hosted ? 'zip' : 'softn'}`;
 }

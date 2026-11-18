@@ -18,7 +18,7 @@
  * way to show one.
  */
 
-import { parse, type Expression } from '@softn/core';
+import { parse, type Expression } from '@softn/core/authoring';
 import type { CanvasElement, PropSchema } from '../types/builder';
 
 /** A property as the model holds it. `value` undefined is a property that is not written. */

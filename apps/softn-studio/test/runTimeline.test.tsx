@@ -97,7 +97,7 @@ describe('the run timeline', () => {
     await flush();
 
     expect(container.querySelector('.st-run-state')?.textContent).toBe('Finished');
-    expect(container.querySelector('.st-run-summary')?.textContent).toContain('Renamed the heading to Chores.');
+    expect(container.querySelector('.st-run-summary')?.textContent).toMatch(/Change summary.*Tasks.*Chores.*ui\/main\.ui/);
     expect(container.querySelector('.st-run-plan-count')?.textContent).toBe('2/2');
     expect(buttons(/Revert run/)).toHaveLength(1);
     // Undo on the edit step puts the file back.

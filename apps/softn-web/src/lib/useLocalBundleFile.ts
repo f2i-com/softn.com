@@ -1,22 +1,27 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { readLocalBundle } from './localBundle';
 
-/** A newer selection or an unmounted picker must not open an older file later. */
+/** Archive and folder opens share the same navigation and unmount checks. */
 export function useLocalBundleFile(
-  onFile: (data: Uint8Array, fileName: string) => void | Promise<void>,
+  onFile: (data: Uint8Array, fileName: string, isForeground: () => boolean) => void | Promise<void>,
   onError: (error: Error) => void,
-): (file: File) => Promise<void> {
+  claimNavigation: () => () => boolean,
+): (source: File | File[]) => Promise<void> {
   const selection = useRef(0);
   useEffect(() => () => { selection.current += 1; }, []);
-  return useCallback(async (file: File) => {
+  return useCallback(async (source: File | File[]) => {
     const request = ++selection.current;
+    const ownsNavigation = claimNavigation();
+    const isForeground = () => request === selection.current && ownsNavigation();
     try {
-      const data = await readLocalBundle(file);
-      if (request === selection.current) await onFile(data, file.name);
+      const bundle = Array.isArray(source)
+        ? await (await import('./localWebFolder')).readLocalWebFolder(source)
+        : { data: await readLocalBundle(source), fileName: source.name };
+      if (isForeground()) await onFile(bundle.data, bundle.fileName, isForeground);
     } catch (error) {
-      if (request === selection.current) {
+      if (isForeground()) {
         onError(error instanceof Error ? error : new Error('This app could not be opened.'));
       }
     }
-  }, [onFile, onError]);
+  }, [onFile, onError, claimNavigation]);
 }

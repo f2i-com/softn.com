@@ -163,7 +163,7 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   try {
     bytes = await bundlePromise;
     handle = exporting
-      ? await writeExport(bytes, bundleFileName(name))
+      ? await writeExport(bytes, bundleFileName(name, deps.hosted))
       : await writeFile(bytes, bundleFileName(name).replace(/\.softn$/, ''), deps.existingHandle);
   } catch (e) {
     // User cancelling the file picker throws an AbortError — quiet.

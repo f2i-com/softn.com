@@ -23,14 +23,28 @@ export function componentIndexText(): string {
 }
 
 const OTHER_LANGUAGE = /python|torch/i;
+const LEGACY_UI_ONLY_SLUGS = new Set([
+  'ui-language',
+  'html-and-softn',
+  'components',
+  'forms-tables-dashboards',
+  'logic-zipp',
+  'state-events',
+  'threejs-games',
+  'language-support',
+]);
 
 /**
  * The guides by slug, one line each: for the system prompt. A JavaScript
  * project is not pointed at the Python guides — its prompt teaches the one
- * language it writes — though read_docs still serves every guide.
+ * language it writes — and a Web Container project is not pointed at legacy
+ * `.ui` template/component guides, though read_docs still serves every guide.
  */
-export function docIndexText(python = true): string {
-  return DOC_INDEX.filter((d) => python || !OTHER_LANGUAGE.test(`${d.slug} ${d.title.replace(/ or Python$/, '')}`))
+export function docIndexText(python = true, options?: { container?: boolean }): string {
+  return DOC_INDEX.filter((d) => {
+    if (options?.container && LEGACY_UI_ONLY_SLUGS.has(d.slug)) return false;
+    return python || !OTHER_LANGUAGE.test(`${d.slug} ${d.title.replace(/ or Python$/, '')}`);
+  })
     .map((d) => {
       const title = python ? d.title : d.title.replace(/ (or|and) Python\b/g, '');
       const sections = python ? d.sections : d.sections.filter((s) => !OTHER_LANGUAGE.test(s));

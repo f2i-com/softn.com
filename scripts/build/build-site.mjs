@@ -47,11 +47,22 @@ import { npmCommand } from '../lib/npm.mjs';
 import { collectSharedAssets } from './shared-assets.mjs';
 import { placeSharedContainerRuntime } from './container-runtime-assets.mjs';
 
-const outDir = path.join(root, 'dist');
+// Stage a build beside a running preview without emptying the directory it serves.
+const outputOption = process.argv.indexOf('--out-dir');
+const outputArg = outputOption === -1 ? undefined : process.argv[outputOption + 1];
+if (outputOption !== -1 && (!outputArg || outputArg.startsWith('--'))) {
+  throw new Error('--out-dir needs the path of a new directory.');
+}
+const outDir = outputArg ? path.resolve(outputArg) : path.join(root, 'dist');
+if (outputArg) {
+  if (fs.existsSync(outDir)) throw new Error(`--out-dir needs a new directory. Already exists: ${outDir}`);
+  fs.mkdirSync(path.dirname(outDir), { recursive: true });
+  fs.mkdirSync(outDir);
+}
 
-// By default the site ships without the example apps: the directory starts
-// empty and fills with what its visitors publish, which keeps the release
-// archive to the site itself. `--with-demos` (or SOFTN_WITH_DEMOS=1) fetches
+// The landing page ships its three starters in /examples/. By default the
+// public directory starts empty and fills with what its visitors publish.
+// `--with-demos` (or SOFTN_WITH_DEMOS=1) fetches
 // the pinned softn-Examples release, ships the bundles under /demos/ with a
 // download page for them at /softn-files/, and lets the API seed the
 // directory with them on first use — the shape softn.com itself deploys.
@@ -91,7 +102,7 @@ const APPS = [
 // deep-link fallbacks for static hosts cannot stand in for — and the sample
 // bundle and config the standalone build carries are stripped on the way.
 const PLAY = { workspace: '@softn/single', dir: 'apps/softn-single', base: '/play/', into: 'play' };
-const PLAY_STANDALONE_ONLY = ['app.softn', 'runtime.config.json', '.htaccess'];
+const PLAY_STANDALONE_ONLY = ['app.softn', 'runtime.config.json', '.htaccess', 'softn.js', 'softn-page.js'];
 
 const APACHE_CONFIG = String.raw`# SoftN static deployment for Apache 2.4+
 # Keep this file beside index.html in the website document root.
@@ -541,7 +552,7 @@ database as a backup. See \`api/README.md\` for migration and metadata details.
 ${
   withDemos
     ? 'The directory starts with the example apps. '
-    : 'The directory starts empty; this build ships no example apps. '
+    : 'The directory starts empty. '
 }Anyone can add one: drop \`.softn\` files onto any page of the site, or open
 \`/publish\`. Several files at once publish as a batch, named and described
 from their manifests. No account: publishing hands back an edit key, and the
@@ -648,6 +659,7 @@ the admin key.
 - \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
+- \`/examples/\` — the editable Vanilla JavaScript, React and Vue starters on the landing page
 - \`/shared/\` — what the site and the apps above are built into, kept once for all of them: \`/shared/assets/\` holds every script, stylesheet and font, the ZIPP engine, the QR decoder and the runtime's workers (no app has an \`assets/\` folder of its own), and \`/shared/container-runtime/\` the web container's files (its Worker and the smaller ZIPP engines it runs plain web apps on)
 ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — a page of download links for those bundles\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
 - \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
@@ -678,6 +690,10 @@ function run(args, env) {
 }
 
 function copyDir(from, to) {
+  const relative = path.relative(from, to);
+  if (!relative || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))) {
+    throw new Error(`Cannot copy a directory into itself. Choose an --out-dir outside ${from}.`);
+  }
   fs.mkdirSync(to, { recursive: true });
   for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
     const src = path.join(from, entry.name);
@@ -904,7 +920,13 @@ run(['run', 'build', '-w', '@softn/site'], {
   SOFTN_SHARED_ASSETS: SHARED_ASSETS,
 });
 
-fs.rmSync(outDir, { recursive: true, force: true });
+if (!outputArg) {
+  const state = path.join(outDir, 'data');
+  if (fs.existsSync(state) && fs.readdirSync(state).some((name) => !['.htaccess', 'README.txt'].includes(name))) {
+    throw new Error('dist/data contains local app data. Build with --out-dir <new-directory> to keep the running site intact.');
+  }
+  fs.rmSync(outDir, { recursive: true, force: true });
+}
 
 const siteDist = path.join(root, 'apps/softn-site/dist');
 requireDir(siteDist, 'The site build');
@@ -1087,7 +1109,7 @@ writeDeploymentFiles();
 const docsResult = await writeDocumentation();
 console.log(`
 Documentation: ${docsResult.pages} guides, ${docsResult.files} files under ${docsResult.basePath}`);
-run(['run', 'licenses:site']);
+run(['run', 'licenses:site', '--', '--out-dir', outDir]);
 writeBuildInfo();
 // Before the twins are made. The service workers' maps name the temporary
 // file workbox bundled each worker from and the checkout's own path in every
@@ -1103,13 +1125,13 @@ if (sourcemaps) {
 if (precompress) await precompressAssets();
 else console.log('\nNo .br/.gz twins (--no-precompress): this dist is for tests, and the packagers refuse it.');
 
-console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
+console.log(`\nBuilt ${countFiles(outDir)} files into ${outDir}`);
 console.log('  dist/           landing page');
 if (withDemos) {
   console.log(`  dist/demos/     the example .softn bundles (${bundleCount} apps)`);
   console.log('  dist/softn-files/ a download page for them');
 } else {
-  console.log('  (no example bundles: the directory starts empty; --with-demos ships them)');
+  console.log('  The public directory starts empty. Use --with-demos to seed it.');
 }
 console.log('  dist/play/      the single-app shell; /play/<slug> is an app\'s play page, rendered by the API');
 console.log('  dist/api/       the directory API (PHP + folder JSON); dist/data/ its state');

@@ -28,6 +28,44 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('shared ZIPP initialization', () => {
+  it('uses the same cached engine offline in an editor whose service worker has not claimed it', async () => {
+    vi.stubGlobal('navigator', { serviceWorker: { controller: null }, onLine: false });
+    const cache = { match: vi.fn(async () => new Response(emptyModuleBytes())), put: vi.fn() };
+    vi.stubGlobal('caches', { open: vi.fn(async () => cache) });
+    const network = vi.fn().mockRejectedValue(new Error('offline'));
+    vi.stubGlobal('fetch', network);
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    loader.cacheUncontrolledZippEngine('softn-full-engine');
+    expect(await loader.zippEngineForWorker()).toBeInstanceOf(WebAssembly.Module);
+    expect(cache.match).toHaveBeenCalledWith(loader.zippWasmUrl().href);
+    expect(network).not.toHaveBeenCalled();
+    expect(cache.put).not.toHaveBeenCalled();
+  });
+
+  it('replaces an invalid cached module with the successful first download', async () => {
+    vi.stubGlobal('navigator', { serviceWorker: { controller: null }, onLine: true });
+    const cache = {
+      match: async () => new Response('missing engine'),
+      delete: vi.fn().mockResolvedValue(true),
+      put: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.stubGlobal('caches', { open: async () => cache });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(emptyModuleBytes())));
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    loader.cacheUncontrolledZippEngine('softn-full-engine');
+    expect(await loader.zippEngineForWorker()).toBeInstanceOf(WebAssembly.Module);
+    expect(cache.delete).toHaveBeenCalledWith(loader.zippWasmUrl().href);
+    expect(cache.put).toHaveBeenCalledWith(loader.zippWasmUrl().href, expect.any(Response));
+    expect(new Uint8Array(await cache.put.mock.calls[0][1].arrayBuffer())).toEqual(emptyModuleBytes());
+  });
+
+  it('gives an offline first use a recovery action', async () => {
+    vi.stubGlobal('navigator', { serviceWorker: { controller: {} }, onLine: false });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    await expect(loader.zippEngineForWorker()).rejects.toThrow('Open it once while online');
+  });
+
   it('shares one initialization and compiles a snapshot of supplied bytes without fetching', async () => {
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);

@@ -4,7 +4,7 @@
  * What a visitor downloads before the first document renders is the entry
  * chunk and everything it imports statically — its closure. The claim
  * under test is that no Three.js, model loader or post-processing code is
- * in that closure: registerRuntimeComponents() in main.tsx reaches every
+ * in that closure: registerRuntimeComponents() in UiAppSurface reaches every
  * feature through import(), so each is a dynamic chunk the manifest lists
  * under `dynamicImports` and nowhere under `imports`. The service worker's
  * precache follows the same line — the closure is in it, the features are
@@ -105,10 +105,8 @@ const LIVE_EDIT = ['EditPane', 'drafts', 'bundle'];
 // core's own entry for it; through the barrel it measured 1.35 MB. Well
 // above the ~10 KB it is, well below what the barrel would make it.
 const ZIP_WORKER_CAP = 50_000;
-// Three.js alone is ~700 KB minified, so an entry closure under this cannot
-// hold it whatever else it holds. The closure was 724 KB when the cap was
-// set (1,780,427 bytes before the registry loaded features on demand).
-const CLOSURE_CAP = 1_000_000;
+// A narrow web host keeps classic rendering out of Runtime's startup graph.
+const CLOSURE_CAP = 430_000;
 
 function readManifest(): Record<string, ManifestChunk> {
   return JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, ManifestChunk>;
@@ -167,6 +165,17 @@ describe.skipIf(!built)('softn-web build graph', () => {
     for (const [key] of closure) {
       expect(key, `entry closure contains ${key}`).not.toMatch(HEAVY);
     }
+  });
+
+  it('keeps the .ui renderer and all @softn/components entries out of the container-first entry closure', () => {
+    for (const [key, chunk] of closure) {
+      expect(key, `entry closure imports @softn/components (${key})`).not.toMatch(/\/components\/dist\//);
+      expect(key, `entry closure imports UiAppSurface (${key})`).not.toMatch(/UiAppSurface/);
+      expect(chunk.file, `entry closure contains UiAppSurface (${chunk.file})`).not.toMatch(/\/UiAppSurface-/);
+    }
+    const uiSurfaceKey = Object.keys(manifest).find((k) => /UiAppSurface\.tsx$/.test(k));
+    expect(uiSurfaceKey, 'UiAppSurface is a dynamic chunk of its own').toBeDefined();
+    expect(manifest[uiSurfaceKey!].isDynamicEntry).toBe(true);
   });
 
   it(`stays under ${CLOSURE_CAP} bytes, per file and in total`, () => {
@@ -255,13 +264,7 @@ describe.skipIf(!built)('softn-web build graph', () => {
     );
   });
 
-  // The light groups that were in the shell until 2026-10-22 (controls,
-  // feedback, data, display, navigation): fetched by the page that draws one,
-  // so out of the entry closure, and precached with the shell, so an app that
-  // uses one works offline as it did. Found by the module each chunk starts
-  // at, not by a file-name prefix: `data-` and `display-` are names other
-  // chunks could start with.
-  it('reaches the light component groups by dynamic import only, and precaches them with the shell', () => {
+  it('leaves every classic component group to the per-app installer', () => {
     const precached = precachedUrls();
     const dynamicTargets = new Set(Object.values(manifest).flatMap((chunk) => chunk.dynamicImports ?? []));
     const staticTargets = new Set(Object.values(manifest).flatMap((chunk) => chunk.imports ?? []));
@@ -274,12 +277,10 @@ describe.skipIf(!built)('softn-web build graph', () => {
       expect(dynamicTargets.has(key!), `${group} is not dynamically imported`).toBe(true);
       expect(staticTargets.has(key!), `${group} is statically imported`).toBe(false);
       expect(closure.has(key!), `${group} is in the entry closure`).toBe(false);
-      for (const [, part] of staticClosure(manifest, [key!])) {
-        expect(precached.has(part.file), `${part.file} (${group}) is not precached`).toBe(true);
-      }
+      expect(precached.has(chunk.file), `${chunk.file} (${group}) is precached`).toBe(false);
       groups.push(`${chunk.file} (${sizeOf(chunk.file)} B)`);
     }
-    process.stdout.write(`[build-graph] component group chunks (on demand, precached):\n  ${groups.join('\n  ')}\n`);
+    process.stdout.write(`[build-graph] classic component chunks (installed per app):\n  ${groups.join('\n  ')}\n`);
   });
 
   it("keeps every Three addon out of the scene3d chunk's static closure and reaches it by dynamic import", () => {
@@ -340,6 +341,37 @@ describe.skipIf(!built)('softn-web build graph', () => {
     return precached;
   }
 
+  it('caches the container’s inline session on use', () => {
+    const matches = Object.entries(manifest).filter(([key]) => /\/container\/dist\/worker-runtime-[^/]+\.js$/.test(key));
+    expect(matches).toHaveLength(1);
+    const [, chunk] = matches[0];
+    expect(chunk.isDynamicEntry).toBe(true);
+    expect(precachedUrls().has(chunk.file)).toBe(false);
+    expect(keptOnceFetched(chunk.file)).toBe('CacheFirst');
+    expect(keptOnceFetched(`shared/${chunk.file}`)).toBe('CacheFirst');
+  });
+
+  it('keeps the full WASM engine out of shell installs and caches it on demand in either deployment', () => {
+    const engines = readdirSync(resolve(dist, 'assets')).filter((file) => /^zipp_wasm_bg-[\w-]+\.wasm$/.test(file));
+    expect(engines).toHaveLength(1);
+    const file = `assets/${engines[0]}`;
+    expect(precachedUrls().has(file)).toBe(false);
+    expect(keptOnceFetched(file)).toBe('CacheFirst');
+    expect(keptOnceFetched(`shared/${file}`)).toBe('CacheFirst');
+  });
+
+  it('keeps shared-site classic worker entries with classic scripts and the archive worker with the shell', () => {
+    const config = JSON.parse(/^self\.__SOFTN_SW__=(.+);$/m.exec(readFileSync(resolve(dist, 'sw.js'), 'utf8'))![1]);
+    if (!config.fullEngine.startsWith('/')) return; // A standalone build already has its workers in scope.
+    const precached = precachedUrls();
+    for (const name of ['model', 'sandbox', 'script']) {
+      const file = `workers/${name}-worker.js`;
+      expect(config.classicAssets.script).toContain(file);
+      expect(precached.has(file)).toBe(false);
+    }
+    expect([...precached]).toContainEqual(expect.stringMatching(/^workers\/zipWorker-[\w-]+\.js$/));
+  });
+
   it('precaches the entry closure and not the feature chunks', () => {
     const precached = precachedUrls();
 
@@ -369,7 +401,7 @@ describe.skipIf(!built)('softn-web build graph', () => {
     );
   });
 
-  it('leaves the on-demand runtime chunks to the runtime cache and keeps the inflate worker and XDB precached', () => {
+  it('leaves the on-demand runtime chunks to the runtime cache and keeps the inflate worker precached', () => {
     const precached = precachedUrls();
     const assets = readdirSync(resolve(dist, 'assets')).filter((file) => file.endsWith('.js'));
 
@@ -385,15 +417,12 @@ describe.skipIf(!built)('softn-web build graph', () => {
       }
     }
 
-    // What every app does need, on the other hand, is in it: the XDB module
-    // (its name starts with `xdb-` and is none of the sync runtimes) and the
-    // inflate worker, which the shell references from app source.
-    const xdb = assets.filter(
-      (file) => /^xdb-/.test(file) && !ON_DEMAND_RUNTIME.some((name) => file.startsWith(`${name}-`))
-    );
-    expect(xdb.length, 'no xdb chunk was emitted').toBeGreaterThan(0);
-    for (const file of xdb) expect(precached.has(`assets/${file}`), `assets/${file} is not precached`).toBe(true);
-
+    // XDB's lazy loader and the classic document shell are installed per app.
+    for (const name of ['xdb', 'shell-source']) {
+      const files = assets.filter((file) => file.startsWith(name + '-') && !ON_DEMAND_RUNTIME.some((prefix) => file.startsWith(prefix + '-')));
+      expect(files.length).toBeGreaterThan(0);
+      for (const file of files) expect(precached.has('assets/' + file)).toBe(false);
+    }
     const worker = assets.find((file) => /^zipWorker-[^/]+\.js$/.test(file));
     expect(worker, 'no zipWorker chunk was emitted').toBeDefined();
     expect(precached.has(`assets/${worker}`), `assets/${worker} is not precached`).toBe(true);

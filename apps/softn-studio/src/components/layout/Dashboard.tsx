@@ -4,6 +4,7 @@ import { RenameField } from '../common/ProjectName';
 import { EXAMPLES, type ExampleProject } from '../../examples';
 import { ProviderSetup } from '../ai/ProviderSetup';
 import { AIStatusPill, useAIReadiness } from '../ai/AIStatusPill';
+import { COMPONENT_STARTERS, WEB_STARTERS, type WebStarter, type WebStarterId } from '@softn/editor-shared/webStarters';
 
 /** A recent-list entry with what the dashboard knows about its copy. */
 export interface RecentEntry {
@@ -39,6 +40,7 @@ interface DashboardProps {
   onRenameProject?: (id: string, name: string) => Promise<DashboardOutcome>;
   /** Open one of the bundled examples as a new project. */
   onOpenExample?: (example: ExampleProject) => void;
+  onCreateStarter?: (starter: WebStarter) => Promise<void>;
   recentProjects?: RecentEntry[];
   /** This browser's storage did not answer in time: said above the list, with a way to ask again. */
   storeSilent?: boolean;
@@ -48,8 +50,8 @@ interface DashboardProps {
   /**
    * The AI's part of the page. With `gate`, no provider is connected and
    * the person has not chosen to go without: connecting one is the first
-   * thing on the page, and nothing else can be started until it is done or
-   * `onSkip` is chosen. Without `gate`, a line under the hero says which
+   * thing on the page. Web starters work here too, and `onSkip` opens the
+   * examples and other project actions. Without `gate`, a line under the hero says which
    * provider the AI uses. Absent in a hosted editor, which has its own AI.
    */
   ai?: { gate: boolean; onSkip(): void };
@@ -61,6 +63,11 @@ function exampleLanguage(example: ExampleProject): 'Python' | 'TypeScript' | 'Ja
   if (example.files.some((file) => /\.py$/i.test(file.path) && !/^assets\//i.test(file.path))) return 'Python';
   if (example.files.some((file) => /\.(?:tsx?|mts)$/i.test(file.path) && !/^assets\//i.test(file.path))) return 'TypeScript';
   return 'JavaScript';
+}
+
+function isContainerExample(example: ExampleProject): boolean {
+  const manifest = example.files.find((file) => file.path === 'manifest.json');
+  return Boolean(manifest && /"engine"\s*:\s*2/.test(manifest.content));
 }
 
 function exampleExcerpt(example: ExampleProject): { path: string; lines: string[] } | null {
@@ -161,6 +168,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onExportProject,
   onRenameProject,
   onOpenExample,
+  onCreateStarter,
   recentProjects = [],
   storeSilent = false,
   onRetryStore,
@@ -177,6 +185,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importRequest = useRef(0);
   const [importing, setImporting] = useState(false);
+  const [creatingStarter, setCreatingStarter] = useState<WebStarterId | null>(null);
+  const [starterError, setStarterError] = useState('');
 
   useEffect(() => () => { importRequest.current++; }, []);
 
@@ -263,22 +273,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
   }, [onDeleteProject, recentProjects]);
 
   const gated = !!ai?.gate;
-  // React 18 has no `inert` prop; the attribute takes the locked part out
-  // of the tab order and the accessibility tree in one go.
-  const lockedRef = useRef<HTMLDivElement>(null);
   const homeRef = useRef<HTMLDivElement>(null);
   const startRef = useRef<HTMLButtonElement>(null);
+  const firstExampleRef = useRef<HTMLButtonElement>(null);
+  const exploring = useRef(false);
   const wasGated = useRef(gated);
   useEffect(() => {
-    lockedRef.current?.toggleAttribute('inert', gated);
-    // Leaving the step (connected or skipped) starts the page from its top,
-    // not wherever the setup's last step had scrolled it.
-    if (!gated) homeRef.current?.scrollTo?.({ top: 0 });
-    // The step leaves the page with the button that ended it, and the focus that button
-    // held would fall to the page: it goes to what the step was in the way of.
     const lifted = wasGated.current && !gated;
     wasGated.current = gated;
-    if (lifted && (!document.activeElement || document.activeElement === document.body)) startRef.current?.focus();
+    if (!lifted) return;
+    const next = exploring.current && firstExampleRef.current ? firstExampleRef.current : startRef.current;
+    exploring.current = false;
+    homeRef.current?.scrollTo?.({ top: 0 });
+    if (!document.activeElement || document.activeElement === document.body) next?.focus();
   }, [gated]);
   // pendingFocus, after the render that took the focused control away.
   useEffect(() => {
@@ -295,31 +302,130 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const aiReady = useAIReadiness().state === 'ready';
   const rowNames = useMemo(() => distinctRowNames(recentProjects), [recentProjects]);
 
+  async function openStarter(starter: WebStarter) {
+    if (!onCreateStarter) return;
+    setStarterError('');
+    setCreatingStarter(starter.id);
+    try {
+      await onCreateStarter(starter);
+    } catch (error) {
+      setStarterError(`Could not create ${starter.label} starter. ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setCreatingStarter(null);
+    }
+  }
+
+  const importAction = onImportProject && (
+    <button type="button" className="st-btn" onClick={() => fileInputRef.current?.click()}
+      aria-busy={importing || undefined} data-drag={isDragOver || undefined}
+      onDrop={handleDrop} onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+      onDragLeave={() => setIsDragOver(false)}
+      title="Open a .softn bundle, a .zip archive or a .json project file. You can also drop the file here.">
+      <Icon name="upload" size={16} />
+      {importing ? 'Opening project…' : 'Import a bundle'}
+    </button>
+  );
+  const importFeedback = (
+    <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'}>
+      {notice && <p className="st-notice" data-kind={notice.kind}>{notice.text}</p>}
+    </div>
+  );
+  const fileInput = (
+    <input ref={fileInputRef} type="file" accept=".softn,.zip,.json" hidden
+      onChange={(e) => {
+        const file = e.target.files?.[0];
+        if (file) void handleFile(file);
+        e.target.value = '';
+      }}
+    />
+  );
+
+  const starters = onCreateStarter && (
+    <section className="st-web-starters" aria-label="Web starters">
+      <h2 className="st-section-title">Web starters</h2>
+      <p>Open a working app in Preview and edit its source.</p>
+      <div className="st-web-starter-actions">
+        {WEB_STARTERS.map((starter) => {
+          const component = starter.id === 'vanilla' ? null : COMPONENT_STARTERS[starter.id];
+          return (
+            <div key={starter.id} className="st-starter-choice" data-framework={starter.id}>
+              <button type="button" className="st-btn st-open-starter" aria-label={`Create ${starter.label} starter`}
+                aria-describedby={`st-starter-name-${starter.id}`}
+                disabled={creatingStarter !== null} aria-busy={creatingStarter === starter.id || undefined}
+                onClick={() => void openStarter(starter)}>
+                <span className="st-starter-mark" aria-hidden="true">
+                  {starter.id === 'vanilla' ? 'JS' : starter.id === 'react' ? (
+                    <svg viewBox="-12 -12 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+                      <ellipse rx="11" ry="4.3" /><ellipse rx="11" ry="4.3" transform="rotate(60)" />
+                      <ellipse rx="11" ry="4.3" transform="rotate(120)" /><circle r="1.7" fill="currentColor" stroke="none" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M1 4h5l6 10.4L18 4h5L12 23z"/><path d="M6 4h4l2 3.5L14 4h4l-6 10.4z" opacity=".55"/></svg>
+                  )}
+                </span>
+                <span className="st-starter-name">
+                  <strong>{creatingStarter === starter.id ? 'Creating…' : starter.label}</strong>
+                  <span id={`st-starter-name-${starter.id}`}>{starter.name}</span>
+                </span>
+                <Icon name="chevron-right" size={14} />
+              </button>
+              {component && (
+                <button type="button" className="st-btn st-starter-component" aria-label={`Create ${component.label} starter`}
+                  title={`Open ${starter.name} with editable ${component.sourceFile} source`}
+                  disabled={creatingStarter !== null} aria-busy={creatingStarter === component.id || undefined}
+                  onClick={() => void openStarter(component)}>
+                  {creatingStarter === component.id ? 'Creating…' : `Use ${component.sourceFile}`}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {starterError && <p role="alert" className="st-notice" data-kind="error">{starterError}</p>}
+    </section>
+  );
+
   const onboarding = gated && (
-    <section className="st-onboard" aria-labelledby="studio-onboard-title">
+    <section className="st-onboard" data-starters={onCreateStarter ? true : undefined} aria-labelledby="studio-onboard-title">
       <div className="st-onboard-intro">
-        <span className="st-onboard-eyebrow">Before you start</span>
-        <h1 id="studio-onboard-title" className="st-onboard-title">Connect an AI provider.</h1>
+        <h1 id="studio-onboard-title" className="st-onboard-title">{onCreateStarter ? 'Create your first app' : 'Connect an AI provider.'}</h1>
         <p className="st-onboard-lede">
-          Studio’s AI writes your app, and it needs a model to do it. Run one on this computer for free, or use your own
-          OpenAI or Anthropic key. It takes a minute, and you can change it later in Settings.
+          {onCreateStarter
+            ? 'Pick a starter, open an existing project, or connect a model to build with AI.'
+            : 'Choose the model Studio uses to build and edit your apps. You can change it later in Settings.'}
         </p>
       </div>
       {/* The way in without a key comes before the setup, in the page and in the tab order. It
           came after the card: beside it on a wide screen, but on a phone under the whole form,
           a screen and more down, so a newcomer with no key met a form and no way round it. */}
       <div className="st-onboard-skip">
-        <span>No key yet? The examples open and run without any AI.</span>
-        <button type="button" className="st-btn st-btn-sm" onClick={ai!.onSkip}>
-          Explore examples without AI
-        </button>
+        {starters}
+        <div className="st-onboard-actions">
+          {importAction}
+          <button type="button" className="st-btn" onClick={() => { exploring.current = true; ai!.onSkip(); }}>
+            <span>Explore examples<span className={onCreateStarter ? 'st-visually-hidden' : undefined}> without AI</span></span>
+            <Icon name="chevron-right" size={16} />
+          </button>
+        </div>
+        {importFeedback}
+        {fileInput}
       </div>
       <div className="st-onboard-card">
+        {onCreateStarter && <h2 className="st-section-title st-onboard-provider">Connect an AI provider</h2>}
         <ProviderSetup />
       </div>
     </section>
   );
 
+  if (onboarding) {
+    return (
+      <div className="st-home" ref={homeRef}>
+        <div className="st-home-inner">{onboarding}</div>
+      </div>
+    );
+  }
+
+  const sortedExamples = [...examples].sort((a, b) => Number(isContainerExample(b)) - Number(isContainerExample(a)));
   const examplesSection = onOpenExample && examples.length > 0 && (
     <section aria-labelledby="studio-examples-heading" className="st-home-examples">
       <div className="st-section-head">
@@ -327,8 +433,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <span className="st-section-note">No key needed</span>
       </div>
       <ul className="st-examples">
-        {examples.map((example) => {
+        {sortedExamples.map((example, index) => {
           const language = exampleLanguage(example);
+          const formatLabel = isContainerExample(example) ? 'Web Container' : '.ui';
           const excerpt = exampleExcerpt(example);
           const title = example.name.replace(/\s*\(example\)\s*$/i, '');
           return (
@@ -336,14 +443,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <button
                 type="button"
                 className="st-example"
+                ref={index === 0 ? firstExampleRef : undefined}
                 onClick={() => onOpenExample(example)}
                 aria-label={`Open the ${language} example: ${title}`}
+                aria-describedby={`studio-example-description-${index}`}
               >
                 <span className="st-example-head">
-                  <span className="st-example-title">{title}</span>
-                  <span className="st-example-lang">{language}</span>
+                  <span className="st-example-lang">{formatLabel} · {language}</span>
+                  <Icon name="chevron-right" size={18} />
                 </span>
-                <span className="st-example-desc">{example.description}</span>
+                <span className="st-example-title">{title}</span>
+                <span className="st-example-desc" id={`studio-example-description-${index}`}>{example.description}</span>
                 {excerpt && (
                   <code className="st-code" aria-hidden="true">
                     <span className="st-code-file">{excerpt.path}</span>
@@ -366,21 +476,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
   return (
     <div className="st-home" ref={homeRef}>
       <div className="st-home-inner">
-        {onboarding}
-        {/* Everything else is still on the page, so it is not a wall — but
-            nothing in it can be started until the step above is done or
-            skipped, and it says so rather than failing later. */}
-        <div ref={lockedRef} className={gated ? 'st-home-locked' : undefined}>
         {/* One line for what Studio is for and the two ways to start, then the work. The product
             bar above carries the mark and the theme switch. */}
         <header className="st-home-head">
           <div className="st-home-intro">
-            <h1 id="studio-home-title" className="st-home-title">Describe an app. Studio builds it.</h1>
+            <h1 id="studio-home-title" className="st-home-title">Studio workspace</h1>
             {/* Said to someone who has made nothing here yet; a person with projects has read it. */}
             {recentProjects.length === 0 && (
               <p className="st-home-lede">
-                Say what the app is for. The AI writes its pages, its logic and its data, shows it running as it goes,
-                and exports a <code>.softn</code> bundle you can run or publish.
+                Describe an app to build with AI, import a project or open an example to edit and run.
               </p>
             )}
           </div>
@@ -389,22 +493,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Icon name="sparkles" size={16} />
               Start a new app
             </button>
-            <button
-              type="button"
-              className="st-btn"
-              onClick={() => fileInputRef.current?.click()}
-              aria-busy={importing || undefined}
-              data-drag={isDragOver || undefined}
-              onDrop={handleDrop}
-              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-              onDragLeave={() => setIsDragOver(false)}
-              title="Open a .softn bundle, a .zip archive or a .json project file. You can also drop the file here."
-            >
-              <Icon name="upload" size={16} />
-              {importing ? 'Opening project…' : 'Import a bundle'}
-            </button>
-            <span className="st-home-hint">.softn, .zip or .json. You can also drop the file on Import.</span>
-            {ai && !gated && (
+            {importAction}
+            {onImportProject && <span className="st-home-hint">.softn, .zip or .json. You can also drop the file on Import.</span>}
+            {ai && (
               <div className="st-home-ai">
                 <span>{aiReady ? 'The AI uses' : 'The AI is not connected yet.'}</span>
                 <AIStatusPill />
@@ -412,17 +503,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
             )}
           </div>
 
-          <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'}>
-            {notice && <p className="st-notice" data-kind={notice.kind}>{notice.text}</p>}
-          </div>
+          {importFeedback}
         </header>
+        {starters}
 
         {/* The work: the person's own projects first and at the left, where the eye starts, and
             the examples beside them. The page used to open on a headline that filled the screen,
             with the projects under it, below the fold on a laptop; on a phone they came after
             both examples. */}
-        <div className="st-home-grid">
-          <section className="st-home-recent" aria-labelledby="studio-recent-heading">
+        <div className="st-home-grid" data-empty={recentProjects.length === 0 || undefined}>
+          {(recentProjects.length > 0 || storeSilent) && <section className="st-home-recent" aria-labelledby="studio-recent-heading">
             <div className="st-section-head">
               <h2 id="studio-recent-heading" className="st-section-title">Recent projects</h2>
               {recentProjects.length > 0 && <span className="st-section-note">Kept in this browser</span>}
@@ -447,13 +537,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </button>
               </div>
             )}
-            {recentProjects.length === 0 ? (
-              <div className="st-empty">
-                <strong>Nothing here yet</strong>
-                Apps you start, import or open from an example are saved in this browser and listed here.
-                Export a bundle to keep a copy anywhere else.
-              </div>
-            ) : (
+            {recentProjects.length > 0 && (
               <ul aria-labelledby="studio-recent-heading" className="st-recent-list">
                 {recentProjects.map((project) => {
                   const who = rowNames.get(project.id) ?? project.name;
@@ -607,24 +691,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 })}
               </ul>
             )}
-          </section>
+          </section>}
 
           {examplesSection}
         </div>
 
-        </div>
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".softn,.zip,.json"
-          style={{ display: 'none' }}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) handleFile(file);
-            e.target.value = '';
-          }}
-        />
+        {fileInput}
       </div>
     </div>
   );

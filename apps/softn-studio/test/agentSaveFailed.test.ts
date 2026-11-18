@@ -17,6 +17,8 @@ import { startAgentRun } from '../src/lib/agent/runAgent';
 import { beginNewProjectSession, getSaveStatus, startProjectAutosave, type AutosaveController } from '../src/lib/projectSession';
 import { loadProjectRecord, saveProjectRecord, type SaveResult } from '../src/lib/persistence';
 import { useWorkspaceStore } from '../src/stores/workspaceStore';
+import { useAIStore } from '../src/stores/aiStore';
+import { useVFSStore } from '../src/stores/vfsStore';
 import type { AgentEnvironment } from '../src/lib/agent/appCheck';
 import { ANTHROPIC, assertScriptsPassed, fakeProvider, lastRun, resetAgent, resultsIn, say, seedApp, text } from './helpers/agentHarness';
 
@@ -62,6 +64,71 @@ const READ = { name: 'read_file', input: { path: 'ui/main.ui' } };
 const EDIT = { name: 'edit_file', input: { path: 'ui/main.ui', old_string: '>Tasks<', new_string: '>Today<' } };
 const finish = (summary: string) => ({ name: 'finish', input: { summary } });
 const storedMain = async () => (await loadProjectRecord(useWorkspaceStore.getState().projectId!))?.files.find((f) => f.path === 'ui/main.ui')?.content;
+
+describe('saving the completed conversation', () => {
+  it('reopens both terminal results immediately after a question and an edit', async () => {
+    fakeProvider('anthropic', [
+      { calls: [READ] }, { text: 'The heading is Tasks.' }, { calls: [finish('Done.')] },
+      { calls: [READ, EDIT] }, { calls: [finish('Done.')] },
+    ]);
+    say('What is the heading?');
+    await startAgentRun();
+    say('Change it to Today.');
+    await startAgentRun();
+    const stored = await loadProjectRecord(useWorkspaceStore.getState().projectId!);
+    expect(stored?.session.messages.filter((message) => message.run).map((message) => [message.run?.status, message.content])).toEqual([
+      ['finished', 'The heading is Tasks.'],
+      ['finished', 'Replaced “Tasks” with “Today” in ui/main.ui.'],
+    ]);
+    expect(await storedMain()).toContain('>Today<');
+  });
+
+  it('keeps the run busy until the final commit, and keeps local edits made during that commit', async () => {
+    autosave!.stop();
+    let start!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    autosave = startProjectAutosave({
+      debounceMs: 60_000, maxWaitMs: 60_000,
+      save: async (project, seen, reconcile) => {
+        if (project.session.messages.some((message) => message.run?.status === 'finished')) {
+          start();
+          await gate;
+        }
+        return saveProjectRecord(project, seen, reconcile);
+      },
+    });
+    fakeProvider('anthropic', [{ text: 'The heading is Tasks.' }, { text: 'Done.' }]);
+    say('What is the heading?');
+    const running = startAgentRun();
+    await started;
+    expect(useAIStore.getState().agentState).toBe('building');
+    useVFSStore.getState().createFile('notes.md', 'Keep this later edit.', 'user');
+    release();
+    await running;
+    expect(useAIStore.getState().agentState).toBe('idle');
+    expect(text('notes.md')).toBe('Keep this later edit.');
+    await autosave.flush();
+    const stored = await loadProjectRecord(useWorkspaceStore.getState().projectId!);
+    expect(stored?.session.messages.at(-1)?.run?.summary).toBe('The heading is Tasks.');
+    expect(stored?.files.find((file) => file.path === 'notes.md')?.content).toBe('Keep this later edit.');
+  });
+
+  it('reports a final message that could not be saved even when the edit itself was saved', async () => {
+    autosave!.stop();
+    autosave = startProjectAutosave({
+      save: (project, seen, reconcile) => project.session.messages.some((message) => message.run?.status === 'finished')
+        ? Promise.resolve(FULL) : saveProjectRecord(project, seen, reconcile),
+    });
+    fakeProvider('anthropic', [{ calls: [READ, EDIT] }, { calls: [finish('Done.')] }]);
+    say('Change the heading to Today.');
+    await startAgentRun();
+    expect(lastRun().run.status).toBe('failed');
+    expect(lastRun().run.reason).toContain('could not save the completed conversation');
+    expect(await storedMain()).toContain('>Today<');
+  });
+});
 
 describe('a run whose save the browser refuses', () => {
   it('is told in the result of the write, and its finish does not end the run as finished', async () => {

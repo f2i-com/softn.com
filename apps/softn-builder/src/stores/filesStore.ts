@@ -3,7 +3,7 @@
  */
 
 import { create } from 'zustand';
-import { isUnsafeEntryName } from '@softn/core';
+import { isUnsafeEntryName } from '@softn/core/authoring';
 import { useProjectStore } from './projectStore';
 import type {
   ProjectFileNode,
@@ -32,7 +32,7 @@ import {
   type LogicLanguage,
 } from '../utils/logicFiles';
 import { applyInlineLogicMove, planInlineLogicMove, takenPaths, type InlineLogicMove } from '../utils/inlineLogic';
-import { isPythonLogicPath, parse as parseSoftN, pythonModuleName, type SoftNDocument } from '@softn/core';
+import { isPythonLogicPath, parse as parseSoftN, pythonModuleName, type SoftNDocument } from '@softn/core/authoring';
 import { randomId } from '../utils/ids';
 
 const generateId = (): string => randomId('file_');
@@ -1415,6 +1415,9 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   },
 
   applyCollectionChange: (change) => {
+    // Web apps import softn:db and read collection names from the XDB files.
+    // Classic pages also keep a <data> declaration in their template.
+    if (useProjectStore.getState().projectFormat === 'web') return;
     edit((state) => {
       const entry = entryFileId(state.uiFiles, useProjectStore.getState().source);
       let uiFiles: Map<string, UIFileState> | null = null;

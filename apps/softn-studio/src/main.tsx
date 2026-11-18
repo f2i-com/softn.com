@@ -15,7 +15,7 @@ import './styles/ai-setup.css';
 import App from './App';
 import { AppBoundary } from './components/common/AppBoundary';
 import { PWAPrompt } from './components/common/PWAPrompt';
-import { awaitZippGlue, awaitZippWasmSource, configureZippTorchSource } from '@softn/core';
+import { awaitZippGlue, awaitZippWasmSource, cacheUncontrolledZippEngine, configureZippTorchSource } from '@softn/core/authoring';
 import { hostedEngineSource, hostedGlueSource, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
@@ -25,12 +25,16 @@ import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 // the site's own ZIPP where FormLogic serves one, so Studio runs the ZIPP the
 // site has, which may be newer than the one it was built with.
 if (isHostedEditor()) {
+  document.title = "FormLogic · AI Studio";
   awaitZippWasmSource(hostedEngineSource(zippSource));
   // The site's torch package with its glue: the one built for its engine.
   awaitZippGlue(hostedGlueSource().then(site => {
     if (site?.torch) configureZippTorchSource(site.torch);
     return site ? site.glue : null;
   }));
+} else if (import.meta.env.PROD) {
+  // A project can start its first full preview before the editor's service worker takes control.
+  cacheUncontrolledZippEngine('softn-full-engine');
 }
 
 

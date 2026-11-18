@@ -92,7 +92,8 @@ describe('Preview | Code on a page', () => {
 
   it('switches a .ui file between its running preview and its source without restarting the app, and remembers the choice for the session', async () => {
     useVFSStore.getState().createFile('ui/main.ui', ui);
-    await act(async () => { root.render(<VisualCanvas />); await vi.dynamicImportSettled(); });
+    act(() => root.render(<VisualCanvas />));
+    await act(async () => { await vi.dynamicImportSettled(); });
     expect(container.querySelector('[data-testid="ready-preview"]')).toBeTruthy();
     expect(button('Preview').getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector('.st-live')).toBeTruthy();

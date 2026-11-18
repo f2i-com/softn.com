@@ -11,10 +11,12 @@
  * every step can be undone on its own and the run reverted as a whole.
  */
 
-import { classifyAsset, pythonModuleName } from '@softn/core';
+import { classifyAsset, pythonModuleName } from '@softn/core/authoring';
 import { keptAsBytes } from '../fileKinds';
+import { databaseFiles, designDatabase } from '../designDatabase';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { useVFSStore, type VFSChangeRecord } from '../../stores/vfsStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { checkWrite, type SuppliedFiles } from '../changeset';
 import { appliedMigrationRefusal } from './appliedMigrations';
 import { bundleNameProblem, findAlias, isPrivatePath, resolveProjectPath } from '../paths';
@@ -22,7 +24,7 @@ import { formatCheckReport, type AgentEnvironment, type RunFunctionRequest } fro
 import { lineDiff, type LineDiff } from './diff';
 import { lookupComponents, readDocs } from './knowledge';
 import type { AgentToolCall, CheckReport, PlanItem } from './types';
-import { isLogicPath, isPagePath } from '../sourceKinds';
+import { isLogicPath, isPagePath, projectContainerMode } from '../sourceKinds';
 import { SEARCH_DEADLINE_MS, searchProject } from './searchLines';
 
 export interface ToolContext {
@@ -46,6 +48,7 @@ export interface ToolOutcome {
   subject: string;
   changed?: boolean;
   transactionId?: string;
+  changeSummary?: string;
   diff?: LineDiff[];
   check?: CheckReport;
   control?: ToolControl;
@@ -177,7 +180,7 @@ function commit(records: VFSChangeRecord[], ctx: ToolContext, seenAfter: Array<{
   return id;
 }
 
-/** The closest lines of `content` to the first line of a failed `old_string`, numbered. */
+/** Source around the closest line, preserving the indentation an edit must match. */
 function nearestLines(content: string, oldString: string): string {
   const lines = content.split('\n');
   const needle = oldString.split('\n').find((l) => l.trim().length > 0)?.trim() ?? '';
@@ -206,7 +209,7 @@ function nearestLines(content: string, oldString: string): string {
   if (best < 0 || bestScore < 0.3) return '';
   const from = Math.max(0, best - 2);
   const to = Math.min(lines.length, best + 3);
-  return lines.slice(from, to).map((l, i) => `${String(from + i + 1).padStart(4)}| ${l}`).join('\n');
+  return `Lines ${from + 1}–${to}:\n${lines.slice(from, to).join('\n')}`;
 }
 
 /**
@@ -223,16 +226,31 @@ function inLineEndingsOf(content: string, text: string): string {
   return content.includes('\r\n') ? text.replace(/\r?\n/g, '\r\n') : text.replace(/\r\n/g, '\n');
 }
 
-function numbered(lines: string[], start: number): string {
-  return lines.map((l, i) => `${String(start + i).padStart(4)}| ${l}`).join('\n');
-}
-
 export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promise<ToolOutcome> {
   const input = call.input;
   if (call.parseError) return fail(call.name, call.parseError);
   const files = useVFSStore.getState().files;
 
   switch (call.name) {
+    case 'design_database': {
+      const subject = str(input, 'name') ?? 'database';
+      try {
+        const plan = designDatabase(databaseFiles(files), input.target, input.name, input.fields);
+        const records: VFSChangeRecord[] = [];
+        const diff: LineDiff[] = [];
+        for (const [path, content] of Object.entries(plan.changes)) {
+          const target = resolveWritable(path, files, true);
+          if (!target.ok) return fail(subject, target.reason);
+          const current = files.get(path);
+          const refusal = checkWrite(path, ctx.seen, current, 'replace');
+          if (refusal) return fail(subject, describeSeenRefusal(path, refusal, 'design_database'));
+          records.push({ op: current ? 'update' : 'create', path, content });
+          diff.push(lineDiff(path, typeof current?.content === 'string' ? current.content : null, content));
+        }
+        const transactionId = commit(records, ctx, records.map(r => ({ path: r.path, whole: false })));
+        return { isError: false, subject, changed: true, diff, transactionId, content: `Created ${subject} in ${plan.path} and updated manifest.json. Read the new source to edit it.` };
+      } catch (problem) { return fail(subject, (problem as Error).message); }
+    }
     case 'list_files': {
       const prefix = fromRoot(str(input, 'prefix') ?? '');
       return { content: describeTree(files, prefix), isError: false, subject: prefix || 'project' };
@@ -255,7 +273,9 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       end = Math.min(end, total, start + MAX_READ_LINES - 1);
       start = Math.min(start, end);
       let slice = lines.slice(start - 1, end);
-      let text = numbered(slice, start);
+      // Keep the range in the header. A numbered gutter adds characters that
+      // local models can copy into old_string, especially leading whitespace.
+      let text = slice.join('\n');
       /** The length of a first line too long to show whole, when it was cut. */
       let cutLineLength: number | null = null;
       if (text.length > MAX_READ_CHARS) {
@@ -273,7 +293,7 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
           slice = slice.slice(0, n);
         }
         end = start + slice.length - 1;
-        text = numbered(slice, start);
+        text = slice.join('\n');
       }
       // A line that was cut was not read whole, so neither was the file.
       const whole = start === 1 && end === total && cutLineLength === null;
@@ -385,12 +405,16 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
         return fail(path, `old_string matches ${count} places in ${path} (lines ${at.join(', ')}). Include more surrounding lines to make it unique, or pass replace_all: true to change every one.`);
       }
       const next = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, () => newString);
+      if (next === content) return { content: `${path} already has exactly this text; nothing changed.`, isError: false, subject: path };
       const transactionId = commit([{ op: 'update', path, content: next }], ctx, [{ path, whole: false }]);
       const diff = lineDiff(path, content, next);
       return {
         content: `Edited ${path}: replaced ${replaceAll ? `${count} occurrence(s)` : '1 occurrence'} (+${diff.added} −${diff.removed} lines; now ${lineCount(next)} lines).`,
         isError: false,
         subject: path,
+        changeSummary: oldString.trim() && newString.trim() && [oldString, newString].every((value) => value.length <= 80 && !/[\r\n]/.test(value))
+          ? `Replaced “${oldString}” with “${newString}” in ${path}.`
+          : undefined,
         changed: true,
         transactionId,
         diff: [diff],
@@ -466,6 +490,12 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
     }
 
     case 'run_app_function': {
+      if (projectContainerMode(files, useWorkspaceStore.getState().brief) === 'web') {
+        return fail(
+          'run_app_function',
+          'This project is a SoftN Web App Container (HTML + DOM), not a legacy .ui template app. Use check_app and inspect_preview to verify container execution and rendered UI.',
+        );
+      }
       const name = str(input, 'name');
       if (!name) return fail('function', 'name is required: the function to call.');
       const args = Array.isArray(input.args) ? input.args : [];
@@ -477,6 +507,12 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
     }
 
     case 'lookup_components': {
+      if (projectContainerMode(files, useWorkspaceStore.getState().brief) === 'web') {
+        return fail(
+          'lookup_components',
+          'This project is a SoftN Web App Container (100% standard HTML5, CSS, and DOM / hosted preact + htm), so legacy SoftN .ui components (<App>, <Stack>, etc.) are not used.',
+        );
+      }
       const names = Array.isArray(input.names) ? input.names.filter((n): n is string => typeof n === 'string') : typeof input.names === 'string' ? [input.names] : [];
       if (names.length === 0) return fail('components', 'names is required: a list of component names, e.g. ["Button", "Table"].');
       const result = await lookupComponents(names);
@@ -516,6 +552,6 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
     }
 
     default:
-      return fail(call.name, `There is no tool called ${call.name}. The tools are: list_files, read_file, search_files, write_file, edit_file, delete_file, rename_file, check_app, inspect_preview, run_app_function, lookup_components, read_docs, update_plan, ask_user, finish.`);
+      return fail(call.name, `There is no tool called ${call.name}. The tools are: list_files, read_file, search_files, design_database, write_file, edit_file, delete_file, rename_file, check_app, inspect_preview, run_app_function, lookup_components, read_docs, update_plan, ask_user, finish.`);
   }
 }

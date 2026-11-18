@@ -3,6 +3,7 @@ import type { Capability } from '@softn/bundle-format/capabilities';
 import { mountSoftNContainer, type ContainerPermissions, type SoftNContainerHandle } from '@softn/container';
 import type { PermissionConfig } from '@softn/core';
 import { hostedContainerOptions } from '@softn/runtime-shell/containerHost';
+import { webPreviewEntries } from '@softn/editor-shared/prepareWebSource';
 
 // Which bytes a file's are, by the array that holds them: an image replaced by another of
 // the same size is another array. (Keyed by its length alone, the preview kept the old one.)
@@ -55,30 +56,32 @@ export function ContainerPreviewRuntime({
     if (!el) return;
     let cancelled = false;
 
-    mountSoftNContainer(el, {
-      source: files,
-      appId: `builder-preview-${projectId}`,
-      // The build's own folder and core's engine for the Python tiers.
-      ...hostedContainerOptions(),
-      theme: themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto',
-      persistStorage: false,
-      // The Builder asks; what was allowed in this preview is in place before the app's
-      // first script runs.
-      permissionMode: 'deny',
-      initialGrantedCapabilities: grantedRef.current as Capability[],
-      permissionsOverride: (declaredPermissions ?? undefined) as unknown as ContainerPermissions | undefined,
-      onError: (err: Error) => {
-        if (!cancelled) onErrorRef.current?.(err);
-      },
-    })
-      .then((handle) => {
-        if (cancelled) {
-          handle.dispose();
-          return;
-        }
-        handleRef.current = handle;
-        handle.setGrantedCapabilities(grantedRef.current as Capability[]);
-      })
+    void (async () => {
+      const source = await webPreviewEntries(files);
+      if (cancelled) return;
+      const handle = await mountSoftNContainer(el, {
+        source,
+        appId: `builder-preview-${projectId}`,
+        // The build's own folder and core's engine for the Python tiers.
+        ...hostedContainerOptions(),
+        theme: themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto',
+        persistStorage: false,
+        // The Builder asks; what was allowed in this preview is in place before the app's
+        // first script runs.
+        permissionMode: 'deny',
+        initialGrantedCapabilities: grantedRef.current as Capability[],
+        permissionsOverride: (declaredPermissions ?? undefined) as unknown as ContainerPermissions | undefined,
+        onError: (err: Error) => {
+          if (!cancelled) onErrorRef.current?.(err);
+        },
+      });
+      if (cancelled) {
+        handle.dispose();
+        return;
+      }
+      handleRef.current = handle;
+      handle.setGrantedCapabilities(grantedRef.current as Capability[]);
+    })()
       .catch((err: unknown) => {
         if (!cancelled) {
           onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));

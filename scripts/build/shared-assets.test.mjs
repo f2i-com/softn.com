@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SHARED_ASSET, collectSharedAssets, sharedAssetsBase, sharedPrecacheUrl, sharedRenderBuiltUrl } from './shared-assets.mjs';
+import { SHARED_ASSET, collectSharedAssets, sharedAssetsBase, sharedPrecacheUrl, sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from './shared-assets.mjs';
 
 const BASE = '/shared/assets/';
 
@@ -172,4 +172,14 @@ test('a build that still names its own assets/ stops the build: its page, its se
   write(path.join(fine, 'index.html'), '<link rel="stylesheet" href="/shared/assets/index-CDGy2PAY.css"><script type="module" src="/shared/assets/index-SITE0000.js"></script>');
   write(path.join(fine, 'assets', 'index-SITE0000.js'), 'site');
   assert.deepEqual(collectSharedAssets(fine, [''], BASE).names, ['index-SITE0000.js']);
+});
+
+test('woff2OnlyFontsPlugin strips legacy .woff fallbacks from @fontsource stylesheets and leaves other CSS untouched', () => {
+  const plugin = woff2OnlyFontsPlugin();
+  const fontCss =
+    "@font-face {\n  src: url(./files/ibm-plex-sans-latin-400-normal.woff2) format('woff2'), url(./files/ibm-plex-sans-latin-400-normal.woff) format('woff');\n}\n";
+  const out = plugin.transform(fontCss, '/repo/node_modules/@fontsource/ibm-plex-sans/400.css?used');
+  assert.ok(out);
+  assert.equal(out.code, "@font-face {\n  src: url(./files/ibm-plex-sans-latin-400-normal.woff2) format('woff2');\n}\n");
+  assert.equal(plugin.transform(fontCss, '/repo/apps/softn-site/src/index.css'), null);
 });

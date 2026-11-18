@@ -37,6 +37,9 @@ vi.mock('./PreviewRuntime', async () => {
   return { PreviewRuntime, previewRecordsFor: () => ({}) };
 });
 vi.mock('@softn/components/theme', () => ({ ThemeProvider: ({ children }: { children: React.ReactNode }) => children }));
+vi.mock('./ContainerPreviewRuntime', () => ({
+  ContainerPreviewRuntime: ({ files }: { files: Record<string, string> }) => files[JSON.parse(files['manifest.json']).main],
+}));
 
 declare global {
   // eslint-disable-next-line no-var
@@ -74,9 +77,37 @@ async function open(): Promise<void> {
   });
   // The renderer is loaded when Preview opens.
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.dynamicImportSettled();
   });
 }
+
+it('fits the workspace until a device is chosen and keeps the same running app', async () => {
+  app.throws = false;
+  await open();
+  const frame = host.querySelector('iframe')!;
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[aria-label="Preview device"] button')];
+  const fit = buttons.find(button => button.textContent === 'Fit')!;
+  expect(fit.getAttribute('aria-pressed')).toBe('true');
+  expect(frame.style.width).toBe('100%');
+  act(() => buttons.find(button => button.textContent === 'Phone')!.click());
+  expect(frame.style.width).toBe('390px');
+  expect(frame.style.height).toBe('844px');
+  act(() => fit.click());
+  expect(frame.style.transform).toBe('');
+  expect(host.querySelector('iframe')).toBe(frame);
+  expect(app.starts).toBe(1);
+});
+
+it('runs the declared HTML entry when the same project contains an empty index.html', async () => {
+  const base = useFilesStore.getState().uiFiles.get('main_ui')!;
+  useFilesStore.setState({ uiFiles: new Map([
+    ['index', { ...base, id: 'index', path: 'index.html', originalSource: '' }],
+    ['entry', { ...base, id: 'entry', path: 'pages/home.html', originalSource: 'The home page' }],
+  ]) });
+  useProjectStore.setState({ projectFormat: 'web', source: { ...useProjectStore.getState().source, mainFileId: 'entry' } });
+  await open();
+  expect(host.querySelector('iframe')?.contentDocument?.body.textContent?.trim()).toBe('The home page');
+});
 
 describe('an app whose logic throws as it starts', () => {
   it('is said to have stopped, and runs again from Restart once it can', async () => {

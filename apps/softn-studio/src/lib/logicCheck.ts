@@ -14,13 +14,16 @@
  * placed in its file, at its line.
  */
 
+import { compiledSourcePath } from '@softn/bundle-format/source-modules';
+import { webPreviewEntries } from '@softn/editor-shared/prepareWebSource';
+import { containerSource } from './containerSource';
 import {
   createEphemeralXDBScope,
   createMockNavModule,
   createMockXDBModule,
   createScriptRuntime,
   parse,
-} from '@softn/core';
+} from '@softn/core/authoring';
 import type { ValidationError, VFSFile } from '../types/studio';
 import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } from './previewProject';
 import { isPrivatePath } from './paths';
@@ -356,11 +359,24 @@ async function checkLogic(files: Map<string, VFSFile>): Promise<ValidationError[
   if (projectContainerMode(files) === 'web') {
     const problems: ValidationError[] = [];
     const { transformEsModule } = await import('@softn/container/esm-linker');
+    const componentPaths = [...files.keys()].filter((path) => !isPrivatePath(path) && compiledSourcePath(path));
+    let prepared: Record<string, string | Uint8Array> = {};
+    if (componentPaths.length) {
+      try {
+        prepared = await webPreviewEntries(containerSource(files));
+      } catch (error) {
+        const detail = message(error);
+        const path = componentPaths.find((name) => detail.startsWith(name + ':')) ?? componentPaths[0];
+        return [{ file: path, level: 'error', type: LOGIC_SYNTAX, message: detail }];
+      }
+    }
     for (const [path, file] of files) {
       if (isPrivatePath(path) || /^assets\//i.test(path) || typeof file.content !== 'string') continue;
-      if (/\.(?:m?js|tsx?|mts|jsx)$/i.test(path)) {
+      if (/\.(?:m?js|tsx?|mts|jsx|vue)$/i.test(path)) {
         try {
-          transformEsModule(file.content, path);
+          const compiledPath = compiledSourcePath(path);
+          const script = compiledPath ? prepared[compiledPath] : file.content;
+          if (typeof script === 'string') transformEsModule(script, path);
         } catch (err) {
           problems.push({
             file: path,

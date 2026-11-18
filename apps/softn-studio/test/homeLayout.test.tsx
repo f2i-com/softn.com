@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 const draw = (recentProjects: RecentEntry[]) => act(() => root.render(
-  <Dashboard onNewProject={() => {}} onOpenExample={() => {}} recentProjects={recentProjects} />,
+  <Dashboard onNewProject={() => {}} onOpenExample={() => {}} onImportProject={async () => ({ ok: true })} recentProjects={recentProjects} />,
 ));
 
 /** Whether `first` comes before `second` in the page. */
@@ -57,15 +57,16 @@ describe('the home page', () => {
 
   it('is one heading and no introduction for a person who has projects', () => {
     draw(entries);
-    expect([...container.querySelectorAll('h1')].map((h) => h.textContent)).toEqual(['Describe an app. Studio builds it.']);
+    expect([...container.querySelectorAll('h1')].map((h) => h.textContent)).toEqual(['Studio workspace']);
     expect(container.querySelector('.st-home-lede')).toBeNull();
     expect(container.textContent).not.toMatch(/How Studio works/);
   });
 
-  it('says what Studio does, in a sentence, to a person who has made nothing yet', () => {
+  it('shows the examples without an empty project list on a first visit', () => {
     draw([]);
-    expect(container.querySelector('.st-home-lede')?.textContent).toMatch(/Say what the app is for\..*\.softn bundle you can run or publish\./s);
-    expect(container.textContent).toContain('Nothing here yet');
+    expect(container.querySelector('.st-home-lede')?.textContent).toContain('open an example');
+    expect(container.querySelector('#studio-recent-heading')).toBeNull();
+    expect(container.querySelector('#studio-examples-heading')).not.toBeNull();
   });
 
   it('still says which files Import takes where its line of text is not drawn', () => {

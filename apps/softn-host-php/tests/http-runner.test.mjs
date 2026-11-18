@@ -116,6 +116,37 @@ function deployment(t,{appId='http-runner',ownNode=false,withNode=!softnRunner,c
   return {root,backend,ask,asking};
 }
 
+test('a browser can save a record on the HTTPS site and read it on a fresh PHP request',t=>{
+  const {backend,ask}=deployment(t);
+  const app=join(backend,'app');
+  const manifest=JSON.parse(readFileSync(join(app,'manifest.json'),'utf8'));
+  const migration='server/migrations/001.sql';
+  mkdirSync(join(app,'server/migrations'));
+  writeFileSync(join(app,migration),'CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL);');
+  manifest.server.database={kind:'private-sqlite',migrations:[migration]};
+  manifest.server.routes=[
+    {method:'POST',path:'/api/notes',handler:'save',transaction:'write'},
+    {method:'GET',path:'/api/notes',handler:'notes',transaction:'read'},
+  ];
+  writeFileSync(join(app,'manifest.json'),JSON.stringify(manifest));
+  writeFileSync(join(app,'server/main.logic'),`
+    function save(req) {
+      softn.sql.execute("INSERT INTO notes(title) VALUES (?)",[req.body.title]);
+      return {status:201,body:{saved:true}};
+    }
+    function notes(req) {
+      return {status:200,body:softn.sql.query("SELECT title FROM notes ORDER BY id",[])};
+    }`);
+  // Browsers serialize the origin without the default port; some frontends forward it in Host.
+  const server={HTTP_HOST:'site.example:443',HTTPS:'on',HTTP_ORIGIN:'https://site.example'};
+  const saved=ask('POST','/api/notes',{server,body:JSON.stringify({title:'Trail notes'})});
+  assert.equal(saved.status,201,saved.text+saved.log);
+  assert.equal(saved.headers['access-control-allow-origin'],'https://site.example');
+  const listed=ask('GET','/api/notes',{server});
+  assert.equal(listed.status,200,listed.text+listed.log);
+  assert.deepEqual(JSON.parse(listed.text),[{title:'Trail notes'}]);
+});
+
 test('a body of numbers reaches the handler as the text the client sent',t=>{
   const d=deployment(t);
   const ping=d.ask('GET','/api/ping');
@@ -335,14 +366,17 @@ test('a client past its limit is told 429 with Retry-After, and then by PHP befo
   // markLimited, worker.rs mark_limited) at the path http.php looks at
   // before it starts one (request.php softn_rate_marker): both runners must
   // write it there, or every request past the limit costs a process.
-  const d=deployment(t,{config:{server:{requestsPerMinute:2}}});
+  const origin='https://app.example';
+  const d=deployment(t,{config:{server:{requestsPerMinute:2,allowedOrigins:[origin]}}});
   freshMinute();
   assert.equal(d.ask('GET','/api/ping').status,200);
   assert.equal(d.ask('GET','/api/ping').status,200);
-  const limited=d.ask('GET','/api/ping');
+  const limited=d.ask('GET','/api/ping',{server:{HTTP_ORIGIN:origin}});
   assert.equal(limited.status,429,limited.text+limited.log);
   assert.deepEqual(JSON.parse(limited.text),{error:'Too many requests.',code:'rate_limited'});
   assert.ok(Number(limited.headers['retry-after'])>=1,JSON.stringify(limited.headers));
+  assert.equal(limited.headers['access-control-allow-origin'],origin);
+  assert.match(limited.headers['access-control-expose-headers'],/\bRetry-After\b/);
   // With no runner left to start, the next is still answered 429: by PHP, from the note.
   renameSync(join(d.backend,softnRunner?RUNNER_FILE:'bin/node'),join(d.backend,'bin/gone'));
   const again=d.ask('GET','/api/ping');

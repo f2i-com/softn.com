@@ -9,7 +9,7 @@ import { exportAsBundle } from '../src/lib/exportBundle';
 import { useVFSStore, useWorkspaceStore } from '../src/stores';
 
 vi.mock('../src/lib/handoff', async (original) => ({ ...await original<typeof import('../src/lib/handoff')>(), prepareHandoff: vi.fn() }));
-vi.mock('../src/lib/exportBundle', () => ({ exportAsBundle: vi.fn() }));
+vi.mock('../src/lib/exportBundle', async (original) => ({ ...await original<typeof import('../src/lib/exportBundle')>(), exportAsBundle: vi.fn() }));
 
 function deferred() {
   let resolve!: (outcome: HandoffOutcome) => void;
@@ -103,12 +103,12 @@ describe('project action ownership and feedback', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it('reports an export error and clears it after a successful retry', () => {
+  it('reports an export error and clears it after a successful retry', async () => {
     vi.mocked(exportAsBundle).mockImplementationOnce(() => { throw new Error('The archive is invalid.'); });
     mount();
-    act(() => actions.exportBundle());
+    await act(async () => actions.exportBundle());
     expect(actions.error).toContain('Could not export the bundle: The archive is invalid.');
-    act(() => actions.exportBundle());
+    await act(async () => actions.exportBundle());
     expect(actions.error).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import { Arrow } from '../components/glyphs';
 import { CategoriesNotice, CategoryChips } from '../components/directory/Controls';
 import { LearnDocs } from '../components/LearnDocs';
 import { StartWays } from '../components/home/StartWays';
+import { OfflineExamples } from '../components/home/OfflineExamples';
 import { HowItWorks } from '../components/home/HowItWorks';
 import { WhyDifferent } from '../components/home/WhyDifferent';
 import { ForDevelopers } from '../components/home/ForDevelopers';
@@ -97,13 +98,11 @@ export function HomePage({
         <div className="wrap hero-inner">
           <div className="hero-apps-head">
             <div className="hero-copy">
-              <p className="eyebrow rise">Made with SoftN</p>
               <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
-                Apps you can play, open and make your own.
+                Apps you can play, open and <em>make your own.</em>
               </h1>
               <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-                Every app here runs in your browser, with nothing to install. Play one, look inside it and remix it, or
-                make your own with a visual builder, code or AI.
+                Run an app in your browser, or start one with vanilla JavaScript, React or Vue. Open its source in Studio or Builder to make it yours.
               </p>
             </div>
             <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
@@ -122,7 +121,7 @@ export function HomePage({
           </div>
           {(featured === null || featured.length >= 3) && (
             <div className="hero-shelf rise" style={{ animationDelay: '180ms' }}>
-              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
+              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} />}
               {featuredSeenAt !== null && (
                 <p className="hero-shelf-note muted" role="status">
                   The directory is not answering right now. This shelf is as it was on{' '}
@@ -131,13 +130,10 @@ export function HomePage({
               )}
             </div>
           )}
-          <ul className="hero-facts" aria-label="Before you start">
-            <li>No account needed to play</li>
-            <li>Runs in your browser</li>
-            <li>Every app’s source is yours to open</li>
-          </ul>
         </div>
       </header>
+
+      <OfflineExamples />
 
       <section className="band band-featured" id="directory">
         <div className="wrap">

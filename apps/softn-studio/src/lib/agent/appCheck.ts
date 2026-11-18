@@ -11,19 +11,18 @@
  * never touches the person's preview state.
  */
 
+import { webPreviewEntries } from '@softn/editor-shared/prepareWebSource';
+import { containerSource } from '../containerSource';
 import { createElement } from 'react';
 import {
   builtinHelpers,
-  collectAllComponentTags,
   createEphemeralXDBScope,
   createScriptRuntime,
-  getDefaultRegistry,
   parse,
   parseXDBFile,
   resolveBundlePath,
-  SoftNWithXDB,
   type PermissionConfig,
-} from '@softn/core';
+} from '@softn/core/authoring';
 import { resolveProjectRelativePath } from '../projectImport';
 import type { Blueprint, VFSFile } from '../../types/studio';
 import { validateProject } from '../validator';
@@ -33,6 +32,7 @@ import { buildPreviewXDBState, composePreviewProject, stripTemplateComments } fr
 import { getBundleEntryPath } from '../studioProject';
 import { isPrivatePath, normalizeProjectPath } from '../paths';
 import { projectContainerMode } from '../sourceKinds';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { checkTemplateNames, type LogicNames, type TemplateFile } from './templateNames';
 import type { CheckReport } from './types';
 import { backendSqlProblems, migrationSqlProblems } from './sqlLint';
@@ -138,7 +138,11 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   const composed = composePreviewProject(files, page);
   if (!composed.ok) return { composeError: composed.error };
   const { composition } = composed;
-  const { registerRuntimeComponents } = await import('@softn/components/lazy');
+  const [{ registerRuntimeComponents }, { ClassicPreviewRenderer }, { getDefaultRegistry, collectAllComponentTags }] = await Promise.all([
+    import('@softn/components/lazy'),
+    import('@softn/runtime-shell/ClassicPreviewRenderer'),
+    import('@softn/core/renderer'),
+  ]);
   registerRuntimeComponents();
   // Every component the page names, on every branch, loaded before it is drawn: the check
   // reads what the page shows, and a component still loading would show nothing.
@@ -204,7 +208,7 @@ async function renderHeadless(files: Map<string, VFSFile>, page: string): Promis
   let loaded = false;
   try {
     root.render(
-      createElement(SoftNWithXDB, {
+      createElement(ClassicPreviewRenderer, {
         source: stripTemplateComments(composition.source),
         importResolver: composition.importResolver,
         logicBasePath: composition.logicBasePath,
@@ -639,10 +643,6 @@ async function renderV2ContainerHeadless(
 ): Promise<{ errors: string[]; warnings: string[]; text: string; snapshot: string }> {
   const errors: string[] = [];
   const warnings: string[] = [];
-  const vfsRecord: Record<string, string | Uint8Array> = {};
-  for (const [p, f] of files) {
-    if (!isPrivatePath(p)) vfsRecord[p] = f.content;
-  }
   const host = document.createElement('div');
   host.style.cssText = 'position:fixed;left:-99999px;top:0;width:1024px;height:768px;pointer-events:none;';
   document.body.appendChild(host);
@@ -650,7 +650,7 @@ async function renderV2ContainerHeadless(
     const { mountSoftNContainer } = await import('@softn/container');
     const isNode = typeof process !== 'undefined' && typeof (process as { versions?: { node?: string } }).versions?.node === 'string';
     const handle = await mountSoftNContainer(host, {
-      source: vfsRecord,
+      source: await webPreviewEntries(containerSource(files)),
       // In a browser, the build's own folder and core's engine for the Python tiers; under Node
       // (the agent's tests) the container finds its package's files itself.
       ...(isNode ? {} : hostedContainerOptions()),
@@ -696,7 +696,7 @@ async function renderV2ContainerHeadless(
 /** The checks themselves: validator and composer everywhere, the render wherever there is a document. */
 const checks: AgentEnvironment = {
   async checkApp(files, { page, blueprint }) {
-    if (projectContainerMode(files) === 'web') {
+    if (projectContainerMode(files, useWorkspaceStore.getState().brief) === 'web') {
       const errors: string[] = [];
       const warnings: string[] = [];
       for (const problem of validateProject(files, blueprint)) {
@@ -788,7 +788,7 @@ const checks: AgentEnvironment = {
     const target = pageToCheck(files, page);
     if (!target) return { ok: false, text: page ? `${page} is not a file in the project.` : 'There is no page to render.' };
     if (typeof document === 'undefined') return { ok: false, text: 'inspect_preview needs a browser document, and there is none here. Use check_app.' };
-    if (projectContainerMode(files) === 'web') {
+    if (projectContainerMode(files, useWorkspaceStore.getState().brief) === 'web') {
       const outcome = await renderV2ContainerHeadless(files, target);
       const errors = outcome.errors.length > 0 ? `\n\nErrors while rendering:\n${outcome.errors.map((e) => `- ${e}`).join('\n')}` : '';
       return { ok: true, text: `${target} renders:\n${outcome.snapshot || outcome.text || '(nothing visible)'}${errors}` };
