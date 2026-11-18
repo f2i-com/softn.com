@@ -12,6 +12,15 @@
 packages/@softn/core/demo-bundle/**/*.json text eol=lf
 packages/@softn/core/demo-bundle/**/*.svg  text eol=lf
 
+# The editors embed these files as starter source and export their original bytes.
+packages/@softn/editor-shared/src/starters/*.js  text eol=lf
+packages/@softn/editor-shared/src/starters/*.jsx text eol=lf
+packages/@softn/editor-shared/src/starters/*.vue text eol=lf
+packages/@softn/editor-shared/src/starters/*.css text eol=lf
+
+# The offline example archives include these icons byte for byte.
+examples/offline-web-apps/*/icon.svg text eol=lf
+
 # The docs build writes this tracked manifest with LF, including on Windows.
 docs/generated/landing.json text eol=lf
 
