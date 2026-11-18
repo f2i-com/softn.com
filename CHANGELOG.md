@@ -6,6 +6,11 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## Unreleased
+
+- Upgrades the browser engines, FormLogic runtime package and backend runners to ZIPP v0.0.36. Vanilla JavaScript, React and Vue starters still use the lite engine. Its published Brotli download is 778,831 bytes. Apps that need the full JavaScript and Python engine load it on demand.
+- ZIPP v0.0.36 improves script loading and fixes a garbage collection issue that could free a closure still in use during native JavaScript execution. [ZIPP release notes](https://github.com/f2i-com/zipp.org/releases/tag/v0.0.36)
+
 ## v0.0.47
 
 - Studio and Builder can create Vanilla JavaScript, React and Vue apps and open them straight in Preview. Both editors keep the original JSX and Vue single-file components in the project. They load the source tools when needed and export runnable modules alongside the source, so a recipient can run the app offline or reopen it for editing.

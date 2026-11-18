@@ -41,7 +41,7 @@ The project is actively developed. The examples, container microkernel, editors,
 | Capability                     | What it gives you                                                                                                                                                                              |
 | :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Web App Containers (v2)**    | Package 100% standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip an existing compiled `dist/` build — into a `.softn` container with zero custom template syntax required.     |
-| **Pay-as-you-go WASM engines** | Vanilla, React and Vue apps can run and install offline with the lite JavaScript engine (~760 KB Brotli). Runtime checks the app’s pages when preparing it offline. An app using `Intl` or Python, for example, downloads the full engine on demand. Studio and Builder cache that same binary on first use. |
+| **Pay-as-you-go WASM engines** | Vanilla, React and Vue apps can run and install offline with the lite JavaScript engine (779 kB with Brotli). Runtime checks the app’s pages when preparing it offline. An app using `Intl` or Python, for example, downloads the full engine on demand. Studio and Builder cache that same binary on first use. |
 | **Hosted zero-bundle imports** | Import `'preact'` (`h`, `render`, `Fragment`), `'preact/hooks'` (`useState`, `useEffect`, `useRef`, `useMemo`), `'htm'`, `'marked'` (`parse`), Split-Realm WebGL2 `'three'`, `<softn-chart>`, and `<softn-datagrid>` on demand — evaluated only when imported, so plain JS/Vite apps pay zero shim overhead. |
 | **Optional `.ui` language**    | Runtime loads the classic renderer for a classic app and keeps the component groups its pages need for offline use. |
 | **AI-assisted creation**       | Studio turns a brief into a v2 Web App Container or a v1 `.ui` app using your OpenAI, Anthropic, local (Ollama / LM Studio), or custom provider — verified headlessly inside the ZIPP sandbox. |
@@ -608,9 +608,10 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
-unchanged from that ZIPP release's official `zipp-<version>-javascript-python-base.wasm`:
-JavaScript and experimental Python in one module, 6.58 MB, without torch. Since ZIPP 0.0.26 an
-engine module carries its own JavaScript bindings in a `zipp.glue` section, which the install
+from the official `javascript-python-base` module. This source checkout uses ZIPP v0.0.36.
+Web starters download the lite JavaScript engine (779 kB with Brotli). Apps that need
+the full JavaScript and experimental Python module download 6.58 MB (1.65 MB with Brotli).
+Since ZIPP 0.0.26 each engine module carries its own JavaScript bindings in a `zipp.glue` section, which the install
 writes out as `zipp_wasm.js`. Torch is ZIPP's separate package
 (`zipp-<version>-torch-package.wasm`, 2.16 MB), installed beside the engine with a small loader
 SoftN generates, and loaded by the runtime only for an app whose manifest declares torch, once per
@@ -626,7 +627,9 @@ builds against the same ZIPP today and next year, and the Rust host and the brow
 missing or not that release (`fetch-zipp-release.mjs --ensure`), so a fresh clone needs network
 access the first time, or `ZIPP_RELEASE_DIR=<folder>` holding the release's `SHA256SUMS`,
 `zipp-<version>-javascript-python-base.wasm`, `zipp-<version>-javascript.wasm`,
-`zipp-<version>-torch-package.wasm` and `zipp-<version>-wasm-embed-kit.zip`. To install it by hand:
+`zipp-<version>-torch-package.wasm` and `zipp-<version>-wasm-embed-kit.zip`. An offline build
+of the web container also needs the `javascript-lite` and `javascript-typescript` Wasm
+files from the same release. To install the core engine by hand:
 
 ```bash
 npm run fetch:zipp                      # the release Cargo.toml declares

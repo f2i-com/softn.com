@@ -26,7 +26,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "using-these-docs",
     "title": "How to use these guides",
-    "text": "The guides explain the workflow and the concepts, with small examples. They are not an exhaustive reference for every component property: follow the source links at the end of each page for the underlying files, and check the host you deploy to before relying on an optional capability.\n\nThis edition was checked against the SoftN repository source on 25 September 2026 (SoftN 0.0.15, ZIPP v0.0.21). Pages changed since then show their own date, and the engine they describe is ZIPP v0.0.35, the engine SoftN ships."
+    "text": "The guides explain the workflow and the concepts, with small examples. They are not an exhaustive reference for every component property: follow the source links at the end of each page for the underlying files, and check the host you deploy to before relying on an optional capability.\n\nThis edition was checked against the SoftN repository source on 25 September 2026 (SoftN 0.0.15, ZIPP v0.0.21). Pages changed since then show their own date, and the engine they describe is ZIPP v0.0.36, the engine SoftN ships."
    }
   ]
  },
@@ -75,7 +75,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "local-setup",
     "title": "Run the project locally",
-    "text": "You need Node.js 24.19 or newer (the `engines` field in `package.json`) and npm. Rust is only needed for the native hosts or to rebuild the engine.\n\n```sh\ngit clone https://github.com/f2i-com/softn.com.git\ncd softn.com\nnpm ci\nnpm run build:packages\nnpm run dev\n```\n(Clone, install, build the shared packages and start every app behind one origin.)\n\nThe browser engine, ZIPP v0.0.35, is not committed. The first `npm run build:packages` installs it from the ZIPP release and verifies its checksums, so a fresh clone needs network access once. `npm run fetch:zipp` installs it by hand; `npm run fetch:zipp -- --check` re-verifies an install offline.\n\nOpen the origin the launcher prints, normally http://localhost:1420. If a port is taken, the launcher moves to the next free one and says so."
+    "text": "You need Node.js 24.19 or newer (the `engines` field in `package.json`) and npm. Rust is only needed for the native hosts or to rebuild the engine.\n\n```sh\ngit clone https://github.com/f2i-com/softn.com.git\ncd softn.com\nnpm ci\nnpm run build:packages\nnpm run dev\n```\n(Clone, install, build the shared packages and start every app behind one origin.)\n\nThe browser engine, ZIPP v0.0.36, is not committed. The first `npm run build:packages` installs it from the ZIPP release and verifies its checksums, so a fresh clone needs network access once. `npm run fetch:zipp` installs it by hand; `npm run fetch:zipp -- --check` re-verifies an install offline.\n\nOpen the origin the launcher prints, normally http://localhost:1420. If a port is taken, the launcher moves to the next free one and says so."
    },
    {
     "id": "pick-a-workspace",
@@ -478,7 +478,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "version",
     "title": "The engine SoftN ships",
-    "text": "SoftN v0.0.47 uses ZIPP v0.0.35. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB compressed). Runtime, Studio and Builder download it when an app needs it. Web starters can run on ZIPP Lite, and torch is a separate package for apps that declare it. `npm run fetch:zipp` installs the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, verifies its checksums and records provenance in `SOURCE.json`.\n\nRebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling; ordinary SoftN development never needs it."
+    "text": "This source checkout uses ZIPP v0.0.36. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB with Brotli). Runtime, Studio and Builder download it when an app needs it. Web starters can run on ZIPP Lite (779 kB with Brotli). Apps that declare torch load it as a separate package. `npm run fetch:zipp` installs the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, verifies its checksums and records provenance in `SOURCE.json`.\n\nRebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling; ordinary SoftN development never needs it."
    },
    {
     "id": "server",
@@ -1268,7 +1268,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "engine",
     "title": "The browser engine comes from a ZIPP release",
-    "text": "The engine is not committed. `packages/@softn/core/wasm-zipp` is installed from the ZIPP release that the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names, today v0.0.35, and verified against that release’s SHA256SUMS, so a browser build needs no Rust toolchain. The build, test, typecheck and licence scripts install it when it is missing, and `SOURCE.json` records its provenance and checksums. Offline, point `ZIPP_RELEASE_DIR` at a folder holding the release files.\n\n`packages/@softn/core/src/runtime/vm-adapter.ts` is where the engine is selected. The separate `build:zipp-wasm` workspace script builds an unreleased engine for local experiments only; no release accepts it, and it needs the matching Rust, wasm-bindgen and optimisation tooling.\n\n```sh\nnpm run test -w @softn/core -- test/zipp-languages.test.ts test/zipp-lifecycle.test.ts\n```\n(The checks that run JavaScript and Python against the real engine.)"
+    "text": "The engine is not committed. `packages/@softn/core/wasm-zipp` is installed from the ZIPP release that the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names, today v0.0.36, and verified against that release’s SHA256SUMS, so a browser build needs no Rust toolchain. The build, test, typecheck and licence scripts install it when it is missing, and `SOURCE.json` records its provenance and checksums. Offline, point `ZIPP_RELEASE_DIR` at a folder holding the release files.\n\n`packages/@softn/core/src/runtime/vm-adapter.ts` is where the engine is selected. The separate `build:zipp-wasm` workspace script builds an unreleased engine for local experiments only; no release accepts it, and it needs the matching Rust, wasm-bindgen and optimisation tooling.\n\n```sh\nnpm run test -w @softn/core -- test/zipp-languages.test.ts test/zipp-lifecycle.test.ts\n```\n(The checks that run JavaScript and Python against the real engine.)"
    },
    {
     "id": "tests",

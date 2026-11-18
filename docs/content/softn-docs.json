@@ -60,24 +60,24 @@
     ]
   },
   "review": {
-    "reviewedAt": "2026-11-18",
+    "reviewedAt": "2026-11-19",
     "status": "checked-against-repository-source",
     "repositories": [
       {
         "url": "https://github.com/f2i-com/softn.com",
         "ref": "main",
-        "commit": "f26c99589ef458c2a81798ccfe744fcd16faa1d4"
+        "commit": "7f014dfc8ae90576de07045d47c745f677ccb73b"
       },
       {
         "url": "https://github.com/f2i-com/zipp.org",
-        "ref": "v0.0.35",
-        "commit": "384cb93a1f5ff48e0a650644901cbee3ab7c2082"
+        "ref": "v0.0.36",
+        "commit": "8eac5a9d6da9cd684a94413dca0dad80fec3f89d"
       }
     ],
     "limitations": [
       "The edition of 25 September 2026 was compared in full with the softn.com working tree at commit 9ac48624ef62db7cc38fbb314865e1b64eaaee7c, with uncommitted changes (engineering/VALIDATION_REPORT.md). Builder and Studio were still changing then; their labels describe that working tree.",
-      "The November 2026 review covered web starters, preview, offline engine selection, Studio summaries and hosting in the v0.0.47 working tree based on the SoftN commit above. Each page’s updatedAt records its own review date.",
-      "The ZIPP commit is the source revision recorded in the installed engine’s SOURCE.json for release v0.0.35. ZIPP’s own source was not inspected.",
+      "The v0.0.47 review covered web starters, preview, offline engine selection, Studio summaries and hosting. The subsequent engine review updated the engine version and download sizes. Each page’s updatedAt records its review date.",
+      "The ZIPP revision matches the v0.0.36 release tag. Download sizes refer to the published Wasm and Brotli assets.",
       "Code samples follow the syntax the current parser and composer accept but were not each executed. Fieldnotes and examples/torch-trainer are the runnable references.",
       "ZIPP’s website pages (Python, WebAssembly, architecture) were last read on 15 September 2026 and were not re-read for this edition.",
       "The hosting guides cover the repository’s packaging scripts, deployment guides and local host behavior. Production deployments depend on the operator’s configuration.",
@@ -219,9 +219,9 @@
       "title": "SoftN root package.json",
       "url": "https://github.com/f2i-com/softn.com/blob/main/package.json",
       "kind": "repository-source",
-      "reviewedAt": "2026-11-18",
+      "reviewedAt": "2026-11-19",
       "retrieval": "retrieved",
-      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). SoftN v0.0.47 uses ZIPP v0.0.35."
+      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). This source checkout uses ZIPP v0.0.36."
     },
     {
       "id": "zipp-wasm",
@@ -255,9 +255,9 @@
       "title": "SoftN notes: JavaScript and Python in the ZIPP runtime",
       "url": "https://github.com/f2i-com/softn.com/blob/main/docs/engineering/ZIPP_LANGUAGES.md",
       "kind": "repository-documentation",
-      "reviewedAt": "2026-11-18",
+      "reviewedAt": "2026-11-19",
       "retrieval": "retrieved",
-      "notes": "ZIPP v0.0.35 engine selection, classic logic, the Python app contract and the optional torch package."
+      "notes": "ZIPP v0.0.36 engine selection, classic logic, the Python app contract and the optional torch package."
     },
     {
       "id": "softn-core-source",
@@ -384,7 +384,7 @@
         "title": "SoftN documentation | SoftN Docs",
         "description": "Guides to portable .softn apps: Builder, Studio, Runtime, app logic in JavaScript or Python, XDB data, machine learning with torch, permissions and hosting."
       },
-      "updatedAt": "2026-11-18",
+      "updatedAt": "2026-11-19",
       "sourceIds": [
         "softn-readme",
         "softn-languages"
@@ -506,7 +506,7 @@
             },
             {
               "type": "paragraph",
-              "text": "This edition was checked against the SoftN repository source on 25 September 2026 (SoftN 0.0.15, ZIPP v0.0.21). Pages changed since then show their own date, and the engine they describe is ZIPP v0.0.35, the engine SoftN ships."
+              "text": "This edition was checked against the SoftN repository source on 25 September 2026 (SoftN 0.0.15, ZIPP v0.0.21). Pages changed since then show their own date, and the engine they describe is ZIPP v0.0.36, the engine SoftN ships."
             }
           ]
         }
@@ -655,7 +655,7 @@
         "title": "Getting started with SoftN | SoftN Docs",
         "description": "Get started with SoftN in the browser or from source: Node.js 24.19 or newer, the setup commands, the local routes and your first edit, export and reopen."
       },
-      "updatedAt": "2026-11-18",
+      "updatedAt": "2026-11-19",
       "sourceIds": [
         "softn-readme",
         "softn-package",
@@ -714,7 +714,7 @@
             },
             {
               "type": "paragraph",
-              "text": "The browser engine, ZIPP v0.0.35, is not committed. The first `npm run build:packages` installs it from the ZIPP release and verifies its checksums, so a fresh clone needs network access once. `npm run fetch:zipp` installs it by hand; `npm run fetch:zipp -- --check` re-verifies an install offline."
+              "text": "The browser engine, ZIPP v0.0.36, is not committed. The first `npm run build:packages` installs it from the ZIPP release and verifies its checksums, so a fresh clone needs network access once. `npm run fetch:zipp` installs it by hand; `npm run fetch:zipp -- --check` re-verifies an install offline."
             },
             {
               "type": "paragraph",
@@ -2638,7 +2638,7 @@
         "title": "App logic in JavaScript or Python | SoftN Docs",
         "description": "SoftN app logic with ZIPP: JavaScript .logic or Python .py files, one language per app, the shared state and handler contract, the WebAssembly engine and host bridges."
       },
-      "updatedAt": "2026-11-18",
+      "updatedAt": "2026-11-19",
       "sourceIds": [
         "softn-languages",
         "softn-core-source",
@@ -2803,7 +2803,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "SoftN v0.0.47 uses ZIPP v0.0.35. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB compressed). Runtime, Studio and Builder download it when an app needs it. Web starters can run on ZIPP Lite, and torch is a separate package for apps that declare it. `npm run fetch:zipp` installs the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, verifies its checksums and records provenance in `SOURCE.json`."
+              "text": "This source checkout uses ZIPP v0.0.36. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB with Brotli). Runtime, Studio and Builder download it when an app needs it. Web starters can run on ZIPP Lite (779 kB with Brotli). Apps that declare torch load it as a separate package. `npm run fetch:zipp` installs the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, verifies its checksums and records provenance in `SOURCE.json`."
             },
             {
               "type": "paragraph",
@@ -6642,9 +6642,9 @@
       "groupId": "help",
       "seo": {
         "title": "Develop SoftN from source | SoftN Docs",
-        "description": "Develop SoftN from source: Node.js 24.19 or newer, npm workspaces, the root scripts, the ZIPP v0.0.35 engine installed by fetch:zipp, tests, and editing these guides."
+        "description": "Develop SoftN from source: Node.js 24.19 or newer, npm workspaces, the root scripts, the ZIPP v0.0.36 engine installed by fetch:zipp, tests, and editing these guides."
       },
-      "updatedAt": "2026-11-11",
+      "updatedAt": "2026-11-19",
       "sourceIds": [
         "softn-package",
         "softn-readme",
@@ -6733,7 +6733,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The engine is not committed. `packages/@softn/core/wasm-zipp` is installed from the ZIPP release that the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names, today v0.0.35, and verified against that release’s SHA256SUMS, so a browser build needs no Rust toolchain. The build, test, typecheck and licence scripts install it when it is missing, and `SOURCE.json` records its provenance and checksums. Offline, point `ZIPP_RELEASE_DIR` at a folder holding the release files."
+              "text": "The engine is not committed. `packages/@softn/core/wasm-zipp` is installed from the ZIPP release that the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names, today v0.0.36, and verified against that release’s SHA256SUMS, so a browser build needs no Rust toolchain. The build, test, typecheck and licence scripts install it when it is missing, and `SOURCE.json` records its provenance and checksums. Offline, point `ZIPP_RELEASE_DIR` at a folder holding the release files."
             },
             {
               "type": "paragraph",
