@@ -1,6 +1,6 @@
 [package]
 name = "softn-runner"
-version = "0.0.47"
+version = "0.0.48"
 edition = "2021"
 description = "SoftN's server runner without Node: the PHP host's runner contract, with app logic in a WebAssembly guest under wasmtime"
 publish = false
@@ -32,7 +32,7 @@ path = "src/main.rs"
 wasmtime = { version = "50", default-features = false, features = ["runtime", "std"] }
 wasmtime-wasi = { version = "50", default-features = false, features = ["p1"] }
 # The app's database, as node:sqlite opens it for the Node runner.
-rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
+rusqlite = { version = "0.41", features = ["bundled", "hooks", "limits"] }
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "unbounded_depth"] }
 ryu = "1"

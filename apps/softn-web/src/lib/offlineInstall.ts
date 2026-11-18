@@ -46,6 +46,7 @@ import {
   preloadWasmRuntime,
   preloadZippTorch,
   type ComponentRegistry,
+  type PythonProject,
   type SoftNDocument,
 } from '@softn/core';
 import { serviceWorkerControls } from './serviceWorkerControls';
@@ -64,12 +65,8 @@ export interface OfflineInstallApp {
   execution?: 'worker' | 'main';
   /** What the bundle's permission.json asked for, as bundleProcessor reads it. */
   capabilities?: readonly string[];
-  /**
-   * The Python packages the app declares (`config.python.packages`, from the
-   * composition's `python.packages`). torch is a separate engine module
-   * fetched on demand, so an app that declares it needs it held as well.
-   */
-  pythonPackages?: readonly string[];
+  /** Python source and declared packages are separate from the composed markup. */
+  python?: PythonProject;
 }
 
 export type WorkerAssetsState = 'not-needed' | 'installed' | 'unavailable';
@@ -158,22 +155,36 @@ function runsScript(doc: SoftNDocument): boolean {
   return Boolean(doc.logic || doc.script || hasPageHandlers(doc.template));
 }
 
-function appNeeds(entry: SoftNDocument, registry: ComponentRegistry, files?: ReadonlyMap<string, string>) {
-  const components = new Set(requiredFeatures(entry, registry));
-  let script = runsScript(entry);
+function appNeeds(app: OfflineInstallApp, registry: ComponentRegistry) {
+  const components = new Set<string>();
+  let script = false;
+  let sandbox = false;
+  let wasm = false;
+  let torch = false;
+  function includePage({ source, python }: Pick<OfflineInstallApp, 'source' | 'python'>): void {
+    const page = parse(source);
+    for (const component of requiredFeatures(page, registry)) components.add(component);
+    script ||= Boolean(python) || runsScript(page);
+    torch ||= python?.packages?.includes(TORCH_PACKAGE) === true;
+    for (const code of [source, ...Object.values(python?.files ?? {})]) {
+      sandbox ||= SANDBOX_USE.test(code);
+      wasm ||= WASM_USE.test(code);
+    }
+  }
+
+  includePage(app);
+  const files = app.textFiles;
   const main = files && mainPage(files);
   for (const path of files?.keys() ?? []) {
     if (path === main || !/\.(?:ui|html?)$/i.test(path)) continue;
     try {
-      const page = parse(composePage(files!, path).source);
-      for (const component of requiredFeatures(page, registry)) components.add(component);
-      script ||= runsScript(page);
+      includePage(composePage(files!, path));
     } catch {
       // Preserve offline engine availability if an additional page cannot be classified.
       script = true;
     }
   }
-  return { features: [...components].sort(), script };
+  return { features: [...components].sort(), script, workers: workerEntries(app, sandbox), wasm, torch };
 }
 
 const inFlight = new Map<string, Promise<OfflineInstallResult>>();
@@ -230,12 +241,11 @@ async function performInstall(
       if ((await abortable(preloadUiAppSurface(), signal)) === ABORTED) return cancelled(result);
     }
 
-    let needsFullEngine: boolean;
+    let needs: ReturnType<typeof appNeeds>;
     try {
-      const entry = parse(app.source);
-      const needs = appNeeds(entry, registry, app.textFiles);
+      needs = appNeeds(app, registry);
       result.features = needs.features;
-      needsFullEngine = needs.script;
+      if (needs.workers.length) result.workerAssets = 'unavailable';
     } catch (err) {
       result.error = `The app's documents could not be read: ${describe(err)}`;
       return result;
@@ -262,7 +272,7 @@ async function performInstall(
     const componentNames = result.features.filter((name) => name !== SYNC_RUNTIME);
     if (!options.registry) {
       const groups = componentNames.flatMap((name) => registry.getFeature(name) ?? []);
-      if (needsFullEngine) groups.push('script');
+      if (needs.script) groups.push('script');
       try {
         await keepClassicAssets(groups, signal);
       } catch (err) {
@@ -290,7 +300,7 @@ async function performInstall(
       if (registry.getLoadState(name) !== 'loaded') result.missing.push(name);
     }
 
-    if (needsFullEngine) {
+    if (needs.script) {
       result.features.push('engine:full');
       const installed = await abortable(
         (options.installFullEngine ?? installFullEngine)(signal).then(() => true, () => false),
@@ -329,9 +339,8 @@ async function performInstall(
       if (!fetched) result.missing.push(SYNC_RUNTIME);
     }
 
-    const entries = workerEntries(app);
-    if (entries.length > 0) {
-      const installed = await abortable(installWorkerAssets(options, entries), signal);
+    if (needs.workers.length > 0) {
+      const installed = await abortable(installWorkerAssets(options, needs.workers), signal);
       if (installed === ABORTED) return cancelled(result);
       result.workerAssets = installed ? 'installed' : 'unavailable';
     }
@@ -352,7 +361,7 @@ async function performInstall(
 
     // The WebAssembly host behind softn.wasm, a chunk of its own; the modules
     // themselves are the app's files and already installed with it.
-    if (WASM_USE.test(app.source)) {
+    if (needs.wasm) {
       const ok = await abortable(
         (options.preloadWasm ?? preloadWasmRuntime)().then(
           () => true,
@@ -367,7 +376,7 @@ async function performInstall(
     // torch is not in the engine the shell loads; the first `import torch`
     // fetches its loader chunk and zipp_torch.wasm. core's preloadZippTorch
     // fetches both past the HTTP cache, so the worker-assets route keeps them.
-    if (app.pythonPackages?.includes(TORCH_PACKAGE)) {
+    if (needs.torch) {
       const preload = options.preloadTorch ?? preloadZippTorch;
       const ok = await abortable(
         preload({ signal }).then(
@@ -480,10 +489,13 @@ const SANDBOX_USE = /\bsandbox\b/;
 const WASM_USE = /\bwasm\s*\.\s*(?:load|call|run|read|write|release)/;
 
 /** The workers an app can start, by their entries under the copied dist. */
-export function workerEntries(app: Pick<OfflineInstallApp, 'execution' | 'source' | 'capabilities'>): string[] {
+export function workerEntries(
+  app: Pick<OfflineInstallApp, 'execution' | 'source' | 'capabilities'>,
+  usesSandbox = SANDBOX_USE.test(app.source),
+): string[] {
   const entries: string[] = [];
   if (app.execution === 'worker') entries.push('runtime/script-worker.js');
-  if (SANDBOX_USE.test(app.source)) entries.push('runtime/sandbox-worker.js');
+  if (usesSandbox) entries.push('runtime/sandbox-worker.js');
   if (app.capabilities?.includes('ai')) entries.push('runtime/model-worker.js');
   return entries;
 }

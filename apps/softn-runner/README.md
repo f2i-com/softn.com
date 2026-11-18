@@ -195,7 +195,7 @@ on the static Linux build (`.github/workflows/verify.yml`, job `runner`).
   JavaScript's: `softn.time.format` of a time within two days of chrono's
   ends (the years 262,142 and -262,143) or past them is a failed host call,
   where Node formats times out to the years 275,760 and -271,821.
-- SQLite is the one rusqlite bundles (3.53.2 for this release; Node 24.19
+- SQLite is the one rusqlite bundles (3.54.1 for this release; Node 24.19
   carries 3.53.3).
 
 ## Where it ships

@@ -158,7 +158,7 @@ export interface OpenBundleHost {
     source: string,
     execution: 'worker' | 'main' | undefined,
     capabilities: string[],
-    pythonPackages?: readonly string[],
+    python?: PythonProject,
     textFiles?: ReadonlyMap<string, string>,
   ) => void;
   /** The same for a web container, whose needs are read from its archive (lib/containerOfflineInstall.ts). */
@@ -681,7 +681,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       // A web container needs the container's own files, not SoftN's components.
       host.installContainerOffline?.(tabId, cachedRecord, data);
     } else if (cachedRecord) {
-      host.installOffline(tabId, cachedRecord, source, manifest.config?.execution, requested, python?.packages, textFiles);
+      host.installOffline(tabId, cachedRecord, source, manifest.config?.execution, requested, python, textFiles);
     }
     return appName;
   } catch (err) {

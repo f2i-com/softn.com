@@ -159,11 +159,12 @@ fn reserved_names(conn: &rusqlite::Connection) -> Result<HashSet<String>, String
 const MAX_MIGRATION_BYTES: usize = 1_000_000;
 
 fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<(), String> {
-    let conn = sql::open_connection(path)?;
+    let mut conn = sql::open_connection(path)?;
     // A request's statement is held to 256 KiB of SQL (`open_connection`); a
     // migration is handed to SQLite whole, so this connection takes a file's
     // worth. It is opened for the migrations and closed after them.
-    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, MAX_MIGRATION_BYTES as i32);
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, MAX_MIGRATION_BYTES as i32)
+        .map_err(|_| "Cannot configure SQLite migration size limit")?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS _migrations(name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at INTEGER NOT NULL) STRICT;")
         .map_err(|_| "Cannot open migration ledger")?;
     let mut migrations = server.database.as_ref().unwrap().migrations.clone();
@@ -210,16 +211,17 @@ fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<
                     steps += 1000;
                     steps > 5_000_000 || Instant::now() > deadline
                 }),
-            );
+            ).map_err(|_| "Cannot configure SQLite migration budget")?;
             let reserved_before = reserved_names(&conn)?;
             conn.authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| {
                 sql::authorize(ctx, true, true)
-            }));
+            })).map_err(|_| "Cannot configure SQLite migration authorizer")?;
             // Each statement stepped to its end, as the PHP host's
             // node:sqlite exec (sqlite3_exec) runs it: execute_batch steps
             // once, so a SELECT whose second row fails (an integer overflow)
             // was applied here and refused there.
             let applied = (|| -> rusqlite::Result<()> {
+                use rusqlite::fallible_iterator::FallibleIterator as _;
                 let mut batch = rusqlite::Batch::new(&conn, script);
                 while let Some(mut statement) = batch.next()? {
                     let mut rows = statement.raw_query();
@@ -227,8 +229,8 @@ fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<
                 }
                 Ok(())
             })();
-            sql::clear_authorizer(&conn);
-            conn.progress_handler(0, None::<fn() -> bool>);
+            sql::clear_authorizer(&mut conn).map_err(|_| "Cannot clear SQLite migration authorizer")?;
+            conn.progress_handler(0, None::<fn() -> bool>).map_err(|_| "Cannot clear SQLite migration budget")?;
             applied.map_err(|e| format!("Migration {name} failed: {e}"))?;
             // The authorizer sees the old name of `ALTER TABLE t RENAME TO x`,
             // never x: nothing may move into the host's `_` namespace that way.
@@ -261,7 +263,7 @@ fn apply_migrations(path: &Path, bundle: &Path, server: &ServerBlock) -> Result<
             .execute_batch("COMMIT")
             .map_err(|_| "Cannot commit migrations".into()),
         Err(e) => {
-            sql::clear_authorizer(&conn);
+            let _ = sql::clear_authorizer(&mut conn);
             let _ = conn.execute_batch("ROLLBACK");
             Err(e)
         }

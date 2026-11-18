@@ -296,7 +296,7 @@ fn ordinary_main_table(db: &Connection, name: &str, qualified: bool) -> Result<O
         .map(|(n, _)| n))
 }
 
-fn execute_statement(db: &Connection, slice: &Slice, sql: &str) -> Result<(), HostError> {
+fn execute_statement(db: &mut Connection, slice: &Slice, sql: &str) -> Result<(), HostError> {
     let mut target = None;
     if let Some(add) = nullable_text_add(slice.tokens.as_ref()) {
         target = ordinary_main_table(db, &add.table, add.qualified)?;
@@ -354,7 +354,7 @@ fn execute_statement(db: &Connection, slice: &Slice, sql: &str) -> Result<(), Ho
 }
 
 /// Apply one migration file (migrations.mjs `applyMigration`).
-pub fn apply(db: &Connection, sql: &str) -> Result<(), HostError> {
+pub fn apply(db: &mut Connection, sql: &str) -> Result<(), HostError> {
     if sql.len() > 1_000_000 {
         return Err(HostError::own("Migration size"));
     }
@@ -364,7 +364,7 @@ pub fn apply(db: &Connection, sql: &str) -> Result<(), HostError> {
     // A request's statement is held to 100,000 opcodes; a migration is not
     // (one INSERT of a long seed list compiles to more), and the request's
     // limit is put back.
-    let _ = db.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 250_000_000);
+    db.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 250_000_000).map_err(HostError::sqlite)?;
     let result = (|| {
         for slice in statements(sql, true)? {
             execute_statement(db, &slice, sql)?;
@@ -377,7 +377,8 @@ pub fn apply(db: &Connection, sql: &str) -> Result<(), HostError> {
         Ok(())
     })();
     let cleared = clear(db);
-    let _ = db.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, VDBE_OP_LIMIT);
+    let restored = db.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, VDBE_OP_LIMIT).map_err(HostError::sqlite);
     result?;
+    restored?;
     cleared
 }

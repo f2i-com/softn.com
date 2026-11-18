@@ -14,8 +14,13 @@ import { repoRoot as root } from '../lib/paths.mjs';
 const HEAVY = /three|scene3d|gltf|fbx|stl|postprocessing|zxing/i;
 /** Where the site build keeps what its apps built (scripts/build/build-site.mjs). */
 const SITE_SHARED = '/shared/assets/';
-/** A built file's name without the hash Vite gives it, which can spell anything. */
-const unhashed = (file) => file.replace(/-[\w-]{8}(\.[a-z0-9]+)$/i, '$1');
+/** A prebuilt core chunk can carry an esbuild hash followed by Vite's hash. */
+const unhashed = (file) => file.replace(/(?:-[\w-]{8})+(?=\.[a-z0-9]+$)/i, '');
+
+test('the editor feature check identifies modules by name even when a hash contains FBX', () => {
+  assert.equal(HEAVY.test(unhashed('_chunk-FBXOJ26U-NnEaV-xz.js')), false);
+  assert.equal(HEAVY.test(unhashed('assets/FBXLoader-FBXOJ26U-NnEaV-xz.js')), true);
+});
 
 function precache(dist) {
   const line = fs.readFileSync(path.join(dist, 'sw.js'), 'utf8').split('\n').find((text) => text.startsWith('self.__SOFTN_PRECACHE='));
@@ -114,7 +119,7 @@ for (const app of ['softn-studio', 'softn-builder']) {
   test(`${app} still loads Three.js and the features only through a dynamic import`, { skip: !built && `build apps/${app} first` }, () => {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const closure = staticClosure(manifest);
-    assert.deepEqual(closure.filter(({ key, file }) => HEAVY.test(key) || HEAVY.test(unhashed(file))), []);
+    assert.deepEqual(closure.filter(({ key, file }) => HEAVY.test(unhashed(key)) || HEAVY.test(unhashed(file))), []);
     // Shared core helpers can pull the renderer into an anonymous chunk even
     // when every named classic entry is dynamic. Check the emitted code too.
     for (const { file } of closure) {

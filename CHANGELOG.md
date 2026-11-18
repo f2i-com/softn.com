@@ -6,10 +6,12 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## Unreleased
+## v0.0.48
 
 - Upgrades the browser engines, FormLogic runtime package and backend runners to ZIPP v0.0.36. Vanilla JavaScript, React and Vue starters still use the lite engine. Its published Brotli download is 778,831 bytes. Apps that need the full JavaScript and Python engine load it on demand.
 - ZIPP v0.0.36 improves script loading and fixes a garbage collection issue that could free a closure still in use during native JavaScript execution. [ZIPP release notes](https://github.com/f2i-com/zipp.org/releases/tag/v0.0.36)
+- A classic app's offline installation checks linked pages and their Python modules. Pages that use a worker, WebAssembly or the torch package have their dependencies saved before Runtime shows **Offline ready**, even if the user has never opened that page.
+- The native backend runners and XDB use patched SQLite dependencies. XDB's peer networking also picks up fixes in Gossipsub and QUIC.
 
 ## v0.0.47
 

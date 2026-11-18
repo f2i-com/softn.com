@@ -1,6 +1,6 @@
 [package]
 name = "softn-server"
-version = "0.0.47"
+version = "0.0.48"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -57,8 +57,8 @@ dirs = "6"
 crossbeam-channel = "0.5"
 subtle = "2"
 r2d2 = "0.8"
-r2d2_sqlite = "0.24"
-rusqlite = { version = "0.31", features = ["bundled", "hooks", "limits"] }
+r2d2_sqlite = "0.36"
+rusqlite = { version = "0.41", features = ["bundled", "hooks", "limits"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 sha2 = "0.10.9"
 hmac = "0.12"

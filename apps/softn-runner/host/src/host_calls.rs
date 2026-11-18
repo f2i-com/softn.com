@@ -186,7 +186,7 @@ pub struct Route {
 }
 
 pub struct Host {
-    pub db: Rc<Connection>,
+    pub db: Rc<RefCell<Connection>>,
     pub sql: Rc<Sql>,
     pub crypto: Rc<Crypto>,
     pub capabilities: Vec<String>,
@@ -228,7 +228,7 @@ impl Host {
         let mut transaction = false;
         let state = Rc::new(RefCell::new(CallState { calls: 0, failure: None }));
         let outcome = (|| -> Result<(u16, String), HostError> {
-            self.db
+            self.db.borrow()
                 .execute_batch(if route.writable { "BEGIN IMMEDIATE" } else { "BEGIN" })
                 .map_err(HostError::library)?;
             transaction = true;
@@ -252,7 +252,7 @@ impl Host {
                     // ON CONFLICT ROLLBACK, an error SQLite rolls back for, a
                     // write the deadline interrupted. Each statement after
                     // that would commit by itself, so none runs.
-                    if db.is_autocommit() {
+                    if db.borrow().is_autocommit() {
                         return Err(HostError::own(TRANSACTION_LOST));
                     }
                     // Past the soft deadline nothing more of the request runs:
@@ -282,11 +282,11 @@ impl Host {
                     }
                     drop(call_state);
                     let value = match family {
-                        "sql" => sql.call(&db, name, args.first(), args.get(1), writable),
+                        "sql" => sql.call(&mut db.borrow_mut(), name, args.first(), args.get(1), writable),
                         "crypto" => crypto.call(name, &args),
                         _ => time(name, &args),
                     }?;
-                    if db.is_autocommit() {
+                    if db.borrow().is_autocommit() {
                         return Err(HostError::own(TRANSACTION_LOST));
                     }
                     Ok(value)
@@ -322,8 +322,8 @@ impl Host {
             if state.borrow().failure.is_some() && !rollback {
                 return Err(HostError::Library("Host call failed".into()));
             }
-            if !self.db.is_autocommit() {
-                self.db.execute_batch(if rollback { "ROLLBACK" } else { "COMMIT" }).map_err(HostError::library)?;
+            if !self.db.borrow().is_autocommit() {
+                self.db.borrow().execute_batch(if rollback { "ROLLBACK" } else { "COMMIT" }).map_err(HostError::library)?;
             } else if !rollback {
                 // Nothing it wrote is left to commit.
                 return Err(HostError::own(TRANSACTION_LOST));
@@ -339,7 +339,7 @@ impl Host {
                 let failure = state.borrow_mut().failure.take();
                 js::log_failure(&format!("handler {}", route.handler), failure.as_ref().unwrap_or(&error).reason());
                 if transaction {
-                    let _ = self.db.execute_batch("ROLLBACK");
+                    let _ = self.db.borrow().execute_batch("ROLLBACK");
                     (500, js::stringify(&serde_json::json!({ "error": "The request could not be completed.", "code": "host_error" })))
                 } else {
                     (503, js::stringify(&serde_json::json!({ "error": "The request could not be completed.", "code": "database_busy" })))

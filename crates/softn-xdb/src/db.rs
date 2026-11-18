@@ -2,8 +2,8 @@
 //! Handles SQLite persistence and Yrs (CRDT) synchronization logic
 
 use rusqlite::{
-    backup::{Backup, StepResult},
-    params, Connection, DatabaseName, OpenFlags, OptionalExtension,
+    backup::{Backup, StepResult, NO_PROGRESS},
+    params, Connection, OpenFlags, OptionalExtension, MAIN_DB,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1473,8 +1473,7 @@ impl XdbDatabase {
     /// Total rows changed on this connection since it was opened (SQLite's
     /// own counter). Benchmarks use it to measure write amplification.
     pub fn total_changes(&self) -> u64 {
-        // SAFETY: the handle belongs to this live connection and is only read.
-        unsafe { rusqlite::ffi::sqlite3_total_changes(self.conn.handle()) as u64 }
+        self.conn.total_changes()
     }
 
     /// Apply a remote CRDT update
@@ -1709,7 +1708,7 @@ impl XdbDatabase {
     pub fn export_to_file(&self, path: &PathBuf) -> DbResult<()> {
         self.require_autocommit("export")?;
         self.require_distinct_path(path)?;
-        self.conn.backup(DatabaseName::Main, path, None)?;
+        self.conn.backup(MAIN_DB, path, NO_PROGRESS)?;
         Ok(())
     }
 
@@ -1728,17 +1727,17 @@ impl XdbDatabase {
         )?;
 
         // Logical database size includes pages whose latest version is in WAL.
-        let page_count: u64 = self
+        let page_count: u32 = self
             .conn
             .pragma_query_value(None, "page_count", |row| row.get(0))?;
-        let page_size: u64 = self
+        let page_size: u32 = self
             .conn
             .pragma_query_value(None, "page_size", |row| row.get(0))?;
 
         Ok(DbStats {
             record_count: record_count as u64,
             collection_count: collection_count as u64,
-            db_size_bytes: page_count * page_size,
+            db_size_bytes: u64::from(page_count) * u64::from(page_size),
         })
     }
 }

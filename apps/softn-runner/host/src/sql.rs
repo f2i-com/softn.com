@@ -102,7 +102,7 @@ pub fn open(path: &Path) -> Result<Connection, HostError> {
 }
 
 /// Take the authorizer off the connection.
-pub fn clear(conn: &Connection) -> Result<(), HostError> {
+pub fn clear(conn: &mut Connection) -> Result<(), HostError> {
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>).map_err(HostError::sqlite)
 }
 
@@ -302,10 +302,6 @@ pub fn scan_statement(sql: &str) -> Result<Scan, HostError> {
     Ok(Scan { keyword: keyword.unwrap_or_default(), parameters, named })
 }
 
-/// sql.mjs FORGET_LAST_INSERT: the id an execute reports is its own row's.
-const FORGET_LAST_INSERT: &str = "CREATE TEMP TABLE IF NOT EXISTS _softn_last_insert(id INTEGER PRIMARY KEY); \
-                                  INSERT OR REPLACE INTO temp._softn_last_insert(id) VALUES(0);";
-
 /// The request-time SQL bridge (sql.mjs `createSql`).
 pub struct Sql {
     tables: Arc<HashSet<String>>,
@@ -328,7 +324,7 @@ impl Sql {
 
     /// Install the request-time authorizer. A statement is never prepared or
     /// run unless this succeeded.
-    fn install(&self, conn: &Connection, writes: bool, wrote: &Arc<AtomicBool>) -> Result<(), HostError> {
+    fn install(&self, conn: &mut Connection, writes: bool, wrote: &Arc<AtomicBool>) -> Result<(), HostError> {
         let tables = Arc::clone(&self.tables);
         let events = self.record_events.clone();
         let wrote = Arc::clone(wrote);
@@ -360,7 +356,7 @@ impl Sql {
     /// `sql(kind, text, params, writable)`: `query` and `first` run one
     /// read-only statement; `execute` one INSERT, UPDATE, DELETE or REPLACE
     /// (behind a WITH, perhaps) that returns no rows, and only in a write.
-    pub fn call(&self, conn: &Connection, kind: &str, text: Option<&Value>, params: Option<&Value>, writable: bool) -> Result<Value, HostError> {
+    pub fn call(&self, conn: &mut Connection, kind: &str, text: Option<&Value>, params: Option<&Value>, writable: bool) -> Result<Value, HostError> {
         if !matches!(kind, "query" | "first" | "execute") {
             return Err(HostError::own("Invalid query"));
         }
@@ -402,28 +398,27 @@ impl Sql {
         }
         let writes = kind == "execute" && writable;
         let wrote = Arc::new(AtomicBool::new(false));
-        self.install(conn, writes, &wrote)?;
-        let prepared = conn.prepare(text);
-        let cleared = clear(conn);
-        let mut statement = prepared.map_err(HostError::sqlite)?;
-        cleared?;
-        if kind == "execute" && (!wrote.load(Ordering::Relaxed) || statement.column_count() != 0) {
-            return Err(HostError::own("execute requires a DML statement without returned rows"));
-        }
-        // The host's own statement, while no authorizer is set.
-        if kind == "execute" {
-            conn.execute_batch(FORGET_LAST_INSERT).map_err(HostError::sqlite)?;
-        }
-        self.install(conn, writes, &wrote)?;
-        // A statement still running near the deadline is interrupted, and the
-        // request fails and rolls back with an answer, rather than by the kill.
+        // Keep the authorizer installed through prepare and step, including
+        // SQLite's automatic reprepare if the schema changes.
         let deadline = crate::soft_deadline();
-        conn.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline)).map_err(HostError::sqlite)?;
-        let result = Self::run(conn, &mut statement, kind, values, &named);
-        drop(statement);
-        let _ = conn.progress_handler(0, None::<fn() -> bool>);
+        let result = (|| {
+            self.install(conn, writes, &wrote)?;
+            conn.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline)).map_err(HostError::sqlite)?;
+            let mut statement = conn.prepare(text).map_err(HostError::sqlite)?;
+            if kind == "execute" {
+                if !wrote.load(Ordering::Relaxed) || statement.column_count() != 0 {
+                    return Err(HostError::own("execute requires a DML statement without returned rows"));
+                }
+                // SAFETY: the live connection is exclusive to this request.
+                // Reset only the connection's counter, without issuing SQL.
+                unsafe { rusqlite::ffi::sqlite3_set_last_insert_rowid(conn.handle(), 0) };
+            }
+            Self::run(conn, &mut statement, kind, values, &named)
+        })();
+        let stopped = conn.progress_handler(0, None::<fn() -> bool>).map_err(HostError::sqlite);
         let cleared = clear(conn);
         let value = result?;
+        stopped?;
         cleared?;
         Ok(value)
     }
@@ -486,7 +481,7 @@ impl Sql {
             }
             return Ok(serde_json::json!({ "changes": changes, "lastInsertRowid": id }));
         }
-        let columns: Vec<String> = statement.column_names().iter().map(|s| s.to_string()).collect();
+        let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let mut rows = statement.raw_query();
         let mut output = Vec::new();
         let mut bytes = 0usize;
@@ -615,9 +610,9 @@ mod tests {
 
     #[test]
     fn the_authorizer_keeps_to_the_apps_tables() {
-        let conn = fixture();
+        let mut conn = fixture();
         let sql = Sql::new(&conn, None).unwrap();
-        let q = |kind: &str, text: &str, writable: bool| sql.call(&conn, kind, Some(&Value::String(text.into())), Some(&serde_json::json!([])), writable);
+        let mut q = |kind: &str, text: &str, writable: bool| sql.call(&mut conn, kind, Some(&Value::String(text.into())), Some(&serde_json::json!([])), writable);
         assert!(q("execute", "INSERT INTO items(name) VALUES('a')", true).is_ok());
         assert_eq!(q("first", "SELECT name FROM items", false).unwrap(), serde_json::json!({"name": "a"}));
         for text in ["SELECT * FROM _host", "SELECT * FROM sqlite_master", "SELECT load_extension('x')", "SELECT \"x\""] {
@@ -629,11 +624,12 @@ mod tests {
 
     #[test]
     fn parameters_and_values_are_refused_as_node_sqlite_refuses_them() {
-        let conn = fixture();
+        let mut conn = fixture();
+        conn.execute("INSERT INTO items(name) VALUES(?1)", ["x".repeat(RESULT_LIMIT + 1)]).unwrap();
         let sql = Sql::new(&conn, None).unwrap();
-        let q = |text: &str, params: Value| sql.call(&conn, "query", Some(&Value::String(text.into())), Some(&params), false);
+        let mut q = |text: &str, params: Value| sql.call(&mut conn, "query", Some(&Value::String(text.into())), Some(&params), false);
         assert_eq!(q("SELECT ?3 AS x, :a AS y", serde_json::json!([1, 2, 3, 4])).unwrap(), serde_json::json!([{"x": 3, "y": 4}]));
-        let library = |text: &str, params: Value, message: &str| {
+        let mut library = |text: &str, params: Value, message: &str| {
             assert!(matches!(q(text, params), Err(HostError::Library(m)) if m == message), "{text}");
         };
         library("SELECT :a AS x, $a AS y", serde_json::json!([1, 2]), "Cannot create bare named parameter 'a' because of conflicting names ':a' and '$a'.");
@@ -645,7 +641,6 @@ mod tests {
         // SQLite's #name is a parameter like :name, bound by its name.
         assert_eq!(q("SELECT #a AS x, ? AS y", serde_json::json!([5, 6])).unwrap(), serde_json::json!([{"x": 5, "y": 6}]));
         // A text past the result limit is that limit, read without copying it.
-        conn.execute("INSERT INTO items(name) VALUES(?1)", [ "x".repeat(RESULT_LIMIT + 1) ]).unwrap();
         assert!(matches!(q("SELECT name FROM items", serde_json::json!([])), Err(HostError::Own(m)) if m == "Query result limit"));
         assert!(matches!(q("SELECT x'00' AS b, name FROM items", serde_json::json!([])), Err(HostError::Own(m)) if m == "Binary SQL values are not supported"));
     }

@@ -12,7 +12,7 @@ import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn
 import { carryAppSync, debug, forgetAppSync } from '@softn/core/web-host';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
-import type { OfflineInstallResult } from './lib/offlineInstall';
+import type { OfflineInstallApp, OfflineInstallResult } from './lib/offlineInstall';
 import { installContainerOffline } from './lib/containerOfflineInstall';
 import { whenIdle } from './lib/idle';
 import {
@@ -487,11 +487,11 @@ function App(): React.ReactElement {
       source: string,
       execution: 'worker' | 'main' | undefined,
       capabilities: string[],
-      pythonPackages?: readonly string[],
+      python?: OfflineInstallApp['python'],
       textFiles?: ReadonlyMap<string, string>,
     ): void =>
       runOfflineInstall(tabId, record, async (signal) =>
-        (await import('./lib/offlineInstall')).installAppOffline({ id: record.id, source, textFiles, execution, capabilities, pythonPackages }, { signal })
+        (await import('./lib/offlineInstall')).installAppOffline({ id: record.id, source, textFiles, execution, capabilities, python }, { signal })
       ),
     [runOfflineInstall]
   );
