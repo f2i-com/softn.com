@@ -42,7 +42,7 @@ lockfile, which carries Tauri for the crate's default feature. The backport's
 release-mode Linux regression test must pass when that source changes.
 Preserve its provenance and license when updating or removing it.
 
-## Temporary picomatch override in v0.0.46
+## Temporary picomatch override in v0.0.47
 
 Vite, Vitest and the source tooling resolve `picomatch` to the exact
 `@ryotsu/picomatch@4.0.7-a` tarball in the lockfile. Upstream 4.0.7 has a

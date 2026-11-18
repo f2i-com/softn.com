@@ -76,7 +76,7 @@
     ],
     "limitations": [
       "The edition of 25 September 2026 was compared in full with the softn.com working tree at commit 9ac48624ef62db7cc38fbb314865e1b64eaaee7c, with uncommitted changes (engineering/VALIDATION_REPORT.md). Builder and Studio were still changing then; their labels describe that working tree.",
-      "The November 2026 review covered web starters, preview, offline engine selection, Studio summaries and hosting in the v0.0.46 working tree based on the SoftN commit above. Each page’s updatedAt records its own review date.",
+      "The November 2026 review covered web starters, preview, offline engine selection, Studio summaries and hosting in the v0.0.47 working tree based on the SoftN commit above. Each page’s updatedAt records its own review date.",
       "The ZIPP commit is the source revision recorded in the installed engine’s SOURCE.json for release v0.0.35. ZIPP’s own source was not inspected.",
       "Code samples follow the syntax the current parser and composer accept but were not each executed. Fieldnotes and examples/torch-trainer are the runnable references.",
       "ZIPP’s website pages (Python, WebAssembly, architecture) were last read on 15 September 2026 and were not re-read for this edition.",
@@ -221,7 +221,7 @@
       "kind": "repository-source",
       "reviewedAt": "2026-11-18",
       "retrieval": "retrieved",
-      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). SoftN v0.0.46 uses ZIPP v0.0.35."
+      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). SoftN v0.0.47 uses ZIPP v0.0.35."
     },
     {
       "id": "zipp-wasm",
@@ -2803,7 +2803,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "SoftN v0.0.46 uses ZIPP v0.0.35. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB compressed). Runtime, Studio and Builder download it when an app needs it. Web starters can run on ZIPP Lite, and torch is a separate package for apps that declare it. `npm run fetch:zipp` installs the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, verifies its checksums and records provenance in `SOURCE.json`."
+              "text": "SoftN v0.0.47 uses ZIPP v0.0.35. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB compressed). Runtime, Studio and Builder download it when an app needs it. Web starters can run on ZIPP Lite, and torch is a separate package for apps that declare it. `npm run fetch:zipp` installs the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, verifies its checksums and records provenance in `SOURCE.json`."
             },
             {
               "type": "paragraph",

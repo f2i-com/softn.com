@@ -13,14 +13,21 @@
  */
 
 import React, { act } from 'react';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mount } from './dom';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mount as mountRoot, type Mounted } from './dom';
 import { Modal } from '../src/feedback/Modal';
 import { Confirm } from '../src/feedback/Confirm';
 import { isHostsOwn, mayTakeKeyboard } from '../src/utils/hostKeyboard';
 
-beforeEach(() => {
-  document.body.innerHTML = '';
+const mounted: Mounted[] = [];
+function mount(element: React.ReactElement): Mounted {
+  const view = mountRoot(element);
+  mounted.push(view);
+  return view;
+}
+
+afterEach(() => {
+  for (const view of mounted.splice(0)) view.unmount();
 });
 
 const settle = () => act(async () => new Promise<void>((resolve) => setTimeout(resolve, 30)));
