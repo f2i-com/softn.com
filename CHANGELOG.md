@@ -13,7 +13,7 @@ section here. Write the section before tagging. Headings are the tag
 - Web apps can work with database records through the host bridge. Studio and Builder expose database design and backend source alongside the app files. When embedded in FormLogic, the editors use the database and backend capabilities advertised by the host. Web forms now submit on a button click or Enter.
 - Studio's final chat reply describes what the assistant found or changed. App edits include the affected files and the saved change. Studio and Builder also have revised project creation, database and preview screens.
 - PHP backends recognize same-origin requests when a trusted reverse proxy preserves the default HTTPS port. The private single-app host now detects a replacement archive even if its size and timestamp match the old one. Its local preview routes requests through PHP. The website build accepts a separate output directory so hosts can stage an upgrade while preserving live data.
-- This release uses the same ZIPP engine as v0.0.45, **v0.0.35**.
+- This release uses the same ZIPP engine as v0.0.45, **v0.0.35**. The npm toolchain pins a reviewed third-party picomatch fix pending an upstream release. [Dependency maintenance](https://github.com/f2i-com/softn.com/blob/v0.0.46/docs/engineering/dependency-maintenance.md#temporary-picomatch-override-in-v0046)
 
 ## v0.0.45
 

@@ -41,3 +41,16 @@ The two GTK desktop dependency trees use the reviewed GLib 0.18.5 backport in
 lockfile, which carries Tauri for the crate's default feature. The backport's
 release-mode Linux regression test must pass when that source changes.
 Preserve its provenance and license when updating or removing it.
+
+## Temporary picomatch override in v0.0.46
+
+Vite, Vitest and the source tooling resolve `picomatch` to the exact
+`@ryotsu/picomatch@4.0.7-a` tarball in the lockfile. Upstream 4.0.7 has a
+high-severity parser advisory. The fork simplifies supported repeated wildcard
+groups and treats unsupported complex forms as literals. Keep its default
+parser safeguards enabled. [Upstream advisory](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)
+· [Reviewed fork commit](https://github.com/ryotsu-kankichi/secured-picomatch/commit/3ab5a7627d480259e3d9ca67fbc14c125d374f0e)
+
+Track advisories for the upstream package while the alias is in use. When
+upstream publishes a patched release, remove the override, refresh the lockfile,
+and run the dependency checks above and the browser suite.
