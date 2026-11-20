@@ -276,28 +276,93 @@ function ensureBrotliTwin(wasmPath, existingBrSrc, destName) {
   console.log(`[container] Compressed ${destName} (${(compressed.byteLength / 1024).toFixed(1)} KB)`);
 }
 
-const phpWasmSrc = findEmbeddedVariant(zippDevRoots, '-javascript-php.wasm') ?? findEmbeddedVariant(zippDevRoots, 'zipp-php.wasm');
-const phpBrSrc = findEmbeddedVariant(zippDevRoots, '-javascript-php.wasm.br') ?? findEmbeddedVariant(zippDevRoots, 'zipp-php.wasm.br');
+const phpReleaseWasm = await resolveReleaseArtifact(`zipp-${version}-javascript-php.wasm`, true);
+const phpReleaseBr = await resolveReleaseArtifact(`zipp-${version}-javascript-php.wasm.br`, true);
+const phpWasmSrc = phpReleaseWasm ?? findEmbeddedVariant(zippDevRoots, '-javascript-php.wasm') ?? findEmbeddedVariant(zippDevRoots, 'zipp-php.wasm');
+const phpBrSrc = phpReleaseBr ?? findEmbeddedVariant(zippDevRoots, '-javascript-php.wasm.br') ?? findEmbeddedVariant(zippDevRoots, 'zipp-php.wasm.br');
 const stagedPhp = copyFirstExisting([phpWasmSrc], ENGINES_DIR, 'zipp-php.wasm');
 ensureBrotliTwin(stagedPhp, phpBrSrc, 'zipp-php.wasm.br');
 if (stagedPhp) await extractGlueForWasm(stagedPhp, null);
 
-const rustWasmSrc = findEmbeddedVariant(zippDevRoots, '-javascript-rust.wasm') ?? findEmbeddedVariant(zippDevRoots, 'zipp-rust.wasm');
-const rustBrSrc = findEmbeddedVariant(zippDevRoots, '-javascript-rust.wasm.br') ?? findEmbeddedVariant(zippDevRoots, 'zipp-rust.wasm.br');
+const rustReleaseWasm = await resolveReleaseArtifact(`zipp-${version}-javascript-rust.wasm`, true);
+const rustReleaseBr = await resolveReleaseArtifact(`zipp-${version}-javascript-rust.wasm.br`, true);
+const rustWasmSrc = rustReleaseWasm ?? findEmbeddedVariant(zippDevRoots, '-javascript-rust.wasm') ?? findEmbeddedVariant(zippDevRoots, 'zipp-rust.wasm');
+const rustBrSrc = rustReleaseBr ?? findEmbeddedVariant(zippDevRoots, '-javascript-rust.wasm.br') ?? findEmbeddedVariant(zippDevRoots, 'zipp-rust.wasm.br');
 const stagedRust = copyFirstExisting([rustWasmSrc], ENGINES_DIR, 'zipp-rust.wasm');
 ensureBrotliTwin(stagedRust, rustBrSrc, 'zipp-rust.wasm.br');
 if (stagedRust) await extractGlueForWasm(stagedRust, null);
 
+// Embedded XDB SQLite WASM (`xdb-wasm.wasm`, `xdb-wasm.wasm.br`, `xdb-wasm.glue.js`):
+// Fetch SHA256SUMS-verified release assets from f2i-com/xdb.org (cached in .xdb-release/<tag>/),
+// with optional local override via XDB_WASM_DIR or sibling xdb-rs checkout fallback.
+const XDB_REPOSITORY = 'https://github.com/f2i-com/xdb.org';
+const XDB_RELEASE_TAG = process.env.XDB_RELEASE || 'v0.1.0';
+const XDB_VERSION = XDB_RELEASE_TAG.replace(/^v/, '');
+const XDB_SUMS_SHA256 = process.env.XDB_SUMS_SHA256 || '3074389101142825e56f07a4653c388d78f27b099145d14538c155b0c2206393';
+const xdbCacheDir = path.join(REPO_ROOT, '.xdb-release', XDB_RELEASE_TAG);
+
+async function fetchXdbReleaseAssets() {
+  if (process.env.XDB_WASM_DIR) return null;
+  try {
+    fs.mkdirSync(xdbCacheDir, { recursive: true });
+    const sumsCache = path.join(xdbCacheDir, 'SHA256SUMS');
+    let sumsBytes = fs.existsSync(sumsCache) ? fs.readFileSync(sumsCache) : null;
+    if (!sumsBytes || createHash('sha256').update(sumsBytes).digest('hex') !== XDB_SUMS_SHA256) {
+      const sumsUrl = `${XDB_REPOSITORY}/releases/download/${encodeURIComponent(XDB_RELEASE_TAG)}/SHA256SUMS`;
+      const resp = await fetch(sumsUrl, { headers: { 'User-Agent': 'softn-container-sync' }, redirect: 'follow' });
+      if (!resp.ok) return null;
+      sumsBytes = Buffer.from(await resp.arrayBuffer());
+      const got = createHash('sha256').update(sumsBytes).digest('hex');
+      if (got !== XDB_SUMS_SHA256) {
+        throw new Error(`XDB ${XDB_RELEASE_TAG} SHA256SUMS mismatch: expected ${XDB_SUMS_SHA256}, got ${got}`);
+      }
+      fs.writeFileSync(sumsCache, sumsBytes);
+    }
+    const xdbSums = new Map();
+    for (const line of sumsBytes.toString('utf8').split(/\r?\n/)) {
+      const m = /^([0-9a-f]{64})\s+\*?(\S+)\s*$/.exec(line.trim());
+      if (m) xdbSums.set(m[2], m[1]);
+    }
+    const resolveXdb = async (assetName) => {
+      const expected = xdbSums.get(assetName);
+      if (!expected) return null;
+      const cached = path.join(xdbCacheDir, assetName);
+      if (fs.existsSync(cached) && sha256File(cached) === expected) return cached;
+      const url = `${XDB_REPOSITORY}/releases/download/${encodeURIComponent(XDB_RELEASE_TAG)}/${encodeURIComponent(assetName)}`;
+      const resp = await fetch(url, { headers: { 'User-Agent': 'softn-container-sync' }, redirect: 'follow' });
+      if (!resp.ok) return null;
+      const bytes = Buffer.from(await resp.arrayBuffer());
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      if (digest !== expected) {
+        throw new Error(`SHA-256 mismatch for ${assetName}: expected ${expected}, got ${digest}`);
+      }
+      fs.writeFileSync(cached, bytes);
+      return cached;
+    };
+    const wasm = await resolveXdb(`xdb-${XDB_VERSION}-wasm.wasm`);
+    const br = await resolveXdb(`xdb-${XDB_VERSION}-wasm.wasm.br`);
+    const glue = await resolveXdb(`xdb-${XDB_VERSION}-wasm.js`);
+    return { wasm, br, glue };
+  } catch (err) {
+    console.warn(`[container] Could not fetch XDB ${XDB_RELEASE_TAG} release assets: ${err.message}`);
+    return null;
+  }
+}
+
+const xdbRelease = await fetchXdbReleaseAssets();
 const xdbPkgDirs = [
-  process.env.XDB_REPO ? path.resolve(process.env.XDB_REPO, 'crates', 'xdb-wasm', 'pkg') : null,
   process.env.XDB_WASM_DIR ? path.resolve(process.env.XDB_WASM_DIR) : null,
+  process.env.XDB_REPO ? path.resolve(process.env.XDB_REPO, 'crates', 'xdb-wasm', 'dist') : null,
+  process.env.XDB_REPO ? path.resolve(process.env.XDB_REPO, 'crates', 'xdb-wasm', 'pkg') : null,
+  path.resolve(REPO_ROOT, '..', 'xdb', 'xdb-rs', 'crates', 'xdb-wasm', 'dist'),
   path.resolve(REPO_ROOT, '..', 'xdb', 'xdb-rs', 'crates', 'xdb-wasm', 'pkg'),
 ].filter(Boolean);
 
-const xdbWasmSrc = findEmbeddedVariant(xdbPkgDirs, 'xdb_wasm_bg.wasm');
-const xdbGlueSrc = findEmbeddedVariant(xdbPkgDirs, 'xdb_wasm.js');
+const xdbWasmSrc = xdbRelease?.wasm ?? findEmbeddedVariant(xdbPkgDirs, '-wasm.wasm') ?? findEmbeddedVariant(xdbPkgDirs, 'xdb_wasm_bg.wasm');
+const xdbBrSrc = xdbRelease?.br ?? findEmbeddedVariant(xdbPkgDirs, '-wasm.wasm.br');
+const xdbGlueSrc = xdbRelease?.glue ?? findEmbeddedVariant(xdbPkgDirs, '-wasm.js') ?? findEmbeddedVariant(xdbPkgDirs, 'xdb_wasm.js');
 const stagedXdb = copyFirstExisting([xdbWasmSrc], ENGINES_DIR, 'xdb-wasm.wasm');
-ensureBrotliTwin(stagedXdb, null, 'xdb-wasm.wasm.br');
+ensureBrotliTwin(stagedXdb, xdbBrSrc, 'xdb-wasm.wasm.br');
 copyFirstExisting([xdbGlueSrc], ENGINES_DIR, 'xdb-wasm.glue.js');
 
 // Stage externally hosted vendor libraries (`/runtime/vendor/three.js`)

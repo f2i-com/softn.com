@@ -1,6 +1,7 @@
 import React, { useCallback, useRef } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
 import { currentBuildId, groupByApp, hasStoredData, holdsNothingOfItsOwn, isOfflineReady, type CachedApp } from '../lib/appCache';
+import { BusinessDemosShelf } from './BusinessDemosShelf';
 import { DirectoryShelf } from './DirectoryShelf';
 
 /*
@@ -414,9 +415,10 @@ export function Launcher({
           ) : (
             <div className="softn-launcher-empty">
               <strong>Your library starts here.</strong> Apps you open appear here so you can return to them.
-              Open a <strong>.softn</strong> file or choose an app from <a href={directoryHref}>the directory</a>.
+              Try a browser-sandboxed business app below, open a <strong>.softn</strong> file, or choose an app from <a href={directoryHref}>the directory</a>.
             </div>
           )}
+          {onOpenUrl && <BusinessDemosShelf onOpen={onOpenUrl} />}
           </div>
           {onOpenUrl && <DirectoryShelf onOpen={onOpenUrl} />}
           </div>

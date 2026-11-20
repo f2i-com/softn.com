@@ -115,6 +115,7 @@ export default defineConfig({
           '**/core-runtime/**',
           '**/container-runtime/**',
           '**/demos/**',
+          '**/business-demos/**',
           ...onDemandGlobIgnores,
           // The editor for a running app (src/edit/), fetched when a person
           // presses Edit, and what an app they have edited reads its changes

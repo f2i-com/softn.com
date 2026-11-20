@@ -89,10 +89,15 @@ describe('runtime directory integration', () => {
   });
 
   it('keeps file and running-app controls usable when the directory fails, then retries', async () => {
-    const fetch = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValue(reply([card()]));
+    let directoryCalls = 0;
+    const fetch = vi.fn(async (url: string) => {
+      if (String(url).includes('business-demos/index.json')) {
+        return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
+      }
+      directoryCalls += 1;
+      if (directoryCalls === 1) throw new Error('offline');
+      return reply([card()]);
+    });
     vi.stubGlobal('fetch', fetch);
     const onResume = vi.fn();
     act(() =>

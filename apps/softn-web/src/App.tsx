@@ -112,11 +112,13 @@ function slugOfName(name: string): string {
   return (s || 'app').slice(0, 48);
 }
 
-async function demoBundleUrlFor(appName: string): Promise<string | null> {
-  // The production distribution has no bundled demo catalogue.
-  if (!import.meta.env.DEV) return null;
+async function lookupCatalogBundle(
+  catalogPath: string,
+  dirPrefix: string,
+  wanted: string
+): Promise<string | null> {
   try {
-    const response = await fetch(publicPath('demos/index.json', import.meta.env.BASE_URL), {
+    const response = await fetch(publicPath(catalogPath, import.meta.env.BASE_URL), {
       credentials: 'same-origin',
       cache: 'no-cache',
     });
@@ -127,20 +129,38 @@ async function demoBundleUrlFor(appName: string): Promise<string | null> {
       : Array.isArray((parsed as { demos?: unknown }).demos)
         ? ((parsed as { demos: unknown[] }).demos)
         : [];
-    const wanted = slugOfName(appName);
     for (const entry of entries) {
       if (!entry || typeof entry !== 'object') continue;
-      const { id, name, file } = entry as { id?: unknown; name?: unknown; file?: unknown };
-      // A catalogue file is a bare name inside demos/, never a path.
+      const { slug, id, name, file } = entry as {
+        slug?: unknown;
+        id?: unknown;
+        name?: unknown;
+        file?: unknown;
+      };
+      // A catalogue file is a bare name inside its folder, never a path.
       if (typeof file !== 'string' || !/^[^/\\]+\.softn$/i.test(file) || file.includes('..')) continue;
-      if (id === wanted || (typeof name === 'string' && slugOfName(name) === wanted)) {
-        return publicPath(`demos/${file}`, import.meta.env.BASE_URL);
+      if (
+        slug === wanted ||
+        id === wanted ||
+        (typeof name === 'string' && slugOfName(name) === wanted)
+      ) {
+        return publicPath(`${dirPrefix}/${file}`, import.meta.env.BASE_URL);
       }
     }
   } catch {
     // No catalogue is not an error: the cache is the next place to look.
   }
   return null;
+}
+
+async function demoBundleUrlFor(appName: string): Promise<string | null> {
+  const wanted = slugOfName(appName);
+  // Hosted browser-sandboxed full-stack business demos are available in both dev and production.
+  const businessHit = await lookupCatalogBundle('business-demos/index.json', 'business-demos', wanted);
+  if (businessHit) return businessHit;
+  // The general dev demo catalogue is only served in development.
+  if (!import.meta.env.DEV) return null;
+  return lookupCatalogBundle('demos/index.json', 'demos', wanted);
 }
 
 /** The URL as the history API sees it, base and query included. */
