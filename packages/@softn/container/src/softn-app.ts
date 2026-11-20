@@ -10,22 +10,33 @@
  */
 
 import type { Capability } from '@softn/bundle-format/capabilities';
-import { ContainerArchive, resolveVfsPath } from './archive';
-import { renderConsentBar, renderSaveBar } from './consent-bar';
+import { base64ToBytes, bytesToBase64, ContainerArchive, VIRTUAL_ORIGIN } from './archive';
+import { buildBackendRoutingConfig, matchBackendTarget } from './backend-transport';
+import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar';
 import { HostDomPatcher } from './dom-patcher';
+import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
 import { hostFileName, hostLabel, slotsAreContained } from './host-policy';
-import { prepareHtmlDocument } from './sanitize';
+import { LocalBackendTransport } from './local-backend-transport';
+import { loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
+import { extractSanitizedFontFaces, prepareHtmlDocument } from './sanitize';
 import { FRAME_BASE_CSS, PAGE_BASE_CSS } from './ui-css';
 import { ensureUiExtension } from './ui-extensions/registry';
+import { renderVirtualNavBar, type VirtualNavBarController } from './virtual-nav-bar';
 import { selectEngineTier } from './zipp-loader';
 import type {
+  BackendTransport,
+  BackendWsHandle,
+  ContainerBootStatus,
   ContainerLimits,
   ContainerManifest,
+  DatabaseConfig,
   HostToWorkerMsg,
   SaveRequest,
   SoftNContainerOptions,
   ThreeSceneOp,
+  VirtualDirEntry,
   WorkerToHostMsg,
+  ZippEngineSource,
   ZippEngineTier,
 } from './types';
 import type { SplitRealmSceneHost } from './vendor/webgl-scene-host';
@@ -38,6 +49,9 @@ const DEFAULT_LIMITS: Required<ContainerLimits> = {
   // everything it stores this way: its own keys and every other app's. The default was the
   // whole of it, so one app could leave the page, and the apps beside it, unable to save.
   storageQuotaBytes: 5 * 1024 * 1024,
+  // Its IndexedDB databases, kept in the page's own IndexedDB, where a browser gives a site
+  // far more (and, where there is none, counted in the localStorage quota above instead).
+  idbQuotaBytes: 64 * 1024 * 1024,
 };
 
 export interface SoftNContainerHandle {
@@ -56,8 +70,18 @@ export interface SoftNContainerHandle {
    * stylesheet of the app's is in this root or reaches it.
    */
   readonly frameRoot: ShadowRoot;
-  /** Navigate to another HTML page inside the same `.softn` container. */
+  /** Current virtual URL path shown inside the container (e.g. `'/'`, `'/signin'`, `'/modules/sign.php'`). */
+  readonly currentPath: string;
+  /** Active backend transport (local WASM Backend Worker or host-injected FormLogic remote transport). */
+  readonly backendTransport?: BackendTransport;
+  /** Navigate to another HTML page, SSR route, or virtual folder script inside the same container. */
   navigate(path: string): Promise<void>;
+  /** List virtual folders & files inside the container `.zip` archive. */
+  listVirtualDirectory(virtualPath?: string): VirtualDirEntry[];
+  /** Apply declarative JSON seed data to a named XDB SQLite database inside this container. */
+  seedDatabase(dbName: string, seedJson: string | Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Export a named XDB SQLite database as standalone `.db` binary bytes. */
+  exportDatabase(dbName: string): Promise<Uint8Array | null>;
   /** Grant or revoke capabilities dynamically. */
   setGrantedCapabilities(caps: Capability[]): void;
   /**
@@ -116,7 +140,8 @@ const BOX_STYLE = `${PINNED}display:block!important;flex:1 1 auto!important;min-
  * elements are placed from (they scroll with it), and nothing here makes it the containing
  * block of a fixed one (no containment, no transform): that is the box around it.
  */
-const DOCROOT_STYLE = `${PINNED}display:block!important;width:100%!important;height:100%!important;position:relative!important;overflow:auto!important;`;
+const DOCROOT_STYLE =
+  'box-sizing:border-box!important;display:block!important;position:relative!important;inset:auto!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;overflow:auto!important;transform:none!important;filter:none!important;contain:none!important;perspective:none!important;clip-path:none!important;';
 
 /**
  * The root the app's page is drawn in, on the box. The app's stylesheets are in it with the
@@ -144,6 +169,8 @@ const ENGINE_FILES: Readonly<Record<ZippEngineTier, string>> = {
   typescript: 'zipp-typescript.wasm',
   python: 'zipp-python-base.wasm',
   'python-torch': 'zipp-python-base.wasm',
+  php: 'zipp-php.wasm',
+  rust: 'zipp-rust.wasm',
 };
 
 /**
@@ -230,7 +257,9 @@ async function loadArchiveSource(
  * host's (`storagePrefix`), or `softn-v2:<appId>:`.
  */
 function loadPersistedStorage(base: string): Record<string, string> {
-  const out: Record<string, string> = {};
+  // No prototype: a key of the app's may be `__proto__`, which a plain object does not keep
+  // as its own, so it was not counted against the quota and the app could keep it twice over.
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
   if (typeof localStorage === 'undefined') return out;
   const prefix = `${base}ls:`;
   try {
@@ -245,6 +274,38 @@ function loadPersistedStorage(base: string): Record<string, string> {
     // Ignore storage access errors in restricted frames
   }
   return out;
+}
+
+/** The most databases one session of an app holds, or asks to hold, across tabs at once. */
+const MAX_IDB_HOLDS = 64;
+
+/**
+ * The apps mounted in this page, by where each keeps what it stores. The browser tells a
+ * write to the page's storage to the site's other pages (another tab), never to the page
+ * that made it: two of the same app in one page did not hear each other, and each wrote
+ * the other's records away. A write is told to the others here, by the key it changed.
+ */
+const mountedByStorage = new Map<string, Set<(key: string) => void>>();
+
+function tellNeighbours(base: string, self: (key: string) => void, keys: readonly string[]): void {
+  const mounted = mountedByStorage.get(base);
+  if (!mounted || mounted.size < 2 || keys.length === 0) return;
+  for (const heard of [...mounted]) if (heard !== self) for (const key of keys) heard(key);
+}
+
+/** The keys the app's localStorage holds in the page's, as they are named there. */
+function persistedStorageKeys(base: string): string[] {
+  const keys: string[] = [];
+  if (typeof localStorage === 'undefined') return keys;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(`${base}ls:`)) keys.push(k);
+    }
+  } catch {
+    // Storage closed to this page: nothing to tell.
+  }
+  return keys;
 }
 
 /** Keep, drop or clear what the app's script kept. False when the page's storage refused. */
@@ -314,6 +375,58 @@ export function savePersistedDbCollection(base: string, collection: string, reco
   }
 }
 
+/** What the app's IndexedDB databases are kept as there: `<base>idb:<name>`, each a text. */
+function loadPersistedIdb(base: string): Record<string, string> {
+  // No prototype, as above: a part named `__proto__` is counted too.
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  if (typeof localStorage === 'undefined') return out;
+  const prefix = `${base}idb:`;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      const value = localStorage.getItem(key);
+      if (value !== null) out[key.slice(prefix.length)] = value;
+    }
+  } catch {
+    // Storage closed to this page: the app starts with no databases.
+  }
+  return out;
+}
+
+/** The bytes they take, as the Worker counts them. */
+function persistedIdbBytes(base: string): number {
+  let bytes = 0;
+  for (const [name, value] of Object.entries(loadPersistedIdb(base))) bytes += (name.length + value.length) * 2;
+  return bytes;
+}
+
+/**
+ * Keep a part of one of the app's IndexedDB databases, or let go of it. Refused past
+ * `quotaBytes` for everything the app keeps: the Worker counts too, but what is written to
+ * the embedding page's storage is decided here.
+ */
+export function savePersistedIdb(base: string, name: string, value: string | null, quotaBytes: number): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  if (typeof name !== 'string' || name.length > 1024) return true;
+  const key = `${base}idb:${name}`;
+  try {
+    if (value === null) {
+      localStorage.removeItem(key);
+      return true;
+    }
+    if (typeof value !== 'string') return true;
+    const old = localStorage.getItem(key);
+    const others = persistedStorageBytes(base) + persistedDbBytes(base) + persistedIdbBytes(base) - (old === null ? 0 : (name.length + old.length) * 2);
+    if (others + (name.length + value.length) * 2 > quotaBytes) return false;
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    // The page's storage is full or closed to this page: the caller says so.
+    return false;
+  }
+}
+
 /** The bytes the app's kept localStorage takes in the embedding page's, as the Worker counts them. */
 function persistedStorageBytes(base: string): number {
   let bytes = 0;
@@ -345,7 +458,7 @@ export function storageWriteFits(base: string, key: string, value: string, quota
   } catch {
     replaced = 0;
   }
-  return persistedStorageBytes(base) + persistedDbBytes(base) - replaced + (key.length + value.length) * 2 <= quotaBytes;
+  return persistedStorageBytes(base) + persistedDbBytes(base) + persistedIdbBytes(base) - replaced + (key.length + value.length) * 2 <= quotaBytes;
 }
 
 /**
@@ -381,8 +494,23 @@ export async function mountSoftNContainer(
     ...(options.limits ?? {}),
   };
 
+  const emitStatus = (status: ContainerBootStatus) => {
+    options.onStatus?.(status);
+  };
+  emitStatus({
+    phase: 'opening',
+    message: 'Opening application archive…',
+    percent: 10,
+  });
+
   const rawSource = await loadArchiveSource(options.source);
   const archive = await ContainerArchive.open(rawSource);
+  emitStatus({
+    phase: 'opening',
+    message: `Preparing ${archive.manifest.name}…`,
+    percent: 18,
+    detail: archive.manifest.backend ? `${archive.manifest.backend.runtime.toUpperCase()} backend + web app` : undefined,
+  });
   // Where the app's saved data is kept in the embedding page's storage. The host's word when
   // it gives one; otherwise the address the archive was loaded from, or the digest of its
   // bytes. Never the `id` the app's own manifest claims: an app that claimed another's id
@@ -429,7 +557,11 @@ export async function mountSoftNContainer(
       appId,
       shadowRoot,
       frameRoot: shadowRoot,
+      currentPath: `/${archive.manifest.main}`,
       navigate: async () => undefined,
+      listVirtualDirectory: (dir) => archive.listVirtualDirectory(dir),
+      seedDatabase: async () => { throw new Error('SQLite is unavailable in legacy-ui mode'); },
+      exportDatabase: async () => null,
       setGrantedCapabilities: () => undefined,
       setActive: () => undefined,
       dispose() {
@@ -460,7 +592,280 @@ export async function mountSoftNContainer(
   let currentTransport: WorkerTransport | null = null;
   let threeHost: SplitRealmSceneHost | null = null;
   const persistStorage = options.persistStorage !== false;
+  // What another tab keeps for the same app, told to its Worker as it happens: each tab reads
+  // what the other kept before it writes over it. (Each kept the stores it had read when it
+  // started, so the same app open in two tabs wrote the other's records away.)
+  // A key of the app's that another tab, or another of the same app in this page, changed.
+  const heard = (key: string) => {
+    if (disposed || !key.startsWith(storageBase)) return;
+    const rest = key.slice(storageBase.length);
+    // What is kept there now: the event's own value may be older than what this tab kept
+    // since, and handed on, this tab's view went back to it.
+    let value: string | null;
+    try {
+      value = localStorage.getItem(key);
+    } catch {
+      return;
+    }
+    if (rest.startsWith('ls:')) currentTransport?.post({ type: 'storage-changed', area: 'ls', key: rest.slice(3), value });
+    else if (rest.startsWith('idb:')) currentTransport?.post({ type: 'storage-changed', area: 'idb', key: rest.slice(4), value });
+  };
+  const onStorage = (event: StorageEvent) => {
+    if (disposed || typeof event.key !== 'string') return;
+    try {
+      if (event.storageArea !== localStorage) return;
+    } catch {
+      return;
+    }
+    heard(event.key);
+  };
+  if (persistStorage && typeof window !== 'undefined') window.addEventListener('storage', onStorage);
+  if (persistStorage) {
+    const mounted = mountedByStorage.get(storageBase) ?? new Set<(key: string) => void>();
+    mounted.add(heard);
+    mountedByStorage.set(storageBase, mounted);
+  }
+  // The app's IndexedDB databases (idb-backing.ts): kept in the page's IndexedDB, or without
+  // one in its localStorage; read when a session starts.
+  let idbBacking: IdbBacking | null = null;
+  /** What is kept of them, as this page last read or wrote it. */
+  const idbParts = new Map<string, string>();
+  /** How often each part was written here or read again: a part told by another tab is not taken in over a newer one of this tab's. */
+  const idbPartTurns = new Map<string, number>();
+  const turnOfPart = (name: string) => idbPartTurns.get(name) ?? 0;
+  const setIdbPart = (name: string, value: string | null) => {
+    if (value === null) idbParts.delete(name);
+    else idbParts.set(name, value);
+    idbPartTurns.set(name, turnOfPart(name) + 1);
+  };
+  /** The databases this tab holds for the app's side (a lock across the site's tabs), each let go of by its function. */
+  const idbHolds = new Map<string, () => void>();
+  /** Those held by a lease (no locks in this browser): what a write under it checks is still this tab's. */
+  const idbFences = new Map<string, LeaseFence>();
+  /** Holds asked for and not given yet: with those given, held to a number a session may ask for. */
+  let idbHoldsAsked = 0;
+  /** What is being kept, in order: a database is let go of once what was written while it was held is kept. */
+  let idbWriting: Promise<unknown> = Promise.resolve();
+  /** Tells the same app in other tabs, and elsewhere in this page, which parts were kept. */
+  let idbChannel: BroadcastChannel | null = null;
+  /** Keep a batch of parts; true once kept, false when the page's storage refused (its answers come in the batches' order). */
+  const keepIdbParts = (parts: Record<string, string | null>): Promise<boolean> => {
+    const backing = idbBacking;
+    if (!backing || !parts || typeof parts !== 'object') return Promise.resolve(true);
+    const changes = new Map<string, string | null>();
+    for (const [name, value] of Object.entries(parts)) {
+      if (name.length > 1024 || (value !== null && typeof value !== 'string')) continue;
+      changes.set(name, value);
+    }
+    if (changes.size === 0) return Promise.resolve(true);
+    if (backing.kind === 'localStorage') {
+      // Held to the one quota with the rest the app keeps, all of it or none: a part refused
+      // puts back what the others were (kept a part at a time, half a transaction could be).
+      // Told to the same app elsewhere in this page.
+      const before = new Map<string, string | null>();
+      for (const name of changes.keys()) {
+        try {
+          before.set(name, localStorage.getItem(`${storageBase}idb:${name}`));
+        } catch {
+          before.set(name, null);
+        }
+      }
+      let refused = false;
+      for (const [name, value] of changes) {
+        if (!savePersistedIdb(storageBase, name, value, limits.storageQuotaBytes)) {
+          refused = true;
+          break;
+        }
+      }
+      if (refused) {
+        for (const [name, value] of before) {
+          try {
+            if (value === null) localStorage.removeItem(`${storageBase}idb:${name}`);
+            else localStorage.setItem(`${storageBase}idb:${name}`, value);
+          } catch {
+            // What was there fitted before; nothing more to do.
+          }
+        }
+        storageKept(false);
+        return Promise.resolve(false);
+      }
+      for (const [name, value] of changes) setIdbPart(name, value);
+      tellNeighbours(storageBase, heard, [...changes.keys()].map((name) => `${storageBase}idb:${name}`));
+      return Promise.resolve(true);
+    }
+    // Held to the app's IndexedDB quota as a whole, and kept together (a transaction whole or
+    // not at all), after what is being kept before it.
+    const done = idbWriting.then(async () => {
+      let bytes = 0;
+      for (const [name, value] of idbParts) if (!changes.has(name)) bytes += partBytes(name, value);
+      for (const [name, value] of changes) if (value !== null) bytes += partBytes(name, value);
+      if (bytes > limits.idbQuotaBytes) return false;
+      const previous = new Map<string, string | null>();
+      for (const name of changes.keys()) previous.set(name, idbParts.get(name) ?? null);
+      for (const [name, value] of changes) setIdbPart(name, value);
+      // Under a lease, the write checks the lease is this tab's still, in its own transaction.
+      const fences: LeaseFence[] = [];
+      for (const database of new Set([...changes.keys()].map((name) => databaseOfPart(name) ?? ''))) {
+        const fence = idbFences.get(database);
+        if (fence) fences.push(fence);
+      }
+      const kept = await backing.write(changes, fences);
+      if (!kept) for (const [name, value] of previous) setIdbPart(name, value);
+      return kept;
+    }).then((kept) => {
+      storageKept(kept);
+      if (kept) idbChannel?.postMessage({ names: [...changes.keys()] });
+      return kept;
+    });
+    idbWriting = done.catch(() => false);
+    return done.catch(() => false);
+  };
+  // The app's side is to write to a database: this tab holds it (across the site's tabs, where
+  // the browser can say so), and tells the app's side what other tabs kept in it first.
+  const holdIdb = (id: number, name: string) => {
+    const backing = idbBacking;
+    // The session that asked: a session started again since asks with ids of its own.
+    const asker = currentTransport;
+    const give = async (): Promise<boolean> => {
+      const parts: Record<string, string | null> = {};
+      if (backing && typeof name === 'string') {
+        try {
+          // What this page wrote is kept first: read before, a part would be read as it was.
+          await idbWriting.catch(() => undefined);
+          const prefixes = partPrefixes(name);
+          const fresh = await backing.read(prefixes);
+          for (const [part, value] of fresh) if (idbParts.get(part) !== value) parts[part] = value;
+          for (const part of idbParts.keys()) if (prefixes.some((p) => part.startsWith(p)) && !fresh.has(part)) parts[part] = null;
+          for (const [part, value] of Object.entries(parts)) setIdbPart(part, value);
+        } catch {
+          // Not read: the app's side goes on from what it has.
+        }
+      }
+      if (disposed || !asker || currentTransport !== asker) return false;
+      asker.post({ type: 'idb-held', id, parts });
+      return true;
+    };
+    const locks = typeof navigator !== 'undefined' ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
+    // A name of a database's length, and as many as an app has use for: past either (the app's
+    // code may ask for anything), given without holding anything across tabs.
+    if (!backing || backing.kind !== 'indexeddb' || typeof name !== 'string' || name.length > 1024 || idbHolds.size + idbHoldsAsked >= MAX_IDB_HOLDS) {
+      void give();
+      return;
+    }
+    idbHoldsAsked++;
+    let asking = true;
+    const answered = () => {
+      if (!asking) return;
+      asking = false;
+      idbHoldsAsked--;
+    };
+    if (!locks || typeof locks.request !== 'function') {
+      // No locks in this browser: a lease in the page's IndexedDB holds it instead.
+      void holdByLease(storageBase, name, () => disposed || currentTransport !== asker)
+        .then((lease) => {
+          answered();
+          if (!lease) return;
+          const release = () => {
+            if (idbFences.get(name) === lease.fence) idbFences.delete(name);
+            lease.release();
+          };
+          idbHolds.set(name, release);
+          idbFences.set(name, lease.fence);
+          return give().then((told) => {
+            if (!told && idbHolds.get(name) === release) releaseIdb(name);
+          });
+        })
+        .catch(() => {
+          answered();
+          void give();
+        });
+      return;
+    }
+    let given = false;
+    locks
+      .request(
+        `softn-idb:${JSON.stringify([storageBase, name])}`,
+        () =>
+          new Promise<void>((release) => {
+            given = true;
+            answered();
+            if (disposed || currentTransport !== asker) {
+              release();
+              return;
+            }
+            idbHolds.set(name, release);
+            void give().then((told) => {
+              // Asked for by a session that is gone: let go of at once.
+              if (!told && idbHolds.get(name) === release) releaseIdb(name);
+            });
+          })
+      )
+      .catch(() => {
+        answered();
+        // The browser would not hold it: the app's side goes on without.
+        if (!given) void give();
+      });
+  };
+  const releaseIdb = (name: string) => {
+    const release = idbHolds.get(name);
+    if (!release) return;
+    idbHolds.delete(name);
+    // Once what was written while it was held is kept.
+    void idbWriting.then(release, release);
+  };
+  // Parts another tab (or the same app elsewhere in this page) kept: read, and told to the
+  // app's side. Not those of a database this tab holds, which it read when it was given it.
+  const idbToldElsewhere = (names: unknown) => {
+    const backing = idbBacking;
+    if (!backing || disposed || !Array.isArray(names)) return;
+    const asked = names.filter((n): n is string => typeof n === 'string' && n.length <= 1024 && !idbHolds.has(databaseOfPart(n) ?? '')).slice(0, 4096);
+    if (asked.length === 0) return;
+    const turns = new Map(asked.map((n) => [n, turnOfPart(n)]));
+    // After what this page is writing: read before, a part it wrote would be read as it was.
+    void idbWriting
+      .catch(() => undefined)
+      .then(() => backing.read(asked))
+      .then((fresh) => {
+        // Told together, taken in together: a commit of the other tab's is never seen half done
+        // (one part a turn, a read between two of them read a page with a list of pages before it).
+        const parts: Record<string, string | null> = {};
+        let any = false;
+        for (const name of asked) {
+          // Written or read again here since it was asked for: what is here is newer.
+          if (turnOfPart(name) !== turns.get(name) || idbHolds.has(databaseOfPart(name) ?? '')) continue;
+          const value = fresh.get(name) ?? null;
+          if ((idbParts.get(name) ?? null) === value) continue;
+          setIdbPart(name, value);
+          parts[name] = value;
+          any = true;
+        }
+        if (any) currentTransport?.post({ type: 'idb-changed', parts });
+      })
+      .catch(() => {
+        // Not read: told again by the next write.
+      });
+  };
   let rafHandle: number | ReturnType<typeof setTimeout> | null = null;
+  let rafInFlight = false;
+  let rafWantedWhileInFlight = false;
+  const COALESCE_MOVE_EVENTS = new Set([
+    'pointermove', 'mousemove', 'touchmove',
+    'pointerover', 'pointerout', 'mouseover', 'mouseout',
+    'pointerleave', 'pointerenter', 'mouseleave', 'mouseenter',
+  ]);
+  const DISCRETE_POINTER_EVENTS = new Set([
+    'pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu',
+  ]);
+  interface PendingCoalescedEvent {
+    nodeId: number;
+    eventType: string;
+    props: Record<string, unknown>;
+    syncChanges: unknown[];
+  }
+  const inFlightCoalesced = new Map<string, number>();
+  const pendingCoalesced = new Map<string, PendingCoalescedEvent>();
+  let wheelInFlightTurnId: number | null = null;
+  let pendingWheel: PendingCoalescedEvent | null = null;
   let activeTier: ZippEngineTier = 'lite';
   let turnSeq = 1;
   const pendingWatchdogs = new Map<number, ReturnType<typeof setTimeout>>();
@@ -468,6 +873,8 @@ export async function mountSoftNContainer(
   const pendingAnswers = new Map<number, (eventBits: number) => void>();
 
   const clearRaf = () => {
+    rafInFlight = false;
+    rafWantedWhileInFlight = false;
     if (rafHandle !== null) {
       if (typeof cancelAnimationFrame === 'function' && typeof rafHandle === 'number') {
         cancelAnimationFrame(rafHandle);
@@ -489,10 +896,18 @@ export async function mountSoftNContainer(
       frameOwed = true;
       return;
     }
+    if (rafInFlight) {
+      rafWantedWhileInFlight = true;
+      return;
+    }
     if (rafHandle !== null || disposed) return;
     const step = (ts: number) => {
       rafHandle = null;
-      if (!disposed) currentTransport?.post({ type: 'raf', timestamp: ts });
+      if (!disposed) {
+        rafInFlight = true;
+        rafWantedWhileInFlight = false;
+        currentTransport?.post({ type: 'raf', timestamp: ts });
+      }
     };
     if (typeof requestAnimationFrame === 'function') {
       rafHandle = requestAnimationFrame(step);
@@ -501,33 +916,411 @@ export async function mountSoftNContainer(
     }
   };
 
+  const backendSockets = new Map<string, BackendWsHandle>();
+  let viewportResizeObserver: ResizeObserver | null = null;
+  let hostFontStyleEl: HTMLStyleElement | null = null;
+  const dynamicFontSheets = new Map<Element, string>();
+
   const teardownPage = () => {
     clearRaf();
+    // Databases the session held are let go of, once what it wrote is kept: started again, it holds none.
+    for (const release of idbHolds.values()) void idbWriting.then(release, release);
+    idbHolds.clear();
     for (const wd of pendingWatchdogs.values()) clearTimeout(wd);
     pendingWatchdogs.clear();
     pendingAnswers.clear();
+    inFlightCoalesced.clear();
+    pendingCoalesced.clear();
+    wheelInFlightTurnId = null;
+    pendingWheel = null;
+    for (const ws of backendSockets.values()) {
+      try { ws.close(1001, 'page navigated'); } catch { /* ignore */ }
+    }
+    backendSockets.clear();
     currentTransport?.terminate();
     currentTransport = null;
     currentPatcher?.dispose();
     currentPatcher = null;
     threeHost?.dispose();
     threeHost = null;
+    viewportResizeObserver?.disconnect();
+    viewportResizeObserver = null;
+    hostFontStyleEl?.remove();
+    hostFontStyleEl = null;
+    dynamicFontSheets.clear();
   };
 
-  const mountPage = async (pagePath: string): Promise<void> => {
+  const useWorkerIsolation =
+    options.isolation === 'worker' ||
+    (options.isolation !== 'inline' && typeof Worker === 'function');
+
+  // Build effective SQLite database configs (manifest + auto-discovered + host-provided JSON seed overrides)
+  const effectiveDatabases: DatabaseConfig[] = (archive.manifest.databases ?? []).map((d) => ({ ...d }));
+  if (options.databaseSeeds) {
+    for (const [dbName, seedJson] of Object.entries(options.databaseSeeds)) {
+      const existing = effectiveDatabases.find((d) => d.name === dbName || d.file === dbName);
+      if (existing) {
+        existing.seedJson = seedJson;
+      } else {
+        effectiveDatabases.push({
+          name: dbName,
+          engine: 'sqlite',
+          file: dbName.endsWith('.db') ? dbName : `${dbName}.db`,
+          seedJson,
+          persist: true,
+        });
+      }
+    }
+  }
+
+  const backendRouting =
+    buildBackendRoutingConfig(archive.manifest.backend) ??
+    (options.backendTransport
+      ? { enabled: true, mode: 'api' as const, routes: ['/api/', '/ws'], interceptOrigins: [] }
+      : undefined);
+
+  let localBackendTransport: LocalBackendTransport | null = null;
+  let backendTransport: BackendTransport | undefined = options.backendTransport;
+
+  if (!backendTransport && (archive.manifest.backend || effectiveDatabases.length > 0)) {
+    const backendVfs = archive.exportBackendVfs();
+    let backendEngineSource: ZippEngineSource | undefined;
+    if (archive.manifest.backend) {
+      const bRt = archive.manifest.backend.runtime;
+      const bTier: ZippEngineTier =
+        bRt === 'rust' ? 'rust' : bRt === 'php' ? 'php' : bRt === 'typescript' ? 'typescript' : bRt === 'python' ? 'python' : 'javascript';
+      const suppliedBackend = options.engineWasm?.[bTier];
+      const resolvedBackend = typeof suppliedBackend === 'function' ? await suppliedBackend() : suppliedBackend;
+      if (resolvedBackend instanceof WebAssembly.Module) {
+        backendEngineSource = resolvedBackend;
+      } else if (typeof resolvedBackend === 'string') {
+        backendEngineSource = useWorkerIsolation ? await getSharedCompiledEngine(resolvedBackend) : resolvedBackend;
+      } else if (resolvedBackend) {
+        backendEngineSource =
+          resolvedBackend instanceof ArrayBuffer
+            ? new Uint8Array(resolvedBackend)
+            : new Uint8Array(resolvedBackend.buffer, resolvedBackend.byteOffset, resolvedBackend.byteLength);
+      } else if (useWorkerIsolation) {
+        backendEngineSource = await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[bTier]}`);
+      }
+    }
+
+    let xdbSource: ZippEngineSource | undefined;
+    if (options.xdbWasm) {
+      const resolvedXdb = typeof options.xdbWasm === 'function' ? await options.xdbWasm() : options.xdbWasm;
+      if (resolvedXdb instanceof WebAssembly.Module) {
+        xdbSource = resolvedXdb;
+      } else if (typeof resolvedXdb === 'string') {
+        xdbSource = useWorkerIsolation ? await getSharedCompiledEngine(resolvedXdb) : resolvedXdb;
+      } else if (resolvedXdb) {
+        xdbSource =
+          resolvedXdb instanceof ArrayBuffer
+            ? new Uint8Array(resolvedXdb)
+            : new Uint8Array(resolvedXdb.buffer, resolvedXdb.byteOffset, resolvedXdb.byteLength);
+      }
+    } else if (useWorkerIsolation) {
+      xdbSource = await getSharedCompiledEngine(`${runtimeUrl}engines/xdb-wasm.wasm`);
+    }
+
+    localBackendTransport = new LocalBackendTransport({
+      appId,
+      storagePrefix: storageBase,
+      persistStorage,
+      backend: archive.manifest.backend,
+      databases: effectiveDatabases,
+      textFiles: backendVfs.textFiles,
+      binaryFiles: backendVfs.binaryFiles,
+      runtimeUrl,
+      isolation: useWorkerIsolation ? 'worker' : 'inline',
+      engineModule: backendEngineSource,
+      xdbModule: xdbSource,
+      xdbGlueUrl: options.xdbGlueUrl,
+      instructionBudget: limits.instructionsPerTurn,
+      onConsole: options.onConsole,
+      onStatus: emitStatus,
+    });
+    backendTransport = localBackendTransport;
+    await backendTransport.ready;
+  } else if (backendTransport) {
+    emitStatus({
+      phase: 'booting-backend',
+      message: 'Connecting to backend…',
+      percent: 60,
+    });
+    await backendTransport.ready;
+    emitStatus({
+      phase: 'backend-ready',
+      message: 'Backend ready',
+      percent: 82,
+    });
+  }
+
+  let currentUrlPath = options.initialPath ?? (archive.manifest.ssrEntry ? '/' : `/${archive.manifest.main}`);
+  const savedSession: PersistedContainerSession | null = persistStorage
+    ? await loadContainerSession(storageBase).catch(() => null)
+    : null;
+  const liveSession: PersistedContainerSession = {
+    urlPath: savedSession?.urlPath,
+    sessionStorage: Object.assign(Object.create(null) as Record<string, string>, savedSession?.sessionStorage ?? {}),
+    localStorage: Object.assign(
+      Object.create(null) as Record<string, string>,
+      savedSession?.localStorage ?? {},
+      persistStorage ? loadPersistedStorage(storageBase) : {}
+    ),
+    updatedAt: Date.now(),
+  };
+  let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let sessionDirty = false;
+  const flushSessionNow = () => {
+    if (!persistStorage) return;
+    if (sessionSaveTimer !== null) {
+      clearTimeout(sessionSaveTimer);
+      sessionSaveTimer = null;
+    }
+    if (!sessionDirty) return;
+    sessionDirty = false;
+    liveSession.updatedAt = Date.now();
+    void saveContainerSession(storageBase, liveSession);
+  };
+  const persistSessionSoon = () => {
+    if (!persistStorage || disposed) return;
+    sessionDirty = true;
+    if (sessionSaveTimer !== null) return;
+    sessionSaveTimer = setTimeout(() => {
+      sessionSaveTimer = null;
+      flushSessionNow();
+    }, 60);
+  };
+  const onPageHideFlush = () => {
+    flushSessionNow();
+    localBackendTransport?.flush();
+  };
+  const onVisibilityFlush = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      flushSessionNow();
+      localBackendTransport?.flush();
+    }
+  };
+  if (persistStorage && typeof window !== 'undefined') {
+    window.addEventListener('pagehide', onPageHideFlush);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityFlush);
+    }
+  }
+  const navHistory: string[] = [];
+  let navHistoryIndex = -1;
+  let navEl: HTMLElement | null = null;
+  let navController: VirtualNavBarController | null = null;
+
+  const updateNavUi = () => {
+    if (!navController) return;
+    navController.setPath(currentUrlPath);
+    navController.setHistoryState(navHistoryIndex > 0, navHistoryIndex >= 0 && navHistoryIndex < navHistory.length - 1);
+  };
+
+  if (options.virtualNav && typeof document !== 'undefined') {
+    navEl = document.createElement('div');
+    navEl.setAttribute('data-softn-virtual-nav', '');
+    navEl.style.cssText = CONSENT_STYLE;
+    navController = renderVirtualNavBar({
+      appName: hostLabel(archive.manifest.name) || 'SoftN App',
+      initialPath: currentUrlPath,
+      listDirectory: (dir) => archive.listVirtualDirectory(dir),
+      onNavigate: (target) => {
+        void navigateTo(target, true).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
+      },
+      onBack: () => {
+        if (navHistoryIndex > 0) {
+          navHistoryIndex--;
+          void navigateTo(navHistory[navHistoryIndex], false).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
+        }
+      },
+      onForward: () => {
+        if (navHistoryIndex + 1 < navHistory.length) {
+          navHistoryIndex++;
+          void navigateTo(navHistory[navHistoryIndex], false).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
+        }
+      },
+      onReload: () => {
+        void navigateTo(currentUrlPath, false).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
+      },
+    });
+    navEl.attachShadow({ mode: 'closed' }).appendChild(navController.element);
+    frameEl.insertBefore(navEl, boxEl);
+  }
+
+  const fetchSsrDocument = async (
+    method: string,
+    rawUrlPath: string,
+    encodedBody?: string
+  ): Promise<{ finalUrlPath: string; html: string }> => {
+    if (!backendTransport) {
+      throw new Error(`No backend available to handle ${rawUrlPath}`);
+    }
+    let curMethod = method.toUpperCase();
+    let curUrl = new URL(rawUrlPath, `${VIRTUAL_ORIGIN}${currentUrlPath.startsWith('/') ? currentUrlPath : `/${currentUrlPath}`}`);
+    let curBody = curMethod !== 'GET' && curMethod !== 'HEAD' ? encodedBody : undefined;
+
+    for (let hops = 0; hops < 10; hops++) {
+      const path = curUrl.pathname || '/';
+      const query = curUrl.search.startsWith('?') ? curUrl.search.slice(1) : curUrl.search;
+      const headers: Record<string, string> = { accept: 'text/html,application/xhtml+xml,*/*' };
+      if (curBody !== undefined) {
+        headers['content-type'] = 'application/x-www-form-urlencoded';
+      }
+      const resp = await backendTransport.fetch({
+        method: curMethod,
+        path,
+        query,
+        headers,
+        body: curBody,
+      });
+
+      if ([301, 302, 303, 307, 308].includes(resp.status)) {
+        const locPair = resp.headers.find(([k]) => k.toLowerCase() === 'location');
+        if (locPair && locPair[1]) {
+          curUrl = new URL(locPair[1], curUrl);
+          if (resp.status === 301 || resp.status === 302 || resp.status === 303) {
+            curMethod = 'GET';
+            curBody = undefined;
+          }
+          continue;
+        }
+      }
+
+      const ctPair = resp.headers.find(([k]) => k.toLowerCase() === 'content-type');
+      const ct = (ctPair?.[1] ?? 'text/html').toLowerCase();
+      const decoded = new TextDecoder().decode(resp.body);
+      const html = ct.includes('html')
+        ? decoded
+        : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${path}</title></head><body><pre>${decoded
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')}</pre></body></html>`;
+      return {
+        finalUrlPath: `${curUrl.pathname}${curUrl.search}`,
+        html,
+      };
+    }
+    throw new Error('Too many redirects from backend');
+  };
+
+  const recordHistory = (urlPath: string, pushHistory: boolean) => {
+    currentUrlPath = urlPath;
+    if (pushHistory) {
+      if (navHistoryIndex + 1 < navHistory.length) {
+        navHistory.splice(navHistoryIndex + 1);
+      }
+      if (navHistory[navHistoryIndex] !== urlPath) {
+        navHistory.push(urlPath);
+        navHistoryIndex = navHistory.length - 1;
+      }
+    }
+    updateNavUi();
+    if (urlPath.startsWith('/')) {
+      liveSession.urlPath = urlPath;
+      persistSessionSoon();
+    }
+  };
+
+  const navigateTo = async (rawTarget: string, pushHistory = true): Promise<void> => {
+    const base = `${VIRTUAL_ORIGIN}${currentUrlPath.startsWith('/') ? currentUrlPath : `/${currentUrlPath}`}`;
+    const parsed = new URL(rawTarget || '/', base);
+    const urlPath = `${parsed.pathname}${parsed.search}`;
+    const pathname = parsed.pathname;
+
+    // 1. If a backend is present and this route belongs to SSR/PHP/virtual folder scripts, render via BackendTransport
+    const isStaticFrontendHtml = (() => {
+      const candidate = archive.resolveFrontendPath(pathname, archive.manifest.main);
+      return Boolean(candidate && /\.html?$/i.test(candidate) && archive.has(candidate));
+    })();
+
+    const wantsBackend =
+      Boolean(backendTransport) &&
+      (Boolean(archive.manifest.ssrEntry) ||
+        /\.(?:php|phtml)$/i.test(pathname) ||
+        (!isStaticFrontendHtml &&
+          Boolean(
+            matchBackendTarget(parsed.href, backendRouting, {
+              baseUrl: base,
+              method: 'GET',
+              isStaticVfsFile: (p) => archive.has(p),
+            })
+          )));
+
+    if (wantsBackend && backendTransport) {
+      const { finalUrlPath, html } = await fetchSsrDocument('GET', urlPath);
+      recordHistory(finalUrlPath, pushHistory);
+      const basePathForAssets = finalUrlPath.split('?')[0].replace(/^\/+/, '') || 'index.html';
+      await mountPage(basePathForAssets, html, finalUrlPath);
+      return;
+    }
+
+    // 2. Static HTML page inside the archive (respecting `frontendRoot`)
+    const resolved = archive.resolveFrontendPath(pathname, archive.manifest.main);
+    if (!resolved || !archive.has(resolved)) {
+      throw new Error(`Cannot navigate to missing container page: ${rawTarget}`);
+    }
+    recordHistory(urlPath, pushHistory);
+    await mountPage(resolved, undefined, urlPath);
+  };
+
+  const submitForm = async (req: { action: string; method: string; encoded: string }): Promise<void> => {
+    if (!backendTransport) return;
+    const base = `${VIRTUAL_ORIGIN}${currentUrlPath.startsWith('/') ? currentUrlPath : `/${currentUrlPath}`}`;
+    const actionUrl = new URL(req.action || currentUrlPath, base);
+    if (req.method === 'GET') {
+      if (req.encoded) {
+        actionUrl.search = actionUrl.search ? `${actionUrl.search}&${req.encoded}` : `?${req.encoded}`;
+      }
+      await navigateTo(`${actionUrl.pathname}${actionUrl.search}`, true);
+      return;
+    }
+    const { finalUrlPath, html } = await fetchSsrDocument(req.method, `${actionUrl.pathname}${actionUrl.search}`, req.encoded);
+    recordHistory(finalUrlPath, true);
+    const basePathForAssets = finalUrlPath.split('?')[0].replace(/^\/+/, '') || 'index.html';
+    await mountPage(basePathForAssets, html, finalUrlPath);
+  };
+
+  const mountPage = async (pagePath: string, overrideHtml?: string, virtualUrlPath?: string): Promise<void> => {
     // A mount the element no longer shows draws nothing: the root is the newer mount's.
     if (disposed || !owns()) return;
     teardownPage();
-    // The page before, and the bars that were about it.
+    // The page before, and the bars that were about it (preserving persistent virtual-nav bar).
     pageRoot.replaceChildren();
-    for (const bar of Array.from(frameEl.children)) if (bar !== boxEl) bar.remove();
+    for (const bar of Array.from(frameEl.children)) if (bar !== boxEl && bar !== navEl) bar.remove();
     saveEl = null;
     if (frameEl.parentNode !== shadowRoot) shadowRoot.replaceChildren(frameStyle, frameEl);
 
-    const html = archive.readText(pagePath);
+    const html = overrideHtml !== undefined ? overrideHtml : archive.readText(pagePath);
     if (html === null) {
       throw new Error(`Page "${pagePath}" not found in .softn container`);
     }
+
+    /**
+     * The app stopped after it had started: said on the page, above its box, with a way to
+     * start this page of it again. Once, however many ways the stop is heard of.
+     */
+    const showStopped = (reason: string) => {
+      // The session is over: what it held across tabs is let go of (once what it wrote is
+      // kept), and what comes for it goes nowhere. (A stopped app kept its databases held, and
+      // the same app in every other tab waited for them for good.)
+      for (const release of idbHolds.values()) void idbWriting.then(release, release);
+      idbHolds.clear();
+      currentTransport?.terminate();
+      currentTransport = null;
+      if (disposed || !owns() || Array.from(frameEl.children).some((el) => el.hasAttribute('data-softn-container-stopped'))) return;
+      const holder = document.createElement('div');
+      holder.setAttribute('data-softn-container-stopped', '');
+      holder.style.cssText = CONSENT_STYLE;
+      holder.attachShadow({ mode: 'closed' }).appendChild(
+        renderStoppedBar(hostLabel(archive.manifest.name) || 'This app', reason, () => {
+          holder.remove();
+          void mountPage(pagePath).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
+        })
+      );
+      frameEl.insertBefore(holder, boxEl);
+    };
 
     const prepared = prepareHtmlDocument(
       html,
@@ -536,6 +1329,10 @@ export async function mountSoftNContainer(
       permissions,
       grantedCaps.has('net')
     );
+    if (virtualUrlPath !== undefined) {
+      const cleanVirtual = virtualUrlPath.startsWith('/') ? virtualUrlPath : `/${virtualUrlPath}`;
+      prepared.seed.url = `${VIRTUAL_ORIGIN}${cleanVirtual}`;
+    }
 
     const { textFiles, binaryFiles } = archive.exportWorkerVfs();
     activeTier = selectEngineTier(prepared.scripts, textFiles, archive.manifest.pythonPackages);
@@ -590,9 +1387,59 @@ export async function mountSoftNContainer(
 
     const viewportEl = document.createElement('div');
     viewportEl.setAttribute('data-softn-viewport', '');
-    viewportEl.setAttribute('data-theme', effectiveTheme);
+    if (prepared.usesSoftnUiCss) {
+      viewportEl.setAttribute('data-theme', effectiveTheme);
+    }
     docRootEl.appendChild(viewportEl);
     pageRoot.appendChild(docRootEl);
+
+    let lastBoxW = -1;
+    let lastBoxH = -1;
+    const syncViewportCssVars = () => {
+      const w = boxEl.clientWidth;
+      const h = boxEl.clientHeight;
+      if (Math.abs(w - lastBoxW) < 0.5 && Math.abs(h - lastBoxH) < 0.5) return;
+      lastBoxW = w;
+      lastBoxH = h;
+      if (w > 0) docRootEl.style.setProperty('--softn-vw', `${w / 100}px`);
+      else docRootEl.style.removeProperty('--softn-vw');
+      if (h > 0) docRootEl.style.setProperty('--softn-vh', `${h / 100}px`);
+      else docRootEl.style.removeProperty('--softn-vh');
+    };
+    syncViewportCssVars();
+    if (typeof ResizeObserver === 'function') {
+      viewportResizeObserver = new ResizeObserver(syncViewportCssVars);
+      viewportResizeObserver.observe(boxEl);
+    }
+    if (prepared.seed.v) {
+      if (boxEl.clientWidth > 0) prepared.seed.v[0] = boxEl.clientWidth;
+      if (boxEl.clientHeight > 0) prepared.seed.v[1] = boxEl.clientHeight;
+    }
+
+    const staticFontFaces = prepared.styles.map(extractSanitizedFontFaces).filter(Boolean).join('\n');
+    const syncHostFonts = () => {
+      if (disposed || typeof document === 'undefined' || !document.head) return;
+      const parts: string[] = [];
+      if (staticFontFaces) parts.push(staticFontFaces);
+      for (const css of dynamicFontSheets.values()) {
+        if (css) parts.push(css);
+      }
+      const combined = parts.join('\n');
+      if (!combined) {
+        hostFontStyleEl?.remove();
+        hostFontStyleEl = null;
+        return;
+      }
+      if (!hostFontStyleEl) {
+        hostFontStyleEl = document.createElement('style');
+        hostFontStyleEl.setAttribute('data-softn-fonts', appId);
+        document.head.appendChild(hostFontStyleEl);
+      }
+      if (hostFontStyleEl.textContent !== combined) {
+        hostFontStyleEl.textContent = combined;
+      }
+    };
+    syncHostFonts();
 
     const handleThreeOps = async (
       canvas: HTMLCanvasElement,
@@ -619,6 +1466,11 @@ export async function mountSoftNContainer(
       netGranted: grantedCaps.has('net'),
       filesGranted: grantedCaps.has('files'),
       callbacks: {
+        onStyleFonts: (sheet, fontFacesCss) => {
+          if (fontFacesCss) dynamicFontSheets.set(sheet, fontFacesCss);
+          else dynamicFontSheets.delete(sheet);
+          syncHostFonts();
+        },
         onSaveRequest: (file) => {
           // One question at a time: a file asked for while another is unanswered is not
           // saved and takes no one's place. (The later one took the place of the earlier, so
@@ -659,26 +1511,75 @@ export async function mountSoftNContainer(
           saveEl = holder;
         },
         onEvent: (nodeId, eventType, props, syncChanges, answered) => {
-          const tid = turnSeq++;
-          if (answered) pendingAnswers.set(tid, answered);
-          if (useWorkerIsolation) {
-            const wd = setTimeout(() => {
-              pendingWatchdogs.delete(tid);
-              currentTransport?.terminate();
-              options.onError?.(
-                new Error(`Container terminated: event "${eventType}" exceeded ${limits.turnTimeoutMs}ms time limit`)
-              );
-            }, limits.turnTimeoutMs);
-            pendingWatchdogs.set(tid, wd);
+          const dispatchEventNow = (
+            nid: number,
+            etype: string,
+            eprops: Record<string, unknown>,
+            esync: unknown[],
+            eans?: (eventBits: number) => void
+          ): number => {
+            const tid = turnSeq++;
+            if (eans) pendingAnswers.set(tid, eans);
+            if (useWorkerIsolation) {
+              const wd = setTimeout(() => {
+                pendingWatchdogs.delete(tid);
+                currentTransport?.terminate();
+                options.onError?.(
+                  new Error(`Container terminated: event "${etype}" exceeded ${limits.turnTimeoutMs}ms time limit`)
+                );
+                showStopped(`its script took more than ${Math.round(limits.turnTimeoutMs / 1000)} seconds to answer a ${etype} and did not finish.`);
+              }, limits.turnTimeoutMs);
+              pendingWatchdogs.set(tid, wd);
+            }
+            currentTransport?.post({
+              type: 'event',
+              turnId: tid,
+              nodeId: nid,
+              eventType: etype,
+              props: eprops,
+              syncChanges: esync,
+            });
+            return tid;
+          };
+
+          if (useWorkerIsolation && !answered) {
+            if (eventType === 'wheel') {
+              if (wheelInFlightTurnId !== null) {
+                if (pendingWheel) {
+                  pendingWheel.nodeId = nodeId;
+                  pendingWheel.syncChanges = syncChanges;
+                  const nextProps = { ...props };
+                  nextProps.deltaX = (Number(pendingWheel.props.deltaX) || 0) + (Number(props.deltaX) || 0);
+                  nextProps.deltaY = (Number(pendingWheel.props.deltaY) || 0) + (Number(props.deltaY) || 0);
+                  nextProps.deltaZ = (Number(pendingWheel.props.deltaZ) || 0) + (Number(props.deltaZ) || 0);
+                  pendingWheel.props = nextProps;
+                } else {
+                  pendingWheel = { nodeId, eventType, props: { ...props }, syncChanges };
+                }
+                return;
+              }
+              wheelInFlightTurnId = dispatchEventNow(nodeId, eventType, props, syncChanges);
+              return;
+            }
+            if (COALESCE_MOVE_EVENTS.has(eventType)) {
+              if (inFlightCoalesced.has(eventType)) {
+                pendingCoalesced.set(eventType, { nodeId, eventType, props, syncChanges });
+                return;
+              }
+              const tid = dispatchEventNow(nodeId, eventType, props, syncChanges);
+              inFlightCoalesced.set(eventType, tid);
+              return;
+            }
+            if (DISCRETE_POINTER_EVENTS.has(eventType)) {
+              const pm = pendingCoalesced.get('pointermove');
+              if (pm) {
+                pendingCoalesced.delete('pointermove');
+                const pmTid = dispatchEventNow(pm.nodeId, pm.eventType, pm.props, pm.syncChanges);
+                inFlightCoalesced.set('pointermove', pmTid);
+              }
+            }
           }
-          currentTransport?.post({
-            type: 'event',
-            turnId: tid,
-            nodeId,
-            eventType,
-            props,
-            syncChanges,
-          });
+          dispatchEventNow(nodeId, eventType, props, syncChanges, answered);
         },
         onSync: (changes) => {
           currentTransport?.post({ type: 'sync', changes });
@@ -687,33 +1588,34 @@ export async function mountSoftNContainer(
           options.onTitleChange?.(title);
         },
         onNavigate: (href) => {
-          // A page of the app's, and only a page: a link to any other file of the app's is
-          // not something to show as a document.
-          const next = resolveVfsPath(href, pagePath);
-          if (next && /\.html?$/i.test(next) && archive.has(next)) {
-            void mountPage(next).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
-          }
+          void navigateTo(href, true).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
         },
+        onFormSubmit: backendTransport
+          ? (req) => {
+              void submitForm(req).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
+            }
+          : undefined,
         onCustomTag: (tag) => {
           void ensureUiExtension(tag, runtimeUrl);
         },
         onThreeOps: (canvas, canvasId, ops) => {
           void handleThreeOps(canvas, canvasId, ops);
         },
+        // What the page could not do for the app, in its console with what it prints.
+        onWarning: (text) => {
+          if (owns()) options.onConsole?.('warn', text);
+        },
       },
     });
     currentPatcher = patcher;
 
     const initialTags = prepared.mountInitialDom(viewportEl, patcher.nodes, docRootEl);
+    patcher.adoptReadableImages(viewportEl);
     for (const tag of initialTags) {
       void ensureUiExtension(tag, runtimeUrl);
     }
 
     // Boot Worker (or inline session when `isolation: 'inline'` or `Worker` is absent in JSDOM)
-    const useWorkerIsolation =
-      options.isolation === 'worker' ||
-      (options.isolation !== 'inline' && typeof Worker === 'function');
-
     await new Promise<void>((resolveReady, rejectReady) => {
       let settledReady = false;
 
@@ -723,22 +1625,87 @@ export async function mountSoftNContainer(
           case 'ready':
             if (!settledReady) {
               settledReady = true;
+              emitStatus({
+                phase: 'ready',
+                message: 'Ready',
+                percent: 100,
+              });
               resolveReady();
             }
             break;
 
           case 'ops':
+            if (msg.rafReply) {
+              rafInFlight = false;
+            }
             if (msg.turnId !== undefined) {
               const wd = pendingWatchdogs.get(msg.turnId);
               if (wd) {
                 clearTimeout(wd);
                 pendingWatchdogs.delete(msg.turnId);
               }
+              if (msg.turnId === wheelInFlightTurnId) {
+                wheelInFlightTurnId = null;
+                if (pendingWheel && !disposed) {
+                  const nextW = pendingWheel;
+                  pendingWheel = null;
+                  const nextTid = turnSeq++;
+                  if (useWorkerIsolation) {
+                    const nwd = setTimeout(() => {
+                      pendingWatchdogs.delete(nextTid);
+                      currentTransport?.terminate();
+                      options.onError?.(new Error(`Container terminated: event "wheel" exceeded ${limits.turnTimeoutMs}ms time limit`));
+                      showStopped(`its script took more than ${Math.round(limits.turnTimeoutMs / 1000)} seconds to answer a wheel and did not finish.`);
+                    }, limits.turnTimeoutMs);
+                    pendingWatchdogs.set(nextTid, nwd);
+                  }
+                  wheelInFlightTurnId = nextTid;
+                  currentTransport?.post({
+                    type: 'event',
+                    turnId: nextTid,
+                    nodeId: nextW.nodeId,
+                    eventType: nextW.eventType,
+                    props: nextW.props,
+                    syncChanges: nextW.syncChanges,
+                  });
+                }
+              } else {
+                for (const [evKey, inflightTid] of inFlightCoalesced) {
+                  if (inflightTid === msg.turnId) {
+                    inFlightCoalesced.delete(evKey);
+                    const nextEv = pendingCoalesced.get(evKey);
+                    if (nextEv && !disposed) {
+                      pendingCoalesced.delete(evKey);
+                      const nextTid = turnSeq++;
+                      if (useWorkerIsolation) {
+                        const nwd = setTimeout(() => {
+                          pendingWatchdogs.delete(nextTid);
+                          currentTransport?.terminate();
+                          options.onError?.(new Error(`Container terminated: event "${nextEv.eventType}" exceeded ${limits.turnTimeoutMs}ms time limit`));
+                          showStopped(`its script took more than ${Math.round(limits.turnTimeoutMs / 1000)} seconds to answer a ${nextEv.eventType} and did not finish.`);
+                        }, limits.turnTimeoutMs);
+                        pendingWatchdogs.set(nextTid, nwd);
+                      }
+                      inFlightCoalesced.set(evKey, nextTid);
+                      currentTransport?.post({
+                        type: 'event',
+                        turnId: nextTid,
+                        nodeId: nextEv.nodeId,
+                        eventType: nextEv.eventType,
+                        props: nextEv.props,
+                        syncChanges: nextEv.syncChanges,
+                      });
+                    }
+                    break;
+                  }
+                }
+              }
             }
             if (msg.ops.length > 0) {
               patcher.applyOps(msg.ops);
             }
-            if (msg.wantsRaf) {
+            if (msg.wantsRaf || (!rafInFlight && rafWantedWhileInFlight)) {
+              rafWantedWhileInFlight = false;
               scheduleNextRaf();
             }
             // Whoever waited for the script's answer to this event has it now, after what
@@ -749,6 +1716,33 @@ export async function mountSoftNContainer(
                 pendingAnswers.delete(msg.turnId);
                 answered(typeof msg.eventBits === 'number' ? msg.eventBits : 0);
               }
+            }
+            break;
+
+          case 'webgl-frame':
+            patcher.presentWebGLFrame(msg.canvasId, msg.bitmap, msg.width, msg.height);
+            break;
+
+          case 'session-route':
+            if (typeof msg.urlPath === 'string' && msg.urlPath.startsWith('/')) {
+              currentUrlPath = msg.urlPath;
+              updateNavUi();
+              liveSession.urlPath = msg.urlPath;
+              persistSessionSoon();
+            }
+            break;
+
+          case 'session-storage-write':
+            if (!persistStorage) break;
+            if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
+              liveSession.sessionStorage[msg.key] = msg.value;
+              persistSessionSoon();
+            } else if (msg.op === 'remove' && typeof msg.key === 'string') {
+              delete liveSession.sessionStorage[msg.key];
+              persistSessionSoon();
+            } else if (msg.op === 'clear') {
+              liveSession.sessionStorage = Object.create(null) as Record<string, string>;
+              persistSessionSoon();
             }
             break;
 
@@ -769,15 +1763,165 @@ export async function mountSoftNContainer(
             if (msg.op === 'set' && (typeof msg.key !== 'string' || typeof msg.value !== 'string' || !storageWriteFits(storageBase, msg.key, msg.value, limits.storageQuotaBytes))) {
               break;
             }
-            storageKept(applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value));
+            {
+              const changed = msg.op === 'clear' ? persistedStorageKeys(storageBase) : typeof msg.key === 'string' ? [`${storageBase}ls:${msg.key}`] : [];
+              const kept = applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value);
+              storageKept(kept);
+              if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
+                liveSession.localStorage[msg.key] = msg.value;
+                persistSessionSoon();
+              } else if (msg.op === 'remove' && typeof msg.key === 'string') {
+                delete liveSession.localStorage[msg.key];
+                persistSessionSoon();
+              } else if (msg.op === 'clear') {
+                liveSession.localStorage = Object.create(null) as Record<string, string>;
+                persistSessionSoon();
+              }
+              if (kept) tellNeighbours(storageBase, heard, changed);
+            }
             break;
 
           case 'db-write':
             // Its records take what its localStorage has left of the one quota.
             if (persistStorage) {
-              storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes - persistedStorageBytes(storageBase)));
+              storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes - persistedStorageBytes(storageBase) - persistedIdbBytes(storageBase)));
             }
             break;
+
+          case 'idb-writes': {
+            // Answered to the session that sent them: a transaction is complete once they are kept.
+            const sender = currentTransport;
+            const batch = msg.id;
+            void (persistStorage ? keepIdbParts(msg.parts) : Promise.resolve(true)).then((ok) => {
+              if (!disposed && sender && currentTransport === sender) sender.post({ type: 'idb-kept', id: batch, ok });
+            });
+            break;
+          }
+
+          case 'idb-hold':
+            holdIdb(msg.id, msg.name);
+            break;
+
+          case 'idb-release':
+            releaseIdb(msg.name);
+            break;
+
+          case 'host-request': {
+            const sender = currentTransport;
+            const requestId = msg.requestId;
+            const reply = (ok: boolean, result?: unknown, error?: string) => {
+              if (!disposed && sender && currentTransport === sender) {
+                sender.post({ type: 'host-reply', requestId, ok, ...(ok ? { result } : { error }) });
+              }
+            };
+            if (msg.kind === 'backend.fetch') {
+              if (!backendTransport) {
+                reply(false, undefined, 'No backend transport is configured for this container');
+                break;
+              }
+              const payload = msg.payload ?? {};
+              const bodyBytes =
+                typeof payload.bodyBase64 === 'string' && payload.bodyBase64.length > 0
+                  ? base64ToBytes(payload.bodyBase64)
+                  : undefined;
+              const rawHeaders: Record<string, string> = {};
+              if (payload.headers && typeof payload.headers === 'object') {
+                for (const [k, v] of Object.entries(payload.headers as Record<string, unknown>)) {
+                  rawHeaders[k] = String(v);
+                }
+              }
+              void backendTransport
+                .fetch({
+                  method: String(payload.method ?? 'GET'),
+                  path: String(payload.path ?? '/'),
+                  query: String(payload.query ?? ''),
+                  headers: rawHeaders,
+                  body: bodyBytes,
+                })
+                .then(
+                  (resp) => {
+                    const hdrObj: Record<string, string> = {};
+                    for (const [k, v] of resp.headers) {
+                      const lower = k.toLowerCase();
+                      // Fetch spec hides Set-Cookie from JS-visible Response.headers;
+                      // VirtualCookieJar already captured it on BackendTransport.
+                      if (lower === 'set-cookie') continue;
+                      hdrObj[lower] = lower in hdrObj ? `${hdrObj[lower]}, ${v}` : v;
+                    }
+                    reply(true, {
+                      ok: resp.status >= 200 && resp.status < 300,
+                      status: resp.status,
+                      statusText: resp.statusText,
+                      headers: hdrObj,
+                      base64: resp.body.byteLength > 0 ? bytesToBase64(resp.body) : '',
+                    });
+                  },
+                  (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+                );
+              break;
+            }
+            if (msg.kind === 'backend.ws.open') {
+              const id = String(msg.payload?.id ?? '');
+              const wsPath = String(msg.payload?.path ?? '/ws');
+              const protocols = Array.isArray(msg.payload?.protocols)
+                ? (msg.payload.protocols as unknown[]).map((p) => String(p))
+                : [];
+              if (backendTransport?.openWebSocket) {
+                const handle = backendTransport.openWebSocket(wsPath, protocols, (event) => {
+                  if (event.type === 'close') {
+                    backendSockets.delete(id);
+                  }
+                  if (!disposed && sender && currentTransport === sender) {
+                    sender.post({ type: 'ws-event', id, event });
+                  }
+                });
+                backendSockets.set(id, handle);
+              } else if (!disposed && sender && currentTransport === sender) {
+                sender.post({ type: 'ws-event', id, event: { type: 'open', protocol: protocols[0] ?? '' } });
+              }
+              reply(true, { ok: true });
+              break;
+            }
+            if (msg.kind === 'backend.ws.send') {
+              const id = String(msg.payload?.id ?? '');
+              const handle = backendSockets.get(id);
+              if (handle) {
+                const isBin = Boolean(msg.payload?.binary);
+                const data = String(msg.payload?.data ?? '');
+                handle.send(isBin ? base64ToBytes(data) : data);
+              }
+              reply(true, { ok: true });
+              break;
+            }
+            if (msg.kind === 'backend.ws.close') {
+              const id = String(msg.payload?.id ?? '');
+              const handle = backendSockets.get(id);
+              if (handle) {
+                backendSockets.delete(id);
+                handle.close(
+                  typeof msg.payload?.code === 'number' ? msg.payload.code : 1000,
+                  typeof msg.payload?.reason === 'string' ? msg.payload.reason : ''
+                );
+              }
+              reply(true, { ok: true });
+              break;
+            }
+            if (msg.kind === 'sqlite.op') {
+              if (!localBackendTransport) {
+                reply(false, undefined, 'Local SQLite engine is not enabled in this container');
+                break;
+              }
+              const op = String(msg.payload?.op ?? '') as 'open' | 'query' | 'execute' | 'close' | 'seed_json';
+              const opArgs = Array.isArray(msg.payload?.args) ? msg.payload.args : [];
+              void localBackendTransport.sqliteOp(op, opArgs).then(
+                (res) => reply(true, res),
+                (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+              );
+              break;
+            }
+            reply(false, undefined, `Unknown host-request kind: ${msg.kind}`);
+            break;
+          }
 
           case 'error': {
             const err = new Error(`[SoftN ${msg.phase}] ${msg.message}`);
@@ -785,6 +1929,9 @@ export async function mountSoftNContainer(
             if (!settledReady && msg.fatal) {
               settledReady = true;
               rejectReady(err);
+            } else if (msg.fatal) {
+              // Stopped after it started: the host's own error page is for an app that never did.
+              showStopped(msg.message);
             }
             break;
           }
@@ -792,6 +1939,12 @@ export async function mountSoftNContainer(
       };
 
       const startSession = async () => {
+        emitStatus({
+          phase: 'starting-frontend',
+          message: 'Starting web interface…',
+          percent: 88,
+          detail: activeTier === 'typescript' ? 'Compiling TypeScript / JSX' : undefined,
+        });
         // The tier's engine: the host's own when it names one for this tier (bytes, a compiled
         // module, an address, or a function asked only now, so a host that offers the engine
         // its page already runs compiles nothing for an app on another tier), else the file
@@ -813,12 +1966,31 @@ export async function mountSoftNContainer(
           engineSource = await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[activeTier]}`);
         }
 
+        // What the app's IndexedDB databases are kept as, read now (a new session reads them again).
+        let initialIdb: Record<string, string> = {};
+        if (persistStorage) {
+          idbBacking ??= (await indexedDbBacking(storageBase)) ?? localStorageBacking(storageBase);
+          try {
+            const kept = await idbBacking.loadAll();
+            idbParts.clear();
+            for (const [name, value] of kept) setIdbPart(name, value);
+            initialIdb = Object.fromEntries(kept);
+          } catch {
+            // Not read: the app starts with no databases.
+          }
+          if (idbBacking.kind === 'indexeddb' && !idbChannel && typeof BroadcastChannel === 'function') {
+            idbChannel = new BroadcastChannel(`softn-idb:${storageBase}`);
+            idbChannel.onmessage = (event: MessageEvent) => idbToldElsewhere((event.data as { names?: unknown } | null)?.names);
+          }
+        }
+
         const initMsg: HostToWorkerMsg = {
           type: 'init',
           appId,
           manifest: archive.manifest,
           seed: prepared.seed,
           scripts: prepared.scripts,
+          placed: prepared.placed,
           textFiles,
           binaryFiles,
           // Always the runtime folder: the tier's bindings and the hosted vendor modules are
@@ -830,8 +2002,15 @@ export async function mountSoftNContainer(
           ...(options.vendorModules ? { vendorModules: options.vendorModules } : {}),
           grantedCapabilities: [...grantedCaps],
           permissions,
-          initialStorage: persistStorage ? loadPersistedStorage(storageBase) : {},
+          initialStorage: persistStorage
+            ? Object.assign(Object.create(null) as Record<string, string>, liveSession.localStorage, loadPersistedStorage(storageBase))
+            : {},
+          initialSessionStorage: persistStorage ? { ...liveSession.sessionStorage } : {},
           initialDbRecords: persistStorage ? loadPersistedDb(storageBase) : {},
+          initialIdb,
+          idbApart: idbBacking?.kind === 'indexeddb',
+          ...(backendRouting ? { backendRouting } : {}),
+          hasSqlite: Boolean(localBackendTransport),
           limits,
         };
 
@@ -845,6 +2024,7 @@ export async function mountSoftNContainer(
           worker.addEventListener('error', (ev) => {
             const err = new Error(ev.message || 'Container Worker crashed');
             options.onError?.(err);
+            if (settledReady) showStopped(`what runs it stopped (${err.message}).`);
             if (!settledReady) {
               settledReady = true;
               rejectReady(err);
@@ -891,7 +2071,53 @@ export async function mountSoftNContainer(
     });
   };
 
-  await mountPage(archive.manifest.main);
+  const restoredUrlPath =
+    !options.initialPath && persistStorage && savedSession?.urlPath && savedSession.urlPath.startsWith('/')
+      ? savedSession.urlPath
+      : undefined;
+
+  if (options.initialPath) {
+    await navigateTo(options.initialPath, true);
+  } else if (restoredUrlPath) {
+    const restoredPathname = new URL(restoredUrlPath, `${VIRTUAL_ORIGIN}/`).pathname;
+    const resolvedHtml = archive.resolveFrontendPath(restoredPathname, archive.manifest.main);
+    const hasExactStaticHtml = Boolean(
+      resolvedHtml &&
+        /\.html?$/i.test(resolvedHtml) &&
+        archive.has(resolvedHtml) &&
+        resolvedHtml !== archive.manifest.main
+    );
+    const wantsBackendRestore =
+      Boolean(backendTransport) &&
+      (Boolean(archive.manifest.ssrEntry) ||
+        /\.(?:php|phtml)$/i.test(restoredPathname) ||
+        (!hasExactStaticHtml &&
+          Boolean(
+            matchBackendTarget(`${VIRTUAL_ORIGIN}${restoredUrlPath}`, backendRouting, {
+              baseUrl: `${VIRTUAL_ORIGIN}/`,
+              method: 'GET',
+              isStaticVfsFile: (p) => archive.has(p),
+            })
+          )));
+    if (wantsBackendRestore || hasExactStaticHtml) {
+      await navigateTo(restoredUrlPath, true).catch(async () => {
+        recordHistory(restoredUrlPath, true);
+        await mountPage(archive.manifest.main, undefined, restoredUrlPath);
+      });
+    } else {
+      recordHistory(restoredUrlPath, true);
+      await mountPage(archive.manifest.main, undefined, restoredUrlPath);
+    }
+  } else if (archive.manifest.ssrEntry && backendTransport) {
+    await navigateTo('/', true);
+  } else {
+    const initialFrontendPath = archive.toFrontendVfsPath(archive.manifest.main);
+    const initialUrl = /(^|\/)index\.html?$/i.test(initialFrontendPath)
+      ? '/' + initialFrontendPath.replace(/(^|\/)index\.html?$/i, '$1')
+      : `/${initialFrontendPath}`;
+    recordHistory(initialUrl, true);
+    await mountPage(archive.manifest.main);
+  }
 
   if (owns()) {
     options.onReady?.({
@@ -906,15 +2132,28 @@ export async function mountSoftNContainer(
     get engineTier() {
       return activeTier;
     },
+    get currentPath() {
+      return currentUrlPath;
+    },
     appId,
     shadowRoot: pageRoot,
     frameRoot: shadowRoot,
+    backendTransport,
     async navigate(path: string) {
-      const resolved = resolveVfsPath(path, archive.manifest.main);
-      if (!resolved || !archive.has(resolved)) {
-        throw new Error(`Cannot navigate to missing container page: ${path}`);
+      await navigateTo(path, true);
+    },
+    listVirtualDirectory(dirPath = ''): VirtualDirEntry[] {
+      return archive.listVirtualDirectory(dirPath);
+    },
+    async seedDatabase(dbName: string, seedJson: string | Record<string, unknown>): Promise<Record<string, unknown>> {
+      if (!localBackendTransport) {
+        throw new Error('Cannot seed database: no local SQLite engine is running in this container');
       }
-      await mountPage(resolved);
+      return localBackendTransport.seedDatabase(dbName, seedJson);
+    },
+    async exportDatabase(dbName: string): Promise<Uint8Array | null> {
+      if (!localBackendTransport) return null;
+      return localBackendTransport.exportDatabase(dbName);
     },
     setGrantedCapabilities(caps: Capability[]) {
       grantedCaps = new Set(caps);
@@ -943,7 +2182,29 @@ export async function mountSoftNContainer(
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('storage', onStorage);
+        window.removeEventListener('pagehide', onPageHideFlush);
+      }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityFlush);
+      }
+      flushSessionNow();
+      const mounted = mountedByStorage.get(storageBase);
+      if (mounted) {
+        mounted.delete(heard);
+        if (mounted.size === 0) mountedByStorage.delete(storageBase);
+      }
+      // Databases this tab held are let go of once what was written is kept.
+      for (const release of idbHolds.values()) void idbWriting.then(release, release);
+      idbHolds.clear();
+      idbChannel?.close();
+      idbChannel = null;
       teardownPage();
+      localBackendTransport?.dispose();
+      localBackendTransport = null;
+      navController = null;
+      navEl = null;
       archive.dispose();
       // Only what this mount drew: a newer mount into the same element owns the root now.
       pageRoot.replaceChildren();
@@ -960,7 +2221,7 @@ export function defineSoftNAppElement(): void {
 
   class SoftNAppElement extends HTMLElement {
     static get observedAttributes(): string[] {
-      return ['src', 'runtime-url', 'theme', 'permission-mode'];
+      return ['src', 'runtime-url', 'theme', 'permission-mode', 'virtual-nav', 'initial-path'];
     }
 
     private handle: SoftNContainerHandle | null = null;
@@ -980,7 +2241,14 @@ export function defineSoftNAppElement(): void {
 
     attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
       if (oldValue === newValue || !this.isConnected) return;
-      if (name === 'src' || name === 'runtime-url' || name === 'theme' || name === 'permission-mode') {
+      if (
+        name === 'src' ||
+        name === 'runtime-url' ||
+        name === 'theme' ||
+        name === 'permission-mode' ||
+        name === 'virtual-nav' ||
+        name === 'initial-path'
+      ) {
         this.scheduleRemount();
       }
     }
@@ -1008,6 +2276,8 @@ export function defineSoftNAppElement(): void {
       const permAttr = this.getAttribute('permission-mode');
       const permissionMode =
         permAttr === 'preapproved' || permAttr === 'deny' ? permAttr : 'prompt';
+      const virtualNav = this.hasAttribute('virtual-nav') && this.getAttribute('virtual-nav') !== 'false';
+      const initialPath = this.getAttribute('initial-path') ?? undefined;
 
       try {
         const mounted = await mountSoftNContainer(this, {
@@ -1015,6 +2285,8 @@ export function defineSoftNAppElement(): void {
           runtimeUrl,
           theme,
           permissionMode,
+          virtualNav,
+          initialPath,
           onTitleChange: (title) => {
             this.dispatchEvent(new CustomEvent('softn-title', { detail: { title }, bubbles: true }));
           },

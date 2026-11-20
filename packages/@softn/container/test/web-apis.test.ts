@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mountSoftNContainer } from '../src/index';
+import { sameSite } from '../src/sanitize';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LITE_WASM = path.join(PKG_ROOT, 'dist', 'runtime', 'engines', 'zipp-javascript-lite.wasm');
@@ -41,8 +42,8 @@ async function open(source: Record<string, string | Uint8Array>, extra: Record<s
   const root = handle.shadowRoot;
   const text = (selector: string): string => root.querySelector(selector)?.textContent ?? '(not on the page)';
   /** What the page's script reported, once it has. */
-  const result = async (): Promise<Record<string, unknown>> => {
-    await expect.poll(() => text('#out'), { timeout: 5_000, interval: 10 }).not.toBe('…');
+  const result = async (timeout = 5_000): Promise<Record<string, unknown>> => {
+    await expect.poll(() => text('#out'), { timeout, interval: 10 }).not.toBe('…');
     return JSON.parse(text('#out')) as Record<string, unknown>;
   };
   return { handle, root, said, text, result };
@@ -183,13 +184,24 @@ describe('an address for a blob (URL.createObjectURL)', () => {
   });
 });
 
+/** A blob's bytes, as this test's page reads them. */
+function blobBytes(blob: Blob): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
 describe('a request, as the web sends one', () => {
   it('carries a form, a query, a blob and bytes as what they are, and takes a Request', async () => {
     const sent: Array<{ url: string; method: string; type: string | null; body: string }> = [];
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       const raw = init?.body;
-      const body = raw instanceof Uint8Array ? new TextDecoder().decode(raw) : typeof raw === 'string' ? raw : '';
+      // A body with a file in it is put together by the Worker from its parts, and comes as a blob.
+      const body = raw instanceof Uint8Array ? new TextDecoder().decode(raw) : typeof raw === 'string' ? raw : raw instanceof Blob ? new TextDecoder().decode(await blobBytes(raw)) : '';
       sent.push({ url: String(input), method: init?.method ?? 'GET', type: headers.get('content-type'), body });
       return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
     });
@@ -605,6 +617,44 @@ describe('an answer read as it arrives', () => {
     handle.dispose();
   });
 
+  it('does not use the browser’s copy of an answer for the site the app is embedded in, and elsewhere only as the app says', async () => {
+    // The browser keeps one copy of an answer whoever asked for it and however. The page
+    // the app is embedded in asks its own site with the person's cookies; a copy it was
+    // given that way would answer the app's request, which goes without them.
+    expect(sameSite('api.example.com', 'example.com')).toBe(true);
+    expect(sameSite('example.com', 'EXAMPLE.com.')).toBe(true);
+    expect(sameSite('example.com', 'example.org')).toBe(false);
+    expect(sameSite('localhost', 'intranet')).toBe(false);
+    expect(sameSite('10.0.0.1', '10.0.0.2')).toBe(false);
+    expect(sameSite('10.0.0.1', '10.0.0.1')).toBe(true);
+    expect(sameSite('', '')).toBe(false);
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      asked.push(`${new URL(String(input)).pathname}:${init?.cache}:${init?.credentials}`);
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    });
+    const here = window.location.origin;
+    const { handle, result } = await open(
+      {
+        'permission.json': JSON.stringify({ permissions: { net: { enabled: true, allow_http: true, allowed_hosts: [window.location.hostname, 'api.softn.test'] } } }),
+        'index.html': page(
+          '',
+          `var ask = function (address, init) { return fetch(address, init).then(function (response) { return response.text(); }); };
+          ask('${here}/own').then(function () { return ask('${here}/own-kept', { cache: 'force-cache' }); })
+            .then(function () { return ask('https://api.softn.test/plain'); })
+            .then(function () { return ask('https://api.softn.test/kept', { cache: 'force-cache' }); })
+            .then(function () { return ask('https://api.softn.test/fresh', { cache: 'no-store' }); })
+            .then(function () { return ask('https://api.softn.test/again', { cache: 'no-cache' }); })
+            .then(function () { out.done = true; done(); });`
+        ),
+      },
+      granted
+    );
+    expect(await result()).toEqual({ done: true });
+    expect(asked).toEqual(['/own:no-store:omit', '/own-kept:no-store:omit', '/plain:undefined:omit', '/kept:undefined:omit', '/fresh:no-store:omit', '/again:reload:omit']);
+    handle.dispose();
+  });
+
   it('is refused for a site the app was not granted, like any request', async () => {
     const { asked } = slowNetwork();
     const { handle, result } = await open(
@@ -685,6 +735,10 @@ describe('a canvas’s picture, as a file', () => {
     HTMLCanvasElement.prototype.toBlob = function (callback: BlobCallback) {
       callback(new Blob(['picture'], { type: 'image/png' }));
     };
+    // The pictures have loaded by the time they are drawn, as in a browser (this test's page loads none: a picture not loaded draws nothing, and taints nothing).
+    const loaded = { natural: Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'naturalWidth'), complete: Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'complete') };
+    Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', { configurable: true, get: () => 1 });
+    Object.defineProperty(HTMLImageElement.prototype, 'complete', { configurable: true, get: () => true });
     try {
       const { handle, result } = await open(
         {
@@ -712,6 +766,8 @@ describe('a canvas’s picture, as a file', () => {
     } finally {
       HTMLCanvasElement.prototype.toBlob = toBlob;
       HTMLCanvasElement.prototype.getContext = getContext;
+      if (loaded.natural) Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', loaded.natural);
+      if (loaded.complete) Object.defineProperty(HTMLImageElement.prototype, 'complete', loaded.complete);
     }
   });
 });
@@ -886,6 +942,33 @@ describe('an image, and when it has loaded', () => {
     }
   }
 
+  it('loads a picture of the app’s own, a blob and a data: address asked for with CORS, as three.js asks for every texture', async () => {
+    // Every image asked for with CORS was fetched to be read back, which takes only http(s):
+    // a texture from the app's own files never loaded.
+    FakeImage.asked = [];
+    vi.stubGlobal('Image', FakeImage);
+    const { handle, result } = await open({
+      'sprite.png': PNG,
+      'index.html': page(
+        '',
+        `var loaded = [];
+        var load = function (address, name) {
+          var picture = new Image();
+          picture.crossOrigin = 'anonymous';
+          picture.onload = function () { loaded.push(name + ' load'); if (loaded.length === 3) { out.loaded = loaded.sort(); done(); } };
+          picture.onerror = function () { loaded.push(name + ' error'); if (loaded.length === 3) { out.loaded = loaded.sort(); done(); } };
+          picture.src = address;
+        };
+        load('./sprite.png', 'own');
+        load(URL.createObjectURL(new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })), 'blob');
+        load('data:image/gif;base64,R0lGODlhAQABAAAAACw=', 'data');`
+      ),
+    });
+    expect(await result()).toEqual({ loaded: ['blob load', 'data load', 'own load'] });
+    handle.dispose();
+    vi.unstubAllGlobals();
+  });
+
   it('says load to an image that is on no page, with its size, and error to one that cannot be loaded', async () => {
     FakeImage.asked = [];
     vi.stubGlobal('Image', FakeImage);
@@ -895,7 +978,11 @@ describe('an image, and when it has loaded', () => {
         '',
         `var sprite = new Image();
         out.before = [sprite instanceof HTMLImageElement, sprite.complete, sprite.naturalWidth].join('|');
+        // Once: it ran twice (a sprite drawn in it was drawn twice).
+        out.loads = 0;
         sprite.onload = function () {
+          out.loads++;
+          if (out.loads > 1) return;
           out.sprite = [sprite.complete, sprite.naturalWidth, sprite.naturalHeight, sprite.width].join('|');
           var missing = new Image(10, 20);
           missing.addEventListener('error', function () {
@@ -914,6 +1001,7 @@ describe('an image, and when it has loaded', () => {
     });
     expect(await result()).toEqual({
       before: 'true|true|0',
+      loads: 1,
       loading: false,
       empty: true,
       sprite: 'true|3|2|3',
@@ -1357,12 +1445,276 @@ describe('a file the person picked in a file field', () => {
     handle.dispose();
   });
 
-  it('leaves out a file past what an app’s script can take in a turn, and says so, with the others handed over', async () => {
-    // Past about two megabytes the turn the change is heard in runs out, and the app heard
-    // of no change at all: a file past the limit is left out in words, and the rest arrive.
+  it('is read whole through its address, and kept in IndexedDB and read back, at six megabytes', async () => {
+    // Bytes were made from base64 a byte at a time on the app's side: fetch(URL.createObjectURL(file))
+    // then arrayBuffer() of a 6 MB file, and get() of a stored file of a few megabytes, took
+    // more than a turn has and stopped the app.
+    const SIZE = 6 * 1024 * 1024;
+    const bytes = new Uint8Array(SIZE).fill(7);
+    bytes[5] = 42;
+    bytes[SIZE - 1] = 9;
+    const { handle, root, result } = await open(
+      {
+        ...FILES,
+        'index.html': page(
+          '<input id="pick" type="file">',
+          `var pick = document.getElementById('pick');
+          var req = function (r) { return new Promise(function (ok, no) { r.onsuccess = function () { ok(r.result); }; r.onerror = function () { no(r.error); }; }); };
+          pick.addEventListener('change', async function () {
+            var file = pick.files[0];
+            var fetched = new Uint8Array(await (await fetch(URL.createObjectURL(file))).arrayBuffer());
+            out.fetched = [fetched.length, fetched[5], fetched[fetched.length - 1]].join('|');
+            var opening = indexedDB.open('files', 1);
+            opening.onupgradeneeded = function () { opening.result.createObjectStore('f'); };
+            var db = await req(opening);
+            var tx = db.transaction('f', 'readwrite');
+            tx.objectStore('f').put(file, 'one');
+            await new Promise(function (ok, no) { tx.oncomplete = ok; tx.onabort = function () { no(tx.error); }; });
+            var back = await req(db.transaction('f').objectStore('f').get('one'));
+            out.stored = [back instanceof File, back.name, back.size].join('|');
+            var read = new Uint8Array(await back.arrayBuffer());
+            out.read = [read.length, read[5], read[read.length - 1]].join('|');
+            done();
+          });`
+        ),
+      },
+      { ...granted, persistStorage: false, limits: { storageQuotaBytes: 64 * 1024 * 1024 } }
+    );
+    await settle();
+    const field = root.querySelector('#pick') as HTMLInputElement;
+    Object.defineProperty(field, 'files', { configurable: true, value: [new File([bytes], 'six.bin', { type: 'application/octet-stream' })] });
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(await result()).toEqual({ fetched: `${SIZE}|42|9`, stored: `true|six.bin|${SIZE}`, read: `${SIZE}|42|9` });
+    handle.dispose();
+  });
+
+  it('hears of a large file at once, and passes it on without making bytes of it: its address, a data: URL, a part of it, an upload', async () => {
+    // Three megabytes, more than an app's script can make bytes of in a turn: the file is
+    // kept as the text it crossed as. What only passes it on (a data: URL, an upload in a
+    // form or by itself) makes no bytes; a part of it makes that part; reading the whole
+    // takes its turns and arrives.
+    const SIZE = 3 * 1024 * 1024;
+    const bytes = new Uint8Array(SIZE).fill(120);
+    bytes.set([104, 101, 97, 100], 0);
+    bytes.set([116, 97, 105, 108], SIZE - 4);
+    const uploads: Array<{ url: string; type: string; size: number; head: string; tail: string }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const raw = init?.body;
+      const sent = raw instanceof Blob ? await blobBytes(raw) : raw instanceof Uint8Array ? raw : new TextEncoder().encode(String(raw ?? ''));
+      const text = (part: Uint8Array) => new TextDecoder().decode(part);
+      uploads.push({ url: String(input), type: new Headers(init?.headers).get('content-type') ?? '', size: sent.length, head: text(sent.subarray(0, 400)), tail: text(sent.subarray(sent.length - 200)) });
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    });
+    const { handle, root, result, said, text } = await open(
+      {
+        'permission.json': JSON.stringify({ permissions: { files: { enabled: true }, net: { enabled: true, allowed_hosts: ['api.softn.test'] } } }),
+        'index.html': page(
+          '<form id="form"><input id="pick" type="file" name="upload"><input name="note" value="hi"></form>',
+          `var pick = document.getElementById('pick');
+          pick.addEventListener('change', function () {
+            var file = pick.files[0];
+            var began = Date.now();
+            out.heard = [file.name, file.size, file.type].join('|');
+            var reader = new FileReader();
+            reader.onload = function () {
+              out.dataUrl = reader.result.slice(0, 41) + '|' + reader.result.length;
+              out.quick = Date.now() - began < 1500;
+              Promise.all([file.slice(0, 4).text(), file.slice(-4).text(), file.slice(1, 3, 'text/x-part').text()]).then(function (parts) {
+                out.parts = parts.join('|');
+                return fetch('https://api.softn.test/form', { method: 'POST', body: new FormData(document.getElementById('form')) });
+              }).then(function () {
+                return fetch('https://api.softn.test/raw', { method: 'PUT', body: file });
+              }).then(function () {
+                return file.arrayBuffer();
+              }).then(function (buffer) {
+                var all = new Uint8Array(buffer);
+                out.whole = [all.length, all[0], all[all.length - 1], all[1000]].join('|');
+                done();
+              });
+            };
+            reader.readAsDataURL(file);
+          });`
+        ),
+      },
+      granted
+    );
+    await settle();
+    const field = root.querySelector('#pick') as HTMLInputElement;
+    Object.defineProperty(field, 'files', { configurable: true, value: [new File([bytes], 'film.bin', { type: 'video/x-test' })] });
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    const reported = await result(30_000).catch(() => { throw new Error('no report; the app said: ' + said.join(' | ') + '; uploads: ' + uploads.map((one) => one.url).join(',') + '; out: ' + text('#out')); });
+    expect(reported).toEqual({
+      heard: `film.bin|${SIZE}|video/x-test`,
+      dataUrl: `data:video/x-test;base64,aGVhZHh4eHh4eHh4|${'data:video/x-test;base64,'.length + (SIZE / 3) * 4}`,
+      quick: true,
+      parts: 'head|tail|ea',
+      whole: `${SIZE}|104|108|120`,
+    });
+    // The form went as a form, the file's bytes between its words; the file by itself as its bytes.
+    expect(uploads.map((one) => one.url)).toEqual(['https://api.softn.test/form', 'https://api.softn.test/raw']);
+    expect(uploads[0].type).toMatch(/^multipart\/form-data; boundary=----SoftNFormBoundary/);
+    expect(uploads[0].head).toContain('name="note"\r\n\r\nhi\r\n');
+    expect(uploads[0].head).toContain('name="upload"; filename="film.bin"\r\nContent-Type: video/x-test\r\n\r\nhead');
+    expect(uploads[0].tail).toMatch(/xtail\r\n------SoftNFormBoundary[a-z0-9]+--\r\n$/);
+    expect(uploads[0].size).toBeGreaterThan(SIZE);
+    expect(uploads[1]).toMatchObject({ type: 'video/x-test', size: SIZE });
+    expect(uploads[1].head.startsWith('head')).toBe(true);
+    expect(uploads[1].tail.endsWith('tail')).toBe(true);
+    handle.dispose();
+  }, 60_000);
+
+  it('makes a part of a large file, a Blob around it and a copy under another name without making its bytes', async () => {
+    // Each made the file's bytes at once (a part of five megabytes, and the whole file for a
+    // Blob or a File around it), which took more than a turn has. A part is now the same text
+    // from other places, an upload hands that text on with the bytes of it to keep, and what
+    // reads it reads it a part a turn.
+    const SIZE = 6 * 1024 * 1024;
+    const bytes = Uint8Array.from({ length: SIZE }, (_, i) => 65 + (i % 26));
+    const uploads: Array<{ url: string; size: number; head: string; tail: string }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const raw = init?.body;
+      const sent = raw instanceof Blob ? await blobBytes(raw) : new TextEncoder().encode(String(raw ?? ''));
+      uploads.push({ url: String(input), size: sent.length, head: new TextDecoder().decode(sent.subarray(0, 6)), tail: new TextDecoder().decode(sent.subarray(sent.length - 6)) });
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    });
+    const { handle, root, result, said, text } = await open(
+      {
+        'permission.json': JSON.stringify({ permissions: { files: { enabled: true }, net: { enabled: true, allowed_hosts: ['api.softn.test'] } } }),
+        'index.html': page(
+          '<input id="pick" type="file">',
+          `var pick = document.getElementById('pick');
+          pick.addEventListener('change', function () {
+            var file = pick.files[0];
+            var began = Date.now();
+            var part = file.slice(1, 5 * 1024 * 1024 + 1);
+            var copy = new File([file], 'renamed.bin', { type: 'application/x-test' });
+            var mixed = new Blob(['<', file.slice(0, 4), '|', file.slice(-4), '>']);
+            out.quick = Date.now() - began < 500;
+            out.sizes = [part.size, copy.size, copy.name, copy.type, mixed.size].join('|');
+            mixed.text().then(function (words) {
+              out.mixed = words;
+              return fetch('https://api.softn.test/part', { method: 'PUT', body: part });
+            }).then(function () {
+              return fetch('https://api.softn.test/copy', { method: 'PUT', body: copy });
+            }).then(function () {
+              return part.slice(-3).text();
+            }).then(function (end) {
+              out.partEnd = end;
+              done();
+            }).catch(function (e) { out.failed = e.message; done(); });
+          });`
+        ),
+      },
+      granted
+    );
+    await settle();
+    const field = root.querySelector('#pick') as HTMLInputElement;
+    Object.defineProperty(field, 'files', { configurable: true, value: [new File([bytes], 'film.bin', { type: 'video/x-test' })] });
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    const reported = await result(60_000).catch(() => { throw new Error('no report; the app said: ' + said.join(' | ') + '; out: ' + text('#out')); });
+    const letters = (from: number, to: number) => new TextDecoder().decode(bytes.subarray(from, to));
+    expect(reported).toEqual({
+      quick: true,
+      sizes: `${5 * 1024 * 1024}|${SIZE}|renamed.bin|application/x-test|${1 + 4 + 1 + 4 + 1}`,
+      mixed: `<${letters(0, 4)}|${letters(SIZE - 4, SIZE)}>`,
+      partEnd: letters(5 * 1024 * 1024 - 2, 5 * 1024 * 1024 + 1),
+    });
+    expect(uploads).toEqual([
+      { url: 'https://api.softn.test/part', size: 5 * 1024 * 1024, head: letters(1, 7), tail: letters(5 * 1024 * 1024 - 5, 5 * 1024 * 1024 + 1) },
+      { url: 'https://api.softn.test/copy', size: SIZE, head: letters(0, 6), tail: letters(SIZE - 6, SIZE) },
+    ]);
+    handle.dispose();
+  }, 90_000);
+
+  it('reads a picked file as a stream, a part at a time, and a blob of bytes the same way', async () => {
+    const SIZE = 600_000;
+    const bytes = Uint8Array.from({ length: SIZE }, (_, i) => 65 + (i % 26));
+    const { handle, root, result, said, text } = await open(
+      {
+        ...FILES,
+        'index.html': page(
+          '<input id="pick" type="file">',
+          `var pick = document.getElementById('pick');
+          var read = async function (blob) {
+            var reader = blob.stream().getReader();
+            var parts = 0, total = 0, first = -1, last = -1;
+            for (;;) {
+              var step = await reader.read();
+              if (step.done) break;
+              if (!(step.value instanceof Uint8Array)) throw new Error('not bytes');
+              if (first < 0) first = step.value[0];
+              last = step.value[step.value.length - 1];
+              parts++;
+              total += step.value.length;
+            }
+            return [parts > 1, total, first, last].join('|');
+          };
+          pick.addEventListener('change', async function () {
+            try {
+              out.file = await read(pick.files[0]);
+              out.part = await read(pick.files[0].slice(1, 5));
+              out.bytes = await read(new Blob([new Uint8Array([1, 2, 3])]));
+            } catch (e) { out.failed = e.message; }
+            done();
+          });`
+        ),
+      },
+      granted
+    );
+    await settle();
+    const field = root.querySelector('#pick') as HTMLInputElement;
+    Object.defineProperty(field, 'files', { configurable: true, value: [new File([bytes], 'big.txt', { type: 'text/plain' })] });
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    const reported = await result(60_000).catch(() => { throw new Error('no report; the app said: ' + said.join(' | ') + '; out: ' + text('#out')); });
+    expect(reported).toEqual({ file: `true|${SIZE}|65|${65 + ((SIZE - 1) % 26)}`, part: 'false|4|66|69', bytes: 'false|3|1|3' });
+    handle.dispose();
+  }, 90_000);
+
+  it('lets go of a large body whose request is refused, so later ones still go', async () => {
+    // A body of more than crosses in one call goes ahead of its request, in pieces. A request
+    // refused (a host the app did not declare) left its body behind; eight of them, and every
+    // later large body was dropped, even to a host the app may reach.
+    const sizes: number[] = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const raw = init?.body;
+      sizes.push(raw instanceof Blob ? raw.size : String(raw ?? '').length);
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    });
+    const { handle, result, said, text } = await open(
+      {
+        'permission.json': JSON.stringify({ permissions: { net: { enabled: true, allowed_hosts: ['api.softn.test'] } } }),
+        'index.html': page(
+          '',
+          `var body = new Array(2500001).join('x');
+          var refused = 0;
+          (async function () {
+            for (var i = 0; i < 9; i++) {
+              try { await fetch('https://elsewhere.softn.test/up', { method: 'POST', body: body }); } catch (e) { refused++; }
+            }
+            var answer = await fetch('https://api.softn.test/up', { method: 'POST', body: body });
+            out.refused = refused;
+            out.sent = answer.status;
+            done();
+          })().catch(function (e) { out.failed = e.message; done(); });`
+        ),
+      },
+      granted
+    );
+    const reported = await result(60_000).catch(() => { throw new Error('no report; the app said: ' + said.join(' | ') + '; out: ' + text('#out')); });
+    expect(reported).toEqual({ refused: 9, sent: 200 });
+    expect(sizes).toEqual([2_500_000]);
+    handle.dispose();
+  }, 90_000);
+
+  it('leaves out a file past what crosses to an app in one piece, and says so, with the others handed over', async () => {
+    // Ten megabytes cross to the app in one piece: a file past that is left out in words, and the rest arrive.
     const { handle, root, said, result } = await open({ ...FILES, 'index.html': PICKER }, granted);
     await settle();
-    pickFiles(root, [new File([new Uint8Array(2 * 1024 * 1024)], 'film.bin')]);
+    pickFiles(root, [new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'film.bin')]);
     expect(await result()).toMatchObject({ picked: 'table.csv:text/csv:3:true note.txt:text/plain:5:true', texts: 'a,b|hello' });
     expect(said.filter((line) => line.includes('1 of the files picked were left out')).length).toBe(1);
     handle.dispose();

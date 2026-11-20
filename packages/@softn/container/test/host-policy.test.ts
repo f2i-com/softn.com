@@ -406,7 +406,171 @@ describe('what an app may put into the page that embeds it', () => {
     await settle(100);
     expect(document.activeElement).toBe(host);
     expect(handle.shadowRoot.activeElement?.id).toBe('mine');
+    // The element the app is drawn in holding the focus itself, as Safari leaves it when the
+    // person clicks the app's button (a clicked button takes no focus there): the app's.
+    (handle.shadowRoot.activeElement as HTMLElement | null)?.blur();
+    host.tabIndex = -1;
+    host.focus();
+    expect(document.activeElement).toBe(host);
+    expect(handle.shadowRoot.activeElement).toBeNull();
+    handle.shadowRoot.querySelector('#go')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+    await settle(100);
+    expect(handle.shadowRoot.activeElement?.id).toBe('mine');
+    // A field of the embedding page again: the app's own click handler does not take it from there.
+    hostField.focus();
+    handle.shadowRoot.querySelector('#go')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+    await settle(100);
+    expect(document.activeElement).toBe(hostField);
     handle.dispose();
+  });
+
+  it('may take the focus from an element around it, and not from one a person types into', async () => {
+    // Safari puts the focus on the nearest element around a click that takes it (the
+    // runtime's tab) when the person clicks the app's own button.
+    const tab = document.createElement('div');
+    tab.tabIndex = -1;
+    document.body.appendChild(tab);
+    const host = document.createElement('div');
+    tab.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      engineWasm: { lite: LITE_WASM },
+      permissionMode: 'deny',
+      source: {
+        'index.html': `<!doctype html><html><body><input id="mine"><button id="go">go</button><script>
+          document.getElementById('go').addEventListener('click', function () { document.getElementById('mine').focus(); });
+        </script></body></html>`,
+      },
+    });
+    await settle();
+    const go = () => handle.shadowRoot.querySelector('#go')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+    tab.focus();
+    expect(document.activeElement).toBe(tab);
+    go();
+    await settle(100);
+    expect(handle.shadowRoot.activeElement?.id).toBe('mine');
+    // Around the app, and edited in place: a person may be typing there.
+    (handle.shadowRoot.activeElement as HTMLElement | null)?.blur();
+    // As a browser reflects the property (this test's page does not).
+    tab.setAttribute('contenteditable', 'true');
+    tab.focus();
+    expect(document.activeElement).toBe(tab);
+    go();
+    await settle(100);
+    expect(handle.shadowRoot.activeElement).toBeNull();
+    expect(document.activeElement).toBe(tab);
+    handle.dispose();
+  });
+
+  it('does not take the focus from a field in the shadow tree of an element around it', async () => {
+    // The container in the light DOM of an element whose own shadow tree has a search field
+    // the person is typing into: the element holding the focus at the page's level is the
+    // shell, around the app, and it was let go of.
+    const shell = document.createElement('div');
+    const shellRoot = shell.attachShadow({ mode: 'open' });
+    const search = document.createElement('input');
+    shellRoot.append(search, document.createElement('slot'));
+    document.body.appendChild(shell);
+    const host = document.createElement('div');
+    shell.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      engineWasm: { lite: LITE_WASM },
+      permissionMode: 'deny',
+      source: {
+        'index.html': `<!doctype html><html><body><input id="mine"><script>
+          setTimeout(function () { document.getElementById('mine').focus(); document.body.setAttribute('data-asked', 'yes'); }, 200);
+        </script></body></html>`,
+      },
+    });
+    search.focus();
+    expect(shellRoot.activeElement).toBe(search);
+    await expect.poll(() => handle.shadowRoot.querySelector('[data-softn-viewport]')?.getAttribute('data-asked')).toBe('yes');
+    await settle(100);
+    expect(shellRoot.activeElement).toBe(search);
+    expect(handle.shadowRoot.activeElement).toBeNull();
+    handle.dispose();
+  });
+
+  it('does not take the focus from a field the person moved to inside the element its click left the focus on', async () => {
+    // Safari leaves a click in the app on the element around it that takes the focus (here a
+    // shell, with a search field in its own shadow tree). The person clicks the app's button,
+    // then the search field: the document's focused element is the shell still, and the app's
+    // focus() a moment later took the person's keys from the field.
+    const shell = document.createElement('div');
+    shell.tabIndex = -1;
+    const shellRoot = shell.attachShadow({ mode: 'open' });
+    const search = document.createElement('input');
+    shellRoot.append(search, document.createElement('slot'));
+    document.body.appendChild(shell);
+    const host = document.createElement('div');
+    shell.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      engineWasm: { lite: LITE_WASM },
+      permissionMode: 'deny',
+      source: {
+        'index.html': `<!doctype html><html><body><input id="mine"><button id="go">go</button><script>
+          document.getElementById('go').addEventListener('click', function () {
+            setTimeout(function () { document.getElementById('mine').focus(); document.body.setAttribute('data-asked', 'yes'); }, 300);
+          });
+        </script></body></html>`,
+      },
+    });
+    await settle();
+    shell.focus();
+    expect(document.activeElement).toBe(shell);
+    handle.shadowRoot.querySelector('#go')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+    search.focus();
+    expect(document.activeElement).toBe(shell);
+    expect(shellRoot.activeElement).toBe(search);
+    await expect.poll(() => handle.shadowRoot.querySelector('[data-softn-viewport]')?.getAttribute('data-asked')).toBe('yes');
+    await settle(100);
+    expect(shellRoot.activeElement).toBe(search);
+    expect(handle.shadowRoot.activeElement).toBeNull();
+    handle.dispose();
+  });
+
+  it('does not take the focus from a bar of the container’s own', async () => {
+    // The bar that asks whether to save a file has buttons; the person may be on one of them.
+    const roots: ShadowRoot[] = [];
+    const attach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (this: Element, init: ShadowRootInit) {
+      const made = attach.call(this, init);
+      roots.push(made);
+      return made;
+    };
+    try {
+      const { handle } = await mount(
+        {
+          'index.html': `<!doctype html><html><body><input id="mine"><button id="save" type="button">save</button><script>
+            document.getElementById('save').addEventListener('click', function () {
+              var link = document.createElement('a');
+              link.href = URL.createObjectURL(new Blob(['x']));
+              link.download = 'x.txt';
+              link.click();
+              setTimeout(function () { document.getElementById('mine').focus(); document.body.setAttribute('data-asked', 'yes'); }, 500);
+            });
+          </script></body></html>`,
+        },
+        { onSaveRequest: undefined }
+      );
+      await settle(100);
+      handle.shadowRoot.querySelector('#save')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+      await expect.poll(() => roots.some((r) => r.querySelector('[data-softn-save-deny]'))).toBe(true);
+      const deny = roots.map((r) => r.querySelector('[data-softn-save-deny]')).find(Boolean) as HTMLButtonElement;
+      deny.focus();
+      // The app asks for the focus after the person is on the bar's button.
+      expect(handle.shadowRoot.querySelector('[data-softn-viewport]')?.getAttribute('data-asked')).toBeNull();
+      await expect.poll(() => handle.shadowRoot.querySelector('[data-softn-viewport]')?.getAttribute('data-asked')).toBe('yes');
+      await settle(100);
+      // The button keeps it.
+      expect(handle.shadowRoot.activeElement).toBeNull();
+      expect((deny.getRootNode() as ShadowRoot).activeElement).toBe(deny);
+      handle.dispose();
+    } finally {
+      Element.prototype.attachShadow = attach;
+    }
   });
 
   it('holds a canvas to a size the page can hold', () => {

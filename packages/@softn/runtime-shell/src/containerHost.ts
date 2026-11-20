@@ -100,6 +100,12 @@ export function hostedContainerFiles(
   runtimeUrl: string = containerRuntimeUrl()
 ): string[] {
   const files = new Set<string>(['container-worker.js']);
+  const needsBackend = tiers.includes('php') || tiers.includes('rust');
+  if (needsBackend) {
+    files.add('backend-worker.js');
+    files.add('engines/xdb-wasm.wasm');
+    files.add('engines/xdb-wasm.glue.js');
+  }
   for (const tier of tiers) {
     if (CORE_ENGINE_TIERS.has(tier)) {
       files.add(`engines/${container.glueFileFor(tier, CORE_ENGINE_META)}`);

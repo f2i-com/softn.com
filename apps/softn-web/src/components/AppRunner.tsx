@@ -422,26 +422,77 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                 active={active}
                 theme={themeMode === 'dark' || themeMode === 'light' ? themeMode : 'auto'}
                 onReady={onReady}
-                loading={
-                  <Box
-                    className="softn-runner-loading"
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      height: '100%',
-                      minHeight: '300px',
-                      flexDirection: 'column',
-                      gap: '1rem',
-                      background: 'var(--ink)',
-                    }}
-                  >
-                    <Spinner size="lg" />
-                    <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>
-                      <span role="status">Starting {appName}…</span>
-                    </Text>
-                  </Box>
-                }
+                loading={(status) => {
+                  const pct = typeof status?.percent === 'number' ? Math.max(4, Math.min(100, status.percent)) : 8;
+                  return (
+                    <Box
+                      className="softn-runner-loading"
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        height: '100%',
+                        minHeight: '300px',
+                        flexDirection: 'column',
+                        gap: '0.85rem',
+                        padding: '1.5rem',
+                        background: 'var(--ink)',
+                      }}
+                    >
+                      <Spinner size="lg" />
+                      <Text style={{ color: 'var(--fg, #e2e8f0)', fontSize: '0.95rem', fontWeight: 500, letterSpacing: '-0.01em' }}>
+                        <span role="status">{status?.message || `Starting ${appName}…`}</span>
+                      </Text>
+                      <div
+                        style={{
+                          width: 'min(320px, 80vw)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.45rem',
+                        }}
+                      >
+                        <div
+                          role="progressbar"
+                          aria-valuenow={pct}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          style={{
+                            width: '100%',
+                            height: '6px',
+                            borderRadius: '999px',
+                            background: 'rgba(148, 163, 184, 0.22)',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${pct}%`,
+                              height: '100%',
+                              borderRadius: '999px',
+                              background: 'var(--accent, #3b82f6)',
+                              transition: 'width 240ms ease-out',
+                            }}
+                          />
+                        </div>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '0.75rem',
+                            fontSize: '0.75rem',
+                            color: 'var(--dim)',
+                          }}
+                        >
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {status?.detail || appName}
+                          </span>
+                          <span style={{ fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{pct}%</span>
+                        </div>
+                      </div>
+                    </Box>
+                  );
+                }}
                 error={(err) => (
                   <div className="softn-runner-error-wrap" role="alert">
                     <RunnerErrorCard

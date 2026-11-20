@@ -49,7 +49,7 @@ export const SOFTN_UI_CSS = `
   background: var(--softn-bg);
   color: var(--softn-fg);
 }
-:host([data-theme="dark"]), [data-softn-viewport][data-theme="dark"] {
+:host([data-theme="dark"]), [data-softn-docroot][data-theme="dark"], [data-softn-viewport][data-theme="dark"] {
   --softn-bg: #0f172a;
   --softn-surface: #1e293b;
   --softn-border: #334155;

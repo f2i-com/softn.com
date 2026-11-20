@@ -1,0 +1,591 @@
+/**
+ * Worker-Side Hardware-Accelerated WebGL / WebGL2 Host (`OffscreenCanvas`).
+ *
+ * Executes batched & synchronous WebGL1/WebGL2 calls from the sandboxed guest VM
+ * against a real browser `OffscreenCanvas` GPU context inside `container-worker.js`,
+ * then transfers finished frames zero-copy to the host `<canvas>` via
+ * `OffscreenCanvas.transferToImageBitmap()` -> `ImageBitmapRenderingContext.transferFromImageBitmap()`.
+ *
+ * Security & resource bounds:
+ * - Strictly caps concurrent contexts, object handles per context, drawing dimensions,
+ *   and single-upload byte size.
+ * - Never exposes host DOM or raw GPU handles to guest code (integer handle table only).
+ * - Cleanly releases GPU contexts (`WEBGL_lose_context`) on canvas sweep or container dispose.
+ */
+
+import { base64ToBytes, bytesToBase64 } from './archive';
+import { canvasSide } from './host-policy';
+
+const MAX_WEBGL_CONTEXTS = 16;
+const MAX_WEBGL_HANDLES = 32_768;
+const MAX_WEBGL_UPLOAD_BYTES = 32 * 1024 * 1024;
+const SERVER_HANDLE_BASE = 1_000_000_000;
+
+/** WebGL methods that mutate the default/active drawing buffer and schedule a frame presentation. */
+const DRAW_METHODS = new Set([
+  'clear',
+  'drawArrays',
+  'drawElements',
+  'drawArraysInstanced',
+  'drawElementsInstanced',
+  'drawRangeElements',
+  'blitFramebuffer',
+  'clearBufferfv',
+  'clearBufferiv',
+  'clearBufferuiv',
+  'clearBufferfi',
+]);
+
+/** Static capability parameters pre-cached once on `webgl.init` so Three.js startup incurs 0 extra sync calls. */
+const STATIC_PARAM_NAMES = [
+  'VERSION',
+  'SHADING_LANGUAGE_VERSION',
+  'VENDOR',
+  'RENDERER',
+  'MAX_TEXTURE_SIZE',
+  'MAX_CUBE_MAP_TEXTURE_SIZE',
+  'MAX_VERTEX_ATTRIBS',
+  'MAX_VERTEX_UNIFORM_VECTORS',
+  'MAX_FRAGMENT_UNIFORM_VECTORS',
+  'MAX_VARYING_VECTORS',
+  'MAX_VERTEX_TEXTURE_IMAGE_UNITS',
+  'MAX_COMBINED_TEXTURE_IMAGE_UNITS',
+  'MAX_TEXTURE_IMAGE_UNITS',
+  'MAX_RENDERBUFFER_SIZE',
+  'MAX_SAMPLES',
+  'MAX_3D_TEXTURE_SIZE',
+  'MAX_ARRAY_TEXTURE_LAYERS',
+  'MAX_UNIFORM_BUFFER_BINDINGS',
+  'MAX_UNIFORM_BLOCK_SIZE',
+  'UNIFORM_BUFFER_OFFSET_ALIGNMENT',
+  'MAX_COLOR_ATTACHMENTS',
+  'MAX_DRAW_BUFFERS',
+  'MAX_VIEWPORT_DIMS',
+  'ALIASED_LINE_WIDTH_RANGE',
+  'ALIASED_POINT_SIZE_RANGE',
+  'SUBPIXEL_BITS',
+  'RED_BITS',
+  'GREEN_BITS',
+  'BLUE_BITS',
+  'ALPHA_BITS',
+  'DEPTH_BITS',
+  'STENCIL_BITS',
+  'MAX_ELEMENTS_VERTICES',
+  'MAX_ELEMENTS_INDICES',
+  'MAX_VARYING_COMPONENTS',
+  'MAX_VERTEX_UNIFORM_COMPONENTS',
+  'MAX_FRAGMENT_UNIFORM_COMPONENTS',
+  'MAX_VERTEX_UNIFORM_BLOCKS',
+  'MAX_FRAGMENT_UNIFORM_BLOCKS',
+  'MAX_COMBINED_UNIFORM_BLOCKS',
+  'MAX_TEXTURE_LOD_BIAS',
+  'MIN_PROGRAM_TEXEL_OFFSET',
+  'MAX_PROGRAM_TEXEL_OFFSET',
+];
+
+const SHADER_TYPES = ['VERTEX_SHADER', 'FRAGMENT_SHADER'] as const;
+const PRECISION_TYPES = [
+  'LOW_FLOAT',
+  'MEDIUM_FLOAT',
+  'HIGH_FLOAT',
+  'LOW_INT',
+  'MEDIUM_INT',
+  'HIGH_INT',
+] as const;
+
+type AnyWebGLContext = WebGL2RenderingContext | WebGLRenderingContext;
+
+interface WebGLCtxEntry {
+  ctxId: number;
+  canvasId: number;
+  canvas: OffscreenCanvas;
+  gl: AnyWebGLContext;
+  isWebGL2: boolean;
+  handles: Map<number, unknown>;
+  extensions: Map<string, Record<string, unknown>>;
+  nextServerHandleId: number;
+  dirty: boolean;
+  hasDrawn: boolean;
+}
+
+export interface WebGLFramePayload {
+  canvasId: number;
+  bitmap: ImageBitmap;
+  width: number;
+  height: number;
+}
+
+export interface WebGLExecResolvers {
+  getCanvas2DMirror?: (id: number, width: number, height: number, pendingCmds: unknown[]) => OffscreenCanvas | null;
+  getImageBitmap?: (ref: string) => ImageBitmap | null;
+}
+
+function decodeTypedArray(typeCode: string, b64: string): ArrayBufferView | ArrayBuffer {
+  const bytes = base64ToBytes(b64);
+  if (bytes.byteLength > MAX_WEBGL_UPLOAD_BYTES) {
+    throw new RangeError('WebGL buffer upload exceeds size limit');
+  }
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  switch (typeCode) {
+    case 'f32': return new Float32Array(buf);
+    case 'f64': return new Float64Array(buf);
+    case 'i8': return new Int8Array(buf);
+    case 'u8': return new Uint8Array(buf);
+    case 'u8c': return new Uint8ClampedArray(buf);
+    case 'i16': return new Int16Array(buf);
+    case 'u16': return new Uint16Array(buf);
+    case 'i32': return new Int32Array(buf);
+    case 'u32': return new Uint32Array(buf);
+    case 'ab': return buf;
+    default: return new Uint8Array(buf);
+  }
+}
+
+function typeCodeOf(view: ArrayBufferView): string {
+  if (view instanceof Float32Array) return 'f32';
+  if (view instanceof Uint16Array) return 'u16';
+  if (view instanceof Uint32Array) return 'u32';
+  if (view instanceof Int32Array) return 'i32';
+  if (view instanceof Int16Array) return 'i16';
+  if (view instanceof Int8Array) return 'i8';
+  if (view instanceof Uint8ClampedArray) return 'u8c';
+  return 'u8';
+}
+
+function encodeSimpleReturn(val: unknown, entry: WebGLCtxEntry): unknown {
+  if (val === null || val === undefined) return null;
+  const t = typeof val;
+  if (t === 'boolean' || t === 'number' || t === 'string') return val;
+  if (Array.isArray(val)) return val.map((v) => encodeSimpleReturn(v, entry));
+  if (ArrayBuffer.isView(val)) {
+    return { __glTA: typeCodeOf(val), data: Array.from(val as unknown as ArrayLike<number>) };
+  }
+  // WebGLActiveInfo ({ name, size, type })
+  if (typeof (val as { name?: unknown; size?: unknown; type?: unknown }).name === 'string' &&
+      typeof (val as { size?: unknown }).size === 'number' &&
+      typeof (val as { type?: unknown }).type === 'number') {
+    const info = val as WebGLActiveInfo;
+    return { name: info.name, size: info.size, type: info.type };
+  }
+  // WebGLShaderPrecisionFormat ({ rangeMin, rangeMax, precision })
+  if (typeof (val as { rangeMin?: unknown; precision?: unknown }).rangeMin === 'number' &&
+      typeof (val as { precision?: unknown }).precision === 'number') {
+    const fmt = val as WebGLShaderPrecisionFormat;
+    return { rangeMin: fmt.rangeMin, rangeMax: fmt.rangeMax, precision: fmt.precision };
+  }
+  // Opaque WebGL object (e.g. getParameter(CURRENT_PROGRAM) / getUniformLocation)
+  for (const [hid, obj] of entry.handles) {
+    if (obj === val) return { __glH: hid };
+  }
+  if (entry.handles.size < MAX_WEBGL_HANDLES) {
+    const hid = entry.nextServerHandleId++;
+    entry.handles.set(hid, val);
+    return { __glH: hid };
+  }
+  return null;
+}
+
+export class WebGLWorkerHost {
+  private readonly contexts = new Map<number, WebGLCtxEntry>();
+  private nextCtxId = 1;
+
+  hasActiveContexts(): boolean {
+    return this.contexts.size > 0;
+  }
+
+  init(
+    canvasId: number,
+    requestedKind: string,
+    width: number,
+    height: number,
+    attrs?: Record<string, unknown>
+  ): Record<string, unknown> | null {
+    if (typeof OffscreenCanvas !== 'function') return null;
+    if (this.contexts.size >= MAX_WEBGL_CONTEXTS) {
+      // Evict the oldest never-drawn probe context (e.g. feature-detection canvases like `webglAvailable()`).
+      for (const [oldId, oldEntry] of this.contexts) {
+        if (!oldEntry.hasDrawn) {
+          this.contexts.delete(oldId);
+          this.releaseEntry(oldEntry);
+          break;
+        }
+      }
+      if (this.contexts.size >= MAX_WEBGL_CONTEXTS) return null;
+    }
+
+    const w = Math.max(1, Math.min(4096, canvasSide(width) || 300));
+    const h = Math.max(1, Math.min(4096, canvasSide(height) || 150));
+    let canvas: OffscreenCanvas;
+    let gl: AnyWebGLContext | null = null;
+    let isWebGL2 = false;
+
+    try {
+      canvas = new OffscreenCanvas(w, h);
+      const want2 = requestedKind === 'webgl2';
+      const contextOpts: WebGLContextAttributes = {
+        alpha: attrs?.alpha !== undefined ? Boolean(attrs.alpha) : true,
+        depth: attrs?.depth !== undefined ? Boolean(attrs.depth) : true,
+        stencil: attrs?.stencil !== undefined ? Boolean(attrs.stencil) : false,
+        antialias: attrs?.antialias !== undefined ? Boolean(attrs.antialias) : true,
+        premultipliedAlpha: attrs?.premultipliedAlpha !== undefined ? Boolean(attrs.premultipliedAlpha) : true,
+        preserveDrawingBuffer: attrs?.preserveDrawingBuffer !== undefined ? Boolean(attrs.preserveDrawingBuffer) : false,
+        powerPreference:
+          attrs?.powerPreference === 'high-performance' || attrs?.powerPreference === 'low-power'
+            ? attrs.powerPreference
+            : 'default',
+        failIfMajorPerformanceCaveat: Boolean(attrs?.failIfMajorPerformanceCaveat),
+      };
+      if (want2) {
+        gl = canvas.getContext('webgl2', contextOpts) as WebGL2RenderingContext | null;
+        isWebGL2 = Boolean(gl);
+      } else {
+        gl = (canvas.getContext('webgl', contextOpts) ??
+          canvas.getContext('experimental-webgl', contextOpts)) as WebGLRenderingContext | null;
+      }
+    } catch {
+      return null;
+    }
+
+    if (!gl) return null;
+
+    const ctxId = this.nextCtxId++;
+    const entry: WebGLCtxEntry = {
+      ctxId,
+      canvasId: Number.isInteger(canvasId) && canvasId > 0 ? canvasId : 0,
+      canvas,
+      gl,
+      isWebGL2,
+      handles: new Map(),
+      extensions: new Map(),
+      nextServerHandleId: SERVER_HANDLE_BASE,
+      dirty: false,
+      hasDrawn: false,
+    };
+    this.contexts.set(ctxId, entry);
+
+    // Collect all GL constants & callable method names from the real context prototype chain
+    const constants: Record<string, number> = Object.create(null);
+    const methodsSet = new Set<string>();
+    const glRec = gl as unknown as Record<string, unknown>;
+    for (let proto: object | null = gl; proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor' || key.startsWith('_')) continue;
+        if (/^[A-Z][A-Z0-9_]+$/.test(key)) {
+          const val = glRec[key];
+          if (typeof val === 'number') constants[key] = val;
+        } else {
+          const desc = Object.getOwnPropertyDescriptor(proto, key);
+          if (desc && typeof desc.value === 'function') {
+            methodsSet.add(key);
+          }
+        }
+      }
+    }
+
+    // Pre-cache immutable capability parameters so Three.js startup incurs zero extra roundtrips
+    const params: Record<number, unknown> = Object.create(null);
+    for (const name of STATIC_PARAM_NAMES) {
+      const code = constants[name];
+      if (code === undefined) continue;
+      try {
+        const val = gl.getParameter(code);
+        if (val !== undefined) params[code] = encodeSimpleReturn(val, entry);
+      } catch {
+        // Ignore parameters unavailable on this WebGL version
+      }
+    }
+
+    // Pre-cache shader precision formats
+    const precisions: Record<string, { rangeMin: number; rangeMax: number; precision: number } | null> = Object.create(null);
+    for (const sName of SHADER_TYPES) {
+      const sCode = constants[sName];
+      if (sCode === undefined) continue;
+      for (const pName of PRECISION_TYPES) {
+        const pCode = constants[pName];
+        if (pCode === undefined) continue;
+        try {
+          const fmt = gl.getShaderPrecisionFormat(sCode, pCode);
+          precisions[`${sCode}:${pCode}`] = fmt
+            ? { rangeMin: fmt.rangeMin, rangeMax: fmt.rangeMax, precision: fmt.precision }
+            : null;
+        } catch {
+          precisions[`${sCode}:${pCode}`] = null;
+        }
+      }
+    }
+
+    return {
+      ctxId,
+      isWebGL2,
+      width: canvas.width,
+      height: canvas.height,
+      constants,
+      params,
+      precisions,
+      supportedExtensions: gl.getSupportedExtensions() ?? [],
+      contextAttributes: gl.getContextAttributes() ?? {},
+      methods: [...methodsSet],
+    };
+  }
+
+  getExtension(ctxId: number, name: string): Record<string, unknown> | null {
+    const entry = this.contexts.get(ctxId);
+    if (!entry) return null;
+    let ext = entry.extensions.get(name);
+    if (!ext) {
+      let raw: unknown = null;
+      try {
+        raw = entry.gl.getExtension(name);
+      } catch {
+        raw = null;
+      }
+      if (!raw || typeof raw !== 'object') return null;
+      ext = raw as Record<string, unknown>;
+      entry.extensions.set(name, ext);
+    }
+    const constants: Record<string, number> = Object.create(null);
+    const methods: string[] = [];
+    for (let proto: object | null = ext; proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor' || key.startsWith('_')) continue;
+        const desc = Object.getOwnPropertyDescriptor(proto, key);
+        if (desc && typeof desc.value === 'function') {
+          if (!methods.includes(key)) methods.push(key);
+        } else {
+          const val = ext[key];
+          if (typeof val === 'number') constants[key] = val;
+        }
+      }
+    }
+    return { constants, methods };
+  }
+
+  private decodeArg(arg: unknown, entry: WebGLCtxEntry, resolvers?: WebGLExecResolvers): unknown {
+    if (!Array.isArray(arg) || arg.length === 0 || typeof arg[0] !== 'string' || !arg[0].startsWith('$')) {
+      return arg;
+    }
+    switch (arg[0]) {
+      case '$h':
+        return entry.handles.get(Number(arg[1])) ?? null;
+      case '$b':
+        return decodeTypedArray(String(arg[1]), String(arg[2]));
+      case '$f32':
+        return new Float32Array(arg[1] as number[]);
+      case '$i32':
+        return new Int32Array(arg[1] as number[]);
+      case '$u32':
+        return new Uint32Array(arg[1] as number[]);
+      case '$c2d': {
+        const cid = Number(arg[1]);
+        const w = Number(arg[2]);
+        const h = Number(arg[3]);
+        const pending = Array.isArray(arg[4]) ? (arg[4] as unknown[]) : [];
+        return resolvers?.getCanvas2DMirror?.(cid, w, h, pending) ?? null;
+      }
+      case '$gl': {
+        const other = this.contexts.get(Number(arg[1]));
+        return other ? other.canvas : null;
+      }
+      case '$img':
+        return resolvers?.getImageBitmap?.(String(arg[1])) ?? null;
+      case '$imagedata': {
+        const w = Math.max(1, Number(arg[1]) || 1);
+        const h = Math.max(1, Number(arg[2]) || 1);
+        const raw = base64ToBytes(String(arg[3] ?? ''));
+        return typeof ImageData === 'function' && raw.byteLength === w * h * 4
+          ? new ImageData(new Uint8ClampedArray(raw), w, h)
+          : null;
+      }
+      default:
+        return arg;
+    }
+  }
+
+  exec(
+    ctxId: number,
+    cmds: unknown[],
+    syncCmd?: unknown[] | null,
+    resolvers?: WebGLExecResolvers
+  ): unknown {
+    const entry = this.contexts.get(ctxId);
+    if (!entry) return null;
+    const gl = entry.gl;
+    const glRec = gl as unknown as Record<string, (...a: unknown[]) => unknown>;
+
+    for (let i = 0; i < cmds.length; i++) {
+      const cmd = cmds[i];
+      if (!Array.isArray(cmd) || cmd.length === 0) continue;
+      const op = cmd[0];
+      try {
+        if (op === 'v') {
+          const method = String(cmd[1]);
+          const fn = glRec[method];
+          if (typeof fn !== 'function') continue;
+          const decoded: unknown[] = [];
+          for (let j = 2; j < cmd.length; j++) decoded.push(this.decodeArg(cmd[j], entry, resolvers));
+          fn.apply(gl, decoded);
+          if (DRAW_METHODS.has(method)) {
+            entry.dirty = true;
+            entry.hasDrawn = true;
+          }
+        } else if (op === 'c') {
+          const method = String(cmd[1]);
+          const hid = Number(cmd[2]);
+          const fn = glRec[method];
+          if (typeof fn !== 'function' || entry.handles.size >= MAX_WEBGL_HANDLES) continue;
+          const decoded: unknown[] = [];
+          for (let j = 3; j < cmd.length; j++) decoded.push(this.decodeArg(cmd[j], entry, resolvers));
+          const created = fn.apply(gl, decoded);
+          if (created !== null && created !== undefined) entry.handles.set(hid, created);
+        } else if (op === 'd') {
+          const method = String(cmd[1]);
+          const hid = Number(cmd[2]);
+          const obj = entry.handles.get(hid);
+          entry.handles.delete(hid);
+          const fn = glRec[method];
+          if (typeof fn === 'function' && obj !== undefined) fn.call(gl, obj);
+        } else if (op === 'resize') {
+          const w = Math.max(1, Math.min(4096, canvasSide(Number(cmd[1])) || 1));
+          const h = Math.max(1, Math.min(4096, canvasSide(Number(cmd[2])) || 1));
+          if (entry.canvas.width !== w) entry.canvas.width = w;
+          if (entry.canvas.height !== h) entry.canvas.height = h;
+        } else if (op === 'canvasId') {
+          const cid = Number(cmd[1]);
+          if (Number.isInteger(cid) && cid > 0) entry.canvasId = cid;
+        } else if (op === 'x') {
+          const extName = String(cmd[1]);
+          const method = String(cmd[2]);
+          const ext = entry.extensions.get(extName);
+          if (!ext) continue;
+          const fn = ext[method];
+          if (typeof fn !== 'function') continue;
+          const decoded: unknown[] = [];
+          for (let j = 3; j < cmd.length; j++) decoded.push(this.decodeArg(cmd[j], entry, resolvers));
+          (fn as (...a: unknown[]) => unknown).apply(ext, decoded);
+          if (method.startsWith('draw')) {
+            entry.dirty = true;
+            entry.hasDrawn = true;
+          }
+        }
+      } catch {
+        // Invalid WebGL call sets GL error flag / no-ops without crashing the container Worker.
+      }
+    }
+
+    if (!syncCmd || !Array.isArray(syncCmd) || syncCmd.length === 0) return null;
+
+    try {
+      if (syncCmd[0] === 'ext') {
+        const ext = entry.extensions.get(String(syncCmd[1]));
+        const method = String(syncCmd[2]);
+        const fn = ext?.[method];
+        if (typeof fn !== 'function') return null;
+        const decoded: unknown[] = [];
+        for (let j = 3; j < syncCmd.length; j++) decoded.push(this.decodeArg(syncCmd[j], entry, resolvers));
+        const res = (fn as (...a: unknown[]) => unknown).apply(ext, decoded);
+        return encodeSimpleReturn(res, entry);
+      }
+
+      const method = String(syncCmd[0]);
+      if (method === 'readPixels') {
+        const x = Number(syncCmd[1]) || 0;
+        const y = Number(syncCmd[2]) || 0;
+        const w = Math.max(0, Math.min(4096, Number(syncCmd[3]) || 0));
+        const h = Math.max(0, Math.min(4096, Number(syncCmd[4]) || 0));
+        const format = Number(syncCmd[5]) || 0;
+        const type = Number(syncCmd[6]) || 0;
+        const byteLen = Math.min(MAX_WEBGL_UPLOAD_BYTES, Math.max(0, Number(syncCmd[7]) || w * h * 4));
+        const typeCode = String(syncCmd[8] || 'u8');
+        const buf = new ArrayBuffer(byteLen);
+        let view: ArrayBufferView;
+        switch (typeCode) {
+          case 'f32': view = new Float32Array(buf); break;
+          case 'u16': view = new Uint16Array(buf); break;
+          case 'i32': view = new Int32Array(buf); break;
+          case 'u32': view = new Uint32Array(buf); break;
+          default: view = new Uint8Array(buf); break;
+        }
+        gl.readPixels(x, y, w, h, format, type, view);
+        return { __glB64: bytesToBase64(new Uint8Array(buf)) };
+      }
+
+      const fn = glRec[method];
+      if (typeof fn !== 'function') return null;
+      const decoded: unknown[] = [];
+      for (let j = 1; j < syncCmd.length; j++) decoded.push(this.decodeArg(syncCmd[j], entry, resolvers));
+      const res = fn.apply(gl, decoded);
+      if (method === 'getUniformLocation') {
+        if (res === null || res === undefined) return null;
+        if (entry.handles.size >= MAX_WEBGL_HANDLES) return null;
+        const hid = entry.nextServerHandleId++;
+        entry.handles.set(hid, res);
+        return { __glH: hid };
+      }
+      return encodeSimpleReturn(res, entry);
+    } catch {
+      return null;
+    }
+  }
+
+  takeDirtyFrames(): WebGLFramePayload[] {
+    const out: WebGLFramePayload[] = [];
+    for (const entry of this.contexts.values()) {
+      if (!entry.dirty || entry.canvasId <= 0) continue;
+      entry.dirty = false;
+      if (entry.canvas.width <= 0 || entry.canvas.height <= 0) continue;
+      if (typeof entry.canvas.transferToImageBitmap !== 'function') continue;
+      try {
+        const bitmap = entry.canvas.transferToImageBitmap();
+        out.push({
+          canvasId: entry.canvasId,
+          bitmap,
+          width: entry.canvas.width,
+          height: entry.canvas.height,
+        });
+      } catch {
+        // Ignore lost-context transfer failures
+      }
+    }
+    return out;
+  }
+
+  disposeContext(ctxId: number): void {
+    const entry = this.contexts.get(ctxId);
+    if (!entry) return;
+    this.contexts.delete(ctxId);
+    this.releaseEntry(entry);
+  }
+
+  disposeCanvas(canvasId: number): void {
+    for (const [ctxId, entry] of [...this.contexts]) {
+      if (entry.canvasId === canvasId) {
+        this.contexts.delete(ctxId);
+        this.releaseEntry(entry);
+      }
+    }
+  }
+
+  disposeAll(): void {
+    for (const entry of this.contexts.values()) {
+      this.releaseEntry(entry);
+    }
+    this.contexts.clear();
+  }
+
+  private releaseEntry(entry: WebGLCtxEntry): void {
+    try {
+      const lose = entry.gl.getExtension('WEBGL_lose_context');
+      lose?.loseContext();
+    } catch {
+      // ignore
+    }
+    try {
+      entry.canvas.width = 1;
+      entry.canvas.height = 1;
+    } catch {
+      // ignore
+    }
+    entry.handles.clear();
+    entry.extensions.clear();
+  }
+}

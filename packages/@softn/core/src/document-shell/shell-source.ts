@@ -2481,8 +2481,8 @@ var __softnShell = (function (win) {
     getClientRects() { var box = measured(this); return box ? [boxRect(box)] : []; }
     get offsetWidth() { var box = measured(this); return box ? Math.round(box.w) : 0; }
     get offsetHeight() { var box = measured(this); return box ? Math.round(box.h) : 0; }
-    get offsetTop() { var box = measured(this); return box ? Math.round(box.y) : 0; }
-    get offsetLeft() { var box = measured(this); return box ? Math.round(box.x) : 0; }
+    get offsetTop() { var box = measured(this); return box ? Math.round(box.ot !== undefined ? box.ot : box.y) : 0; }
+    get offsetLeft() { var box = measured(this); return box ? Math.round(box.ol !== undefined ? box.ol : box.x) : 0; }
     get clientWidth() { var box = measured(this); return box ? Math.round(box.w) : 0; }
     get clientHeight() { var box = measured(this); return box ? Math.round(box.h) : 0; }
     get scrollWidth() { var box = measured(this); return box ? Math.round(box.sw !== undefined ? box.sw : box.w) : 0; }
@@ -3718,7 +3718,16 @@ var __softnShell = (function (win) {
     throw new Error('prompt() cannot wait for an answer here: ask with an <input> on the page, or a <Dialog>.');
   }
 
-  function queueMicrotask(fn) { Promise.resolve().then(fn); }
+  // A microtask of the engine's own, whatever the page has since made of Promise. It was
+  // Promise.resolve().then(fn) with the Promise that is global when it is called: a library
+  // that puts a Promise of its own there while a transaction of its own runs, and schedules
+  // itself with queueMicrotask (Dexie does both), was left waiting on itself.
+  var MICROTASK_THEN = Promise.prototype.then;
+  var MICROTASK_DONE = Promise.resolve();
+  function queueMicrotask(fn) {
+    if (typeof fn !== 'function') throw new TypeError("Failed to execute 'queueMicrotask': parameter 1 is not of type 'Function'.");
+    MICROTASK_THEN.call(MICROTASK_DONE, fn);
+  }
   // The callback is handed the clock performance.now() reads, as a browser
   // hands it: the loop everyone writes, "let last = performance.now()" and
   // then "(now - last) / 1000" in the callback, was given Date.now() here,
@@ -4388,6 +4397,8 @@ var __softnShell = (function (win) {
       // scrolls holds more than it shows, and scrollHeight is the first of the two.
       if (typeof list[i][5] === 'number') r.box.sw = list[i][5];
       if (typeof list[i][6] === 'number') r.box.sh = list[i][6];
+      if (typeof list[i][7] === 'number') r.box.ol = list[i][7];
+      if (typeof list[i][8] === 'number') r.box.ot = list[i][8];
       changed.push(node);
     }
     for (var o = 0; o < resizeObservers.slice().length; o++) {
@@ -4872,6 +4883,8 @@ var __softnShell = (function (win) {
 
   var api = {
     init: init, take: take, sync: sync, event: event, ready: ready,
+    // A node on the page by the id the host knows it by (what a layer over the shell is told by id).
+    byId: function (id) { return BY_ID[id] || null; },
     document: null,
     Node: Node, Element: Element, HTMLElement: HTMLElement, HTMLInputElement: HTMLInputElement,
     HTMLTextAreaElement: HTMLTextAreaElement, HTMLSelectElement: HTMLSelectElement, HTMLOptionElement: HTMLOptionElement,

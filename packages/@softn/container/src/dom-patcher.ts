@@ -6,13 +6,14 @@
  * `<softn-app>`'s closed `ShadowRoot`.
  */
 
-import { ContainerArchive, base64ToBytes, bytesToBase64, resolveVfsPath } from './archive';
+import { ContainerArchive, bytesToBase64, piecesToBytes } from './archive';
+import { blobWithin } from './capped-body';
+import { replayCanvasCommands } from './canvas-replay';
 import {
   MATH_NS,
   MAX_EVENT_TYPES,
   MAX_HOST_NODES,
   SVG_NS,
-  canvasPropertyAllowed,
   canvasSide,
   createHostElement,
   hostAttributeValue,
@@ -22,7 +23,7 @@ import {
   isExternalHref,
   isLinkElement,
 } from './host-policy';
-import { NODE_ID_ATTR, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
 import type {
   Canvas2DCmd,
   ContainerPermissions,
@@ -59,6 +60,12 @@ const MAX_CANVAS_FILE_BYTES = 32 * 1024 * 1024;
 
 /** How long after a click or a key of the person's the app may ask to save a file. */
 const ACTIVATION_MS = 5000;
+/** The largest picture from another site the page fetches for the app to read back, and the most all it keeps of them take. */
+const MAX_READABLE_PICTURE_BYTES = 32 * 1024 * 1024;
+const MAX_READABLE_TOTAL_BYTES = 128 * 1024 * 1024;
+
+/** How long after the person's click in the app an element around it that the click left the focus on is the app's to move on from. */
+const CLICK_FOCUS_MS = 1500;
 
 /** How long after a save was asked for nothing counts as a new word of the person's: what is left of the same press. */
 const SAME_PRESS_MS = 500;
@@ -66,6 +73,22 @@ const SAME_PRESS_MS = 500;
 /** The most shadow trees an app has at once, and how many more there must be before those no longer on the page are looked for. */
 const MAX_SHADOW_ROOTS = 8192;
 const SWEEP_ROOTS_EVERY = 256;
+
+/** How many more nodes there must be before those no longer on the app's page are looked for. */
+const SWEEP_NODES_EVERY = 10_000;
+
+/**
+ * The most canvases and images kept from the sweep because the app lately drew on them or
+ * from them: one off the page may be a buffer or a sprite sheet the app still draws with.
+ */
+const MAX_DRAWN_LATELY = 2000;
+
+/**
+ * The most pixels of the canvases the page keeps for the app off its page, in all (four bytes
+ * each): past it, the least lately drawn on are let go of. The app's side says when it lets go
+ * of a canvas itself; this is for an app that makes canvases faster than it lets go of them.
+ */
+const MAX_OFF_PAGE_PIXELS = 64 * 1024 * 1024;
 
 /** The most pictures of canvases made for an app at once. */
 const MAX_CANVAS_ENCODES = 4;
@@ -87,17 +110,23 @@ const COMPOSED_EVENTS = new Set([
 /**
  * The most files of one file field handed to an app, and the most bytes of them together.
  *
- * A megabyte and a half, which is what an app's script can take in one turn: the bytes cross
- * to it as text and are made bytes again by the script's own engine, a byte at a time, inside
- * the turn the field's change is heard in. Measured, two megabytes arrive and two and a half
- * never do (the turn runs out, and the app hears of no change at all); the limit was 32 MB
- * a file, so every file a person would call large was lost without a word. A file past the
- * limit is left out and the app is told so. Handing over more needs the bytes kept on the
- * page and read by the app a part at a time, which is not built.
+ * Ten megabytes, which is what crosses to the app in one piece: the bytes go as text, and
+ * the engine takes a text of sixteen megabytes at most. The app keeps a file as that text
+ * and makes bytes of it only when something reads them, a part a turn (guest-web-apis.ts),
+ * so a file is heard of at once whatever its size; an address for it, a data: URL of it and
+ * a request that uploads it make no bytes at all. (Made bytes all at once, in the turn the
+ * field's change was heard in, two megabytes arrived and two and a half never did.) A file
+ * past the limit is left out and the app is told so.
  */
 const MAX_PICKED_FILES = 32;
-const MAX_PICKED_BYTES = 1536 * 1024;
+const MAX_PICKED_BYTES = 10 * 1024 * 1024;
 const MAX_PICKED_FILE_BYTES = MAX_PICKED_BYTES;
+
+/** The most measured elements the sweep let go of that are remembered, to be measured again if they are told again. */
+const MAX_SWEPT_MEASURED = 20_000;
+
+/** How long after the person's last scroll the app is told where its page and elements are, when no event has told it. */
+const SCROLL_SETTLE_MS = 100;
 
 /** The most animations an app runs at once, the most keyframes in one, and the longest any part of one lasts. */
 const MAX_ANIMATIONS = 2048;
@@ -123,6 +152,8 @@ const CAPTURE_ONLY_EVENTS = new Set([
   'invalid',
 ]);
 
+const PASSIVE_EVENTS = new Set(['scroll', 'wheel', 'touchstart', 'touchmove']);
+
 export interface DomPatcherCallbacks {
   /**
    * An event for the app's script. `answered`, when given, is called once the script has
@@ -138,10 +169,15 @@ export interface DomPatcherCallbacks {
   onSync: (changes: unknown[]) => void;
   onTitleChange?: (title: string) => void;
   onNavigate?: (href: string) => void;
+  onFormSubmit?: (req: { action: string; method: string; encoded: string }) => void;
   onCustomTag?: (tag: string) => void;
   onThreeOps?: (canvas: HTMLCanvasElement, canvasId: number, ops: ThreeSceneOp[]) => void;
   /** The app's script asks to save a file it made, just after a click or a key of the person's in the app. */
   onSaveRequest?: (file: { name: string; type: string; bytes: Uint8Array }) => void;
+  /** Something the app is to be told in its console, as a warning: what the page could not do for it. */
+  onWarning?: (text: string) => void;
+  /** Sanitized `@font-face` rules extracted from a dynamic `<style>`/`<link>` sheet (empty string when cleared/removed). */
+  onStyleFonts?: (sheet: Element, fontFacesCss: string) => void;
 }
 
 export class HostDomPatcher {
@@ -155,9 +191,18 @@ export class HostDomPatcher {
   private filesGranted: boolean;
   /** When the person last clicked or pressed a key in the app: a file is saved only just after. */
   private lastActivation = Number.NEGATIVE_INFINITY;
+  /**
+   * The element around the app that held the focus just after the person's last click in it,
+   * the element inside it (through its own open shadow trees) that did, and when. Forgotten
+   * when the person presses or clicks anywhere outside the app.
+   */
+  private clickFocus: Element | null = null;
+  private clickFocusDeep: Element | null = null;
+  private clickFocusAt = Number.NEGATIVE_INFINITY;
   /** The files of a file field as last read for the app, by the list the page holds for it. */
   private readonly pickedFiles = new WeakMap<HTMLInputElement, { list: FileList | null; change: Promise<unknown[]> }>();
   private readonly callbacks: DomPatcherCallbacks;
+  private heldForm: { event: Event; req: { action: string; method: string; encoded: string } } | null = null;
 
   private readonly listenedEvents = new Set<string>();
   private readonly cleanupFns: Array<() => void> = [];
@@ -178,9 +223,26 @@ export class HostDomPatcher {
   /** Structured values for a `<softn-*>` element whose class has not arrived yet. */
   private readonly pendingProperties = new Map<Element, Array<[string, unknown]>>();
   private readonly measuredIds = new Set<number>();
+  /**
+   * Measured elements let go of by the sweep, by id: the app's side asks for an element to be
+   * measured once, so one put on the page again (a tab panel kept off it, Vue's KeepAlive) is
+   * measured again when it is told again. Forgotten, it never was, and the app kept its old size.
+   */
+  private readonly sweptMeasured = new Set<number>();
+  /** The app's elements (and its page) the person has scrolled since the app was last told where they are. */
+  private readonly scrolledSince = new Set<Element>();
+  private scrollSettle: ReturnType<typeof setTimeout> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private measureScheduled = false;
   private readonly imageCache = new Map<string, HTMLImageElement>();
+  /** The blob each image fetched for the app to read back is shown from (loadReadable), and what each holds. */
+  private readonly readableUrls = new Map<HTMLImageElement, string>();
+  private readonly readableSizes = new Map<string, number>();
+  /** Bytes of such pictures being read now, held with those kept to their total. */
+  private readableLoading = 0;
+  /** An image of the page's being loaded as readable: the address it was asked for, and which asking is the last. */
+  private readonly wantedSrc = new WeakMap<HTMLImageElement, string>();
+  private readonly readableTokens = new WeakMap<HTMLImageElement, number>();
   /** Animations the app's script started (`element.animate`), by the key the script knows each by. */
   private readonly animations = new Map<string, { el: Element; animation: Animation }>();
   /**
@@ -200,6 +262,16 @@ export class HostDomPatcher {
   private readonly rootIds = new Map<ShadowRoot, number>();
   /** How many roots there were when those of elements no longer on the page were last let go. */
   private rootsAtSweep = 0;
+  /** How many nodes were known when those no longer on the page were last looked for, and the ones found off it then. */
+  private nodesAtSweep = 0;
+  private offPage = new Set<number>();
+  /** The canvases and images drawn on or from lately, the least lately first. */
+  private readonly drawnLately = new Map<number, true>();
+  /** The canvases the page made for the app's canvases that are on no page, by id. */
+  private readonly offPage2d = new Map<number, HTMLCanvasElement>();
+  private readonly bitmapContexts = new WeakMap<HTMLCanvasElement, ImageBitmapRenderingContext>();
+  private warnedOffPage = false;
+  private readonly sweepNodesEvery: number;
   /** Canvases with a picture from the network drawn into them, which are not the app's to read back. */
   private readonly unreadable = new WeakSet<HTMLCanvasElement>();
   /** Pictures of canvases being made for the app. */
@@ -227,6 +299,8 @@ export class HostDomPatcher {
     netGranted: boolean;
     /** Whether the person allowed the app files: what they pick in a file field is then read for it. */
     filesGranted?: boolean;
+    /** How many more nodes there must be before those no longer on the page are looked for (a test asks sooner). */
+    sweepNodesEvery?: number;
     callbacks: DomPatcherCallbacks;
   }) {
     this.viewportEl = params.viewportEl;
@@ -236,6 +310,7 @@ export class HostDomPatcher {
     this.permissions = params.permissions;
     this.netGranted = params.netGranted;
     this.filesGranted = params.filesGranted === true;
+    this.sweepNodesEvery = Math.max(1, params.sweepNodesEvery ?? SWEEP_NODES_EVERY);
     this.callbacks = params.callbacks;
     if (params.headEl) this.nodes.set(GUEST_HEAD_ID, params.headEl);
 
@@ -267,10 +342,11 @@ export class HostDomPatcher {
     // read: the same turn that makes the address sets it on an image.
     for (const op of ops) {
       if (op[0] !== 'blob') continue;
-      const [, id, type, base64] = op;
-      if (typeof id !== 'string' || typeof base64 !== 'string') continue;
+      const [, id, type, given] = op;
+      if (typeof id !== 'string') continue;
       try {
-        this.archive.putRuntimeBlob(id, typeof type === 'string' ? type : '', base64ToBytes(base64));
+        const bytes = piecesToBytes(given);
+        if (bytes) this.archive.putRuntimeBlob(id, typeof type === 'string' ? type : '', bytes);
       } catch {
         // Not base64: nothing is kept, and the address names nothing.
       }
@@ -301,7 +377,11 @@ export class HostDomPatcher {
             }
             this.shadowRoots.add(root);
             // What does not leave a shadow tree is listened for inside it; what does is heard on the page.
-            for (const { type, fn, capture } of this.listening) if (!COMPOSED_EVENTS.has(type)) root.addEventListener(type, fn, capture);
+            for (const { type, fn, capture } of this.listening) {
+              if (!COMPOSED_EVENTS.has(type)) {
+                root.addEventListener(type, fn, PASSIVE_EVENTS.has(type) ? { capture, passive: true } : capture);
+              }
+            }
           }
           this.rootIds.set(root, rootId);
           this.nodes.set(rootId, root);
@@ -313,7 +393,7 @@ export class HostDomPatcher {
           break;
 
         case 'img':
-          if (typeof op[1] === 'string' && typeof op[2] === 'string') this.preloadImage(op[1], op[2]);
+          if (typeof op[1] === 'string' && typeof op[2] === 'string') this.preloadImage(op[1], op[2], op[3] === 'anonymous');
           break;
 
         case 'anim':
@@ -395,6 +475,29 @@ export class HostDomPatcher {
             break;
           }
           const lower = name.toLowerCase();
+          // A canvas told again (moved, or put on the page after it was drawn on off it) keeps
+          // what is drawn on it, as a canvas that moves does: made again, it was blank.
+          const told = this.nodes.get(id);
+          if (!ns && lower === 'canvas' && told instanceof HTMLCanvasElement) {
+            this.offPage2d.delete(id);
+            const given = attrs && typeof attrs === 'object' ? (attrs as Record<string, unknown>) : {};
+            for (const attr of Array.from(told.attributes)) {
+              if (!attr.name.startsWith('data-softn-') && !(attr.name in given)) told.removeAttribute(attr.name);
+            }
+            for (const [k, v] of Object.entries(given)) {
+              const value = typeof v === 'string' ? v : null;
+              // Its size set again to what it is would clear it. Compared with the size it has:
+              // at the default size (300 by 150) it has no such attribute.
+              if ((k === 'width' || k === 'height') && value !== null && String(k === 'width' ? told.width : told.height) === value.trim()) continue;
+              this.applySafeAttribute(told, lower, k, value);
+            }
+            if (!this.measuredIds.has(id)) {
+              this.measuredIds.add(id);
+              this.resizeObserver?.observe(told);
+            }
+            this.scheduleBoxMeasure();
+            break;
+          }
           // A `<link>` is a `<style>` here, filled by the host when it names a stylesheet of
           // the app's; the page never fetches what a link names.
           const isLink = !ns && lower === 'link';
@@ -415,6 +518,13 @@ export class HostDomPatcher {
           const before = this.nodes.get(id);
           if (before instanceof Element && before.shadowRoot && this.shadowRoots.has(before.shadowRoot)) this.dropShadowRoot(before.shadowRoot);
           this.nodes.set(id, el);
+          // Measured before: the element it is now is observed and measured (the one before was).
+          if (el instanceof HTMLCanvasElement || this.measuredIds.has(id) || this.sweptMeasured.delete(id)) {
+            if (before instanceof Element) this.resizeObserver?.unobserve(before);
+            this.measuredIds.add(id);
+            this.resizeObserver?.observe(el);
+            this.scheduleBoxMeasure();
+          }
           break;
         }
 
@@ -463,7 +573,7 @@ export class HostDomPatcher {
               else root.setAttribute(lowerName, value);
             } else if (id === 1 && lowerName === 'style') {
               if (value === null) root.removeAttribute('style');
-              else root.setAttribute('style', sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted));
+              else root.setAttribute('style', sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline'));
             }
             break;
           }
@@ -527,9 +637,34 @@ export class HostDomPatcher {
 
         case 'k2d': {
           const [, canvasId, width, height, cmds] = op;
-          const node = this.nodes.get(canvasId);
+          this.drawnWith(canvasId, cmds);
+          const node = this.nodes.get(canvasId) ?? this.offPageCanvas(canvasId);
           if (node && node instanceof HTMLCanvasElement) {
+            const area = node.width * node.height;
             this.replayCanvas2D(node, width, height, cmds);
+            this.keepOffPage(canvasId, node, area);
+          }
+          break;
+        }
+
+        case 'k2dgone': {
+          // The app let go of a canvas: one on no page is let go of here too.
+          const node = this.nodes.get(op[1]);
+          if (node instanceof HTMLCanvasElement && !node.isConnected) this.releaseCanvas(op[1], node);
+          break;
+        }
+
+        case 'k2dreset': {
+          // Set even when it is the size the canvas has: setting it is what clears a canvas.
+          this.drawnWith(op[1], []);
+          const node = this.nodes.get(op[1]) ?? this.offPageCanvas(op[1]);
+          if (node && node instanceof HTMLCanvasElement) {
+            const area = node.width * node.height;
+            const w = canvasSide(op[2]);
+            const h = canvasSide(op[3]);
+            if (w > 0) node.width = w;
+            if (h > 0) node.height = h;
+            this.keepOffPage(op[1], node, area);
           }
           break;
         }
@@ -575,6 +710,8 @@ export class HostDomPatcher {
       this.writtenSheets.clear();
       if (this.shadowRoots.size >= this.rootsAtSweep + SWEEP_ROOTS_EVERY) this.sweepShadowRoots();
     }
+    if (this.nodes.size >= this.nodesAtSweep + this.sweepNodesEvery) this.sweepNodes();
+    this.limitOffPageCanvases();
 
     for (const [id, prop, val] of afterTree) this.applyProperty(id, prop, val);
     for (const [key, id, frames, timing] of started) this.startAnimation(key, id, frames, timing);
@@ -620,6 +757,12 @@ export class HostDomPatcher {
     if (val === null) {
       el.removeAttribute(name);
       if (isLinkElement(lowerTag)) this.holdLink(el);
+      // An image no longer asked for with CORS (or with no address): loaded as any other.
+      if (lowerTag === 'img' && el instanceof HTMLImageElement && (lowerName === 'crossorigin' || lowerName === 'src')) {
+        const wanted = this.wantedSrc.get(el);
+        this.cancelReadable(el);
+        if (lowerName === 'crossorigin' && wanted) el.setAttribute('src', wanted);
+      }
       return;
     }
 
@@ -630,6 +773,23 @@ export class HostDomPatcher {
       netGranted: this.netGranted,
       ns: el.namespaceURI === MATH_NS ? 'math' : el.namespaceURI === SVG_NS ? 'svg' : undefined,
     });
+    // An image on the page asked for with CORS: fetched by the page and shown from a blob of
+    // what came (loadReadable), so that a canvas it is drawn into is read back, toBlob too.
+    // Shown from its own address, where a redirect took it was not the page's to know.
+    if (lowerTag === 'img' && el instanceof HTMLImageElement && el.namespaceURI !== SVG_NS) {
+      if (lowerName === 'src') {
+        if (clean !== null && /^https?:/i.test(clean) && el.hasAttribute('crossorigin')) {
+          this.readableImage(el, clean);
+          return;
+        }
+        this.cancelReadable(el);
+      } else if (lowerName === 'crossorigin' && clean !== null) {
+        el.setAttribute('crossorigin', clean);
+        const wanted = this.wantedSrc.get(el) ?? el.getAttribute('src');
+        if (wanted && /^https?:/i.test(wanted)) this.readableImage(el, wanted);
+        return;
+      }
+    }
     try {
       if (clean === null) el.removeAttribute(name);
       else el.setAttribute(name, clean);
@@ -637,6 +797,33 @@ export class HostDomPatcher {
       // Ignore invalid attribute names
     }
     if (isLinkElement(lowerTag)) this.holdLink(el);
+  }
+
+  /** An image of the page's loaded as one the app may read: fetched, and shown from a blob of what came; told `error` if it cannot be. */
+  private readableImage(img: HTMLImageElement, address: string): void {
+    const token = (this.readableTokens.get(img) ?? 0) + 1;
+    this.readableTokens.set(img, token);
+    this.wantedSrc.set(img, address);
+    // Nothing loaded from its address meanwhile: what shows is what can be read.
+    img.removeAttribute('src');
+    this.loadReadable(img, address, () => this.readableTokens.get(img) === token);
+  }
+
+  /** The images of the app's first markup asked for with CORS (sanitize.ts marks them): each loaded as one the app may read. */
+  adoptReadableImages(root: ParentNode): void {
+    for (const img of Array.from(root.querySelectorAll(`img[${READABLE_ATTR}]`))) {
+      const address = img.getAttribute(READABLE_ATTR);
+      img.removeAttribute(READABLE_ATTR);
+      if (img instanceof HTMLImageElement && address) this.readableImage(img, address);
+    }
+  }
+
+  /** An image's readable load, if one is under way, is no longer wanted. */
+  private cancelReadable(img: HTMLImageElement): void {
+    if (!this.wantedSrc.has(img)) return;
+    this.wantedSrc.delete(img);
+    this.readableTokens.set(img, (this.readableTokens.get(img) ?? 0) + 1);
+    this.letGoOfReadable(img);
   }
 
   /** A link out opens in a tab of its own with no handle on this page, whatever target the app gave it and in whatever order it set them. */
@@ -662,7 +849,9 @@ export class HostDomPatcher {
       if (node && node.nodeType === Node.TEXT_NODE) css += node.nodeValue ?? '';
     }
     const scope = this.cssScope(sheet);
-    sheet.textContent = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted, scope);
+    const sanitized = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted, scope);
+    sheet.textContent = sanitized;
+    this.callbacks.onStyleFonts?.(sheet, extractSanitizedFontFaces(sanitized));
     this.writtenSheets.add(sheet);
     if (scope === 'shadow') this.shadowSheets.add(sheet);
     else this.shadowSheets.delete(sheet);
@@ -693,11 +882,224 @@ export class HostDomPatcher {
     this.rootsAtSweep = this.shadowRoots.size;
   }
 
-  /** Whether a picture drawn into a canvas is of the app's own bytes: a file of its own, a blob it made, another canvas of such. */
+  /**
+   * Forget the nodes that are no longer on the app's page.
+   *
+   * The app's document tells the page of a node when it joins the page and never says it
+   * has left: a node taken off is dropped from its parent's children, and one put back is
+   * told afresh and made afresh. So every node an app ever showed was kept by its id, and
+   * an app that makes and drops nodes for as long as it runs (a list that scrolls, a game's
+   * sprites) came to the most nodes a page may have and drew nothing new after that.
+   *
+   * Asked at the end of a batch, when every node the document has on its page is on this
+   * one. A node found off the page is let go the second time it is found there, in case a
+   * batch ever ends between a node's being told and its being placed. The text of a
+   * stylesheet is kept out of the page on purpose, and stays while its sheet does.
+   */
+  /**
+   * A canvas of the app's that the page was not told of: one on no page (a buffer, a sprite
+   * cache, a layer drawn once and copied every frame). The app's document tells the page of
+   * a node when it joins the page, so the page had none, drew nothing on it, and drew
+   * nothing from it. Made here when it is first drawn on, and the one used if it joins the
+   * page later.
+   */
+  private offPageCanvas(id: unknown): HTMLCanvasElement | undefined {
+    if (typeof id !== 'number' || !Number.isInteger(id) || id <= 1 || this.nodes.size >= MAX_HOST_NODES) return undefined;
+    const canvas = document.createElement('canvas');
+    canvas.setAttribute(NODE_ID_ATTR, String(id));
+    this.nodes.set(id, canvas);
+    this.offPage2d.set(id, canvas);
+    return canvas;
+  }
+
+  /** A canvas let go of: out of the page's table, and its pixels given back now. */
+  private releaseCanvas(id: number, canvas: HTMLCanvasElement): void {
+    this.nodes.delete(id);
+    this.drawnLately.delete(id);
+    this.offPage2d.delete(id);
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+
+  /**
+   * A canvas on no page that was drawn on (made so, or taken off the page and drawn on still):
+   * counted with the others, and held to their budget at once when it is new or grew. Held to
+   * it only when a batch was over, a batch that made a hundred large ones had them all at once;
+   * and one taken off the page was never counted.
+   */
+  private keepOffPage(id: number, canvas: HTMLCanvasElement, areaBefore: number): void {
+    if (canvas.isConnected) return;
+    const known = this.offPage2d.has(id);
+    if (!known) this.offPage2d.set(id, canvas);
+    if (!known || canvas.width * canvas.height > areaBefore) this.limitOffPageCanvases();
+  }
+
+  /** Within what the page keeps of canvases on no page: the least lately drawn on are let go of. */
+  private limitOffPageCanvases(): void {
+    if (this.offPage2d.size === 0) return;
+    let pixels = 0;
+    for (const canvas of this.offPage2d.values()) pixels += canvas.width * canvas.height;
+    if (pixels <= MAX_OFF_PAGE_PIXELS) return;
+    // Least lately drawn first: drawnLately is in that order; one never drawn with is first of all.
+    const rank = new Map<number, number>();
+    let at = 0;
+    for (const key of this.drawnLately.keys()) rank.set(key, at++);
+    const order = [...this.offPage2d.keys()].sort((a, b) => (rank.get(a) ?? -1) - (rank.get(b) ?? -1));
+    for (const id of order) {
+      if (pixels <= MAX_OFF_PAGE_PIXELS) break;
+      const canvas = this.offPage2d.get(id)!;
+      if (canvas.isConnected) {
+        this.offPage2d.delete(id);
+        continue;
+      }
+      pixels -= canvas.width * canvas.height;
+      this.releaseCanvas(id, canvas);
+      if (!this.warnedOffPage) {
+        this.warnedOffPage = true;
+        this.callbacks.onWarning?.(
+          `[SoftN] The page let go of a canvas the app had not drawn on lately, one on no page, to keep the canvases it keeps for the app off its page within ${MAX_OFF_PAGE_PIXELS} pixels: drawn from again, it is blank.`
+        );
+      }
+    }
+  }
+
+
+  /** A canvas drawn on, and the canvases and images drawn from into it: kept from the sweep while the app draws with them. */
+  private drawnWith(canvasId: number, cmds: readonly Canvas2DCmd[] | undefined): void {
+    const touch = (id: number) => {
+      if (!Number.isInteger(id)) return;
+      this.drawnLately.delete(id);
+      this.drawnLately.set(id, true);
+      if (this.drawnLately.size > MAX_DRAWN_LATELY) {
+        const oldest = this.drawnLately.keys().next().value;
+        if (oldest !== undefined) this.drawnLately.delete(oldest);
+      }
+    };
+    touch(canvasId);
+    if (!Array.isArray(cmds)) return;
+    for (const cmd of cmds) {
+      if (Array.isArray(cmd) && cmd[0] === 'drawImage' && typeof cmd[1] === 'string' && cmd[1].startsWith('node:')) touch(Number(cmd[1].slice(5)));
+    }
+  }
+
+  private sweepNodes(): void {
+    // Nothing is on any page while the app's page is not on one: nothing to tell apart.
+    if (!this.docRootEl.isConnected) return;
+    const sheetText = new Set<number>();
+    for (const [sheet, ids] of this.styleSheets) if (sheet.isConnected) for (const id of ids) sheetText.add(id);
+    const found = new Set<number>();
+    for (const [id, node] of this.nodes) {
+      // The page's own (its scroller, its body, its head) are no one's to forget; nor is a
+      // canvas or an image the app lately drew with, on the page or not.
+      // A canvas drawn on while on no page is left to its own budget (and to the app's letting go of it).
+      if (id <= 1 || node.isConnected || sheetText.has(id) || this.drawnLately.has(id) || this.offPage2d.has(id)) continue;
+      if (!this.offPage.has(id)) {
+        found.add(id);
+        continue;
+      }
+      this.nodes.delete(id);
+      if (this.measuredIds.delete(id)) {
+        this.sweptMeasured.add(id);
+        if (this.sweptMeasured.size > MAX_SWEPT_MEASURED) this.sweptMeasured.delete(this.sweptMeasured.values().next().value as number);
+      }
+      // The browser's observer holds what it observes: let go of here, let go of there too.
+      if (node instanceof Element) this.resizeObserver?.unobserve(node);
+      if (node instanceof HTMLImageElement) this.letGoOfReadable(node);
+      if (node instanceof ShadowRoot) {
+        if (this.shadowRoots.has(node)) this.dropShadowRoot(node);
+      } else if (node instanceof Element) {
+        if (this.styleSheets.delete(node) || this.links.delete(node)) this.callbacks.onStyleFonts?.(node, '');
+        this.links.delete(node);
+        this.linkNews.delete(node);
+        this.pendingProperties.delete(node);
+        this.shadowSheets.delete(node);
+        if (node.shadowRoot && this.shadowRoots.has(node.shadowRoot)) this.dropShadowRoot(node.shadowRoot);
+      }
+    }
+    this.offPage = found;
+    this.nodesAtSweep = this.nodes.size;
+  }
+
+  /**
+   * Whether a picture drawn into a canvas leaves it readable: the app's own bytes (a file of
+   * its own, a blob it made, another canvas of such, or a picture from another site the app
+   * asked for with CORS, which the page fetched for it and keeps as a blob: loadReadable).
+   * An image of the page's with a network address is not, `crossorigin` or not: where a
+   * redirect took it is not the page's to know.
+   */
   private isOwnPicture(source: CanvasImageSource): boolean {
     if (source instanceof HTMLCanvasElement) return !this.unreadable.has(source);
-    if (source instanceof HTMLImageElement) return /^(?:blob|data):/i.test(source.currentSrc || source.src);
-    return false;
+    if (!(source instanceof HTMLImageElement)) return false;
+    return /^(?:blob|data):/i.test(source.currentSrc || source.src);
+  }
+
+  /**
+   * A picture from another site the app asked for with CORS, to draw from and read back: fetched
+   * with CORS and without the person's cookies, read only if it came from a site the app may
+   * read from (wherever a redirect took it) and never from the embedding page's own site, and
+   * kept as a blob of what came, which is the app's to read. On failure, `img` is told so.
+   */
+  private loadReadable(img: HTMLImageElement, address: string, current: () => boolean = () => true): void {
+    const readable = (url: string): boolean => {
+      try {
+        const parsed = new URL(url);
+        if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.origin === location.origin) return false;
+      } catch {
+        return false;
+      }
+      return sanitizeHostAssetUrl('src', url, 'img', this.entryPath, this.archive, this.permissions, this.netGranted) !== null;
+    };
+    const failed = () => {
+      if (!this.disposed && current()) img.dispatchEvent(new Event('error'));
+    };
+    if (!readable(address) || typeof fetch !== 'function') {
+      queueMicrotask(failed);
+      return;
+    }
+    // Never from the browser's copy: one the embedding page loaded with the person's cookies
+    // (a site of its own it shares cookies with) would come back as if fetched without them.
+    void fetch(address, { mode: 'cors', credentials: 'omit', cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok || (response.redirected && !readable(response.url))) throw new Error('not readable');
+        // Read a part at a time and held to its size as it comes, and with the others being
+        // read to what all of them may keep: a size said first is not always there, nor true.
+        let loading = 0;
+        let blob: Blob;
+        try {
+          blob = await blobWithin(response, MAX_READABLE_PICTURE_BYTES, (bytes) => {
+            loading += bytes;
+            this.readableLoading += bytes;
+            let kept = this.readableLoading;
+            for (const size of this.readableSizes.values()) kept += size;
+            return kept <= MAX_READABLE_TOTAL_BYTES;
+          });
+        } finally {
+          this.readableLoading -= loading;
+        }
+        if (this.disposed) throw new Error('not kept');
+        // Asked for another address since: this one is not shown.
+        if (!current()) return;
+        // One kept for each image, the one it shows, and all of them held to a total: an image
+        // that changed its address every second kept every picture it had ever shown.
+        this.letGoOfReadable(img);
+        let total = blob.size;
+        for (const kept of this.readableSizes.values()) total += kept;
+        if (total > MAX_READABLE_TOTAL_BYTES) throw new Error('too much');
+        const url = URL.createObjectURL(blob);
+        this.readableUrls.set(img, url);
+        this.readableSizes.set(url, blob.size);
+        img.src = url;
+      })
+      .catch(failed);
+  }
+
+  /** The blob an image was shown from, given back. */
+  private letGoOfReadable(img: HTMLImageElement): void {
+    const url = this.readableUrls.get(img);
+    if (url === undefined) return;
+    this.readableUrls.delete(img);
+    this.readableSizes.delete(url);
+    URL.revokeObjectURL(url);
   }
 
   /**
@@ -743,15 +1145,16 @@ export class HostDomPatcher {
    */
   private listen(type: string, fn: (e: Event) => void, capture: boolean): void {
     this.listening.push({ type, fn, capture });
-    this.docRootEl.addEventListener(type, fn, capture);
-    if (!COMPOSED_EVENTS.has(type)) for (const root of this.shadowRoots) root.addEventListener(type, fn, capture);
+    const opts = PASSIVE_EVENTS.has(type) ? { capture, passive: true } : capture;
+    this.docRootEl.addEventListener(type, fn, opts);
+    if (!COMPOSED_EVENTS.has(type)) for (const root of this.shadowRoots) root.addEventListener(type, fn, opts);
   }
 
   /** Fill the `<style>` standing in for a `<link>`: a stylesheet of the app's, by the host's rule, or nothing. */
   private writeLinkedSheet(el: Element, link: { rel: string; href: string }): void {
     let css = '';
     if (/(?:^|\s)stylesheet(?:\s|$)/i.test(link.rel) && link.href.trim()) {
-      const path = resolveVfsPath(link.href, this.entryPath);
+      const path = this.archive.resolveExistingPath(link.href, this.entryPath);
       const text = path ? this.archive.readText(path) : null;
       const scope = this.cssScope(el);
       if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted, scope);
@@ -764,6 +1167,7 @@ export class HostDomPatcher {
       this.linkNews.delete(el);
     }
     el.textContent = css;
+    this.callbacks.onStyleFonts?.(el, extractSanitizedFontFaces(css));
   }
 
   /** Reconcile `parent`'s DOM children to match `childIds` with minimal DOM moves. */
@@ -777,6 +1181,14 @@ export class HostDomPatcher {
       if (child && child.nodeType !== Node.DOCUMENT_FRAGMENT_NODE && !desiredSet.has(child)) {
         desiredNodes.push(child);
         desiredSet.add(child);
+        if (child instanceof HTMLCanvasElement && parent instanceof Element) {
+          const pid = Number(parent.getAttribute(NODE_ID_ATTR));
+          if (Number.isInteger(pid) && pid > 1 && !this.measuredIds.has(pid)) {
+            this.measuredIds.add(pid);
+            this.resizeObserver?.observe(parent);
+            this.scheduleBoxMeasure();
+          }
+        }
       }
     }
 
@@ -921,16 +1333,59 @@ export class HostDomPatcher {
     }
   }
 
-  /** Whether the app may be given the focus: it has it already, or nothing in the embedding page does. */
+  /**
+   * Whether the app may be given the focus: it has it already, the element it is drawn in
+   * has it, nothing in the embedding page has it, or the person's last click in the app left
+   * it on an element around the app and nothing has moved it since. Never from a field of the
+   * embedding page a person may be typing into, nor from a bar of the container's own.
+   *
+   * Asked out through each root the app's page is in, to the document: in each, the element
+   * holding the focus is the one the app is inside, one around it, another, or none (asked of
+   * the next root out). A browser that does not focus a button when it is clicked (Safari)
+   * puts the focus on the nearest element around the click that takes it (the runtime's tab)
+   * when the person clicks the app's own button: that element is the app's to move on from,
+   * and only that one. (Any element around the app was: one whose own shadow tree held the
+   * field a person was typing into gave its keys to the app.) The rule looked at one root
+   * only, and the app's page has been in a root of its own since v0.0.45: in Safari, an app's
+   * `focus()` after a click on its own button did nothing.
+   */
   private mayTakeFocus(): boolean {
-    const root = this.viewportEl.getRootNode() as ShadowRoot | Document;
+    let root = this.docRootEl.getRootNode() as ShadowRoot | Document;
     const inside = root.activeElement;
-    if (inside && this.viewportEl.contains(inside)) return true;
-    const doc = this.viewportEl.ownerDocument;
-    const active = doc?.activeElement ?? null;
-    if (!active || active === doc.body || active === doc.documentElement) return true;
-    // The element the app is drawn in holding the focus is the app holding it.
-    return 'host' in root && active === (root as ShadowRoot).host;
+    if (inside && this.owns(inside)) return true;
+    while (root instanceof ShadowRoot) {
+      const host = root.host;
+      const outer = host.getRootNode() as ShadowRoot | Document;
+      const active = outer.activeElement;
+      // The document's body or its root holding the focus is nobody holding it.
+      const nobody = !active || (!(outer instanceof ShadowRoot) && (active === outer.body || active === outer.documentElement));
+      if (!nobody && active) {
+        if (active === host) return true;
+        // The element around the app the person's click left the focus on, and still the very
+        // one inside it (a move into a field of its own shadow tree leaves the document's the same).
+        if (active !== this.clickFocus || performance.now() - this.clickFocusAt > CLICK_FOCUS_MS || !active.contains(host)) return false;
+        const deep = deepestFocus(active);
+        return deep === this.clickFocusDeep && !typedInto(deep);
+      }
+      // Nothing in this tree has it: out to the next.
+      if (!(outer instanceof ShadowRoot)) return true;
+      root = outer;
+    }
+    const active = root.activeElement;
+    return !active || active === root.body || active === root.documentElement;
+  }
+
+  /** The element holding the focus around the app: the first a root out from the app's page has, or null. */
+  private focusAround(): Element | null {
+    let root = this.docRootEl.getRootNode() as ShadowRoot | Document;
+    while (root instanceof ShadowRoot) {
+      const outer = root.host.getRootNode() as ShadowRoot | Document;
+      const active = outer.activeElement;
+      if (!(outer instanceof ShadowRoot)) return active && active !== outer.body && active !== outer.documentElement ? active : null;
+      if (active) return active;
+      root = outer;
+    }
+    return null;
   }
 
   /** Hand `val` to a `<softn-*>` element's own property, now or when its class has arrived. */
@@ -985,128 +1440,11 @@ export class HostDomPatcher {
     }
     if (!ctx) return;
 
-    for (const cmd of cmds) {
-      switch (cmd[0]) {
-        case 'prop':
-          // A drawing property of the context, by name (host-policy.ts): not any name, and
-          // not a filter that names an address.
-          if (canvasPropertyAllowed(cmd[1], cmd[2])) (ctx as unknown as Record<string, unknown>)[cmd[1]] = cmd[2];
-          break;
-        case 'clearRect':
-          ctx.clearRect(cmd[1], cmd[2], cmd[3], cmd[4]);
-          break;
-        case 'fillRect':
-          ctx.fillRect(cmd[1], cmd[2], cmd[3], cmd[4]);
-          break;
-        case 'strokeRect':
-          ctx.strokeRect(cmd[1], cmd[2], cmd[3], cmd[4]);
-          break;
-        case 'beginPath':
-          ctx.beginPath();
-          break;
-        case 'closePath':
-          ctx.closePath();
-          break;
-        case 'moveTo':
-          ctx.moveTo(cmd[1], cmd[2]);
-          break;
-        case 'lineTo':
-          ctx.lineTo(cmd[1], cmd[2]);
-          break;
-        case 'arc':
-          ctx.arc(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6]);
-          break;
-        case 'ellipse':
-          ctx.ellipse(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6], cmd[7], cmd[8]);
-          break;
-        case 'rect':
-          ctx.rect(cmd[1], cmd[2], cmd[3], cmd[4]);
-          break;
-        case 'roundRect':
-          if (typeof ctx.roundRect === 'function') {
-            ctx.roundRect(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5]);
-          } else {
-            ctx.rect(cmd[1], cmd[2], cmd[3], cmd[4]);
-          }
-          break;
-        case 'quadraticCurveTo':
-          ctx.quadraticCurveTo(cmd[1], cmd[2], cmd[3], cmd[4]);
-          break;
-        case 'bezierCurveTo':
-          ctx.bezierCurveTo(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6]);
-          break;
-        case 'fill':
-          if (cmd[1]) ctx.fill(cmd[1] as CanvasFillRule);
-          else ctx.fill();
-          break;
-        case 'stroke':
-          ctx.stroke();
-          break;
-        case 'clip':
-          if (cmd[1]) ctx.clip(cmd[1] as CanvasFillRule);
-          else ctx.clip();
-          break;
-        case 'save':
-          ctx.save();
-          break;
-        case 'restore':
-          ctx.restore();
-          break;
-        case 'scale':
-          ctx.scale(cmd[1], cmd[2]);
-          break;
-        case 'rotate':
-          ctx.rotate(cmd[1]);
-          break;
-        case 'translate':
-          ctx.translate(cmd[1], cmd[2]);
-          break;
-        case 'transform':
-          ctx.transform(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6]);
-          break;
-        case 'setTransform':
-          ctx.setTransform(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6]);
-          break;
-        case 'resetTransform':
-          ctx.resetTransform();
-          break;
-        case 'setLineDash':
-          ctx.setLineDash(cmd[1]);
-          break;
-        case 'fillText':
-          if (cmd[4] !== undefined) ctx.fillText(cmd[1], cmd[2], cmd[3], cmd[4]);
-          else ctx.fillText(cmd[1], cmd[2], cmd[3]);
-          break;
-        case 'strokeText':
-          if (cmd[4] !== undefined) ctx.strokeText(cmd[1], cmd[2], cmd[3], cmd[4]);
-          else ctx.strokeText(cmd[1], cmd[2], cmd[3]);
-          break;
-        case 'putImageData': {
-          const raw = base64ToBytes(cmd[1]);
-          const w = cmd[2];
-          const h = cmd[3];
-          if (typeof ImageData === 'function' && raw.byteLength === w * h * 4) {
-            const imgData = new ImageData(new Uint8ClampedArray(raw), w, h);
-            ctx.putImageData(imgData, cmd[4], cmd[5]);
-          }
-          break;
-        }
-        case 'drawImage': {
-          const srcRef = cmd[1];
-          const source = this.resolveDrawableImage(srcRef);
-          if (!source) break;
-          if (!this.isOwnPicture(source)) this.unreadable.add(canvas);
-          if (cmd[7] !== undefined && cmd[8] !== undefined && cmd[9] !== undefined) {
-            ctx.drawImage(source, cmd[2], cmd[3], cmd[4]!, cmd[5]!, cmd[6]!, cmd[7], cmd[8], cmd[9]);
-          } else if (cmd[4] !== undefined && cmd[5] !== undefined) {
-            ctx.drawImage(source, cmd[2], cmd[3], cmd[4], cmd[5]);
-          } else {
-            ctx.drawImage(source, cmd[2], cmd[3]);
-          }
-          break;
-        }
-      }
-    }
+    replayCanvasCommands(ctx, cmds, (ref) => {
+      const source = this.resolveDrawableImage(ref);
+      if (source && !this.isOwnPicture(source)) this.unreadable.add(canvas);
+      return source;
+    });
   }
 
   /**
@@ -1115,11 +1453,53 @@ export class HostDomPatcher {
    * `<img>` on the page is: a file of the app's, a blob it made, or a site it was granted.
    * Kept by the address as written, which is how a canvas then asks to draw it.
    */
-  private preloadImage(token: string, src: string): void {
+  /** Present a zero-copy GPU `ImageBitmap` rendered on an OffscreenCanvas WebGL/WebGL2 context in the Worker. */
+  presentWebGLFrame(canvasId: number, bitmap: ImageBitmap, width: number, height: number): void {
+    const node = this.nodes.get(canvasId);
+    if (!(node instanceof HTMLCanvasElement)) {
+      try { bitmap.close(); } catch { /* ignore */ }
+      return;
+    }
+    const w = canvasSide(width);
+    const h = canvasSide(height);
+    if (w > 0 && node.width !== w) node.width = w;
+    if (h > 0 && node.height !== h) node.height = h;
+    let br = this.bitmapContexts.get(node);
+    if (!br && typeof node.getContext === 'function') {
+      try {
+        br = node.getContext('bitmaprenderer') ?? undefined;
+        if (br) this.bitmapContexts.set(node, br);
+      } catch {
+        br = undefined;
+      }
+    }
+    if (br) {
+      try {
+        br.transferFromImageBitmap(bitmap);
+        return;
+      } catch {
+        // Fall through to 2D blit fallback
+      }
+    }
+    try {
+      const ctx2d = node.getContext('2d');
+      if (ctx2d) {
+        ctx2d.clearRect(0, 0, node.width, node.height);
+        ctx2d.drawImage(bitmap, 0, 0, node.width, node.height);
+      }
+    } catch {
+      // ignore
+    }
+    try { bitmap.close(); } catch { /* ignore */ }
+  }
+
+  private preloadImage(token: string, src: string, cors = false): void {
     const answer = (ok: boolean, width = 0, height = 0) => {
       if (!this.disposed) this.callbacks.onEvent(-1, 'softn:image', { token, src, ok, width, height }, []);
     };
-    const kept = this.imageCache.get(src);
+    // Kept by the name a canvas draws it by: one asked for with CORS apart from one without.
+    const name = cors ? `cors:${src}` : src;
+    const kept = this.imageCache.get(name);
     if (kept) {
       if (kept.complete) answer(kept.naturalWidth > 0, kept.naturalWidth, kept.naturalHeight);
       else {
@@ -1138,8 +1518,13 @@ export class HostDomPatcher {
     const img = new Image();
     img.addEventListener('load', () => answer(true, img.naturalWidth, img.naturalHeight), { once: true });
     img.addEventListener('error', () => answer(false), { once: true });
-    this.imageCache.set(src, img);
-    img.src = address;
+    this.imageCache.set(name, img);
+    // From another site, fetched to be read back; the app's own file, a blob or data: address
+    // is loaded as it is (and read back as it is: isOwnPicture). Every crossOrigin image was
+    // fetched here, which takes only http(s): three.js sets it on every texture, and one from
+    // the app's own files never loaded.
+    if (cors && /^https?:/i.test(address)) this.loadReadable(img, address);
+    else img.src = address;
   }
 
   /**
@@ -1160,7 +1545,7 @@ export class HostDomPatcher {
       queueMicrotask(() => ended('finished'));
       return;
     }
-    const css = (value: string) => sanitizeContainerCss(value.slice(0, 2000), this.entryPath, this.archive, this.permissions, this.netGranted);
+    const css = (value: string) => sanitizeContainerCss(value.slice(0, 2000), this.entryPath, this.archive, this.permissions, this.netGranted, 'inline');
     const value = (raw: unknown): string | number | null => (typeof raw === 'number' && Number.isFinite(raw) ? raw : typeof raw === 'string' ? css(raw) : null);
     const frame = (raw: unknown): Keyframe | null => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -1246,16 +1631,24 @@ export class HostDomPatcher {
     if (ref.startsWith('node:')) {
       const id = Number(ref.slice(5));
       const n = this.nodes.get(id);
-      if (n instanceof HTMLCanvasElement || n instanceof HTMLImageElement) return n;
+      if (n instanceof HTMLCanvasElement) return n;
+      // A picture not loaded yet, or that could not be, draws nothing (drawn, a broken one throws).
+      if (n instanceof HTMLImageElement) return n.complete && n.naturalWidth > 0 ? n : null;
       return null;
     }
     const cached = this.imageCache.get(ref);
-    if (cached && cached.complete) return cached;
-    if (!cached && typeof Image === 'function') {
-      const blobUrl = this.archive.getBlobUrl(ref, this.entryPath);
-      if (blobUrl) {
+    if (cached && cached.complete) return cached.naturalWidth > 0 ? cached : null;
+    if (!cached && typeof Image === 'function' && this.imageCache.size < MAX_PRELOADED_IMAGES) {
+      // Loaded by the rule an image on no page is (a file of the app's, a blob it made, data
+      // in the address, a site it was granted), and drawn from the next time it is asked for.
+      // Only a file of the app's was: a picture by any other address was never drawn. One
+      // the app asked for with CORS ('cors:' and its address) is loaded with CORS.
+      const cors = ref.startsWith('cors:');
+      const address = sanitizeHostAssetUrl('src', cors ? ref.slice(5) : ref, 'img', this.entryPath, this.archive, this.permissions, this.netGranted);
+      if (address) {
         const img = new Image();
-        img.src = blobUrl;
+        if (cors && /^https?:/i.test(address)) this.loadReadable(img, address);
+        else img.src = address;
         this.imageCache.set(ref, img);
       }
     }
@@ -1267,6 +1660,38 @@ export class HostDomPatcher {
     const onSubmitCapture = (e: Event) => {
       // Never allow a form inside `<softn-app>` to navigate the host browser window
       e.preventDefault();
+      if (!this.callbacks.onFormSubmit) return;
+      const target = this.originOf(e);
+      const form = target instanceof HTMLFormElement ? target : target?.closest?.('form') ?? null;
+      if (!form || !this.owns(form)) return;
+      const action = (form.getAttribute('action') ?? '').trim();
+      const method = (form.getAttribute('method') ?? 'GET').trim().toUpperCase() || 'GET';
+      const params = new URLSearchParams();
+      for (const el of Array.from(form.elements)) {
+        if (el instanceof HTMLInputElement) {
+          if (!el.name || el.disabled) continue;
+          const t = (el.type || 'text').toLowerCase();
+          if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image' || t === 'file') continue;
+          if ((t === 'checkbox' || t === 'radio') && !el.checked) continue;
+          params.append(el.name, el.value);
+        } else if (el instanceof HTMLTextAreaElement) {
+          if (!el.name || el.disabled) continue;
+          params.append(el.name, el.value);
+        } else if (el instanceof HTMLSelectElement) {
+          if (!el.name || el.disabled) continue;
+          for (const opt of Array.from(el.selectedOptions)) params.append(el.name, opt.value);
+        }
+      }
+      const submitter = 'submitter' in e ? ((e as SubmitEvent).submitter as Element | null) : null;
+      if ((submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) && submitter.name && !submitter.disabled) {
+        params.append(submitter.name, submitter.value);
+      }
+      const req = { action, method, encoded: params.toString() };
+      if (this.listenedEvents.has('submit')) {
+        this.heldForm = { event: e, req };
+        return;
+      }
+      this.callbacks.onFormSubmit(req);
     };
     // Every click on a link of the app's is the host's to carry out, never the browser's: the
     // link is an element of the embedding page, so followed natively it would move that
@@ -1339,6 +1764,47 @@ export class HostDomPatcher {
     this.listen('input', oncePerEvent(onInputOrChange), true);
     this.listen('change', oncePerEvent(onInputOrChange), true);
     for (const type of ACTIVATIONS) this.listen(type, onActivation, true);
+    // Where the person has scrolled the app's page and its elements to: told with the next
+    // event the app hears, and once the scrolling stops, so that scrollTop reads it.
+    this.listen(
+      'scroll',
+      (e: Event) => {
+        const target = e.target;
+        if (!(target instanceof Element) || !this.owns(target)) return;
+        this.scrolledSince.add(target);
+        if (this.scrollSettle !== null) clearTimeout(this.scrollSettle);
+        this.scrollSettle = setTimeout(() => {
+          this.scrollSettle = null;
+          const changes = this.scrollChanges();
+          if (changes.length > 0 && !this.disposed) this.callbacks.onSync(changes);
+        }, SCROLL_SETTLE_MS);
+      },
+      true
+    );
+    // Where the person's click in the app left the focus, for an app's focus() just after it.
+    this.listen(
+      'click',
+      () => {
+        this.clickFocus = this.focusAround();
+        this.clickFocusDeep = this.clickFocus ? deepestFocus(this.clickFocus) : null;
+        this.clickFocusAt = performance.now();
+      },
+      true
+    );
+    // A press or a click anywhere outside the app ends it: the person has moved on. (Heard at
+    // the document, an event inside the app's closed roots is seen as far as their hosts.)
+    const outside = (e: Event) => {
+      const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+      if (path.includes(this.docRootEl)) return;
+      for (let root = this.docRootEl.getRootNode(); root instanceof ShadowRoot; root = root.host.getRootNode()) if (path.includes(root.host)) return;
+      this.clickFocus = this.clickFocusDeep = null;
+    };
+    if (typeof document !== 'undefined') {
+      for (const type of ['pointerdown', 'mousedown', 'keydown']) document.addEventListener(type, outside, true);
+      this.cleanupFns.push(() => {
+        for (const type of ['pointerdown', 'mousedown', 'keydown']) document.removeEventListener(type, outside, true);
+      });
+    }
 
     this.cleanupFns.push(() => {
       for (const { type, fn, capture } of this.listening) {
@@ -1360,8 +1826,8 @@ export class HostDomPatcher {
       const onResize = () => {
         this.callbacks.onEvent(-1, 'softn:viewport', {
           v: [
-            window.innerWidth || 1024,
-            window.innerHeight || 768,
+            this.docRootEl.clientWidth || window.innerWidth || 1024,
+            this.docRootEl.clientHeight || window.innerHeight || 768,
             window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 1 : 0,
             window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 1 : 0,
             window.devicePixelRatio || 1,
@@ -1370,7 +1836,16 @@ export class HostDomPatcher {
         }, []);
       };
       window.addEventListener('resize', onResize);
-      this.cleanupFns.push(() => window.removeEventListener('resize', onResize));
+      let viewportRo: ResizeObserver | null = null;
+      if (typeof ResizeObserver === 'function') {
+        viewportRo = new ResizeObserver(onResize);
+        viewportRo.observe(this.docRootEl);
+      }
+      this.cleanupFns.push(() => {
+        window.removeEventListener('resize', onResize);
+        viewportRo?.disconnect();
+      });
+
       return;
     }
 
@@ -1379,19 +1854,23 @@ export class HostDomPatcher {
 
     const handler = (e: Event) => {
       // The element it happened on, inside whatever shadow tree of the app's: at the app's
-      // page an event that left one reads as its host's.
+      // page an event that left one reads as its host's. The app's page scrolled is its
+      // document scrolled (window.addEventListener('scroll', …)).
       const targetEl = this.originOf(e);
-      const nodeId = this.findNearestNodeId(targetEl);
+      const nodeId = eventType === 'scroll' && targetEl === this.docRootEl ? -1 : this.findNearestNodeId(targetEl);
       // A link held for this click (above): followed once the script has heard the click
       // and not cancelled it, or now if the script is not going to hear it.
       const held = this.heldLink && this.heldLink.event === e ? this.heldLink.href : null;
       if (held !== null) this.heldLink = null;
+      const heldForm = this.heldForm && this.heldForm.event === e ? this.heldForm.req : null;
+      if (heldForm !== null) this.heldForm = null;
       if (nodeId === null) {
         if (held !== null) this.callbacks.onNavigate?.(held);
+        if (heldForm !== null) this.callbacks.onFormSubmit?.(heldForm);
         return;
       }
 
-      const syncChanges = this.extractInputSync(targetEl, eventType === 'click');
+      const syncChanges = [...this.scrollChanges(), ...this.extractInputSync(targetEl, eventType === 'click')];
       // The focused element inside the app's own root. (The document's is the embedding
       // page's `<softn-app>` element, which is none of the app's, so the app's script never
       // learned where the focus was.) Inside a shadow tree of the app's, the one in there.
@@ -1403,10 +1882,13 @@ export class HostDomPatcher {
 
       const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this), this.origin());
       const answered =
-        held === null
+        held === null && heldForm === null
           ? undefined
           : (eventBits: number) => {
-              if (!this.disposed && !(eventBits & 1)) this.callbacks.onNavigate?.(held);
+              if (!this.disposed && !(eventBits & 1)) {
+                if (held !== null) this.callbacks.onNavigate?.(held);
+                if (heldForm !== null) this.callbacks.onFormSubmit?.(heldForm);
+              }
             };
       // A file field that changed: its files are read (for an app allowed them) and told
       // with the event, so that input.files is true by the time the script hears of it.
@@ -1522,12 +2004,13 @@ export class HostDomPatcher {
     const id = this.findNearestNodeId(field);
     if (id === null || id <= 1) return Promise.resolve([]);
     const kept = this.pickedFiles.get(field);
-    if (kept && kept.list === field.files) return kept.change;
+    // A field says both `input` and `change` of one choice: the files go with the first, and the second says only that they are the same.
+    if (kept && kept.list === field.files) return kept.change.then(() => [['F', id, { again: true }]]);
     const list = field.files;
     const chosen = list ? Array.from(list) : [];
     const change = (async (): Promise<unknown[]> => {
       if (!this.filesGranted) return [['F', id, { files: [], refused: chosen.length > 0 }]];
-      const files: Array<{ name: string; type: string; lastModified: number; base64: string }> = [];
+      const files: Array<{ name: string; type: string; lastModified: number; size: number; base64: string }> = [];
       let skipped = 0;
       let total = 0;
       for (const file of chosen) {
@@ -1538,7 +2021,7 @@ export class HostDomPatcher {
         try {
           const bytes = await readFile(file);
           total += bytes.byteLength;
-          files.push({ name: file.name, type: file.type, lastModified: file.lastModified, base64: bytesToBase64(bytes) });
+          files.push({ name: file.name, type: file.type, lastModified: file.lastModified, size: bytes.byteLength, base64: bytesToBase64(bytes) });
         } catch {
           skipped++;
         }
@@ -1547,6 +2030,19 @@ export class HostDomPatcher {
     })();
     this.pickedFiles.set(field, { list, change });
     return change;
+  }
+
+  /** Where each element the person scrolled since the app was last told is now, by its id (the app's page is its body's, 1). */
+  private scrollChanges(): unknown[] {
+    if (this.scrolledSince.size === 0) return [];
+    const changes: unknown[] = [];
+    for (const el of this.scrolledSince) {
+      if (!el.isConnected) continue;
+      const id = el === this.docRootEl || el === this.viewportEl ? 1 : Number(el.getAttribute(NODE_ID_ATTR));
+      if (Number.isInteger(id) && id >= 1) changes.push(['Y', id, el.scrollTop, el.scrollLeft]);
+    }
+    this.scrolledSince.clear();
+    return changes;
   }
 
   private installResizeObserver(): void {
@@ -1564,12 +2060,38 @@ export class HostDomPatcher {
       if (this.disposed || this.measuredIds.size === 0) return;
       const boxes: MeasuredBoxTuple[] = [];
       const origin = this.origin();
+      // Also observe up to 2 ancestor wrappers of any measured <canvas> (e.g. R3F events.connected div)
+      // so controllers reading element.clientWidth/clientHeight never observe 0 on first interaction.
+      for (const id of [...this.measuredIds]) {
+        const node = this.nodes.get(id);
+        if (node instanceof HTMLCanvasElement && node.isConnected) {
+          let anc = node.parentElement;
+          for (let depth = 0; depth < 2 && anc; depth++, anc = anc.parentElement) {
+            const aid = Number(anc.getAttribute(NODE_ID_ATTR));
+            if (Number.isInteger(aid) && aid > 1 && !this.measuredIds.has(aid)) {
+              this.measuredIds.add(aid);
+              this.resizeObserver?.observe(anc);
+            }
+          }
+        }
+      }
       for (const id of this.measuredIds) {
         const node = this.nodes.get(id);
         if (node instanceof Element && node.isConnected) {
           const rect = node.getBoundingClientRect();
           // With how much it holds, for scrollHeight: a box and what scrolls inside it differ.
-          boxes.push([id, rect.left - origin.left, rect.top - origin.top, rect.width, rect.height, node.scrollWidth, node.scrollHeight]);
+          const htmlEl = node as HTMLElement;
+          boxes.push([
+            id,
+            rect.left - origin.left,
+            rect.top - origin.top,
+            rect.width,
+            rect.height,
+            node.scrollWidth,
+            node.scrollHeight,
+            typeof htmlEl.offsetLeft === 'number' ? htmlEl.offsetLeft : 0,
+            typeof htmlEl.offsetTop === 'number' ? htmlEl.offsetTop : 0,
+          ]);
         }
       }
       if (boxes.length > 0) {
@@ -1585,17 +2107,39 @@ export class HostDomPatcher {
     this.disposed = true;
     for (const fn of this.cleanupFns) fn();
     this.cleanupFns.length = 0;
+    if (this.scrollSettle !== null) clearTimeout(this.scrollSettle);
+    this.scrollSettle = null;
+    this.scrolledSince.clear();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.nodes.clear();
     this.shadowSheets.clear();
     this.rootIds.clear();
     this.imageCache.clear();
+    for (const url of this.readableUrls.values()) URL.revokeObjectURL(url);
+    this.readableUrls.clear();
+    this.readableSizes.clear();
     this.animations.clear();
     this.styleSheets.clear();
     this.links.clear();
     this.pendingProperties.clear();
   }
+}
+
+/** The element holding the focus inside `el`, through its open shadow trees: `el` itself when none does. */
+function deepestFocus(el: Element): Element {
+  let deep = el;
+  for (let depth = 0; depth < 32; depth++) {
+    const inner = deep.shadowRoot?.activeElement;
+    if (!inner) break;
+    deep = inner;
+  }
+  return deep;
+}
+
+/** Whether a person types into an element: a field, or a region of the page that is edited in place. */
+function typedInto(el: Element): boolean {
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || (el as HTMLElement).isContentEditable === true || el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '';
 }
 
 /** The nearest link on an event's way out, through any shadow tree. */

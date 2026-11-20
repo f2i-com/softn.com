@@ -174,7 +174,7 @@ export function Launcher({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".softn"
+                accept=".softn,.zip"
                 onChange={handleFileSelect}
                 style={{ display: 'none' }}
               />

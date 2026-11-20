@@ -14,7 +14,7 @@ import { selectEngineTier } from './zipp-loader';
 import type { ZippEngineTier } from './types';
 
 export interface ContainerRuntimeNeeds {
-  /** Every engine tier one of the app's pages starts on, each once. */
+  /** Every engine tier one of the app's pages or embedded backend starts on, each once. */
   tiers: ZippEngineTier[];
   /** A script imports `three`: the page's side of a 3D scene is loaded when one is drawn. */
   three: boolean;
@@ -22,6 +22,8 @@ export interface ContainerRuntimeNeeds {
   models: boolean;
   /** The built-in `<softn-*>` elements its pages or scripts name (`softn-chart`, `softn-datagrid`). */
   extensions: string[];
+  /** Whether the app embeds a backend or SQLite database (requires `xdb-wasm.wasm` and `backend-worker.js`). */
+  sqlite?: boolean;
 }
 
 /** The `<softn-*>` elements whose code the container carries itself (ui-extensions/registry.ts). */
@@ -57,6 +59,16 @@ export async function containerRuntimeNeeds(
       if (html === null || html === undefined) continue;
       const prepared = prepareHtmlDocument(html, page, archive, archive.permissions, false);
       tiers.add(selectEngineTier(prepared.scripts, textFiles, archive.manifest.pythonPackages));
+    }
+    if (archive.manifest.backend) {
+      const rt = archive.manifest.backend.runtime;
+      tiers.add(
+        rt === 'rust' ? 'rust' : rt === 'php' ? 'php' : rt === 'typescript' ? 'typescript' : rt === 'python' ? 'python' : 'javascript'
+      );
+      if (tiers.size === 1) tiers.add('lite');
+    }
+    if (archive.manifest.backend || (archive.manifest.databases && archive.manifest.databases.length > 0)) {
+      needs.sqlite = true;
     }
     needs.tiers = [...tiers];
 

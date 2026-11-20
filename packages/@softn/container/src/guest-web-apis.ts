@@ -21,6 +21,9 @@
  *     game's sprites, a preloader); `document.createRange()`; `customElements`, for elements
  *     that draw in the page's own tree (there is no shadow root here to attach).
  *
+ *   - `crypto.subtle`: each call done by the browser's own Web Crypto in the app's Worker,
+ *     where the app's keys are kept.
+ *
  * Everything is defined only where it is missing.
  */
 export const GUEST_WEB_APIS_SOURCE = String.raw`
@@ -41,6 +44,87 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   function later(fn) { g.setTimeout(fn, 0); }
 
   // ---------------------------------------------------------------------------
+  // 0. Code compiled while the app runs
+  // ---------------------------------------------------------------------------
+  // The engine compiles 64 KB of code at once while an app runs, and past that it stops the
+  // app altogether. new Function is held to that here first, with an error the app can catch
+  // (a library that compiles a template may fall back on one). eval is not held this way: a
+  // direct eval reads the scope it is called in, which a function standing in for eval would
+  // take from it.
+  var NativeFunction = g.Function;
+  var MAX_COMPILE_BYTES = 60000;
+  if (typeof NativeFunction === 'function' && !NativeFunction._softnHeld) {
+    // In UTF-8 bytes, counted only when the text is long enough for it to matter.
+    var compiledSize = function (parts) {
+      var texts = [];
+      var units = 0;
+      for (var i = 0; i < parts.length; i++) { texts.push(String(parts[i])); units += texts[i].length; }
+      if (units * 3 <= MAX_COMPILE_BYTES) return units;
+      var size = 0;
+      for (var t = 0; t < texts.length; t++) {
+        for (var k = 0; k < texts[t].length; k++) {
+          var c = texts[t].charCodeAt(k);
+          size += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+        }
+      }
+      return size;
+    };
+    // Each kind of function a constructor makes from text: plain, async, generator, async generator.
+    var hold = function (Native, word) {
+      var Held = function Function() {
+        if (compiledSize(arguments) > MAX_COMPILE_BYTES) {
+          throw new RangeError('new ' + word + ' was given more code than an app compiles at once while it runs (64 KB).');
+        }
+        // A class that extends it gets an instance of itself, as from the engine's own.
+        return typeof Reflect === 'object' && typeof Reflect.construct === 'function' ? Reflect.construct(Native, arguments, new.target || Native) : Native.apply(this, arguments);
+      };
+      Held.prototype = Native.prototype;
+      try { Object.defineProperty(Held, 'name', { value: Native.name, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(Held, '_softnHeld', { value: true }); } catch (e) {}
+      // A function's constructor is this one too: fn.constructor('...') goes through it.
+      try { Object.defineProperty(Native.prototype, 'constructor', { value: Held, writable: true, configurable: true, enumerable: false }); } catch (e) {}
+      return Held;
+    };
+    var HeldFunction = hold(NativeFunction, 'Function');
+    try { g.Function = HeldFunction; } catch (e) {}
+    // The others are reached only through a function's constructor: async function () {}.constructor.
+    var kinds = [['async function () {}', 'AsyncFunction'], ['function* () {}', 'GeneratorFunction'], ['async function* () {}', 'AsyncGeneratorFunction']];
+    for (var kind = 0; kind < kinds.length; kind++) {
+      try {
+        var sample = (0, eval)('(' + kinds[kind][0] + ')');
+        var Native = Object.getPrototypeOf(sample).constructor;
+        if (typeof Native === 'function' && Native !== NativeFunction && !Native._softnHeld) hold(Native, kinds[kind][1]);
+      } catch (e) {}
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 0b. Math.random
+  // ---------------------------------------------------------------------------
+  // The engine's gives the same numbers in every app, every time it starts: ids an app makes
+  // with it are the same in two tabs (and on two people's machines), and every game deals the
+  // same hand. Its crypto.getRandomValues is the machine's own randomness: a generator seeded
+  // from it (sfc32) answers Math.random from here on.
+  if (g.crypto && typeof g.crypto.getRandomValues === 'function' && typeof Math.random === 'function') {
+    try {
+      var seed = g.crypto.getRandomValues(new Uint32Array(4));
+      var sa = seed[0] | 0, sb = seed[1] | 0, sc = seed[2] | 0, sd = seed[3] | 1;
+      var nextRandom = function random() {
+        var t = (sa + sb) | 0;
+        sa = sb ^ (sb >>> 9);
+        sb = (sc + (sc << 3)) | 0;
+        sc = (sc << 21) | (sc >>> 11);
+        sd = (sd + 1) | 0;
+        t = (t + sd) | 0;
+        sc = (sc + t) | 0;
+        return (t >>> 0) / 4294967296;
+      };
+      for (var warm = 0; warm < 12; warm++) nextRandom();
+      Math.random = nextRandom;
+    } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------------------
   // 1. Bytes
   // ---------------------------------------------------------------------------
   function utf8(text) { return new g.TextEncoder().encode(String(text)); }
@@ -51,10 +135,165 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     return g.btoa(out);
   }
   function fromBase64(text) {
+    // Made by the Worker past a little (the layer before this one), a byte at a time here only below that.
+    if (typeof g.__softnBytesFrom64 === 'function') return g.__softnBytesFrom64(text);
     var bin = g.atob(text);
     var out = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
+  }
+  // Bytes that crossed to the app as text (a file the person picked) are kept as that text
+  // and made bytes when something reads them. Making them is this engine's slowest work, a
+  // byte at a time: all at once it took the whole of a turn for two megabytes, and more than
+  // a turn has for anything larger, so a large file was never heard of at all. What only
+  // passes the bytes on (an address for the file, a request that uploads it, a data: URL of
+  // it) passes the text on and makes no bytes; what reads them reads them a part a turn.
+  // (A turn's share: made by the Worker, 2.25 MB is a fraction of a turn; made here, 192 KB.)
+  var DECODE_STEP = typeof g.__softnBytesFrom64 === 'function' ? 2250000 : 196608;
+  var STREAM_PART = 196608;
+  function decodeLater(text, size) {
+    return new Promise(function (resolve, reject) {
+      var out = new Uint8Array(size);
+      var at = 0;
+      var from = 0;
+      var chars = DECODE_STEP / 3 * 4;
+      var step = function () {
+        try {
+          var piece = fromBase64(text.slice(from, from + chars));
+          if (at + piece.length > out.length) { var wider = new Uint8Array(at + piece.length); wider.set(out.subarray(0, at)); out = wider; }
+          out.set(piece, at);
+          at += piece.length;
+          from += chars;
+        } catch (e) { reject(e); return; }
+        if (from >= text.length) resolve(at === out.length ? out : out.subarray(0, at));
+        else g.setTimeout(step, 0);
+      };
+      step();
+    });
+  }
+  // A blob made from a file still kept as text (a part of it, or a Blob or a File around it)
+  // is kept as parts: bytes { u }, or bytes a to b of a text of base64 { t, a, b }. Made bytes
+  // at once, a part of one megabyte or more took a turn, and five took more than a turn has.
+  function decodedSize(text) {
+    var pad = text.length > 0 && text.charAt(text.length - 1) === '=' ? (text.length > 1 && text.charAt(text.length - 2) === '=' ? 2 : 1) : 0;
+    return Math.floor(text.length / 4) * 3 - pad;
+  }
+  function segmentSize(seg) { return seg.u ? seg.u.length : seg.b - seg.a; }
+  // The parts a blob is still kept as, or null when it is bytes (or has been made bytes since).
+  function lazySegments(blob) {
+    if (!blob || blob._softnSegs === undefined) return null;
+    var have = Object.getOwnPropertyDescriptor(blob, '_softnBytes');
+    return have && have.value ? null : blob._softnSegs;
+  }
+  // The characters of base64 that hold bytes a to b, and how many bytes of them come before a.
+  function covering(seg) {
+    var first = Math.floor(seg.a / 3);
+    return { text: seg.t.slice(first * 4, Math.ceil(seg.b / 3) * 4), skip: seg.a - first * 3 };
+  }
+  // A blob's parts made bytes at once: for what must have them now.
+  function assembleNow(segs, size) {
+    var out = new Uint8Array(size);
+    var at = 0;
+    for (var i = 0; i < segs.length; i++) {
+      var seg = segs[i];
+      if (seg.u) { out.set(seg.u, at); at += seg.u.length; continue; }
+      var cover = covering(seg);
+      out.set(fromBase64(cover.text).subarray(cover.skip, cover.skip + seg.b - seg.a), at);
+      at += seg.b - seg.a;
+    }
+    return out;
+  }
+  function defineSegments(blob, segs) {
+    var size = 0;
+    for (var i = 0; i < segs.length; i++) size += segmentSize(segs[i]);
+    Object.defineProperty(blob, '_softnSegs', { value: segs, enumerable: false });
+    Object.defineProperty(blob, '_softnBytes', {
+      configurable: true,
+      enumerable: false,
+      get: function () {
+        var bytes = assembleNow(segs, size);
+        Object.defineProperty(this, '_softnBytes', { value: bytes, enumerable: false, configurable: true });
+        return bytes;
+      },
+    });
+    // The whole of one text: what passes it on hands the text on, as for the file itself.
+    if (segs.length === 1 && segs[0].t !== undefined && segs[0].a === 0 && segs[0].b === decodedSize(segs[0].t)) Object.defineProperty(blob, '_softnB64', { value: segs[0].t, enumerable: false });
+    blob.size = size;
+  }
+  // Bytes a to b of a text of base64, written into out from the place given, a part a turn.
+  function decodeRangeLater(text, a, b, out, into) {
+    return new Promise(function (resolve, reject) {
+      var pos = Math.floor(a / 3) * 3;
+      var step = function () {
+        try {
+          var stop = Math.min(b, pos + DECODE_STEP);
+          var piece = fromBase64(text.slice((pos / 3) * 4, Math.ceil(stop / 3) * 4));
+          var from = Math.max(a, pos) - pos;
+          var to = Math.min(b, pos + piece.length) - pos;
+          if (to > from) out.set(piece.subarray(from, to), into + pos + from - a);
+          pos += DECODE_STEP;
+        } catch (e) { reject(e); return; }
+        if (pos >= b) resolve();
+        else g.setTimeout(step, 0);
+      };
+      step();
+    });
+  }
+  // The text a blob's bytes are still kept as, or null when they are bytes.
+  function textOf(blob) {
+    if (!blob || blob._softnB64 === undefined) return null;
+    var have = Object.getOwnPropertyDescriptor(blob, '_softnBytes');
+    return have && have.value ? null : blob._softnB64;
+  }
+  // A blob's bytes as base64, without making bytes of text that is base64 already.
+  function base64Of(blob) {
+    var text = textOf(blob);
+    return text === null ? toBase64(blob._softnBytes) : text;
+  }
+  // A blob as it is handed to the page or the Worker: the text it is still kept as, when it
+  // is the whole of one; the parts of the texts it is made of, with which of their bytes to
+  // keep (made bytes there, where that is quick); or its bytes.
+  function piecesOf(blob) {
+    var text = textOf(blob);
+    if (text !== null) return text;
+    var segs = lazySegments(blob);
+    if (!segs) return toBase64(blob._softnBytes);
+    var pieces = [];
+    for (var s = 0; s < segs.length; s++) {
+      var seg = segs[s];
+      if (seg.u) pieces.push({ base64: toBase64(seg.u) });
+      else if (seg.a === 0 && seg.b === decodedSize(seg.t)) pieces.push({ base64: seg.t });
+      else { var cover = covering(seg); pieces.push({ base64: cover.text, skip: cover.skip, take: seg.b - seg.a }); }
+    }
+    return pieces;
+  }
+  // A blob's bytes, later: at once when they are bytes, a part a turn when they are still text.
+  function bytesLater(blob) {
+    var text = textOf(blob);
+    var segs = text === null ? lazySegments(blob) : null;
+    if (text === null && !segs) return Promise.resolve(blob._softnBytes);
+    if (!blob._softnDecoding) {
+      var made;
+      if (text !== null) {
+        made = decodeLater(text, blob.size);
+      } else {
+        var out = new Uint8Array(blob.size);
+        var chain = Promise.resolve();
+        var at = 0;
+        segs.forEach(function (seg) {
+          var into = at;
+          at += segmentSize(seg);
+          if (seg.u) out.set(seg.u, into);
+          else chain = chain.then(function () { return decodeRangeLater(seg.t, seg.a, seg.b, out, into); });
+        });
+        made = chain.then(function () { return out; });
+      }
+      Object.defineProperty(blob, '_softnDecoding', { enumerable: false, value: made.then(function (bytes) {
+        Object.defineProperty(blob, '_softnBytes', { value: bytes, enumerable: false, configurable: true });
+        return bytes;
+      }) });
+    }
+    return blob._softnDecoding;
   }
   function bytesOf(part) {
     if (part instanceof Uint8Array) return part;
@@ -78,25 +317,75 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   // ---------------------------------------------------------------------------
   function Blob(parts, options) {
     if (!(this instanceof Blob)) throw new TypeError("Failed to construct 'Blob': Please use the 'new' operator.");
-    var bytes = concat(parts === undefined || parts === null ? [] : Array.prototype.slice.call(parts));
+    var list = parts === undefined || parts === null ? [] : Array.prototype.slice.call(parts);
     var type = options && options.type !== undefined ? String(options.type) : '';
-    Object.defineProperty(this, '_softnBytes', { value: bytes, enumerable: false });
-    this.size = bytes.length;
+    var lazy = false;
+    for (var i = 0; i < list.length && !lazy; i++) lazy = isBlob(list[i]) && !!lazySegments(list[i]);
+    if (lazy) {
+      // Around a file still kept as text: kept as its parts, made bytes when they are read.
+      var segs = [];
+      for (var k = 0; k < list.length; k++) {
+        var part = list[k];
+        var kept = isBlob(part) ? lazySegments(part) : null;
+        if (kept) for (var s = 0; s < kept.length; s++) segs.push(kept[s]);
+        // A copy: the app's array changed later is not the blob changed.
+        else segs.push({ u: bytesOf(part).slice() });
+      }
+      defineSegments(this, segs);
+    } else {
+      var bytes = concat(list);
+      Object.defineProperty(this, '_softnBytes', { value: bytes, enumerable: false });
+      this.size = bytes.length;
+    }
     // As a browser keeps it: lower case, and nothing at all if it is not plain text.
     this.type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
   }
   Blob.prototype.slice = function (start, end, type) {
     var size = this.size;
     var from = start === undefined ? 0 : start < 0 ? Math.max(size + start, 0) : Math.min(start, size);
-    var to = end === undefined ? size : end < 0 ? Math.max(size + end, 0) : Math.min(end, size);
-    return new Blob([this._softnBytes.subarray(from, Math.max(from, to))], { type: type === undefined ? '' : type });
+    var to = Math.max(from, end === undefined ? size : end < 0 ? Math.max(size + end, 0) : Math.min(end, size));
+    var kind = type === undefined ? '' : String(type);
+    var segs = lazySegments(this);
+    if (!segs) return new Blob([this._softnBytes.subarray(from, to)], { type: kind });
+    // A part of a file still kept as text is the same text from other places: nothing is made bytes.
+    var cut = [];
+    var at = 0;
+    for (var i = 0; i < segs.length && at < to; i++) {
+      var seg = segs[i];
+      var length = segmentSize(seg);
+      var lo = Math.max(from, at) - at;
+      var hi = Math.min(to, at + length) - at;
+      if (hi > lo) cut.push(seg.u ? { u: seg.u.subarray(lo, hi) } : { t: seg.t, a: seg.a + lo, b: seg.a + hi });
+      at += length;
+    }
+    var blob = Object.create(Blob.prototype);
+    defineSegments(blob, cut);
+    blob.type = /^[\x20-\x7e]*$/.test(kind) ? kind.toLowerCase() : '';
+    return blob;
   };
-  Blob.prototype.bytes = function () { return Promise.resolve(new Uint8Array(this._softnBytes)); };
+  Blob.prototype.bytes = function () { return bytesLater(this).then(function (bytes) { return new Uint8Array(bytes); }); };
   Blob.prototype.arrayBuffer = function () {
-    var bytes = this._softnBytes;
-    return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    return bytesLater(this).then(function (bytes) { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); });
   };
-  Blob.prototype.text = function () { return Promise.resolve(fromUtf8(this._softnBytes)); };
+  Blob.prototype.text = function () { return bytesLater(this).then(fromUtf8); };
+  // A blob read a part at a time, as a hash or an upload in parts reads a large file: a part
+  // a turn, and the whole never held at once. (There was none: stream() was not a function.)
+  Blob.prototype.stream = function () {
+    var blob = this;
+    var at = 0;
+    var StreamClass = g.ReadableStream;
+    if (typeof StreamClass !== 'function') throw new TypeError("Failed to execute 'stream' on 'Blob': streams are not available here.");
+    return new StreamClass({
+      pull: function (controller) {
+        if (at >= blob.size) { controller.close(); return; }
+        // In parts of the size a browser's stream gives (a hash's progress is told by them).
+        var end = Math.min(blob.size, at + STREAM_PART);
+        var part = blob.slice(at, end);
+        at = end;
+        return bytesLater(part).then(function (bytes) { controller.enqueue(new Uint8Array(bytes)); });
+      },
+    });
+  };
   try { Object.defineProperty(Blob.prototype, Symbol.toStringTag, { configurable: true, get: function () { return this instanceof File ? 'File' : 'Blob'; } }); } catch (e) {}
 
   function File(parts, name, options) {
@@ -109,12 +398,41 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   }
   File.prototype = Object.create(Blob.prototype);
   File.prototype.constructor = File;
+  // A file whose bytes are the text they crossed to the app as, until something reads them.
+  function fileKeptAsText(base64, size, name, type, lastModified) {
+    var file = Object.create(File.prototype);
+    defineSegments(file, [{ t: String(base64), a: 0, b: size }]);
+    if (file._softnB64 === undefined) Object.defineProperty(file, '_softnB64', { value: String(base64), enumerable: false });
+    file.type = /^[\x20-\x7e]*$/.test(String(type)) ? String(type).toLowerCase() : '';
+    file.name = String(name);
+    file.lastModified = typeof lastModified === 'number' ? lastModified : Date.now();
+    file.webkitRelativePath = '';
+    return file;
+  }
+  // A Blob (or a File, given a name) kept as the base64 it is held as elsewhere (IndexedDB),
+  // until something reads it.
+  g.__softnKeptAsText = function (base64, type, name, lastModified) {
+    var text = String(base64);
+    var size = decodedSize(text);
+    if (name !== undefined && name !== null) return fileKeptAsText(text, size, name, type, lastModified);
+    var blob = Object.create(Blob.prototype);
+    defineSegments(blob, [{ t: text, a: 0, b: size }]);
+    if (blob._softnB64 === undefined) Object.defineProperty(blob, '_softnB64', { value: text, enumerable: false });
+    blob.type = /^[\x20-\x7e]*$/.test(String(type || '')) ? String(type || '').toLowerCase() : '';
+    return blob;
+  };
+  // The same file under another name, without making its bytes.
+  function renamed(blob, name) {
+    var text = textOf(blob);
+    return text === null ? new File([blob], name, { type: blob.type }) : fileKeptAsText(text, blob.size, name, blob.type, blob.lastModified);
+  }
 
   var hasBlob = typeof g.Blob === 'function';
   define('Blob', Blob);
   define('File', File);
   var BlobClass = g.Blob;
-  function isBlob(value) { return !!value && value._softnBytes instanceof Uint8Array; }
+  // Asked without making a blob's bytes (asking for them makes them, for one kept as parts).
+  function isBlob(value) { return !!value && (value._softnB64 !== undefined || value._softnSegs !== undefined || value._softnBytes instanceof Uint8Array); }
 
   // What an object a listener can be put on, and a handler set on as a property, is made of.
   var Target = typeof g.EventTarget === 'function' ? g.EventTarget : null;
@@ -123,7 +441,10 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     var event = new Kind(type, fields || {});
     if (fields) for (var key in fields) { try { if (event[key] === undefined) event[key] = fields[key]; } catch (e) {} }
     try { target.dispatchEvent(event); } catch (e) { g.console.error(e); }
-    var handler = target['on' + type];
+    // A handler set as a property is called here, except on a node of the document, whose own
+    // dispatch calls it in its place among the listeners: an image on no page ran its onload
+    // twice (a sprite drawn in it was drawn twice).
+    var handler = typeof target.nodeType === 'number' ? null : target['on' + type];
     if (typeof handler === 'function') { try { handler.call(target, event); } catch (e) { g.console.error(e); } }
     return event;
   }
@@ -131,7 +452,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   if (Target && typeof g.FileReader === 'undefined') {
     var FileReader = class extends Target {
       constructor() { super(); this.readyState = 0; this.result = null; this.error = null; this._run = 0; }
-      _read(blob, make) {
+      _read(blob, make, ofText) {
         if (!isBlob(blob)) throw new TypeError("Failed to execute 'read' on 'FileReader': parameter 1 is not of type 'Blob'.");
         if (this.readyState === 1) throw failure('The object is in an invalid state.', 'InvalidStateError');
         var self = this;
@@ -143,15 +464,32 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
           if (run !== self._run || self.readyState !== 1) return;
           var size = blob.size;
           tell(self, 'loadstart', { loaded: 0, total: size, lengthComputable: true }, g.ProgressEvent);
-          try { self.result = make(blob._softnBytes); } catch (e) { self.error = e; }
-          self.readyState = 2;
-          tell(self, self.error ? 'error' : 'load', { loaded: size, total: size, lengthComputable: true }, g.ProgressEvent);
-          tell(self, 'loadend', { loaded: size, total: size, lengthComputable: true }, g.ProgressEvent);
+          var end = function () {
+            if (run !== self._run || self.readyState !== 1) return;
+            self.readyState = 2;
+            tell(self, self.error ? 'error' : 'load', { loaded: size, total: size, lengthComputable: true }, g.ProgressEvent);
+            tell(self, 'loadend', { loaded: size, total: size, lengthComputable: true }, g.ProgressEvent);
+          };
+          // What is wanted as base64 is base64 already where the bytes are still kept as text.
+          var text = ofText ? textOf(blob) : null;
+          if (text !== null) {
+            try { self.result = ofText(text); } catch (e) { self.error = e; }
+            end();
+            return;
+          }
+          bytesLater(blob).then(function (bytes) {
+            if (run !== self._run || self.readyState !== 1) return;
+            try { self.result = make(bytes); } catch (e) { self.error = e; }
+            end();
+          }, function (e) { self.error = e; end(); });
         });
       }
       readAsText(blob) { this._read(blob, fromUtf8); }
       readAsArrayBuffer(blob) { this._read(blob, function (bytes) { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); }); }
-      readAsDataURL(blob) { this._read(blob, function (bytes) { return 'data:' + (blob.type || 'application/octet-stream') + ';base64,' + toBase64(bytes); }); }
+      readAsDataURL(blob) {
+        var head = 'data:' + (blob && blob.type ? blob.type : 'application/octet-stream') + ';base64,';
+        this._read(blob, function (bytes) { return head + toBase64(bytes); }, function (text) { return head + text; });
+      }
       readAsBinaryString(blob) {
         this._read(blob, function (bytes) { var out = ''; for (var i = 0; i < bytes.length; i += 0x8000) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return out; });
       }
@@ -179,7 +517,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     var keptSeq = 0;
     var keep = function (value, filename) {
       if (!isBlob(value)) return value;
-      var file = value instanceof File && filename === undefined ? value : new File([value], filename === undefined ? (value.name === undefined ? 'blob' : value.name) : String(filename), { type: value.type });
+      var file = value instanceof File && filename === undefined ? value : renamed(value, filename === undefined ? (value.name === undefined ? 'blob' : value.name) : String(filename));
       var mark = MARK + (++keptSeq);
       kept[mark] = file;
       return mark;
@@ -223,7 +561,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       blobUrls[id] = blob;
       // An app that makes an address for a blob may put it on a link to save it by.
       if (typeof g.__softnWatchSaves === 'function') g.__softnWatchSaves();
-      if (push && blob.size <= MAX_BLOB_URL_BYTES) push(['blob', id, blob.type, toBase64(blob._softnBytes)]);
+      if (push && blob.size <= MAX_BLOB_URL_BYTES) push(['blob', id, blob.type, piecesOf(blob)]);
       return BLOB_PREFIX + id;
     };
     UrlClass.revokeObjectURL = function (address) {
@@ -322,7 +660,9 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       if (!entry) return null;
       if (!entry.list) {
         entry.list = listOf(entry.files.map(function (file) {
-          return new File([fromBase64(String(file.base64 || ''))], String(file.name || ''), { type: String(file.type || ''), lastModified: Number(file.lastModified) || 0 });
+          var text = String(file.base64 || '');
+          var size = typeof file.size === 'number' ? file.size : Math.floor(text.length / 4) * 3 - (text.slice(-2) === '==' ? 2 : text.slice(-1) === '=' ? 1 : 0);
+          return fileKeptAsText(text, size, String(file.name || ''), String(file.type || ''), Number(file.lastModified) || 0);
         }));
         entry.files = [];
       }
@@ -343,6 +683,8 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
           var change = changes[i];
           if (!change || change[0] !== 'F') continue;
           var told = change[2] || {};
+          // The same choice, told with each event a field makes of it: kept from the first.
+          if (told.again) continue;
           if (told.refused && !warned) {
             warned = true;
             g.console.warn('[SoftN] A file was picked, and this app has not been allowed to read files: declare "files" in permission.json. input.files is empty.');
@@ -352,7 +694,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
           var mark = JSON.stringify([files.map(function (file) { return [file.name, file.lastModified, String(file.base64 || '').length]; }), told.skipped || 0]);
           var before = given.get(change[1]);
           if (before && before.mark === mark) continue;
-          if (told.skipped) g.console.warn('[SoftN] ' + told.skipped + ' of the files picked were left out: a file field hands an app 1.5 MB at a time here, and they were past it.');
+          if (told.skipped) g.console.warn('[SoftN] ' + told.skipped + ' of the files picked were left out: a file field hands an app 10 MB at a time here, and they were past it.');
           given.set(change[1], { mark: mark, files: files, list: null });
         }
         return plainSync(changes);
@@ -374,18 +716,32 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     if (typeof FormBase === 'function' && !FormBase._softnPicked) {
       var FormWithFiles = function (form) {
         var data = form === undefined ? new FormBase() : new FormBase(form);
-        if (form && typeof form.querySelectorAll === 'function') {
-          var fileFields = form.querySelectorAll('input[name]');
-          for (var i = 0; i < fileFields.length; i++) {
-            if (String(fileFields[i].type || '').toLowerCase() !== 'file') continue;
-            var files = filesOf(fileFields[i]);
-            var name = fileFields[i].getAttribute('name');
-            data.delete(name);
-            if (!files || files.length === 0) data.append(name, new File([], '', { type: 'application/octet-stream' }));
-            else for (var f = 0; f < files.length; f++) data.append(name, files[f]);
-          }
+        if (!form || typeof form.querySelectorAll !== 'function') return data;
+        // What each file field of the form holds, by the field's name.
+        var held = Object.create(null);
+        var any = false;
+        var fileFields = form.querySelectorAll('input[name]');
+        for (var i = 0; i < fileFields.length; i++) {
+          if (String(fileFields[i].type || '').toLowerCase() !== 'file') continue;
+          var files = filesOf(fileFields[i]);
+          var name = fileFields[i].getAttribute('name');
+          var list = held[name] || (held[name] = []);
+          if (!files || files.length === 0) list.push(new File([], '', { type: 'application/octet-stream' }));
+          else for (var f = 0; f < files.length; f++) list.push(files[f]);
+          any = true;
         }
-        return data;
+        if (!any) return data;
+        // In the form's own order: a file field's files where the field is among the others.
+        var ordered = new FormBase();
+        var put = Object.create(null);
+        data.forEach(function (value, key) {
+          if (!held[key]) { ordered.append(key, value); return; }
+          if (put[key]) return;
+          put[key] = true;
+          for (var k = 0; k < held[key].length; k++) ordered.append(key, held[key][k]);
+        });
+        for (var left in held) if (!put[left]) for (var m = 0; m < held[left].length; m++) ordered.append(left, held[left][m]);
+        return ordered;
       };
       FormWithFiles.prototype = FormBase.prototype;
       FormWithFiles._softnPicked = true;
@@ -401,7 +757,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   function encodeBody(body) {
     if (body === undefined || body === null) return null;
     if (typeof body === 'string') return { text: body, type: 'text/plain;charset=UTF-8' };
-    if (isBlob(body)) return { bytes: body._softnBytes, type: body.type || null };
+    if (isBlob(body)) return { parts: [body], type: body.type || null };
     if (body instanceof ArrayBuffer || (body.buffer instanceof ArrayBuffer && typeof body.byteLength === 'number')) return { bytes: bytesOf(body), type: null };
     if (typeof g.URLSearchParams === 'function' && body instanceof g.URLSearchParams) return { text: body.toString(), type: 'application/x-www-form-urlencoded;charset=UTF-8' };
     if (typeof g.FormData === 'function' && body instanceof g.FormData) {
@@ -412,14 +768,14 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         var head = '--' + boundary + '\r\nContent-Disposition: form-data; name="' + quoted(name) + '"';
         if (isBlob(value)) {
           parts.push(head + '; filename="' + quoted(value.name === undefined ? 'blob' : value.name) + '"\r\nContent-Type: ' + (value.type || 'application/octet-stream') + '\r\n\r\n');
-          parts.push(value._softnBytes);
+          parts.push(value);
           parts.push('\r\n');
         } else {
           parts.push(head + '\r\n\r\n' + String(value) + '\r\n');
         }
       });
       parts.push('--' + boundary + '--\r\n');
-      return { bytes: concat(parts), type: 'multipart/form-data; boundary=' + boundary };
+      return { parts: parts, type: 'multipart/form-data; boundary=' + boundary };
     }
     // Anything else was sent as its JSON, and still is: apps written for this depend on it.
     return { text: JSON.stringify(body), type: null };
@@ -430,8 +786,30 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     var named = false;
     for (var key in headers) if (key.toLowerCase() === 'content-type') named = true;
     if (!named && encoded.type) headers['content-type'] = encoded.type;
+    // A body with a file in it goes in its parts, the words as words and each file as
+    // base64, and is put together by the Worker: a file still kept as text is never made
+    // bytes here to be made text again.
+    if (encoded.parts) {
+      var sent = [];
+      for (var i = 0; i < encoded.parts.length; i++) {
+        var part = encoded.parts[i];
+        if (typeof part === 'string') { sent.push({ text: part }); continue; }
+        // A part of a file still kept as text: the characters that hold it, and which of
+        // their bytes are its, which the Worker keeps.
+        var pieces = piecesOf(part);
+        if (typeof pieces === 'string') sent.push({ base64: pieces });
+        else for (var s = 0; s < pieces.length; s++) sent.push(pieces[s]);
+      }
+      return { bodyParts: sent };
+    }
     return encoded.bytes ? { bodyBase64: toBase64(encoded.bytes) } : { body: encoded.text };
   };
+  // A body's bytes, for code that reads a request back: a file kept as text, a part a turn.
+  function bodyBytesLater(encoded) {
+    if (!encoded) return Promise.resolve(new Uint8Array(0));
+    if (!encoded.parts) return Promise.resolve(encoded.bytes ? encoded.bytes : utf8(encoded.text));
+    return Promise.all(encoded.parts.map(function (part) { return typeof part === 'string' ? utf8(part) : bytesLater(part); })).then(concat);
+  }
 
   if (typeof g.Request === 'undefined' && typeof g.Headers === 'function') {
     var Request = function (input, init) {
@@ -456,14 +834,12 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     Request.prototype.text = function () {
       this.bodyUsed = true;
       var encoded = encodeBody(this._softnBody);
-      return Promise.resolve(!encoded ? '' : encoded.bytes ? fromUtf8(encoded.bytes) : encoded.text);
+      return !encoded ? Promise.resolve('') : encoded.text !== undefined ? Promise.resolve(encoded.text) : bodyBytesLater(encoded).then(fromUtf8);
     };
     Request.prototype.json = function () { return this.text().then(function (text) { return JSON.parse(text); }); };
     Request.prototype.arrayBuffer = function () {
       this.bodyUsed = true;
-      var encoded = encodeBody(this._softnBody);
-      var bytes = !encoded ? new Uint8Array(0) : encoded.bytes ? encoded.bytes : utf8(encoded.text);
-      return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      return bodyBytesLater(encodeBody(this._softnBody)).then(function (bytes) { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); });
     };
     Request.prototype.blob = function () { return this.arrayBuffer().then(function (buffer) { return new BlobClass([buffer]); }); };
     define('Request', Request);
@@ -486,7 +862,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       if (signal && signal.aborted) return Promise.reject(signal.reason !== undefined ? signal.reason : failure('The operation was aborted.', 'AbortError'));
       var blob = blobAt(address);
       var sent = blob
-        ? Promise.resolve(new g.Response({ ok: true, status: 200, statusText: 'OK', headers: { 'content-type': blob.type || 'application/octet-stream', 'content-length': String(blob.size) }, base64: toBase64(blob._softnBytes) }, String(address)))
+        ? Promise.resolve(new g.Response({ ok: true, status: 200, statusText: 'OK', headers: { 'content-type': blob.type || 'application/octet-stream', 'content-length': String(blob.size) }, base64: base64Of(blob) }, String(address)))
         : String(address).indexOf('blob:') === 0
           ? Promise.reject(new TypeError('Failed to fetch'))
           // The network is read as it arrives; a file of the app's own, where it is.
@@ -698,6 +1074,11 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   // own above that one, which an app is never to meet.
   var MAX_UNANSWERED = 12;
   var MAX_OPEN_REQUESTS = 48;
+  // A body of more characters than this goes to the Worker in pieces of these sizes (words
+  // may come to six times their length written out, so their pieces are the smaller).
+  var MAX_CALL_BODY_CHARS = 2400000;
+  var BASE64_PIECE_CHARS = 2400000;
+  var TEXT_PIECE_CHARS = 500000;
   var MAX_UNREAD_BYTES = 2 * 1024 * 1024;
   var unanswered = 0;
   var openRequests = 0;
@@ -713,6 +1094,40 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     var request = Object.assign({ method: options.method ? String(options.method).toUpperCase() : 'GET', headers: headers }, options.body === undefined || options.body === null ? {} : g.__softnEncodeBody(options.body, headers));
     // Whether the browser's own copy of an earlier answer will do: the app's to say.
     if (typeof options.cache === 'string') request.cache = options.cache;
+    // A call to the Worker carries four million characters at most. A body past that (a
+    // file uploaded, a picture posted) goes ahead of its request in pieces, each a call of
+    // its own, and the request names them. It was refused whole: nothing over about three
+    // megabytes could be sent anywhere.
+    var pieces = null;
+    var size = (request.body ? request.body.length : 0) + (request.bodyBase64 ? request.bodyBase64.length : 0);
+    if (request.bodyParts) for (var p = 0; p < request.bodyParts.length; p++) size += String(request.bodyParts[p].base64 || request.bodyParts[p].text || '').length;
+    if (size > MAX_CALL_BODY_CHARS) {
+      pieces = [];
+      var whole = request.bodyParts || [request.bodyBase64 !== undefined ? { base64: request.bodyBase64 } : { text: request.body }];
+      for (var w = 0; w < whole.length; w++) {
+        var isBytes = typeof whole[w].base64 === 'string';
+        var all = String(isBytes ? whole[w].base64 : whole[w].text || '');
+        // Base64 breaks cleanly every four characters; words are put together again before they are made bytes.
+        var step = isBytes ? BASE64_PIECE_CHARS : TEXT_PIECE_CHARS;
+        // A part of a file names the bytes it keeps of its characters: each piece names its own share.
+        var skip = isBytes && typeof whole[w].skip === 'number' ? whole[w].skip : 0;
+        var take = isBytes && typeof whole[w].take === 'number' ? whole[w].take : -1;
+        var decoded = 0;
+        for (var at = 0; at < all.length; at += step) {
+          var chunk = all.slice(at, at + step);
+          if (!isBytes) { pieces.push({ text: chunk }); continue; }
+          if (take < 0) { pieces.push({ base64: chunk }); continue; }
+          var length = decodedSize(chunk);
+          var own = Math.max(0, skip - decoded);
+          var keep = Math.min(decoded + length, skip + take) - (decoded + own);
+          if (keep > 0) pieces.push({ base64: chunk, skip: own, take: keep });
+          decoded += length;
+        }
+      }
+      delete request.body;
+      delete request.bodyBase64;
+      delete request.bodyParts;
+    }
     var signal = options.signal && typeof options.signal.addEventListener === 'function' ? options.signal : null;
     var id = String(++streamSeq);
     return new Promise(function (resolve, reject) {
@@ -850,6 +1265,11 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         openRequests++;
         awaited = true;
         unanswered++;
+        if (pieces) {
+          request.bodyId = 'u' + id;
+          for (var i = 0; i < pieces.length; i++) bridge.call('stream.body', [request.bodyId, JSON.stringify(pieces[i])]);
+          pieces = null;
+        }
         bridge.call('stream.open', [id, String(address), JSON.stringify(request)], function (reply) {
           if (over) return;
           if (!reply || reply.error) {
@@ -1142,7 +1562,11 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         if (this.readyState === 0) throw failure("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
         if (this.readyState !== 1) return;
         if (typeof data === 'string') bridge.call('ws.send', [this._id, 'text', data]);
-        else bridge.call('ws.send', [this._id, 'base64', toBase64(bytesOf(data))]);
+        else if (isBlob(data)) {
+          // A file kept as text goes as that text: made bytes here, it was made all at once.
+          var pieces = piecesOf(data);
+          bridge.call('ws.send', typeof pieces === 'string' ? [this._id, 'base64', pieces] : [this._id, 'pieces', JSON.stringify(pieces)]);
+        } else bridge.call('ws.send', [this._id, 'base64', toBase64(bytesOf(data))]);
       }
       close(code, reason) {
         if (code !== undefined && code !== 1000 && !(code >= 3000 && code <= 4999)) throw failure("Failed to execute 'close' on 'WebSocket': The close code must be either 1000, or between 3000 and 4999. " + code + ' is neither.', 'InvalidAccessError');
@@ -1203,6 +1627,429 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   }
 
   // ---------------------------------------------------------------------------
+  // 7b. Worker: a script of the app's run apart, in an engine of its own
+  // ---------------------------------------------------------------------------
+  // There was none: a library that offloads work to a Worker (a PDF reader, an editor's
+  // language service, Comlink, a bundler's ?worker import) stopped, or ran nothing. A Worker
+  // of the app's runs in an engine of its own in the container's Worker, from one of the
+  // app's script files or a blob of script the app made; messages are copied as structured
+  // clone copies them. (Not a MessagePort sent along, nor a Worker inside a Worker.)
+  if (bridge && typeof g.Worker === 'undefined' && !g.__softnWorkerSpec) {
+    var appWorkers = Object.create(null);
+    var appWorkerSeq = 0;
+    var AppWorker = function Worker(url, options) {
+      if (!(this instanceof AppWorker)) throw new TypeError("Failed to construct 'Worker': Please use the 'new' operator, this DOM object constructor cannot be called as a function.");
+      if (arguments.length === 0) throw new TypeError("Failed to construct 'Worker': 1 argument required, but only 0 present.");
+      var id = 'w' + (++appWorkerSeq);
+      var address = String(url && typeof url === 'object' && typeof url.href === 'string' ? url.href : url);
+      var made = { id: id, type: options && options.type === 'module' ? 'module' : 'classic', name: options && options.name !== undefined ? String(options.name) : '' };
+      var blob = blobAt(address);
+      if (blob) {
+        // A blob of script the app made: its text goes with it.
+        made.code = textOf(blob) !== null ? fromUtf8(fromBase64(textOf(blob))) : fromUtf8(blob._softnBytes);
+        made.url = address;
+      } else {
+        try { made.url = new g.URL(address, g.location ? g.location.href : undefined).href; } catch (e) { throw failure("Failed to construct 'Worker': The URL '" + address + "' is invalid.", 'SyntaxError'); }
+      }
+      Object.defineProperty(this, '_id', { value: id });
+      Object.defineProperty(this, '_listeners', { value: Object.create(null) });
+      Object.defineProperty(this, '_over', { value: false, writable: true });
+      this.onmessage = null;
+      this.onmessageerror = null;
+      this.onerror = null;
+      appWorkers[id] = this;
+      var worker = this;
+      bridge.call('worker.start', [JSON.stringify(made)], function (answer) {
+        if (answer && answer.error) told(worker, 'error', { message: String(answer.error) });
+      });
+    };
+    AppWorker.prototype.postMessage = function (data) {
+      if (arguments.length === 0) throw new TypeError("Failed to execute 'postMessage' on 'Worker': 1 argument required, but only 0 present.");
+      if (this._over) return;
+      var packed = g.__softnClone.pack(data);
+      bridge.call('worker.post', [this._id, packed], function () {});
+    };
+    AppWorker.prototype.terminate = function () {
+      if (this._over) return;
+      this._over = true;
+      delete appWorkers[this._id];
+      bridge.call('worker.end', [this._id], function () {});
+    };
+    AppWorker.prototype.addEventListener = function (type, listener, options) {
+      if (typeof listener !== 'function' && !(listener && typeof listener.handleEvent === 'function')) return;
+      var list = this._listeners[type] || (this._listeners[type] = []);
+      for (var i = 0; i < list.length; i++) if (list[i].fn === listener) return;
+      list.push({ fn: listener, once: !!(options && typeof options === 'object' && options.once) });
+    };
+    AppWorker.prototype.removeEventListener = function (type, listener) {
+      var list = this._listeners[type];
+      if (!list) return;
+      for (var i = 0; i < list.length; i++) if (list[i].fn === listener) { list.splice(i, 1); return; }
+    };
+    AppWorker.prototype.dispatchEvent = function (event) {
+      var type = event && event.type;
+      var handler = this['on' + type];
+      if (typeof handler === 'function') { try { handler.call(this, event); } catch (e) { g.console.error(e); } }
+      var list = (this._listeners[type] || []).slice();
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].once) this.removeEventListener(type, list[i].fn);
+        try { if (typeof list[i].fn === 'function') list[i].fn.call(this, event); else list[i].fn.handleEvent(event); } catch (e) { g.console.error(e); }
+      }
+      return !event.defaultPrevented;
+    };
+    var told = function (worker, type, fields) {
+      var Kind = type === 'error' ? g.ErrorEvent : g.MessageEvent;
+      var event = null;
+      try { event = typeof Kind === 'function' ? new Kind(type, fields) : null; } catch (e) { event = null; }
+      if (!event) event = { type: type, defaultPrevented: false, preventDefault: function () { this.defaultPrevented = true; }, stopPropagation: function () {} };
+      for (var key in fields) { try { if (event[key] !== fields[key]) Object.defineProperty(event, key, { value: fields[key], configurable: true }); } catch (e) {} }
+      try { Object.defineProperty(event, 'target', { value: worker, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(event, 'currentTarget', { value: worker, configurable: true }); } catch (e) {}
+      worker.dispatchEvent(event);
+    };
+    // From the Worker: a message, or an error of its.
+    g.__softnWorkerFromWorker = function (id, packed) {
+      var worker = appWorkers[id];
+      if (!worker) return;
+      var data;
+      try { data = g.__softnClone.unpack(packed); } catch (e) { told(worker, 'messageerror', { data: null }); return; }
+      told(worker, 'message', { data: data, ports: [] });
+    };
+    g.__softnWorkerFailedAt = function (id, message) {
+      var worker = appWorkers[id];
+      if (worker) told(worker, 'error', { message: String(message), filename: '', lineno: 0, colno: 0, error: null });
+    };
+    define('Worker', AppWorker);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7c. Scripts: the page's own in its document, and those the app adds while it runs
+  // ---------------------------------------------------------------------------
+  // A <script> the app added to its page did nothing at all: its code never ran, and neither
+  // load nor error came, so a webpack build waited for good for each part it loads that way,
+  // a loader for each library it adds, and jQuery's DOMEval ran nothing. One the app makes now
+  // runs when it joins the document, as in a browser: one of text at once, one by its address
+  // when its code has come (in the order they were added, where its async was set false),
+  // then load, or error when it could not be had. The page's own scripts are in its document
+  // too, already run: document.currentScript is the one running (webpack finds where its parts
+  // are from it), getElementsByTagName('script')[0] is there for a snippet that puts its own
+  // script beside it, and one of another type (a template, JSON, a shader) holds its text.
+  var scriptDocProto = doc ? Object.getPrototypeOf(doc) : null;
+  var ScriptBase = g.HTMLElement && g.HTMLElement.prototype;
+  if (doc && bridge && scriptDocProto && ScriptBase && typeof g.Node === 'function' && typeof doc.createElement === 'function' && !g.__softnWorkerSpec && typeof WeakMap === 'function') {
+    var JS_TYPES = Object.create(null);
+    ['', 'text/javascript', 'application/javascript', 'application/ecmascript', 'application/x-ecmascript', 'application/x-javascript',
+      'text/ecmascript', 'text/javascript1.0', 'text/javascript1.1', 'text/javascript1.2', 'text/javascript1.3', 'text/javascript1.4',
+      'text/javascript1.5', 'text/jscript', 'text/livescript', 'text/x-ecmascript', 'text/x-javascript'].forEach(function (t) { JS_TYPES[t] = true; });
+    // What a script is by its type, as a browser reads it: none for a type it does not run.
+    var scriptKind = function (el) {
+      var type = el.getAttribute('type');
+      var language = el.getAttribute('language');
+      var t = type !== null ? String(type) : language !== null && language !== '' ? 'text/' + language : '';
+      t = t.split(';')[0].replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '').toLowerCase();
+      if (JS_TYPES[t]) return 'classic';
+      return t === 'module' ? 'module' : null;
+    };
+    var runScriptText = g.eval;
+    var scriptStates = new WeakMap();
+    // App-made scripts not started yet: while there are none, an insertion is not looked through.
+    var scriptsWaiting = 0;
+    var currentScriptEl = null;
+    var orderedScripts = [];
+    var pageScripts = Object.create(null);
+    var pageAddress = function () { return g.location && g.location.href ? String(g.location.href) : ORIGIN + '/'; };
+    var absoluteAddress = function (value) {
+      try { return new g.URL(String(value), pageAddress()).href; } catch (e) { return String(value); }
+    };
+
+    // A script's own properties, on a prototype of its own over HTMLElement's.
+    var ScriptProto = Object.create(ScriptBase);
+    var scriptAccessor = function (name, get, set) {
+      Object.defineProperty(ScriptProto, name, { configurable: true, enumerable: true, get: get, set: set });
+    };
+    var scriptFlag = function (name, attr) {
+      scriptAccessor(name, function () { return this.hasAttribute(attr); }, function (on) { if (on) this.setAttribute(attr, ''); else this.removeAttribute(attr); });
+    };
+    var scriptText = function (name, attr) {
+      scriptAccessor(name, function () { var v = this.getAttribute(attr); return v === null ? '' : v; }, function (v) { this.setAttribute(attr, String(v)); });
+    };
+    scriptAccessor('src', function () { var v = this.getAttribute('src'); return v === null ? '' : absoluteAddress(v); }, function (v) { this.setAttribute('src', String(v)); });
+    scriptAccessor('text', function () { return this.textContent; }, function (v) { this.textContent = v === null || v === undefined ? '' : String(v); });
+    // async: true for one the app made, until it is set (as a browser's "force async").
+    scriptAccessor('async', function () {
+      var state = scriptStates.get(this);
+      return !!(state && state.forceAsync) || this.hasAttribute('async');
+    }, function (on) {
+      var state = scriptStates.get(this);
+      if (state) state.forceAsync = false;
+      if (on) this.setAttribute('async', ''); else this.removeAttribute('async');
+    });
+    scriptFlag('defer', 'defer');
+    scriptFlag('noModule', 'nomodule');
+    scriptAccessor('crossOrigin', function () {
+      var v = this.getAttribute('crossorigin');
+      return v === null ? null : v.toLowerCase() === 'use-credentials' ? 'use-credentials' : 'anonymous';
+    }, function (v) { if (v === null || v === undefined) this.removeAttribute('crossorigin'); else this.setAttribute('crossorigin', String(v)); });
+    scriptText('charset', 'charset');
+    scriptText('integrity', 'integrity');
+    scriptText('event', 'event');
+    scriptText('htmlFor', 'for');
+    scriptText('referrerPolicy', 'referrerpolicy');
+    var ScriptClass = g.HTMLScriptElement;
+    if (typeof ScriptClass === 'function') {
+      try { ScriptClass.prototype = ScriptProto; } catch (e) {}
+      try { Object.defineProperty(ScriptProto, 'constructor', { value: ScriptClass, configurable: true, writable: true }); } catch (e) {}
+      try { ScriptClass.supports = function (type) { return type === 'classic' || type === 'module'; }; } catch (e) {}
+    }
+    // One made and never put in the document (a test of what a script has) is counted out once
+    // it is let go of: counted for good, every insertion after it was looked through.
+    var unusedScripts = typeof g.FinalizationRegistry === 'function'
+      ? new g.FinalizationRegistry(function (state) { if (!state.started) { state.started = true; scriptsWaiting--; } })
+      : null;
+    var asScript = function (el, byApp) {
+      try { Object.setPrototypeOf(el, ScriptProto); } catch (e) {}
+      if (byApp) {
+        var made = { forceAsync: true, started: false };
+        scriptStates.set(el, made);
+        scriptsWaiting++;
+        if (unusedScripts) unusedScripts.register(el, made);
+      }
+      return el;
+    };
+    // One that joined the document with no address and no text runs when it is given either, as in a browser.
+    var plainSetAttribute = ScriptBase.setAttribute;
+    if (typeof plainSetAttribute === 'function') {
+      ScriptProto.setAttribute = function (name, value) {
+        plainSetAttribute.call(this, name, value);
+        if (scriptsWaiting > 0 && String(name).toLowerCase() === 'src' && scriptStates.has(this)) prepareScript(this);
+      };
+    }
+    var nodeTextContent = Object.getOwnPropertyDescriptor(g.Node.prototype, 'textContent');
+    if (nodeTextContent && nodeTextContent.get && nodeTextContent.set) {
+      Object.defineProperty(ScriptProto, 'textContent', {
+        configurable: true,
+        enumerable: true,
+        get: nodeTextContent.get,
+        set: function (value) {
+          nodeTextContent.set.call(this, value);
+          if (scriptsWaiting > 0 && scriptStates.has(this)) prepareScript(this);
+        },
+      });
+    }
+    // On the document's prototype, where customElements (below) wraps it in turn: set on the
+    // document itself, it hid theirs, and no element of the app's own was made.
+    var makeElement = doc.createElement;
+    scriptDocProto.createElement = function (name) {
+      var el = makeElement.apply(this, arguments);
+      if (el && el.nodeType === 1 && String(el.localName).toLowerCase() === 'script') asScript(el, true);
+      return el;
+    };
+    var makeElementNS = doc.createElementNS;
+    if (typeof makeElementNS === 'function') {
+      scriptDocProto.createElementNS = function (ns, name) {
+        var el = makeElementNS.apply(this, arguments);
+        if (el && el.nodeType === 1 && ns === 'http://www.w3.org/1999/xhtml' && String(el.localName).toLowerCase() === 'script') asScript(el, true);
+        return el;
+      };
+    }
+
+    // Reported as a script's uncaught error is, and the next goes on.
+    var scriptFailed = function (e) {
+      try { g.console.error('[SoftN] A script the app added failed: ' + (e && e.stack ? e.stack : e && e.message ? e.message : String(e))); } catch (ignored) {}
+    };
+    var tellScript = function (el, type) {
+      try { el.dispatchEvent(new g.Event(type)); } catch (e) { scriptFailed(e); }
+    };
+    // Text made ready to run by the Worker: what it declares is the page's, its import() asks the
+    // app's modules; refused, in words, past what the engine compiles at once while the app runs.
+    var preparedScript = function (text, address) {
+      try {
+        var answer = bridge.callSync('script.prepare', String(text), String(address));
+        return answer && typeof answer === 'object' ? answer : { error: 'The script could not be made ready to run.' };
+      } catch (e) {
+        return { error: e && e.message ? e.message : String(e) };
+      }
+    };
+    var runScript = function (el, code, fn) {
+      var before = currentScriptEl;
+      currentScriptEl = el;
+      try {
+        if (typeof fn === 'string') {
+          var compiled = g[fn];
+          if (typeof compiled !== 'function') throw new Error('The script ' + el.src + ' was not compiled with the app.');
+          compiled.call(g);
+        } else {
+          (0, runScriptText)(code);
+        }
+      } catch (e) {
+        scriptFailed(e);
+      } finally {
+        currentScriptEl = before;
+      }
+    };
+    var finishScript = function (entry) {
+      if (entry.error !== null) {
+        if (entry.error) scriptFailed(entry.error);
+        tellScript(entry.el, 'error');
+        return;
+      }
+      runScript(entry.el, entry.code, entry.fn);
+      tellScript(entry.el, 'load');
+    };
+    var dataUrlText = function (address) {
+      var comma = address.indexOf(',');
+      if (comma < 0) return null;
+      var meta = address.slice(5, comma);
+      var body = address.slice(comma + 1);
+      return /;base64$/i.test(meta) ? fromUtf8(fromBase64(decodeURIComponent(body))) : decodeURIComponent(body);
+    };
+    var inlineModule = function (text) {
+      var address = pageAddress();
+      bridge.call('esm.inline', [String(text), address], function (reply) {
+        if (!reply || reply.error) { scriptFailed(new TypeError(reply && reply.error ? String(reply.error) : 'The module script could not be compiled.')); return; }
+        try {
+          var blocks = reply.blocks || [];
+          for (var i = 0; i < blocks.length; i++) (0, runScriptText)(String(blocks[i]));
+        } catch (e) {
+          try { bridge.call('esm.forget', [JSON.stringify(reply.urls || [])], function () {}); } catch (ignored) {}
+          scriptFailed(e);
+          return;
+        }
+        if (g.__softnModules) g.__softnModules.import(reply.url, address).then(undefined, scriptFailed);
+      });
+    };
+    // A script the app made, scriptsJoining the document: run, or fetched and then run.
+    var prepareScript = function (el) {
+      var state = scriptStates.get(el);
+      if (!state || state.started || !el.isConnected) return;
+      var hasSrc = el.hasAttribute('src');
+      var text = hasSrc ? '' : el.textContent;
+      // One with no address and no text yet runs when it joins the document with some.
+      if (!hasSrc && text === '') return;
+      var kind = scriptKind(el);
+      if (!kind) return;
+      state.started = true;
+      scriptsWaiting--;
+      // A browser that runs modules runs no nomodule script.
+      if (kind === 'classic' && el.hasAttribute('nomodule')) return;
+      if (!hasSrc) {
+        if (kind === 'module') { inlineModule(text); return; }
+        var ready = preparedScript(text, pageAddress());
+        if (ready.error) { scriptFailed(ready.error); return; }
+        runScript(el, ready.code, ready.fn);
+        return;
+      }
+      var raw = el.getAttribute('src');
+      var address = raw === '' ? '' : absoluteAddress(raw);
+      if (kind === 'module') {
+        if (!address || !g.__softnModules) { later(function () { tellScript(el, 'error'); }); return; }
+        g.__softnModules.import(address, pageAddress()).then(function () { tellScript(el, 'load'); }, function (e) { scriptFailed(e); tellScript(el, 'error'); });
+        return;
+      }
+      var entry = { el: el, ready: false, code: null, fn: null, error: null, ordered: !state.forceAsync && !el.hasAttribute('async') };
+      if (entry.ordered) orderedScripts.push(entry);
+      var settle = function (answer) {
+        if (!answer || typeof answer !== 'object' || typeof answer.error === 'string' || (typeof answer.code !== 'string' && typeof answer.fn !== 'string')) {
+          entry.error = answer && typeof answer.error === 'string' ? answer.error : 'The script at ' + address + ' could not be loaded.';
+        } else {
+          entry.code = typeof answer.code === 'string' ? answer.code : null;
+          entry.fn = typeof answer.fn === 'string' ? answer.fn : null;
+        }
+        entry.ready = true;
+        if (!entry.ordered) { finishScript(entry); return; }
+        while (orderedScripts.length && orderedScripts[0].ready) finishScript(orderedScripts.shift());
+      };
+      if (!address) { later(function () { settle({ error: '' }); }); return; }
+      // A blob of script the app made, or a data: address: the text is here already.
+      var blob = blobAt(address);
+      if (blob || /^data:/i.test(address)) {
+        var code = null;
+        try { code = blob ? (textOf(blob) !== null ? fromUtf8(fromBase64(textOf(blob))) : fromUtf8(blob._softnBytes)) : dataUrlText(address); } catch (e) { code = null; }
+        later(function () { settle(code === null ? { error: 'The script at ' + address + ' could not be read.' } : preparedScript(code, address)); });
+        return;
+      }
+      try { bridge.call('script.load', [address], settle); } catch (e) { later(function () { settle({ error: e && e.message ? e.message : String(e) }); }); }
+    };
+
+    // Each way a node joins another: what scriptsJoined is looked through for scripts the app made.
+    var scriptsJoining = function (list) {
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var node = list[i];
+        if (!node || typeof node !== 'object' || typeof node.nodeType !== 'number') continue;
+        if (node.nodeType === 11) { for (var c = node.firstChild; c; c = c.nextSibling) if (c.nodeType === 1) out.push(c); }
+        else if (node.nodeType === 1) out.push(node);
+      }
+      return out;
+    };
+    var scriptsJoined = function (nodes) {
+      for (var i = 0; i < nodes.length && scriptsWaiting > 0; i++) {
+        var node = nodes[i];
+        if (!node.isConnected) continue;
+        if (scriptStates.has(node)) prepareScript(node);
+        if (node.firstElementChild && typeof node.querySelectorAll === 'function') {
+          var inner = node.querySelectorAll('script');
+          for (var k = 0; k < inner.length; k++) if (scriptStates.has(inner[k])) prepareScript(inner[k]);
+        }
+      }
+    };
+    var watchJoining = function (proto, name, pick) {
+      if (!proto || !Object.prototype.hasOwnProperty.call(proto, name) || typeof proto[name] !== 'function') return;
+      var plain = proto[name];
+      proto[name] = function () {
+        if (scriptsWaiting === 0) return plain.apply(this, arguments);
+        var nodes = scriptsJoining(pick(arguments));
+        var result = plain.apply(this, arguments);
+        scriptsJoined(nodes);
+        // Text put into one of them that is in the document already.
+        if (scriptStates.has(this)) prepareScript(this);
+        return result;
+      };
+    };
+    var firstArgument = function (args) { return [args[0]]; };
+    var everyArgument = function (args) { return Array.prototype.slice.call(args); };
+    var plainInsertBefore = g.Node.prototype.insertBefore;
+    watchJoining(g.Node.prototype, 'appendChild', firstArgument);
+    watchJoining(g.Node.prototype, 'insertBefore', firstArgument);
+    watchJoining(g.Node.prototype, 'replaceChild', firstArgument);
+    var joinParents = [g.Element && g.Element.prototype, scriptDocProto, g.DocumentFragment && g.DocumentFragment.prototype];
+    var joinChildren = [g.Element && g.Element.prototype, g.Text && g.Text.prototype, g.Comment && g.Comment.prototype];
+    ['append', 'prepend', 'replaceChildren'].forEach(function (name) { joinParents.forEach(function (proto) { watchJoining(proto, name, everyArgument); }); });
+    ['before', 'after', 'replaceWith'].forEach(function (name) { joinChildren.forEach(function (proto) { watchJoining(proto, name, everyArgument); }); });
+    watchJoining(g.Element && g.Element.prototype, 'insertAdjacentElement', function (args) { return [args[1]]; });
+
+    // The page's own scripts, in its document where they were (the Worker says where), already
+    // run or never to be: each is document.currentScript while it runs.
+    g.__softnPlaceScripts = function (list) {
+      if (!Array.isArray(list)) return;
+      var shell = typeof __softnShell !== 'undefined' ? __softnShell : null;
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        if (!item || typeof item !== 'object') continue;
+        try {
+          var el = asScript(makeElement.call(doc, 'script'), false);
+          var attrs = Array.isArray(item.a) ? item.a : [];
+          for (var k = 0; k < attrs.length; k++) if (Array.isArray(attrs[k])) el.setAttribute(String(attrs[k][0]), String(attrs[k][1]));
+          if (typeof item.x === 'string' && item.x !== '') el.textContent = item.x;
+          var parent = item.p === 'head' ? doc.head : item.p === 1 ? doc.body : shell && typeof shell.byId === 'function' ? shell.byId(item.p) : null;
+          if (!parent || parent.nodeType !== 1) parent = item.p === 'head' ? doc.head : doc.body;
+          var before = typeof item.b === 'number' && shell && typeof shell.byId === 'function' ? shell.byId(item.b) : null;
+          if (before && before.parentNode !== parent) before = null;
+          plainInsertBefore.call(parent, el, before);
+          if (typeof item.r === 'number') pageScripts[item.r] = el;
+        } catch (e) {}
+      }
+    };
+    g.__softnScriptRunning = function (id) {
+      currentScriptEl = id === null || id === undefined ? null : pageScripts[id] || null;
+    };
+    try { Object.defineProperty(scriptDocProto, 'currentScript', { configurable: true, get: function () { return currentScriptEl; } }); } catch (e) {}
+    if (!('scripts' in doc)) {
+      try { Object.defineProperty(scriptDocProto, 'scripts', { configurable: true, get: function () { return this.getElementsByTagName('script'); } }); } catch (e) {}
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // 8. Images: when one has loaded, and how large it is
   // ---------------------------------------------------------------------------
   // The page loads an image, and says so with load or error. Neither bubbles, so neither
@@ -1231,6 +2078,8 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       if (state.src === src) return;
       state.src = src; state.done = false; state.ok = false; state.width = 0; state.height = 0; state.told = false;
       if (!src) { state.done = true; return; }
+      // Decoded for the Worker's copies of the app's canvases now, when the app reads them back.
+      if (typeof g.__softnMirrorPicture === 'function') g.__softnMirrorPicture(img);
       // On the page, the page's own image loads it. Apart, the host is asked: at the end of
       // the turn, when it is known which images stayed apart (a framework makes every
       // image apart and puts it on the page a moment later).
@@ -1244,14 +2093,38 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       for (var i = 0; i < list.length; i++) {
         var img = list[i];
         var state = stateOf(img);
-        if (img.isConnected || state.done || !state.src) continue;
+        // Put on the page in the turn its address was set (how React and Vue make an image):
+        // named for the Worker's copies by its node too, so its load waits for its decoding.
+        if (img.isConnected) {
+          if (state.src && !state.done && typeof g.__softnMirrorPicture === 'function') g.__softnMirrorPicture(img);
+          continue;
+        }
+        if (state.done || !state.src) continue;
         var token = String(++imageSeq);
         waiting[token] = img;
-        push(['img', token, state.src]);
+        push(['img', token, state.src, img.getAttribute('crossorigin') !== null ? 'anonymous' : '']);
       }
     };
     var takeChanges = g.__softnDocTake;
     if (typeof takeChanges === 'function' && push) g.__softnDocTake = function (failed) { askForUnplaced(); return takeChanges(failed); };
+    // crossOrigin, as the attribute it is: an image asked for with CORS from a site that
+    // allows it can be drawn into a canvas the app then reads back.
+    if (!('crossOrigin' in ImageClass.prototype)) {
+      try {
+        Object.defineProperty(ImageClass.prototype, 'crossOrigin', {
+          configurable: true,
+          enumerable: true,
+          get: function () {
+            var given = this.getAttribute('crossorigin');
+            return given === null ? null : String(given).toLowerCase() === 'use-credentials' ? 'use-credentials' : 'anonymous';
+          },
+          set: function (value) {
+            if (value === null || value === undefined) this.removeAttribute('crossorigin');
+            else this.setAttribute('crossorigin', String(value));
+          },
+        });
+      } catch (e) {}
+    }
     // The page's own images: heard here first, as the event goes down to the image.
     var heardOnPage = function (event) {
       var img = event.target;
@@ -1346,8 +2219,9 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     CanvasProto.toBlob = function (callback, type, quality) {
       if (String(this.localName || '').toLowerCase() !== 'canvas') throw new TypeError("Failed to execute 'toBlob': this element is not a canvas.");
       if (typeof callback !== 'function') throw new TypeError("Failed to execute 'toBlob' on 'HTMLCanvasElement': parameter 1 is not of type 'Function'.");
+      // On the page or on none: the page keeps a canvas for one the app draws on off it.
       var id = this.__softnNode;
-      if (!(typeof id === 'number' && id > 0) || this.isConnected === false) { later(function () { callback(null); }); return; }
+      if (!(typeof id === 'number' && id > 0)) { later(function () { callback(null); }); return; }
       var token = String(++pictureSeq);
       pictures[token] = callback;
       asked.push(['canvas-blob', token, id, type === undefined ? 'image/png' : String(type), typeof quality === 'number' ? quality : -1]);
@@ -1994,6 +2868,194 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         };
       } catch (e) {}
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 11. crypto.subtle, done by the browser's own
+  // ---------------------------------------------------------------------------
+  // The engine has none. Each call is the browser's own Web Crypto, in the app's Worker, where
+  // the app's keys are kept: a CryptoKey here names one there, and is let go of there when the
+  // app lets go of it here. All of it or none: a library that finds crypto.subtle uses it and
+  // does not fall back, so one that did only some of it would be worse than none. (None, as in
+  // a browser, where the embedding page is not a secure context.)
+  if (bridge && g.crypto && !g.crypto.subtle && g.__softnSubtle === true) {
+    (function () {
+      // What one call may carry: the bridge takes 4 million characters from the app at once.
+      var MAX_SUBTLE_CHARS = 3900000;
+      var keyInfo = typeof WeakMap === 'function' ? new WeakMap() : null;
+      var CryptoKeyClass = function CryptoKey() { throw new TypeError('Illegal constructor'); };
+      var SubtleCryptoClass = function SubtleCrypto() { throw new TypeError('Illegal constructor'); };
+      var infoOf = function (key) {
+        var info = keyInfo ? keyInfo.get(key) : key && key._softnKeyInfo;
+        if (!info) throw new TypeError("Failed to read a CryptoKey: the value is not one.");
+        return info;
+      };
+      ['type', 'extractable', 'algorithm', 'usages'].forEach(function (name) {
+        Object.defineProperty(CryptoKeyClass.prototype, name, { configurable: true, enumerable: true, get: function () { return infoOf(this)[name]; } });
+      });
+      try { Object.defineProperty(CryptoKeyClass.prototype, Symbol.toStringTag, { value: 'CryptoKey', configurable: true }); } catch (e) {}
+      try { Object.defineProperty(SubtleCryptoClass.prototype, Symbol.toStringTag, { value: 'SubtleCrypto', configurable: true }); } catch (e) {}
+
+      // A key the app no longer holds is let go of in the Worker, a few at a time.
+      var released = [];
+      var releasing = false;
+      var release = function () {
+        releasing = false;
+        var ids = released.splice(0);
+        if (ids.length > 0) bridge.call('subtle.drop', [JSON.stringify(ids)], function () {});
+      };
+      var watcher = typeof g.FinalizationRegistry === 'function'
+        ? new g.FinalizationRegistry(function (id) {
+            released.push(id);
+            if (!releasing) { releasing = true; g.setTimeout(release, 0); }
+          })
+        : null;
+      var keyFrom = function (told) {
+        var key = Object.create(CryptoKeyClass.prototype);
+        var usages = Array.isArray(told.usages) ? told.usages.map(String) : [];
+        var info = { id: String(told.id), type: String(told.type), extractable: !!told.extractable, algorithm: fromHost(told.algorithm), usages: usages };
+        if (keyInfo) keyInfo.set(key, info);
+        else Object.defineProperty(key, '_softnKeyInfo', { value: info });
+        if (watcher) watcher.register(key, info.id);
+        return key;
+      };
+      // To the Worker: bytes as base64, a key by its id, the rest as it is.
+      var forHost = function (value, depth) {
+        if (depth > 16) throw new TypeError('An argument to crypto.subtle is nested too deeply.');
+        if (value === null || typeof value !== 'object') return typeof value === 'function' || typeof value === 'symbol' ? undefined : value;
+        if (value instanceof CryptoKeyClass) return { $k: infoOf(value).id };
+        if (value instanceof ArrayBuffer) return { $b: toBase64(new Uint8Array(value)) };
+        if (ArrayBuffer.isView(value)) return { $b: toBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+        if (Array.isArray(value)) return value.map(function (item) { return forHost(item, depth + 1); });
+        var out = {};
+        for (var name in value) if (name !== '__proto__') out[name] = forHost(value[name], depth + 1);
+        return out;
+      };
+      // From it: bytes as numbers (an ArrayBuffer, or a Uint8Array where the browser gives one), a key it keeps.
+      var fromHost = function (value) {
+        if (value === null || typeof value !== 'object') return value;
+        if (Array.isArray(value)) return value.map(fromHost);
+        // Bytes come as base64, read a piece at a time (as numbers, two million and more were not taken in).
+        if ('$b64' in value) return fromBase64(String(value.$b64)).slice().buffer;
+        if ('$u64' in value) return fromBase64(String(value.$u64));
+        if ('$b' in value) return new Uint8Array(value.$b).buffer;
+        if ('$u' in value) return new Uint8Array(value.$u);
+        if ('$k' in value) return keyFrom(value.$k);
+        var out = {};
+        for (var name in value) if (name !== '__proto__') out[name] = fromHost(value[name]);
+        return out;
+      };
+      var ask = function (op, args) {
+        return new Promise(function (resolve, reject) {
+          var given = Array.prototype.slice.call(args);
+          while (given.length > 0 && given[given.length - 1] === undefined) given.pop();
+          var payload;
+          try { payload = JSON.stringify({ op: op, args: given.map(function (arg) { return forHost(arg, 0); }) }); } catch (e) { reject(e); return; }
+          if (payload.length > MAX_SUBTLE_CHARS) {
+            reject(failure('crypto.subtle is given at most about 2.9 MB at a time in a web container, and this was more.', 'QuotaExceededError'));
+            return;
+          }
+          bridge.call('subtle', [payload], function (reply) {
+            if (reply && reply.ok) {
+              try { resolve(fromHost(reply.value)); } catch (e) { reject(e); }
+              return;
+            }
+            var why = reply && reply.error ? reply.error : {};
+            var message = typeof why.message === 'string' ? why.message : 'The operation failed for an operation-specific reason';
+            var name = typeof why.name === 'string' ? why.name : 'OperationError';
+            reject(name === 'TypeError' ? new TypeError(message) : name === 'RangeError' ? new RangeError(message) : failure(message, name));
+          });
+        });
+      };
+      ['encrypt', 'decrypt', 'sign', 'verify', 'digest', 'generateKey', 'deriveKey', 'deriveBits', 'importKey', 'exportKey', 'wrapKey', 'unwrapKey'].forEach(function (op) {
+        Object.defineProperty(SubtleCryptoClass.prototype, op, { configurable: true, writable: true, enumerable: true, value: function () { return ask(op, arguments); } });
+      });
+      var subtle = Object.create(SubtleCryptoClass.prototype);
+      var placed = false;
+      try { Object.defineProperty(g.crypto, 'subtle', { configurable: true, enumerable: true, get: function () { return subtle; } }); placed = g.crypto.subtle === subtle; } catch (e) {}
+      if (!placed) {
+        // A crypto that takes nothing new: one of the app's own that does what it did, and this.
+        try {
+          var plainCrypto = g.crypto;
+          var withSubtle = Object.create(plainCrypto);
+          Object.defineProperty(withSubtle, 'subtle', { configurable: true, enumerable: true, value: subtle });
+          ['getRandomValues', 'randomUUID'].forEach(function (name) {
+            if (typeof plainCrypto[name] === 'function') Object.defineProperty(withSubtle, name, { configurable: true, writable: true, value: function () { return plainCrypto[name].apply(plainCrypto, arguments); } });
+          });
+          Object.defineProperty(g, 'crypto', { configurable: true, enumerable: true, writable: true, value: withSubtle });
+        } catch (e) {}
+      }
+      define('CryptoKey', CryptoKeyClass);
+      define('SubtleCrypto', SubtleCryptoClass);
+    })();
+  }
+
+  // ---------------------------------------------------------------------------
+  // 12. structuredClone, for what the container makes
+  // ---------------------------------------------------------------------------
+  // The document's own copy made a blob or a file the app made a plain object of nothing, and a
+  // CryptoKey {} (its secret lost without a word). A blob or a file is copied as one (sharing
+  // what it holds, which no one can change); a key is refused, as nothing here copies it yet;
+  // everything else is the document's own copy, a value that holds itself included.
+  var documentClone = g.structuredClone;
+  if (typeof documentClone === 'function') {
+    var cloneOf = function (value, seen) {
+      if (value === null || typeof value !== 'object') return documentClone(value);
+      if (seen.has(value)) return seen.get(value);
+      // Each key as the copy's own, a key named __proto__ too (assigned, it was the copy's prototype).
+      var put = function (copy, key, item) { Object.defineProperty(copy, key, { value: item, writable: true, enumerable: true, configurable: true }); };
+      var copy;
+      if (isBlob(value)) {
+        copy = typeof g.File === 'function' && value instanceof g.File
+          ? new g.File([value], value.name, { type: value.type, lastModified: value.lastModified })
+          : value.slice(0, value.size, value.type);
+        seen.set(value, copy);
+        return copy;
+      }
+      if (typeof g.CryptoKey === 'function' && value instanceof g.CryptoKey) throw failure('A CryptoKey could not be cloned here.', 'DataCloneError');
+      var proto = Object.getPrototypeOf(value);
+      if (Array.isArray(value)) {
+        copy = new Array(value.length);
+        seen.set(value, copy);
+        for (var i = 0; i < value.length; i++) if (i in value) copy[i] = cloneOf(value[i], seen);
+        return copy;
+      }
+      if (typeof Map === 'function' && value instanceof Map) {
+        copy = new Map();
+        seen.set(value, copy);
+        value.forEach(function (v, k) { copy.set(cloneOf(k, seen), cloneOf(v, seen)); });
+        return copy;
+      }
+      if (typeof Set === 'function' && value instanceof Set) {
+        copy = new Set();
+        seen.set(value, copy);
+        value.forEach(function (v) { copy.add(cloneOf(v, seen)); });
+        return copy;
+      }
+      // A plain object (or one of a class of the app's, copied as a plain object, as a browser
+      // copies it); anything else (a date, bytes, an error) the document's own copy makes, told
+      // what is copied already (two views of one buffer share the copy of it), and an error's
+      // cause copied here (a blob in it was a plain object of nothing).
+      var kind = Object.prototype.toString.call(value);
+      if (kind !== '[object Object]' || (proto !== null && proto !== Object.prototype && typeof value.nodeType === 'number')) {
+        // An error's cause copied here first: the document's copy then finds it copied.
+        var hasCause = value instanceof Error && Object.prototype.hasOwnProperty.call(value, 'cause');
+        var cause = hasCause ? cloneOf(value.cause, seen) : undefined;
+        copy = documentClone(value, seen);
+        seen.set(value, copy);
+        if (hasCause) put(copy, 'cause', cause);
+        return copy;
+      }
+      copy = {};
+      seen.set(value, copy);
+      var keys = Object.keys(value);
+      for (var k = 0; k < keys.length; k++) put(copy, keys[k], cloneOf(value[keys[k]], seen));
+      return copy;
+    };
+    g.structuredClone = function structuredClone(value) {
+      if (arguments.length === 0) throw new TypeError("Failed to execute 'structuredClone' on 'Window': 1 argument required, but only 0 present.");
+      return cloneOf(value, new Map());
+    };
   }
 })();
 `;

@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 import {
   CACHE_DIR,
   REPOSITORY,
@@ -239,6 +240,65 @@ await extractGlueForWasm(stagedLite, null);
 await extractGlueForWasm(stagedJs, jsIsCores ? coreJsGlue : null);
 await extractGlueForWasm(stagedTs, null);
 await extractGlueForWasm(stagedPy, corePyGlue);
+
+// Optional full-stack backend WASM tiers (`zipp-php.wasm`, `zipp-rust.wasm`) from a local
+// ZIPP dev checkout (`ZIPP_DEV_REPO` or sibling `zipp.org`) or `ZIPP_RELEASE_DIR`, plus
+// embedded XDB SQLite WASM (`xdb-wasm.wasm` + `xdb-wasm.glue.js`) from `XDB_REPO` or sibling `xdb/xdb-rs`.
+function findEmbeddedVariant(dirs, suffix) {
+  for (const dir of dirs) {
+    if (!dir || !fs.existsSync(dir)) continue;
+    const direct = path.join(dir, suffix);
+    if (fs.existsSync(direct)) return direct;
+    try {
+      const files = fs.readdirSync(dir).filter((f) => f.endsWith(suffix)).sort().reverse();
+      if (files.length > 0) return path.join(dir, files[0]);
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+const zippDevRoots = [
+  process.env.ZIPP_DEV_REPO ? path.resolve(process.env.ZIPP_DEV_REPO, 'crates', 'zipp-wasm', 'dist', 'embedded') : null,
+  process.env.ZIPP_RELEASE_DIR ? path.resolve(process.env.ZIPP_RELEASE_DIR) : null,
+  path.resolve(REPO_ROOT, '..', 'zipp.org', 'crates', 'zipp-wasm', 'dist', 'embedded'),
+].filter(Boolean);
+
+function ensureBrotliTwin(wasmPath, existingBrSrc, destName) {
+  if (copyFirstExisting([existingBrSrc], ENGINES_DIR, destName)) return;
+  if (!wasmPath || !fs.existsSync(wasmPath)) return;
+  const dest = path.join(ENGINES_DIR, destName);
+  const compressed = zlib.brotliCompressSync(fs.readFileSync(wasmPath), {
+    params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 6 },
+  });
+  fs.writeFileSync(dest, compressed);
+  console.log(`[container] Compressed ${destName} (${(compressed.byteLength / 1024).toFixed(1)} KB)`);
+}
+
+const phpWasmSrc = findEmbeddedVariant(zippDevRoots, '-javascript-php.wasm') ?? findEmbeddedVariant(zippDevRoots, 'zipp-php.wasm');
+const phpBrSrc = findEmbeddedVariant(zippDevRoots, '-javascript-php.wasm.br') ?? findEmbeddedVariant(zippDevRoots, 'zipp-php.wasm.br');
+const stagedPhp = copyFirstExisting([phpWasmSrc], ENGINES_DIR, 'zipp-php.wasm');
+ensureBrotliTwin(stagedPhp, phpBrSrc, 'zipp-php.wasm.br');
+if (stagedPhp) await extractGlueForWasm(stagedPhp, null);
+
+const rustWasmSrc = findEmbeddedVariant(zippDevRoots, '-javascript-rust.wasm') ?? findEmbeddedVariant(zippDevRoots, 'zipp-rust.wasm');
+const rustBrSrc = findEmbeddedVariant(zippDevRoots, '-javascript-rust.wasm.br') ?? findEmbeddedVariant(zippDevRoots, 'zipp-rust.wasm.br');
+const stagedRust = copyFirstExisting([rustWasmSrc], ENGINES_DIR, 'zipp-rust.wasm');
+ensureBrotliTwin(stagedRust, rustBrSrc, 'zipp-rust.wasm.br');
+if (stagedRust) await extractGlueForWasm(stagedRust, null);
+
+const xdbPkgDirs = [
+  process.env.XDB_REPO ? path.resolve(process.env.XDB_REPO, 'crates', 'xdb-wasm', 'pkg') : null,
+  process.env.XDB_WASM_DIR ? path.resolve(process.env.XDB_WASM_DIR) : null,
+  path.resolve(REPO_ROOT, '..', 'xdb', 'xdb-rs', 'crates', 'xdb-wasm', 'pkg'),
+].filter(Boolean);
+
+const xdbWasmSrc = findEmbeddedVariant(xdbPkgDirs, 'xdb_wasm_bg.wasm');
+const xdbGlueSrc = findEmbeddedVariant(xdbPkgDirs, 'xdb_wasm.js');
+const stagedXdb = copyFirstExisting([xdbWasmSrc], ENGINES_DIR, 'xdb-wasm.wasm');
+ensureBrotliTwin(stagedXdb, null, 'xdb-wasm.wasm.br');
+copyFirstExisting([xdbGlueSrc], ENGINES_DIR, 'xdb-wasm.glue.js');
 
 // Stage externally hosted vendor libraries (`/runtime/vendor/three.js`)
 copyFirstExisting(

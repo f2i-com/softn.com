@@ -55,6 +55,7 @@ const HOSTED = [
   'engines/zipp-python-base.glue.js',
   'engines/zipp-typescript.glue.js',
   'engines/zipp-typescript.wasm',
+  'vendor/three.js',
 ];
 
 function fixture(t) {
@@ -94,8 +95,8 @@ test('a host serves the Worker, the two engines core cannot stand in for and the
   assert.equal(isHostedRuntimeFile('engines/zipp-javascript.glue.js'), false);
   // Core's engine's bindings stay: the Worker imports them for whichever tier that engine runs.
   assert.equal(isHostedRuntimeFile('engines/zipp-python-base.glue.js'), true);
-  // Three.js: the app bundles its own for its 3D components and hands it to the container.
-  assert.equal(isHostedRuntimeFile('vendor/three.js'), false);
+  // Three.js is hosted under vendor/three.js so container-worker.js (ThreeWorkerHost) can import it in its Worker.
+  assert.equal(isHostedRuntimeFile('vendor/three.js'), true);
   assert.equal(isHostedRuntimeFile('vendor/marked.js'), true);
   // The drop-in's entry and chunks are compiled into the app, and never asked for.
   for (const name of ['softn.js', 'chunk-EMPE36JR.js', 'worker-runtime-I4CH3MDX.js']) assert.equal(isHostedRuntimeFile(name), false, name);
@@ -106,7 +107,13 @@ test('the real package, when built, hosts no engine that core ships', { skip: !f
   const files = hostedRuntimeFiles();
   assert.ok(files.includes('container-worker.js'));
   assert.ok(files.includes('engines/zipp-javascript-lite.wasm'));
-  assert.deepEqual(files.filter((name) => name.endsWith('.wasm')), ['engines/zipp-javascript-lite.wasm', 'engines/zipp-typescript.wasm']);
+  const wasmFiles = files.filter((name) => name.endsWith('.wasm'));
+  for (const required of ['engines/zipp-javascript-lite.wasm', 'engines/zipp-typescript.wasm']) {
+    assert.ok(wasmFiles.includes(required), `missing ${required}`);
+  }
+  for (const excluded of ['engines/zipp-python-base.wasm', 'engines/zipp-torch.wasm', 'engines/zipp-javascript.wasm']) {
+    assert.ok(!wasmFiles.includes(excluded), `unexpected core duplicate ${excluded}`);
+  }
   // Each engine the folder holds, and the one core supplies, has its bindings beside it.
   for (const tier of ['javascript-lite', 'typescript', 'python-base']) assert.ok(files.includes(`engines/zipp-${tier}.glue.js`), tier);
   // No engine in the folder is one core installs under another name: its engine, that

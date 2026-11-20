@@ -130,6 +130,11 @@ export function hostAttributeValue(tag: string, name: string, value: string, con
     return TARGETS.has(target) ? target : null;
   }
 
+  // A picture (or anything) asked for with CORS is asked for without the person's cookies:
+  // `use-credentials` would have the page send them to the app's sites and hand the app what
+  // came back, readable.
+  if (lower === 'crossorigin') return 'anonymous';
+
   // SVG animation aimed at an address: `<set attributeName="href" to="javascript:…">` writes
   // the link's address after every check here has passed. Neither half is set.
   if (lower === 'attributename' && /^(?:xlink:)?href$/i.test(value.trim())) return null;
@@ -156,7 +161,7 @@ export function hostAttributeValue(tag: string, name: string, value: string, con
   }
 
   if (lower === 'style' || (PAINT_ATTRIBUTES.has(lower) && /\(|\\/.test(value))) {
-    return sanitizeContainerCss(value, context.entryPath, context.archive, context.permissions, context.netGranted);
+    return sanitizeContainerCss(value, context.entryPath, context.archive, context.permissions, context.netGranted, 'inline');
   }
 
   return value;

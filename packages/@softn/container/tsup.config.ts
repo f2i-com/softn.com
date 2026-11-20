@@ -37,10 +37,27 @@ export default defineConfig([
     noExternal: ['@softn/bundle-format', 'fflate'],
     external: ['three', /^three\//, /^node:/],
   },
-  // 3. Dedicated Web Worker (`/runtime/container-worker.js`)
+  // 3. Dedicated Frontend Web Worker (`/runtime/container-worker.js`)
   {
     entry: {
       'container-worker': 'src/worker-entry.ts',
+    },
+    outDir: 'dist/runtime',
+    platform: 'browser',
+    format: ['esm'],
+    dts: false,
+    clean: false,
+    sourcemap: true,
+    minify: true,
+    splitting: false,
+    treeshake: true,
+    noExternal: ['@softn/bundle-format', 'fflate'],
+    external: [/^node:/],
+  },
+  // 4. Dedicated Full-Stack Backend & SQLite Web Worker (`/runtime/backend-worker.js`)
+  {
+    entry: {
+      'backend-worker': 'src/backend-worker-entry.ts',
     },
     outDir: 'dist/runtime',
     platform: 'browser',

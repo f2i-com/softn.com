@@ -13,12 +13,13 @@
  */
 
 import { ContainerArchive, resolveVfsPath, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
-import { rewriteCss } from './css-policy';
+import { extractFontFaces, rewriteCss, transformContainerCss } from './css-policy';
 import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement } from './host-policy';
 import { SOFTN_UI_CSS } from './ui-css';
 import type {
   ContainerPermissions,
   ExtractedScript,
+  PlacedScript,
   SeedNode,
   ShellSeed,
   ViewportTuple,
@@ -50,6 +51,25 @@ export function isExternalUrlAllowed(
   if (!hosts || hosts.length === 0) return true;
   const hostname = parsed.hostname.toLowerCase();
   return hosts.some((h) => h.toLowerCase() === hostname);
+}
+
+/** A host written as an address of numbers. */
+const NUMBERED_HOST = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\])$/i;
+
+/**
+ * Whether two hosts are one site, as near as can be told without the list of where
+ * registered names begin: the same host, or hosts whose last two labels are the same
+ * (`api.example.com` and `example.com`). That takes `a.co.uk` and `b.co.uk` for one site,
+ * which they are not; where this is asked, too wide is the safe way to be wrong.
+ */
+export function sameSite(a: string, b: string): boolean {
+  const one = a.toLowerCase().replace(/\.$/, '');
+  const other = b.toLowerCase().replace(/\.$/, '');
+  if (one === '' || other === '') return false;
+  if (one === other) return true;
+  if (NUMBERED_HOST.test(one) || NUMBERED_HOST.test(other)) return false;
+  const tail = (host: string) => host.split('.').slice(-2).join('.');
+  return one.includes('.') && other.includes('.') && tail(one) === tail(other);
 }
 
 /** Sanitize a single URL attribute value (`src`, `href`, etc.) for the host DOM. */
@@ -119,13 +139,32 @@ export function sanitizeHostAssetUrl(
   // A link out (`<a href="https://...">`, an image map's `<area>`) fetches nothing until the
   // person follows it, and then the patcher opens it in a tab of its own.
   const isLink = (tagName === 'a' || tagName === 'area') && attrName === 'href';
+  const isFormAction =
+    (tagName === 'form' && attrName === 'action') ||
+    ((tagName === 'button' || tagName === 'input') && attrName === 'formaction');
   if (isLink && /^https?:/i.test(trimmed)) {
     return originalTrimmed;
   }
 
+  // When an embedded backend is active, allow same-virtual-origin links & form actions
+  // (including `.htaccess` rewrite routes like `/signin`, `/posts/42`, and query strings
+  // like `modules/sign.php?do=in`). `new URL(..., VIRTUAL_ORIGIN)` rejects all external
+  // hosts and dangerous schemes (`javascript:`, `data:`, `file:`, `//evil.com`).
+  if (archive.manifest.backend && (isLink || isFormAction) && !/^https?:|^\/\//i.test(trimmed)) {
+    try {
+      const baseUrl = `${VIRTUAL_ORIGIN}/${basePath.replace(/^\/+/, '')}`;
+      const resolvedUrl = new URL(originalTrimmed, baseUrl);
+      if (resolvedUrl.origin === VIRTUAL_ORIGIN) {
+        return `${resolvedUrl.pathname}${resolvedUrl.search}${resolvedUrl.hash}`;
+      }
+    } catch {
+      return null;
+    }
+  }
+
   // Virtual-origin or relative path -> resolve from `.softn` archive VFS
-  const vfsPath = resolveVfsPath(originalTrimmed, basePath);
-  if (vfsPath && archive.has(vfsPath)) {
+  const vfsPath = archive.resolveExistingPath(originalTrimmed, basePath);
+  if (vfsPath) {
     // A link to a file of the app's keeps the file's path: the patcher follows it inside the
     // container (a page) or does nothing (anything else). It is never given a `blob:`
     // address: one made by this page is this page's origin, and a link the person opens in
@@ -150,8 +189,9 @@ export function sanitizeHostAssetUrl(
 
 /**
  * A stylesheet of the app's, or a `style` attribute's value, for the page: every address by
- * the host's rule, no `@import`, no `:host` (css-policy.ts reads it as CSS does), and `html`,
- * `body` and `:root` scoped to the container's viewport.
+ * the host's rule, no `@import`, no `:host` (css-policy.ts reads it as CSS does), `html`/`:root`
+ * scoped to `[data-softn-docroot]`, `body` scoped to `[data-softn-viewport]`, and viewport units
+ * (`vh`/`dvh`/`vw`/`dvw`) bound to the container's live viewport variables.
  */
 export function sanitizeContainerCss(
   css: string,
@@ -159,10 +199,10 @@ export function sanitizeContainerCss(
   archive: ContainerArchive,
   permissions: ContainerPermissions,
   netGranted: boolean,
-  /** Where the sheet is: the app's page, or a shadow tree the app attached to an element of its own. */
-  scope: 'page' | 'shadow' = 'page'
+  /** Where the sheet is: the app's page, a shadow tree the app attached, or an inline `style` value. */
+  scope: 'page' | 'shadow' | 'inline' = 'page'
 ): string {
-  let out = rewriteCss(css, (target) => {
+  const out = rewriteCss(css, (target) => {
     // An empty address is the page's own: the embedding page, fetched again as an image.
     if (!target) return null;
     // A fragment alone names something in this document (an SVG filter, clip or gradient).
@@ -174,37 +214,83 @@ export function sanitizeContainerCss(
     if (SVG_DATA.test(target)) return target;
     const runtimeBlob = RUNTIME_BLOB_URL.exec(target);
     if (runtimeBlob) return archive.getRuntimeBlobUrl(runtimeBlob[1]);
-    const vfs = resolveVfsPath(target, basePath);
-    if (vfs && archive.has(vfs)) return archive.getBlobUrl(vfs);
+    const vfs = archive.resolveExistingPath(target, basePath);
+    if (vfs) return archive.getBlobUrl(vfs);
     if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
     return null;
   }, { keepHost: scope === 'shadow' });
 
-  // Scope top-level `html` / `body` / `:root` selectors to the container viewport inside ShadowRoot.
-  // (Not in a shadow tree's own sheet: none of the three is in there to be matched.)
-  if (scope === 'page') out = out.replace(/(^|[},])\s*(?::root|html|body)(?=[\s.{:#[,>~+])/gi, '$1 [data-softn-viewport]');
-  return out;
+  return transformContainerCss(out, {
+    scopeSelectors: scope === 'page',
+    rewriteViewportUnits: true,
+    inline: scope === 'inline',
+  });
 }
 
-function classifyScriptLanguage(typeAttr: string, srcPath?: string): {
+export { extractFontFaces as extractSanitizedFontFaces };
+
+/** The attribute an image asked for with CORS in the app's first markup carries its address in, for the patcher to load (dom-patcher.ts `adoptReadableImages`). */
+export const READABLE_ATTR = 'data-softn-readable';
+
+/** The types a browser runs a script of (its "JavaScript MIME types"), and the container's own for TypeScript and Python. */
+const JS_SCRIPT_TYPES = new Set([
+  '', 'text/javascript', 'application/javascript', 'application/ecmascript', 'application/x-ecmascript', 'application/x-javascript',
+  'text/ecmascript', 'text/javascript1.0', 'text/javascript1.1', 'text/javascript1.2', 'text/javascript1.3', 'text/javascript1.4',
+  'text/javascript1.5', 'text/jscript', 'text/livescript', 'text/x-ecmascript', 'text/x-javascript',
+]);
+const OWN_SCRIPT_TYPES = new Set([
+  'module',
+  'text/typescript',
+  'module/ts',
+  'text/tsx',
+  'module/tsx',
+  'text/jsx',
+  'module/jsx',
+  'text/python',
+  'python',
+]);
+
+/**
+ * What a `<script>` runs as, by its type as a browser reads it (a `language` attribute stands
+ * for a missing type): none for a type that is not run. Every type but a few was run as
+ * JavaScript, so a template (`text/x-template`), a shader (`x-shader/x-vertex`) or JSX for
+ * Babel was run, and failed, where a browser leaves it for the app to read.
+ */
+function classifyScriptLanguage(typeAttr: string | null, srcPath?: string, languageAttr?: string | null): {
   kind: 'classic' | 'module' | 'python';
   language: 'javascript' | 'typescript' | 'python';
+  jsx?: boolean;
 } | null {
-  const t = typeAttr.trim().toLowerCase();
-  if (t === 'importmap' || t === 'application/json' || t === 'application/ld+json' || t === 'text/plain') {
-    return null;
-  }
+  const written = typeAttr !== null ? typeAttr : languageAttr ? `text/${languageAttr}` : '';
+  const t = written.split(';')[0].trim().toLowerCase();
+  if (!JS_SCRIPT_TYPES.has(t) && !OWN_SCRIPT_TYPES.has(t)) return null;
   if (t === 'text/python' || t === 'python' || (srcPath && /\.py$/i.test(srcPath))) {
     return { kind: 'python', language: 'python' };
   }
+  const isJsx =
+    t === 'text/tsx' ||
+    t === 'module/tsx' ||
+    t === 'text/jsx' ||
+    t === 'module/jsx' ||
+    (srcPath ? /\.(?:tsx|jsx)$/i.test(srcPath) : false);
   const isTs =
     t === 'text/typescript' ||
     t === 'module/ts' ||
+    t === 'text/tsx' ||
+    t === 'module/tsx' ||
     (srcPath ? /\.(?:ts|tsx|mts)$/i.test(srcPath) : false);
-  const isModule = t === 'module' || t === 'module/ts' || (srcPath ? /\.(?:mjs|mts|tsx)$/i.test(srcPath) : false);
+  const isModule =
+    t === 'module' ||
+    t === 'module/ts' ||
+    t === 'text/tsx' ||
+    t === 'module/tsx' ||
+    t === 'text/jsx' ||
+    t === 'module/jsx' ||
+    (srcPath ? /\.(?:mjs|mts|tsx|jsx)$/i.test(srcPath) : false);
   return {
     kind: isModule ? 'module' : 'classic',
     language: isTs ? 'typescript' : 'javascript',
+    ...(isJsx ? { jsx: true } : {}),
   };
 }
 
@@ -221,6 +307,10 @@ function currentViewport(): ViewportTuple {
   ];
 }
 
+/** The most of the page's scripts placed in the app's document, and the most text one of them carries (a template, JSON). */
+const MAX_PLACED_SCRIPTS = 512;
+const MAX_PLACED_SCRIPT_TEXT = 2 * 1024 * 1024;
+
 function randomCryptoSeed(): number[] {
   if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
     return Array.from(crypto.getRandomValues(new Uint8Array(32)));
@@ -231,6 +321,8 @@ function randomCryptoSeed(): number[] {
 export interface PreparedDocument {
   seed: ShellSeed;
   scripts: ExtractedScript[];
+  /** Every `<script>` of the page, for the app's document (each where it was). */
+  placed: PlacedScript[];
   styles: string[];
   usesSoftnUiCss: boolean;
   /** Populate `viewportEl` and fill `nodeMap` (`id -> Node`) with sanitized initial DOM nodes. */
@@ -255,6 +347,11 @@ export function prepareHtmlDocument(
   const scripts: ExtractedScript[] = [];
   let usesSoftnUiCss = false;
   let scriptSeq = 1;
+  /** Every `<script>` of the page, with where it was: placed in the app's document by its id (PlacedScript). */
+  const placedScripts: Array<{ el: Element; attrs: Array<[string, string]>; text: string; parent: Element | null; next: Node | null; ran: number | null }> = [];
+  let placedText = 0;
+  /** What came after each element taken out (a stylesheet, a script, what the page does not get): where a script was is found past them. */
+  const afterRemoved = new Map<Node, Node | null>();
 
   // Walk `<head>` and `<body>` in document order for `<link rel="stylesheet">`, `<style>`, and `<script>`
   const allElements = Array.from(parsed.querySelectorAll('link, style, script'));
@@ -263,6 +360,7 @@ export function prepareHtmlDocument(
     if (tag === 'link') {
       const rel = (el.getAttribute('rel') ?? '').toLowerCase();
       const href = (el.getAttribute('href') ?? '').trim();
+      afterRemoved.set(el, el.nextSibling);
       if (rel === 'stylesheet' && href) {
         if (href === 'softn:ui.css' || href === '/runtime/ui.css') {
           usesSoftnUiCss = true;
@@ -270,7 +368,7 @@ export function prepareHtmlDocument(
         } else {
           const cssText = archive.readText(href, entryPath);
           if (cssText !== null) {
-            const cssPath = resolveVfsPath(href, entryPath) ?? entryPath;
+            const cssPath = archive.resolveExistingPath(href, entryPath) ?? resolveVfsPath(href, entryPath) ?? entryPath;
             styles.push(sanitizeContainerCss(cssText, cssPath, archive, permissions, netGranted));
           }
         }
@@ -280,6 +378,7 @@ export function prepareHtmlDocument(
     }
 
     if (tag === 'style') {
+      afterRemoved.set(el, el.nextSibling);
       const rawCss = el.textContent ?? '';
       if (rawCss.trim()) {
         styles.push(sanitizeContainerCss(rawCss, entryPath, archive, permissions, netGranted));
@@ -289,38 +388,73 @@ export function prepareHtmlDocument(
     }
 
     if (tag === 'script') {
-      const typeAttr = el.getAttribute('type') ?? '';
       const srcAttr = el.getAttribute('src')?.trim();
-      const classified = classifyScriptLanguage(typeAttr, srcAttr);
-      if (classified) {
+      const classified = classifyScriptLanguage(el.getAttribute('type'), srcAttr, el.getAttribute('language'));
+      // A browser that runs modules runs no nomodule script (a build's copy for old browsers).
+      const runs = classified !== null && !(classified.kind === 'classic' && el.hasAttribute('nomodule'));
+      let ran: number | null = null;
+      // Run once the page's other scripts have run, as a browser runs it after the page is
+      // read: a module (unless async), a classic script by its address with defer. A bundle in
+      // the head with defer ran before the page's own scripts that set up what it reads.
+      const deferred = classified !== null && !el.hasAttribute('async') && (classified.kind === 'module' || (!!srcAttr && el.hasAttribute('defer')));
+      if (classified && runs) {
         if (srcAttr) {
-          const resolvedSrc = resolveVfsPath(srcAttr, entryPath);
+          const resolvedSrc = archive.resolveExistingPath(srcAttr, entryPath);
           const code = resolvedSrc ? archive.readText(resolvedSrc) : null;
           if (code !== null && resolvedSrc) {
+            ran = scriptSeq;
             scripts.push({
               id: scriptSeq++,
               kind: classified.kind,
               language: classified.language,
               src: srcAttr,
               code,
-              originPath: resolvedSrc,
+              originPath: archive.toFrontendVfsPath(resolvedSrc),
+              ...(deferred ? { defer: true } : {}),
             });
           }
         } else {
           const inlineCode = el.textContent ?? '';
           if (inlineCode.trim()) {
-            const ext = classified.language === 'typescript' ? 'ts' : classified.language === 'python' ? 'py' : 'js';
+            const ext = classified.jsx
+              ? classified.language === 'typescript'
+                ? 'tsx'
+                : 'jsx'
+              : classified.language === 'typescript'
+                ? 'ts'
+                : classified.language === 'python'
+                  ? 'py'
+                  : 'js';
+            ran = scriptSeq;
             scripts.push({
               id: scriptSeq,
               kind: classified.kind,
               language: classified.language,
               code: inlineCode,
-              originPath: `${entryPath}.inline-${scriptSeq}.${ext}`,
+              originPath: `${archive.toFrontendVfsPath(entryPath)}.inline-${scriptSeq}.${ext}`,
+              ...(deferred ? { defer: true } : {}),
             });
             scriptSeq++;
           }
         }
       }
+      // In the app's document all the same, where it was, already run or never to be: what
+      // reads the page's scripts finds it (document.currentScript, a snippet that puts its own
+      // script beside the first, a template or JSON read by its id). Its text goes with it
+      // only when it is not run (a run script's code is the script itself).
+      if (placedScripts.length < MAX_PLACED_SCRIPTS) {
+        const attrs: Array<[string, string]> = [];
+        for (const attr of Array.from(el.attributes)) {
+          const lower = attr.name.toLowerCase();
+          if (lower.startsWith('on') || lower === NODE_ID_ATTR) continue;
+          attrs.push([attr.name, attr.value]);
+        }
+        let text = ran === null && !srcAttr ? (el.textContent ?? '') : '';
+        if (text.length > MAX_PLACED_SCRIPT_TEXT || placedText + text.length > MAX_PLACED_SCRIPT_TEXT * 2) text = '';
+        placedText += text.length;
+        placedScripts.push({ el, attrs, text, parent: el.parentElement, next: el.nextSibling, ran });
+      }
+      afterRemoved.set(el, el.nextSibling);
       el.remove();
     }
   }
@@ -330,6 +464,7 @@ export function prepareHtmlDocument(
   // `<meta http-equiv>`, which is a navigation.
   for (const el of Array.from(parsed.body.querySelectorAll('*'))) {
     if (hostElementName(el.localName, undefined) === null) {
+      afterRemoved.set(el, el.nextSibling);
       el.remove();
       continue;
     }
@@ -346,7 +481,7 @@ export function prepareHtmlDocument(
       const name = attr.name.toLowerCase();
       if (name.startsWith('on')) continue;
       if (name === 'style') {
-        out.style = sanitizeContainerCss(attr.value, entryPath, archive, permissions, netGranted);
+        out.style = sanitizeContainerCss(attr.value, entryPath, archive, permissions, netGranted, 'inline');
       } else {
         out[attr.name] = attr.value;
       }
@@ -370,10 +505,13 @@ export function prepareHtmlDocument(
     children?: BlueprintNode[];
   }
 
+  /** The id each node with a seed was given: where a page's script was is said by these. */
+  const seedIds = new Map<Node, number>();
   const buildNode = (domNode: Node): { seed: SeedNode | null; bp: BlueprintNode | null } => {
     if (domNode.nodeType === Node.TEXT_NODE) {
       const text = domNode.nodeValue ?? '';
       const id = nextId++;
+      seedIds.set(domNode, id);
       return {
         seed: { i: id, x: text },
         bp: { id, kind: 'text', text },
@@ -404,6 +542,7 @@ export function prepareHtmlDocument(
     const lowerTag = tag.toLowerCase();
 
     const id = nextId++;
+    seedIds.set(domNode, id);
     const seedAttrs: Record<string, string> = {};
     const hostAttrs: Record<string, string> = {};
     const inlineHandlers: Record<string, string> = {};
@@ -421,6 +560,13 @@ export function prepareHtmlDocument(
       seedAttrs[name] = attr.value;
       const clean = hostAttributeValue(lowerTag, name, attr.value, context);
       if (clean !== null) hostAttrs[name] = clean;
+    }
+
+    // An image asked for with CORS from a site the app may reach: loaded by the patcher, which
+    // fetches it and shows it from a blob of what came (a canvas it is drawn into is read back).
+    if (lowerTag === 'img' && !ns && hostAttrs.crossorigin !== undefined && hostAttrs.src && /^https?:/i.test(hostAttrs.src)) {
+      hostAttrs[READABLE_ATTR] = hostAttrs.src;
+      delete hostAttrs.src;
     }
 
     // A link out opens in a tab of its own, with no handle on this page, whatever the app
@@ -487,6 +633,31 @@ export function prepareHtmlDocument(
     if (built.bp) bodyBlueprints.push(built.bp);
   }
 
+  // Where each of the page's scripts was: in the head, or under its parent before the first
+  // node after it that the app's document has (each by its id there).
+  const placed: PlacedScript[] = placedScripts.map((script) => {
+    const inHead = !script.parent || script.parent === parsed.head || script.parent === parsed.documentElement;
+    let before: number | null = null;
+    if (!inHead) {
+      // Past the elements taken out beside it (a script straight after another was placed last).
+      for (let node = script.next; node; node = afterRemoved.has(node) ? afterRemoved.get(node)! : node.nextSibling) {
+        const id = seedIds.get(node);
+        if (id !== undefined) {
+          before = id;
+          break;
+        }
+      }
+    }
+    const parentId = inHead ? 'head' : script.parent === parsed.body ? 1 : seedIds.get(script.parent!) ?? 1;
+    return {
+      a: script.attrs,
+      ...(script.text ? { x: script.text } : {}),
+      p: parentId,
+      b: parentId === 'head' ? null : before,
+      r: script.ran,
+    };
+  });
+
   const seed: ShellSeed = {
     next: nextId,
     body: bodySeeds,
@@ -496,7 +667,7 @@ export function prepareHtmlDocument(
     // A folder's index page is at the folder's address, as every web server gives it: a
     // router matches location.pathname, and an app opened at "/index.html" started on its
     // "no such page" page. A page of any other name is at its own address.
-    url: `${VIRTUAL_ORIGIN}/${entryPath.replace(/(^|\/)index\.html?$/i, '$1')}`,
+    url: `${VIRTUAL_ORIGIN}/${archive.toFrontendVfsPath(entryPath).replace(/(^|\/)index\.html?$/i, '$1')}`,
     r: randomCryptoSeed(),
     v: currentViewport(),
     shadow: true,
@@ -563,6 +734,7 @@ export function prepareHtmlDocument(
   return {
     seed,
     scripts,
+    placed,
     styles,
     usesSoftnUiCss,
     mountInitialDom,

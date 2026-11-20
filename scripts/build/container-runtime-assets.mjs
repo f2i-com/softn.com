@@ -76,9 +76,6 @@ const APP_HAS = new Set([
   'engines/zipp-torch.wasm',
   'engines/zipp-javascript.wasm',
   'engines/zipp-javascript.glue.js',
-  // Three.js: the app bundles its own for `<Scene3D>`, and hands it to the container
-  // (containerHost.ts's hostThree).
-  'vendor/three.js',
 ]);
 
 /** Whether a host that carries @softn/core serves this file of `dist/runtime/` (a `/`-separated path). */
@@ -87,7 +84,12 @@ export function isHostedRuntimeFile(relative) {
   // (precompress-assets.mjs), from the bytes it ends up serving.
   if (/\.(?:map|br|gz)$/.test(relative)) return false;
   if (APP_HAS.has(relative)) return false;
-  return relative === 'container-worker.js' || relative.startsWith('engines/') || relative.startsWith('vendor/');
+  return (
+    relative === 'container-worker.js' ||
+    relative === 'backend-worker.js' ||
+    relative.startsWith('engines/') ||
+    relative.startsWith('vendor/')
+  );
 }
 
 function inside(root, candidate) {
@@ -233,6 +235,9 @@ export function containerRuntimeAssetPlugin({ runtimeDistRoot = defaultContainer
           const bytes = fs.readFileSync(useBr ? brTwin : source);
           res.statusCode = 200;
           res.setHeader('Content-Type', MIME_TYPES.get(path.extname(source)) || 'application/octet-stream');
+          res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+          res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+          res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
           if (useBr) {
             res.setHeader('Content-Encoding', 'br');
             res.setHeader('Vary', 'Accept-Encoding');

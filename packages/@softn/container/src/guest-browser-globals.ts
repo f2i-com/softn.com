@@ -407,8 +407,9 @@ export const GUEST_BROWSER_GLOBALS_SOURCE = String.raw`
   // The window does not scroll: the embedding page's does, and that is not the app's to
   // move. window.scrollTo (a router's "back to the top" on every page it shows) scrolls the
   // app's own box, and an element's scrollTop, scrollLeft and scrollTo() scroll that element
-  // on the page. What is read back is what was last written: where the person has scrolled
-  // to since is the page's to know.
+  // on the page. Where the person has scrolled to is told by the page with the next event the
+  // app hears and once the scrolling stops, and read back here (a list that draws only the
+  // rows in view reads scrollTop as it scrolls; before, it read what it had last written).
   var push = typeof g.__softnPushExtraOp === 'function' ? g.__softnPushExtraOp : null;
   var scrolled = typeof WeakMap === 'function' ? new WeakMap() : null;
   function scrollOf(el) {
@@ -436,6 +437,36 @@ export const GUEST_BROWSER_GLOBALS_SOURCE = String.raw`
     scrollOf(el)[axis] = n;
     var id = el === doc.body || el === doc.documentElement ? 1 : el.__softnNode;
     if (typeof id === 'number' && id > 0 && el.isConnected !== false) push(['p', id, axis === 'top' ? 'scrollTop' : 'scrollLeft', n]);
+  }
+  // localStorage changed by another tab, or by another of the same app in this page: a storage
+  // event at the window, as a browser sends one (and window.onstorage, set as a property).
+  g.__softnStorageChanged = function (key, oldValue, newValue) {
+    if (!doc || typeof g.StorageEvent !== 'function') return;
+    var e = new g.StorageEvent('storage', { key: key, oldValue: oldValue, newValue: newValue, url: g.location ? String(g.location.href) : '', storageArea: g.localStorage || null });
+    try { doc.dispatchEvent(e); } catch (error) { g.console.error('[SoftN] A storage listener failed: ' + (error && error.message ? error.message : error)); }
+    if (typeof g.onstorage === 'function') {
+      try { g.onstorage.call(g, e); } catch (error) { g.console.error('[SoftN] A storage listener failed: ' + (error && error.message ? error.message : error)); }
+    }
+  };
+  var shellApi = typeof __softnShell !== 'undefined' ? __softnShell : null;
+  var plainScrollSync = g.__softnDocSync;
+  if (typeof plainScrollSync === 'function') {
+    g.__softnDocSync = function (changes) {
+      var rest = [];
+      for (var i = 0; i < changes.length; i++) {
+        var c = changes[i];
+        if (!c || c[0] !== 'Y') { rest.push(c); continue; }
+        // The app's page (the box it scrolls in) is its document's: window.scrollY.
+        var el = c[1] === 1 ? doc && doc.body : shellApi && typeof shellApi.byId === 'function' ? shellApi.byId(c[1]) : null;
+        if (!el) continue;
+        var at = scrollOf(el);
+        var top = Number(c[2]);
+        var left = Number(c[3]);
+        if (top === top) at.top = Math.max(0, top);
+        if (left === left) at.left = Math.max(0, left);
+      }
+      return plainScrollSync(rest);
+    };
   }
   function scrollArgs(el, a, b, by) {
     var top = a && typeof a === 'object' ? a.top : b;

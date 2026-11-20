@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Capability } from '@softn/bundle-format/capabilities';
 import type { PermissionConfig } from '@softn/core';
-import type { ContainerPermissions, SoftNContainerHandle } from '@softn/container';
+import type { ContainerBootStatus, ContainerPermissions, SoftNContainerHandle } from '@softn/container';
 import { hostedContainerOptions } from './containerHost';
 
 export interface WebContainerViewProps {
@@ -23,10 +23,12 @@ export interface WebContainerViewProps {
   theme?: 'light' | 'dark' | 'auto';
   /** Whether guest storage persists to host `localStorage` (default `true`). */
   persistStorage?: boolean;
-  /** Shown while engine WASM & initial scripts boot. */
-  loading?: React.ReactNode;
+  /** Shown while engine WASM & initial scripts boot. Can be a render function receiving live boot status. */
+  loading?: React.ReactNode | ((status: ContainerBootStatus | null) => React.ReactNode);
   /** Rendered if container startup fails fatally. */
   error?: (err: Error) => React.ReactNode;
+  /** Fired on each startup stage with message/percent/detail. */
+  onStatus?: (status: ContainerBootStatus) => void;
   /** Fired once container initial scripts & `DOMContentLoaded` complete. */
   onReady?: () => void;
   /** Fired when guest updates `document.title`. */
@@ -57,6 +59,7 @@ export function WebContainerView({
   persistStorage = true,
   loading,
   error: renderError,
+  onStatus,
   onReady,
   onTitleChange,
   onConsole,
@@ -65,8 +68,11 @@ export function WebContainerView({
   const hostRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<SoftNContainerHandle | null>(null);
   const [booting, setBooting] = useState(true);
+  const [bootStatus, setBootStatus] = useState<ContainerBootStatus | null>(null);
   const [fatalError, setFatalError] = useState<Error | null>(null);
 
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   const onTitleRef = useRef(onTitleChange);
@@ -83,6 +89,7 @@ export function WebContainerView({
     if (!el) return;
     let cancelled = false;
     setBooting(true);
+    setBootStatus({ phase: 'opening', message: 'Loading container runtime…', percent: 5 });
     setFatalError(null);
 
     void (async () => {
@@ -104,6 +111,11 @@ export function WebContainerView({
           permissionMode: 'deny',
           initialGrantedCapabilities: grantedRef.current as Capability[],
           permissionsOverride: declaredPermissions as unknown as ContainerPermissions | undefined,
+          onStatus: (status) => {
+            if (cancelled) return;
+            setBootStatus(status);
+            onStatusRef.current?.(status);
+          },
           // To the host's listener when it has one; otherwise to the browser's console, as an
           // app's own page would write there. With no listener the app's errors went nowhere:
           // a script that threw left a blank page and nothing to read.
@@ -165,7 +177,7 @@ export function WebContainerView({
       <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
       {booting && loading && (
         <div style={{ position: 'absolute', inset: 0, zIndex: 2 }}>
-          {loading}
+          {typeof loading === 'function' ? loading(bootStatus) : loading}
         </div>
       )}
     </div>

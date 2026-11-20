@@ -510,6 +510,31 @@ describe('a click on a box', () => {
   });
 });
 
+describe('queueMicrotask', () => {
+  it('is a microtask of the engine’s own, whatever the page has made of Promise since', async () => {
+    // A library may put a Promise of its own in the global's place for a while (Dexie does,
+    // inside a transaction) and schedule itself with queueMicrotask meanwhile.
+    const doc = await page(`
+      var ran = [];
+      function ask() {
+        var Native = Promise;
+        var then = Promise.prototype.then;
+        globalThis.Promise = { resolve: function () { return { then: function () { ran.push('the page’s own Promise'); } }; } };
+        Native.prototype.then = function () { ran.push('a patched then'); return then.apply(this, arguments); };
+        queueMicrotask(function () { ran.push('ran'); });
+        var refused = 'taken';
+        try { queueMicrotask('not a function'); } catch (e) { refused = e.name; }
+        globalThis.Promise = Native;
+        Native.prototype.then = then;
+        return refused;
+      }
+      function seen() { return ran; }`);
+    expect(doc.call('ask')).toBe('TypeError');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(doc.call('seen')).toEqual(['ran']);
+  });
+});
+
 describe('a shadow tree', () => {
   // For a host that draws them (a web container says so in the seed). Elsewhere an
   // element has no attachShadow, and code that asks is told the truth.

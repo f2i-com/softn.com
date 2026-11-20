@@ -357,6 +357,53 @@ export function migrateAppStorage(fromAppId: string, toAppId: string): DataTrans
  * the records, and the keys its script kept through localStorage itself,
  * which the first version of this left behind.
  */
+function clearContainerIndexedDb(prefix: string): void {
+  if (typeof indexedDB === 'undefined') return;
+  try {
+    const req1 = indexedDB.open('softn-container-session', 1);
+    req1.onsuccess = () => {
+      const db = req1.result;
+      try {
+        if (db.objectStoreNames.contains('sessions')) {
+          const tx = db.transaction('sessions', 'readwrite');
+          tx.objectStore('sessions').delete(prefix);
+        }
+      } catch {
+        // ignore
+      } finally {
+        try { db.close(); } catch { /* ignore */ }
+      }
+    };
+  } catch {
+    // ignore
+  }
+  try {
+    const req2 = indexedDB.open('softn-container-sqlite', 1);
+    req2.onsuccess = () => {
+      const db = req2.result;
+      try {
+        if (db.objectStoreNames.contains('blobs')) {
+          const tx = db.transaction('blobs', 'readwrite');
+          const store = tx.objectStore('blobs');
+          const curReq = store.openCursor();
+          curReq.onsuccess = () => {
+            const cur = curReq.result;
+            if (!cur) return;
+            if (String(cur.key).startsWith(prefix)) cur.delete();
+            cur.continue();
+          };
+        }
+      } catch {
+        // ignore
+      } finally {
+        try { db.close(); } catch { /* ignore */ }
+      }
+    };
+  } catch {
+    // ignore
+  }
+}
+
 export function removeAppData(origin: string | undefined): number {
   if (!origin) return 0;
   let removed = 0;
@@ -370,5 +417,6 @@ export function removeAppData(origin: string | undefined): number {
   } catch {
     // Storage unavailable; the cache record still goes.
   }
+  clearContainerIndexedDb(containerStoragePrefix(origin));
   return removed;
 }

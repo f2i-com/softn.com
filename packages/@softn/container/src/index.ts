@@ -16,7 +16,43 @@ export { ContainerArchive, resolveVfsPath, mimeTypeFor, VIRTUAL_ORIGIN, isLegacy
 export { selectEngineTier, loadZippEngine, engineFileFor, glueFileFor } from './zipp-loader';
 export { containerRuntimeNeeds, preloadContainerFeatures, type ContainerRuntimeNeeds } from './runtime-needs';
 export { transformEsModule, resolveModuleSpecifier, DEFAULT_VENDOR_IMPORT_MAP } from './esm-linker';
+export { transformJsx } from './jsx-transform';
 export { registerUiExtension, ensureUiExtension } from './ui-extensions/registry';
 export { prepareHtmlDocument, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
 export { SOFTN_UI_CSS, SHADOW_HOST_BASE_CSS } from './ui-css';
+export {
+  VirtualCookieJar,
+  RemoteBackendTransport,
+  buildBackendRoutingConfig,
+  matchBackendTarget,
+  parseCookieHeader,
+  statusTextFor,
+  type BackendRoutingConfig,
+  type ParsedBackendTarget,
+} from './backend-transport';
+export { LocalBackendTransport, clearBackendPersistedBlobs, type LocalBackendTransportOptions } from './local-backend-transport';
+export { loadContainerSession, saveContainerSession, clearContainerSession, type PersistedContainerSession } from './session-store';
+export { BackendWorkerSession } from './backend-runtime';
+export {
+  parseHtaccess,
+  evaluateHtaccess,
+  evaluateHtaccessChain,
+  type ParsedHtaccess,
+  type HtaccessRewriteRule,
+  type HtaccessRewriteCond,
+  type HtaccessRedirectMatch,
+  type HtaccessEvalInput,
+  type HtaccessEvalResult,
+} from './htaccess';
+export {
+  loadXdbWasm,
+  XdbSqlManager,
+  normalizeDbKey,
+  ZIPP_SQL_CAPABILITIES,
+  type LoadedXdbBindings,
+  type XdbWasmConnection,
+  type XdbBudgetHooks,
+  type XdbSqlManagerOptions,
+} from './xdb-sql-bridge';
+export { renderVirtualNavBar, type VirtualNavBarController } from './virtual-nav-bar';
 export type * from './types';

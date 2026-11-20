@@ -23,22 +23,17 @@ const ENGINE_FILENAMES: Readonly<Record<ZippEngineTier, string>> = {
   typescript: 'zipp-typescript.wasm',
   python: 'zipp-python-base.wasm',
   'python-torch': 'zipp-python-base.wasm',
+  php: 'zipp-php.wasm',
+  rust: 'zipp-rust.wasm',
 };
 
-/**
- * The bindings that go with an engine, by the variant its own `zipp.meta` names. A host may
- * hand a tier an engine that can do more than the tier asks (a SoftN app runs the
- * `javascript` tier on the JavaScript-and-Python engine its page already has, and ships no
- * `zipp-javascript.wasm`), and that engine instantiates only under its own bindings: the
- * Python build imports what the JavaScript-only bindings do not provide. So the bindings
- * follow the engine that runs, and the tier's name decides them only for an engine that
- * does not say what it is.
- */
 const GLUE_FILE_BY_VARIANT: Readonly<Record<string, string>> = {
   lite: 'zipp-javascript-lite.glue.js',
   javascript: 'zipp-javascript.glue.js',
   'javascript-typescript': 'zipp-typescript.glue.js',
   'javascript-python-base': 'zipp-python-base.glue.js',
+  'javascript-php': 'zipp-php.glue.js',
+  'javascript-rust': 'zipp-rust.glue.js',
 };
 
 /** A tier's engine file in `engines/`, where the host does not supply the tier's engine itself. */
@@ -106,17 +101,58 @@ export function selectEngineTier(
   return 'lite';
 }
 
+export type ZippHostBridge =
+  | { call: (kind: string, args: string[]) => unknown }
+  | Record<string, (...args: unknown[]) => unknown>;
+
+export interface ZippPhpAppInstance {
+  readonly disposed: boolean;
+  setBaseDir(dir: string): void;
+  setEnv(env: Record<string, string>): void;
+  setInstructionBudget(steps: number): boolean;
+  setSyncHostCapabilities(ops: string[]): void;
+  setAppBridge(bridge: ZippHostBridge): void;
+  addAppBridge(namespace: string, bridge: ZippHostBridge): void;
+  mountFiles(files: Record<string, string | { base64: string }>): void;
+  mountFile(path: string, content: string): void;
+  mountFileBase64(path: string, base64: string): void;
+  handleRequest(scriptPath: string, reqJson: string): { metaJson: string; bodyBase64: string; error: string | null };
+  exportOverlayJson(): string;
+  importOverlayJson(json: string): void;
+  dispose(): void;
+  free?(): void;
+}
+
 export interface ZippEngineInstance {
   setSyncHostCapabilities(ops: string[]): void;
   setInstructionBudget(steps: number): boolean;
   renewInstructionBudget(): boolean;
   setScriptOrigin(name: string, lineOffset: number, colOffset: number): void;
-  setAppBridge(bridge: Record<string, (...args: unknown[]) => unknown>): void;
+  setAppBridge(bridge: ZippHostBridge): void;
+  addAppBridge?(namespace: string, bridge: ZippHostBridge): void;
   setDbBridge(bridge: Record<string, (...args: unknown[]) => unknown>): void;
   setLocalStorageBridge(bridge: Record<string, (...args: unknown[]) => unknown>): void;
   initScript(source: string): unknown;
   initSource(source: string, language: string): unknown;
   initPythonProject?(files: Record<string, unknown>, entry: string, argv?: string[]): unknown;
+  initRustProject?(
+    files: Record<string, string | { base64: string }>,
+    entry: string,
+    options?: Record<string, unknown>
+  ): unknown;
+  rustDispatchRequest?(reqJson: string): string;
+  takeRustOutput?(): string;
+  takeRustStderr?(): string;
+  exportRustOverlayJson?(): string;
+  initPhpProject?(
+    files: Record<string, string | { base64: string }>,
+    entry: string,
+    options?: Record<string, unknown>
+  ): unknown;
+  phpDispatchRequest?(reqJson: string): { metaJson: string; bodyBase64: string };
+  phpTakeResponse?(): string;
+  takePhpOutput?(): string;
+  takePhpOutputBase64?(): string;
   evalInContext(expr: string): unknown;
   callFunction?(name: string, args: unknown[]): unknown;
   drainPendingHostCalls(): Array<{ id: number; kind: string; args: string[] }>;
@@ -134,6 +170,9 @@ export interface ZippEngineInstance {
 
 export interface LoadedZippBindings {
   Engine: new () => ZippEngineInstance;
+  PhpApp?: new () => ZippPhpAppInstance;
+  hostStepsRemaining?: () => number;
+  hostChargeSteps?: (steps: number) => void;
   meta: Record<string, unknown> | null;
   profile: Record<string, unknown>;
   module: WebAssembly.Module;
@@ -277,11 +316,21 @@ export async function loadZippEngine(options: {
       const fsMod = await import('node:fs');
       if (!fsMod.existsSync(targetSource)) {
         const pathMod = await import('node:path');
-        const pkgRoot = await resolveNodeContainerPkgRoot();
-        if (pkgRoot) {
-          const fallbackPath = pathMod.resolve(pkgRoot, '..', 'core', 'wasm-zipp', 'zipp_wasm_bg.wasm');
-          if (fsMod.existsSync(fallbackPath)) {
-            targetSource = fallbackPath;
+        if (tier === 'php' || tier === 'rust') {
+          const devRepo = process.env.ZIPP_DEV_REPO || 'E:\\repos\\zipp.org';
+          const embeddedDir = pathMod.join(devRepo, 'crates', 'zipp-wasm', 'dist', 'embedded');
+          if (fsMod.existsSync(embeddedDir)) {
+            const suffix = `-javascript-${tier}.wasm`;
+            const match = fsMod.readdirSync(embeddedDir).find((f) => f.endsWith(suffix));
+            if (match) targetSource = pathMod.join(embeddedDir, match);
+          }
+        } else {
+          const pkgRoot = await resolveNodeContainerPkgRoot();
+          if (pkgRoot) {
+            const fallbackPath = pathMod.resolve(pkgRoot, '..', 'core', 'wasm-zipp', 'zipp_wasm_bg.wasm');
+            if (fsMod.existsSync(fallbackPath)) {
+              targetSource = fallbackPath;
+            }
           }
         }
       }
@@ -333,6 +382,9 @@ export async function loadZippEngine(options: {
 
     return {
       Engine: bindings.Engine as new () => ZippEngineInstance,
+      PhpApp: typeof bindings.PhpApp === 'function' ? (bindings.PhpApp as new () => ZippPhpAppInstance) : undefined,
+      hostStepsRemaining: typeof bindings.hostStepsRemaining === 'function' ? (bindings.hostStepsRemaining as () => number) : undefined,
+      hostChargeSteps: typeof bindings.hostChargeSteps === 'function' ? (bindings.hostChargeSteps as (steps: number) => void) : undefined,
       meta,
       profile,
       module,

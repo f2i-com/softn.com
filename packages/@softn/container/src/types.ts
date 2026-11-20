@@ -12,7 +12,151 @@ export type ZippEngineTier =
   | 'javascript'
   | 'typescript'
   | 'python'
-  | 'python-torch';
+  | 'python-torch'
+  | 'php'
+  | 'rust';
+
+/** Supported embedded backend runtime languages running inside the Backend Worker on ZIPP WASM. */
+export type BackendRuntimeKind = 'rust' | 'php' | 'javascript' | 'typescript' | 'python';
+
+/** Declarative URL rewrite rule (can come from `manifest.json` or parsed `.htaccess`). */
+export interface RewriteRule {
+  match: string;
+  to: string;
+  flags?: string[];
+}
+
+/** Embedded backend configuration (explicit in `manifest.json` or zero-config auto-discovered). */
+export interface BackendConfig {
+  runtime: BackendRuntimeKind;
+  /** Entry script or source file inside the archive (e.g. `"server/src/main.rs"`, `"index.php"`, `"backend/server.js"`). */
+  entry: string;
+  /** Optional directory prefix containing backend source files (e.g. `"server"`, `"backend"`, `""` for root PHP). */
+  root?: string;
+  /**
+   * Execution model:
+   * - `'ssr'`: backend renders HTML pages AND handles API routes (e.g. PHP apps like Sngine)
+   * - `'api'`: static/SPA frontend (`index.html`) talks to backend over HTTP/WS API routes (e.g. React + Rust Axum)
+   */
+  mode?: 'api' | 'ssr';
+  /** Path prefixes routed to this backend (default `['/api/', '/ws']` in `'api'` mode, `['/']` in `'ssr'` mode). */
+  routes?: string[];
+  /**
+   * External origins (e.g. `['http://localhost:8080', 'http://127.0.0.1:8080']`) whose frontend
+   * `fetch()` / `XHR` / `WebSocket` requests are transparently intercepted and routed to the
+   * sandboxed backend with zero external network egress!
+   */
+  interceptOrigins?: string[];
+  /** Environment variables passed to the backend runtime (e.g. `PIT_DB_PATH`, `APP_ENV`). */
+  env?: Record<string, string>;
+  /** Explicit URL rewrite rules (in addition to any `.htaccess` files in the archive). */
+  rewrites?: RewriteRule[];
+  /** For PHP: `'sapi'` (shared-nothing per request, default) or `'worker'` (`zipp_handle_requests`). */
+  phpMode?: 'sapi' | 'worker';
+}
+
+/** SQLite database configuration backed by XDB WASM (`xdb-rs`). */
+export interface DatabaseConfig {
+  /** Logical database name (e.g. `"app"`, `"pit"`). */
+  name: string;
+  engine?: 'sqlite';
+  /** Archive path or virtual filename (e.g. `"data/app.db"` or `"pit.db"`). */
+  file?: string;
+  /** Optional SQL DDL/seed script (inline SQL or archive path like `"db/schema.sql"`). */
+  seedSql?: string;
+  /** Optional JSON seed data (inline object/JSON string or archive path like `"db/seed.json"`). */
+  seedJson?: string | Record<string, unknown>;
+  /** Whether writes persist to host IndexedDB across reloads (default `true`). */
+  persist?: boolean;
+}
+
+/** Transport-agnostic HTTP request crossing the Frontend <-> Backend boundary (FormLogic-compatible). */
+export interface BackendHttpRequest {
+  method: string;
+  /** Normalized pathname starting with `/` (e.g. `"/api/v1/health"`, `"/signin"`). */
+  path: string;
+  /** Query string without leading `?`. */
+  query?: string;
+  headers?: Record<string, string>;
+  body?: Uint8Array | string;
+  /** Original requested URL (for `Origin` / `Host` / rewrite context). */
+  url?: string;
+}
+
+/** Transport-agnostic HTTP response from a local WASM backend or remote FormLogic backend. */
+export interface BackendHttpResponse {
+  status: number;
+  statusText?: string;
+  headers: Array<[string, string]>;
+  body: Uint8Array;
+}
+
+export type BackendWsEvent =
+  | { type: 'open'; protocol?: string }
+  | { type: 'message'; data: string | Uint8Array }
+  | { type: 'error'; message?: string }
+  | { type: 'close'; code?: number; reason?: string; wasClean?: boolean };
+
+export interface BackendWsHandle {
+  send(data: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+}
+
+/** Live startup progress emitted during container & embedded backend boot. */
+export interface ContainerBootStatus {
+  phase:
+    | 'opening'
+    | 'loading-sqlite'
+    | 'hydrating-db'
+    | 'loading-backend-runtime'
+    | 'booting-backend'
+    | 'backend-ready'
+    | 'starting-frontend'
+    | 'ready';
+  message: string;
+  /** Progress percentage `0..100`. */
+  percent?: number;
+  /** Optional extra detail (e.g., runtime name, database name, migration/seed log). */
+  detail?: string;
+}
+
+/**
+ * Clean Frontend <-> Backend boundary.
+ *
+ * By default SoftN constructs a `LocalBackendTransport` running the bundled backend
+ * inside an isolated Web Worker on ZIPP WASM + XDB SQLite. Later, FormLogic can inject
+ * a remote multi-user `BackendTransport` without changing any app code!
+ */
+export interface BackendTransport {
+  readonly kind: 'local-worker' | 'local-inline' | 'remote';
+  readonly ready: Promise<void>;
+  fetch(req: BackendHttpRequest): Promise<BackendHttpResponse>;
+  openWebSocket?(
+    path: string,
+    protocols: string[],
+    onEvent: (event: BackendWsEvent) => void
+  ): BackendWsHandle;
+  /** Apply JSON seed data dynamically to a named database (local transports). */
+  seedDatabase?(dbName: string, seedJson: string | Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Export a named database's live SQLite `.db` bytes (local transports). */
+  exportDatabase?(dbName: string): Promise<Uint8Array | null>;
+  dispose(): void;
+}
+
+/** One entry returned by virtual folder navigation (`listVirtualDirectory`). */
+export interface VirtualDirEntry {
+  name: string;
+  /** Normalized virtual path (e.g. `"modules/sign.php"` or `"modules"`). */
+  path: string;
+  /** Virtual URL path starting with `/` (e.g. `"/modules/sign.php"` or `"/modules/"`). */
+  urlPath: string;
+  kind: 'dir' | 'file';
+  /** Whether navigating to this entry executes a script or renders a page (`.php`, `.html`, etc.). */
+  navigable: boolean;
+  /** File extension without dot (lowercase). */
+  ext?: string;
+  size?: number;
+}
 
 /** Network allowlist configuration from `permission.json`. */
 export interface NetPermission {
@@ -50,6 +194,14 @@ export interface ContainerManifest {
   importMap: Record<string, string>;
   pythonPackages?: string[];
   theme?: 'light' | 'dark' | 'auto';
+  /** Optional embedded backend configuration (Rust, PHP, JS/TS, Python). */
+  backend?: BackendConfig;
+  /** Optional directory prefix for frontend static files inside a full-stack archive (e.g. `"app/dist"`). */
+  frontendRoot?: string;
+  /** Optional SQLite databases managed by XDB WASM (`xdb-rs`). */
+  databases?: DatabaseConfig[];
+  /** Whether the initial HTML document is rendered dynamically by the backend (`GET /`). */
+  ssrEntry?: boolean;
   raw?: Record<string, unknown>;
 }
 
@@ -67,6 +219,22 @@ export interface ExtractedScript {
   src?: string;
   code: string;
   originPath: string;
+  /** Run after the page's other scripts, as a browser runs a deferred one: a module, or a classic script by its address with `defer` (neither `async`). */
+  defer?: boolean;
+}
+
+/**
+ * One `<script>` of the page, put in the app's document where it was (inert: run already, or
+ * never to be). `a` its attributes, `x` its text when it is not run (a template, JSON), `p` its
+ * parent (`'head'`, or the id of a node of the seed, 1 the body), `b` the node it came before
+ * (null: last), `r` the id of the `ExtractedScript` it was, when it is run.
+ */
+export interface PlacedScript {
+  a: Array<[string, string]>;
+  x?: string;
+  p: 'head' | number;
+  b: number | null;
+  r: number | null;
 }
 
 /** Seed node passed to the Worker's guest DOM on startup. */
@@ -111,6 +279,7 @@ export interface ShellSeed {
 /** Compact 2D `<canvas>` command tuple replayed on the host `<canvas>`. */
 export type Canvas2DCmd =
   | ['prop', string, string | number]
+  | ['grad', 'fillStyle' | 'strokeStyle', 'linear' | 'radial', number[], Array<[number, string]>]
   | ['clearRect', number, number, number, number]
   | ['fillRect', number, number, number, number]
   | ['strokeRect', number, number, number, number]
@@ -172,11 +341,11 @@ export type ShellOp =
   | ['l', string]
   | ['t', string]
   | ['n', string]
-  /** A blob the script made an address for: its id, its type, its bytes in base64; and one let go. */
-  | ['blob', string, string, string]
+  /** A blob the script made an address for: its id, its type, its bytes in base64 (or in pieces, for a part of a picked file); and one let go. */
+  | ['blob', string, string, string | Array<{ base64: string; skip?: number; take?: number }>]
   | ['unblob', string]
   /** An image that is not on the page, for the host to load and say when it has: a token to answer by, and the address. */
-  | ['img', string, string]
+  | ['img', string, string, string?]
   /** An animation of an element (`element.animate`): its key, the element, its keyframes and its timing; and what the script then asks of it. */
   | ['anim', string, number, unknown, unknown]
   | ['anim-ctl', string, string]
@@ -184,7 +353,12 @@ export type ShellOp =
   | ['canvas-blob', string, number, string, number]
   /** A file the script asks to save: the id of a blob it made an address for, and the name it gives the file. */
   | ['save', string, string]
-  | ['k2d', number, number, number, Canvas2DCmd[]]
+  /** A canvas's drawing since the last turn; 'mirrored' when the Worker has drawn it on its own copy already (the app read the canvas back). */
+  | ['k2d', number, number, number, Canvas2DCmd[], 'mirrored'?]
+  /** A canvas's size set by the app: it is cleared, even at the size it had, in its place among what was drawn. */
+  | ['k2dreset', number, number, number, 'mirrored'?]
+  /** A canvas the app can no longer reach: what the page and the Worker keep for it is let go of. */
+  | ['k2dgone', number]
   | ['3d', number, ThreeSceneOp[]];
 
 /** A file an app asks to save. */
@@ -197,8 +371,8 @@ export interface SaveRequest {
   bytes: Uint8Array;
 }
 
-/** Measured bounding rect tuple: [id, x, y, width, height], and how wide and tall what it holds is (scrollWidth, scrollHeight). */
-export type MeasuredBoxTuple = [number, number, number, number, number, number?, number?];
+/** Measured bounding rect tuple: [id, x, y, width, height], plus optional scrollWidth, scrollHeight, offsetLeft, offsetTop. */
+export type MeasuredBoxTuple = [number, number, number, number, number, number?, number?, number?, number?];
 
 /** Resource & execution limits applied to each container Worker. */
 export interface ContainerLimits {
@@ -208,6 +382,12 @@ export interface ContainerLimits {
   turnTimeoutMs?: number;
   /** What the app may keep, its localStorage and its records together, in bytes (default 5 MB: half of what a browser gives the page). */
   storageQuotaBytes?: number;
+  /**
+   * What the app's IndexedDB databases may take, in bytes, where the page keeps them in its own
+   * IndexedDB (default 64 MB). Where the page has none, they are kept in its localStorage and
+   * counted in `storageQuotaBytes` with the rest.
+   */
+  idbQuotaBytes?: number;
 }
 
 /** A ZIPP engine as a host can hand it over: bytes, a compiled module, or an address to fetch. */
@@ -229,6 +409,22 @@ export interface SoftNContainerOptions {
    * Python engine can offer it for the Python tiers and ship no second copy of it.
    */
   engineWasm?: Partial<Record<ZippEngineTier, ZippEngineSupplier>>;
+  /**
+   * Optional host-supplied `BackendTransport` (e.g. for FormLogic multi-user remote backends).
+   * When provided, replaces the local in-browser Backend Worker while preserving the exact
+   * frontend routing, cookie, and virtual navigation contract.
+   */
+  backendTransport?: BackendTransport;
+  /** Optional explicit XDB SQLite WASM module/bytes/URL supplier (overrides `runtimeUrl/engines/xdb-wasm.wasm`). */
+  xdbWasm?: ZippEngineSupplier;
+  /** Optional explicit XDB glue JS URL/path override. */
+  xdbGlueUrl?: string;
+  /** Optional JSON seed overrides keyed by database name (applied on first boot via XDB `seed_json`). */
+  databaseSeeds?: Record<string, string | Record<string, unknown>>;
+  /** Initial virtual URL path to load (default `'/'` for SSR/backend apps or `manifest.main` for static apps). */
+  initialPath?: string;
+  /** Show an isolated virtual folder & script navigation bar in the container frame (default `false`). */
+  virtualNav?: boolean;
   /** Optional custom vendor ESM module map (`specifier -> ESM source or URL`). */
   vendorModules?: Record<string, string>;
   /**
@@ -284,6 +480,8 @@ export interface SoftNContainerOptions {
   onTitleChange?: (title: string) => void;
   /** Error callback. */
   onError?: (error: Error) => void;
+  /** Live startup progress callback (opening archive, loading SQLite/backend WASM, migrations, starting UI). */
+  onStatus?: (status: ContainerBootStatus) => void;
   /** Ready callback once initial scripts + `DOMContentLoaded` complete. */
   onReady?: (info: { manifest: ContainerManifest; engineTier: ZippEngineTier; capabilitiesRequested: Capability[] }) => void;
 }
@@ -296,6 +494,8 @@ export type HostToWorkerMsg =
       manifest: ContainerManifest;
       seed: ShellSeed;
       scripts: ExtractedScript[];
+      /** The page's scripts, for the app's document (each where it was). */
+      placed?: PlacedScript[];
       textFiles: Record<string, string>;
       /** Every other file of the app, as its bytes; the Worker writes one out as base64 when a script reads it. */
       binaryFiles: Record<string, Uint8Array>;
@@ -308,7 +508,21 @@ export type HostToWorkerMsg =
       grantedCapabilities: Capability[];
       permissions: ContainerPermissions;
       initialStorage: Record<string, string>;
+      initialSessionStorage?: Record<string, string>;
       initialDbRecords: Record<string, unknown[]>;
+      /** What the app's IndexedDB databases were kept as: each a text, by a name of the app's side's own making. */
+      initialIdb?: Record<string, string>;
+      /** Whether they are kept apart from the app's localStorage (in the page's IndexedDB), held to `idbQuotaBytes` rather than counted in `storageQuotaBytes`. */
+      idbApart?: boolean;
+      /** Full-stack backend routing metadata (frontend worker routes matching URLs via host `BackendTransport`). */
+      backendRouting?: {
+        enabled: boolean;
+        mode: 'api' | 'ssr';
+        routes: string[];
+        interceptOrigins: string[];
+      };
+      /** Whether frontend `softn:sqlite` host RPC is enabled (when container declares `databases`). */
+      hasSqlite?: boolean;
       limits: Required<ContainerLimits>;
     }
   | {
@@ -338,6 +552,16 @@ export type HostToWorkerMsg =
       result?: unknown;
       error?: string;
     }
+  /** Live push event from a backend-routed WebSocket (`BackendTransport.openWebSocket`). */
+  | { type: 'ws-event'; id: string; event: BackendWsEvent }
+  /** What another tab keeps for the same app changed: a key of its localStorage, or a part of an IndexedDB database (null: removed). */
+  | { type: 'storage-changed'; area: 'ls' | 'idb'; key: string; value: string | null }
+  /** This tab holds an IndexedDB database it asked for (`idb-hold`): its parts that changed since, as kept now (null: removed). */
+  | { type: 'idb-held'; id: number; parts: Record<string, string | null> }
+  /** Parts of the app's IndexedDB another tab (or the same app elsewhere in this page) kept, together: taken in in one turn. */
+  | { type: 'idb-changed'; parts: Record<string, string | null> }
+  /** Whether the page kept the parts of the app's IndexedDB written in a batch (`idb-writes`): a transaction is complete only once they are. */
+  | { type: 'idb-kept'; id: number; ok: boolean }
   /** The app is not on screen (`pause`) or is again (`resume`): its timers wait meanwhile. */
   | { type: 'pause' }
   | { type: 'resume' }
@@ -348,9 +572,25 @@ export type HostToWorkerMsg =
 /** Messages posted from Worker (`container-worker.js`) to Host (`<softn-app>`). */
 export type WorkerToHostMsg =
   | { type: 'ready' }
-  | { type: 'ops'; ops: ShellOp[]; turnId?: number; eventBits?: number; wantsRaf?: boolean }
+  | { type: 'ops'; ops: ShellOp[]; turnId?: number; eventBits?: number; wantsRaf?: boolean; rafReply?: boolean }
+  /** Zero-copy GPU WebGL/WebGL2 frame rendered on an OffscreenCanvas in the container Worker. */
+  | { type: 'webgl-frame'; canvasId: number; bitmap: ImageBitmap; width: number; height: number }
+  | { type: 'session-route'; urlPath: string }
+  | { type: 'session-storage-write'; op: 'set' | 'remove' | 'clear'; key?: string; value?: string }
   | { type: 'console'; level: 'log' | 'info' | 'warn' | 'error'; text: string }
   | { type: 'storage-write'; op: 'set' | 'remove' | 'clear'; key?: string; value?: string }
   | { type: 'db-write'; collection: string; records: unknown[] }
+  /**
+   * Parts of the app's IndexedDB databases to keep (each its text), or to let go of (null):
+   * all a turn wrote, kept together (a transaction is kept whole or not at all).
+   */
+  | { type: 'idb-writes'; id: number; parts: Record<string, string | null> }
+  /**
+   * The app's side is to write to a database (a transaction that writes, an upgrade, a
+   * deletion): this tab is to hold it, and be told what other tabs kept in it, first. Let go
+   * of (`idb-release`) once nothing here writes to it; what was written meanwhile is kept then.
+   */
+  | { type: 'idb-hold'; id: number; name: string }
+  | { type: 'idb-release'; name: string }
   | { type: 'host-request'; requestId: number; kind: string; payload: Record<string, unknown> }
   | { type: 'error'; message: string; phase: string; fatal: boolean };

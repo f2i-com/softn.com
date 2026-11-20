@@ -172,3 +172,49 @@ export function renderSaveBar(appName: string, fileName: string, bytes: number, 
   bar.append(msg, actions);
   return bar;
 }
+
+/** The most of the reason the stopped bar shows: the rest is in the console. */
+const SHOWN_REASON_LENGTH = 240;
+
+/**
+ * The bar that says an app has stopped, and why, with a way to start it again.
+ *
+ * An app stops when what runs it can go no further: a turn of its script that does not end,
+ * a ceiling the engine keeps that the app passed. The page it drew stays as it was, and
+ * stays still: without a word on the page, a person saw an app that no longer answered
+ * them, and the reason was only in the developer's console.
+ */
+export function renderStoppedBar(appName: string, reason: string, onRestart: () => void): HTMLElement {
+  const bar = document.createElement('div');
+  bar.setAttribute('data-softn-stopped-bar', '');
+  bar.setAttribute('role', 'alert');
+  bar.style.cssText = [
+    'display:flex',
+    'align-items:center',
+    'justify-content:space-between',
+    'flex-wrap:wrap',
+    'gap:0.75rem',
+    'padding:0.55rem 0.9rem',
+    'background:#450a0a',
+    'color:#fef2f2',
+    'border-bottom:1px solid #7f1d1d',
+    'font-size:0.8125rem',
+    'font-family:system-ui,-apple-system,sans-serif',
+  ].join(';');
+  const msg = document.createElement('span');
+  msg.style.cssText = 'overflow-wrap:anywhere;min-width:0';
+  const shown = Array.from(reason.replace(/^The app stopped:\s*/i, ''));
+  const text = shown.length > SHOWN_REASON_LENGTH ? `${shown.slice(0, SHOWN_REASON_LENGTH - 1).join('')}…` : shown.join('');
+  msg.append(ownWord(appName), ' stopped: ', ownWord(text));
+  const again = document.createElement('button');
+  again.type = 'button';
+  again.textContent = 'Start again';
+  again.setAttribute('data-softn-stopped-restart', '');
+  again.style.cssText = 'padding:0.28rem 0.7rem;border-radius:6px;border:none;background:#fef2f2;color:#450a0a;font-size:0.78rem;font-weight:600;cursor:pointer';
+  again.addEventListener('click', () => {
+    bar.remove();
+    onRestart();
+  });
+  bar.append(msg, again);
+  return bar;
+}

@@ -10,7 +10,16 @@
 
 import { openBundleArchive, sha256Hex, type BundleArchive } from '@softn/bundle-format';
 import { inspectDeclaration, type Capability } from '@softn/bundle-format/capabilities';
-import type { ContainerManifest, ContainerMode, ContainerPermissions } from './types';
+import { parseHtaccess, type ParsedHtaccess } from './htaccess';
+import type {
+  BackendConfig,
+  BackendRuntimeKind,
+  ContainerManifest,
+  ContainerMode,
+  ContainerPermissions,
+  DatabaseConfig,
+  VirtualDirEntry,
+} from './types';
 
 export const VIRTUAL_ORIGIN = 'https://app.softn.local';
 
@@ -23,7 +32,9 @@ const MAX_RUNTIME_BLOB_BYTES = 64 * 1024 * 1024;
 
 const TEXT_EXTENSIONS = new Set([
   'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'mts', 'tsx', 'jsx',
-  'py', 'json', 'importmap', 'svg', 'txt', 'md', 'csv', 'xml', 'ui',
+  'py', 'php', 'phtml', 'inc', 'tpl', 'rs', 'toml', 'sql', 'htaccess',
+  'ini', 'env', 'yml', 'yaml', 'lock',
+  'json', 'importmap', 'svg', 'txt', 'md', 'csv', 'xml', 'ui',
   'logic', 'xdb', 'wgsl', 'glsl', 'vert', 'frag', 'obj', 'mtl', 'gltf',
 ]);
 
@@ -141,13 +152,64 @@ export function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
+/** A piece of a blob as the app's side hands it over: base64, and (for a part of a file it picked) which of its bytes are the piece's. */
+export interface BlobPiece {
+  base64: string;
+  skip?: number;
+  take?: number;
+}
+
+/**
+ * A blob's bytes from what the app's side hands over: one text of base64, or pieces of it
+ * with the bytes of each to keep. (A part of a file the app picked is kept there as the text
+ * the file came as, and made bytes here, where that is quick.) Null when it is neither.
+ */
+export function piecesToBytes(given: unknown): Uint8Array | null {
+  if (typeof given === 'string') return base64ToBytes(given);
+  if (!Array.isArray(given)) return null;
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (const piece of given as unknown[]) {
+    if (!piece || typeof piece !== 'object' || typeof (piece as BlobPiece).base64 !== 'string') return null;
+    const { base64, skip, take } = piece as BlobPiece;
+    const bytes = base64ToBytes(base64);
+    const from = typeof skip === 'number' && skip > 0 ? Math.floor(skip) : 0;
+    const length = typeof take === 'number' && take >= 0 ? Math.floor(take) : bytes.length - from;
+    const part = bytes.subarray(from, from + length);
+    parts.push(part);
+    size += part.length;
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
+/** How many bytes the base64 of what `piecesToBytes` is handed comes to at most, without decoding it. */
+export function piecesSize(given: unknown): number {
+  if (typeof given === 'string') return Math.ceil((given.length * 3) / 4);
+  if (!Array.isArray(given)) return 0;
+  let size = 0;
+  for (const piece of given as unknown[]) if (piece && typeof (piece as BlobPiece).base64 === 'string') size += Math.ceil(((piece as BlobPiece).base64.length * 3) / 4);
+  return size;
+}
+
 /**
  * Detect when all archive entries sit inside a single top-level wrapper folder
  * (e.g. `zip -r app.softn dist/`) with no root-level `manifest.json` or `index.html`.
  */
 function detectSingleRootPrefix(names: readonly string[]): string {
   if (names.length === 0) return '';
-  if (names.includes('manifest.json') || names.includes('index.html') || names.includes('ui/main.ui')) {
+  if (
+    names.includes('manifest.json') ||
+    names.includes('index.html') ||
+    names.includes('index.php') ||
+    names.includes('Cargo.toml') ||
+    names.includes('ui/main.ui')
+  ) {
     return '';
   }
   let candidate: string | null = null;
@@ -323,9 +385,33 @@ export class ContainerArchive {
     });
   }
 
+  /** Resolve a path in this archive, falling back to `manifest.frontendRoot` if configured. */
+  resolveExistingPath(path: string, basePath?: string): string | null {
+    const resolved = resolveVfsPath(path, basePath);
+    if (resolved && this.normalizedNames.has(resolved)) return resolved;
+    const feRoot = this.manifest.frontendRoot
+      ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      : '';
+    if (feRoot && resolved && !resolved.startsWith(`${feRoot}/`)) {
+      const prefixed = resolveVfsPath(`${feRoot}/${resolved}`);
+      if (prefixed && this.normalizedNames.has(prefixed)) return prefixed;
+    }
+    return null;
+  }
+
+  /** Map a normalized archive path into the frontend worker's VFS namespace (stripping `frontendRoot`). */
+  toFrontendVfsPath(archivePath: string): string {
+    const feRoot = this.manifest.frontendRoot
+      ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
+      : '';
+    if (feRoot && archivePath.startsWith(feRoot)) {
+      return archivePath.slice(feRoot.length);
+    }
+    return archivePath;
+  }
+
   has(path: string): boolean {
-    const resolved = resolveVfsPath(path);
-    return resolved !== null && this.normalizedNames.has(resolved);
+    return this.resolveExistingPath(path) !== null;
   }
 
   names(): string[] {
@@ -333,8 +419,8 @@ export class ContainerArchive {
   }
 
   readText(path: string, basePath?: string): string | null {
-    const resolved = resolveVfsPath(path, basePath);
-    if (!resolved || !this.normalizedNames.has(resolved)) return null;
+    const resolved = this.resolveExistingPath(path, basePath);
+    if (!resolved) return null;
     const cached = this.textCache.get(resolved);
     if (cached !== undefined) return cached;
     const bytes = this.readBytes(resolved);
@@ -346,8 +432,8 @@ export class ContainerArchive {
 
   readBytes(path: string, basePath?: string): Uint8Array | null {
     if (this.disposed) return null;
-    const resolved = resolveVfsPath(path, basePath);
-    if (!resolved || !this.normalizedNames.has(resolved)) return null;
+    const resolved = this.resolveExistingPath(path, basePath);
+    if (!resolved) return null;
     const cachedBin = this.binaryCache.get(resolved);
     if (cachedBin) return cachedBin;
     const cachedText = this.textCache.get(resolved);
@@ -378,8 +464,8 @@ export class ContainerArchive {
    */
   getBlobUrl(path: string, basePath?: string): string | null {
     if (this.disposed || typeof URL.createObjectURL !== 'function') return null;
-    const resolved = resolveVfsPath(path, basePath);
-    if (!resolved || !this.normalizedNames.has(resolved)) return null;
+    const resolved = this.resolveExistingPath(path, basePath);
+    if (!resolved) return null;
     const existing = this.blobUrls.get(resolved);
     if (existing) return existing;
     const bytes = this.readBytes(resolved);
@@ -453,7 +539,60 @@ export class ContainerArchive {
    * makes the text when a script asks for a file.
    */
   exportWorkerVfs(): { textFiles: Record<string, string>; binaryFiles: Record<string, Uint8Array> } {
-    // No prototype: a file may be called `constructor` or `__proto__`.
+    return this.exportFrontendVfs();
+  }
+
+  /**
+   * Partitioned VFS strictly for the untrusted Frontend Worker.
+   *
+   * Security invariant: when a container includes an embedded backend or SQLite database,
+   * backend source files (`.php`, `.rs`, `Cargo.toml`, `.htaccess`, `server/`, `backend/`),
+   * secrets (`.env`), and raw database/seed files (`.db`, `.sqlite`, `.sql`, `seed.json`)
+   * are NEVER exposed to the frontend sandbox.
+   *
+   * If `manifest.frontendRoot` is set (e.g. `"app/dist"`), files under that prefix are
+   * mounted at the frontend virtual root (`"index.html"`, `"assets/..."`).
+   */
+  exportFrontendVfs(): { textFiles: Record<string, string>; binaryFiles: Record<string, Uint8Array> } {
+    const textFiles: Record<string, string> = Object.create(null);
+    const binaryFiles: Record<string, Uint8Array> = Object.create(null);
+    const feRoot = this.manifest.frontendRoot
+      ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
+      : '';
+    const hasBackend = Boolean(this.manifest.backend);
+    const backendRoot = this.manifest.backend?.root
+      ? this.manifest.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
+      : '';
+
+    for (const name of this.normalizedNames) {
+      if (isBackendPrivatePath(name, hasBackend, backendRoot)) continue;
+      if (feRoot) {
+        if (!name.startsWith(feRoot)) continue;
+        const mapped = name.slice(feRoot.length);
+        if (!mapped) continue;
+        if (this.textCache.has(name)) {
+          textFiles[mapped] = this.textCache.get(name)!;
+        } else {
+          const bytes = this.readBytes(name);
+          if (bytes) binaryFiles[mapped] = bytes;
+        }
+      } else {
+        if (this.textCache.has(name)) {
+          textFiles[name] = this.textCache.get(name)!;
+        } else {
+          const bytes = this.readBytes(name);
+          if (bytes) binaryFiles[name] = bytes;
+        }
+      }
+    }
+    return { textFiles, binaryFiles };
+  }
+
+  /**
+   * Complete VFS for the isolated Backend Worker (includes backend source, `.htaccess`,
+   * bundled `.db` / `.sql` / `seed.json`, and static assets for PHP/SSR serving).
+   */
+  exportBackendVfs(): { textFiles: Record<string, string>; binaryFiles: Record<string, Uint8Array> } {
     const textFiles: Record<string, string> = Object.create(null);
     const binaryFiles: Record<string, Uint8Array> = Object.create(null);
     for (const name of this.normalizedNames) {
@@ -465,6 +604,101 @@ export class ContainerArchive {
       }
     }
     return { textFiles, binaryFiles };
+  }
+
+  /** Parse all `.htaccess` files in this archive keyed by directory prefix (`""` for root). */
+  getHtaccessFiles(): Map<string, ParsedHtaccess> {
+    const out = new Map<string, ParsedHtaccess>();
+    for (const name of this.normalizedNames) {
+      if (name === '.htaccess' || name.endsWith('/.htaccess')) {
+        const text = this.readText(name);
+        if (text !== null) {
+          const dirPrefix = name === '.htaccess' ? '' : name.slice(0, -'/.htaccess'.length);
+          out.set(dirPrefix, parseHtaccess(text, dirPrefix));
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * List a virtual directory inside the container `.zip` archive (for virtual folder navigation
+   * of scripts, pages, and folders).
+   */
+  listVirtualDirectory(virtualPath = '/', options?: { includeHidden?: boolean; includePrivate?: boolean }): VirtualDirEntry[] {
+    const cleanDir = virtualPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const prefix = cleanDir ? `${cleanDir}/` : '';
+    const includeHidden = options?.includeHidden ?? false;
+    const includePrivate = options?.includePrivate ?? true;
+    const hasBackend = Boolean(this.manifest.backend);
+    const backendRoot = this.manifest.backend?.root
+      ? this.manifest.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
+      : '';
+
+    const dirs = new Set<string>();
+    const files: VirtualDirEntry[] = [];
+
+    for (const name of this.normalizedNames) {
+      if (prefix && !name.startsWith(prefix)) continue;
+      const rest = prefix ? name.slice(prefix.length) : name;
+      if (!rest) continue;
+      const slash = rest.indexOf('/');
+      if (slash >= 0) {
+        const dirName = rest.slice(0, slash);
+        if (!includeHidden && dirName.startsWith('.')) continue;
+        dirs.add(dirName);
+      } else {
+        if (!includeHidden && rest.startsWith('.')) continue;
+        if (!includePrivate && isBackendPrivatePath(name, hasBackend, backendRoot)) continue;
+        const ext = extOf(rest);
+        const navigable = ext === 'php' || ext === 'phtml' || ext === 'html' || ext === 'htm';
+        const textVal = this.textCache.get(name);
+        const binVal = this.binaryCache.get(name);
+        files.push({
+          name: rest,
+          path: name,
+          urlPath: `/${name}`,
+          kind: 'file',
+          navigable,
+          ext: ext || undefined,
+          size: textVal !== undefined ? textVal.length : binVal?.byteLength,
+        });
+      }
+    }
+
+    const dirEntries: VirtualDirEntry[] = [...dirs]
+      .sort((a, b) => a.localeCompare(b))
+      .map((dirName) => {
+        const full = prefix ? `${prefix}${dirName}` : dirName;
+        return {
+          name: dirName,
+          path: full,
+          urlPath: `/${full}/`,
+          kind: 'dir',
+          navigable: true,
+        };
+      });
+
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    return [...dirEntries, ...files];
+  }
+
+  /** Resolve a frontend asset path (respecting `manifest.frontendRoot` when present). */
+  resolveFrontendPath(path: string, basePath?: string): string | null {
+    const feRoot = this.manifest.frontendRoot
+      ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      : '';
+    const direct = resolveVfsPath(path, basePath);
+    if (direct && this.normalizedNames.has(direct)) return direct;
+    if (feRoot) {
+      const strippedBase = basePath && basePath.startsWith(`${feRoot}/`) ? basePath.slice(feRoot.length + 1) : basePath;
+      const rel = resolveVfsPath(path, strippedBase);
+      if (rel) {
+        const underRoot = `${feRoot}/${rel}`;
+        if (this.normalizedNames.has(underRoot)) return underRoot;
+      }
+    }
+    return direct;
   }
 
   dispose(): void {
@@ -502,6 +736,156 @@ export function isLegacySoftNMarkup(source: string): boolean {
   return false;
 }
 
+const BACKEND_PRIVATE_EXTENSIONS = new Set([
+  'php', 'phtml', 'inc', 'tpl', 'rs', 'sql', 'db', 'sqlite', 'sqlite3',
+  'htaccess', 'htpasswd', 'env', 'ini', 'bak', 'log', 'sh',
+]);
+
+function isBackendPrivatePath(path: string, hasBackend: boolean, backendRootWithSlash: string): boolean {
+  const lower = path.toLowerCase();
+  const base = lower.slice(lower.lastIndexOf('/') + 1);
+  if (
+    base === '.htaccess' ||
+    base === '.htpasswd' ||
+    base === '.env' ||
+    base.startsWith('.env.') ||
+    base === 'cargo.toml' ||
+    base === 'cargo.lock' ||
+    base.endsWith('.db-wal') ||
+    base.endsWith('.db-shm') ||
+    base.endsWith('.db-journal')
+  ) {
+    return true;
+  }
+  const ext = extOf(lower);
+  if (BACKEND_PRIVATE_EXTENSIONS.has(ext)) {
+    return true;
+  }
+  if (hasBackend && backendRootWithSlash && path.startsWith(backendRootWithSlash)) {
+    return true;
+  }
+  return false;
+}
+
+function parseExplicitBackend(raw: unknown): BackendConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const rt = typeof obj.runtime === 'string' ? obj.runtime.toLowerCase() : '';
+  if (!['rust', 'php', 'javascript', 'typescript', 'python'].includes(rt)) return undefined;
+  const entry = typeof obj.entry === 'string' ? obj.entry.replace(/\\/g, '/').replace(/^\/+/, '') : '';
+  if (!entry) return undefined;
+  const mode = obj.mode === 'ssr' || obj.mode === 'api' ? obj.mode : undefined;
+  const routes = Array.isArray(obj.routes)
+    ? obj.routes.filter((r): r is string => typeof r === 'string')
+    : undefined;
+  const interceptOrigins = Array.isArray(obj.interceptOrigins)
+    ? obj.interceptOrigins.filter((o): o is string => typeof o === 'string')
+    : undefined;
+  const env: Record<string, string> | undefined =
+    obj.env && typeof obj.env === 'object' && !Array.isArray(obj.env)
+      ? Object.fromEntries(
+          Object.entries(obj.env as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')])
+        )
+      : undefined;
+  const root = typeof obj.root === 'string' ? obj.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : undefined;
+  const phpMode = obj.phpMode === 'worker' || obj.phpMode === 'sapi' ? obj.phpMode : undefined;
+  return {
+    runtime: rt as BackendRuntimeKind,
+    entry,
+    root,
+    mode,
+    routes,
+    interceptOrigins,
+    env,
+    phpMode,
+  };
+}
+
+function parseExplicitDatabases(raw: unknown): DatabaseConfig[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: DatabaseConfig[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const obj = item as Record<string, unknown>;
+    const name = typeof obj.name === 'string' && obj.name.trim() ? obj.name.trim() : '';
+    if (!name) continue;
+    out.push({
+      name,
+      engine: 'sqlite',
+      file: typeof obj.file === 'string' ? obj.file.replace(/\\/g, '/').replace(/^\/+/, '') : undefined,
+      seedSql: typeof obj.seedSql === 'string' ? obj.seedSql : undefined,
+      seedJson:
+        typeof obj.seedJson === 'string' || (obj.seedJson && typeof obj.seedJson === 'object' && !Array.isArray(obj.seedJson))
+          ? (obj.seedJson as string | Record<string, unknown>)
+          : undefined,
+      persist: typeof obj.persist === 'boolean' ? obj.persist : true,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function isLikelyXdbSeedJson(raw: string | undefined): boolean {
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const obj = parsed as Record<string, unknown>;
+    if (
+      Array.isArray(obj.schema) ||
+      Array.isArray(obj.statements) ||
+      (obj.tables && typeof obj.tables === 'object' && !Array.isArray(obj.tables))
+    ) {
+      return true;
+    }
+    const entries = Object.entries(obj);
+    return (
+      entries.length > 0 &&
+      entries.every(
+        ([, v]) =>
+          Array.isArray(v) &&
+          v.every((row) => row !== null && typeof row === 'object' && !Array.isArray(row))
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function discoverDatabases(names: ReadonlySet<string>, texts: ReadonlyMap<string, string>): DatabaseConfig[] | undefined {
+  const dbFiles = [...names].filter((n) => /\.(?:db|sqlite|sqlite3)$/i.test(n)).sort();
+  const seedSql = ['db/schema.sql', 'database/schema.sql', 'schema.sql', 'db/seed.sql', 'seed.sql'].find((p) => names.has(p));
+  const seedJson = ['db/seed.json', 'database/seed.json', 'database.seed.json', 'seed.json'].find(
+    (p) => names.has(p) && isLikelyXdbSeedJson(texts.get(p))
+  );
+
+  if (dbFiles.length > 0) {
+    return dbFiles.map((file, idx) => {
+      const base = file.slice(file.lastIndexOf('/') + 1).replace(/\.(?:db|sqlite|sqlite3)$/i, '');
+      return {
+        name: base || `db${idx}`,
+        engine: 'sqlite',
+        file,
+        seedSql: idx === 0 ? seedSql : undefined,
+        seedJson: idx === 0 ? seedJson : undefined,
+        persist: true,
+      };
+    });
+  }
+  if (seedSql || seedJson) {
+    return [
+      {
+        name: 'app',
+        engine: 'sqlite',
+        file: 'app.db',
+        seedSql,
+        seedJson,
+        persist: true,
+      },
+    ];
+  }
+  return undefined;
+}
+
 function buildContainerMeta(
   names: ReadonlySet<string>,
   texts: ReadonlyMap<string, string>,
@@ -525,12 +909,116 @@ function buildContainerMeta(
     }
   }
 
-  // Entry file discovery (explicit manifest -> root index.html -> sole root .html -> legacy .ui)
+  // Parse explicit backend / frontendRoot / databases from manifest.json
+  let backend = parseExplicitBackend(rawManifest?.backend);
+  let frontendRoot =
+    typeof rawManifest?.frontendRoot === 'string'
+      ? rawManifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      : typeof (rawManifest?.frontend as Record<string, unknown> | undefined)?.root === 'string'
+        ? String((rawManifest?.frontend as Record<string, unknown>).root).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+        : undefined;
+  const databases = parseExplicitDatabases(rawManifest?.databases) ?? discoverDatabases(names, texts);
+
+  // Zero-config backend discovery when manifest.json doesn't declare one
+  if (!backend) {
+    const rustEntry = ['server/src/main.rs', 'backend/src/main.rs', 'src/main.rs'].find((p) => names.has(p));
+    const hasRootHtml = names.has('index.html') || names.has('app.html');
+    const nestedFeIndex = [
+      'app/dist/index.html',
+      'frontend/dist/index.html',
+      'client/dist/index.html',
+      'web/dist/index.html',
+      'dist/index.html',
+      'app/index.html',
+      'frontend/index.html',
+      'client/index.html',
+      'web/index.html',
+      'public/index.html',
+    ].find((p) => names.has(p));
+
+    if (rustEntry) {
+      const root = rustEntry.includes('/') ? rustEntry.slice(0, rustEntry.indexOf('/src/')) : '';
+      const cleanRoot = rustEntry.startsWith('src/') ? '' : root;
+      backend = {
+        runtime: 'rust',
+        entry: rustEntry,
+        root: cleanRoot,
+        mode: hasRootHtml || nestedFeIndex ? 'api' : 'ssr',
+        routes: hasRootHtml || nestedFeIndex ? ['/api/', '/ws'] : ['/'],
+        interceptOrigins: ['http://localhost:8080', 'http://127.0.0.1:8080'],
+      };
+      if (!frontendRoot && !hasRootHtml && nestedFeIndex) {
+        frontendRoot = nestedFeIndex.slice(0, -'/index.html'.length);
+      }
+    } else if (!hasRootHtml && (names.has('index.php') || [...names].some((n) => !n.includes('/') && /\.php$/i.test(n)))) {
+      const phpEntry = names.has('index.php')
+        ? 'index.php'
+        : [...names].filter((n) => !n.includes('/') && /\.php$/i.test(n)).sort()[0];
+      backend = {
+        runtime: 'php',
+        entry: phpEntry,
+        root: '',
+        mode: 'ssr',
+        routes: ['/'],
+        phpMode: 'sapi',
+      };
+    } else {
+      const phpBackendEntry = ['backend/index.php', 'server/index.php', 'api/index.php'].find((p) => names.has(p))
+        ?? [...names].filter((n) => /^api\/[^/]+\.php$/i.test(n)).sort()[0];
+      const jsBackendEntry = ['backend/server.js', 'backend/index.js', 'server/index.js', 'server/server.js'].find((p) => names.has(p));
+      const tsBackendEntry = ['backend/server.ts', 'backend/index.ts', 'server/index.ts', 'server/server.ts'].find((p) => names.has(p));
+      const pyBackendEntry = ['backend/app.py', 'backend/server.py', 'server/app.py'].find((p) => names.has(p));
+      if (phpBackendEntry) {
+        backend = {
+          runtime: 'php',
+          entry: phpBackendEntry,
+          root: phpBackendEntry.includes('/') ? phpBackendEntry.slice(0, phpBackendEntry.indexOf('/')) : '',
+          mode: 'api',
+          routes: ['/api/'],
+          phpMode: 'sapi',
+        };
+      } else if (tsBackendEntry) {
+        backend = {
+          runtime: 'typescript',
+          entry: tsBackendEntry,
+          root: tsBackendEntry.slice(0, tsBackendEntry.indexOf('/')),
+          mode: 'api',
+          routes: ['/api/'],
+        };
+      } else if (jsBackendEntry) {
+        backend = {
+          runtime: 'javascript',
+          entry: jsBackendEntry,
+          root: jsBackendEntry.slice(0, jsBackendEntry.indexOf('/')),
+          mode: 'api',
+          routes: ['/api/'],
+        };
+      } else if (pyBackendEntry) {
+        backend = {
+          runtime: 'python',
+          entry: pyBackendEntry,
+          root: pyBackendEntry.slice(0, pyBackendEntry.indexOf('/')),
+          mode: 'api',
+          routes: ['/api/'],
+        };
+      }
+    }
+  }
+
+  // Entry file discovery (explicit manifest -> frontendRoot/index.html -> root index.html -> SSR backend -> sole root .html -> legacy .ui)
   let main = typeof rawManifest?.main === 'string' ? rawManifest.main.replace(/^\/+/, '') : '';
+  let ssrEntry = false;
   if (!main || !names.has(main)) {
-    if (names.has('index.html')) main = 'index.html';
-    else if (names.has('app.html')) main = 'app.html';
-    else {
+    if (frontendRoot && names.has(`${frontendRoot}/index.html`)) {
+      main = `${frontendRoot}/index.html`;
+    } else if (names.has('index.html')) {
+      main = 'index.html';
+    } else if (names.has('app.html')) {
+      main = 'app.html';
+    } else if (backend && (backend.mode === 'ssr' || backend.runtime === 'php')) {
+      main = backend.entry;
+      ssrEntry = true;
+    } else {
       const rootHtml = [...names].filter((n) => !n.includes('/') && /\.html?$/i.test(n));
       if (rootHtml.length >= 1) main = rootHtml.sort()[0];
       else if (names.has('ui/main.ui')) main = 'ui/main.ui';
@@ -538,25 +1026,32 @@ function buildContainerMeta(
       else {
         const anyHtml = [...names].filter((n) => /\.html?$/i.test(n)).sort();
         if (anyHtml.length > 0) main = anyHtml[0];
+        else if (backend) {
+          main = backend.entry;
+          ssrEntry = true;
+        }
       }
     }
+  } else if (backend && (/\.php$/i.test(main) || (backend.mode === 'ssr' && main === backend.entry))) {
+    ssrEntry = true;
   }
 
   if (!main || !names.has(main)) {
-    throw new Error('Container has no entry point (expected index.html or manifest.json "main")');
+    throw new Error('Container has no entry point (expected index.html, index.php, or manifest.json "main")');
   }
 
-  const rawEntryText = texts.get(main) ?? '';
+  const rawEntryText = ssrEntry ? '' : (texts.get(main) ?? '');
   const explicitV2 =
     rawManifest === null ||
     rawManifest.engine === 2 ||
-    rawManifest.container === true;
+    rawManifest.container === true ||
+    Boolean(backend);
   const mode: ContainerMode = /\.ui$/i.test(main)
     ? 'legacy-ui'
     : !explicitV2 && isLegacySoftNMarkup(rawEntryText)
       ? 'legacy-ui'
       : 'web';
-  const entryHtml = mode === 'web' ? rawEntryText : '';
+  const entryHtml = mode === 'web' && !ssrEntry ? rawEntryText : '';
   const htmlMeta = entryHtml ? extractHtmlHeadMeta(entryHtml) : { importMap: {} };
 
   const manifestImports: Record<string, string> = { ...htmlMeta.importMap };
@@ -618,6 +1113,10 @@ function buildContainerMeta(
     importMap: manifestImports,
     pythonPackages,
     theme: themeMode,
+    backend,
+    frontendRoot,
+    databases,
+    ssrEntry: ssrEntry || undefined,
     raw: rawManifest ?? undefined,
   };
 

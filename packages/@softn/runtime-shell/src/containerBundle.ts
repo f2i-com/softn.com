@@ -131,7 +131,12 @@ export function unwrapContainerZipEntries(
   if (
     !textFiles.has(`${prefix}manifest.json`) &&
     !textFiles.has(`${prefix}index.html`) &&
-    !textFiles.has(`${prefix}app.html`)
+    !textFiles.has(`${prefix}app.html`) &&
+    !textFiles.has(`${prefix}index.php`) &&
+    !textFiles.has(`${prefix}server/src/main.rs`) &&
+    !textFiles.has(`${prefix}backend/src/main.rs`) &&
+    !textFiles.has(`${prefix}app/dist/index.html`) &&
+    !textFiles.has(`${prefix}frontend/dist/index.html`)
   ) {
     return { textFiles, binaryFiles, unwrappedPrefix: null };
   }
@@ -190,26 +195,56 @@ export function detectWebContainer(
   const hasAny = (p: string) => textFiles.has(p) || Boolean(hasBinary?.(p));
 
   if (!textFiles.has('manifest.json')) {
-    // No manifest: a zipped folder of a web app, opened at its page (the one rule for which
-    // page is @softn/bundle-format's zeroConfigEntry).
-    const htmlEntry = zeroConfigEntry(textFiles.keys());
-    if (!htmlEntry) {
-      return { isWebContainer: false };
-    }
-    const html = textFiles.get(htmlEntry) ?? '';
+    // No manifest: a zipped folder of a web app or full-stack app (HTML/JS, PHP, or Rust+Web).
     const cleanFallback = fallbackName?.replace(/\.(?:softn|zip)$/i, '').trim() || 'Web App';
-    const title = inferTitleFromHtml(html) || cleanFallback;
-    const icon = discoverHtmlIcon(html, hasAny);
-    return {
-      isWebContainer: true,
-      inferredManifest: {
-        name: title,
-        version: '1.0.0',
-        main: htmlEntry,
-        ...(icon ? { icon } : {}),
-        config: { execution: 'worker' },
-      },
-    };
+    const htmlEntry =
+      zeroConfigEntry(textFiles.keys()) ??
+      [
+        'app/dist/index.html',
+        'frontend/dist/index.html',
+        'client/dist/index.html',
+        'web/dist/index.html',
+        'dist/index.html',
+        'app/index.html',
+        'frontend/index.html',
+        'client/index.html',
+        'web/index.html',
+        'public/index.html',
+      ].find((p) => textFiles.has(p));
+    const hasRustBackend = ['server/src/main.rs', 'backend/src/main.rs', 'src/main.rs'].some((p) => textFiles.has(p));
+    const phpEntry = textFiles.has('index.php')
+      ? 'index.php'
+      : [...textFiles.keys()].filter((k) => !k.includes('/') && /\.php$/i.test(k)).sort()[0];
+
+    if (htmlEntry) {
+      const html = textFiles.get(htmlEntry) ?? '';
+      const title = inferTitleFromHtml(html) || cleanFallback;
+      const fePrefix = htmlEntry.includes('/') ? htmlEntry.slice(0, htmlEntry.lastIndexOf('/') + 1) : '';
+      const icon = discoverHtmlIcon(html, (p) => hasAny(p) || (fePrefix ? hasAny(fePrefix + p) : false));
+      const resolvedIcon = icon && !hasAny(icon) && fePrefix && hasAny(fePrefix + icon) ? fePrefix + icon : icon;
+      return {
+        isWebContainer: true,
+        inferredManifest: {
+          name: title,
+          version: '1.0.0',
+          main: htmlEntry,
+          ...(resolvedIcon ? { icon: resolvedIcon } : {}),
+          config: { execution: 'worker' },
+        },
+      };
+    }
+    if (phpEntry || hasRustBackend) {
+      return {
+        isWebContainer: true,
+        inferredManifest: {
+          name: cleanFallback,
+          version: '1.0.0',
+          main: phpEntry ?? 'index.html',
+          config: { execution: 'worker' },
+        },
+      };
+    }
+    return { isWebContainer: false };
   }
 
   let raw: Record<string, unknown>;
@@ -223,8 +258,13 @@ export function detectWebContainer(
     return { isWebContainer: false };
   }
 
+  // Full-stack manifest with explicit `backend` always runs in `@softn/container`.
+  if (raw.backend && typeof raw.backend === 'object' && !Array.isArray(raw.backend)) {
+    return { isWebContainer: true };
+  }
+
   const main = typeof raw.main === 'string' ? raw.main : '';
-  if (!main || !/\.html?$/i.test(main) || !textFiles.has(main)) {
+  if (!main || !/\.(?:html?|php|phtml)$/i.test(main) || !textFiles.has(main)) {
     return { isWebContainer: false };
   }
 
