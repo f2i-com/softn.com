@@ -2,53 +2,101 @@
 
 # SoftN
 
-Build, edit and run sandboxed JavaScript apps with a lightweight WebAssembly runtime.
+**Full-stack sandboxed web apps — frontend, backend, and SQLite database — running right inside your browser.**
 
-[Choose a starter](https://softn.com/#create) · [AI Studio](https://softn.com/studio/) · [Builder](https://softn.com/builder/) · [Runtime](https://softn.com/web/) · [Run locally](#get-started) · [Hosting options](#choose-where-it-runs)
+[Full-stack in the browser](#full-stack-sandbox-in-the-browser) · [Choose a starter](https://softn.com/#create) · [AI Studio](https://softn.com/studio/) · [Builder](https://softn.com/builder/) · [Runtime](https://softn.com/web/) · [Run locally](#get-started) · [Hosting options](#choose-where-it-runs)
 
 </div>
 
-SoftN runs Vanilla JavaScript, React and Vue apps from a folder or ZIP. A Web Worker runs the app in the ZIPP WebAssembly VM and renders its interface in a closed shadow root. A portable `.softn` archive can carry the editable project, local assets, data seeds and permission declarations. Classic `.ui` apps use a renderer and component library loaded on demand. [How the container works](#softn-v2-web-app-containers)
+SoftN packages an entire web application — **any frontend** (**HTML/JS**, **React**, **Vue**, or visual **`.ui`**), an optional **sandboxed backend** (**PHP 8**, **JavaScript/TypeScript**, **Rust**, or **Python**), a **SQLite 3** or local **XDB** database, and explicit permission rules — into one portable `.softn` file.
+
+Open it in the browser and the whole stack runs **completely locally inside WebAssembly Workers** powered by [ZIPP](https://github.com/f2i-com/zipp.org) (`v0.0.37`) and **XDB SQLite 3 WASM** (`v0.1.0`) — no server, no Docker, no install. When you are ready to share it with a team, deploy the **exact same `.softn` file** multi-user on **FormLogic**, `softn-server`, or PHP hosting inside ZIPP `safe-sandbox` with **zero app code changes**.
+
+---
+
+## Full-stack sandbox in the browser
+
+Think of a `.softn` bundle like a tiny, portable container for a web app:
+
+```text
+  Your Browser Tab (Zero Server Required)
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  Frontend UI  (React · Vue · HTML/JS · or classic .ui)              │
+  │  Runs in a ZIPP WASM Worker · renders inside a closed Shadow DOM    │
+  └──────────────────────────┬──────────────────────────────────────────┘
+                             │  standard fetch('/api/orders')
+                             ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  Sandboxed Backend  (PHP 8 · JS/TS · Rust · or Python)              │
+  │  Runs in an isolated ZIPP Backend Worker · virtual cookies & VFS    │
+  └──────────────────────────┬──────────────────────────────────────────┘
+                             │  standard PDO('sqlite:app.db') / sqlite
+                             ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  XDB SQLite 3 WASM Database  (persisted locally in IndexedDB)       │
+  │  Same bundle scales multi-user on FormLogic / softn-server          │
+  └─────────────────────────────────────────────────────────────────────┘
+```
+
+### 1. Run a real full-stack app locally — zero backend setup
+
+![Order Desk full-stack PHP 8 and SQLite 3 app running live inside SoftN AI Studio completely in the browser](docs/readme-assets/fullstack-preview.jpg)
+
+Above is **Order Desk**, a full-stack app running inside **SoftN AI Studio** with no external server. Standard browser JavaScript (`app.js`) — or your own **React**, **Vue**, or **`.ui`** frontend — calls `fetch('/api/orders')`. SoftN routes that request straight to `backend/index.php` running inside a **PHP 8.4 ZIPP WebAssembly Worker**, which queries and updates the **SQLite 3** database in IndexedDB. Creating a new order (`ORD-1046 · Summit Bikes`) runs a real `POST /api/orders` → PHP PDO → SQLite `INSERT` right in your browser tab.
+
+### 2. Write and edit standard backend code right beside your UI
+
+![Editing backend/index.php with standard PHP 8 PDO SQLite queries inside SoftN AI Studio](docs/readme-assets/fullstack-backend-code.jpg)
+
+No proprietary backend lock-in: write standard **PHP 8** (`new PDO('sqlite:app.db')` or Slim 4), **JavaScript / TypeScript**, **Rust / Axum**, or **Python** handlers alongside your frontend files, and edit them directly in **AI Studio** or **SoftN Builder**. Mix and match freely:
+
+- **Use any frontend with any backend:** React, Vue, plain HTML/JS, and classic `.ui` apps can each use **Local XDB collections**, **FormLogic hosted tables & API**, or a **sandboxed PHP / JS / TS / Rust / Python + SQLite** backend.
+- **Same code locally and in production:** Run offline on a single device in browser WASM Workers, or host multi-user on **FormLogic**, `softn-server`, or `softn-host-php` where every request runs inside **ZIPP `safe-sandbox`** against a shared WAL SQLite database.
+
+### 3. Inspect and edit the SQLite database visually (and with AI)
+
+![SoftN AI Studio Data tab showing the built-in mini-phpMyAdmin SQLite 3 Explorer browsing the orders table](docs/readme-assets/fullstack-sqlite-data.jpg)
+
+Open the **Data** tab in **AI Studio** (directly under **Files**) or **Builder** to inspect and modify your app's **SQLite 3** database with a built-in **mini-phpMyAdmin explorer**:
+
+- **Tables & schema:** Create, alter, or drop tables, columns, and indexes visually.
+- **Live data & SQL console:** Browse, filter, insert, edit, and delete rows, run arbitrary SQL queries, sync edits back to `backend/schema.sql` / `.db` in your bundle, or export `.sql` / `.db`.
+- **AI database tools:** AI Studio's coding agent can also inspect schemas, query tables, run migrations, and update seed data safely while building your app (`sqlite_list_databases`, `sqlite_schema`, `sqlite_query`, `sqlite_execute`).
+
+---
 
 ## Create an app from a starter
 
-SoftN packages full-stack web applications — frontend UI, optional sandboxed backend code (**PHP/Slim 4**, **JavaScript/TypeScript**, **Rust/Axum**, or **Python**), SQLite/XDB data seeds, and capability declarations — into portable `.softn` containers powered by [ZIPP](https://github.com/f2i-com/zipp.org) (`v0.0.37`) and **XDB SQLite 3 WASM** (`v0.1.0`), completely locally in your browser with IndexedDB persistence or hosted multi-user inside ZIPP `safe-sandbox` with zero app code changes.
+Choose **Vanilla JS**, **React**, or **Vue** on [softn.com](https://softn.com/#create) to open a working example directly in **Studio**, **Builder**, or **Runtime** — or create a new full-stack project with one click:
 
-Choose **Vanilla JS**, **React** or **Vue** on the website to open a working example directly in Studio, Builder or Runtime. Try packing an item in **Trail Pack**, changing the coffee dose in **Ratio Bar**, or choosing a palette in **Swatchbook**. Their downloads carry the original `app.js`, `main.jsx` or `App.vue`. [Example source](examples/offline-web-apps)
+1. **AI Studio (`/studio/`):** Pick a framework (**Vanilla JS**, **React**, **Vue**, or classic **`.ui`**) and choose your data/backend mode (**Local collections**, **FormLogic tables & API**, **PHP + SQLite**, **JS API + SQLite**, or **TS API + SQLite**). Works with or without an AI provider (OpenAI, Anthropic, Ollama, LM Studio, or custom).
+2. **SoftN Builder (`/builder/`):** Click **New**, pick a Web starter, Web layout, or Visual `.ui` layout, attach an optional **PHP / JS / TS + SQLite** or **FormLogic** backend, and edit pages, backend scripts, and SQLite tables in one workspace.
+3. **Export & run anywhere:** Click **Export bundle** to download a single `.softn` file. Open it in **Runtime (`/web/`)** for offline use, share it via the directory, or deploy it multi-user.
 
-To create your own project, pick a framework on **Studio**’s welcome screen or dashboard. In **Builder**, choose **New**, select a starter (or a Web layout with an optional PHP/JS/TS + SQLite sandboxed backend) and choose **Create app**. Each starter opens directly in Preview and works without an AI provider.
-
-Plain JavaScript starters keep editable `index.html`, `styles.css` and `app.js`. For component syntax, choose **React JSX** or **Vue SFC** in Studio, or pick the source format under **React** or **Vue** in Builder. Edit `App.jsx` or `App.vue`, then use **Save & preview** in Studio or **Preview** in Builder. Vue supports JavaScript, templates and plain or scoped CSS.
-
-Preview each component format once online in the editor you’ll use offline. Wait for the message confirming that JSX or Vue components are ready to edit offline. Export keeps your source files byte-for-byte alongside generated JavaScript and the local framework library. Reopening the bundle in an editor lets you change the original source again. Runtime runs the generated JavaScript with its usual sandbox and needs no authoring compiler.
-
-Use **Export bundle** in Studio or **Export → Export .softn** in Builder. Open the download in Runtime and wait for **Offline ready** on its Home card. Web starters use the lite engine. Opening a classic `.ui` app downloads its renderer, and offline installation saves the component groups its pages can use.
+Try the checked-in starter examples (**Trail Pack**, **Ratio Bar**, **Swatchbook** — [example source](examples/offline-web-apps)) directly on the website. Their downloads preserve your original editable `app.js`, `App.jsx`, or `App.vue` alongside compiled output so reopening a bundle always lets you edit the original source again.
 
 ## Open your own web app
 
-1. Keep `index.html`, your JavaScript, stylesheets and local dependencies together. For JSX or Vue single-file components, export the project from Studio or Builder. You can also bring the output from your own build.
-2. On **Runtime Home**, choose **Open folder** and select the folder containing the runnable `index.html` (usually `dist/` for a project with a build step). SoftN opens a local copy in the sandbox. Open the folder again to pick up edits.
-3. To share a standard app, zip the folder containing `index.html`. The recipient can use **Open file** to open a `.zip` or `.softn` archive. This also works in browsers that offer only the file picker.
+1. Keep `index.html`, your JavaScript, stylesheets and local dependencies together (or export a JSX / Vue / full-stack project from Studio or Builder, or bring the `dist/` output from your own Vite/React/Vue build).
+2. On **Runtime Home**, choose **Open folder** and select the folder containing `index.html` (usually `dist/`). SoftN opens a local copy in the sandbox.
+3. To share your app, zip the folder containing `index.html` (and any optional `backend/` + `manifest.json`). Recipients can open the `.zip` or `.softn` archive directly in **Runtime**, **Studio**, or **Builder**.
 
-A basic app needs only an HTML entry and its local assets. Bundle framework dependencies with the app. If the app calls an external API, declare the host in `permission.json` so Runtime can ask for access.
-
-For offline use, open the app online and wait for **Offline ready** on its Runtime Home card. The card shows which engine was saved. Try this with the [vanilla hiking checklist, React coffee calculator and Vue palette picker](examples/offline-web-apps). Each keeps your last choice when you disconnect and reopen it.
+A basic frontend app needs only `index.html` and its local assets — no `manifest.json` required. If the app calls an external API, declare the host in `permission.json` so Runtime can ask the user for access first. For offline use, open the app online and wait for **Offline ready** on its Runtime Home card.
 
 When sharing a ZIP of a progressive web app, use `manifest.webmanifest` for its Web App Manifest and update the HTML link to match. SoftN archives reserve a root `manifest.json` for the SoftN manifest. The folder picker also recognises common Web App Manifests at that path and adapts its local copy.
-
-The project is actively developed. The examples, container microkernel, full-stack sandboxed backends, editors, and runtimes are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
 
 ## What you can build
 
 | Capability                     | What it gives you                                                                                                                                                                              |
 | :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Full-Stack Web Containers (v2)** | Package standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip a Vite `dist/` build — together with an optional sandboxed HTTP backend (`php` / Slim 4, `javascript`, `typescript`, `rust`, `python`) and XDB SQLite 3 database in one `.softn` file. |
-| **Sandboxed local & multi-user** | Every `fetch("/api/...")` runs locally in a ZIPP WebAssembly Worker with IndexedDB SQLite — or scales multi-user via FormLogic, `softn-server`, or `softn-host-php`, strictly inside ZIPP `safe-sandbox` (never native OS PHP/Python/shell). |
-| **Pay-as-you-go WASM engines** | Boots on `zipp-javascript-lite.wasm` (~770 KB Brotli) by default and lazily loads `zipp-javascript`, `zipp-typescript`, `zipp-python-base`, `zipp-php`, `zipp-rust` (`ZIPP v0.0.37`), and `xdb-wasm` (`v0.1.0`) only when an app requires them. |
-| **Hosted zero-bundle imports** | Import `'preact'`, `'preact/hooks'`, `'htm'`, `'marked'`, Split-Realm / Native V8 WebGL2 `'three'` + bundled `GLTFLoader`/`MeshoptDecoder` (`THREE.loadGLTF`), `<softn-chart>`, and `<softn-datagrid>` on demand at 0 KB of bundle weight. |
-| **Builder + SQLite Explorer**  | Hybrid IDE for v2 containers and optional v1 `.ui` apps, with a built-in **mini-phpMyAdmin XDB SQLite 3 explorer** (tables, columns, indexes, full CRUD, SQL console, `.sql`/`.db` export, live bundle sync), FormLogic hosted tables, automatic session restore, and toolbar **Clear**. |
-| **AI-assisted creation**       | Studio turns a brief into a full-stack v2 Web App Container (Vanilla/React/Vue or PHP/JS/TS + SQLite) or a classic `.ui` app using OpenAI, Anthropic, local (Ollama / LM Studio), or custom providers — verified headlessly inside the ZIPP sandbox. |
-| **Local-first XDB & security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) and IndexedDB SQLite with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage. [Permissions guide](https://softn.com/docs/permissions/) |
+| **Full-Stack Web Containers (v2)** | Package standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip a Vite React/Vue `dist/` build — together with an optional sandboxed HTTP backend (**PHP 8 / Slim 4**, **JS/TS**, **Rust/Axum**, or **Python**) and **SQLite 3** database in one `.softn` file. |
+| **Any Frontend × Any Backend** | Pair **React**, **Vue**, **HTML/JS**, or classic **`.ui`** pages with **Local XDB collections**, **FormLogic hosted tables & API**, or a **sandboxed PHP/JS/TS/Rust/Python + SQLite** backend. |
+| **Sandboxed Local & Multi-User** | Every `fetch("/api/...")` runs locally in a ZIPP WebAssembly Worker with IndexedDB SQLite — or scales multi-user on **FormLogic**, `softn-server`, or `softn-host-php`, strictly inside **ZIPP `safe-sandbox`** (never native OS PHP/Python/shell). |
+| **Pay-as-you-go WASM Engines** | Boots on `zipp-javascript-lite.wasm` (~770 KB Brotli) by default and lazily loads `zipp-javascript`, `zipp-typescript`, `zipp-python-base`, `zipp-php`, `zipp-rust` (`ZIPP v0.0.37`), and `xdb-wasm` (`v0.1.0`) only when an app requires them. |
+| **Fast Native V8 Three.js & 3D** | Import `'three'` directly or bundle Three.js in your Vite build — SoftN automatically offloads Three.js and WebGL2 onto native host V8 + GPU (`THREE.loadGLTF` + `MeshoptDecoder`), plus zero-bundle `'preact'`, `'htm'`, `'marked'`, `<softn-chart>`, and `<softn-datagrid>`. |
+| **Studio & Builder + SQLite IDE** | Visual & code editing for both v2 full-stack containers and classic `.ui` apps, with a shared **mini-phpMyAdmin SQLite 3 Explorer** (tables, columns, indexes, CRUD, SQL console, `.sql`/`.db` export, bundle sync), PHP/backend script editing, and automatic session restore. |
+| **AI Studio with SQLite Tools** | Turn a brief into a full-stack app using OpenAI, Anthropic, Ollama, LM Studio, or custom models — verified headlessly inside the ZIPP sandbox, with direct AI tools to inspect and edit SQLite schemas and data. |
+| **Local-First XDB & Security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) and IndexedDB SQLite with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage. [Permissions guide](https://softn.com/docs/permissions/) |
 
 ## SoftN v2 Web App Containers
 
@@ -618,7 +666,7 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
-from the official `javascript-python-base` module. SoftN v0.0.48 uses ZIPP v0.0.36.
+from the official `javascript-python-base` module. SoftN v0.0.49 uses ZIPP v0.0.37.
 Web starters download the lite JavaScript engine (779 kB with Brotli). Apps that need
 the full JavaScript and experimental Python module download 6.58 MB (1.65 MB with Brotli).
 Since ZIPP 0.0.26 each engine module carries its own JavaScript bindings in a `zipp.glue` section, which the install
@@ -1368,8 +1416,8 @@ Chromium and skips itself until `npm run e2e:install` has put one on the machine
 | File                                                 | Purpose                                                                                                                                                                                                                      |
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/@softn/container/`                         | SoftN v2 Web App Container microkernel (`<softn-app>`): Worker-isolated tiered ZIPP WASM engines (`lite`/`js`/`ts`/`python`/`php`/`rust`), closed ShadowRoot DOM patcher, full-stack `BackendTransport` + XDB SQLite 3 WASM (`v0.1.0`), `.htaccess` rewriting, hosted `/runtime/vendor/` modules (`preact`, `htm`, `marked`, Native V8 `three` + `gltf-loader`), and `<softn-*>` custom elements |
-| `packages/@softn/runtime-shell/src/WebContainerView.tsx` | Shared React host wrapper and zero-config container detector (`containerBundle.ts`) used by `softn-web`, `softn-single`, and `softn-loader`                                                                              |
-| `apps/softn-builder/src/components/schema/SqliteDatabaseAdmin.tsx` | Mini-phpMyAdmin XDB SQLite 3 explorer in Builder's Data view (`DataWorkspace.tsx` + `sqliteDatabase.ts`): schema DDL, indexes, full CRUD, SQL console, `.sql`/`.db` export, and live bundle sync                  |
+| `packages/@softn/runtime-shell/src/WebContainerView.tsx` | Shared React host wrapper, zero-config container detector (`containerBundle.ts`), and `.ui`-to-container backend bridge (`uiBackendBridge.ts`) used by `softn-web`, `softn-single`, `softn-studio`, `softn-builder`, and `softn-loader` |
+| `packages/@softn/editor-shared/src/SqliteDatabaseAdmin.tsx` | Shared mini-phpMyAdmin XDB SQLite 3 Explorer (`sqliteDatabase.ts`) used by both **AI Studio** (`StudioDataWorkspace.tsx` + `sqliteTools.ts` AI harness) and **SoftN Builder** (`DataWorkspace.tsx`): schema DDL, indexes, full CRUD, SQL console, `.sql`/`.db` export, and live bundle sync |
 | `apps/softn-api/lib/hosted_backend.php`              | Directory flexible hosting (`browser` / `server` / `hybrid`) dispatching `/api/apps/<slug>/backend/...` strictly through `hosted-backend-runner.mjs` (ZIPP WASM `safe-sandbox` + shared WAL SQLite)                        |
 | `apps/softn-host-rust/src/container_backend.rs`      | Multi-user v2 container backend runner in `softn-server` executing PHP, JS/TS, Rust, and Python strictly inside ZIPP `safe-sandbox` against shared WAL SQLite                                                              |
 | `apps/softn-host-php/runtime/container-backend.mjs`  | On-demand v2 container backend runner for Apache/PHP deployments executing PHP, JS/TS, Rust, and Python inside verified ZIPP WASM `safe-sandbox` modules                                                                   |

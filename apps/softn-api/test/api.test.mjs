@@ -40,7 +40,7 @@ let adminKey = '';
 function copyDir(from, to) {
   fs.mkdirSync(to, { recursive: true });
   for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-    if (entry.name === 'test' || entry.name === 'node_modules') continue;
+    if (entry.name === 'test' || entry.name === 'node_modules' || entry.name === 'data') continue;
     const src = path.join(from, entry.name);
     const dest = path.join(to, entry.name);
     if (entry.isDirectory()) copyDir(src, dest);
@@ -151,7 +151,7 @@ before(async () => {
   base = `http://127.0.0.1:${port}`;
   // siteOrigin is what a deployed site sets; the share and play pages carry
   // no absolute address without it (hardening.test.mjs covers that case).
-  fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES }, siteOrigin: base }));
+  fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES }, siteOrigin: base, seedDemos: true }));
   server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
     stdio: ['ignore', 'ignore', 'pipe'],
     env: { ...process.env },

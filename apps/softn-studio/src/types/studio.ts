@@ -33,8 +33,8 @@ export type LogicLanguage = 'javascript' | 'typescript' | 'python';
 /** Whether the project uses the v2 Web App Container runtime (`@softn/container`) or v1 `.ui` templates. */
 export type StudioAppFormat = 'container' | 'ui';
 
-/** Optional sandboxed container backend bundled inside a v2 Web App Container. */
-export type ContainerBackendRuntime = 'none' | 'php' | 'javascript' | 'typescript';
+/** Optional backend & database mode for Studio apps (supported on both Web Containers and Classic `.ui`). */
+export type ContainerBackendRuntime = 'none' | 'formlogic' | 'php' | 'javascript' | 'typescript';
 
 /** Brief wizard data */
 export interface ProjectBrief {
@@ -249,7 +249,7 @@ export interface ValidationError {
 export type DevicePreset = 'desktop' | 'tablet' | 'mobile';
 
 /** Left rail panel */
-export type LeftPanel = 'pages' | 'history' | 'ai' | 'settings' | 'files';
+export type LeftPanel = 'pages' | 'history' | 'ai' | 'settings' | 'files' | 'data';
 
 /**
  * Where the project is: being described (no brief yet), its structure laid

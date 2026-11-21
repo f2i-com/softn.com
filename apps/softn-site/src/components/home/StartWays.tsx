@@ -5,14 +5,14 @@ import { Arrow } from '../glyphs';
 
 export function StartWays() {
   return (
-    <section className="band starter-alternatives" aria-label="More ways to start">
+    <section className="band band-start" aria-label="More ways to start">
       <div className="wrap">
         <div className="band-head">
-          <p className="eyebrow">Create an app</p>
+          <p className="eyebrow">Ways to build</p>
           <h2 className="band-title">Three ways to start.</h2>
           <p className="band-sub">
-            Whichever you choose, the app ends up the same: a <code>.softn</code> file that holds its pages, logic and
-            assets, which you can run, change, download and publish.
+            Whichever you choose, the app ends up the same: a <code>.softn</code> file that holds your frontend,
+            optional sandboxed backend, SQLite data, and assets — ready to run locally, remix, or publish.
           </p>
         </div>
         <div className="start-grid">
@@ -34,7 +34,7 @@ export function StartWays() {
             </div>
           </article>
           <article className="start-card">
-            <p className="start-badge">Needs an AI connection (or try built-in examples)</p>
+            <p className="start-badge">AI-assisted · or built-in examples</p>
             <h3 className="start-name">Describe a full-stack app to AI</h3>
             <p className="start-copy">
               Tell Studio what the app should do, in plain words. It plans and writes the app — choose JavaScript,

@@ -576,6 +576,63 @@ export function FileNavigator({ onToggleDock, onFileOpened }: FileNavigatorProps
     }
     return { extraPrimary: primary, extraVendor: vendor };
   }, [retainedSource.extraEntries]);
+
+  // Detect embedded v2 container backend (PHP, Rust, JS/TS, Python) declared in manifest.backend
+  // or auto-discovered from project backend files so Builder shows & opens it directly.
+  const containerBackend = useMemo(() => {
+    const manifest = retainedSource.manifest;
+    const raw =
+      manifest && typeof manifest === 'object' && manifest.backend && typeof manifest.backend === 'object' && !Array.isArray(manifest.backend)
+        ? (manifest.backend as { runtime?: unknown; entry?: unknown; mode?: unknown; routes?: unknown })
+        : null;
+    if (raw && typeof raw.runtime === 'string' && raw.runtime.trim()) {
+      const runtime = raw.runtime.trim().toLowerCase();
+      const entry = typeof raw.entry === 'string' ? raw.entry.replace(/^\/+/, '') : '';
+      const mode = typeof raw.mode === 'string' ? raw.mode : 'api';
+      const routes = Array.isArray(raw.routes) ? raw.routes.filter((r): r is string => typeof r === 'string') : [];
+      return { runtime, entry, mode, routes };
+    }
+    const allPaths = [
+      ...[...logicFiles.values()].map((f) => f.path.replace(/^\/+/, '')),
+      ...extraPrimary,
+    ];
+    const phpEntry = allPaths.find((p) => /^(?:server\/public\/index\.php|backend\/public\/index\.php|backend\/index\.php|server\/index\.php|index\.php)$/i.test(p))
+      ?? allPaths.find((p) => /\.php$/i.test(p));
+    if (phpEntry) return { runtime: 'php', entry: phpEntry, mode: 'api', routes: ['/api/'] };
+    const rustEntry = allPaths.find((p) => /^(?:server\/src\/main\.rs|backend\/src\/main\.rs|src\/main\.rs)$/i.test(p));
+    if (rustEntry) return { runtime: 'rust', entry: rustEntry, mode: 'api', routes: ['/api/'] };
+    return null;
+  }, [retainedSource.manifest, logicFiles, extraPrimary]);
+
+  const openPathInBuilder = useCallback(
+    (targetPath: string) => {
+      const clean = targetPath.replace(/^\/+/, '');
+      for (const lf of logicFiles.values()) {
+        if (lf.path.replace(/^\/+/, '') === clean) {
+          openExtraFile(null);
+          openFile(lf.id);
+          onFileOpened?.();
+          return true;
+        }
+      }
+      for (const uf of uiFiles.values()) {
+        if (uf.path.replace(/^\/+/, '') === clean) {
+          openExtraFile(null);
+          openFile(uf.id);
+          onFileOpened?.();
+          return true;
+        }
+      }
+      if (retainedSource.extraEntries.has(clean)) {
+        openExtraFile(clean);
+        onFileOpened?.();
+        return true;
+      }
+      return false;
+    },
+    [logicFiles, uiFiles, retainedSource.extraEntries, openExtraFile, openFile, onFileOpened]
+  );
+
   const pageAction = projectFormat === 'web' ? 'New HTML page' : 'New UI file';
   const codeAction = projectFormat === 'web' ? 'New code file' : 'New logic file';
 
@@ -629,10 +686,11 @@ export function FileNavigator({ onToggleDock, onFileOpened }: FileNavigatorProps
 
   const handleSelect = useCallback(
     (id: string) => {
+      openExtraFile(null);
       openFile(id);
       onFileOpened?.();
     },
-    [openFile, onFileOpened]
+    [openExtraFile, openFile, onFileOpened]
   );
 
   // Which row holds the tree's one stop. The row last moved to keeps it
@@ -771,20 +829,22 @@ export function FileNavigator({ onToggleDock, onFileOpened }: FileNavigatorProps
         createFile(parentPath, uiName, 'ui');
       } else {
         // Backend & non-frontend files (PHP, Rust, SQL, TOML, YAML, .htaccess, or anything under server/ / backend/)
-        // go straight into `source.extraEntries` so they can be edited freely without polluting manifest.files.logic.
+        // stay directly editable in the main tree for v2 Web Containers (matching bundleLoader.ts),
+        // and go into `source.extraEntries` for classic `.ui` projects.
         const isBackendExt =
           /\.(?:php|phtml|rs|go|c|cpp|h|hpp|sql|toml|ya?ml|ini|conf|cfg|sh|bash|zsh)$/i.test(trimmed) ||
           /(?:^|\/)(?:\.htaccess|dockerfile|makefile)$/i.test(trimmed);
         const targetPath = parentPath ? `${parentPath}/${trimmed}` : trimmed;
-        if (isBackendExt || /^(?:server|backend)\//i.test(targetPath)) {
+        if (projectFormat !== 'web' && (isBackendExt || /^(?:server|backend)\//i.test(targetPath))) {
           const savedPath = setExtraEntry(targetPath, strToU8(blankLogicFile(targetPath)));
           openExtraFile(savedPath);
           return;
         }
-        // `.py`, `.ts`, `.js`, `.css`, `.json`, etc. keep their explicit extension when typed.
+        // `.php`, `.sql`, `.rs`, `.py`, `.ts`, `.js`, `.css`, `.json`, etc. keep their explicit extension when typed.
         const named = projectFormat === 'web'
-          ? (/\.(?:m?js|cjs|tsx?|mts|jsx|vue|py|css|json|md|txt|logic)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`)
+          ? (isBackendExt || /\.(?:m?js|cjs|tsx?|mts|jsx|vue|py|css|json|md|txt|logic)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`)
           : (/\.(logic|py)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`);
+        openExtraFile(null);
         createFile(parentPath, named, 'logic');
       }
     });
@@ -1135,7 +1195,7 @@ export function FileNavigator({ onToggleDock, onFileOpened }: FileNavigatorProps
       <div style={styles.header}>
         <span style={styles.title}>Files</span>
         <div style={styles.actions}>
-          <button type="button" className="bl-mini" aria-label="FormLogic backend" title="Edit FormLogic backend" onClick={() => setBackendFor(backendProject)}>API</button>
+          <button type="button" className="bl-mini" aria-label="FormLogic backend" title="Edit FormLogic tables & API backend" onClick={() => setBackendFor(backendProject)}>API</button>
           <button
             className="bl-mini"
             onClick={() => handleQuickCreateStart('ui')}
@@ -1210,6 +1270,66 @@ export function FileNavigator({ onToggleDock, onFileOpened }: FileNavigatorProps
           )}
         </div>
       </div>
+      {containerBackend && (
+        <div
+          data-container-backend-banner=""
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 6,
+            padding: '6px 10px',
+            borderBottom: '1px solid var(--line-soft)',
+            background: 'var(--ink-2)',
+            fontSize: 11.5,
+          }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              minWidth: 0,
+              overflow: 'hidden',
+            }}
+            title={`Sandboxed ${containerBackend.runtime.toUpperCase()} backend (${containerBackend.mode}): ${containerBackend.entry}${containerBackend.routes.length ? ` · routes ${containerBackend.routes.join(', ')}` : ''}`}
+          >
+            <span
+              className="bl-badge"
+              data-tone="code"
+              style={{ fontSize: 10, padding: '1px 5px', flexShrink: 0, textTransform: 'uppercase' }}
+            >
+              {containerBackend.runtime}
+            </span>
+            <span
+              style={{
+                fontFamily: 'var(--mono)',
+                color: 'var(--paper)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {containerBackend.entry || 'backend'}
+            </span>
+          </span>
+          {containerBackend.entry && (
+            <button
+              type="button"
+              className="bl-mini"
+              style={{ flexShrink: 0 }}
+              onClick={() => {
+                if (!openPathInBuilder(containerBackend.entry)) {
+                  setAddingExtra(true);
+                  setNewExtraPath(containerBackend.entry);
+                }
+              }}
+            >
+              Edit
+            </button>
+          )}
+        </div>
+      )}
       {quickCreateType && (
         <div style={styles.quickCreate}>
           <div style={styles.quickCreateTop}>

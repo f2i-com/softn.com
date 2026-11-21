@@ -18,6 +18,7 @@ import {
   clearContainerSession,
 } from '../src/index';
 import { ThreeWorkerHost } from '../src/three-worker-host';
+import { GUEST_THREE_NATIVE_SOURCE, hasBundledThree, instrumentBundledThree } from '../src/guest-three-native';
 import { loadZippEngine } from '../src/zipp-loader';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -413,5 +414,83 @@ fn main() {
     expect(typeof b64).toBe('string');
     const decoded = Array.from(atob(b64), (ch) => ch.charCodeAt(0));
     expect(decoded).toEqual([0x00, 0x7f, 0x80, 0xfe, 0xff, 0xc3, 0x28, 0xa0, 0xa1, 0x99]);
+  });
+});
+
+describe('Bundled/inlined Three.js automatic Native V8 offloading', () => {
+  it('instruments Vite/Rollup-minified bundled WebGLRenderer and Raycaster classes cleanly', () => {
+    const plain = 'export function hello() { return 42; }';
+    expect(hasBundledThree(plain)).toBe(false);
+    expect(instrumentBundledThree(plain)).toEqual({ code: plain, patched: false });
+
+    const bundled = [
+      'class Vec3{constructor(x=0,y=0,z=0){this.x=x;this.y=y;this.z=z;this.isVector3=!0}}',
+      'class Ray{constructor(o,d){this.origin=o||new Vec3;this.direction=d||new Vec3(0,0,-1)}}',
+      'class Layers{constructor(){this.mask=1}}',
+      'class fm{constructor(e={}){const{canvas:t=null,antialias:a=!1}=e;this.isWebGLRenderer=!0;this._fallback=true;this.opts=e;console.warn("THREE.WebGLRenderer")}}',
+      'class H_{constructor(e,t,n=0,i=1/0){this.ray=new Ray(e,t),this.near=n,this.far=i,this.camera=null,this.layers=new Layers,this.params={Mesh:{},Line:{threshold:1},LOD:{},Points:{threshold:1},Sprite:{}}}setFromCamera(e,t){console.error("THREE.Raycaster: Unsupported camera type: "+t.type)}intersectObject(e,t=!0,n=[]){return n}intersectObjects(e,t=!0,n=[]){return n}}',
+      'return { WebGLRenderer: fm, Raycaster: H_, Vec3 };',
+    ].join('\n');
+
+    expect(hasBundledThree(bundled)).toBe(true);
+    const { code, patched } = instrumentBundledThree(bundled);
+    expect(patched).toBe(true);
+    expect(code).toContain('__softnTryNativeWebGLRenderer(e)');
+    expect(code).toContain('__softnPatchBundledRaycaster(this.constructor');
+
+    // Execute instrumented code with GUEST_THREE_NATIVE_SOURCE and mocked native `host.callSync`
+    const calls: Array<{ kind: string; args: unknown[] }> = [];
+    const fakeHost = {
+      callSync: (kind: string, ...args: unknown[]) => {
+        calls.push({ kind, args });
+        if (kind === 'three' && args[0] === 'init') {
+          return { rendererId: 7, isWebGL2: true, maxTextureSize: 8192 };
+        }
+        if (kind === 'three' && args[0] === 'frame') {
+          return true;
+        }
+        if (kind === 'three' && args[0] === 'raycast') {
+          return [{ id: 1, d: 12.5, p: [3, 4, 5], fi: 2, uv: [0.25, 0.75] }];
+        }
+        return null;
+      },
+    };
+    const sandbox = new Function('host', `${GUEST_THREE_NATIVE_SOURCE}\n${code}`);
+    const prevTry = (globalThis as Record<string, unknown>).__softnTryNativeWebGLRenderer;
+    const prevPatchRay = (globalThis as Record<string, unknown>).__softnPatchBundledRaycaster;
+    const prevPatchThree = (globalThis as Record<string, unknown>).__softnPatchThreeNative;
+    try {
+      const mod = sandbox(fakeHost) as {
+        WebGLRenderer: new (opts?: Record<string, unknown>) => Record<string, unknown>;
+        Raycaster: new () => { intersectObject: (o: unknown) => Array<{ distance: number; point: { x: number; y: number; z: number; isVector3?: boolean }; uv?: { x: number; y: number } }> };
+      };
+
+      // Default construction returns NativeWebGLRenderer backed by ThreeWorkerHost
+      const r = new mod.WebGLRenderer({ antialias: true, alpha: true });
+      expect(r.isWebGLRenderer).toBe(true);
+      expect(r._rid).toBe(7);
+      expect(r._fallback).toBeUndefined();
+      expect(calls.some((c) => c.kind === 'three' && c.args[0] === 'init')).toBe(true);
+
+      // Explicit custom opts.context falls back cleanly to original JS constructor
+      const fb = new mod.WebGLRenderer({ context: { custom: true } });
+      expect(fb._fallback).toBe(true);
+
+      // Raycaster prototype is patched in-place and delegates mirrored objects to Native V8 raycast
+      const rc = new mod.Raycaster();
+      const fakeScene = { isScene: true, children: [], visible: true, matrixAutoUpdate: true, position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 }, scale: { x: 1, y: 1, z: 1 } };
+      const fakeCam = { isPerspectiveCamera: true, fov: 50, aspect: 1, near: 0.1, far: 1000, zoom: 1, children: [], visible: true, matrixAutoUpdate: true, position: { x: 0, y: 0, z: 5 }, quaternion: { x: 0, y: 0, z: 0, w: 1 }, scale: { x: 1, y: 1, z: 1 } };
+      (r.render as (s: unknown, c: unknown) => void)(fakeScene, fakeCam);
+      const hits = rc.intersectObject(fakeScene);
+      expect(hits).toHaveLength(1);
+      expect(hits[0].distance).toBe(12.5);
+      expect([hits[0].point.x, hits[0].point.y, hits[0].point.z]).toEqual([3, 4, 5]);
+      expect(hits[0].point.isVector3).toBe(true);
+      expect([hits[0].uv?.x, hits[0].uv?.y]).toEqual([0.25, 0.75]);
+    } finally {
+      (globalThis as Record<string, unknown>).__softnTryNativeWebGLRenderer = prevTry;
+      (globalThis as Record<string, unknown>).__softnPatchBundledRaycaster = prevPatchRay;
+      (globalThis as Record<string, unknown>).__softnPatchThreeNative = prevPatchThree;
+    }
   });
 });

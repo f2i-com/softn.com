@@ -342,6 +342,20 @@ try {
   add('native-runtime/wasm/zipp_wasm.mjs', fs.readFileSync(path.join(wasmDir, 'zipp_wasm.js')));
   add('native-runtime/wasm/zipp_wasm_bg.wasm', wasmBytes);
   add('native-runtime/wasm/SOURCE.json', fs.readFileSync(path.join(wasmDir, 'SOURCE.json')));
+  // native-runtime/wasm/container/: verified ZIPP WASM engines for multi-user
+  // sandboxed v2 container backends (PHP, Rust, TypeScript; JS & Python share zipp_wasm_bg.wasm).
+  const containerEnginesDir = path.join(root, 'packages/@softn/container/dist/runtime/engines');
+  const containerEngines = {};
+  for (const base of ['zipp-php', 'zipp-rust', 'zipp-typescript']) {
+    for (const ext of ['.wasm', '.glue.js']) {
+      const fileName = `${base}${ext}`;
+      const src = path.join(containerEnginesDir, fileName);
+      if (!fs.existsSync(src)) fail(`missing container backend engine asset: ${src} (build @softn/container first)`);
+      const bytes = fs.readFileSync(src);
+      add(`native-runtime/wasm/container/${fileName}`, bytes);
+      containerEngines[fileName] = sha256(bytes);
+    }
+  }
   add('native-runtime/LICENSE', fs.readFileSync(path.join(root, 'LICENSE')));
   add('native-runtime/NOTICE', fs.readFileSync(path.join(root, 'NOTICE')));
   add('native-runtime/ZIPP-THIRD-PARTY-LICENSES.txt', fs.readFileSync(path.join(wasmDir, zippSource.notices.file)));
@@ -372,7 +386,7 @@ try {
     }
   }
   const runnerRecord = Object.keys(runners).length ? { runner: { source: 'softn.com/apps/softn-runner', zipp: { release: zippSource.release, revision: zippSource.revision }, files: runners, notices: runnerNotices } } : {};
-  add('native-runtime/provenance.json', Buffer.from(JSON.stringify({ source: 'softn.com/apps/softn-host-php/runtime', nativeProtocol: protocols.nativeProtocol, zipp: zippSource, modules, ...runnerRecord }, null, 2) + '\n'));
+  add('native-runtime/provenance.json', Buffer.from(JSON.stringify({ source: 'softn.com/apps/softn-host-php/runtime', nativeProtocol: protocols.nativeProtocol, zipp: zippSource, modules, containerEngines, ...runnerRecord }, null, 2) + '\n'));
 
   // zipp/: the release install as it is, so FormLogic installs its browser
   // engine from here and can check it against the SHA256SUMS it came with.

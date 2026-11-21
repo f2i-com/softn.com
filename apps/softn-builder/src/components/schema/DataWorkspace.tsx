@@ -72,24 +72,25 @@ export function DataWorkspace({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      {hasSqlite || projectFormat === 'web' ? (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '6px 14px',
-            background: 'var(--ink-2)',
-            borderBottom: '1px solid var(--line-soft)',
-            flexShrink: 0,
-          }}
-        >
-          {modeSwitch}
-          <span style={{ fontSize: 12, color: 'var(--dim)' }}>
-            Switch to SQLite to inspect or edit this app’s embedded SQLite database
-          </span>
-        </div>
-      ) : null}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '6px 14px',
+          background: 'var(--ink-2)',
+          borderBottom: '1px solid var(--line-soft)',
+          flexShrink: 0,
+          flexWrap: 'wrap',
+        }}
+      >
+        {modeSwitch}
+        <span style={{ fontSize: 12, color: 'var(--dim)' }}>
+          {hasSqlite
+            ? 'Switch to SQLite to inspect or edit this app’s embedded SQLite database'
+            : 'Switch to SQLite to add or inspect an embedded SQLite 3 database alongside collections'}
+        </span>
+      </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <DatabaseWorkspace hosted={hosted} onSave={onSave ?? (() => {})} saveLabel={saveLabel} />
       </div>

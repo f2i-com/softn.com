@@ -70,28 +70,30 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** Whether a path is safe to mount into the guest VFS (never traversal, never server/private files). */
+export function isSafeClientPath(name: string): boolean {
+  if (!name || name.includes('\0') || name.includes('\\') || /^[A-Za-z]:/.test(name)) return false;
+  if (!name.split('/').every((part) => part !== '' && part !== '.' && part !== '..')) return false;
+  if (/^(?:__softn_generated__\/)?(?:server|backend|private)\/|\.sql$/i.test(name)) return false;
+  return true;
+}
+
 /**
  * Combine `init.client` text files and `init.assets` (bytes or base64 strings) into the
- * VFS map `@softn/container` mounts from. Unsafe paths are dropped.
+ * VFS map `@softn/container` mounts from. Unsafe and server-only paths are dropped.
  */
 export function buildContainerSource(
   files: ReadonlyMap<string, string>,
   assets: Record<string, unknown> | undefined
 ): Record<string, string | Uint8Array> {
   const out: Record<string, string | Uint8Array> = Object.create(null);
-  const safePath = (name: string): boolean =>
-    Boolean(name) &&
-    !name.includes('\0') &&
-    !name.includes('\\') &&
-    !/^[A-Za-z]:/.test(name) &&
-    name.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
 
   for (const [path, text] of files.entries()) {
-    if (safePath(path) && typeof text === 'string') out[path] = text;
+    if (isSafeClientPath(path) && typeof text === 'string') out[path] = text;
   }
   if (isRecord(assets)) {
     for (const [path, value] of Object.entries(assets)) {
-      if (!safePath(path)) continue;
+      if (!isSafeClientPath(path)) continue;
       if (value instanceof Uint8Array) {
         out[path] = value;
       } else if (value instanceof ArrayBuffer) {
@@ -147,14 +149,14 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           : req.body instanceof Uint8Array
             ? req.body
             : null;
-      const raw = await call('containerHttp', {
+      const envelope = await call('containerHttp', {
         method: req.method,
         path: req.path,
         query: req.query ?? '',
         headers: req.headers ?? {},
         bodyBase64: bodyBytes && bodyBytes.byteLength > 0 ? encodeBase64(bodyBytes) : '',
       });
-      if (!isRecord(raw)) {
+      if (!isRecord(envelope)) {
         return {
           status: 502,
           statusText: 'Bad Gateway',
@@ -162,6 +164,15 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           body: new TextEncoder().encode(JSON.stringify({ error: 'Invalid backend response' })),
         };
       }
+      if (typeof envelope.error === 'string' && envelope.status === undefined && !isRecord(envelope.result)) {
+        return {
+          status: 502,
+          statusText: 'Bad Gateway',
+          headers: [['content-type', 'application/json']],
+          body: new TextEncoder().encode(JSON.stringify({ error: envelope.error })),
+        };
+      }
+      const raw = isRecord(envelope.result) ? envelope.result : envelope;
       if (typeof raw.error === 'string' && raw.status === undefined) {
         return {
           status: 502,

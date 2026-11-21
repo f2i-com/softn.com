@@ -1,9 +1,29 @@
 # README screenshots
 
-Direct screenshots of the real SoftN Builder and Runtime, captured on
-12 September 2026. The app is [Fieldnotes](../../examples/fieldnotes), using the
-checked-in [bundle](../../apps/softn-site/public/examples/Fieldnotes.softn).
-Its `.ui` is rendered by SoftN and its `.logic` runs on ZIPP.
+Direct screenshots of the real SoftN AI Studio, Builder, and Runtime.
+
+## Full-stack browser sandbox (`Order Desk`)
+
+Captured from a self-contained full-stack PHP 8 + SQLite 3 v2 Web Container
+running inside SoftN AI Studio completely in the browser (no backend server):
+
+| Asset | Pixels | View |
+| :---- | :----- | :--- |
+| `fullstack-preview.jpg` | 2160 × 1380 | Studio Preview running `Order Desk` live on PHP 8.4 (ZIPP WASM) + XDB SQLite 3 after submitting a real `POST /api/orders` record, with the project tree open on the left. |
+| `fullstack-backend-code.jpg` | 2160 × 1380 | Studio Code view showing `backend/index.php` (`new PDO('sqlite:app.db')`) alongside the frontend and schema files. |
+| `fullstack-sqlite-data.jpg` | 2160 × 1380 | Studio Data tab showing the built-in SQLite / XDB Explorer browsing the `orders` table (`Browse`, `Structure`, `Insert`, `SQL`, `Sync to SQL`, `Download .db`). |
+
+Reproduce after `npm run build:site` (serves `dist/` directly, or set `STUDIO_URL`):
+
+```sh
+node docs/readme-assets/capture-fullstack.mjs
+```
+
+## Classic `.ui` + `.logic` (`Fieldnotes`)
+
+Captured from [Fieldnotes](../../examples/fieldnotes), using the checked-in
+[bundle](../../apps/softn-site/public/examples/Fieldnotes.softn). Its `.ui` is
+rendered by SoftN and its `.logic` runs on ZIPP.
 
 | Asset | Pixels | View |
 | :---- | :----- | :--- |

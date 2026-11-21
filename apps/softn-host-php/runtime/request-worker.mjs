@@ -84,7 +84,8 @@ try {
     const request=JSON.parse(input);
     if(!request||typeof request.path!=='string'||!request.path.startsWith('/')||typeof request.method!=='string')throw new Error('Invalid request');
     startupStage='container_backend';
-    const containerResult=await handleContainerRequest({root,bundle,data,manifest,config,request,markLimited});
+    const hostContext=config.enableHostContext===true?JSON.parse(process.env.SOFTN_HOST_CONTEXT||'{}'):null;
+    const containerResult=await handleContainerRequest({root,bundle,data,manifest,config,request,hostContext,markLimited});
     if(containerResult.isMeta)emit({status:containerResult.status,body:containerResult.body});
     else emitContainer(containerResult);
   } else {

@@ -8,6 +8,7 @@ type RailItem = { id: LeftPanel; icon: Parameters<typeof Icon>[0]['name']; label
 const topPanels: RailItem[] = [
   { id: 'ai', icon: 'ai', label: 'AI' },
   { id: 'files', icon: 'folder', label: 'Files' },
+  { id: 'data', icon: 'database', label: 'Data' },
   { id: 'pages', icon: 'pages', label: 'Pages' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
 ];
@@ -55,7 +56,8 @@ export const LeftRail: React.FC<{ children?: React.ReactNode }> = ({ children })
         {renderBtn(historyPanel)}
       </nav>
 
-      {leftPanel && leftPanelExpanded && (
+      {/* `data` opens full-width in the main work area rather than a narrow side drawer */}
+      {leftPanel && leftPanel !== 'data' && leftPanelExpanded && (
         <section className="st-panel" data-panel={leftPanel} aria-label={open?.label}>
           <div className="st-panel-head">
             <h2 className="st-panel-title">{open?.label}</h2>

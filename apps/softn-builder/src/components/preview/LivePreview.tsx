@@ -14,6 +14,7 @@ import { buildPermissionJson } from '../../utils/permissions';
 import type { CollectionDef } from '../../types/builder';
 import { previewSourceFor, undeclaredPythonPackage } from '../../utils/previewSource';
 import { type AppUpdateResult, inspectDeclaration, type PermissionConfig } from '@softn/core/authoring';
+import { createUiBackendBridge, hasEmbeddedBackend } from '@softn/runtime-shell/uiBackendBridge';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
 import type { ContainerPreviewRuntimeProps } from './ContainerPreviewRuntime';
@@ -448,6 +449,43 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
   }, [entities, seedData, recordIdentity, projectCollections]);
   const previewRecords = useMemo(() => previewRecordsFor?.(collections) ?? {}, [previewRecordsFor, collections]);
 
+  const uiHasEmbeddedBackend = projectFormat !== 'web' && hasEmbeddedBackend(retainedSource.manifest);
+  const uiBackendBridge = useMemo(() => {
+    if (!uiHasEmbeddedBackend || !retainedSource.manifest) return null;
+    const textFiles: Record<string, string> = {};
+    const binaryFiles: Record<string, Uint8Array> = {};
+    for (const [extraPath, bytes] of retainedSource.extraEntries) {
+      const clean = extraPath.replace(/^\/+/, '');
+      if (!clean) continue;
+      if (/\.(?:php|phtml|sql|js|mjs|ts|py|rs|toml|json|txt|htaccess)$/i.test(clean)) {
+        textFiles[clean] = new TextDecoder().decode(bytes);
+      } else {
+        binaryFiles[clean] = bytes;
+      }
+    }
+    for (const lf of logicFiles.values()) {
+      const clean = lf.path.replace(/^\/+/, '');
+      if (clean) textFiles[clean] = lf.content;
+    }
+    for (const [assetPath, asset] of previewAssets) {
+      const clean = assetPath.replace(/^\/+/, '');
+      if (clean && !binaryFiles[clean]) binaryFiles[clean] = asset.data;
+    }
+    return createUiBackendBridge({
+      appId: `builder-preview-${projectId}-${run}`,
+      manifest: retainedSource.manifest,
+      textFiles,
+      binaryFiles,
+      persistStorage: false,
+    });
+  }, [uiHasEmbeddedBackend, retainedSource.manifest, retainedSource.extraEntries, logicFiles, previewAssets, projectId, run]);
+
+  useEffect(() => {
+    return () => {
+      uiBackendBridge?.dispose();
+    };
+  }, [uiBackendBridge]);
+
   const { files: containerFiles, entry: webEntryPath } = useMemo(() => {
     const out: Record<string, string | Uint8Array> = {};
     // Preserve extra bundle entries first (e.g. PHP vendor/, .htaccess, SQLite seeds, etc.)
@@ -460,10 +498,26 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
     }
     let mainHtmlPath = 'index.html';
     if (projectFormat !== 'web') return { files: out, entry: mainHtmlPath };
+    const hasContainerBackend =
+      Boolean(
+        retainedSource.manifest &&
+          typeof retainedSource.manifest.backend === 'object' &&
+          retainedSource.manifest.backend !== null &&
+          !Array.isArray(retainedSource.manifest.backend)
+      ) ||
+      [...logicFiles.values()].some((lf) =>
+        /^(?:server|backend)\/.*\.(?:php|phtml|rs)$/i.test(lf.path) ||
+        /^(?:server|backend)\/(?:Cargo\.toml|server\.(?:js|mjs|ts|py)|app\.py|main\.py)$/i.test(lf.path)
+      ) ||
+      [...retainedSource.extraEntries.keys()].some((k) =>
+        /^(?:server|backend)\/(?:Cargo\.toml|public\/index\.php|index\.php|server\.(?:js|mjs|ts|py)|app\.py|main\.py|src\/main\.rs)$/i.test(k)
+      );
+    const skipServerPath = (p: string) =>
+      /^server\/.*\.logic$/i.test(p) || (!hasContainerBackend && p.startsWith('server/'));
     const entryId = entryFileId(uiFiles, retainedSource);
     for (const [id, ui] of uiFiles) {
       const p = ui.path.replace(/^\/+/, '');
-      if (p.startsWith('server/')) continue;
+      if (skipServerPath(p)) continue;
       out[p] = ui.originalSource ?? '';
       if (id === entryId) mainHtmlPath = p;
     }
@@ -473,11 +527,11 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
     }
     for (const [, lf] of logicFiles) {
       const path = lf.path.replace(/^\/+/, '');
-      if (!path.startsWith('server/')) out[path] = lf.content;
+      if (!skipServerPath(path)) out[path] = lf.content;
     }
     for (const [assetPath, asset] of previewAssets) {
       const path = assetPath.replace(/^\/+/, '');
-      if (!path.startsWith('server/')) out[path] = asset.data;
+      if (!skipServerPath(path)) out[path] = asset.data;
     }
     const xdb: string[] = [];
     for (const col of collections) {
@@ -781,6 +835,7 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
             // of a Python app ran nothing at all.
             python={previewState.composition?.python}
             permissionConfig={previewPermissionConfig}
+            netFetchHandler={uiBackendBridge?.netFetchHandler}
             onUpdate={setUpdateNews}
             onLoad={(doc: unknown) => {
               debug('[LivePreview] SoftNRenderer onLoad - document parsed:', doc);

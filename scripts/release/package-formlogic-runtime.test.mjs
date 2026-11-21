@@ -221,8 +221,13 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     const known = [
       /^zipp\/zipp_wasm_bg\.wasm$/,
       /^native-runtime\/wasm\/zipp_wasm_bg\.wasm$/,
+      /^native-runtime\/wasm\/container\/zipp-php\.wasm$/,
+      /^native-runtime\/wasm\/container\/zipp-rust\.wasm$/,
+      /^native-runtime\/wasm\/container\/zipp-typescript\.wasm$/,
       /^zipp-web\/zipp_wasm_bg\.wasm$/,
       /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-javascript-lite\.wasm$/,
+      /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-php\.wasm$/,
+      /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-rust\.wasm$/,
       /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-typescript\.wasm$/,
     ];
     for (const pattern of known) assert.equal(copies.filter((n) => pattern.test(n)).length, 1, `one engine at ${pattern}`);

@@ -4,6 +4,7 @@ import { Icon } from '../common/Icon';
 import { declarePythonPackage, getBundleEntryPath, MAIN_PAGE_PATH, resolveActivePreviewPath, resolveManifest, undeclaredPythonPackage } from '../../lib/studioProject';
 import { createEphemeralXDBScope, type AppUpdateResult, type SoftNRendererProps, type XDBService } from '@softn/core/authoring';
 import { hostedContainerOptions } from '@softn/runtime-shell/containerHost';
+import { createUiBackendBridge, hasEmbeddedBackend } from '@softn/runtime-shell/uiBackendBridge';
 import { webPreviewEntries } from '@softn/editor-shared/prepareWebSource';
 import { containerSource } from '../../lib/containerSource';
 import type { DevicePreset, ValidationError, VFSFile } from '../../types/studio';
@@ -692,6 +693,39 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     [assetKey, activeVFSFile]
   );
 
+  const previewStoreHasEmbeddedBackend = !isV2Container && hasEmbeddedBackend(manifest);
+  const backendFilesKey = useMemo(
+    () => (previewStoreHasEmbeddedBackend ? filesKey(files, (p) => !p.startsWith('builder/')) : ''),
+    [previewStoreHasEmbeddedBackend, files]
+  );
+  const uiBackendBridge = useMemo(() => {
+    if (!previewStoreHasEmbeddedBackend || !manifest) return null;
+    const textFiles: Record<string, string> = {};
+    const binaryFiles: Record<string, Uint8Array> = {};
+    for (const [p, f] of files) {
+      if (p.startsWith('builder/')) continue;
+      if (typeof f.content === 'string') textFiles[p] = f.content;
+      else binaryFiles[p] = f.content;
+    }
+    return createUiBackendBridge({
+      appId: previewAppId,
+      manifest,
+      textFiles,
+      binaryFiles,
+      persistStorage: false,
+      onConsole: (_level, text) => {
+        queueMicrotask(() => useWorkspaceStore.getState().addConsoleOutput('[Backend] ' + text));
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewStoreHasEmbeddedBackend, previewAppId, backendFilesKey, refreshKey, previewDataResets]);
+
+  useEffect(() => {
+    return () => {
+      uiBackendBridge?.dispose();
+    };
+  }, [uiBackendBridge]);
+
   const rendererFunctions = useMemo<Record<string, (...args: unknown[]) => unknown>>(
     () => ({
       asset: (assetPath: unknown) => resolveAssetUrl(String(assetPath ?? '')),
@@ -1202,6 +1236,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                 appId={previewStore.appId}
                 xdb={previewStore.xdb}
                 permissionConfig={previewPermissions}
+                netFetchHandler={uiBackendBridge?.netFetchHandler}
                 scriptExecutionMode="main"
                 resumeSavedSyncRoom={false}
                 failureNotices={false}
@@ -1234,6 +1269,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               appId={previewStore.appId}
               xdb={previewStore.xdb}
               permissionConfig={previewPermissions}
+              netFetchHandler={uiBackendBridge?.netFetchHandler}
               scriptExecutionMode="main"
               resumeSavedSyncRoom={false}
               failureNotices={false}
@@ -1370,7 +1406,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
             {/* The page at the chosen device's width, the header above it at the frame's: a
                 tablet's or a phone's width is the page's, and the controls stay where they are. */}
             <div
-              style={!isMobile && !isExpandedPreview && devicePreset !== 'desktop' ? { ...styles.surfaceColumn, ...styles.deviceColumn, width: previewWidth } : styles.surfaceColumn}
+              style={!isMobile && !isExpandedPreview && !showCode && devicePreset !== 'desktop' ? { ...styles.surfaceColumn, ...styles.deviceColumn, width: previewWidth } : styles.surfaceColumn}
               data-device={devicePreset}
             >
               {renderPreviewContent()}

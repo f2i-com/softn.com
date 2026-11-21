@@ -25,7 +25,7 @@ export const COMPONENT_PROPS: Readonly<Record<string, Readonly<Record<string, Pl
   "Card": {"title":"s","subtitle":"s","variant":["default","outlined","elevated","filled","ghost","glass","gradient"],"padding":["none","sm","md","lg","xl","*"],"borderRadius":["none","sm","md","lg","xl","*"],"hover":"b","interactive":"b","selected":"b","gradientFrom":"s","gradientTo":"s","dividers":"b"},
   "Center": {"inline":"b","width":"s","height":"s","padding":["none","xs","sm","md","lg","xl","*"]},
   "Checkbox": {"name":"s","checked":"b","defaultChecked":"b","indeterminate":"b","label":"s","description":"s","disabled":"b","size":["sm","md","lg"],"error":"b"},
-  "CodeEditor": {"value":"s","defaultValue":"s","language":["javascript","typescript","json","html","css","python","sql","markdown","plain"],"placeholder":"s","disabled":"b","readOnly":"b","lineNumbers":"b","tabSize":"n","minHeight":"s","maxHeight":"s","ariaLabel":"s","aria-label":"s"},
+  "CodeEditor": {"value":"s","defaultValue":"s","language":["javascript","typescript","json","html","css","python","php","rust","shell","sql","markdown","plain"],"placeholder":"s","disabled":"b","readOnly":"b","lineNumbers":"b","tabSize":"n","minHeight":"s","maxHeight":"s","ariaLabel":"s","aria-label":"s"},
   "Collapse": {"isOpen":"b","duration":"n"},
   "ColorPicker": {"value":"s","defaultValue":"s","name":"s","label":"s","disabled":"b","size":["sm","md","lg"],"showInput":"b","fullWidth":"b"},
   "Confirm": {"open":"b","title":"s","confirmText":"s","cancelText":"s","variant":["primary","danger","warning","success"],"loading":"b","size":["sm","md","lg"]},

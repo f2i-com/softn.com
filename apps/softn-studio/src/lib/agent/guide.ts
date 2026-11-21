@@ -418,7 +418,7 @@ function remaining() {
 // The guide
 // ---------------------------------------------------------------------------
 
-export function buildGuide({ python, torch, backend = false, style }: { python: boolean; torch: boolean; backend?: boolean; style: string }): string {
+export function buildGuide({ python, torch, backend = false, containerBackend = false, style }: { python: boolean; torch: boolean; backend?: boolean; containerBackend?: boolean; style: string }): string {
   const logicExt = python ? '.py' : '.js';
   const entry = python ? 'main.py' : 'main.js';
   return `# How to build a SoftN app
@@ -585,11 +585,25 @@ ${python ? `- JavaScript and Python in one app: "This app mixes Python and JavaS
 
 ## Style
 Match the brief's style: ${style}. Pages should be responsive and polished — production quality, not wireframes: real headings and copy, sensible spacing (\`Stack gap\`, \`Container size\`), empty states, and sample data where it helps.
-${backend ? `
+${SQLITE_HARNESS_SECTION}
+${containerBackend ? `
+${CONTAINER_BACKEND_SECTION}
+- **Calling the sandboxed backend from a \`.ui\` page**: Use \`softn.net.fetch('/api/items', { method: 'GET' })\` (or \`fetch('/api/items')\`) — the runtime routes matching \`manifest.backend.routes\` paths directly to the sandboxed backend + SQLite without requiring external hosts in \`permission.json\`.
+` : `
+## Optional Sandboxed Backend & SQLite
+Classic \`.ui\` apps are not limited to \`.xdb\` collections or FormLogic \`server/\` tables: they can also declare a sandboxed \`backend\` (\`"php"\`, \`"javascript"\`, \`"typescript"\`, \`"rust"\`, or \`"python"\`) and \`databases\` (SQLite) in \`manifest.json\`, call it via \`softn.net.fetch('/api/...')\`, and manage its SQLite database with the \`sqlite_*\` tools.
+`}${backend ? `
 ${PRIVATE_BACKEND_SECTION}
 ` : ''}
 ${python ? PYTHON_APP_EXAMPLE : JAVASCRIPT_APP_EXAMPLE}`;
 }
+
+export const SQLITE_HARNESS_SECTION = `## Embedded SQLite Database Harness Tools
+Both Web App Containers and \`.ui\` apps can bundle real SQLite 3 (\`.db\`) databases via \`manifest.databases\`. You can inspect and modify them directly with dedicated tools:
+- \`sqlite_list_databases\` — list all bundled/declared SQLite databases, their tables, and row counts.
+- \`sqlite_schema\` — inspect full columns, primary keys, indexes, foreign keys, and CREATE DDL.
+- \`sqlite_query\` — run read-only \`SELECT\` / \`PRAGMA\` / \`EXPLAIN\` queries to check live data.
+- \`sqlite_execute\` — run DDL or DML (\`CREATE TABLE\`, \`ALTER TABLE\`, \`DROP TABLE\`, \`CREATE INDEX\`, \`INSERT\`, \`UPDATE\`, \`DELETE\`) directly against the bundled \`.db\` file (creating \`app.db\` and registering \`manifest.databases\` automatically if missing). Pass \`sync_seed_sql: true\` when you also want to mirror the updated schema and rows into the project's \`.sql\` seed file (e.g. \`backend/schema.sql\`).`;
 
 /** Whether manifest.json declares a legacy v1 private backend (`server` block with an entry). */
 export function projectHasBackend(manifestSource: string | undefined): boolean {
@@ -742,5 +756,7 @@ Drop these directly in HTML or \`htm\` templates (lazy-loaded automatically when
 
 ## Design Quality
 Match the brief's **${style}** aesthetic. Build complete, interactive, responsive UIs with realistic seeded data, clear typography, keyboard-friendly forms, and zero placeholder stubs.
-${containerBackend ? `\n${CONTAINER_BACKEND_SECTION}\n` : `\n## Optional Sandboxed Container Backend\nIf the user asks for an API backend (PHP, JS/TS, Rust, or Python) and SQLite inside this container, declare \`"backend": { "runtime": "php" | "javascript" | "typescript" | "rust" | "python", "entry": "backend/index.php", "mode": "api", "routes": ["/api/"] }\` and \`"databases": [{ "name": "app", "engine": "sqlite", "file": "app.db", "seedSql": "backend/schema.sql", "persist": true }]\` in \`manifest.json\`, then call \`fetch('/api/...')\` from frontend scripts. It runs locally in a ZIPP WASM Worker and deploys unchanged to multi-user \`softn-server\` ZIPP \`safe-sandbox\`.\n`}${backend ? `\n${CONTAINER_PRIVATE_BACKEND_SECTION}\n` : ''}`;
+
+${SQLITE_HARNESS_SECTION}
+${containerBackend ? `\n${CONTAINER_BACKEND_SECTION}\n` : `\n## Optional Sandboxed Container Backend\nIf the user asks for an API backend (PHP, JS/TS, Rust, or Python) and SQLite inside this container, declare \`"backend": { "runtime": "php" | "javascript" | "typescript" | "rust" | "python", "entry": "backend/index.php", "mode": "api", "routes": ["/api/"] }\` and \`"databases": [{ "name": "app", "engine": "sqlite", "file": "app.db", "seedSql": "backend/schema.sql", "persist": true }]\` in \`manifest.json\`, then call \`fetch('/api/...')\` from frontend scripts. It runs locally in a ZIPP WASM Worker and deploys unchanged to multi-user \`softn-server\` ZIPP \`safe-sandbox\`.\n`}${backend ? `\n${CONTAINER_PRIVATE_BACKEND_SECTION}\n` : `\n## Optional Collections & FormLogic Tables\nThis container can also use local offline collections (\`xdb/*.xdb\` via \`import { db } from 'softn:db'\`) OR a FormLogic private SQLite backend (\`manifest.server\` + \`server/main.logic\` + \`server/migrations/*.sql\` via \`import { api } from 'softn:api'\`). Use \`design_database\` to create either a local collection or a FormLogic table.\n`}`;
 }

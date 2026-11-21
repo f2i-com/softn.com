@@ -93,36 +93,110 @@ export function HomePage({
   const gallery = (rest.length >= 3 ? rest : apps).slice(0, GALLERY_SIZE);
   const galleryLoading = listLoading || (featured === null && !listError);
 
+  const showShelf = featured === null || featured.length >= 3;
+
   return (
     <>
       <header className="hero hero-apps" id="top">
         <div className="wrap hero-inner">
-          <div className="hero-apps-head">
-            <div className="hero-copy">
-              <p className="eyebrow rise">Sandboxed Full-Stack Web Containers</p>
-              <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
-                Full web apps — frontend and backend — sandboxed in your browser.
-              </h1>
-              <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-                Run complete web apps locally with zero install: standard HTML, React, Vue, or TypeScript frontends paired with sandboxed PHP (Slim 4), JS/TS, Rust, or Python backends and SQLite persisted in IndexedDB — or host the exact same <code>.softn</code> bundle multi-user inside ZIPP safe-sandbox.
-              </p>
+          <div className={showShelf ? 'hero-top hero-top-shelf' : 'hero-top hero-top-blueprint'}>
+            <div className="hero-apps-head">
+              <div className="hero-copy">
+                <p className="hero-eyebrow rise">
+                  <span className="hero-eyebrow-dot" aria-hidden="true" />
+                  Sandboxed Full-Stack Web Containers
+                </p>
+                <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
+                  Full web apps — frontend and backend — sandboxed in your browser.
+                </h1>
+                <p className="hero-lede rise" style={{ animationDelay: '120ms' }}>
+                  Bring standard HTML, React, Vue, or TypeScript frontends — or optional <code>.ui</code> files — paired with sandboxed PHP (Slim 4), JS/TS, Rust, or Python backends and SQLite persisted in IndexedDB. Run locally with zero install, or host the exact same <code>.softn</code> bundle multi-user inside ZIPP safe-sandbox.
+                </p>
+              </div>
+              <div className="hero-cta rise" style={{ animationDelay: '180ms' }}>
+                <a className="cta cta-primary cta-large" href="/apps">
+                  Explore all apps
+                  <Arrow />
+                </a>
+                <a className="cta cta-large" href="#create">
+                  Create an app
+                  <Arrow />
+                </a>
+                <a className="hero-more" href="#how">
+                  How it works
+                </a>
+              </div>
             </div>
-            <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
-              <a className="cta cta-primary cta-large" href="/apps">
-                Explore all apps
-                <Arrow />
-              </a>
-              <a className="cta cta-large" href="#create">
-                Create an app
-                <Arrow />
-              </a>
-              <a className="hero-more" href="#how">
-                How it works
-              </a>
-            </div>
+
+            {showShelf ? (
+              <div className="hero-shelf rise" style={{ animationDelay: '160ms' }}>
+                {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} />}
+                {featuredSeenAt !== null && (
+                  <p className="hero-shelf-note muted" role="status">
+                    The directory is not answering right now. This shelf is as it was on{' '}
+                    {new Date(featuredSeenAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <aside className="hero-blueprint rise" style={{ animationDelay: '160ms' }} aria-label="Inside a SoftN v2 Web Container">
+                <div className="blueprint-bar">
+                  <span className="blueprint-file">order-desk.softn</span>
+                  <span className="blueprint-pill">
+                    <span className="blueprint-pill-dot" aria-hidden="true" />
+                    ZIPP Sandbox
+                  </span>
+                </div>
+                <div className="blueprint-stack">
+                  <div className="blueprint-layer">
+                    <div className="blueprint-layer-head">
+                      <span className="blueprint-layer-tag">Frontend</span>
+                      <span className="blueprint-layer-meta">Worker + Shadow DOM</span>
+                    </div>
+                    <div className="blueprint-chips">
+                      <span className="blueprint-chip blueprint-chip-code">React</span>
+                      <span className="blueprint-chip blueprint-chip-code">Vue</span>
+                      <span className="blueprint-chip blueprint-chip-code">HTML / JS</span>
+                      <span className="blueprint-chip blueprint-chip-code">TypeScript</span>
+                      <span className="blueprint-chip">.ui optional</span>
+                    </div>
+                  </div>
+                  <div className="blueprint-wire" aria-hidden="true">
+                    <span className="blueprint-wire-line" />
+                    <code>{'fetch("/api/items")'}</code>
+                    <span className="blueprint-wire-line" />
+                  </div>
+                  <div className="blueprint-layer">
+                    <div className="blueprint-layer-head">
+                      <span className="blueprint-layer-tag blueprint-layer-tag-mint">Backend</span>
+                      <span className="blueprint-layer-meta">ZIPP WASM · zero ambient access</span>
+                    </div>
+                    <div className="blueprint-chips">
+                      <span className="blueprint-chip blueprint-chip-mint">PHP 8 / Slim 4</span>
+                      <span className="blueprint-chip blueprint-chip-mint">JS / TS</span>
+                      <span className="blueprint-chip blueprint-chip-mint">Rust</span>
+                      <span className="blueprint-chip blueprint-chip-mint">Python</span>
+                    </div>
+                  </div>
+                  <div className="blueprint-layer blueprint-layer-db">
+                    <div className="blueprint-layer-head">
+                      <span className="blueprint-layer-tag">SQLite 3</span>
+                      <span className="blueprint-layer-meta">IndexedDB locally · WAL on server</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="blueprint-foot">
+                  <span>Open in browser or host multi-user</span>
+                  <div className="blueprint-foot-links">
+                    <a href={STUDIO_HREF}>Studio <span aria-hidden="true">↗</span></a>
+                    <a href={BUILDER_HREF}>Builder <span aria-hidden="true">↗</span></a>
+                  </div>
+                </div>
+              </aside>
+            )}
           </div>
 
-          <div className="hero-sandbox-grid rise" style={{ animationDelay: '160ms' }} aria-label="How SoftN sandboxes full web apps">
+          <div className="hero-sandbox-grid rise" style={{ animationDelay: '200ms' }} aria-label="How SoftN sandboxes full web apps">
             <article className="hero-sandbox-card">
               <div className="hero-sandbox-head">
                 <span className="hero-sandbox-icon" aria-hidden="true">
@@ -132,10 +206,11 @@ export function HomePage({
                   </svg>
                 </span>
                 <span className="hero-sandbox-badge">Frontend Sandbox</span>
+                <span className="hero-sandbox-num" aria-hidden="true">01</span>
               </div>
-              <h2>Worker + Shadow DOM</h2>
+              <h2>React, Vue, or plain HTML</h2>
               <p>
-                Run standard HTML5, CSS, TypeScript, Preact, React, Vue, or Three.js inside an isolated WebAssembly Worker — zero ambient access to the host page or browser secrets.
+                Run standard HTML5, CSS, TypeScript, React, Vue, Preact, or Three.js inside an isolated WebAssembly Worker + Shadow DOM — zero ambient access to the host page or browser secrets.
               </p>
             </article>
             <article className="hero-sandbox-card">
@@ -146,7 +221,8 @@ export function HomePage({
                     <path d="M4.5 5.5v13c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-13M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3" />
                   </svg>
                 </span>
-                <span className="hero-sandbox-badge">Backend + SQLite Sandbox</span>
+                <span className="hero-sandbox-badge">Backend + SQLite</span>
+                <span className="hero-sandbox-num" aria-hidden="true">02</span>
               </div>
               <h2>ZIPP WASM + IndexedDB</h2>
               <p>
@@ -162,29 +238,19 @@ export function HomePage({
                   </svg>
                 </span>
                 <span className="hero-sandbox-badge">Flexible Hosting</span>
+                <span className="hero-sandbox-num" aria-hidden="true">03</span>
               </div>
               <h2>Browser-only or SoftN-hosted</h2>
               <p>
-                Let visitors download and run the whole app in their browser sandbox, or host its backend on SoftN or <a href={HOSTING_GUIDE_HREF}>softn-server</a> with shared WAL SQLite — always inside ZIPP safe-sandbox.
+                Let visitors download and run the whole app in their browser sandbox, or host its backend on SoftN, FormLogic, or <a href={HOSTING_GUIDE_HREF}>softn-server</a> with shared WAL SQLite — always inside ZIPP safe-sandbox.
               </p>
             </article>
           </div>
 
-          {(featured === null || featured.length >= 3) && (
-            <div className="hero-shelf rise" style={{ animationDelay: '180ms' }}>
-              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} />}
-              {featuredSeenAt !== null && (
-                <p className="hero-shelf-note muted" role="status">
-                  The directory is not answering right now. This shelf is as it was on{' '}
-                  {new Date(featuredSeenAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
-                </p>
-              )}
-            </div>
-          )}
           <ul className="hero-facts" aria-label="Before you start">
+            <li>React, Vue, HTML/JS, TS &amp; optional .ui frontends</li>
             <li>PHP (Slim 4), JS/TS, Rust &amp; Python + SQLite in ZIPP</li>
-            <li>Runs locally in IndexedDB — no server or account needed</li>
-            <li>Same .softn bundle scales multi-user in ZIPP safe-sandbox</li>
+            <li>Runs locally in IndexedDB — or scales multi-user in ZIPP safe-sandbox</li>
           </ul>
         </div>
       </header>
@@ -225,16 +291,24 @@ export function HomePage({
               </button>
             </div>
           ) : !galleryLoading && gallery.length === 0 ? (
-            <div className="notice" role="status">
-              {total === 0 ? (
-                <>
-                  <strong>The directory is empty.</strong> Create the first app in <a href={STUDIO_HREF}>Studio</a> or{' '}
-                  <a href={BUILDER_HREF}>Builder</a>, then <a href="/publish">publish your .softn file</a> to share it here.
-                </>
-              ) : (
-                'Nothing in this list yet.'
-              )}
-            </div>
+            total === 0 ? (
+              <div className="dir-empty-card" role="status">
+                <div className="dir-empty-copy">
+                  <strong>The directory is empty.</strong>
+                  <p>
+                    Create the first app in <a href={STUDIO_HREF}>Studio</a> or <a href={BUILDER_HREF}>Builder</a>, then{' '}
+                    <a href="/publish">publish your <code>.softn</code> file</a> to share it here.
+                  </p>
+                </div>
+                <div className="dir-empty-actions">
+                  <a className="cta cta-primary cta-small" href={STUDIO_HREF}>Open Studio <Arrow /></a>
+                  <a className="cta cta-small" href={BUILDER_HREF}>Open Builder <Arrow /></a>
+                  <a className="cta cta-small" href="/publish">Publish .softn</a>
+                </div>
+              </div>
+            ) : (
+              <div className="notice" role="status">Nothing in this list yet.</div>
+            )
           ) : (
             <AppGrid apps={galleryLoading ? [] : gallery} categories={categories} skeleton={galleryLoading ? GALLERY_SIZE : 0} loading={galleryLoading} short />
           )}

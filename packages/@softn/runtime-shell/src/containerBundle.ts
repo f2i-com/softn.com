@@ -258,16 +258,27 @@ export function detectWebContainer(
     return { isWebContainer: false };
   }
 
-  // Full-stack manifest with explicit `backend` always runs in `@softn/container`.
-  if (raw.backend && typeof raw.backend === 'object' && !Array.isArray(raw.backend)) {
-    return { isWebContainer: true };
-  }
-
   const frontendRoot =
     typeof raw.frontendRoot === 'string'
       ? raw.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
       : '';
   const main = typeof raw.main === 'string' ? raw.main : '';
+
+  // Full-stack manifest with explicit `backend` runs in `@softn/container` unless it is a
+  // classic SoftN `.ui` app (either `main` ends in `.ui`, or a v1 SoftN template `index.html`
+  // without `"engine": 2` and without `<!DOCTYPE html>`/`<html>`), which runs on `@softn/core`
+  // with `createUiBackendBridge`.
+  if (raw.backend && typeof raw.backend === 'object' && !Array.isArray(raw.backend)) {
+    const isClassicUiEntry = /\.ui$/i.test(main);
+    const resolvedMain =
+      frontendRoot && main && !hasAny(main) ? `${frontendRoot}/${main.replace(/^\/+/, '')}` : main;
+    const mainHtml = resolvedMain && /\.html?$/i.test(resolvedMain) ? (textFiles.get(resolvedMain) ?? '') : '';
+    const isClassicSoftnTemplate =
+      isClassicUiEntry ||
+      (!declaresContainer(raw) && Boolean(mainHtml) && !/<!doctype\s+html\b|<html\b/i.test(mainHtml));
+    return { isWebContainer: !isClassicSoftnTemplate };
+  }
+
   const hasMain =
     main !== '' &&
     (hasAny(main) || (frontendRoot !== '' && hasAny(`${frontendRoot}/${main.replace(/^\/+/, '')}`)));

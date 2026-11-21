@@ -6,6 +6,7 @@ import {
   createPortBackendTransport,
   grantedContainerCapabilities,
   isContainerBundle,
+  isSafeClientPath,
 } from '../src/containerBridge.ts';
 
 test('identifies v2 Web Containers by manifest engine, container flag, backend block, or zero-config HTML', () => {
@@ -95,6 +96,24 @@ test('bridges container HTTP requests across MessagePort via containerHttp actio
     ['set-cookie', 'b=2'],
   ]);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(res.body)), { created: true });
+
+  assert.equal(isSafeClientPath('public/logo.png'), true);
+  assert.equal(isSafeClientPath('assets/icon.svg'), true);
+  assert.equal(isSafeClientPath('backend/index.php'), false);
+  assert.equal(isSafeClientPath('server/main.logic'), false);
+  assert.equal(isSafeClientPath('private/config.json'), false);
+  assert.equal(isSafeClientPath('db/schema.sql'), false);
+
+  const wrappedTransport = createPortBackendTransport(async () => ({
+    result: {
+      status: 200,
+      headers: [['Content-Type', 'application/json']],
+      bodyBase64: Buffer.from('{"ok":true}').toString('base64'),
+    },
+  }));
+  const wrappedRes = await wrappedTransport.fetch({ method: 'GET', path: '/api/ping' });
+  assert.equal(wrappedRes.status, 200);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(wrappedRes.body)), { ok: true });
 
   transport.dispose();
   const afterDispose = await transport.fetch({

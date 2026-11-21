@@ -8,6 +8,7 @@ import type {
   VFSFile,
 } from '../types/studio';
 import { PYTHON_PACKAGES, parseXDBFile, readPythonPackages } from '@softn/core/authoring';
+import { addFormLogicBackend } from '@softn/editor-shared/formlogicBackend';
 import { isPrivatePath } from './paths';
 import { isJavaScriptLogicPath } from './sourceKinds';
 
@@ -768,7 +769,12 @@ function scaffoldV2ContainerFiles(
   const ts = lang === 'typescript';
   const logicPath = python ? 'main.py' : ts ? 'app.ts' : 'main.js';
   const backendRuntime =
-    brief.containerBackend && brief.containerBackend !== 'none' ? brief.containerBackend : null;
+    brief.containerBackend === 'php' ||
+    brief.containerBackend === 'javascript' ||
+    brief.containerBackend === 'typescript'
+      ? brief.containerBackend
+      : null;
+  const wantsFormLogic = brief.containerBackend === 'formlogic';
   const backendStarter = backendRuntime ? buildContainerBackendStarter(backendRuntime, brief.appName) : null;
   const accent = accentFor(brief.style);
   const theme = themeFor(brief.style);
@@ -972,65 +978,70 @@ function scaffoldV2ContainerFiles(
     ? [backendStarter.entry, 'backend/schema.sql']
     : [];
 
+  let manifestObj: Record<string, unknown> = {
+    engine: 2,
+    name: brief.appName,
+    version: '2.0.0',
+    description: brief.description,
+    main: MAIN_PAGE_PATH,
+    icon: APP_ICON_PATH,
+    target: brief.target,
+    ...(backendStarter && backendRuntime
+      ? {
+          backend: {
+            runtime: backendRuntime,
+            entry: backendStarter.entry,
+            mode: 'api',
+            routes: ['/api/'],
+          },
+          databases: [
+            {
+              name: 'app',
+              engine: 'sqlite',
+              file: 'app.db',
+              seedSql: 'backend/schema.sql',
+              persist: true,
+            },
+          ],
+        }
+      : {}),
+    files: {
+      ui: [MAIN_PAGE_PATH],
+      logic: [
+        logicPath,
+        ...(backendStarter && backendRuntime !== 'php' ? [backendStarter.entry] : []),
+      ],
+      xdb: xdbPaths,
+      assets: [
+        APP_ICON_PATH,
+        'styles.css',
+        ...backendAssetFiles.filter((p) => !(backendRuntime !== 'php' && p === backendStarter?.entry)),
+      ],
+    },
+    config: {
+      execution: 'worker',
+      theme: { mode: theme },
+      ...(packages.length > 0 ? { python: { packages } } : {}),
+    },
+    pages: blueprint.pages.map((page) => ({
+      id: page.id,
+      name: page.name,
+      path: MAIN_PAGE_PATH,
+      route: page.route,
+    })),
+  };
+
+  let formLogicExtraFiles: Array<{ path: string; content: string }> = [];
+  if (wantsFormLogic) {
+    const fl = addFormLogicBackend(manifestObj, [MAIN_PAGE_PATH, logicPath, 'styles.css', APP_ICON_PATH, ...xdbPaths]);
+    manifestObj = fl.manifest;
+    formLogicExtraFiles = Object.entries(fl.files).map(([path, content]) => ({ path, content }));
+  }
+
   const files: Array<{ path: string; content: string }> = [
     {
       path: 'manifest.json',
-      content: JSON.stringify(
-        {
-          engine: 2,
-          name: brief.appName,
-          version: '2.0.0',
-          description: brief.description,
-          main: MAIN_PAGE_PATH,
-          icon: APP_ICON_PATH,
-          target: brief.target,
-          ...(backendStarter && backendRuntime
-            ? {
-                backend: {
-                  runtime: backendRuntime,
-                  entry: backendStarter.entry,
-                  mode: 'api',
-                  routes: ['/api/'],
-                },
-                databases: [
-                  {
-                    name: 'app',
-                    engine: 'sqlite',
-                    file: 'app.db',
-                    seedSql: 'backend/schema.sql',
-                    persist: true,
-                  },
-                ],
-              }
-            : {}),
-          files: {
-            ui: [MAIN_PAGE_PATH],
-            logic: [
-              logicPath,
-              ...(backendStarter && backendRuntime !== 'php' ? [backendStarter.entry] : []),
-            ],
-            xdb: xdbPaths,
-            assets: [
-              APP_ICON_PATH,
-              'styles.css',
-              ...backendAssetFiles.filter((p) => !(backendRuntime !== 'php' && p === backendStarter?.entry)),
-            ],
-          },
-          config: {
-            execution: 'worker',
-            theme: { mode: theme },
-            ...(packages.length > 0 ? { python: { packages } } : {}),
-          },
-          pages: blueprint.pages.map((page) => ({
-            id: page.id,
-            name: page.name,
-            path: MAIN_PAGE_PATH,
-            route: page.route,
-          })),
-        },
-        null,
-        2
-      ),
+      content: JSON.stringify(manifestObj, null, 2),
     },
     {
       path: 'permission.json',
@@ -1058,6 +1069,7 @@ function scaffoldV2ContainerFiles(
           { path: 'backend/schema.sql', content: backendStarter.schemaSql },
         ]
       : []),
+    ...formLogicExtraFiles,
     {
       path: 'builder/blueprint.json',
       content: JSON.stringify(blueprint, null, 2),
@@ -1138,35 +1150,77 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
     return scaffoldV2ContainerFiles(brief, blueprint, slugs, xdbPaths, packages, requirements);
   }
 
+  const classicBackendRuntime =
+    brief.containerBackend === 'php' ||
+    brief.containerBackend === 'javascript' ||
+    brief.containerBackend === 'typescript'
+      ? brief.containerBackend
+      : null;
+  const classicWantsFormLogic = brief.containerBackend === 'formlogic';
+  const classicBackendStarter = classicBackendRuntime
+    ? buildContainerBackendStarter(classicBackendRuntime, brief.appName)
+    : null;
+  const classicBackendAssets = classicBackendStarter
+    ? [classicBackendStarter.entry, 'backend/schema.sql']
+    : [];
+
+  let classicManifest: Record<string, unknown> = {
+    name: brief.appName,
+    version: '1.0.0',
+    description: brief.description,
+    main: MAIN_PAGE_PATH,
+    icon: APP_ICON_PATH,
+    target: brief.target,
+    ...(classicBackendStarter && classicBackendRuntime
+      ? {
+          backend: {
+            runtime: classicBackendRuntime,
+            entry: classicBackendStarter.entry,
+            mode: 'api',
+            routes: ['/api/'],
+          },
+          databases: [
+            {
+              name: 'app',
+              engine: 'sqlite',
+              file: 'app.db',
+              seedSql: 'backend/schema.sql',
+              persist: true,
+            },
+          ],
+        }
+      : {}),
+    files: {
+      ui: [MAIN_PAGE_PATH, ...pagePaths],
+      logic: [logicPath],
+      xdb: xdbPaths,
+      assets: [APP_ICON_PATH, ...classicBackendAssets],
+    },
+    config: {
+      theme: { mode: themeFor(brief.style) },
+      // Declared only for Python: a JavaScript app cannot import a Python
+      // package, and a declaration it cannot use would say otherwise.
+      ...(packages.length > 0 ? { python: { packages } } : {}),
+    },
+    pages: blueprint.pages.map((page, i) => ({
+      id: page.id,
+      name: page.name,
+      path: pagePaths[i],
+      route: page.route,
+    })),
+  };
+
+  let classicFormLogicFiles: Array<{ path: string; content: string }> = [];
+  if (classicWantsFormLogic) {
+    const fl = addFormLogicBackend(classicManifest, [MAIN_PAGE_PATH, ...pagePaths, logicPath, APP_ICON_PATH, ...xdbPaths]);
+    classicManifest = fl.manifest;
+    classicFormLogicFiles = Object.entries(fl.files).map(([path, content]) => ({ path, content }));
+  }
+
   const files: Array<{ path: string; content: string }> = [
     {
       path: 'manifest.json',
-      content: JSON.stringify({
-        name: brief.appName,
-        version: '1.0.0',
-        description: brief.description,
-        main: MAIN_PAGE_PATH,
-        icon: APP_ICON_PATH,
-        target: brief.target,
-        files: {
-          ui: [MAIN_PAGE_PATH, ...pagePaths],
-          logic: [logicPath],
-          xdb: xdbPaths,
-          assets: [APP_ICON_PATH],
-        },
-        config: {
-          theme: { mode: themeFor(brief.style) },
-          // Declared only for Python: a JavaScript app cannot import a Python
-          // package, and a declaration it cannot use would say otherwise.
-          ...(packages.length > 0 ? { python: { packages } } : {}),
-        },
-        pages: blueprint.pages.map((page, i) => ({
-          id: page.id,
-          name: page.name,
-          path: pagePaths[i],
-          route: page.route,
-        })),
-      }, null, 2),
+      content: JSON.stringify(classicManifest, null, 2),
     },
     {
       // Nothing declared: the app gets no capability until this says
@@ -1226,6 +1280,13 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
       path: MAIN_PAGE_PATH,
       content: buildMainUi(brief, blueprint, slugs, logicPath),
     },
+    ...(classicBackendStarter
+      ? [
+          { path: classicBackendStarter.entry, content: classicBackendStarter.source },
+          { path: 'backend/schema.sql', content: classicBackendStarter.schemaSql },
+        ]
+      : []),
+    ...classicFormLogicFiles,
   ];
 
   for (const [index, page] of blueprint.pages.entries()) {

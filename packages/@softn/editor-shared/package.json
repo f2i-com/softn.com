@@ -1,6 +1,6 @@
 {
   "name": "@softn/editor-shared",
-  "version": "0.0.48",
+  "version": "0.0.49",
   "private": true,
   "description": "What Builder and Studio share and neither owns: the hand-off to the runtime and publish page, opening a bundle from a same-origin link, modal keyboard ownership, and the private FormLogic editor channel.",
   "license": "Apache-2.0",
@@ -22,6 +22,9 @@
     "./useHostedSaveLabel": "./src/useHostedSaveLabel.ts",
     "./directPublish": "./src/directPublish.ts",
     "./PublishModal": "./src/PublishModal.tsx",
+    "./sqliteDatabase": "./src/sqliteDatabase.ts",
+    "./SqliteDatabaseAdmin": "./src/SqliteDatabaseAdmin.tsx",
+    "./sqliteAdmin.css": "./src/sqliteAdmin.css",
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -29,6 +32,7 @@
   },
   "dependencies": {
     "@softn/bundle-format": "*",
+    "@softn/container": "*",
     "@vue/compiler-sfc": "^3.5.45",
     "sucrase": "^3.35.1"
   },

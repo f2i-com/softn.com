@@ -291,10 +291,15 @@ test('every app that mounts a container asks the host options for its folder and
     'apps/softn-studio/src/components/canvas/VisualCanvas.tsx',
     'apps/softn-studio/src/lib/agent/appCheck.ts',
     'apps/softn-builder/src/components/preview/ContainerPreviewRuntime.tsx',
-    'apps/formlogic-host/src/containerMount.ts',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.ok(source.includes('hostedContainerOptions()'), `${file} mounts with hostedContainerOptions()`);
+    assert.ok(!/assets\/container-runtime/.test(source), `${file} names the folder itself`);
+  }
+  {
+    const file = 'apps/formlogic-host/src/web.ts';
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.ok(source.includes('containerRuntimeUrl()'), `${file} asks containerRuntimeUrl() for its folder`);
     assert.ok(!/assets\/container-runtime/.test(source), `${file} names the folder itself`);
   }
   for (const app of ['softn-web', 'softn-studio', 'softn-builder', 'softn-single', 'softn-single-private', 'softn-loader', 'formlogic-host']) {

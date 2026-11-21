@@ -36,6 +36,52 @@ export const AGENT_TOOLS: ToolSpec[] = [
     }, required: ['target', 'name', 'fields'] },
   },
   {
+    name: 'sqlite_list_databases',
+    description: 'List every embedded SQLite database (.db/.sqlite, manifest.databases, or .sql seed) in this project, along with its tables, views, row counts, and size.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'sqlite_schema',
+    description: 'Inspect the schema of an embedded SQLite database: tables, views, columns (type, PK, NOT NULL, defaults), indexes, foreign keys, row counts, and CREATE DDL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        database: str('Database name or file path (e.g. "app" or "app.db"). Optional when the project has one database.'),
+        table: str('Inspect only this table or view. Optional.'),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'sqlite_query',
+    description: 'Run a read-only SQL query (SELECT, WITH, EXPLAIN, or read-only PRAGMA) against an embedded SQLite database and return rows. Use sqlite_execute for writes or schema changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sql: str('Read-only SQL query.'),
+        params: { type: 'array', description: 'Optional positional ? parameters for a single statement.', items: {} },
+        database: str('Database name or file path. Optional when the project has one database.'),
+        limit: int('Maximum rows to return (default 50, max 200). Optional.'),
+      },
+      required: ['sql'],
+    },
+  },
+  {
+    name: 'sqlite_execute',
+    description: 'Execute SQL DDL or DML (CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE INDEX, INSERT, UPDATE, DELETE) directly against an embedded SQLite database (.db), persisting the updated binary database and manifest.databases entry as one undoable step. Creates app.db (or the named database) automatically if none exists yet. Set sync_seed_sql: true to also update the database\'s seed .sql file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sql: str('SQL statement(s) to execute (semicolon-separated for multiple statements).'),
+        params: { type: 'array', description: 'Optional positional ? parameters for a single SQL statement.', items: {} },
+        database: str('Database name or file path (e.g. "app" or "backend/data/app.db"). Defaults to the project\'s database or "app.db".'),
+        sync_seed_sql: bool('Also export the resulting schema and rows into the database\'s seed SQL file (e.g. backend/schema.sql). Default false.'),
+        seed_sql_path: str('Target .sql path when sync_seed_sql is true. Optional.'),
+      },
+      required: ['sql'],
+    },
+  },
+  {
     name: 'list_files',
     description: 'List the project\'s files as a tree, each with its size and kind (page, logic, data, config, asset). Private editor state is not listed.',
     inputSchema: { type: 'object', properties: { prefix: str('Only list files under this folder, e.g. "pages/". Optional.') }, required: [] },
@@ -178,7 +224,7 @@ export type AgentAppMode = 'web' | 'legacy-ui';
 export const TOOL_NAMES = new Set(AGENT_TOOLS.map((t) => t.name));
 
 /** The tools that change files. */
-export const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'rename_file', 'design_database']);
+export const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'rename_file', 'design_database', 'sqlite_execute']);
 
 const LEGACY_UI_ONLY_TOOLS = new Set(['lookup_components', 'run_app_function']);
 

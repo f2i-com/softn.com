@@ -44,7 +44,7 @@ import { isExternalUrlAllowed, sameSite } from './sanitize';
 import { loadZippEngine, type LoadedZippBindings, type ZippEngineInstance } from './zipp-loader';
 import { WebGLWorkerHost } from './webgl-worker-host';
 import { ThreeWorkerHost } from './three-worker-host';
-import { GUEST_THREE_NATIVE_SOURCE } from './guest-three-native';
+import { GUEST_THREE_NATIVE_SOURCE, hasBundledThree, instrumentBundledThree } from './guest-three-native';
 import type {
   Canvas2DCmd,
   ContainerPermissions,
@@ -430,6 +430,7 @@ export class ContainerWorkerSession {
   private readonly webglHost = new WebGLWorkerHost();
   private readonly threeHost = new ThreeWorkerHost();
   private externalThreeLoaded = false;
+  private bundledThreeDetected = false;
   private readonly fallbackGlueFactory?: () => Promise<Record<string, unknown>>;
 
   private engine: ZippEngineInstance | null = null;
@@ -756,6 +757,9 @@ export class ContainerWorkerSession {
         this.definedModules.add(builtin);
       }
 
+      this.bundledThreeDetected = false;
+      this.externalThreeLoaded = false;
+
       // Pre-link all reachable VFS & inline-supplied vendor ES modules
       const factoryBlocks: string[] = [];
       const namedOnDemand: Array<{ spec: string; from: string }> = [];
@@ -771,7 +775,15 @@ export class ContainerWorkerSession {
       for (const s of msg.scripts) {
         if (s.kind !== 'classic') continue;
         const rewritten = classicImportsRewritten(s.code, `${VIRTUAL_ORIGIN}/${s.originPath.replace(/^\/+/, '')}`);
-        classicCode.set(s, rewritten.code);
+        let codeOut = rewritten.code;
+        if (typeof OffscreenCanvas === 'function' && hasBundledThree(codeOut)) {
+          const inst = instrumentBundledThree(codeOut);
+          if (inst.patched) {
+            codeOut = inst.code;
+            this.bundledThreeDetected = true;
+          }
+        }
+        classicCode.set(s, codeOut);
         for (const spec of rewritten.named) namedOnDemand.push({ spec, from: s.originPath });
       }
       const seedJson = JSON.stringify(msg.seed)
@@ -794,12 +806,17 @@ export class ContainerWorkerSession {
       const onDemand = this.collectOnDemand(namedOnDemand, factoryBlocks, aheadBytes);
 
       // If any reachable module (static or dynamic/on-demand) imports external `'three'`
-      // (`softn-vendor:three`) and this Worker has `OffscreenCanvas`, load SoftN's external
-      // Native V8 `/runtime/vendor/three.js` into `ThreeWorkerHost` and link `'softn-vendor:three'`
-      // backed by Native V8 GPU rendering & raycasting!
+      // (`softn-vendor:three`) — OR any bundled Vite/Rollup/Webpack/UMD chunk inlines Three.js —
+      // and this Worker has `OffscreenCanvas`, load SoftN's external Native V8 `/runtime/vendor/three.js`
+      // into `ThreeWorkerHost` so WebGL2 rendering & high-poly raycasting run natively in V8 (>200x faster).
       const importsThreeVendor = factoryBlocks.some((block) =>
         /(?:__import|__softnModules\.import)\(\s*["'](?:softn-vendor:)?three["']/.test(block)
       );
+      const hasBundledThreeApp =
+        !importsThreeVendor &&
+        (this.bundledThreeDetected ||
+          Object.values(this.textFiles).some((t) => hasBundledThree(t)) ||
+          msg.scripts.some((s) => typeof s.code === 'string' && hasBundledThree(s.code)));
       if (importsThreeVendor && typeof OffscreenCanvas === 'function') {
         const [nativeLoaded, threeVendorSource] = await Promise.all([
           this.threeHost.ensureLoaded(this.runtimeUrl),
@@ -827,6 +844,12 @@ export class ContainerWorkerSession {
             for (const [idx, url] of shifted) onDemand.set(idx, url);
           }
         }
+      } else if (hasBundledThreeApp && typeof OffscreenCanvas === 'function') {
+        const nativeLoaded = await this.threeHost.ensureLoaded(this.runtimeUrl);
+        if (nativeLoaded && !this.disposed) {
+          this.mirrorCanvases = true;
+          this.externalThreeLoaded = true;
+        }
       }
 
       // The app's own script files that a script it adds may name, past what eval compiles while
@@ -848,7 +871,14 @@ export class ContainerWorkerSession {
           // with #! is run by a shell, not added as a script.
           if (text.length < 16_000 || !/\.(?:js|cjs)$/i.test(path) || started.has(path) || this.definedModules.has(`${VIRTUAL_ORIGIN}/${path}`) || text.startsWith('#!')) continue;
           const url = `${VIRTUAL_ORIGIN}/${path}`;
-          const code = classicImportsRewritten(text, url).code;
+          let code = classicImportsRewritten(text, url).code;
+          if (typeof OffscreenCanvas === 'function' && hasBundledThree(code)) {
+            const inst = instrumentBundledThree(code);
+            if (inst.patched) {
+              code = inst.code;
+              this.bundledThreeDetected = true;
+            }
+          }
           const size = utf8Length(code);
           if (size > left || !tooLongForEval(scriptForEval(code)) || looksLikeModule(code)) continue;
           const fn = `__softnStandby${standbyBlocks.length}`;
@@ -1099,7 +1129,14 @@ export class ContainerWorkerSession {
       return { factoryCode, staticImports: [], dynamicImports: [] };
     }
     const isCompiledSidecar = code !== this.textFiles[filePath];
-    const source = !isCompiledSidecar && /\.(?:tsx|jsx)$/i.test(lower) ? transformJsx(code) : code;
+    let source = !isCompiledSidecar && /\.(?:tsx|jsx)$/i.test(lower) ? transformJsx(code) : code;
+    if (typeof OffscreenCanvas === 'function' && moduleUrl !== 'softn-vendor:three' && hasBundledThree(source)) {
+      const inst = instrumentBundledThree(source);
+      if (inst.patched) {
+        source = inst.code;
+        this.bundledThreeDetected = true;
+      }
+    }
     return transformEsModule(source, moduleUrl);
   }
 

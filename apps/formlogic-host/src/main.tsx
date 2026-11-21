@@ -15,7 +15,6 @@ import { seedBundledData } from './seed';
 import { createUpdater, importsFrom, type ImportResolver } from './update';
 import { isOtherPage, linkedPage, startPlace, writePlace } from './place';
 import { decideLink, letThrough, linkKind, watchLinks, type FoundLink } from './links';
-import { isContainerBundle } from './containerBridge';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -41,7 +40,6 @@ root.render(<LoadingIndicator label="Opening app" />);
 let started = false;
 let port: MessagePort | undefined;
 let appStorage: ReturnType<typeof installAppStorage> | undefined;
-let containerDispose: (() => void) | undefined;
 let rootMounted = true;
 let terminated = false;
 // The app's first page has been drawn, and the parent told so.
@@ -78,8 +76,6 @@ function backendCall(action: string, input: Record<string, unknown>): Promise<un
 function terminate(): void {
   if (terminated) return;
   terminated = true;
-  containerDispose?.();
-  containerDispose = undefined;
   appStorage?.dispose();
   calls.dispose(BACKEND_UNREADABLE);
   storageCalls?.dispose(BACKEND_UNREADABLE);
@@ -296,35 +292,6 @@ window.addEventListener('message', async event => {
     if (terminated) return;
     // The manifest the app runs by: the one it opened with, then that of each update it takes.
     let manifest = JSON.parse(files.get('manifest.json') || '{}');
-    if (isContainerBundle(manifest, files)) {
-      const { mountHostedContainer } = await import('./containerMount');
-      if (terminated) return;
-      const hostEl = document.getElementById('root')!;
-      if (rootMounted) {
-        rootMounted = false;
-        root.unmount();
-      }
-      hostEl.innerHTML = '';
-      containerDispose = await mountHostedContainer(hostEl, {
-        files,
-        assets: event.data.assets,
-        appId: event.data.appId,
-        dark: event.data.dark === true,
-        native: event.data.native === true,
-        containerBackend: event.data.containerBackend,
-        containerEngines: event.data.containerEngines,
-        permissions: framePermissions,
-        backendCall,
-        port,
-        markShown: () => {
-          if (drawn) return false;
-          drawn = true;
-          return true;
-        },
-        onError: error => reportError(reasonOf(error), drawn ? 'runtime' : 'load'),
-      });
-      return;
-    }
     // What the app's tree is drawn from, read out of `init` once. The tree can be drawn again (an
     // update that brings other media), and a drawing that held the message itself would hold the
     // app's files, its media and the engine's bytes for as long as the frame lives.

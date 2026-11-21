@@ -724,7 +724,18 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   function WebGL2RenderingContext(canvas, info) {
     WebGLRenderingContext.call(this, canvas, info);
   }
-  WebGL2RenderingContext.prototype = Object.create(WebGLRenderingContext.prototype);
+  // Keep WebGL2RenderingContext separate from WebGLRenderingContext's prototype chain
+  // (matching browser WebGL2 spec so (gl instanceof WebGLRenderingContext) is false on WebGL2).
+  WebGL2RenderingContext.prototype = Object.create(Object.prototype);
+  (function () {
+    var keys = Object.getOwnPropertyNames(WebGLRenderingContext.prototype);
+    for (var ki = 0; ki < keys.length; ki++) {
+      var k = keys[ki];
+      if (k === 'constructor') continue;
+      var desc = Object.getOwnPropertyDescriptor(WebGLRenderingContext.prototype, k);
+      if (desc) Object.defineProperty(WebGL2RenderingContext.prototype, k, desc);
+    }
+  })();
   WebGL2RenderingContext.prototype.constructor = WebGL2RenderingContext;
   if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
     WebGL2RenderingContext.prototype[Symbol.toStringTag] = 'WebGL2RenderingContext';
@@ -747,11 +758,12 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     var methods = info.methods || [];
     for (var i = 0; i < methods.length; i++) {
       var m = methods[i];
-      if (WebGLRenderingContext.prototype[m]) continue;
+      if (WebGLRenderingContext.prototype[m] && WebGL2RenderingContext.prototype[m]) continue;
       (function (mname) {
+        var fn;
         if (GL_CREATE_CTORS[mname]) {
           var Ctor = GL_CREATE_CTORS[mname];
-          WebGLRenderingContext.prototype[mname] = function () {
+          fn = function () {
             var hid = this._nextHid++;
             var h = new Ctor(hid);
             this._handles[hid] = h;
@@ -765,7 +777,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
             return h;
           };
         } else if (GL_DELETE_SET[mname]) {
-          WebGLRenderingContext.prototype[mname] = function (obj) {
+          fn = function (obj) {
             if (!obj || typeof obj.__glId !== 'number') return;
             delete this._handles[obj.__glId];
             this._q.push(['d', mname, obj.__glId]);
@@ -773,14 +785,14 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
           };
         } else if (GL_SYNC_SET[mname]) {
           var isUloc = mname === 'getUniformLocation';
-          WebGLRenderingContext.prototype[mname] = function () {
+          fn = function () {
             var est = { n: 24 };
             var cmd = [mname];
             for (var ai = 0; ai < arguments.length; ai++) cmd.push(encodeGlArg(arguments[ai], est));
             return decodeGlReturn(this._flush(cmd), this, isUloc);
           };
         } else {
-          WebGLRenderingContext.prototype[mname] = function () {
+          fn = function () {
             var est = { n: 24 };
             var cmd = ['v', mname];
             for (var ai = 0; ai < arguments.length; ai++) cmd.push(encodeGlArg(arguments[ai], est));
@@ -790,6 +802,8 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
             if (this._q.length >= 2000 || this._qBytes >= 400000) this._flush();
           };
         }
+        if (!WebGLRenderingContext.prototype[mname]) WebGLRenderingContext.prototype[mname] = fn;
+        if (!WebGL2RenderingContext.prototype[mname]) WebGL2RenderingContext.prototype[mname] = fn;
       })(m);
     }
     __glWiredProto = true;

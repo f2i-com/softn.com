@@ -150,8 +150,8 @@ it('keeps a TypeScript web layout valid when changing to a classic project', () 
   act(() => dialog.querySelector<HTMLInputElement>('[value=typescript]')!.click());
   expect(dialog.querySelector('.bl-choice-detail code:last-child')?.textContent).toBe('app.ts');
   chooseType(dialog, 'ui');
-  expect(dialog.querySelector('[value=typescript]')).toBeNull();
-  expect(dialog.querySelector<HTMLInputElement>('[value=javascript]')?.checked).toBe(true);
+  expect(dialog.querySelector('input[name$="-language"][value=typescript]')).toBeNull();
+  expect(dialog.querySelector<HTMLInputElement>('input[name$="-language"][value=javascript]')?.checked).toBe(true);
   act(() => dialog.querySelector<HTMLButtonElement>('[type=submit]')!.click());
   expect(create.mock.lastCall?.[0]).toMatchObject({ template: 'blank', language: 'javascript', pythonPackages: [] });
   expect(create.mock.lastCall?.[0].format).toBeUndefined();

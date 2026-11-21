@@ -7,7 +7,7 @@ import type { LogicLanguage } from '../../utils/logicFiles';
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
 export type NewProjectFormat = 'ui' | 'web';
 export type NewProjectLanguage = LogicLanguage | 'typescript';
-export type NewProjectBackend = 'none' | 'php' | 'javascript' | 'typescript';
+export type NewProjectBackend = 'none' | 'formlogic' | 'php' | 'javascript' | 'typescript';
 
 export interface NewProjectConfig {
   name: string;
@@ -15,7 +15,7 @@ export interface NewProjectConfig {
   theme: 'light' | 'dark' | 'system';
   template: StarterTemplate;
   format?: NewProjectFormat;
-  /** Optional embedded sandboxed backend (ZIPP WASM + SQLite) for Web Container projects. */
+  /** Optional backend & database choice (FormLogic tables/API or sandboxed PHP/JS/TS + SQLite) for either Web or Classic `.ui`. */
   backend?: NewProjectBackend;
   language: NewProjectLanguage;
   pythonPackages: string[];
@@ -71,9 +71,10 @@ function StarterIllustration({ framework }: { framework: (typeof WEB_STARTERS)[n
   );
 }
 
-const WEB_BACKENDS: { key: NewProjectBackend; title: string; description: string; path: string }[] = [
-  { key: 'none', title: 'Frontend only', description: 'No embedded backend server; local browser state only.', path: 'No backend' },
-  { key: 'php', title: 'PHP + SQLite', description: 'Sandboxed PHP 8 API with persistent SQLite via ZIPP WASM.', path: 'backend/index.php' },
+const PROJECT_BACKENDS: { key: NewProjectBackend; title: string; description: string; path: string }[] = [
+  { key: 'none', title: 'Local collections', description: 'Offline local XDB collections (.xdb) — works in both Web Containers and .ui apps.', path: 'xdb/*.xdb' },
+  { key: 'formlogic', title: 'FormLogic API', description: 'FormLogic private SQLite tables & API routes — works in both Web Containers and .ui apps.', path: 'server/main.logic' },
+  { key: 'php', title: 'PHP + SQLite', description: 'Sandboxed PHP 8 API with persistent SQLite via ZIPP WASM or multi-user server.', path: 'backend/index.php' },
   { key: 'javascript', title: 'JS API + SQLite', description: 'Sandboxed JavaScript HTTP handler + persistent SQLite.', path: 'backend/server.js' },
   { key: 'typescript', title: 'TS API + SQLite', description: 'Sandboxed TypeScript HTTP handler + persistent SQLite.', path: 'backend/server.ts' },
 ];
@@ -146,7 +147,8 @@ function NewProjectForm({ onClose, onCreate }: Omit<NewProjectDialogProps, 'isOp
       description: description?.trim() ?? defaultDescription,
       theme,
       template: starter ? 'blank' : template.key,
-      ...(classic ? {} : { format: 'web' as const, ...(projectType === 'web' && backend !== 'none' ? { backend } : {}) }),
+      ...(classic ? {} : { format: 'web' as const }),
+      ...(!starter && backend !== 'none' ? { backend } : {}),
       language: selectedLanguage.id,
       pythonPackages: selectedLanguage.id === 'python' && torch ? ['torch'] : [],
     };
@@ -268,29 +270,29 @@ function NewProjectForm({ onClose, onCreate }: Omit<NewProjectDialogProps, 'isOp
                     </label>
                   )}
                 </fieldset>
-                {projectType === 'web' && (
-                  <fieldset>
-                    <legend className="bl-create-label">Sandboxed backend (optional)</legend>
-                    <div className="bl-language-options">
-                      {WEB_BACKENDS.map((option) => (
-                        <label key={option.key} className="bl-choice bl-language-option" data-checked={backend === option.key}>
-                          <input
-                            className="bl-create-radio"
-                            type="radio"
-                            name={fieldId + '-backend'}
-                            value={option.key}
-                            checked={backend === option.key}
-                            onChange={() => setBackend(option.key)}
-                          />
-                          <strong>{option.title}</strong>
-                          <code>{option.path}</code>
-                        </label>
-                      ))}
-                    </div>
-                    <p className="bl-choice-detail" aria-live="polite">
-                      {WEB_BACKENDS.find((b) => b.key === backend)?.description}
-                    </p>
-                  </fieldset>
+                {supportsWeb && (
+                <fieldset>
+                  <legend className="bl-create-label">Backend &amp; database (optional)</legend>
+                  <div className="bl-backend-options">
+                    {PROJECT_BACKENDS.map((option) => (
+                      <label key={option.key} className="bl-choice bl-backend-option" data-checked={backend === option.key}>
+                        <input
+                          className="bl-create-radio"
+                          type="radio"
+                          name={fieldId + '-backend'}
+                          value={option.key}
+                          checked={backend === option.key}
+                          onChange={() => setBackend(option.key)}
+                        />
+                        <strong>{option.title}</strong>
+                        <code>{option.path}</code>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="bl-choice-detail" aria-live="polite">
+                    {PROJECT_BACKENDS.find((b) => b.key === backend)?.description}
+                  </p>
+                </fieldset>
                 )}
               </>
             )}

@@ -5,6 +5,7 @@ import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
 import { LeftRail } from './components/layout/LeftRail';
 import { VisualCanvas, writeCanvasViewMode } from './components/canvas/VisualCanvas';
+import { StudioDataWorkspace } from './components/canvas/StudioDataWorkspace';
 import { createWebStarter, type WebStarter } from '@softn/editor-shared/webStarters';
 import { BottomDrawer } from './components/layout/BottomDrawer';
 import { StatusBar } from './components/layout/StatusBar';
@@ -80,12 +81,13 @@ const BlueprintReview = lazy(() => import('./components/blueprint/BlueprintRevie
 type View = 'dashboard' | 'brief' | 'editor';
 
 /** What a phone shows: the panels take turns with the preview, one at a time. */
-type MobilePanel = 'chat' | 'canvas' | 'files' | 'pages' | 'history' | 'settings';
+type MobilePanel = 'chat' | 'canvas' | 'files' | 'data' | 'pages' | 'history' | 'settings';
 
 const MOBILE_TABS: Array<{ id: MobilePanel; label: string; icon: Parameters<typeof Icon>[0]['name'] }> = [
   { id: 'chat', label: 'AI Chat', icon: 'ai' },
   { id: 'canvas', label: 'Preview', icon: 'eye' },
   { id: 'files', label: 'Files', icon: 'folder' },
+  { id: 'data', label: 'Data', icon: 'database' },
   { id: 'pages', label: 'Pages', icon: 'pages' },
   { id: 'history', label: 'History', icon: 'clock' },
   { id: 'settings', label: 'Settings', icon: 'settings' },
@@ -119,10 +121,12 @@ const App: React.FC = () => {
   const [isHydrated, setIsHydrated] = useState(false);
   const {
     leftPanel,
+    leftPanelExpanded,
     projectName,
     blueprint,
     blueprintApproved,
   } = useWorkspaceStore();
+  const isDataOpen = leftPanel === 'data' && leftPanelExpanded;
   const providerCount = useAIStore((s) => s.providers.length);
   const setupSkipped = useAIStore((s) => s.setupSkipped);
   const [isMobile, setIsMobile] = useState(false);
@@ -698,6 +702,16 @@ const App: React.FC = () => {
               <FilesPanel />
             </section>
           )}
+          {mobilePanel === 'data' && (
+            <section style={styles.mobilePanel} aria-label="Data">
+              <StudioDataWorkspace
+                onOpenFile={(path) => {
+                  useWorkspaceStore.getState().setActiveFilePath(path);
+                  setMobilePanel('canvas');
+                }}
+              />
+            </section>
+          )}
           {mobilePanel === 'pages' && (
             <section style={styles.mobilePanel} className="st-panel-body" aria-label="Pages">
               <PagesPanel />
@@ -765,8 +779,20 @@ const App: React.FC = () => {
       <div style={styles.main}>
         <LeftRail>{renderLeftPanelContent()}</LeftRail>
         <div style={styles.centerColumn} id={MAIN_ID} tabIndex={-1} aria-label="Work area">
-          <VisualCanvas onStartBrief={handleNewProject} />
-          <BottomDrawer />
+          {isDataOpen && (
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+              <StudioDataWorkspace
+                onOpenFile={(path) => {
+                  useWorkspaceStore.getState().setActiveFilePath(path);
+                  useWorkspaceStore.getState().setLeftPanel('files');
+                }}
+              />
+            </div>
+          )}
+          <div style={{ flex: 1, minHeight: 0, display: isDataOpen ? 'none' : 'flex', flexDirection: 'column' }}>
+            <VisualCanvas onStartBrief={handleNewProject} />
+            <BottomDrawer />
+          </div>
         </div>
       </div>
       <StatusBar />

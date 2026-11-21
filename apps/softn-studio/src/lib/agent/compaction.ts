@@ -13,7 +13,18 @@ const KEEP_READS_FOR = 6;
 /** A reply's text longer than this is shortened once it is old. */
 const LONG_TEXT_CHARS = 1_500;
 
-const COMPACTABLE = new Set(['read_file', 'search_files', 'list_files', 'inspect_preview', 'run_app_function', 'lookup_components', 'read_docs']);
+const COMPACTABLE = new Set([
+  'read_file',
+  'search_files',
+  'list_files',
+  'inspect_preview',
+  'run_app_function',
+  'lookup_components',
+  'read_docs',
+  'sqlite_list_databases',
+  'sqlite_schema',
+  'sqlite_query',
+]);
 
 /** What compaction reads and rewrites of a run: its turns, and the step and tool of each tool result by id. */
 export interface Conversation {

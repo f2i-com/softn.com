@@ -1,0 +1,98 @@
+/*
+ * Shared button & control styles for SqliteDatabaseAdmin across SoftN Builder and Studio.
+ * Uses @softn/brand tokens (--ink, --ink-2, --paper, --dim, --line, --line-strong, --mint)
+ * so it matches both Builder and Studio in dark and light themes.
+ */
+
+.sn-sql-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+  background: var(--ink-2, #181c22);
+  color: var(--paper, #f2f0ec);
+  font: 500 12.5px/1.2 var(--body, system-ui, sans-serif);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+.sn-sql-btn:hover:not(:disabled) {
+  border-color: var(--line-strong, rgba(255, 255, 255, 0.28));
+  background: var(--ink-3, #20262e);
+}
+
+.sn-sql-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sn-sql-btn-primary {
+  background: var(--paper, #f2f0ec);
+  color: var(--ink, #101318);
+  border-color: var(--paper, #f2f0ec);
+  font-weight: 600;
+}
+
+.sn-sql-btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+  background: var(--paper, #f2f0ec);
+  border-color: var(--paper, #f2f0ec);
+}
+
+.sn-sql-btn-sm {
+  padding: 4px 9px;
+  font-size: 12px;
+  min-height: 28px;
+}
+
+.sn-sql-btn-lg {
+  padding: 9px 16px;
+  font-size: 13.5px;
+  min-height: 38px;
+}
+
+.sn-sql-btn-danger {
+  color: var(--danger, #f87171);
+  border-color: rgba(239, 68, 68, 0.42);
+}
+
+.sn-sql-btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.65);
+}
+
+.sn-sql-seg {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 7px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+  background: var(--ink, #101318);
+  gap: 2px;
+}
+
+.sn-sql-seg > button {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dim, #9aa4b2);
+  font: 500 12px/1.2 var(--body, system-ui, sans-serif);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sn-sql-seg > button:hover {
+  color: var(--paper, #f2f0ec);
+}
+
+.sn-sql-seg > button[aria-pressed='true'] {
+  background: var(--ink-2, #1c2128);
+  color: var(--paper, #f2f0ec);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}

@@ -2450,21 +2450,21 @@ export class SoftNScriptRuntime {
         }
       }
       case 'net.fetch': {
-        // A host that supplied a handler has taken this capability over: the
-        // request is its to make or refuse, and the permission check and host
-        // allowlist in `AppNetwork.fetch` belong to the browser `fetch` the
-        // handler is standing in for. The script's options object is parsed
-        // here rather than passed on as text so the handler sees what the
-        // browser path sees.
-        if (!this.netFetchHandler) return this.network.fetch(call);
-        const [url, optionsJson] = call.args;
-        let options: Record<string, unknown> = {};
-        try {
-          options = optionsJson ? JSON.parse(optionsJson) : {};
-        } catch {
-          return { error: 'The request options are not JSON.' };
+        // A host that supplied a handler may handle the request (e.g. a bundled
+        // sandboxed backend for `/api/*`, or a desktop/hosted proxy), or return
+        // `null`/`undefined` to fall through to `AppNetwork.fetch` + permission.json.
+        if (this.netFetchHandler) {
+          const [url, optionsJson] = call.args;
+          let options: Record<string, unknown> = {};
+          try {
+            options = optionsJson ? JSON.parse(optionsJson) : {};
+          } catch {
+            return { error: 'The request options are not JSON.' };
+          }
+          const handled = await this.netFetchHandler(url, options);
+          if (handled !== null && handled !== undefined) return handled;
         }
-        return this.netFetchHandler(url, options);
+        return this.network.fetch(call);
       }
       case 'qr.encode':
         return this.qr.encode(call);
@@ -2578,8 +2578,16 @@ export class SoftNScriptRuntime {
         return this.wasm.releaseAll();
       case 'storage.op':
         return this.network.storage(call);
-      case 'bundle.read':
+      case 'bundle.read': {
+        const [url] = call.args;
+        if (this.netFetchHandler && typeof url === 'string' && url.startsWith('/')) {
+          const handled = await this.netFetchHandler(url, { method: 'GET' });
+          if (handled && typeof handled === 'object' && 'status' in handled) {
+            return handled;
+          }
+        }
         return this.network.readFile(call);
+      }
       case 'dialog.alert': {
         // A page's alert(), shown when its turn is over: nothing waits on it.
         //

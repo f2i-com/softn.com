@@ -222,7 +222,7 @@
       "kind": "repository-source",
       "reviewedAt": "2026-11-19",
       "retrieval": "retrieved",
-      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). SoftN v0.0.48 uses ZIPP v0.0.36."
+      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). SoftN v0.0.49 uses ZIPP v0.0.37."
     },
     {
       "id": "zipp-wasm",

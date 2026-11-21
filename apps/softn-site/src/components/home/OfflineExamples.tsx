@@ -15,8 +15,9 @@ export function OfflineExamples() {
     <section className="band band-split starter-band" id="create" aria-labelledby="starter-heading">
       <div className="wrap" id="offline-examples">
         <div className="band-head">
+          <p className="eyebrow">Editable starters</p>
           <h2 className="band-title" id="starter-heading">Create an app</h2>
-          <p className="band-sub">Choose a working starter, edit its source and see your changes in Studio or Builder.</p>
+          <p className="band-sub">Choose a working React, Vue, or Vanilla JS starter, edit its source live in Studio or Builder, and pair it with a sandboxed PHP, JS/TS, Rust, or Python + SQLite backend whenever you need one.</p>
           <fieldset className="starter-choices">
             <legend>Choose a framework</legend>
             {examples.map(item => (

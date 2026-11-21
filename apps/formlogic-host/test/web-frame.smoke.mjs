@@ -119,6 +119,7 @@ try {
     'The vanilla web frame must open without fetching the classic renderer or React.');
   console.log(`The ${browserName} frame rendered the backend response and saved the record using the lite engine.`);
   await checkWebPages(browser, page.url());
+  await checkHostContainerBackend(browser, page.url());
 } finally {
   await browser?.close();
   await new Promise(resolve => server.close(resolve));
@@ -199,5 +200,75 @@ async function checkWebPages(browser, origin) {
         allowed ? 'Picked note' : 'No file available');
     }
     console.log('Hosted HTML navigation, a restored page, a removed page, external links and both file grant settings passed.');
+  } finally { await page.close(); }
+}
+
+/** Verify full-stack containerBackend:'host' routes fetch('/api/*') over MessagePort containerHttp without booting local PHP/SQLite WASM. */
+async function checkHostContainerBackend(browser, origin) {
+  const page = await browser.newPage();
+  try {
+    await keepTestRoots(page);
+    const requested = [];
+    page.on('request', req => requested.push(new URL(req.url()).pathname));
+    await page.goto(origin);
+    await page.evaluate(() => {
+      const frame = document.createElement('iframe');
+      frame.setAttribute('sandbox', 'allow-scripts');
+      window.events = [];
+      window.readyMsg = null;
+      window.addEventListener('message', event => {
+        if (event.source !== frame.contentWindow || event.data?.type !== 'formlogic:ready') return;
+        window.readyMsg = event.data;
+        const channel = new MessageChannel();
+        channel.port1.onmessage = ({ data }) => {
+          window.events.push(data);
+          if (data.type === 'call' && data.action === 'containerHttp') {
+            const payload = data.input.bodyBase64 ? JSON.parse(atob(data.input.bodyBase64)) : {};
+            const replyBody = JSON.stringify({ ok: true, method: data.input.method, path: data.input.path, echo: payload.name || null });
+            channel.port1.postMessage({
+              id: data.id,
+              result: { result: { status: 201, headers: [['Content-Type', 'application/json']], bodyBase64: btoa(replyBody) } },
+            });
+          } else if (data.type === 'call' && data.action === 'nativeStorage') {
+            channel.port1.postMessage({ id: data.id, result: { result: { ok: true } } });
+          }
+        };
+        const client = {
+          'manifest.json': JSON.stringify({
+            engine: 2,
+            main: 'public/index.html',
+            frontendRoot: 'public',
+            backend: { runtime: 'php', entry: 'backend/index.php', mode: 'api', routes: ['/api/'] },
+            databases: [{ name: 'app', engine: 'sqlite', file: 'app.db', persist: true }],
+          }),
+          'public/index.html': '<div id="out">loading</div><script type="module" src="./app.js"></script>',
+          'public/app.js': `
+            const r = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Latte' }) });
+            const d = await r.json();
+            document.getElementById('out').textContent = r.status + ':' + d.method + ':' + d.path + ':' + d.echo;
+          `,
+        };
+        frame.contentWindow.postMessage({
+          type: 'formlogic:init',
+          native: true,
+          engine: 'web-container',
+          containerBackend: 'host',
+          appId: 'hosted-php-app',
+          client,
+          storage: {},
+          assets: {},
+        }, '*', [channel.port2]);
+      });
+      frame.src = '/hosted-runtime/index.html?format=web';
+      document.body.appendChild(frame);
+    });
+    await page.waitForFunction(() => window.events.some(e => e.type === 'error' || e.action === 'containerHttp'));
+    const readyMsg = await page.evaluate(() => window.readyMsg);
+    assert.equal(readyMsg.containerBackend, 1);
+    const frame = page.frames()[1];
+    await frame.waitForFunction(() => window.testRoots.some(r => r.querySelector('#out')?.textContent === '201:POST:/api/orders:Latte'));
+    const fetchedWasms = requested.filter(p => p.endsWith('.wasm')).map(p => p.split('/').pop());
+    assert.deepEqual(fetchedWasms, ['zipp-javascript-lite.wasm'], 'Hosted container backend must not download local zipp-php.wasm or xdb-wasm.wasm into the browser');
+    console.log('Full-stack containerBackend:host routed fetch("/api/orders") over MessagePort containerHttp with zero local backend WASM.');
   } finally { await page.close(); }
 }

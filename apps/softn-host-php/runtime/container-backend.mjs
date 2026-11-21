@@ -71,6 +71,19 @@ const JS_BACKEND_PRELUDE = `
         if (res && res.error) throw new Error(res.error);
         return res;
       },
+      all: function (sql, params) {
+        return this.query(sql, params).rows;
+      },
+      first: function (sql, params) {
+        var rows = this.query(sql, params).rows;
+        return rows.length > 0 ? rows[0] : null;
+      },
+      get: function (sql, params) {
+        return this.first(sql, params);
+      },
+      run: function (sql, params) {
+        return this.execute(sql, params);
+      },
       seedJson: function (seed) {
         var payload = typeof seed === "string" ? seed : JSON.stringify(seed);
         var res = sqlCall("seed_json", id, payload, "");
@@ -330,10 +343,15 @@ function isMultiStatementOrControl(sql) {
 }
 
 class NodeSqlManager {
-  constructor({dbDir, databases, vfs}) {
+  constructor({dbDir, databases, vfs, primaryDbFile = null}) {
     this.dbDir = dbDir;
     this.databases = Array.isArray(databases) ? databases : [];
     this.vfs = vfs;
+    this.primaryDbFile = primaryDbFile;
+    this.primaryKey = this.databases.length > 0
+      ? normalizeDbKey(this.databases[0].file || `${this.databases[0].name}.db`).key
+      : null;
+    if (this.primaryKey === ':memory:') this.primaryKey = null;
     this.byKey = new Map();
     this.handles = new Map();
     this.nextId = 1;
@@ -366,6 +384,16 @@ class NodeSqlManager {
   }
 
   dbPathFor(key) {
+    if (this.primaryDbFile && (!this.primaryKey || key === this.primaryKey)) {
+      if (!this.primaryKey) this.primaryKey = key;
+      try {
+        const st = lstatSync(this.primaryDbFile);
+        if (st.isSymbolicLink()) throw new Error('Database symlink refused');
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+      return this.primaryDbFile;
+    }
     const file = join(this.dbDir, safeDbFilename(key));
     if (!contained(realpathSync(this.dbDir), resolve(file))) {
       throw new Error('Database path escaped');
@@ -397,7 +425,8 @@ class NodeSqlManager {
       const path = this.dbPathFor(target.key);
       const marker = path + '.softn_seeded';
       if (existsSync(marker)) continue;
-      if (!existsSync(path) && typeof cfg.file === 'string') {
+      const existedBefore = existsSync(path);
+      if (!existedBefore && typeof cfg.file === 'string') {
         const norm = normalizeVfsKey(cfg.file);
         const bundled = this.vfs.get(norm);
         if (bundled) {
@@ -406,13 +435,19 @@ class NodeSqlManager {
       }
       const db = this.openConfigured(path);
       try {
-        if (typeof cfg.seedSql === 'string' && cfg.seedSql.trim()) {
+        // If a database file already existed (for example from a FormLogic backup restore)
+        // and already contains user tables, do not re-run seed inserts over restored data.
+        const existingTables = existedBefore
+          ? db.prepare("SELECT count(*) AS cnt FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_%'").get()
+          : {cnt: 0};
+        const alreadyPopulated = Number(existingTables?.cnt || 0) > 0;
+        if (!alreadyPopulated && typeof cfg.seedSql === 'string' && cfg.seedSql.trim()) {
           const norm = normalizeVfsKey(cfg.seedSql);
           const bundledSql = this.vfs.get(norm);
           const sqlText = bundledSql ? bundledSql.toString('utf8') : cfg.seedSql;
           if (sqlText.trim()) db.exec(sqlText);
         }
-        if (cfg.seedJson !== undefined && cfg.seedJson !== null) {
+        if (!alreadyPopulated && cfg.seedJson !== undefined && cfg.seedJson !== null) {
           let payload = cfg.seedJson;
           if (typeof payload === 'string') {
             const norm = normalizeVfsKey(payload);
@@ -660,7 +695,9 @@ function vfsToZippObject(vfs, stripPrefix = '') {
 
 function resolveContainerEngineDir(root) {
   const candidates = [
-    join(root, 'wasm/container'),
+    // Shared runtime install (FormLogic's resources/softn-native/wasm/container/) first
+    fileURLToPath(new URL('./wasm/container', import.meta.url)),
+    root ? join(root, 'wasm/container') : '',
     process.env.SOFTN_CONTAINER_ENGINES_DIR || '',
     resolve(dirname(fileURLToPath(import.meta.url)), '../../../packages/@softn/container/dist/runtime/engines'),
   ].filter(Boolean);
@@ -803,7 +840,7 @@ function resolvePhpScript(vfs, backend, targetPath) {
   return null;
 }
 
-export async function handleContainerRequest({root, bundle, data, manifest, config, request, markLimited}) {
+export async function handleContainerRequest({root, bundle, data, manifest, config, request, hostContext = null, markLimited}) {
   const backend = manifest.backend;
   const runtime = String(backend.runtime).toLowerCase();
 
@@ -836,10 +873,19 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     throw new Error(`Container backend entry not found: ${backend.entry}`);
   }
 
+  // When hosted inside FormLogic (`containerPrimaryDatabase: 'application.sqlite'`),
+  // store the container's primary SQLite database at `private/data/application.sqlite`
+  // so FormLogic's Data manager and backup/restore work natively on the app's tables.
+  const primaryDbFile =
+    config.containerPrimaryDatabase === 'application.sqlite'
+      ? join(data, 'application.sqlite')
+      : null;
+
   const sqlManager = new NodeSqlManager({
     dbDir: join(data, 'databases'),
     databases: manifest.databases || [],
     vfs,
+    primaryDbFile,
   });
 
   try {
@@ -858,7 +904,33 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     const rawHeaders = request.headers && typeof request.headers === 'object' ? request.headers : {};
     const headers = {};
     for (const [k, v] of Object.entries(rawHeaders)) {
-      if (typeof v === 'string') headers[k.toLowerCase()] = v;
+      const lower = k.toLowerCase();
+      // Never allow untrusted client headers to spoof host identity headers.
+      if (lower.startsWith('x-formlogic-')) continue;
+      if (typeof v === 'string') headers[lower] = v;
+    }
+    const verifiedContext = hostContext && typeof hostContext === 'object' && !Array.isArray(hostContext) ? hostContext : null;
+    const hostEnv = {};
+    if (verifiedContext) {
+      const serialized = JSON.stringify(verifiedContext);
+      headers['x-formlogic-context'] = serialized;
+      hostEnv.FORMLOGIC_CONTEXT = serialized;
+      if (verifiedContext.userId !== undefined && verifiedContext.userId !== null) {
+        headers['x-formlogic-user-id'] = String(verifiedContext.userId);
+        hostEnv.FORMLOGIC_USER_ID = String(verifiedContext.userId);
+      }
+      if (verifiedContext.roleId !== undefined && verifiedContext.roleId !== null) {
+        headers['x-formlogic-role-id'] = String(verifiedContext.roleId);
+        hostEnv.FORMLOGIC_ROLE_ID = String(verifiedContext.roleId);
+      }
+      if (typeof verifiedContext.authenticated === 'boolean') {
+        headers['x-formlogic-authenticated'] = verifiedContext.authenticated ? '1' : '0';
+        hostEnv.FORMLOGIC_AUTHENTICATED = verifiedContext.authenticated ? '1' : '0';
+      }
+      if (typeof verifiedContext.appId === 'string' && verifiedContext.appId) {
+        headers['x-formlogic-app-id'] = verifiedContext.appId;
+        hostEnv.FORMLOGIC_APP_ID = verifiedContext.appId;
+      }
     }
     const bodyBytes =
       typeof request.bodyBase64 === 'string' && request.bodyBase64 !== ''
@@ -922,7 +994,8 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         app.setInstructionBudget(INSTRUCTION_BUDGET);
         app.setSyncHostCapabilities([...ZIPP_SQL_CAPABILITIES]);
         app.addAppBridge('sql', sqlBridge);
-        if (backend.env && typeof backend.env === 'object') app.setEnv(backend.env);
+        const mergedPhpEnv = {...(backend.env && typeof backend.env === 'object' ? backend.env : {}), ...hostEnv};
+        if (Object.keys(mergedPhpEnv).length > 0) app.setEnv(mergedPhpEnv);
         app.mountFiles(vfsObj);
         if (initialOverlay) {
           try { app.importOverlayJson(initialOverlay); } catch {}
@@ -958,7 +1031,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         else engine.setAppBridge(sqlBridge);
         engine.initSource(`${JS_BACKEND_PRELUDE}\n${source}`, lang);
         const rawResp = engine.callFunction('__softnBackendDispatch', [
-          JSON.stringify({method, path, query: queryString, headers, body: bodyText}),
+          JSON.stringify({method, path, query: queryString, headers, body: bodyText, ...(verifiedContext ? {context: verifiedContext} : {})}),
         ]);
         const parsed = JSON.parse(String(rawResp || '{}'));
         return {
@@ -982,7 +1055,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         engine.initSource(`${PYTHON_BACKEND_PRELUDE}\n${source}`, 'python');
         const dispatch = engine.pythonCall || engine.callFunction;
         const rawResp = dispatch.call(engine, '__softn_backend_dispatch', [
-          JSON.stringify({method, path, query: queryString, headers, body: bodyText}),
+          JSON.stringify({method, path, query: queryString, headers, body: bodyText, ...(verifiedContext ? {context: verifiedContext} : {})}),
         ]);
         const parsed = JSON.parse(String(rawResp || '{}'));
         return {
@@ -1019,7 +1092,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         engine.initRustProject(vfsObj, relEntry, {
           mode: 'worker_boot',
           writableVfs: true,
-          env: backend.env && typeof backend.env === 'object' ? backend.env : {},
+          env: {...(backend.env && typeof backend.env === 'object' ? backend.env : {}), ...hostEnv},
         });
         engine.setInstructionBudget(INSTRUCTION_BUDGET);
         const uri = queryString ? `${path}?${queryString}` : path;

@@ -209,7 +209,7 @@ const WORKSPACE_MODES = new Set(['describe', 'structure', 'design', 'data', 'log
 export function normalizeMode(mode: string): BuilderMode {
   return mode === 'describe' || mode === 'structure' || mode === 'design' ? mode : 'design';
 }
-const LEFT_PANELS = new Set(['pages', 'history', 'ai', 'settings', 'files']);
+const LEFT_PANELS = new Set(['pages', 'history', 'ai', 'settings', 'files', 'data']);
 const DEVICE_PRESETS = new Set(['desktop', 'tablet', 'mobile']);
 const TARGETS = new Set(['web', 'desktop', 'dual']);
 const STYLES = new Set(['clean', 'bold', 'minimal', 'playful', 'dark']);

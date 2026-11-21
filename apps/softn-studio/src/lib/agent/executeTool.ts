@@ -24,14 +24,23 @@ import { formatCheckReport, type AgentEnvironment, type RunFunctionRequest } fro
 import { lineDiff, type LineDiff } from './diff';
 import { lookupComponents, readDocs } from './knowledge';
 import type { AgentToolCall, CheckReport, PlanItem } from './types';
+import type { LoadedXdbBindings } from '@softn/container';
 import { isLogicPath, isPagePath, projectContainerMode } from '../sourceKinds';
 import { SEARCH_DEADLINE_MS, searchProject } from './searchLines';
+import {
+  runSqliteExecute,
+  runSqliteListDatabases,
+  runSqliteQuery,
+  runSqliteSchema,
+} from './sqliteTools';
 
 export interface ToolContext {
   /** What the model has read in this run, and at which version: the "seen" rule. */
   seen: SuppliedFiles;
   env: AgentEnvironment;
   blueprint: Blueprint | null;
+  /** Optional pre-loaded XDB SQLite WASM bindings (used in headless tests). */
+  sqliteBindings?: LoadedXdbBindings;
   /** A fresh transaction id for a write. */
   newTransactionId(): string;
 }
@@ -250,6 +259,34 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
         const transactionId = commit(records, ctx, records.map(r => ({ path: r.path, whole: false })));
         return { isError: false, subject, changed: true, diff, transactionId, content: `Created ${subject} in ${plan.path} and updated manifest.json. Read the new source to edit it.` };
       } catch (problem) { return fail(subject, (problem as Error).message); }
+    }
+    case 'sqlite_list_databases': {
+      return await runSqliteListDatabases({
+        files,
+        bindings: ctx.sqliteBindings,
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+      });
+    }
+    case 'sqlite_schema': {
+      return await runSqliteSchema(input, {
+        files,
+        bindings: ctx.sqliteBindings,
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+      });
+    }
+    case 'sqlite_query': {
+      return await runSqliteQuery(input, {
+        files,
+        bindings: ctx.sqliteBindings,
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+      });
+    }
+    case 'sqlite_execute': {
+      return await runSqliteExecute(input, {
+        files,
+        bindings: ctx.sqliteBindings,
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+      });
     }
     case 'list_files': {
       const prefix = fromRoot(str(input, 'prefix') ?? '');
@@ -552,6 +589,6 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
     }
 
     default:
-      return fail(call.name, `There is no tool called ${call.name}. The tools are: list_files, read_file, search_files, design_database, write_file, edit_file, delete_file, rename_file, check_app, inspect_preview, run_app_function, lookup_components, read_docs, update_plan, ask_user, finish.`);
+      return fail(call.name, `There is no tool called ${call.name}. The tools are: list_files, read_file, search_files, design_database, sqlite_list_databases, sqlite_schema, sqlite_query, sqlite_execute, write_file, edit_file, delete_file, rename_file, check_app, inspect_preview, run_app_function, lookup_components, read_docs, update_plan, ask_user, finish.`);
   }
 }

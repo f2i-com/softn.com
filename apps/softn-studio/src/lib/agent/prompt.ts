@@ -35,7 +35,7 @@ const WORKFLOW = `You are the SoftN Studio agent. You build and change SoftN app
 
 ## Rules
 - Paths are relative to the project root (\`index.html\`, \`pages/home.html\`, \`main.js\`). Never write under \`builder/\` (private editor state).
-- You can only write text files. Name images and other binary assets that already exist through \`asset("assets/…")\` (see Assets below).
+- You can only write text files directly; to inspect or modify an embedded SQLite \`.db\` database (tables, columns, indexes, rows), use \`sqlite_list_databases\`, \`sqlite_schema\`, \`sqlite_query\`, and \`sqlite_execute\`. Name images and other binary assets that already exist through \`asset("assets/…")\` (see Assets below).
 - Keep manifest.json true whenever you add, rename or remove a file (see the guide below).
 - Ask the person (ask_user) only when you cannot proceed sensibly without their decision; otherwise decide and say what you decided in the summary.
 - Keep your own messages short: a sentence before a group of steps is enough. The timeline already shows every step.
@@ -54,7 +54,7 @@ const CONTAINER_WORKFLOW = `You are the SoftN Studio agent. You build and change
 
 ## Rules
 - Paths are relative to the project root (\`index.html\`, \`styles.css\`, \`app.ts\`, \`main.js\`). Never write under \`builder/\` (private editor state).
-- You can only write text files (including \`.svg\` vector graphics). Reference assets in the bundle with standard relative paths (\`./assets/icon.svg\`), never \`asset(...)\`.
+- You can only write text files directly (including \`.svg\` vector graphics); to inspect or modify an embedded SQLite \`.db\` database (tables, columns, indexes, rows), use \`sqlite_list_databases\`, \`sqlite_schema\`, \`sqlite_query\`, and \`sqlite_execute\`. Reference assets in the bundle with standard relative paths (\`./assets/icon.svg\`), never \`asset(...)\`.
 - Keep manifest.json accurate whenever you add, rename or remove a file (see the guide below).
 - Ask the person (ask_user) only when you cannot proceed sensibly without their decision; otherwise decide and say what you decided in the summary.
 - Keep your own messages short: a sentence before a group of steps is enough. The timeline already shows every step.
@@ -98,7 +98,7 @@ export function buildAgentSystemPrompt(protocol: ToolProtocol): string {
   return [
     WORKFLOW,
     QUESTION_WORKFLOW,
-    buildGuide({ python, torch, backend, style: ws.brief?.style || 'clean' }),
+    buildGuide({ python, torch, backend, containerBackend, style: ws.brief?.style || 'clean' }),
     `## Components\nEvery component SoftN registers, by group. Use lookup_components for exact props and events.\n${componentIndexText()}`,
     `## Guides (read_docs)\n${docIndexText(python)}`,
     protocol === 'text' ? textProtocolGuide() : '',
@@ -127,7 +127,7 @@ export function buildProjectContext(kind: 'build' | 'edit' = 'edit', previewRepo
 - Style: ${ws.brief.style}
 - Pages: ${ws.brief.pages.join(', ') || 'none specified'}
 - Collections: ${ws.brief.collections.join(', ') || 'none specified'}
-- Auth: ${ws.brief.authNeeded ? 'required' : 'not required'}${ws.brief.containerBackend && ws.brief.containerBackend !== 'none' ? `\n- Sandboxed backend: ${ws.brief.containerBackend} + SQLite` : ''}`
+- Auth: ${ws.brief.authNeeded ? 'required' : 'not required'}${ws.brief.containerBackend === 'formlogic' ? '\n- Backend: FormLogic private SQLite tables & API (server/)' : ws.brief.containerBackend && ws.brief.containerBackend !== 'none' ? `\n- Sandboxed backend: ${ws.brief.containerBackend} + SQLite` : ''}`
     : '## No brief yet\nWork from the person\'s messages.';
 
   const blueprint = ws.blueprint

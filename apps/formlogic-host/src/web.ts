@@ -1,7 +1,15 @@
 import { mountSoftNContainer, type SoftNContainerHandle } from '@softn/container';
 import { manifestRunsInContainer } from '@softn/bundle-format/engine';
 import { containerRuntimeUrl } from '@softn/runtime-shell/containerHost';
+import type { Capability } from '@softn/bundle-format/capabilities';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
+import {
+  createPortBackendTransport,
+  grantedContainerCapabilities,
+  isContainerBundle,
+  isSafeClientPath,
+  type ContainerBackendTransport,
+} from './containerBridge';
 import { bytesOf } from './media';
 import { readPlace, writePlace } from './place';
 import { grantedPermissions } from './permissions';
@@ -11,6 +19,7 @@ import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 const target = document.getElementById('root')!;
 let port: MessagePort | undefined;
 let container: SoftNContainerHandle | undefined;
+let hostBackend: ContainerBackendTransport | undefined;
 let store: ReturnType<typeof installAppStorage> | undefined;
 let closed = false;
 const post = (message: unknown) => port?.postMessage(message);
@@ -22,6 +31,8 @@ function close() {
   if (closed) return;
   closed = true;
   container?.dispose();
+  hostBackend?.dispose();
+  hostBackend = undefined;
   store?.dispose();
   calls.dispose(BACKEND_UNREADABLE);
   saves.dispose(BACKEND_UNREADABLE);
@@ -43,14 +54,23 @@ window.addEventListener('message', async event => {
     if (self.origin !== 'null' || parent === window || !data.native || data.engine !== 'web-container') {
       throw new Error('Open this app from its sandboxed FormLogic frame.');
     }
-    if (!manifestRunsInContainer(JSON.parse(data.client['manifest.json']))) throw new Error('This project requires the classic SoftN renderer.');
+    const clientEntries = new Map<string, string>();
+    for (const [path, content] of Object.entries(data.client ?? {})) {
+      if (typeof content === 'string') clientEntries.set(path, content);
+    }
+    const manifestJson = clientEntries.get('manifest.json');
+    const parsedManifest = manifestJson ? JSON.parse(manifestJson) : null;
+    const runsInContainer = parsedManifest
+      ? manifestRunsInContainer(parsedManifest) || isContainerBundle(parsedManifest, clientEntries)
+      : isContainerBundle(null, clientEntries);
+    if (!runsInContainer) throw new Error('This project requires the classic SoftN renderer.');
     const source: Record<string, string | Uint8Array> = Object.create(null);
-    for (const [path, content] of Object.entries(data.client)) {
-      if (typeof content === 'string' && !/^(?:__softn_generated__\/)?(?:server|backend|private)\/|\.sql$/i.test(path)) source[path] = content;
+    for (const [path, content] of clientEntries.entries()) {
+      if (isSafeClientPath(path)) source[path] = content;
     }
     for (const [path, content] of Object.entries(data.assets ?? {})) {
       const bytes = bytesOf(content);
-      if (bytes && path.startsWith('assets/')) source[path] = bytes;
+      if (bytes && isSafeClientPath(path)) source[path] = bytes;
     }
     const lane = data.storageLane === true ? saves : calls;
     store = installAppStorage(data.storage ?? {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle),
@@ -67,9 +87,16 @@ window.addEventListener('message', async event => {
       return fullEngine();
     };
     const permissions = grantedPermissions(data.permissions);
+    const grantedCaps = grantedContainerCapabilities(permissions) as Capability[];
     const allowFiles = permissions.permissions.files?.enabled === true;
+    // When FormLogic hosts the container's embedded backend (PHP/Rust/Python/JS/TS + SQLite)
+    // multi-user on its server, route all backend HTTP traffic over the authenticated MessagePort.
+    hostBackend = data.containerBackend === 'host'
+      ? createPortBackendTransport((action, input) => calls.call(action, input))
+      : undefined;
     container = await mountSoftNContainer(target, {
       source, appId: data.appId, runtimeUrl, storage: store.storage,
+      ...(hostBackend ? { backendTransport: hostBackend } : {}),
       initialPage: readPlace(data.place)?.file ?? undefined,
       onPageChange: (page, manifest) => {
         if (!closed) post({ type: 'place', place: writePlace({ file: page === manifest.main ? null : page, section: null }) });
@@ -77,7 +104,7 @@ window.addEventListener('message', async event => {
       onExternalLink: href => { if (!closed) post({ type: 'link', href }); },
       engineWasm: { javascript: fullEngine, python: pythonEngine, 'python-torch': pythonEngine },
       hostThree: () => import('three'), permissionMode: 'deny', permissionsOverride: permissions,
-      initialGrantedCapabilities: allowFiles ? ['files'] : [], downloads: allowFiles ? 'ask' : 'deny',
+      initialGrantedCapabilities: grantedCaps, downloads: allowFiles ? 'ask' : 'deny',
       theme: data.dark === true ? 'dark' : 'light',
       backendCall: (action, input) => {
         if (action !== 'nativeRequest' || typeof input.url !== 'string' || !/^\/api\/[A-Za-z0-9_/-]+(?:\?[^#]*)?$/.test(input.url)) {
@@ -98,4 +125,4 @@ window.addEventListener('message', async event => {
   }
 });
 
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, webContainer: 1, places: 1, links: 1, shown: 1, mediaBytes: 1, storageProtocol: STORAGE_PROTOCOL }, '*');
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, webContainer: 1, containerBackend: 1, places: 1, links: 1, shown: 1, mediaBytes: 1, storageProtocol: STORAGE_PROTOCOL }, '*');

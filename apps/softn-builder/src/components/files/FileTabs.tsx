@@ -366,7 +366,10 @@ export function FileTabs() {
             key={fileId}
             fileId={fileId}
             isActive={activeExtraPath === null && fileId === activeFileId}
-            onSelect={() => setActiveFile(fileId)}
+            onSelect={() => {
+              openExtraFile(null);
+              setActiveFile(fileId);
+            }}
             onClose={() => closeFile(fileId)}
             onContextMenu={(e) => {
               e.preventDefault();

@@ -14,10 +14,10 @@ import { createHash } from 'node:crypto';
 /** Exports the engine has and no other module in a SoftN build does (gpu-lab kernels, the WASI guest). */
 export const ZIPP_ENGINE_EXPORTS = ['zippProfile', 'zipp_start', 'engine_evalInContext'];
 
-/** The two container-specific builds, in the shared runtime's content-addressed folder. */
+/** The container-specific ZIPP builds, in hosted-runtime's shared content-addressed folder and native-runtime's container backend folder. */
 export function containerEngineBundle(name, version) {
-  const tier = /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-(javascript-lite|typescript)\.wasm$/.exec(name)?.[1];
-  return tier ? `zipp-${version}-${tier === 'typescript' ? 'javascript-typescript' : tier}.wasm` : null;
+  const tier = /^(?:hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines|native-runtime\/wasm\/container)\/zipp-(javascript-lite|typescript|php|rust)\.wasm$/.exec(name)?.[1];
+  return tier ? `zipp-${version}-${tier === 'javascript-lite' ? tier : `javascript-${tier}`}.wasm` : null;
 }
 
 /**

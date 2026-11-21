@@ -154,6 +154,15 @@ export function loadBundleContents({ manifest, manifestBytes, files, dropped, sy
   // on it, after which every runtime ran it on the other engine.
   // And only over a page: `"engine": 2` with a `.ui` entry is the SoftN bundle its entry is.
   const isWebContainer = Boolean(synthesizedManifest) || manifestRunsInContainer(rawManifest);
+  const hasContainerBackend =
+    isWebContainer &&
+    (Boolean(rawManifest.backend && typeof rawManifest.backend === 'object' && !Array.isArray(rawManifest.backend)) ||
+      [...files.keys()].some((k) =>
+        k === 'index.php' ||
+        k === 'Cargo.toml' ||
+        /^(?:server|backend)\/(?:Cargo\.toml|public\/index\.php|index\.php|server\.(?:js|mjs|ts|py)|app\.py|main\.py|src\/main\.rs)$/i.test(k) ||
+        (/^(?:server|backend)\/.*\.(?:php|phtml|rs)$/i.test(k) && !/(?:^|\/)(?:vendor|node_modules)\//i.test(k))
+      ));
   if (isWebContainer) {
     for (const [path, bytes] of files) {
       if (path.startsWith('__softn_generated__/') && isGeneratedSourceModule(path, decoder.decode(bytes))) consumed.add(path);
@@ -296,10 +305,28 @@ export function loadBundleContents({ manifest, manifestBytes, files, dropped, sy
     }
   }
 
-  if (isWebContainer) {
+  if (isWebContainer || hasContainerBackend) {
     for (const [path, bytes] of files) {
       if (consumed.has(path) || path.endsWith('/') || path === 'manifest.json' || path === 'permission.json') continue;
-      if (path.startsWith('server/') || /\.xdb$/i.test(path)) continue;
+      if (/\.xdb$/i.test(path)) continue;
+      // On classic `.ui` projects with an embedded sandboxed backend, only auto-load files
+      // under `backend/` (or declared backend entry / seedSql) so unrelated assets stay untouched.
+      if (!isWebContainer) {
+        const backendEntry =
+          rawManifest && typeof rawManifest.backend === 'object' && rawManifest.backend !== null
+            ? String((rawManifest.backend as { entry?: unknown }).entry ?? '')
+            : '';
+        const isBackendScript =
+          path.startsWith('backend/') ||
+          (backendEntry !== '' && path === backendEntry) ||
+          /\.sql$/i.test(path);
+        if (!isBackendScript) continue;
+      }
+      // Keep FormLogic's classic `server/*.logic` (and `server/` on apps without a container backend)
+      // in extraEntries for FormLogic's BackendEditor; for full-stack containers with PHP/Rust/JS/TS/Py
+      // backends under `server/` or `backend/`, load all non-vendor backend scripts into editable `logicFiles`.
+      if (/^server\/.*\.logic$/i.test(path)) continue;
+      if (path.startsWith('server/') && !hasContainerBackend) continue;
       // Keep bulky third-party dependency trees (e.g. PHP Composer vendor/ or node_modules/)
       // in extraEntries so they round-trip into preview & export without crowding the code tree.
       if (/(?:^|\/)(?:vendor|node_modules)\//i.test(path)) continue;
@@ -425,6 +452,15 @@ export function loadBundleContents({ manifest, manifestBytes, files, dropped, sy
     const found = resolveEntry(files, assetPath, 'assets');
     if (!found) continue;
     if (consumed.has(found.path)) continue;
+    if (isWebContainer || hasContainerBackend) {
+      // Never pull vendored dependency trees, SQLite database images, or classic server/*.logic
+      // into UI assetFiles even if Studio or another tool listed them in manifest.files.assets:
+      // keeping them in extraEntries lets SqliteDatabaseAdmin and Dependencies handle them cleanly.
+      if (/(?:^|\/)(?:vendor|node_modules)\//i.test(found.path)) continue;
+      if (/\.(?:db|sqlite|sqlite3)$/i.test(found.path)) continue;
+      if (/^server\/.*\.logic$/i.test(found.path)) continue;
+      if (found.path.startsWith('server/') && !hasContainerBackend) continue;
+    }
     consumed.add(found.path);
     assets.set(found.path, found.bytes);
   }

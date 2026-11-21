@@ -250,7 +250,7 @@ export interface NetFetchResult {
 export type NetFetchHandler = (
   url: string,
   options: Record<string, unknown>
-) => Promise<NetFetchResult>;
+) => Promise<NetFetchResult | null | undefined>;
 
 /** The app's code failing after it started, as reported to the host. */
 export interface ScriptFailure {

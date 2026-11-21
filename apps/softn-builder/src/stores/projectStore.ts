@@ -23,7 +23,7 @@
  */
 
 import { create } from 'zustand';
-import { isUnsafeEntryName } from '@softn/core';
+import { isUnsafeEntryName } from '@softn/core/authoring';
 import type { CollectionDef, AssetFile } from '../types/builder';
 import { emptyDeclaration, type PermissionDeclaration } from '../utils/permissions';
 import { logicStarter, type LogicLanguage } from '../utils/logicFiles';
@@ -187,8 +187,8 @@ interface ProjectStore {
   settle: () => void;
   /** Keep what an opened bundle carried, without treating it as an edit. */
   setSource: (source: RetainedSource) => void;
-  /** Open an extra/backend project file (from `source.extraEntries`) in the editor. */
-  openExtraFile: (path: string) => void;
+  /** Open an extra/backend project file (from `source.extraEntries`) in the editor, or pass null to clear. */
+  openExtraFile: (path: string | null) => void;
   /** Close one extra/backend file tab, or clear the active extra file if omitted. */
   closeExtraFile: (path?: string) => void;
   /** Create or update any file in `source.extraEntries` (PHP, Rust, Python, SQL, config, etc.) and mark dirty. */
@@ -381,6 +381,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
   },
 
   openExtraFile: (path) => {
+    if (path === null) {
+      set({ activeExtraPath: null });
+      return;
+    }
     const clean = path.replace(/^\/+/, '').replace(/\/+/g, '/');
     set((state) => {
       if (!state.source.extraEntries.has(clean)) return state;

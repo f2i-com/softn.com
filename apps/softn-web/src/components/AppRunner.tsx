@@ -3,6 +3,7 @@ import type { AppAssetResolver, AppUpdateResult, ComposedBundleSource, EditMarks
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { requestedCapabilities } from '@softn/runtime-shell/consent';
 import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
+import { createUiBackendBridge, hasEmbeddedBackend } from '@softn/runtime-shell/uiBackendBridge';
 import { LoadProgress } from '@softn/runtime-shell/LoadProgress';
 import { containerStoragePrefix } from '../lib/appCacheStorage';
 import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
@@ -306,6 +307,38 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   const containerSource = useMemo(() => (webContainer ? (bundleData ?? Object.fromEntries(textFiles ?? [])) : null), [webContainer, bundleData, textFiles]);
   const containerGrants = useMemo(() => (consent ? [] : requestedCapabilities(permissionConfig ?? { permissions: {} })), [consent, permissionConfig]);
 
+  // Embedded sandboxed backend bridge for classic `.ui` apps that declare `manifest.backend` + SQLite.
+  const uiManifest = useMemo(() => {
+    if (webContainer) return null;
+    const raw = textFiles?.get('manifest.json');
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }, [webContainer, textFiles]);
+
+  const uiBackendBridge = useMemo(() => {
+    if (webContainer || !hasEmbeddedBackend(uiManifest)) return null;
+    return createUiBackendBridge({
+      appId: runtimeAppId,
+      manifest: uiManifest,
+      textFiles: textFiles ? Object.fromEntries(textFiles) : undefined,
+      bundleBytes: bundleData,
+      persistStorage: true,
+    });
+  }, [webContainer, uiManifest, runtimeAppId, textFiles, bundleData]);
+
+  useEffect(() => {
+    return () => {
+      uiBackendBridge?.dispose();
+    };
+  }, [uiBackendBridge]);
+
   const initialState = useMemo(() => {
     let savedRoom: string | null = null;
     try {
@@ -562,6 +595,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                 parseProblem={shown.parseProblem}
                 executionPreference={executionPreference}
                 permissionConfig={permissionConfig}
+                netFetchHandler={uiBackendBridge?.netFetchHandler}
                 onConsentStatus={setConsentStatus}
                 // Another page of the bundle is another app run afresh (the key
                 // above), and not a newer version of this one.

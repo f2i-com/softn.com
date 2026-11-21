@@ -1,7 +1,9 @@
 /**
- * Guest-Side Native V8 Three.js Accelerator Shim (`GUEST_THREE_NATIVE_SOURCE`).
+ * Guest-Side Native V8 Three.js Accelerator Shim (`GUEST_THREE_NATIVE_SOURCE`)
+ * and Bundled-Three.js Instrumentation (`hasBundledThree`, `instrumentBundledThree`).
  *
- * Patches externalized `'three'` (`WebGLRenderer` + `Raycaster`) inside the ZIPP
+ * Patches BOTH externalized `'three'` AND bundled/inlined Three.js chunks produced by
+ * Vite / Rollup / Webpack / esbuild / UMD (`WebGLRenderer` + `Raycaster`) inside the ZIPP
  * sandbox so that:
  * - All GPU WebGL2 rendering, shadow mapping, shader compilation, frustum culling,
  *   and draw calls execute in Native V8 inside `container-worker.js` via `ThreeWorkerHost`
@@ -12,10 +14,204 @@
  *   `@react-three/drei`) while sending only tiny dirty scene deltas (~400 bytes/frame).
  */
 
+/** Fast check for whether a JS module/script contains an inlined/bundled Three.js library. */
+export function hasBundledThree(code: string): boolean {
+  return code.includes('THREE.WebGLRenderer') && code.includes('isWebGLRenderer');
+}
+
+/**
+ * Find the matching closing `}` for the `{` at `openBraceIdx`, skipping JS string
+ * literals, template literals, and line/block comments. Returns -1 if unbalanced.
+ */
+function findClosingBrace(code: string, openBraceIdx: number): number {
+  let depth = 0;
+  const len = code.length;
+  for (let i = openBraceIdx; i < len; i++) {
+    const ch = code.charCodeAt(i);
+    // Single / double / template string
+    if (ch === 34 || ch === 39 || ch === 96) {
+      const q = ch;
+      i++;
+      while (i < len) {
+        const c = code.charCodeAt(i);
+        if (c === 92) {
+          i += 2;
+          continue;
+        }
+        if (c === q) break;
+        i++;
+      }
+      continue;
+    }
+    // Comments (`//` and `/* ... */`)
+    if (ch === 47 && i + 1 < len) {
+      const next = code.charCodeAt(i + 1);
+      if (next === 47) {
+        i += 2;
+        while (i < len && code.charCodeAt(i) !== 10) i++;
+        continue;
+      }
+      if (next === 42) {
+        i += 2;
+        while (i + 1 < len && !(code.charCodeAt(i) === 42 && code.charCodeAt(i + 1) === 47)) i++;
+        i++;
+        continue;
+      }
+    }
+    if (ch === 123) {
+      depth++;
+    } else if (ch === 125) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Surgically instrument a pre-bundled (Vite/Rollup/Webpack/esbuild/UMD) Three.js chunk
+ * so `new WebGLRenderer(opts)` delegates to SoftN's Native V8 `ThreeWorkerHost` when
+ * available (falling back seamlessly to the bundled JS renderer if unavailable or if a
+ * custom `opts.context` was passed), and `Raycaster` delegates `intersectObject(s)` to
+ * Native V8 raycasting.
+ */
+export function instrumentBundledThree(code: string): { code: string; patched: boolean } {
+  if (!hasBundledThree(code)) return { code, patched: false };
+  const insertions: Array<{ offset: number; text: string }> = [];
+
+  // 1. Hook bundled `WebGLRenderer` constructor right after its opening `{`
+  const rendererFlagMatch = /\bthis\.isWebGLRenderer\s*=\s*(?:true|!0)\b/.exec(code);
+  if (rendererFlagMatch) {
+    const flagIdx = rendererFlagMatch.index;
+    const lookbackStart = Math.max(0, flagIdx - 900);
+    const slice = code.slice(lookbackStart, flagIdx);
+    const ctorRe =
+      /(?:\bconstructor|\bfunction(?:\s+[A-Za-z_$][\w$]*)?)\s*\(\s*([A-Za-z_$][\w$]*)?(?:\s*=\s*\{\s*\})?\s*\)\s*\{/g;
+    let lastMatch: RegExpExecArray | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = ctorRe.exec(slice)) !== null) {
+      lastMatch = m;
+    }
+    if (lastMatch) {
+      const insertAt = lookbackStart + lastMatch.index + lastMatch[0].length;
+      const argExpr = lastMatch[1] || 'arguments[0]';
+      insertions.push({
+        offset: insertAt,
+        text: `var __snR=typeof globalThis.__softnTryNativeWebGLRenderer==="function"&&globalThis.__softnTryNativeWebGLRenderer(${argExpr});if(__snR)return __snR;`,
+      });
+    }
+  }
+
+  // 2. Hook bundled `Raycaster` constructor right before its closing `}` so its
+  //    prototype's `intersectObject` / `intersectObjects` run in Native V8.
+  const rayAnchorIdx = code.indexOf('THREE.Raycaster: Unsupported camera type:');
+  if (rayAnchorIdx > 0) {
+    const lookbackStart = Math.max(0, rayAnchorIdx - 1200);
+    const slice = code.slice(lookbackStart, rayAnchorIdx);
+    const ctorRe = /(?:\bconstructor|\bfunction\s+[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g;
+    let matchedClose = -1;
+    let m: RegExpExecArray | null;
+    while ((m = ctorRe.exec(slice)) !== null) {
+      const openBrace = lookbackStart + m.index + m[0].length - 1;
+      const closeBrace = findClosingBrace(code, openBrace);
+      if (closeBrace > openBrace && closeBrace < rayAnchorIdx) {
+        const body = code.slice(openBrace, closeBrace);
+        if (body.includes('this.ray') && body.includes('this.params')) {
+          matchedClose = closeBrace;
+        }
+      }
+    }
+    if (matchedClose > 0) {
+      insertions.push({
+        offset: matchedClose,
+        text: `;if(typeof globalThis.__softnPatchBundledRaycaster==="function"&&!this.constructor.__softnRayPatched)globalThis.__softnPatchBundledRaycaster(this.constructor,this.ray&&this.ray.origin&&this.ray.origin.constructor);`,
+      });
+    }
+  }
+
+  if (insertions.length === 0) return { code, patched: false };
+  // Apply from highest offset to lowest so indices never shift.
+  insertions.sort((a, b) => b.offset - a.offset);
+  let out = code;
+  for (const ins of insertions) {
+    out = out.slice(0, ins.offset) + ins.text + out.slice(ins.offset);
+  }
+  return { code: out, patched: true };
+}
+
 export const GUEST_THREE_NATIVE_SOURCE = String.raw`
 (function () {
   var g = globalThis;
   var doc = g.document;
+
+  function parseHexColor(color, ColorCtor) {
+    if (color && color.isColor && typeof color.getHex === 'function') return color.getHex();
+    if (typeof color === 'number') return color & 0xffffff;
+    if (ColorCtor) {
+      try { return new ColorCtor(color).getHex(); } catch (_) {}
+    }
+    if (typeof color === 'string') {
+      var s = color.trim();
+      if (s.charAt(0) === '#') {
+        var hex = s.slice(1);
+        if (hex.length === 3) {
+          hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+        }
+        var n = parseInt(hex.slice(0, 6), 16);
+        if (!isNaN(n)) return n & 0xffffff;
+      }
+      var rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
+      if (rgb) {
+        return (((Number(rgb[1]) & 255) << 16) | ((Number(rgb[2]) & 255) << 8) | (Number(rgb[3]) & 255)) >>> 0;
+      }
+    }
+    return 0;
+  }
+
+  function makeVec2(x, y, Vec2Ctor) {
+    if (Vec2Ctor) return new Vec2Ctor(x, y);
+    return {
+      x: x,
+      y: y,
+      isVector2: true,
+      set: function (nx, ny) { this.x = nx; this.y = ny; return this; },
+      clone: function () { return makeVec2(this.x, this.y, null); },
+      copy: function (v) { this.x = v.x; this.y = v.y; return this; },
+    };
+  }
+
+  function makeVec3(x, y, z, Vec3Ctor) {
+    if (Vec3Ctor) return new Vec3Ctor(x, y, z);
+    return {
+      x: x,
+      y: y,
+      z: z,
+      isVector3: true,
+      set: function (nx, ny, nz) { this.x = nx; this.y = ny; this.z = nz; return this; },
+      clone: function () { return makeVec3(this.x, this.y, this.z, null); },
+      copy: function (v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; },
+    };
+  }
+
+  function makeColor(hex, ColorCtor) {
+    if (ColorCtor) return new ColorCtor().setHex(hex);
+    var c = {
+      r: ((hex >> 16) & 255) / 255,
+      g: ((hex >> 8) & 255) / 255,
+      b: (hex & 255) / 255,
+      isColor: true,
+      getHex: function () {
+        return (((Math.round(this.r * 255) & 255) << 16) | ((Math.round(this.g * 255) & 255) << 8) | (Math.round(this.b * 255) & 255)) >>> 0;
+      },
+      setHex: function (h) {
+        this.r = ((h >> 16) & 255) / 255;
+        this.g = ((h >> 8) & 255) / 255;
+        this.b = (h & 255) / 255;
+        return this;
+      },
+    };
+    return c;
+  }
 
   function bytesToB64(u8) {
     var s = '';
@@ -104,16 +300,18 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
 
   var __activeRenderers = Object.create(null);
 
-  g.__softnPatchThreeNative = function (THREE) {
-    if (!THREE || THREE.__softnNativePatched) return;
-    if (typeof host === 'undefined' || typeof host.callSync !== 'function') return;
-    THREE.__softnNativePatched = true;
-
-    var OrigWebGLRenderer = THREE.WebGLRenderer;
-    var OrigRaycaster = THREE.Raycaster;
+  function createNativeRendererClass(THREE) {
+    var OrigWebGLRenderer = THREE && THREE.WebGLRenderer ? THREE.WebGLRenderer : null;
+    var Vec2Ctor = THREE && THREE.Vector2 ? THREE.Vector2 : null;
+    var ColorCtor = THREE && THREE.Color ? THREE.Color : null;
 
     function NativeWebGLRenderer(opts) {
       opts = opts || {};
+      if (opts.context) {
+        if (OrigWebGLRenderer) return new OrigWebGLRenderer(opts);
+        this._snInitFailed = true;
+        return;
+      }
       this.domElement = opts.canvas || (doc && doc.createElement ? doc.createElement('canvas') : { width: 300, height: 150, style: {} });
       var w = this.domElement.width || 300;
       var h = this.domElement.height || 150;
@@ -134,9 +332,12 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       }
       if (!info || !info.rendererId) {
         // Fallback cleanly to built-in JS WebGLRenderer if OffscreenCanvas Three host is unavailable
-        return new OrigWebGLRenderer(opts);
+        if (OrigWebGLRenderer) return new OrigWebGLRenderer(opts);
+        this._snInitFailed = true;
+        return;
       }
 
+      this.isWebGLRenderer = true;
       this._rid = info.rendererId;
       this._canvasIdSent = this.domElement.__softnNode || 0;
       this._w = w;
@@ -172,11 +373,11 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         enabled: false,
         autoUpdate: true,
         needsUpdate: false,
-        type: THREE.PCFShadowMap !== undefined ? THREE.PCFShadowMap : 1,
+        type: THREE && THREE.PCFShadowMap !== undefined ? THREE.PCFShadowMap : 1,
       };
-      this.toneMapping = THREE.NoToneMapping !== undefined ? THREE.NoToneMapping : 0;
+      this.toneMapping = THREE && THREE.NoToneMapping !== undefined ? THREE.NoToneMapping : 0;
       this.toneMappingExposure = 1;
-      this.outputColorSpace = THREE.SRGBColorSpace || 'srgb';
+      this.outputColorSpace = (THREE && THREE.SRGBColorSpace) || 'srgb';
       this.autoClear = true;
       this.autoClearColor = true;
       this.autoClearDepth = true;
@@ -273,19 +474,24 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       }
       this._sizeDirty = true;
     };
+    Object.defineProperty(NativeWebGLRenderer.prototype, 'outputEncoding', {
+      enumerable: true,
+      configurable: true,
+      get: function () { return this.outputColorSpace === 'srgb-linear' ? 3000 : 3001; },
+      set: function (enc) { this.outputColorSpace = enc === 3000 ? 'srgb-linear' : 'srgb'; },
+    });
     NativeWebGLRenderer.prototype.getSize = function (target) {
-      return (target || new THREE.Vector2()).set(this._w, this._h);
+      return (target || makeVec2(0, 0, Vec2Ctor)).set(this._w, this._h);
     };
     NativeWebGLRenderer.prototype.getDrawingBufferSize = function (target) {
-      return (target || new THREE.Vector2()).set(Math.round(this._w * this._dpr), Math.round(this._h * this._dpr));
+      return (target || makeVec2(0, 0, Vec2Ctor)).set(Math.round(this._w * this._dpr), Math.round(this._h * this._dpr));
     };
     NativeWebGLRenderer.prototype.setClearColor = function (color, alpha) {
-      var c = color && color.isColor ? color : new THREE.Color(color);
-      this._clearColor = c.getHex();
+      this._clearColor = parseHexColor(color, ColorCtor);
       if (alpha !== undefined) this._clearAlpha = Number(alpha);
     };
     NativeWebGLRenderer.prototype.getClearColor = function (target) {
-      return (target || new THREE.Color()).setHex(this._clearColor);
+      return (target || makeColor(0, ColorCtor)).setHex(this._clearColor);
     };
     NativeWebGLRenderer.prototype.getClearAlpha = function () { return this._clearAlpha; };
     NativeWebGLRenderer.prototype.setClearAlpha = function (a) { this._clearAlpha = Number(a); };
@@ -948,6 +1154,128 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       try { host.callSync('three', 'dispose', String(this._rid), 'renderer'); } catch (e) {}
     };
 
+    return NativeWebGLRenderer;
+  }
+
+  function patchRaycasterCtor(OrigRaycaster, Vector3Ctor, Vector2Ctor) {
+    if (!OrigRaycaster || !OrigRaycaster.prototype || OrigRaycaster.__softnRayPatched) return;
+    if (typeof host === 'undefined' || typeof host.callSync !== 'function') return;
+    OrigRaycaster.__softnRayPatched = true;
+
+    var vec3Ctor = Vector3Ctor || null;
+    var vec2Ctor = Vector2Ctor || null;
+    var origSetFromCamera = OrigRaycaster.prototype.setFromCamera;
+    if (!vec2Ctor && typeof origSetFromCamera === 'function') {
+      OrigRaycaster.prototype.setFromCamera = function (coords, camera) {
+        if (!vec2Ctor && coords && coords.isVector2 && typeof coords.constructor === 'function') {
+          vec2Ctor = coords.constructor;
+        }
+        return origSetFromCamera.call(this, coords, camera);
+      };
+    }
+
+    var origIntersectObjects = OrigRaycaster.prototype.intersectObjects;
+
+    function runNativeRaycast(raycaster, list, recursive, optionalTarget) {
+      var out = optionalTarget || [];
+      var byRid = null;
+      var fallback = [];
+      for (var i = 0; i < list.length; i++) {
+        var o = list[i];
+        if (o && o._snThreeRid && o._snThreeId && __activeRenderers[o._snThreeRid]) {
+          if (!byRid) byRid = Object.create(null);
+          if (!byRid[o._snThreeRid]) byRid[o._snThreeRid] = [];
+          byRid[o._snThreeRid].push(o._snThreeId);
+        } else if (o) {
+          fallback.push(o);
+        }
+      }
+      if (!byRid) {
+        return origIntersectObjects.call(raycaster, list, recursive, out);
+      }
+      var ray = raycaster.ray;
+      if (!vec3Ctor && ray && ray.origin && typeof ray.origin.constructor === 'function') {
+        vec3Ctor = ray.origin.constructor;
+      }
+      var origin = [ray.origin.x, ray.origin.y, ray.origin.z];
+      var dir = [ray.direction.x, ray.direction.y, ray.direction.z];
+      var near = raycaster.near;
+      var far = raycaster.far === Infinity ? 1e30 : raycaster.far;
+      var rids = Object.keys(byRid);
+      for (var ri = 0; ri < rids.length; ri++) {
+        var rid = Number(rids[ri]);
+        var renderer = __activeRenderers[rid];
+        var camId = raycaster.camera && raycaster.camera._snThreeRid === rid ? raycaster.camera._snThreeId : 0;
+        var hits = null;
+        try {
+          hits = host.callSync(
+            'three',
+            'raycast',
+            String(rid),
+            JSON.stringify([origin, dir, near, far, byRid[rid], recursive !== false, camId])
+          );
+        } catch (e) {
+          hits = null;
+        }
+        if (Array.isArray(hits)) {
+          for (var hi = 0; hi < hits.length; hi++) {
+            var h = hits[hi];
+            var guestObj = renderer && renderer._objById[h.id];
+            if (!guestObj) continue;
+            var item = {
+              distance: h.d,
+              point: makeVec3(h.p[0], h.p[1], h.p[2], vec3Ctor),
+              object: guestObj,
+            };
+            if (typeof h.fi === 'number') item.faceIndex = h.fi;
+            if (Array.isArray(h.uv)) item.uv = makeVec2(h.uv[0], h.uv[1], vec2Ctor);
+            if (typeof h.ii === 'number') item.instanceId = h.ii;
+            out.push(item);
+          }
+        }
+      }
+      if (fallback.length > 0) {
+        origIntersectObjects.call(raycaster, fallback, recursive, out);
+      }
+      if (out.length > 1) {
+        out.sort(function (a, b) { return a.distance - b.distance; });
+      }
+      return out;
+    }
+
+    OrigRaycaster.prototype.intersectObject = function (object, recursive, optionalTarget) {
+      return runNativeRaycast(this, [object], recursive !== false, optionalTarget);
+    };
+    OrigRaycaster.prototype.intersectObjects = function (objects, recursive, optionalTarget) {
+      return runNativeRaycast(this, objects, recursive !== false, optionalTarget);
+    };
+  }
+
+  // Standalone native renderer class for pre-bundled/inlined Three.js chunks (Vite/Rollup/Webpack/UMD)
+  var BundledNativeWebGLRenderer = createNativeRendererClass(null);
+
+  g.__softnTryNativeWebGLRenderer = function (opts) {
+    if (typeof host === 'undefined' || typeof host.callSync !== 'function') return null;
+    try {
+      var inst = new BundledNativeWebGLRenderer(opts || {});
+      if (!inst || inst._snInitFailed || !inst._rid) return null;
+      return inst;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  g.__softnPatchBundledRaycaster = function (RaycasterCtor, Vector3Ctor, Vector2Ctor) {
+    patchRaycasterCtor(RaycasterCtor, Vector3Ctor, Vector2Ctor);
+  };
+
+  g.__softnPatchThreeNative = function (THREE) {
+    if (!THREE || THREE.__softnNativePatched) return;
+    if (typeof host === 'undefined' || typeof host.callSync !== 'function') return;
+    THREE.__softnNativePatched = true;
+
+    var NativeWebGLRenderer = createNativeRendererClass(THREE);
+
     Object.defineProperty(THREE, 'WebGLRenderer', {
       enumerable: true,
       configurable: true,
@@ -965,82 +1293,7 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       value: loadGLTF,
     });
 
-    // Patch Raycaster.prototype in-place so high-poly terrain/scene picking runs in Native V8 (>200x faster!)
-    if (OrigRaycaster && OrigRaycaster.prototype) {
-      var origIntersectObject = OrigRaycaster.prototype.intersectObject;
-      var origIntersectObjects = OrigRaycaster.prototype.intersectObjects;
-
-      function runNativeRaycast(raycaster, list, recursive, optionalTarget) {
-        var out = optionalTarget || [];
-        var byRid = null;
-        var fallback = [];
-        for (var i = 0; i < list.length; i++) {
-          var o = list[i];
-          if (o && o._snThreeRid && o._snThreeId && __activeRenderers[o._snThreeRid]) {
-            if (!byRid) byRid = Object.create(null);
-            if (!byRid[o._snThreeRid]) byRid[o._snThreeRid] = [];
-            byRid[o._snThreeRid].push(o._snThreeId);
-          } else if (o) {
-            fallback.push(o);
-          }
-        }
-        if (!byRid) {
-          return origIntersectObjects.call(raycaster, list, recursive, out);
-        }
-        var ray = raycaster.ray;
-        var origin = [ray.origin.x, ray.origin.y, ray.origin.z];
-        var dir = [ray.direction.x, ray.direction.y, ray.direction.z];
-        var near = raycaster.near;
-        var far = raycaster.far === Infinity ? 1e30 : raycaster.far;
-        var rids = Object.keys(byRid);
-        for (var ri = 0; ri < rids.length; ri++) {
-          var rid = Number(rids[ri]);
-          var renderer = __activeRenderers[rid];
-          var camId = raycaster.camera && raycaster.camera._snThreeRid === rid ? raycaster.camera._snThreeId : 0;
-          var hits = null;
-          try {
-            hits = host.callSync(
-              'three',
-              'raycast',
-              String(rid),
-              JSON.stringify([origin, dir, near, far, byRid[rid], recursive !== false, camId])
-            );
-          } catch (e) {
-            hits = null;
-          }
-          if (Array.isArray(hits)) {
-            for (var hi = 0; hi < hits.length; hi++) {
-              var h = hits[hi];
-              var guestObj = renderer && renderer._objById[h.id];
-              if (!guestObj) continue;
-              var item = {
-                distance: h.d,
-                point: new THREE.Vector3(h.p[0], h.p[1], h.p[2]),
-                object: guestObj,
-              };
-              if (typeof h.fi === 'number') item.faceIndex = h.fi;
-              if (Array.isArray(h.uv)) item.uv = new THREE.Vector2(h.uv[0], h.uv[1]);
-              if (typeof h.ii === 'number') item.instanceId = h.ii;
-              out.push(item);
-            }
-          }
-        }
-        if (fallback.length > 0) {
-          origIntersectObjects.call(raycaster, fallback, recursive, out);
-        }
-        if (out.length > 1) {
-          out.sort(function (a, b) { return a.distance - b.distance; });
-        }
-        return out;
-      }
-
-      OrigRaycaster.prototype.intersectObject = function (object, recursive, optionalTarget) {
-        return runNativeRaycast(this, [object], recursive !== false, optionalTarget);
-      };
-      OrigRaycaster.prototype.intersectObjects = function (objects, recursive, optionalTarget) {
-        return runNativeRaycast(this, objects, recursive !== false, optionalTarget);
-      };
-    }
+    patchRaycasterCtor(THREE.Raycaster, THREE.Vector3, THREE.Vector2);
   };
 })();
 `;

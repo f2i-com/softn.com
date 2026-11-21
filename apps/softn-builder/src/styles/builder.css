@@ -795,6 +795,38 @@ body {
   font: 600 13px/1.3 var(--body);
 }
 
+.bl-backend-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.bl-backend-option {
+  position: relative;
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  text-align: left;
+  font: 600 13px/1.35 var(--body);
+}
+
+.bl-backend-option strong {
+  font-weight: 600;
+  color: var(--paper);
+  line-height: 1.3;
+}
+
+.bl-backend-option code {
+  display: block;
+  max-width: 100%;
+  color: var(--dim);
+  font: 11px/1.4 var(--mono);
+  word-break: break-word;
+}
+
 .bl-choice-detail {
   margin: 6px 0 0;
   font: 12px/1.5 var(--body);
@@ -850,6 +882,7 @@ body {
   .bl-create-body, .bl-create-head, .bl-create-footer { padding-inline: 14px; }
   .bl-create-types { gap: 1px; }
   .bl-create-type { font-size: 12px; }
+  .bl-backend-options { grid-template-columns: 1fr; }
   .bl-framework-sample { height: 52px; }
   .bl-framework-caption { padding-inline: 4px; font-size: 13px; }
   .bl-framework-caption::after { display: none; }
@@ -857,7 +890,7 @@ body {
   .bl-project-details > div { grid-template-columns: 1fr; }
 }
 @media (pointer: coarse) {
-  .bl-create-type, .bl-create .bl-language-option, .bl-create .bl-btn, .bl-create .bl-close { min-height: 44px; }
+  .bl-create-type, .bl-create .bl-language-option, .bl-create .bl-backend-option, .bl-create .bl-btn, .bl-create .bl-close { min-height: 44px; }
   .bl-create .bl-close { min-width: 44px; }
   .bl-project-details summary { padding-block: 14px; }
 }

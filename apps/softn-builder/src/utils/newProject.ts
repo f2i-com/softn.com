@@ -11,6 +11,7 @@
 
 import { useCanvasStore } from '../stores/canvasStore';
 import type { StarterFile } from '@softn/editor-shared/webStarters';
+import { addFormLogicBackend } from '@softn/editor-shared/formlogicBackend';
 import { useFilesStore } from '../stores/filesStore';
 import { useHistoryStore } from '../stores/historyStore';
 import { useProjectStore } from '../stores/projectStore';
@@ -23,7 +24,6 @@ import { prepareProjectSnapshot, commitProjectSnapshot } from './openProject';
 import { markUnsaved } from './savedPoint';
 import { expressionText } from './starterProps';
 import type {
-  NewProjectBackend,
   NewProjectConfig,
   NewProjectLanguage,
   StarterTemplate,
@@ -374,7 +374,7 @@ function buildWebBackendStarter(
   name: string,
   description: string,
   language: NewProjectLanguage,
-  backend: Exclude<NewProjectBackend, 'none'>
+  backend: 'php' | 'javascript' | 'typescript'
 ): {
   html: string;
   css: string;
@@ -643,9 +643,13 @@ export function startNewProject(config: NewProjectConfig, starterFiles?: Starter
     project.setVersion('1.0.0');
     project.setPythonPackages(config.pythonPackages);
 
-    const hasBackend = config.backend && config.backend !== 'none';
-    const backendStarter = hasBackend
-      ? buildWebBackendStarter(config.name, config.description, config.language, config.backend as Exclude<NewProjectBackend, 'none'>)
+    const sandboxBackend =
+      config.backend === 'php' || config.backend === 'javascript' || config.backend === 'typescript'
+        ? config.backend
+        : null;
+    const wantsFormLogic = config.backend === 'formlogic';
+    const backendStarter = sandboxBackend
+      ? buildWebBackendStarter(config.name, config.description, config.language, sandboxBackend)
       : null;
     const starter = backendStarter ?? buildWebContainerStarter(config.name, config.description, config.template, config.language);
     const htmlId = 'web_index_html';
@@ -692,40 +696,64 @@ export function startNewProject(config: NewProjectConfig, starterFiles?: Starter
     }
 
     useFilesStore.getState().loadFromBundle(uiFiles, logicFiles, new Map(), htmlId);
+    const prevSource = useProjectStore.getState().source;
+    const extraEntries = new Map(prevSource.extraEntries);
+    let nextManifest: Record<string, unknown> | null = prevSource.manifest;
+    if (backendStarter && sandboxBackend) {
+      nextManifest = {
+        formatVersion: 2,
+        engine: 2,
+        name: config.name,
+        version: '1.0.0',
+        description: config.description,
+        main: 'index.html',
+        backend: {
+          runtime: sandboxBackend,
+          entry: backendStarter.backendEntry,
+          mode: 'api',
+          routes: ['/api/'],
+        },
+        databases: [
+          {
+            name: 'app',
+            engine: 'sqlite',
+            file: 'app.db',
+            seedSql: 'backend/schema.sql',
+          },
+        ],
+        config: {
+          execution: 'worker',
+          theme: { mode: config.theme },
+          ...(config.pythonPackages.length > 0 ? { python: { packages: config.pythonPackages } } : {}),
+        },
+      };
+    } else if (wantsFormLogic) {
+      const baseManifest: Record<string, unknown> = {
+        formatVersion: 2,
+        engine: 2,
+        name: config.name,
+        version: '1.0.0',
+        description: config.description,
+        main: 'index.html',
+        config: {
+          execution: 'worker',
+          theme: { mode: config.theme },
+          ...(config.pythonPackages.length > 0 ? { python: { packages: config.pythonPackages } } : {}),
+        },
+      };
+      const fl = addFormLogicBackend(baseManifest, ['index.html', 'style.css', starter.scriptPath]);
+      nextManifest = fl.manifest;
+      const enc = new TextEncoder();
+      for (const [p, content] of Object.entries(fl.files)) {
+        extraEntries.set(p, enc.encode(content));
+      }
+    }
     useProjectStore.getState().setSource({
-      ...useProjectStore.getState().source,
+      ...prevSource,
       mainFileId: htmlId,
-      ...(backendStarter
-        ? {
-            manifest: {
-              formatVersion: 2,
-              engine: 2,
-              name: config.name,
-              version: '1.0.0',
-              description: config.description,
-              main: 'index.html',
-              backend: {
-                runtime: config.backend,
-                entry: backendStarter.backendEntry,
-                mode: 'api',
-                routes: ['/api/'],
-              },
-              databases: [
-                {
-                  name: 'app',
-                  engine: 'sqlite',
-                  file: 'app.db',
-                  seedSql: 'backend/schema.sql',
-                },
-              ],
-              config: {
-                execution: 'worker',
-                theme: { mode: config.theme },
-                ...(config.pythonPackages.length > 0 ? { python: { packages: config.pythonPackages } } : {}),
-              },
-            },
-          }
-        : {}),
+      manifest: nextManifest,
+      manifestBytes: null,
+      extraEntries,
     });
     useProjectStore.getState().markDirty();
     return;
@@ -747,6 +775,85 @@ export function startNewProject(config: NewProjectConfig, starterFiles?: Starter
   applyStarterTemplate(config.template);
   // Into the file, or the next reload of the canvas from it throws it away.
   flushCanvasToActiveFile();
+
+  // Optional backend & database for classic `.ui` projects (FormLogic API OR sandboxed PHP/JS/TS + SQLite)
+  const classicSandboxBackend =
+    config.backend === 'php' || config.backend === 'javascript' || config.backend === 'typescript'
+      ? config.backend
+      : null;
+  if (classicSandboxBackend) {
+    const starter = buildWebBackendStarter(config.name, config.description, config.language, classicSandboxBackend);
+    const filesState = useFilesStore.getState();
+    const nextLogic = new Map(filesState.logicFiles);
+    nextLogic.set('ui_backend_entry', {
+      id: 'ui_backend_entry',
+      path: starter.backendEntry,
+      content: starter.backendContent,
+    });
+    nextLogic.set('ui_backend_schema', {
+      id: 'ui_backend_schema',
+      path: 'backend/schema.sql',
+      content: starter.schemaSql,
+    });
+    filesState.loadFromBundle(filesState.uiFiles, nextLogic, filesState.assetFiles, filesState.activeFileId ?? undefined);
+
+    const prevSource = useProjectStore.getState().source;
+    useProjectStore.getState().setSource({
+      ...prevSource,
+      manifest: {
+        ...(prevSource.manifest ?? {}),
+        name: config.name,
+        version: '1.0.0',
+        description: config.description,
+        main: 'ui/main.ui',
+        backend: {
+          runtime: classicSandboxBackend,
+          entry: starter.backendEntry,
+          mode: 'api',
+          routes: ['/api/'],
+        },
+        databases: [
+          {
+            name: 'app',
+            engine: 'sqlite',
+            file: 'app.db',
+            seedSql: 'backend/schema.sql',
+            persist: true,
+          },
+        ],
+        config: {
+          theme: { mode: config.theme },
+          ...(config.pythonPackages.length > 0 ? { python: { packages: config.pythonPackages } } : {}),
+        },
+      },
+      manifestBytes: null,
+    });
+  } else if (config.backend === 'formlogic') {
+    const prevSource = useProjectStore.getState().source;
+    const baseManifest: Record<string, unknown> = {
+      ...(prevSource.manifest ?? {}),
+      name: config.name,
+      version: '1.0.0',
+      description: config.description,
+      main: 'ui/main.ui',
+      config: {
+        theme: { mode: config.theme },
+        ...(config.pythonPackages.length > 0 ? { python: { packages: config.pythonPackages } } : {}),
+      },
+    };
+    const fl = addFormLogicBackend(baseManifest, ['ui/main.ui']);
+    const nextExtra = new Map(prevSource.extraEntries);
+    const enc = new TextEncoder();
+    for (const [p, content] of Object.entries(fl.files)) {
+      nextExtra.set(p, enc.encode(content));
+    }
+    useProjectStore.getState().setSource({
+      ...prevSource,
+      manifest: fl.manifest,
+      manifestBytes: null,
+      extraEntries: nextExtra,
+    });
+  }
 
   // The new project has not been saved anywhere yet, including its name,
   // chosen template and theme. Keep navigation/New/Open guards active.

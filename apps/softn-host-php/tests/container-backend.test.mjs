@@ -337,3 +337,73 @@ test('package.mjs bundles container ZIPP WASM engines and sets backendUrl for v2
   assert.ok(entries.has('backend/wasm/container/zipp-typescript.wasm'));
   assert.ok(entries.has('backend/wasm/container/zipp-rust.wasm'));
 });
+
+test('FormLogic multi-user mode stores primary SQLite at application.sqlite and forwards verified hostContext while blocking spoofed headers', {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
+  const root = makeBackendFixture(t, {
+    'manifest.json': JSON.stringify({
+      engine: 2,
+      id: 'fl-multi-notes',
+      name: 'FL Multi Notes',
+      version: '1.0.0',
+      main: 'public/index.html',
+      frontendRoot: 'public',
+      backend: {runtime: 'php', entry: 'backend/index.php', mode: 'api', routes: ['/api/']},
+      databases: [{name: 'app', engine: 'sqlite', file: 'app.db', seedSql: 'backend/schema.sql', persist: true}],
+    }),
+    'public/index.html': '<!doctype html><h1>Notes</h1>',
+    'backend/schema.sql': 'CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, text TEXT NOT NULL);',
+    'backend/index.php': `<?php
+header('Content-Type: application/json; charset=utf-8');
+$pdo = new PDO('sqlite:app');
+$userId = $_SERVER['HTTP_X_FORMLOGIC_USER_ID'] ?? 'anon';
+$spoof = $_SERVER['HTTP_X_FORMLOGIC_SPOOF'] ?? null;
+$ctx = json_decode($_SERVER['HTTP_X_FORMLOGIC_CONTEXT'] ?? '{}', true);
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    $in = json_decode(file_get_contents('php://input'), true) ?: [];
+    $stmt = $pdo->prepare('INSERT INTO items (user_id, text) VALUES (?, ?)');
+    $stmt->execute([$userId, $in['text'] ?? '']);
+}
+$rows = $pdo->query('SELECT id, user_id, text FROM items ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+echo json_encode(['userId' => $userId, 'spoof' => $spoof, 'roleId' => $ctx['roleId'] ?? null, 'items' => $rows]);
+`,
+  }, 'fl-multi-notes');
+
+  // Enable FormLogic multi-user config flags
+  const cfgPath = join(root, 'private/config.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  cfg.enableHostContext = true;
+  cfg.containerPrimaryDatabase = 'application.sqlite';
+  writeFileSync(cfgPath, JSON.stringify(cfg));
+
+  const res = spawnSync(process.execPath, [join(root, 'runner.mjs')], {
+    input: JSON.stringify({
+      path: '/api/items',
+      method: 'POST',
+      queryString: '',
+      headers: {
+        'content-type': 'application/json',
+        'x-formlogic-user-id': 'spoofed-admin',
+        'x-formlogic-spoof': 'evil',
+      },
+      bodyBase64: Buffer.from(JSON.stringify({text: 'Hello FormLogic'})).toString('base64'),
+      client_ip: '127.0.0.1',
+    }),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      SOFTN_BACKEND_ROOT: root,
+      SOFTN_CONTAINER_ENGINES_DIR: containerEnginesDir,
+      SOFTN_HOST_CONTEXT: JSON.stringify({userId: 'user-42', roleId: 'member', authenticated: true, appId: 'fl-multi-notes'}),
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  const parsed = JSON.parse(res.stdout);
+  const body = JSON.parse(Buffer.from(parsed.bodyBase64, 'base64').toString('utf8'));
+  assert.equal(body.userId, 'user-42');
+  assert.equal(body.roleId, 'member');
+  assert.equal(body.spoof, null);
+  assert.equal(body.items.length, 1);
+  assert.deepEqual(body.items[0], {id: 1, user_id: 'user-42', text: 'Hello FormLogic'});
+  // Verify primary DB landed at private/data/application.sqlite for FormLogic Data manager & backups!
+  assert.equal(existsSync(join(root, 'private/data/application.sqlite')), true);
+});

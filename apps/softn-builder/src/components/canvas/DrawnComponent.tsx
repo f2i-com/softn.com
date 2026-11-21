@@ -40,7 +40,7 @@
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { App, minimalComponents } from '@softn/components/minimal';
 import { darkTheme, lightTheme, themeToCssVariables } from '@softn/components/theme';
-import { getDefaultRegistry } from '@softn/core';
+import { getDefaultRegistry } from '@softn/core/authoring';
 import type { CanvasElement, ComponentMeta } from '../../types/builder';
 import { drawnProps, type DrawnHeld } from '../../utils/drawnProps';
 import type { DrawnTheme, ThemeSide } from '../../utils/drawnTheme';

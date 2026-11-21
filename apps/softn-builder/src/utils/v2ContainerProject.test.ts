@@ -259,4 +259,107 @@ describe('SoftN Builder v2 Web App Containers', () => {
     expect(html).toContain('softn:ui.css');
     expect(py).toContain('addEventListener("click", add_task)');
   });
+
+  it('opens a Studio-exported PHP Slim 4 bundle whose server/*.php and server/*.sql are listed under manifest.files.assets into editable logicFiles', async () => {
+    const studioExportedZip = zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          id: 'com.studio.clinic',
+          name: 'Clinic Desk',
+          version: '1.0.0',
+          engine: 2,
+          main: 'public/index.html',
+          frontendRoot: 'public',
+          backend: {
+            runtime: 'php',
+            entry: 'server/public/index.php',
+            mode: 'api',
+            routes: ['/api/'],
+          },
+          databases: [{ name: 'app', engine: 'sqlite', file: 'server/data/app.db', seedSql: 'server/migrations/001.sql' }],
+          files: {
+            ui: ['public/index.html'],
+            logic: ['public/app.js'],
+            xdb: [],
+            assets: [
+              'server/public/index.php',
+              'server/src/Routes.php',
+              'server/migrations/001.sql',
+              'server/public/.htaccess',
+              'server/vendor/autoload.php',
+              'server/data/app.db',
+              'public/logo.png',
+            ],
+          },
+        })
+      ),
+      'public/index.html': strToU8('<!DOCTYPE html><html><body><div id="app"></div><script type="module" src="./app.js"></script></body></html>'),
+      'public/app.js': strToU8('fetch("/api/patients");'),
+      'public/logo.png': new Uint8Array([137, 80, 78, 71]),
+      'server/public/index.php': strToU8('<?php echo json_encode(["ok" => true]);'),
+      'server/src/Routes.php': strToU8('<?php // routes'),
+      'server/migrations/001.sql': strToU8('CREATE TABLE patients (id INTEGER PRIMARY KEY);'),
+      'server/public/.htaccess': strToU8('RewriteEngine On\nRewriteRule ^ index.php [QSA,L]\n'),
+      'server/vendor/autoload.php': strToU8('<?php // composer'),
+      'server/data/app.db': new Uint8Array([83, 81, 76, 105, 116, 101]),
+    });
+
+    const loaded = await loadBundle(studioExportedZip);
+    expect(loaded.projectFormat).toBe('web');
+    const editablePaths = [...loaded.logicFiles.values()].map((f) => f.path);
+    expect(editablePaths).toContain('server/public/index.php');
+    expect(editablePaths).toContain('server/src/Routes.php');
+    expect(editablePaths).toContain('server/migrations/001.sql');
+    expect(editablePaths).toContain('server/public/.htaccess');
+    expect(loaded.assets.has('server/public/index.php')).toBe(false);
+    expect(loaded.assets.has('server/vendor/autoload.php')).toBe(false);
+    expect(loaded.assets.has('server/data/app.db')).toBe(false);
+    expect(loaded.assets.has('public/logo.png')).toBe(true);
+    expect(loaded.extraEntries.has('server/vendor/autoload.php')).toBe(true);
+    expect(loaded.extraEntries.has('server/data/app.db')).toBe(true);
+
+    // Edit server/public/index.php and verify it round-trips back out cleanly
+    commitProjectSnapshot(prepareProjectSnapshot(loaded));
+    const entry = [...useFilesStore.getState().logicFiles.values()].find((f) => f.path === 'server/public/index.php')!;
+    useFilesStore.getState().updateLogicFile(entry.id, '<?php echo json_encode(["ok" => true, "edited" => 1]);');
+    const exported = await buildProjectBundle();
+    const reopened = await loadBundle(exported);
+    expect([...reopened.logicFiles.values()].find((f) => f.path === 'server/public/index.php')?.content).toContain('"edited" => 1');
+  });
+
+  it('scaffolds Classic .ui projects with PHP + SQLite AND Web Container projects with FormLogic API', async () => {
+    // 1. Classic `.ui` + custom sandboxed PHP + SQLite backend
+    startNewProject({
+      name: 'Classic PHP UI',
+      description: '.ui frontend backed by PHP + SQLite',
+      theme: 'light',
+      template: 'blank',
+      backend: 'php',
+      language: 'javascript',
+      pythonPackages: [],
+    });
+    expect(useProjectStore.getState().projectFormat).toBe('ui');
+    const uiLogicPaths = [...useFilesStore.getState().logicFiles.values()].map((f) => f.path);
+    expect(uiLogicPaths).toContain('backend/index.php');
+    expect(uiLogicPaths).toContain('backend/schema.sql');
+    const uiManifest = useProjectStore.getState().source.manifest as Record<string, unknown>;
+    expect(uiManifest.backend).toMatchObject({ runtime: 'php', entry: 'backend/index.php', mode: 'api' });
+    expect(Array.isArray(uiManifest.databases)).toBe(true);
+
+    // 2. Web Container + FormLogic API backend
+    startNewProject({
+      name: 'Web FormLogic App',
+      description: 'Web container backed by FormLogic tables & API',
+      theme: 'dark',
+      template: 'blank',
+      format: 'web',
+      backend: 'formlogic',
+      language: 'typescript',
+      pythonPackages: [],
+    });
+    expect(useProjectStore.getState().projectFormat).toBe('web');
+    const webManifest = useProjectStore.getState().source.manifest as Record<string, unknown>;
+    expect((webManifest.server as Record<string, unknown>)?.entry).toBe('server/main.logic');
+    expect(useProjectStore.getState().source.extraEntries.has('server/main.logic')).toBe(true);
+  });
 });

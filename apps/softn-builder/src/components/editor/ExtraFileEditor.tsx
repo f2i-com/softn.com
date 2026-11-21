@@ -6,7 +6,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { strToU8 } from 'fflate';
-import { assetObjectUrl } from '@softn/core';
+import { assetObjectUrl } from '@softn/core/authoring';
 import { useProjectStore } from '../../stores/projectStore';
 import { askConfirm } from '../../utils/confirm';
 import { sizeWords } from '../../utils/addAssets';
