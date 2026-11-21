@@ -1,6 +1,8 @@
 /** Private editor session with the same-origin FormLogic parent. No account credentials cross it. */
 import { randomUUID } from '@softn/bundle-format/crypto';
 export const isHostedEditor = () => typeof window !== 'undefined' && window.parent !== window && new URLSearchParams(window.location.search).get('formlogicEditor') === '1';
+/** FormLogic sets this when its installed runtime can preview and host HTML/ES module projects. */
+export const hostedWebContainersEnabled = () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('webContainers') === '1';
 let currentPort: MessagePort | null = null;
 const hostRequests = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
 const pendingSaves = new Map<string, { resolve(value: HostedSaveResult): void; timer: ReturnType<typeof setTimeout> | null }>();
@@ -392,19 +394,19 @@ function takeUpPendingSaves(): void {
 }
 
 /** What the host asked for with the project, beyond the project itself. */
-export interface HostedOpenOptions { brief: HostedBrief | null }
+export interface HostedOpenOptions { brief: HostedBrief | null; preview?: boolean }
 
 /**
  * `agentRuns`: whether this editor runs an AI agent that can take a brief and
  * report its status (Studio does; the Builder does not, so it does not announce it).
  */
-export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: string, options: HostedOpenOptions): Promise<void>; export(): Promise<Uint8Array> | Uint8Array }, capabilities: { agentRuns?: boolean } = {}): () => void {
+export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: string, options: HostedOpenOptions): Promise<void>; export(): Promise<Uint8Array> | Uint8Array }, capabilities: { agentRuns?: boolean; projectZip?: boolean } = {}): () => void {
   if (!isHostedEditor()) return () => {};
   let port: MessagePort | null = null;
   let disposed = false;
   let loaded = false;
   let busy = false;
-  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION, ...(capabilities.agentRuns ? { agentRuns: HOSTED_AGENT_RUNS_VERSION } : {}), ...(engineBuild && settleEngine ? { engine: HOSTED_ENGINE_VERSION, zipp: engineBuild, ...(settleGlue ? { glue: HOSTED_GLUE_VERSION } : {}) } : {}) }, location.origin); };
+  const ready = () => { if (!port) window.parent.postMessage({ kind: 'formlogic-editor-ready', protocol: 1, aiTools: HOSTED_AI_TOOLS_VERSION, ...(capabilities.projectZip ? { projectZip: true } : {}), ...(capabilities.agentRuns ? { agentRuns: HOSTED_AGENT_RUNS_VERSION } : {}), ...(engineBuild && settleEngine ? { engine: HOSTED_ENGINE_VERSION, zipp: engineBuild, ...(settleGlue ? { glue: HOSTED_GLUE_VERSION } : {}) } : {}) }, location.origin); };
   const receive = (event: MessageEvent) => {
     if (event.source !== window.parent || event.origin !== location.origin || event.data?.kind !== 'formlogic-editor-connect' || event.data?.protocol !== 1 || port || !event.ports[0]) return;
     port = event.ports[0]; currentPort = port;
@@ -457,7 +459,10 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
           setHostSaveLabel(readHostedSaveLabel(data.saveLabel));
           setHostAiLabel(readHostedAiLabel(data.aiLabel));
           // A brief is only read from a host that said it speaks agentRuns.
-          await handlers.open(data.bytes, typeof data.name === 'string' ? data.name.slice(0, 150) : 'App', { brief: hostAgentRuns > 0 ? readHostedBrief(data.brief) : null });
+          await handlers.open(data.bytes, typeof data.name === 'string' ? data.name.slice(0, 150) : 'App', {
+            brief: hostAgentRuns > 0 ? readHostedBrief(data.brief) : null,
+            ...(data.preview === true ? { preview: true } : {}),
+          });
           if (!disposed) { loaded = true; reply({ opened: true }); }
         } else if (data.method === 'export' && loaded) {
           const bytes = await handlers.export();

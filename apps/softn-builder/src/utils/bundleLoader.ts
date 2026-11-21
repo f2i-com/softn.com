@@ -16,9 +16,10 @@
  * declared path is not moved (see bundleValidator.resolveEntry).
  */
 
+import { isGeneratedSourceModule } from '@softn/bundle-format/source-modules';
 import { debug } from './debug';
 import { manifestRunsInContainer } from '@softn/bundle-format/engine';
-import { MAX_ZIP_INPUT_BYTES, classifyAsset, pageLogicSources, resolveBundlePath } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, classifyAsset, pageLogicSources, resolveBundlePath } from '@softn/core/authoring';
 import { bytesToBase64 } from './base64';
 import { countedId } from './ids';
 import { ensureFieldIds } from './schemaFields';
@@ -104,7 +105,10 @@ function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
  * Load a .softn bundle from Uint8Array data
  */
 export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
-  const { manifest, manifestBytes, files, dropped, synthesizedManifest } = parseBundle(data);
+  return loadBundleContents(parseBundle(data));
+}
+
+export function loadBundleContents({ manifest, manifestBytes, files, dropped, synthesizedManifest }: ReturnType<typeof parseBundle>): LoadedBundle {
   // The manifest as read, before anything here touches the typed view of it.
   const rawManifest = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
 
@@ -150,6 +154,11 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   // on it, after which every runtime ran it on the other engine.
   // And only over a page: `"engine": 2` with a `.ui` entry is the SoftN bundle its entry is.
   const isWebContainer = Boolean(synthesizedManifest) || manifestRunsInContainer(rawManifest);
+  if (isWebContainer) {
+    for (const [path, bytes] of files) {
+      if (path.startsWith('__softn_generated__/') && isGeneratedSourceModule(path, decoder.decode(bytes))) consumed.add(path);
+    }
+  }
 
   // Load UI files. The entry is loaded whether or not `files.ui` lists it:
   // the runtime reads it by `main`, so a bundle that names it only there is
@@ -295,7 +304,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       // in extraEntries so they round-trip into preview & export without crowding the code tree.
       if (/(?:^|\/)(?:vendor|node_modules)\//i.test(path)) continue;
       if (
-        /\.(?:m?js|cjs|tsx?|mts|jsx|py|php|phtml|sql|rs|toml|ini|ya?ml|css|json|md|txt)$/i.test(path) ||
+        /\.(?:m?js|cjs|tsx?|mts|jsx|vue|py|php|phtml|sql|rs|toml|ini|ya?ml|css|json|md|txt)$/i.test(path) ||
         /(?:^|\/)\.htaccess$/i.test(path)
       ) {
         consumed.add(path);
@@ -552,7 +561,7 @@ export async function selectBundleFile(): Promise<Uint8Array | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.softn';
+    input.accept = '.softn,.zip';
 
     input.onchange = async () => {
       const file = input.files?.[0];

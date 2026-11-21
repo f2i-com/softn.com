@@ -39,8 +39,9 @@ describe('runtime file drops', () => {
   let mounted: boolean;
   const onFile = vi.fn();
   const onError = vi.fn();
+  const claimNavigation = () => () => true;
   function RuntimeFiles(): React.ReactElement {
-    const openFile = useLocalBundleFile(onFile, onError);
+    const openFile = useLocalBundleFile(onFile, onError, claimNavigation);
     return <DropZone onFile={openFile} onError={onError}><input /></DropZone>;
   }
   beforeEach(() => {
@@ -74,7 +75,7 @@ describe('runtime file drops', () => {
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Drop your');
     await drag('drop', [file('NOTES.SOFTN')]);
     expect(host.querySelector('[role="status"]')).toBeNull();
-    expect(onFile).toHaveBeenCalledWith(new Uint8Array(4), 'NOTES.SOFTN');
+    expect(onFile).toHaveBeenCalledWith(new Uint8Array(4), 'NOTES.SOFTN', expect.any(Function));
   });
   it('respects upload zones and native file inputs inside a running app', async () => {
     const input = host.querySelector('input')!;

@@ -132,5 +132,13 @@ with open(root/'apache.log','w') as log:
         if softn_runner:assert req('/api/meta')[0]==200;increment()
         print('PHP supervisor: four-slot admission limit, output limit, 25-second timeout and recovery passed'+(' (on Node, by "runner": "node")' if softn_runner else '')+'.',flush=True)
     finally:
-        os.killpg(server.pid,signal.SIGTERM);server.wait(timeout=15)
+        try:
+            os.killpg(server.pid, signal.SIGTERM)
+            try:
+                server.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                os.killpg(server.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        server.wait()
 print('Apache PHP test extraction: '+str(root))

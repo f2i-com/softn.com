@@ -1,0 +1,99 @@
+.st-db-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.st-db-dialog > header {
+  padding: 16px var(--sn-gap);
+  border-block-end: 1px solid var(--sn-edge);
+}
+
+.st-db-dialog form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.st-db-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--sn-gap);
+}
+
+.st-db-storage,
+.st-db-field {
+  display: grid;
+  align-items: end;
+  gap: 12px;
+}
+
+.st-db-storage {
+  grid-template-columns: 1fr 1fr;
+}
+
+.st-db-dialog label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.st-db-dialog label :is(input:not([type='checkbox']), select) {
+  width: 100%;
+  min-height: 38px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.st-db-dialog p.st-db-hint {
+  margin: 8px 0 20px;
+  font-size: 13px;
+}
+
+.st-db-field {
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto auto;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-block-start: 1px solid var(--sn-edge);
+}
+
+.st-db-dialog .st-db-required {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  gap: 6px;
+}
+
+.st-db-required input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.st-db-dialog .st-db-remove {
+  width: 38px;
+  min-height: 38px;
+  color: var(--sn-secondary);
+  font: 18px/1 system-ui, sans-serif;
+}
+
+.st-db-dialog footer {
+  flex: none;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 12px var(--sn-gap);
+  border-block-start: 1px solid var(--sn-edge);
+}
+
+.st-db-dialog footer p[role='alert'] { flex-basis: 100%; margin: 0; }
+
+@media (max-width: 480px) {
+  .st-db-storage { grid-template-columns: 1fr; }
+  .st-db-field { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 5px 10px; }
+  .st-db-dialog .st-db-remove { justify-self: end; }
+  .st-db-dialog button, .st-db-dialog label :is(input:not([type='checkbox']), select) { min-height: 42px; }
+}

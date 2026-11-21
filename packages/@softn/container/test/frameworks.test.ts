@@ -171,6 +171,12 @@ describe('React and Vue apps built by Vite, run as their dist/ folder', () => {
       await expect.poll(rows).toBe('third,second,first');
       find('#list .row .remove').click();
       await expect.poll(rows).toBe('second,first');
+      // Implicit submission uses the same form listener and updates the list once.
+      type('#new', 'by keyboard');
+      await settle();
+      find('#new').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await expect.poll(rows).toBe('second,first,by keyboard');
+      await expect.poll(() => find<HTMLInputElement>('#new').value).toBe('');
 
       // A portal (React) or a teleport (Vue): drawn outside the app's root, and its button works.
       click('#open');

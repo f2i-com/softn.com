@@ -142,12 +142,12 @@ window.scope = (css) => scopeAppCss(sanitizeBundleCSS(css), 'a1').css;`,
   expect(own).toEqual({ a: 'rgb(9, 9, 9)', root: 'rgb(7, 7, 7)', b: 'rgb(8, 8, 8)', animation: 'spin-a1', themed: 'underline' });
 });
 
-/** Open `buffer` through the workspace's "Open a .softn file" button. */
+/** Open `buffer` through the workspace's "Open file" button. */
 async function openBundle(page: Page, name: string, buffer: Buffer): Promise<void> {
   await page.goto('/web/');
   await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
   const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open a .softn file', exact: true }).click();
+  await page.getByRole('button', { name: 'Open file', exact: true }).click();
   await (await chooser).setFiles({ name, mimeType: 'application/octet-stream', buffer });
 }
 

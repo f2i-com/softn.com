@@ -6,6 +6,9 @@ import { resetProjectSessionForImport } from '../src/lib/projectSession';
 import { generateBlueprintFromBrief, projectLogicLanguage, scaffoldProjectFiles } from '../src/lib/studioProject';
 import { projectContainerMode } from '../src/lib/sourceKinds';
 import { buildAgentSystemPrompt } from '../src/lib/agent/prompt';
+import { agentToolsForMode, openAITools, anthropicTools } from '../src/lib/agent/tools';
+import { CONTAINER_FIELDNOTES } from '../src/examples/containerFieldnotes';
+import { openExampleInStores } from '../src/examples';
 import { validateProject } from '../src/lib/validator';
 import { buildBundle } from '../src/lib/exportBundle';
 import { browserEnvironment } from '../src/lib/agent/appCheck';
@@ -98,6 +101,21 @@ describe('SoftN Studio v2 Web App Containers', () => {
     expect(prompt).toContain('# How to build a SoftN v2 Web App Container');
     expect(prompt).toContain("'three'");
     expect(prompt).not.toContain('<logic src=');
+    expect(prompt).not.toContain('lookup_components');
+    expect(prompt).not.toContain('run_app_function');
+    expect(prompt).not.toContain('The component list below is complete');
+    expect(prompt).not.toContain('- ui-language:');
+
+    const textPrompt = buildAgentSystemPrompt('text');
+    expect(textPrompt).not.toContain('lookup_components');
+    expect(textPrompt).not.toContain('run_app_function');
+    expect(textPrompt).toContain('<h1>Hello, world</h1>');
+
+    const webToolNames = agentToolsForMode('web').map((t) => t.name);
+    expect(webToolNames).not.toContain('lookup_components');
+    expect(webToolNames).not.toContain('run_app_function');
+    expect(openAITools('web').map((t) => t.function.name)).toEqual(webToolNames);
+    expect(anthropicTools('web').map((t) => t.name)).toEqual(webToolNames);
 
     // Break stylesheet reference and confirm validator catches it
     vfs.delete('styles.css');
@@ -181,4 +199,13 @@ describe('SoftN Studio v2 Web App Containers', () => {
     const undeclared = await browserEnvironment.checkApp(app(JSON.stringify({ permissions: {} })), { blueprint: null });
     expect([...undeclared.errors, ...undeclared.warnings].join('\n')).toMatch(/not permitted by this container/);
   }, 30_000);
+
+  it('preserves container format and container task graph when opening a bundled Web Container example', () => {
+    openExampleInStores(CONTAINER_FIELDNOTES);
+    const ws = useWorkspaceStore.getState();
+    expect(ws.brief?.appFormat).toBe('container');
+    expect(ws.brief?.logicLanguage).toBe('typescript');
+    const pagesTask = ws.taskGraph.find((t) => t.id === 'task-pages');
+    expect(pagesTask?.files).toEqual(['index.html', 'styles.css', 'app.ts']);
+  });
 });

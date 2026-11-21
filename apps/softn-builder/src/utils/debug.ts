@@ -6,6 +6,6 @@
  * `localStorage['softn.debug'] = '1'` in the page. Warnings go to
  * `console.warn` directly.
  */
-import { debug } from '@softn/core';
+import { debug } from '@softn/core/authoring';
 
 export { debug };

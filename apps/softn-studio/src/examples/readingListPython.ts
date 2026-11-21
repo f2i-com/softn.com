@@ -18,7 +18,7 @@ import { APP_ICON_PATH, appIconSvg } from '../lib/studioProject';
 export const READING_LIST_PYTHON: ExampleProject = {
   id: 'reading-list-python',
   name: 'Reading list in Python (example)',
-  description: 'The reading list with its logic written in Python. Open it, change the goal, run it, export it.',
+  description: 'Browse the book list and adjust a reading goal with Python.',
   files: [
     {
       path: 'manifest.json',

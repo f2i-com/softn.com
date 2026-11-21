@@ -85,7 +85,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeArchive } from '../lib/archive.mjs';
-import { KNOWN_TORCH_COPIES, PACKAGE_TREES, VARIANT_ENGINE_COPIES, archiveEngineProblems, isZippEngineWasm } from '../lib/zipp-engine-copy.mjs';
+import { KNOWN_TORCH_COPIES, PACKAGE_TREES, VARIANT_ENGINE_COPIES, archiveEngineProblems, containerEngineBundle, isZippEngineWasm } from '../lib/zipp-engine-copy.mjs';
 import { archiveName, root } from './release-packages.mjs';
 import { TORCH_PACKAGE, WEB_VARIANT, ensureReleaseEngine, packageDir, releaseOptions, variantDir } from '../../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
@@ -271,7 +271,7 @@ const addTree = (dir, prefix, { skip = () => false } = {}) => {
  */
 const dropEngineCopies = (prefix) => {
   for (const [name, value] of [...entries]) {
-    if (name.startsWith(`${prefix}/`) && name.endsWith('.wasm') && isZippEngineWasm(Buffer.isBuffer(value) ? value : value.data)) entries.delete(name);
+    if (name.startsWith(`${prefix}/`) && name.endsWith('.wasm') && !containerEngineBundle(name, zippSource.version) && isZippEngineWasm(Buffer.isBuffer(value) ? value : value.data)) entries.delete(name);
   }
 };
 /**

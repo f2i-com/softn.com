@@ -1,13 +1,6 @@
 import { reopenBundle } from './lib/reopenBundle';
 import { useLocalBundleFile } from './lib/useLocalBundleFile';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-// From the minimal and theme entries, not the root barrel: the barrel is the
-// eager path, and keeping Scene3D out of the shell would then rest on the
-// bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
-import { Spinner, Text } from '@softn/components/essentials';
-import { ThemeProvider } from '@softn/components/theme';
-// Before the components' own stylesheets, which used to follow this one in
-// the document as <style> elements.
 import './App.css';
 import { DropZone } from './components/DropZone';
 import { ErrorCard } from './components/ErrorCard';
@@ -15,11 +8,11 @@ import { Launcher } from './components/Launcher';
 import { AppRunner } from './components/AppRunner';
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
 import { ProductBar } from '@softn/brand';
-import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn/core';
-import { carryAppSync, debug, forgetAppSync } from '@softn/core';
+import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn/core/web-host';
+import { carryAppSync, debug, forgetAppSync } from '@softn/core/web-host';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
-import { installAppOffline, type OfflineInstallResult } from './lib/offlineInstall';
+import type { OfflineInstallApp, OfflineInstallResult } from './lib/offlineInstall';
 import { installContainerOffline } from './lib/containerOfflineInstall';
 import { whenIdle } from './lib/idle';
 import {
@@ -482,6 +475,7 @@ function App(): React.ReactElement {
               `missing ${[...result.missing, ...(result.workerAssets === 'unavailable' ? ['worker assets'] : [])].join(', ')}`;
           await setOfflineState(record.id, {
             ready: result.ready,
+            ...(record.format === 'classic' && result.ready ? { allPages: true } : {}),
             features: result.features,
             optionalOnline: result.optionalOnline,
             build: currentBuildId(),
@@ -519,10 +513,11 @@ function App(): React.ReactElement {
       source: string,
       execution: 'worker' | 'main' | undefined,
       capabilities: string[],
-      pythonPackages?: readonly string[]
+      python?: OfflineInstallApp['python'],
+      textFiles?: ReadonlyMap<string, string>,
     ): void =>
-      runOfflineInstall(tabId, record, (signal) =>
-        installAppOffline({ id: record.id, source, execution, capabilities, pythonPackages }, { signal })
+      runOfflineInstall(tabId, record, async (signal) =>
+        (await import('./lib/offlineInstall')).installAppOffline({ id: record.id, source, textFiles, execution, capabilities, python }, { signal })
       ),
     [runOfflineInstall]
   );
@@ -565,12 +560,12 @@ function App(): React.ReactElement {
     (request: OpenBundleRequest): Promise<string | null> => openBundle(bundleHost, request),
     [bundleHost]
   );
-  /** Handle file from picker or drag-drop */
+  /** Open the bytes read from a local archive or web app folder. */
   const handleOpenFile = useCallback(
-    (data: Uint8Array, fileName: string) => {
-      void processBundleData({ data, fileName, isForeground: claimNavigation() });
+    async (data: Uint8Array, fileName: string, isForeground: () => boolean) => {
+      await processBundleData({ data, fileName, isForeground });
     },
-    [processBundleData, claimNavigation]
+    [processBundleData]
   );
 
   /**
@@ -1304,7 +1299,7 @@ function App(): React.ReactElement {
   }, [bundleHost]);
 
   /** File input change handler */
-  const openLocalFile = useLocalBundleFile(handleOpenFile, setError);
+  const openLocalFile = useLocalBundleFile(handleOpenFile, setError, claimNavigation);
   const handleFileInputChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -1690,27 +1685,25 @@ function App(): React.ReactElement {
         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', position: 'relative' }}>
           {/* Loading indicator (for non-URL opens that don't have skeleton tabs) */}
           {loadingTabId && (
-            <ThemeProvider followHost followSystem>
-              <div
-                className="softn-shell-loading"
-                role="status"
-                data-softn-host=""
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  flexDirection: 'column',
-                  gap: '1rem',
-                  background: 'var(--ink)',
-                  zIndex: 10,
-                }}
-              >
-                <Spinner size="lg" />
-                <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Opening {loadingFileName}…</Text>
-              </div>
-            </ThemeProvider>
+            <div
+              className="softn-shell-loading"
+              role="status"
+              data-softn-host=""
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                flexDirection: 'column',
+                gap: '1rem',
+                background: 'var(--ink)',
+                zIndex: 10,
+              }}
+            >
+              <span className="softn-shell-spinner" aria-hidden="true" />
+              <span style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Opening {loadingFileName}…</span>
+            </div>
           )}
 
           {/* Error state: what went wrong, and what to do about it. */}
@@ -1779,6 +1772,7 @@ function App(): React.ReactElement {
               onStop={(id) => handleCloseTab(id, true)}
               onStopAll={handleStopAll}
               onOpenFile={openLocalFile}
+              onOpenFolder={openLocalFile}
               onOpenCached={handleOpenCached}
               onOpenUrl={(url) => { void openFromUrl(url, claimNavigation()); }}
               onRemove={handleRemove}

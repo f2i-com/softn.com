@@ -1,12 +1,14 @@
 {
   "name": "@softn/runtime-shell",
-  "version": "0.0.45",
+  "version": "0.0.48",
   "private": true,
   "description": "What every host that runs one .softn bundle in a browser shares: reading and composing the bundle (bundleProcessor), warming its first screen off the main thread (zipWarmup + zipWorker), the slim frame bar drawn over an app, and consent — the rule that withholds what a bundle declared until the person allows it (consent), with the bar and dialog that ask (PermissionBar, PermissionPrompt). The web runtime, the single-app shell and the desktop loader all build on it; none of them owns it.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./classicAssets": "./src/classicAssets.ts",
     ".": "./src/index.ts",
+    "./bundleFiles": "./src/bundleFiles.ts",
     "./bundleProcessor": "./src/bundleProcessor.ts",
     "./zipWarmup": "./src/zipWarmup.ts",
     "./net": "./src/net.ts",
@@ -19,6 +21,7 @@
     "./containerBundle": "./src/containerBundle.ts",
     "./containerHost": "./src/containerHost.ts",
     "./WebContainerView": "./src/WebContainerView.tsx",
+    "./ClassicPreviewRenderer": "./src/ClassicPreviewRenderer.tsx",
     "./package.json": "./package.json"
   },
   "scripts": {

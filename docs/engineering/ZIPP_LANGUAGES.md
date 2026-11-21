@@ -246,10 +246,11 @@ to at install.
 `tsup` copies `zipp_torch.wasm` into core's `dist/` and its
 `dist/core-runtime/` mirror, and bundles the loader as a chunk of its own
 (`zipp_torch-<hash>.js`); an app's `coreWorkerAssetPlugin` copies it to
-`assets/core-runtime/zipp_torch.wasm`. The PWAs precache the engine (6.58 MB,
-under their 8 MiB caps) and not the package: `assets/core-runtime/` is in
-every PWA's `globIgnores`. An app carries the engine once, as its hashed
-asset: the page compiles it (`zippEngineForWorker` in `zipp-wasm-loader.ts`)
+`assets/core-runtime/zipp_torch.wasm`. Runtime, Studio and Builder cache
+the full engine (6.58 MB) on demand. Runtime also leaves the torch package
+to apps that declare it. The editors precache the package with their offline
+tools. When an app needs the full engine, the page compiles its hashed asset
+(`zippEngineForWorker` in `zipp-wasm-loader.ts`)
 and posts the module to every worker it starts, the script, sandbox and
 local-model workers, which therefore fetch and compile none, and
 `assets/core-runtime/` holds no engine. A host that configures the engine's
@@ -257,25 +258,18 @@ bytes (`configureZippWasmSource`) has them compiled once for all of them. The Fo
 as `zipp-torch/`, and every copy of the package in it, found by its exports,
 must be the recorded one.
 
-| | raw | gzip -9 | Brotli-11 |
-| --- | ---: | ---: | ---: |
-| `javascript-python` engine (torch built in; not taken) | 8,617,556 | 2,700,237 | 2,022,547 |
-| `javascript-python-base` engine (every app) | 6,580,459 | 2,225,461 | 1,645,970 |
-| `zipp_torch.wasm` (apps that declare torch) | 2,163,109 | 499,396 | 403,192 |
+The following sizes are the published `.wasm` and `.wasm.br` downloads
+for ZIPP v0.0.36. They exclude the SoftN shell, application source and assets.
+[ZIPP v0.0.36 downloads](https://github.com/f2i-com/zipp.org/releases/tag/v0.0.36)
 
-These are ZIPP v0.0.35's files as published, each module with its `zipp.meta`
-record and each engine with its bindings, of which the engine's are 61,881
-bytes raw (13,978 with Brotli), measured with Node 24.19's zlib and Brotli.
-The engine is 1,319 bytes larger than 0.0.33's 6,579,140 (1,646,601 with
-Brotli, 631 more than now). 0.0.33 left Node's layer out of its WebAssembly
-engines, so its engine was 764,680 bytes smaller than 0.0.32's 7,343,820
-(1,795,413 with Brotli). 0.0.30's engine was 6,667,188 bytes raw and 1,653,720 with
-Brotli, and its torch package the same size raw (403,308 with Brotli);
-0.0.29's 6,569,310 and 1,630,183; 0.0.25's, the last published as zip bundles
-and without its bindings inside, 6,187,748 and 1,535,660. An app that does not
-declare torch downloads 2.04 MB less (377 KB less with Brotli) than it would
-with the complete engine; one that does downloads about 126 KB more in all
-(27 KB with Brotli).
+| ZIPP module | Use | Wasm bytes | Brotli bytes |
+| --- | --- | ---: | ---: |
+| `javascript-lite` | Default for web starters | 2,833,099 | 778,831 |
+| `javascript` | JavaScript-only runtime option | 4,855,616 | 1,253,549 |
+| `javascript-typescript` | Web apps using TypeScript | 5,192,941 | 1,324,850 |
+| `javascript-python-base` | Full engine, loaded on demand | 6,581,013 | 1,645,337 |
+| `torch-package` | Optional package for Python apps that declare torch | 2,163,109 | 403,150 |
+| `javascript-python` | Upstream combined build with torch included | 8,618,114 | 2,020,938 |
 
 ## The JavaScript-only web variant
 
@@ -289,12 +283,17 @@ zip bundles before 0.0.26, under names starting `web`): `javascript-python`
 `javascript-typescript` (that one with TypeScript read as well, since 0.0.31)
 and `javascript-lite` (ZIPP Lite: the JavaScript core without `Intl` and
 `Temporal`).
-Softn's engine is `javascript-python-base` and its torch package is
-`torch-package` (above); it does not take `javascript-python`,
-`javascript-typescript` or `javascript-lite`. The `javascript` module is installed BESIDE it, into `packages/@softn/core/wasm-zipp-web/`, as a verified
-variant — not as an engine Softn's own apps, editors or PWAs ever load, but so
-the FormLogic runtime archive can carry it as a top-level `zipp-web/` tree for a
-FormLogic that lets an app's owner choose the smaller `zipp-web` engine.
+Runtime, Studio and Builder run ordinary web starters on `javascript-lite`.
+The web container checks the scripts in each packaged page. TypeScript selects
+the `javascript-typescript` module. Locale-aware JavaScript and Python use
+the host's full `javascript-python-base` engine on demand. The separate torch
+package serves apps that declare it. Runtime's offline installer saves the
+engine tiers a particular app needs, including its secondary pages.
+
+FormLogic also offers a JavaScript-only host engine. The release installer
+verifies the `javascript` module in `packages/@softn/core/wasm-zipp-web/`.
+The FormLogic runtime archive ships that module under `zipp-web/`, where a
+host can select it for a workspace.
 
 What makes it a variant rather than a second engine is provenance, and
 `fetch-zipp-release.mjs` refuses the whole install unless every part holds:
@@ -302,11 +301,10 @@ What makes it a variant rather than a second engine is provenance, and
 as the engine; its `zipp.meta` record says `javascript`, `["javascript"]` and
 the SAME commit as the engine, and names the bindings it carries; its stack is
 1 MiB; the module asks the host for nothing the engine's glue does not provide
-and exports nothing the engine does not (so the engine's glue binds it — Softn
-ships one glue, `43bb1628…`, and records the module's own `7828eb2e…` in
-`glueSha256` for provenance only; the web module imports one hook fewer, the
-torch kernel, which instantiation leaves unread); and,
-really loaded under that glue, `zippProfile().languages` is exactly
+and exports nothing the engine does not. FormLogic can instantiate the web
+variant with the primary engine's bindings. The primary and web variant
+records each give their own bindings digest in `glueSha256`. With the
+web variant loaded, `zippProfile().languages` is exactly
 `["javascript"]` while `initSource(code, "python")` and `pythonHas` throw.
 That last probe — loading the variant under the primary glue — runs at
 INSTALL, in `verifyVariant`. `--check` (offline) does not load anything: it
@@ -321,7 +319,8 @@ the variant's own;
 `wasm-zipp/SOURCE.json` gains an additive `variants.web` record
 (`bundle`, `bundleSha256`, `sha256`, `glueSha256`, `variant`, `languages`,
 `stackBytes`, `commit`) and every key it had before is unchanged. `tsup` copies
-only the engine, so `@softn/core`'s `dist/` and the PWAs never carry the variant.
+only the primary engine into `@softn/core`'s `dist/`. The web container
+stages its engine tiers separately.
 
 In the hosted runtime, `index.html` accepts `init.engine: 'zipp-web'` and
 `formlogic:ready` announces it with the variant's digest; the parent posts the

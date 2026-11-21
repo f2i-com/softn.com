@@ -28,7 +28,7 @@ vi.mock('../src/lib/api', async () => {
 import App from '../src/App';
 import { HomePage } from '../src/pages/HomePage';
 import { DirectoryPage } from '../src/pages/DirectoryPage';
-import { shelfApps } from '../src/components/directory/AppCard';
+import { shelfApps, Thumb } from '../src/components/directory/AppCard';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -101,6 +101,15 @@ afterEach(() => {
 describe('the front page', () => {
   const shelf = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'].map((slug) => card(slug, { runs: 9 }));
   const others = ['zeta', 'eta', 'theta', 'iota'].map((slug) => card(slug));
+
+  it('shows the app initial for a missing screenshot and loads a replacement URL', () => {
+    const app = card('alpha', { thumbnailKind: 'image', thumbnail: '/old.png' });
+    act(() => root.render(<Thumb app={app} />));
+    act(() => { container.querySelector('img')!.dispatchEvent(new Event('error')); });
+    expect(container.querySelector('.thumb-letter')?.textContent).toBe('A');
+    act(() => root.render(<Thumb app={{ ...app, thumbnail: '/new.png' }} />));
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/new.png');
+  });
 
   it('has one bar, and the hero leads to its three places', async () => {
     listApps.mockResolvedValue(reply([]));

@@ -578,3 +578,4 @@
     display: none;
   }
 }
+.st-files-project-tools { display:flex; gap:6px; padding:0 12px 8px; flex-wrap:wrap }

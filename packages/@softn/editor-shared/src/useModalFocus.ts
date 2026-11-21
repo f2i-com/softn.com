@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 const nonEditingInputTypes = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+const openDialogs: HTMLElement[] = [];
 
 function editsTextOrSelection(target: Element): boolean {
   if (target instanceof HTMLSelectElement) return !target.disabled;
@@ -19,6 +20,7 @@ export function useModalFocus(isOpen: boolean, onClose: () => void, initialSelec
     if (!isOpen) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
+    openDialogs.push(dialog);
     // React Flow edges are focusable SVG elements, while toolbar/list
     // openers are HTML. Both must get their keyboard position back.
     const active = document.activeElement;
@@ -30,6 +32,7 @@ export function useModalFocus(isOpen: boolean, onClose: () => void, initialSelec
     initial.focus();
     if (initial instanceof HTMLInputElement) initial.select();
     const keyDown = (event: KeyboardEvent) => {
+      if (openDialogs[openDialogs.length - 1] !== dialog) return;
       if (event.isComposing || event.keyCode === 229) return;
       if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
         const target = event.target instanceof Element ? event.target : null;
@@ -62,8 +65,11 @@ export function useModalFocus(isOpen: boolean, onClose: () => void, initialSelec
     };
     document.addEventListener('keydown', keyDown, true);
     return () => {
+      const index = openDialogs.indexOf(dialog);
+      const wasTopmost = index === openDialogs.length - 1;
+      if (index >= 0) openDialogs.splice(index, 1);
       document.removeEventListener('keydown', keyDown, true);
-      if (opener?.isConnected) opener.focus();
+      if (wasTopmost && opener?.isConnected) opener.focus();
     };
   }, [isOpen, initialSelector]);
   return dialogRef;

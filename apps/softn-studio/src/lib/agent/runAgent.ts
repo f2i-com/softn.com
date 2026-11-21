@@ -33,10 +33,12 @@ import type { SuppliedFiles } from '../changeset';
 import { browserEnvironment, formatCheckReport, type AgentEnvironment } from './appCheck';
 import { executeTool, type ToolOutcome } from './executeTool';
 import { revertRunFromJournal, undoStepFromJournal, type RevertOutcome } from './runRevert';
+import { changedFileSummary } from './runSummary';
 import { compact } from './compaction';
 import { addUsage, cacheWeights, effectiveTokens, runEffective, type CacheWeights } from './budget';
 import { holdPageForRun, releasePageForRun, runInAnotherTab, wasInBackground } from './keepAlive';
 import { buildAgentSystemPrompt, buildProjectContext } from './prompt';
+import { projectContainerMode } from '../sourceKinds';
 import { takePreviewFaults } from '../previewFaults';
 import { saveForRun } from '../projectSession';
 import {
@@ -144,6 +146,8 @@ interface RunController {
   deletes: number;
   approvedDeletes: number;
   nudged: boolean;
+  /** The answer just given to the person, before Studio asks for a closing tool call. */
+  answer?: string;
   repairNext: boolean;
   lastCheckSignature: string | null;
   sameCheckFailures: number;
@@ -227,7 +231,7 @@ function updateEntry(ctl: RunController, id: string, update: Partial<Extract<Run
   patch(ctl, (run) => ({ ...run, entries: run.entries.map((e) => (e.id === id && e.kind === 'tool' ? { ...e, ...update } : e)) }));
 }
 
-function setStatus(ctl: RunController, status: AgentRunRecord['status'], reason?: string, extra: Partial<AgentRunRecord> = {}): void {
+function recordStatus(ctl: RunController, status: AgentRunRecord['status'], reason?: string, extra: Partial<AgentRunRecord> = {}): void {
   const ending = status === 'finished' || status === 'failed' || status === 'stopped';
   patch(ctl, (run) => ({
     ...run,
@@ -239,6 +243,9 @@ function setStatus(ctl: RunController, status: AgentRunRecord['status'], reason?
     ...(ending ? { endedAt: Date.now() } : { endedAt: undefined }),
     ...extra,
   }));
+}
+
+function publishStatus(ctl: RunController, status: AgentRunRecord['status']): void {
   const ai = useAIStore.getState();
   if (status === 'running') {
     ai.setAgentState('building');
@@ -250,6 +257,11 @@ function setStatus(ctl: RunController, status: AgentRunRecord['status'], reason?
   if (!ctl.alive) return;
   if (status === 'running' || status === 'waiting') holdPageForRun(ctl.id);
   else releasePageForRun(ctl.id);
+}
+
+function setStatus(ctl: RunController, status: AgentRunRecord['status'], reason?: string, extra: Partial<AgentRunRecord> = {}): void {
+  recordStatus(ctl, status, reason, extra);
+  publishStatus(ctl, status);
 }
 
 // ---------------------------------------------------------------------------
@@ -744,9 +756,24 @@ function controllerStopped(ctl: RunController): boolean {
  * a run that had only used up its own steps among them.) With `null` nothing
  * is left behind: the run's own words are all there is to say.
  */
-function end(ctl: RunController, status: 'finished' | 'failed', reason: string | undefined, summary?: string, failure: Pick<AIFailure, 'kind' | 'fix'> | null = { kind: 'stuck' }): void {
-  setStatus(ctl, status, reason, summary !== undefined ? { summary } : {});
-  if (status === 'failed' && reason && failure) useAIStore.getState().setLastFailure({ ...failure, message: reason, at: Date.now() });
+function failRun(ctl: RunController, reason: string, summary?: string, failure: Pick<AIFailure, 'kind' | 'fix'> | null = { kind: 'stuck' }): void {
+  setStatus(ctl, 'failed', reason, summary !== undefined ? { summary } : {});
+  if (failure) useAIStore.getState().setLastFailure({ ...failure, message: reason, at: Date.now() });
+  ctl.abort = null;
+}
+
+/** A write checkpoint can still say "running". Commit the completed message itself before
+ * releasing the page or announcing completion to the editor and its host. */
+async function finishRun(ctl: RunController, summary: string): Promise<void> {
+  useAIStore.getState().setCurrentStep('Saving the result…');
+  recordStatus(ctl, 'finished', undefined, { summary });
+  const saved = await saveForRun(ctl.messageId);
+  if (!ctl.alive || activeRunId !== ctl.id) return;
+  if (saved.failed) {
+    failRun(ctl, `Studio could not save the completed conversation. ${saved.failed.message}\n\n${summary}`, summary, null);
+    return;
+  }
+  publishStatus(ctl, 'finished');
   ctl.abort = null;
 }
 
@@ -884,6 +911,7 @@ async function request(ctl: RunController, system: string, model: string, protoc
         turns,
         protocol,
         model,
+        appMode: projectContainerMode(useVFSStore.getState().files, useWorkspaceStore.getState().brief),
         signal: ctl.abort.signal,
         timeoutMs: settings.requestTimeoutMs,
         maxOutputTokens,
@@ -1002,6 +1030,7 @@ async function runOneCall(ctl: RunController, call: AgentToolCall, step: number,
     subject: outcome.subject || subjectGuess,
     result: outcome.content.slice(0, 2_000),
     transactionId: outcome.transactionId,
+    changeSummary: outcome.changeSummary,
     diff: outcome.diff,
     check: outcome.check,
   });
@@ -1069,7 +1098,7 @@ async function processCalls(ctl: RunController): Promise<boolean> {
     pending.index++;
     if (ctl.sameToolErrors >= REPEAT_LIMIT) {
       settlePending(ctl, 'Not run: the run stopped after repeated failures.');
-      end(ctl, 'failed', `The same tool call failed ${REPEAT_LIMIT} times in a row (${ctl.lastToolError?.split(':')[0]}). The run stopped so it does not spend tokens going round in circles. Continue to let it try again, or give it more direction.`);
+      failRun(ctl, `The same tool call failed ${REPEAT_LIMIT} times in a row (${ctl.lastToolError?.split(':')[0]}). The run stopped so it does not spend tokens going round in circles. Continue to let it try again, or give it more direction.`);
       return true;
     }
   }
@@ -1170,6 +1199,7 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
   // another tab) was not looked at either, and the run ended "Finished" over a project that
   // was in this tab's memory only: the model is told, and a finish over it ends the run below.
   let unsavedAtFinish: string | null = null;
+  let conflictingFiles: string[] = [];
   if (pending.wrote || pending.finishSummary !== undefined) {
     const saved = await saveForRun();
     if (!ctl.alive || ctl.pending !== pending) return true;
@@ -1192,7 +1222,8 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
     }
     const conflicts = saved.conflicts;
     const written = pathsWritten(ctl);
-    const untold = conflicts.filter((path) => written.has(path) && !ctl.toldConflicts.has(path));
+    conflictingFiles = conflicts.filter((path) => written.has(path));
+    const untold = conflictingFiles.filter((path) => !ctl.toldConflicts.has(path));
     if (untold.length > 0) {
       for (const path of untold) ctl.toldConflicts.add(path);
       const note = conflictNote(untold);
@@ -1215,24 +1246,40 @@ async function finishCalls(ctl: RunController): Promise<boolean> {
   ctl.pending = null;
 
   if (finishedOverErrors) {
-    end(ctl, 'failed', `The agent said it was finished while the check still finds ${finishedOverErrors}. The run stopped rather than call the app done. Continue to let it try again, or say how to fix it.`);
+    failRun(ctl, `The agent said it was finished while the check still finds ${finishedOverErrors}. The run stopped rather than call the app done. Continue to let it try again, or say how to fix it.`);
     return true;
   }
   if (failedRepeatedly) {
-    end(ctl, 'failed', `The same check error came back ${REPEAT_LIMIT} times after the agent's fixes: ${failedRepeatedly}. The run stopped rather than keep trying the same thing. Continue to let it try again, or say how to fix it.`);
+    failRun(ctl, `The same check error came back ${REPEAT_LIMIT} times after the agent's fixes: ${failedRepeatedly}. The run stopped rather than keep trying the same thing. Continue to let it try again, or say how to fix it.`);
     return true;
   }
   // Not "Finished": what the run did is in this tab only. The summary is kept with the run, and
   // said in the reason, which is what a stopped run shows.
   if (summary !== undefined && unsavedAtFinish !== null) {
-    end(ctl, 'failed', `The agent finished, but the project is not saved: ${unsavedAtFinish} What the run changed is in this tab only. The agent's summary: ${summary}`, summary, null);
+    failRun(ctl, `The agent finished, but the project is not saved: ${unsavedAtFinish} What the run changed is in this tab only. The agent's summary: ${summary}`, summary, null);
     return true;
   }
   if (summary !== undefined) {
-    end(ctl, 'finished', undefined, summary);
+    const answer = completedSummary(ctl, summary);
+    const conflict = conflictingFiles.length ? `Changes to ${conflictingFiles.join(', ')} are only in this tab because another tab saved a different version.` : '';
+    await finishRun(ctl, [answer, conflict].filter(Boolean).join('\n\n'));
     return true;
   }
   return false;
+}
+
+function completedSummary(ctl: RunController, finish: string): string {
+  const run = record(ctl);
+  const changes = run && changedFileSummary(run, useVFSStore.getState().journal);
+  if (!run) return ctl.answer || finish;
+  if (!changes) {
+    const attempted = [...run.entries].reverse().find((entry) => entry.kind === 'tool' && WRITE_TOOLS.has(entry.name));
+    return attempted?.kind === 'tool' ? `No files changed. ${attempted.result}` : ctl.answer || finish;
+  }
+  const lastCheckOrWrite = [...run.entries].reverse().find((entry) => entry.kind === 'tool' && (entry.check || entry.transactionId));
+  return lastCheckOrWrite?.kind === 'tool' && lastCheckOrWrite.check && !lastCheckOrWrite.check.ok
+    ? [changes, ...lastCheckOrWrite.check.errors].join('\n\n')
+    : changes;
 }
 
 /** The files this run's committed changes touched, from the undo journal and the history. */
@@ -1264,7 +1311,7 @@ async function drive(ctl: RunController): Promise<void> {
     const ai = useAIStore.getState();
 
     if (run.steps >= run.maxSteps) {
-      end(ctl, 'failed', `The run reached its limit of ${run.maxSteps} steps. Continue to give it another ${ai.agentSettings.maxSteps}, or raise the limit in Settings.`, undefined, A_LIMIT);
+      failRun(ctl, `The run reached its limit of ${run.maxSteps} steps. Continue to give it another ${ai.agentSettings.maxSteps}, or raise the limit in Settings.`, undefined, A_LIMIT);
       return;
     }
 
@@ -1283,12 +1330,12 @@ async function drive(ctl: RunController): Promise<void> {
     const estimate = requestEstimate(ctl, contextSize(ctl, system)) + outputAllowance(ctl.provider, model);
     const spent = runEffective(run.tokens);
     if (spent + estimate > run.tokenBudget) {
-      end(ctl, 'failed', `The run's token budget would be exceeded: ${spent.toLocaleString()} of ${run.tokenBudget.toLocaleString()} tokens used, and the next request needs about ${estimate.toLocaleString()}. Continue to allow another ${ai.agentSettings.runTokenBudget.toLocaleString()}, or raise the per-run budget in Settings.`, undefined, A_LIMIT);
+      failRun(ctl, `The run's token budget would be exceeded: ${spent.toLocaleString()} of ${run.tokenBudget.toLocaleString()} tokens used, and the next request needs about ${estimate.toLocaleString()}. Continue to allow another ${ai.agentSettings.runTokenBudget.toLocaleString()}, or raise the per-run budget in Settings.`, undefined, A_LIMIT);
       return;
     }
     if (ai.tokensUsed + estimate > ai.tokenBudget) {
       const message = `The session's token budget would be exceeded: ${ai.tokensUsed.toLocaleString()} of ${ai.tokenBudget.toLocaleString()} used, and the next request needs about ${estimate.toLocaleString()}. The budget is a local guardrail, not a billing cap: raise or reset it in Settings, then Continue.`;
-      end(ctl, 'failed', message, undefined, A_LIMIT);
+      failRun(ctl, message, undefined, A_LIMIT);
       return;
     }
 
@@ -1336,7 +1383,7 @@ async function drive(ctl: RunController): Promise<void> {
         useAIStore.getState().setLastFailure(failure);
         return;
       }
-      end(ctl, 'failed', failure.message);
+      failRun(ctl, failure.message);
       useAIStore.getState().setLastFailure(failure);
       return;
     }
@@ -1366,7 +1413,7 @@ async function drive(ctl: RunController): Promise<void> {
     }
 
     if (reply.status === 'refused') {
-      end(ctl, 'failed', 'The model declined this request.', undefined, { kind: 'refused' });
+      failRun(ctl, 'The model declined this request.', undefined, { kind: 'refused' });
       return;
     }
     if (reply.status === 'truncated') {
@@ -1383,7 +1430,7 @@ async function drive(ctl: RunController): Promise<void> {
         const remedy = allowance < ai.maxOutputTokens
           ?'That is the most this model allows in one reply: ask for a smaller change, or choose a model that allows longer replies in AI setup.'
           : 'Raise Max output tokens in Settings → Agent runs, or ask for a smaller change.';
-        end(ctl, 'failed', `The model's reply was cut off at the output limit (${allowance.toLocaleString()} tokens) again after it was asked to keep its reasoning short and split the work. ${remedy}`, undefined, { kind: 'truncated', fix: allowance < ai.maxOutputTokens ? 'provider' : 'limits' });
+        failRun(ctl, `The model's reply was cut off at the output limit (${allowance.toLocaleString()} tokens) again after it was asked to keep its reasoning short and split the work. ${remedy}`, undefined, { kind: 'truncated', fix: allowance < ai.maxOutputTokens ? 'provider' : 'limits' });
         return;
       }
       ctl.turns.push({
@@ -1399,6 +1446,11 @@ async function drive(ctl: RunController): Promise<void> {
     if (reply.text.trim()) addEntry(ctl, { kind: 'text', id: newId(), text: reply.text.trim(), at: Date.now() });
 
     if (reply.calls.length === 0) {
+      // A protocol nudge often gets a generic “Done” after a perfectly good answer.
+      // Keep the answer unless the next turn actually starts doing more work.
+      if (reply.text.trim() && !(protocol === 'text' && /<tool_call\b/i.test(reply.text))) {
+        ctl.answer ??= reply.text.trim();
+      }
       if (!ctl.nudged && reply.status !== 'empty') {
         ctl.nudged = true;
         // Every readable block has been taken out of the text: a <tool_call> left in it is one that could not be read.
@@ -1418,12 +1470,13 @@ async function drive(ctl: RunController): Promise<void> {
       }
       // A build that wrote nothing and never called finish did not build anything, whatever its text says.
       if (ctl.kind === 'build' && (record(ctl)?.transactions.length ?? 0) === 0) {
-        end(ctl, 'failed', 'The model stopped without building anything: it answered in text and never called the tools that write files. Smaller models often cannot drive tool calls. Continue to let it try again, or choose a larger model in AI setup.', undefined, { kind: 'empty', fix: 'provider' });
+        failRun(ctl, 'The model stopped without building anything: it answered in text and never called the tools that write files. Smaller models often cannot drive tool calls. Continue to let it try again, or choose a larger model in AI setup.', undefined, { kind: 'empty', fix: 'provider' });
         return;
       }
-      end(ctl, 'finished', undefined, reply.text.trim() || 'The agent stopped without a summary.');
+      await finishRun(ctl, completedSummary(ctl, reply.text.trim() || 'The agent stopped without a summary.'));
       return;
     }
+    ctl.answer = reply.calls.every((call) => call.name === 'finish') ? ctl.answer || reply.text.trim() : undefined;
     ctl.nudged = false;
 
     ctl.pending = { calls: reply.calls, index: 0, results: [], wrote: false, checkedAfterWrite: false };

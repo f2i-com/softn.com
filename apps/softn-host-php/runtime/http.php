@@ -32,13 +32,12 @@ $ownOrigin=softn_own_origin($_SERVER,softn_peer_is_trusted_proxy($remoteAddr,$tr
 $originAllowed=softn_origin_allowed($origin,$manifest['config']['server']['allowedOrigins']??[],$ownOrigin);
 if($origin!==null)header('Vary: Origin');
 if($origin!==null&&$originAllowed)header('Access-Control-Allow-Origin: '.$origin);
-// OPTIONS is answered as the Rust host's CORS layer answers it (that sends 200):
-// an ok status, never a handler. A browser's preflight carries Origin, and only an allowed
+// OPTIONS has no body and does not start a handler. A browser's preflight carries Origin, and only an allowed
 // one gets Access-Control-Allow-Origin back, so a foreign page's preflight
 // fails in the browser. An OPTIONS with no Origin is not a CORS request at
 // all (a probe or a tool), and learns only the methods.
 if ($method==='OPTIONS') {
-    $allowMethods=$isContainer?'GET, POST, PUT, PATCH, DELETE, OPTIONS':'GET, POST, PUT, DELETE, OPTIONS';
+    $allowMethods=$isContainer?'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS':'GET, HEAD, POST, PUT, DELETE, OPTIONS';
     header('Allow: '.$allowMethods);
     header('Access-Control-Allow-Headers: '.softn_preflight_headers($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']??null));
     header('Access-Control-Allow-Methods: '.$allowMethods);
@@ -46,7 +45,7 @@ if ($method==='OPTIONS') {
     http_response_code(204); exit;
 }
 if(!$originAllowed)reply(403,['error'=>'Origin not allowed.','code'=>'origin_not_allowed']);
-header('Access-Control-Expose-Headers: ETag, X-SoftN-Poll-Interval');
+header('Access-Control-Expose-Headers: ETag, X-SoftN-Poll-Interval, Retry-After, Allow');
 // HEAD on a GET route is that GET with the body left off the answer, as on
 // the Rust host: the runner is asked for the GET. It was refused here, 405.
 $head=$method==='HEAD';if($head)$method='GET';

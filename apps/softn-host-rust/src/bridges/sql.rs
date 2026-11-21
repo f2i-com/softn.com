@@ -77,15 +77,19 @@ pub fn open_connection(path: &Path) -> Result<Connection, String> {
         .map_err(|_| "Cannot configure SQLite timeout")?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY; PRAGMA max_page_count=131072;")
         .map_err(|_| "Cannot configure private SQLite database")?;
-    conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_RESULT_BYTES as i32);
-    conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 256 * 1024);
-    conn.set_limit(Limit::SQLITE_LIMIT_COLUMN, 200);
-    conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
-    conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 100);
-    conn.set_limit(Limit::SQLITE_LIMIT_EXPR_DEPTH, 100);
-    conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 100_000);
-    conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0);
-    conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT);
+    for (limit, value) in [
+        (Limit::SQLITE_LIMIT_LENGTH, MAX_RESULT_BYTES as i32),
+        (Limit::SQLITE_LIMIT_SQL_LENGTH, 256 * 1024),
+        (Limit::SQLITE_LIMIT_COLUMN, 200),
+        (Limit::SQLITE_LIMIT_ATTACHED, 0),
+        (Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 100),
+        (Limit::SQLITE_LIMIT_EXPR_DEPTH, 100),
+        (Limit::SQLITE_LIMIT_VDBE_OP, 100_000),
+        (Limit::SQLITE_LIMIT_WORKER_THREADS, 0),
+        (Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT),
+    ] {
+        conn.set_limit(limit, value).map_err(|_| "Cannot configure SQLite limits")?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -214,8 +218,8 @@ pub fn authorize(ctx: AuthContext<'_>, migration: bool, writable: bool) -> Autho
     }
 }
 
-pub fn clear_authorizer(conn: &Connection) {
-    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+pub fn clear_authorizer(conn: &mut Connection) -> rusqlite::Result<()> {
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
 }
 
 /// Reject a second statement while allowing semicolons inside SQL literals.
@@ -282,9 +286,6 @@ pub struct NativeSql {
     connection: Option<Connection>,
     failed: bool,
     active: bool,
-    /// Whether the open transaction is a write, which is what its
-    /// authorizer was installed with (and is installed with again).
-    writable: bool,
     cancellation: Arc<AtomicBool>,
     deadline: Instant,
 }
@@ -302,7 +303,6 @@ impl NativeSql {
             connection: None,
             failed: false,
             active: false,
-            writable: false,
             cancellation: Arc::new(AtomicBool::new(false)),
             deadline: Instant::now(),
         }
@@ -325,7 +325,7 @@ impl NativeSql {
         if self.connection.is_none() {
             self.connection = Some(open_connection(&self.path)?);
         }
-        let conn = self.connection.as_ref().unwrap();
+        let conn = self.connection.as_mut().unwrap();
         self.failed = false;
         self.deadline = Instant::now() + Duration::from_secs(25);
         self.cancellation = cancellation;
@@ -336,22 +336,21 @@ impl NativeSql {
         };
         conn.execute_batch(sql)
             .map_err(|_| "Private database is busy; retry the same action")?;
-        self.active = true;
         let writable = mode == TransactionMode::Write;
-        self.writable = writable;
-        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-            authorize(ctx, false, writable)
-        }));
         let cancel = self.cancellation.clone();
         let deadline = self.deadline;
         let mut steps = 0u64;
-        conn.progress_handler(
-            1000,
-            Some(move || {
+        let hooks = conn.authorizer(Some(move |ctx: AuthContext<'_>| authorize(ctx, false, writable)))
+            .and_then(|()| conn.progress_handler(1000, Some(move || {
                 steps += 1000;
                 steps > 5_000_000 || Instant::now() >= deadline || cancel.load(Ordering::Relaxed)
-            }),
-        );
+            })));
+        if hooks.is_err() {
+            // Closing the connection rolls back the open transaction.
+            self.connection = None;
+            return Err("Cannot configure private SQL request".into());
+        }
+        self.active = true;
         Ok(())
     }
 
@@ -359,9 +358,12 @@ impl NativeSql {
         if !self.active {
             return Ok(());
         }
-        let conn = self.connection.as_ref().unwrap();
-        clear_authorizer(conn);
-        conn.progress_handler(0, None::<fn() -> bool>);
+        let conn = self.connection.as_mut().unwrap();
+        if clear_authorizer(conn).and_then(|()| conn.progress_handler(0, None::<fn() -> bool>)).is_err() {
+            self.connection = None;
+            self.active = false;
+            return Err("Private SQL transaction was rolled back".into());
+        }
         let aborted = self.failed
             || self.cancellation.load(Ordering::Relaxed)
             || Instant::now() >= self.deadline;
@@ -390,33 +392,6 @@ impl NativeSql {
             self.failed = true;
         }
         result
-    }
-
-    /// Run before an `execute`, so that the `lastInsertRowid` it reports is
-    /// its own: the id of a row this statement inserted, and 0 when it
-    /// inserted none (an `INSERT OR IGNORE` that was ignored, an upsert that
-    /// updated, an `UPDATE`, a `DELETE`).
-    ///
-    /// SQLite keeps the last id a connection inserted until its next insert,
-    /// and a worker keeps its connection: a statement that inserted nothing
-    /// answered with the row an earlier request had made, another client's
-    /// as likely as not. SQLite has no statement that clears it, so the host
-    /// inserts row 0 of a table of its own in the connection's temporary
-    /// schema, which no app SQL can name. The authorizer refuses everything
-    /// outside `main`, the host's statement included, so it is taken off for
-    /// that statement and put back. The same on the PHP host
-    /// (runtime/sql.mjs FORGET_LAST_INSERT).
-    fn forget_last_insert(&self, conn: &Connection) -> Result<(), String> {
-        clear_authorizer(conn);
-        let forgotten = conn.execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS _softn_last_insert(id INTEGER PRIMARY KEY); \
-             INSERT OR REPLACE INTO temp._softn_last_insert(id) VALUES(0);",
-        );
-        let writable = self.writable;
-        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-            authorize(ctx, false, writable)
-        }));
-        forgotten.map_err(|_| "SQL write failed".into())
     }
 
     fn run(&self, kind: &str, sql: &str, binds: &str) -> Result<Value, String> {
@@ -469,7 +444,9 @@ impl NativeSql {
             if stmt.readonly() || stmt.column_count() != 0 {
                 return Err("execute requires a DML statement without returned rows".into());
             }
-            self.forget_last_insert(conn)?;
+            // SAFETY: this request owns the live connection. Resetting its
+            // last row ID keeps an UPDATE from reporting another request's ID.
+            unsafe { rusqlite::ffi::sqlite3_set_last_insert_rowid(conn.handle(), 0) };
             let changes = stmt
                 .execute(params_from_iter(params))
                 .map_err(|_| "SQL write failed")?;
@@ -482,7 +459,7 @@ impl NativeSql {
         if !stmt.readonly() {
             return Err("query requires a read-only statement".into());
         }
-        let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let columns: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         let mut rows = stmt
             .query(params_from_iter(params))
             .map_err(|_| "SQL query failed")?;

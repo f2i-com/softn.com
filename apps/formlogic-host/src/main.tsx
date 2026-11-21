@@ -9,7 +9,7 @@ import { grantedPermissions, type FramePermissions } from './permissions';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippAddress, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { createNativeNetFetch } from './nativeFetch';
-import { framePolicy, zippDirectory } from './framePolicy';
+import { zippDirectory } from './framePolicy';
 import { mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl } from './media';
 import { seedBundledData } from './seed';
 import { createUpdater, importsFrom, type ImportResolver } from './update';
@@ -20,10 +20,8 @@ import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
 // authentication and accepts only named action calls for the selected app.
-// Which document this is comes first: the policy depends on it, a meta policy
-// can be tightened afterwards but never relaxed, and the same list decides what
-// `init` is accepted and what `ready` announces. Nothing the parent sends is
-// read before this point.
+// The entry has installed the document's policy. Its declared engines also
+// determine what this renderer accepts at init and announces at ready.
 //
 // The ZIPP engines are named by the installed release: the web-python build
 // is the install itself, and the JavaScript-only web build is its
@@ -32,12 +30,7 @@ import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 // announced, by the one filter, so the two lists cannot disagree.
 const identities = zippIdentities(zippSource);
 const served = servableEngines(documentEngines(document.documentElement.getAttribute('data-softn-logic-engine')), identities);
-// Pin all loading to this trusted runtime directory before accepting app source.
-const policy = document.createElement('meta');
-policy.httpEquiv = 'Content-Security-Policy';
 const assets = new URL('./', document.baseURI).href;
-policy.content = framePolicy(assets, served);
-document.head.appendChild(policy);
 // Where a host keeps a ZIPP of its own, the one other folder the policy lets the shell load from.
 const zippFolder = zippDirectory(assets);
 registerRuntimeComponents();

@@ -4,7 +4,8 @@ import { Icon } from '../common/Icon';
 import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import type { LogicLanguage, ProjectBrief, RuntimeTarget, VisualStyle } from '../../types/studio';
 import { accentFor, generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles, themeFor, withRevisionNotesOf } from '../../lib/studioProject';
-import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { projectContainerMode } from '../../lib/sourceKinds';
+import { hostedWebContainersEnabled, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { AIStatusPill, openSetupFor, useAIReadiness } from '../ai/AIStatusPill';
 import { NoticeSlot } from '../common/NoticeSlot';
 
@@ -84,11 +85,15 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
   const setupOpen = useAIStore((st) => st.setupDialog !== null);
   const readiness = useAIReadiness();
   const hosted = isHostedEditor();
+  const supportsWeb = !hosted || hostedWebContainersEnabled();
   const { reset: resetVFS, hydrateFiles } = useVFSStore();
 
   const [brief, updateBrief] = useState<ProjectBrief>(() => existingBrief
     ? {
       ...existingBrief,
+      ...(existingBrief.appFormat === undefined && useVFSStore.getState().files.size > 0 && projectContainerMode(useVFSStore.getState().files, existingBrief) === 'web'
+        ? { appFormat: 'container' as const }
+        : {}),
       // A brief saved before the choice existed was JavaScript; say so, so
       // the toggle shows a selection and the rebuilt project keeps it.
       logicLanguage: existingBrief.logicLanguage ?? 'javascript',
@@ -102,10 +107,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
       collections: [],
       authNeeded: false,
       style: 'clean',
-      // A web container by default, except in a host's Studio (FormLogic's): that build
-      // carries no container runtime and the host's frame runs SoftN apps, so a container
-      // made there could be neither previewed nor run.
-      appFormat: isHostedEditor() ? 'ui' : 'container',
+      appFormat: supportsWeb ? 'container' : 'ui',
       logicLanguage: 'javascript',
       referenceImages: [],
     }
@@ -194,7 +196,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
     // Made again from a brief sent back for revision, the plan keeps the notes the person had
     // put on the one it replaces (a new app has no plan yet, and so none).
     const blueprint = withRevisionNotesOf(generateBlueprintFromBrief(final), useWorkspaceStore.getState().blueprint);
-    const tasks = generateTaskGraph(blueprint);
+    const tasks = generateTaskGraph(blueprint, final);
     const starterFiles = scaffoldProjectFiles(final, blueprint);
 
     // The scaffold is where the project starts, not something the AI did to it: the files are
@@ -240,11 +242,15 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
   // that mixes them, so this is a choice for the whole project.
   const isV2Container = brief.appFormat === 'container' || brief.logicLanguage === 'typescript';
   const languages: { id: LogicLanguage; label: string; ext: string; desc: string }[] = [
-    { id: 'javascript', label: 'JavaScript', ext: '.js', desc: 'The SoftN default: logic in .js files, written as JavaScript.' },
+    { id: 'javascript', label: 'JavaScript', ext: '.js', desc: isV2Container
+      ? 'Starts on the lite engine. Apps using Intl or Temporal load the full engine.'
+      : 'Write page logic in JavaScript.' },
     ...(isV2Container
       ? [{ id: 'typescript' as const, label: 'TypeScript', ext: '.ts', desc: 'Zero-build TypeScript ES modules inside the v2 Web Container.' }]
       : []),
-    { id: 'python', label: 'Python', ext: '.py', desc: 'Logic in .py modules, each named after its file. Pick it if Python is what you know.' },
+    { id: 'python', label: 'Python', ext: '.py', desc: isHostedEditor()
+      ? 'Write page logic in Python modules.'
+      : 'Uses the full engine. Preview once online to use it offline.' },
   ];
 
   /**
@@ -636,17 +642,17 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
                       id: 'container' as const,
                       label: 'Web Container (v2)',
                       ext: 'HTML + DOM',
-                      desc: '100% standard HTML, CSS, and ES modules in an isolated ZIPP Worker with hosted Preact & Three.js.',
+                      desc: 'Build with HTML, CSS and ES modules, or import a bundled React or Vue app.',
                     },
                     {
                       id: 'ui' as const,
                       label: 'SoftN Templates (v1)',
                       ext: '.ui / DSL',
-                      desc: 'Declarative SoftN component markup (<App>, :bind, #each) for backwards-compatible bundles.',
+                      desc: 'Compose screens from SoftN components. Scripted interactions use the full engine.',
                     },
                   ]
                     // A host's Studio offers what the host runs (see the default above).
-                    .filter((fmt) => fmt.id === 'ui' || !isHostedEditor())
+                    .filter((fmt) => fmt.id === 'ui' || supportsWeb || brief.appFormat === 'container')
                     .map((fmt) => {
                     const currentFormat = brief.appFormat ?? (brief.logicLanguage === 'typescript' ? 'container' : 'ui');
                     const on = currentFormat === fmt.id;

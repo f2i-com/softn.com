@@ -36,31 +36,37 @@
 
 import {
   collectAllComponentTags,
+  composePage,
   getDefaultRegistry,
+  hasPageHandlers,
+  mainPage,
   parse,
   preloadAIRuntime,
   preloadSyncRuntime,
   preloadWasmRuntime,
   preloadZippTorch,
   type ComponentRegistry,
+  type PythonProject,
+  type SoftNDocument,
 } from '@softn/core';
-import { offlineExtras } from '@softn/components/lazy';
+import { serviceWorkerControls } from './serviceWorkerControls';
+export { serviceWorkerControls } from './serviceWorkerControls';
+import { installFullEngine } from './installFullEngine';
+import { keepClassicAssets } from '@softn/runtime-shell/classicAssets';
 
 export interface OfflineInstallApp {
   /** The cache record's id, which installs dedupe on. */
   id: string;
   /** The composed source the renderer parses: every page, every branch. */
   source: string;
+  /** Other pages a link can open, even when the entry is a static page. */
+  textFiles?: ReadonlyMap<string, string>;
   /** The manifest's `config.execution`: a worker needs its files held too. */
   execution?: 'worker' | 'main';
   /** What the bundle's permission.json asked for, as bundleProcessor reads it. */
   capabilities?: readonly string[];
-  /**
-   * The Python packages the app declares (`config.python.packages`, from the
-   * composition's `python.packages`). torch is a separate engine module
-   * fetched on demand, so an app that declares it needs it held as well.
-   */
-  pythonPackages?: readonly string[];
+  /** Python source and declared packages are separate from the composed markup. */
+  python?: PythonProject;
 }
 
 export type WorkerAssetsState = 'not-needed' | 'installed' | 'unavailable';
@@ -98,6 +104,7 @@ export const WASM_RUNTIME = 'wasm-runtime';
 export interface OfflineInstallHost {
   /** The registry the loads go through; the default registry outside tests. */
   registry?: ComponentRegistry;
+  installFullEngine?: typeof installFullEngine;
   /** Fetches the sync runtime's chunk; core's preloadSyncRuntime outside tests. */
   preloadSync?: () => Promise<void>;
   /** Fetches the torch package's loader and module; core's preloadZippTorch outside tests. */
@@ -131,17 +138,53 @@ export interface OfflineInstallOptions extends OfflineInstallHost {
  * Only a name with a loader is a fetch.
  */
 export function requiredFeatures(
-  source: string,
+  source: string | SoftNDocument,
   registry: ComponentRegistry = getDefaultRegistry()
 ): string[] {
   const names: string[] = [];
-  for (const tag of collectAllComponentTags(parse(source))) {
+  for (const tag of collectAllComponentTags(typeof source === 'string' ? parse(source) : source)) {
     // As the renderer resolves it: `<datagrid>` needs DataGrid's chunk.
     const name = registry.resolveName(tag);
     const state = name === undefined ? undefined : registry.getLoadState(name);
     if (state !== undefined && state !== 'eager' && !names.includes(name!)) names.push(name!);
   }
   return names.sort();
+}
+
+function runsScript(doc: SoftNDocument): boolean {
+  return Boolean(doc.logic || doc.script || hasPageHandlers(doc.template));
+}
+
+function appNeeds(app: OfflineInstallApp, registry: ComponentRegistry) {
+  const components = new Set<string>();
+  let script = false;
+  let sandbox = false;
+  let wasm = false;
+  let torch = false;
+  function includePage({ source, python }: Pick<OfflineInstallApp, 'source' | 'python'>): void {
+    const page = parse(source);
+    for (const component of requiredFeatures(page, registry)) components.add(component);
+    script ||= Boolean(python) || runsScript(page);
+    torch ||= python?.packages?.includes(TORCH_PACKAGE) === true;
+    for (const code of [source, ...Object.values(python?.files ?? {})]) {
+      sandbox ||= SANDBOX_USE.test(code);
+      wasm ||= WASM_USE.test(code);
+    }
+  }
+
+  includePage(app);
+  const files = app.textFiles;
+  const main = files && mainPage(files);
+  for (const path of files?.keys() ?? []) {
+    if (path === main || !/\.(?:ui|html?)$/i.test(path)) continue;
+    try {
+      includePage(composePage(files!, path));
+    } catch {
+      // Preserve offline engine availability if an additional page cannot be classified.
+      script = true;
+    }
+  }
+  return { features: [...components].sort(), script, workers: workerEntries(app, sandbox), wasm, torch };
 }
 
 const inFlight = new Map<string, Promise<OfflineInstallResult>>();
@@ -193,8 +236,16 @@ async function performInstall(
   try {
     if (signal?.aborted) return cancelled(result);
 
+    if (!options.registry) {
+      const { preloadUiAppSurface } = await import('./uiSurfaceLoader');
+      if ((await abortable(preloadUiAppSurface(), signal)) === ABORTED) return cancelled(result);
+    }
+
+    let needs: ReturnType<typeof appNeeds>;
     try {
-      result.features = requiredFeatures(app.source, registry);
+      needs = appNeeds(app, registry);
+      result.features = needs.features;
+      if (needs.workers.length) result.workerAssets = 'unavailable';
     } catch (err) {
       result.error = `The app's documents could not be read: ${describe(err)}`;
       return result;
@@ -219,6 +270,18 @@ async function performInstall(
     // earlier attempt is retried: a network that has since come back is the
     // usual reason to be here at all.
     const componentNames = result.features.filter((name) => name !== SYNC_RUNTIME);
+    if (!options.registry) {
+      const groups = componentNames.flatMap((name) => registry.getFeature(name) ?? []);
+      if (needs.script) groups.push('script');
+      try {
+        await keepClassicAssets(groups, signal);
+      } catch (err) {
+        if (signal?.aborted) return cancelled(result);
+        result.error = describe(err);
+        result.missing.push('classic renderer');
+        return result;
+      }
+    }
     const loads = componentNames.map((name) => {
       // Quiet: the app is on screen and working, and a 3D chunk for a route
       // it has not shown is not something it waits for, so the download bar
@@ -237,9 +300,24 @@ async function performInstall(
       if (registry.getLoadState(name) !== 'loaded') result.missing.push(name);
     }
 
+    if (needs.script) {
+      result.features.push('engine:full');
+      const installed = await abortable(
+        (options.installFullEngine ?? installFullEngine)(signal).then(() => true, () => false),
+        signal
+      );
+      if (installed === ABORTED) return cancelled(result);
+      if (!installed) result.missing.push('engine:full');
+    }
+
     // What a loaded component fetches later still: a Scene3D's loaders for
     // models it has not named yet, a QRReader's decoder before its first scan.
-    const extras = options.componentExtras ?? ((name: string) => offlineExtras[name]?.());
+    let extras = options.componentExtras;
+    if (!extras) {
+      const lazyMod = await abortable(import('@softn/components/lazy'), signal);
+      if (lazyMod === ABORTED) return cancelled(result);
+      extras = (name: string) => lazyMod.offlineExtras[name]?.();
+    }
     const pending = componentNames
       .filter((name) => !result.missing.includes(name))
       .map((name) => ({ name, run: extras(name) }))
@@ -261,9 +339,8 @@ async function performInstall(
       if (!fetched) result.missing.push(SYNC_RUNTIME);
     }
 
-    const entries = workerEntries(app);
-    if (entries.length > 0) {
-      const installed = await abortable(installWorkerAssets(options, entries), signal);
+    if (needs.workers.length > 0) {
+      const installed = await abortable(installWorkerAssets(options, needs.workers), signal);
       if (installed === ABORTED) return cancelled(result);
       result.workerAssets = installed ? 'installed' : 'unavailable';
     }
@@ -284,7 +361,7 @@ async function performInstall(
 
     // The WebAssembly host behind softn.wasm, a chunk of its own; the modules
     // themselves are the app's files and already installed with it.
-    if (WASM_USE.test(app.source)) {
+    if (needs.wasm) {
       const ok = await abortable(
         (options.preloadWasm ?? preloadWasmRuntime)().then(
           () => true,
@@ -299,7 +376,7 @@ async function performInstall(
     // torch is not in the engine the shell loads; the first `import torch`
     // fetches its loader chunk and zipp_torch.wasm. core's preloadZippTorch
     // fetches both past the HTTP cache, so the worker-assets route keeps them.
-    if (app.pythonPackages?.includes(TORCH_PACKAGE)) {
+    if (needs.torch) {
       const preload = options.preloadTorch ?? preloadZippTorch;
       const ok = await abortable(
         preload({ signal }).then(
@@ -360,48 +437,6 @@ function mark(name: string): void {
   }
 }
 
-// ── The service worker ───────────────────────────────────────────────
-
-/** How long to wait for a worker that is installing to take the page. */
-const SERVICE_WORKER_WAIT_MS = 10_000;
-
-/**
- * Whether a service worker holds this page's fetches.
- *
- * `ready` resolves once a worker is active for the scope, and the runtime's
- * worker claims open pages as it activates (`clientsClaim`), so on a first
- * visit the controller can arrive a moment after the app has opened; it is
- * waited for, briefly. A page with no worker at all — a dev server, a
- * browser without them, a private window that refuses registration —
- * resolves false, and the install says so rather than counting a fetch
- * nothing kept.
- */
-export async function serviceWorkerControls(): Promise<boolean> {
-  const container = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined;
-  if (!container) return false;
-  if (container.controller) return true;
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (value: boolean): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      container.removeEventListener('controllerchange', onChange);
-      resolve(value);
-    };
-    const onChange = (): void => finish(Boolean(container.controller));
-    const timer = setTimeout(() => finish(Boolean(container.controller)), SERVICE_WORKER_WAIT_MS);
-    container.addEventListener('controllerchange', onChange);
-    container.ready.then(
-      () => {
-        // Active, and either already in control or about to say so.
-        if (container.controller) finish(true);
-      },
-      () => finish(false)
-    );
-  });
-}
-
 // ── Worker assets ────────────────────────────────────────────────────
 //
 // Core's workers ship in a copy of what they reach of its dist under
@@ -420,7 +455,7 @@ export async function serviceWorkerControls(): Promise<boolean> {
 // than a list kept by hand the served entry is read and its imports
 // followed, the way the browser will. Not the engine: the glue still names
 // `zipp_wasm_bg.wasm` beside itself, but the page posts its own compiled
-// engine to the worker, the shell's one precached copy, and there is no copy
+// engine to the worker, installed for apps with scripts, and there is no copy
 // under core-runtime/ to fetch.
 
 /** The copied core dist, relative to the shell's base: where the dev server serves it, and a build of the app alone keeps it. */
@@ -454,10 +489,13 @@ const SANDBOX_USE = /\bsandbox\b/;
 const WASM_USE = /\bwasm\s*\.\s*(?:load|call|run|read|write|release)/;
 
 /** The workers an app can start, by their entries under the copied dist. */
-export function workerEntries(app: Pick<OfflineInstallApp, 'execution' | 'source' | 'capabilities'>): string[] {
+export function workerEntries(
+  app: Pick<OfflineInstallApp, 'execution' | 'source' | 'capabilities'>,
+  usesSandbox = SANDBOX_USE.test(app.source),
+): string[] {
   const entries: string[] = [];
   if (app.execution === 'worker') entries.push('runtime/script-worker.js');
-  if (SANDBOX_USE.test(app.source)) entries.push('runtime/sandbox-worker.js');
+  if (usesSandbox) entries.push('runtime/sandbox-worker.js');
   if (app.capabilities?.includes('ai')) entries.push('runtime/model-worker.js');
   return entries;
 }

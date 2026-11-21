@@ -1,4 +1,4 @@
-import { MAX_ZIP_INPUT_BYTES } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES } from '@softn/core/web-host';
 
 /** Check before allocating: ZIP validation cannot protect the initial file read. */
 export async function readLocalBundle(file: File): Promise<Uint8Array> {
@@ -6,7 +6,7 @@ export async function readLocalBundle(file: File): Promise<Uint8Array> {
     throw new Error('Choose a .softn or .zip app file to open it in the runtime.');
   }
   if (file.size > MAX_ZIP_INPUT_BYTES) {
-    throw new Error(`This app is too large to open. Choose a .softn file under ${MAX_ZIP_INPUT_BYTES / 1024 / 1024} MB.`);
+    throw new Error(`This app is too large to open. Choose an archive of ${MAX_ZIP_INPUT_BYTES / 1024 / 1024} MB or less.`);
   }
   try {
     return new Uint8Array(await file.arrayBuffer());

@@ -6,7 +6,7 @@
  * until it has proved to be a same-origin bundle of a plausible size.
  */
 
-import { responseBodyLength, trackLoad } from '@softn/core';
+import { responseBodyLength, trackLoad } from '@softn/core/web-host';
 import { readBoundedBody } from '@softn/runtime-shell/net';
 
 /** Refuse anything larger than this. Promptly Unemployed is about 18 MB. */

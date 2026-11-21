@@ -33,8 +33,8 @@ export interface LazyComponentRegistration {
 
 // One import() per entry, so every name of it shares the module promise and
 // the browser fetches its chunk once. The first five were in the shell until
-// 2026-10-22: light, but drawn by few apps, so each is fetched by the page
-// that draws it and kept in softn-web's precache with the shell.
+// 2026-10-22. Each is fetched by the page that draws it and retained when
+// Runtime installs a classic app whose documents use the group.
 const controls = () => import('./controls');
 const feedback = () => import('./feedback');
 const data = () => import('./data');

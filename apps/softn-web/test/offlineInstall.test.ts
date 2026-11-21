@@ -27,6 +27,7 @@ import {
   AI_RUNTIME,
   SYNC_RUNTIME,
   TORCH_PACKAGE,
+  WASM_RUNTIME,
   workerEntries,
   type OfflineInstallOptions,
 } from '../src/lib/offlineInstall';
@@ -69,6 +70,7 @@ const app = (extra: Partial<Parameters<typeof installAppOffline>[0]> = {}) => ({
   source: SOURCE,
   ...extra,
 });
+const pythonWith = (...packages: string[]) => ({ files: { main: 'value = 1' }, modules: ['main'], packages });
 
 const host = (
   registry: ComponentRegistry,
@@ -80,6 +82,7 @@ const host = (
   // unless a test says otherwise: the real ones are Three.js and core's chunks.
   componentExtras: () => undefined,
   preloadAI: async () => {},
+  installFullEngine: async () => {},
   ...extra,
 });
 
@@ -96,6 +99,65 @@ describe('requiredFeatures', () => {
 });
 
 describe('installAppOffline', () => {
+  it('installs the full engine for scripts and linked pages with inline browser handlers', async () => {
+    const installFullEngine = vi.fn().mockResolvedValue(undefined);
+    const setup = host(registryWith({}), { installFullEngine });
+    const entry = '<a href="clock.html">Clock</a>';
+    const files = new Map([['manifest.json', '{"name":"Clock","main":"index.html"}'], ['index.html', entry]]);
+    expect((await installAppOffline(app({ source: entry, textFiles: files }), setup)).features).toEqual([]);
+    expect(installFullEngine).not.toHaveBeenCalled();
+    files.set('clock.html', '<button onclick="this.textContent = Date.now()">Clock</button>');
+    expect((await installAppOffline(app({ source: entry, textFiles: files }), setup)).features).toContain('engine:full');
+    expect(installFullEngine).toHaveBeenCalledOnce();
+    installFullEngine.mockRejectedValueOnce(new Error('offline'));
+    expect(await installAppOffline(app({ source: '<logic>let value = 1</logic><Text>{value}</Text>' }), setup))
+      .toMatchObject({ ready: false, missing: ['engine:full'] });
+  });
+
+  it('waits for sandbox workers and the Wasm host used only by a linked page', async () => {
+    const source = '<a href="tools.ui">Tools</a>';
+    const textFiles = new Map([
+      ['manifest.json', '{"name":"Tools","main":"home.ui"}'],
+      ['home.ui', source],
+      ['tools.ui', '<logic src="tools.logic" /><Text>Tools</Text>'],
+      ['tools.logic', 'function run() { softn.sandbox.run(code, {}, done); softn.wasm.load("add.wasm", done) }'],
+    ]);
+    const fetch = vi.fn(async () => new Response('export {};'));
+    const preloadWasm = vi.fn(async () => {});
+    const setup = host(registryWith({}), { fetch, preloadWasm, baseUrl: '/web/' });
+    const install = () => installAppOffline(app({ source, textFiles }), setup);
+    expect(await install()).toMatchObject({ ready: true, workerAssets: 'installed' });
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/runtime\/sandbox-worker\.js$/), expect.any(Object));
+    expect(preloadWasm).toHaveBeenCalledOnce();
+
+    fetch.mockResolvedValueOnce(new Response('', { status: 404 }));
+    preloadWasm.mockRejectedValueOnce(new Error('disconnected'));
+    expect(await install()).toMatchObject({ ready: false, workerAssets: 'unavailable', missing: [WASM_RUNTIME] });
+  });
+
+  it('reads Python runtime dependencies from modules on the entry or a linked page', async () => {
+    const code = 'import torch\ndef run():\n    softn.sandbox.run(code, {}, done)\n    softn.wasm.load("calc.wasm", done)';
+    const fetch = vi.fn(async () => new Response('export {};'));
+    const preloadWasm = vi.fn(async () => {});
+    const preloadTorch = vi.fn(async () => {});
+    const setup = host(registryWith({}), { fetch, preloadWasm, preloadTorch, baseUrl: '/web/' });
+    const entry = '<a href="tools.ui">Tools</a>';
+    const projects = [
+      { source: '<Text>Tools</Text><logic>\n</logic>', python: { files: { tools: code }, modules: ['tools'], packages: ['torch'] } },
+      { source: entry, textFiles: new Map([
+        ['manifest.json', '{"name":"Tools","main":"home.ui","config":{"python":{"packages":["torch"]}}}'],
+        ['home.ui', entry],
+        ['tools.ui', '<logic src="tools.py" /><Text>Tools</Text>'],
+        ['tools.py', code],
+      ]) },
+    ];
+    for (const project of projects) {
+      expect(await installAppOffline(app(project), setup)).toMatchObject({ ready: true, workerAssets: 'installed' });
+    }
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(preloadWasm).toHaveBeenCalledTimes(2);
+    expect(preloadTorch).toHaveBeenCalledTimes(2);
+  });
   it('loads in the background, off the download progress of the app on screen', async () => {
     resetLoadProgressForTests();
     let failing = true;
@@ -251,7 +313,7 @@ describe('installAppOffline', () => {
     const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
     const preloadTorch = vi.fn(async (_init: RequestInit) => undefined);
     const ok = await installAppOffline(
-      app({ pythonPackages: ['numpy', 'torch'] }),
+      app({ python: pythonWith('numpy', 'torch') }),
       host(registry, { preloadTorch })
     );
     expect(preloadTorch).toHaveBeenCalledTimes(1);
@@ -262,7 +324,7 @@ describe('installAppOffline', () => {
       throw new Error('zipp_torch.wasm answered 404');
     });
     const bad = await installAppOffline(
-      app({ pythonPackages: ['torch'] }),
+      app({ python: pythonWith('torch') }),
       host(registry, { preloadTorch: failing })
     );
     expect(bad.ready).toBe(false);
@@ -272,7 +334,7 @@ describe('installAppOffline', () => {
   it('does not fetch torch for an app that does not declare it', async () => {
     const registry = registryWith({ Scene3D: async () => Fake, LineChart: async () => Fake });
     const preloadTorch = vi.fn(async (_init: RequestInit) => undefined);
-    const result = await installAppOffline(app({ pythonPackages: ['numpy'] }), host(registry, { preloadTorch }));
+    const result = await installAppOffline(app({ python: pythonWith('numpy') }), host(registry, { preloadTorch }));
     expect(preloadTorch).not.toHaveBeenCalled();
     expect(result.ready).toBe(true);
   });
@@ -283,7 +345,7 @@ describe('installAppOffline', () => {
     const controller = new AbortController();
     const preloadTorch = vi.fn((_init: RequestInit) => pending.promise);
     const run = installAppOffline(
-      app({ pythonPackages: ['torch'] }),
+      app({ python: pythonWith('torch') }),
       { ...host(registry, { preloadTorch }), signal: controller.signal }
     );
     await vi.waitFor(() => expect(preloadTorch).toHaveBeenCalled());

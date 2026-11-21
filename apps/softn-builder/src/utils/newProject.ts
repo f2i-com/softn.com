@@ -10,12 +10,17 @@
  */
 
 import { useCanvasStore } from '../stores/canvasStore';
+import type { StarterFile } from '@softn/editor-shared/webStarters';
 import { useFilesStore } from '../stores/filesStore';
 import { useHistoryStore } from '../stores/historyStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSchemaStore } from '../stores/schemaStore';
 import type { LogicFileState, UIFileState } from '../types/builder';
 import { flushCanvasToActiveFile } from './buildProjectBundle';
+import { parseBundleFiles } from './bundleExporter';
+import { loadBundleContents } from './bundleLoader';
+import { prepareProjectSnapshot, commitProjectSnapshot } from './openProject';
+import { markUnsaved } from './savedPoint';
 import { expressionText } from './starterProps';
 import type {
   NewProjectBackend,
@@ -144,6 +149,7 @@ function buildWebContainerStarter(
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${safeName}</title>
+  <link rel="stylesheet" href="softn:ui.css" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -241,13 +247,73 @@ body {
 
   let scriptContent: string;
   if (language === 'python') {
-    scriptContent = `# ${scriptPath} — runs inside SoftN's isolated ZIPP Python Worker
+    if (template === 'dashboard') {
+      scriptContent = `# ${scriptPath} — runs inside SoftN's isolated ZIPP Python Worker
+from js import document
+
+tasks = [
+    {"title": "Write container spec", "done": True},
+    {"title": "Preview in SoftN Builder", "done": False},
+]
+
+
+def render():
+    task_list = document.getElementById("task-list")
+    if not task_list:
+        return
+    task_list.innerHTML = ""
+    for item in tasks:
+        li = document.createElement("li")
+        mark = "✓" if item["done"] else "○"
+        li.textContent = f"{mark} {item['title']}"
+        task_list.appendChild(li)
+    active = document.getElementById("stat-active")
+    done = document.getElementById("stat-done")
+    if active:
+        active.textContent = str(sum(1 for t in tasks if not t["done"]))
+    if done:
+        done.textContent = str(sum(1 for t in tasks if t["done"]))
+
+
+def add_task(_event=None):
+    tasks.append({"title": f"Task #{len(tasks) + 1}", "done": False})
+    render()
+
+
+btn = document.getElementById("add-task-btn")
+if btn:
+    btn.addEventListener("click", add_task)
+
+render()
+`;
+    } else if (template === 'landing') {
+      scriptContent = `# ${scriptPath} — runs inside SoftN's isolated ZIPP Python Worker
+from js import document
+
+clicks = 0
+
+
+def on_cta(_event=None):
+    global clicks
+    clicks += 1
+    badge = document.getElementById("clicks")
+    if badge:
+        badge.textContent = str(clicks)
+
+
+btn = document.getElementById("cta-btn")
+if btn:
+    btn.addEventListener("click", on_cta)
+`;
+    } else {
+      scriptContent = `# ${scriptPath} — runs inside SoftN's isolated ZIPP Python Worker
 from js import document
 
 app = document.getElementById("app")
 if app:
     app.textContent = "Python Web Container ready."
 `;
+    }
   } else if (template === 'dashboard') {
     const typeDecl = language === 'typescript' ? `\ninterface TaskItem {\n  title: string;\n  done: boolean;\n}\n` : '';
     const listType = language === 'typescript' ? ': TaskItem[]' : '';
@@ -542,7 +608,24 @@ function handleRequest(req) {
 }
 
 /** Replace the workspace with a new app made from the dialog's choices. */
-export function startNewProject(config: NewProjectConfig): void {
+export function startNewProject(config: NewProjectConfig, starterFiles?: StarterFile[]): void {
+  if (starterFiles) {
+    const encoder = new TextEncoder();
+    const entries = new Map(starterFiles.map(({ path, content }) => [path, encoder.encode(content)]));
+    const snapshot = prepareProjectSnapshot(loadBundleContents(parseBundleFiles(entries)));
+    commitProjectSnapshot(snapshot);
+    // Keep the app's own three files available above the editor. Preview still
+    // runs the HTML entry, whichever file is selected for editing.
+    const files = useFilesStore.getState();
+    if (files.activeFileId === snapshot.project.source.mainFileId) {
+      for (const path of ['styles.css', 'app.js']) {
+        const file = [...files.logicFiles.values()].find((entry) => entry.path === path);
+        if (file) files.openFile(file.id);
+      }
+    }
+    markUnsaved();
+    return;
+  }
   const isWeb = config.format === 'web' || config.language === 'typescript';
   const baseLanguage = config.language === 'python' ? 'python' : 'javascript';
 

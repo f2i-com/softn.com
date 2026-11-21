@@ -630,6 +630,8 @@ export function buildEffectsRig(
         )
       )
     : null;
+  let cssWidth = Math.max(1, width);
+  let cssHeight = Math.max(1, height);
   // Tone mapping and the sRGB conversion the renderer would have done.
   add(new mods.OutputPass());
   let grain: ShaderPass | null = null;
@@ -709,9 +711,17 @@ export function buildEffectsRig(
       }
       composer.render();
     },
-    setSize: (w, h) => composer.setSize(w, h),
+    setSize: (w, h) => {
+      cssWidth = Math.max(1, w);
+      cssHeight = Math.max(1, h);
+      composer.setSize(w, h);
+      // Gaussian bloom has no detail above CSS pixel resolution; capping its
+      // internal 5-mip pyramid at CSS dimensions saves >55% bloom GPU fill on HiDPI.
+      bloom?.setSize(cssWidth, cssHeight);
+    },
     setPixelRatio: (ratio) => {
       if (typeof composer.setPixelRatio === 'function') composer.setPixelRatio(ratio);
+      bloom?.setSize(cssWidth, cssHeight);
     },
     setCamera: (next) => {
       scenePass.camera = next;

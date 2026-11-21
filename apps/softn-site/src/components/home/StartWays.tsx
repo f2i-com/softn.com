@@ -1,17 +1,11 @@
-import React from 'react';
-import { Reveal } from '../Reveal';
-import { Arrow } from '../glyphs';
-import { BUILDER_HREF, STUDIO_HREF } from '../../lib/appUrls';
+import { BUILDER_HREF, STUDIO_HREF, WEB_HREF } from '../../lib/appUrls';
 import { FIELDNOTES_BUNDLE, FIELDNOTES_STARTER, fieldnotesInRuntime } from '../../lib/examples';
 import { HTML_GUIDE_HREF } from '../../lib/guides';
+import { Arrow } from '../glyphs';
 
-/**
- * "Create an app": three ways in, each saying what it needs before anyone presses it. The working example comes
- * first and is the one recommended: it needs no account, no AI and no empty project, and opens on a running app.
- */
-export function StartWays(): React.ReactElement {
+export function StartWays() {
   return (
-    <Reveal as="section" className="band band-split band-start" id="create">
+    <section className="band starter-alternatives" aria-label="More ways to start">
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">Create an app</p>
@@ -43,8 +37,8 @@ export function StartWays(): React.ReactElement {
             <p className="start-badge">Needs an AI connection (or try built-in examples)</p>
             <h3 className="start-name">Describe a full-stack app to AI</h3>
             <p className="start-copy">
-              Tell Studio what the app should do, in plain words. It plans and writes the app — choose JavaScript or
-              Python, plus an optional sandboxed PHP or JS/TS + SQLite backend — and previews every edit live.
+              Tell Studio what the app should do, in plain words. It plans and writes the app — choose JavaScript,
+              React, Vue, or Python, plus an optional sandboxed PHP or JS/TS + SQLite backend — and previews every edit live.
             </p>
             <p className="start-needs">
               <span>You need</span> a local model or your own API key (or open Studio’s built-in PHP + SQLite example with no key).
@@ -60,9 +54,9 @@ export function StartWays(): React.ReactElement {
             <p className="start-badge">No account</p>
             <h3 className="start-name">Build or open any .softn container</h3>
             <p className="start-copy">
-              Scaffold a new full-stack container (HTML/TS + PHP or JS/TS + SQLite) or open any <code>.softn</code>{' '}
-              bundle — including Slim 4 and Rust apps — to edit frontend and backend files side-by-side and manage
-              embedded SQLite tables, schemas and records in the built-in Data explorer.
+              Scaffold a new full-stack container (HTML/React/Vue/TS + PHP or JS/TS + SQLite) or open any{' '}
+              <code>.softn</code> bundle — including Slim 4 and Rust apps — to edit frontend and backend files
+              side-by-side and manage embedded SQLite tables, schemas and records in the built-in Data explorer.
             </p>
             <p className="start-needs">
               <span>You need</span> a browser. Bringing existing HTML or PHP?{' '}
@@ -73,11 +67,12 @@ export function StartWays(): React.ReactElement {
                 Open in Builder
                 <Arrow />
               </a>
+              <a className="start-link" href={WEB_HREF}>Open Runtime</a>
               <a className="start-link" href="/apps">Find an app to remix</a>
             </div>
           </article>
         </div>
       </div>
-    </Reveal>
+    </section>
   );
 }

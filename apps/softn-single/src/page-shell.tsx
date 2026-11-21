@@ -1,4 +1,5 @@
-import { SingleApp, loadPageApplication, type PageSource } from '@softn/single-shell';
+import { SingleApp } from '@softn/single-shell/SingleApp';
+import { loadPageApplication, type PageSource } from '@softn/single-shell/page';
 import '@softn/single-shell/style.css';
 
 /** The shell, loading the app from the page it is mounted on. */

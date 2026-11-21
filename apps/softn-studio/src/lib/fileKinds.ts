@@ -10,7 +10,7 @@
  * no longer read or edit.
  */
 
-import { ASSET_CLASSIFICATIONS } from '@softn/core';
+import { ASSET_CLASSIFICATIONS } from '@softn/core/authoring';
 
 /** Archives and compiled code: bytes too, though core's registry, which lists what a bundle serves, does not name them. */
 const ARCHIVE_OR_COMPILED = /\.(zip|gz|tgz|tar|bz2|xz|7z|rar|jar|wasm)$/i;

@@ -4,6 +4,7 @@
 
 import React, { useState } from 'react';
 import { useSchemaStore } from '../../stores/schemaStore';
+import { useProjectStore } from '../../stores/projectStore';
 import { toast, useNotificationStore } from '../../stores/notificationStore';
 import { describeReidentify } from '../../utils/reidentify';
 import { askConfirm } from '../../utils/confirm';
@@ -29,6 +30,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
     background: 'var(--ink)',
   },
   tabs: {
@@ -296,12 +299,24 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
 }
 
 export function DataEntryPanel() {
-  const { entities, seedData, recordIdentity, addSeedRecord, updateSeedRecord, deleteSeedRecord } =
+  const isWeb = useProjectStore(state => state.projectFormat === 'web');
+  const { entities, seedData, recordIdentity, selectedEntityId, selectEntity, addSeedRecord, updateSeedRecord, deleteSeedRecord } =
     useSchemaStore();
   const lastReidentify = useSchemaStore((s) => s.lastReidentify);
   // Render the first collection immediately so the table has its final
   // height before the schema diagram measures its available viewport.
-  const [activeEntityId, setActiveEntityId] = useState<string | null>(() => entities[0]?.id ?? null);
+  const [lastEntityId, setLastEntityId] = useState<string | null>(selectedEntityId);
+  const activeEntity = entities.find(entity => entity.id === selectedEntityId)
+    ?? entities.find(entity => entity.id === lastEntityId) ?? entities[0];
+  const [search, setSearch] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  React.useEffect(() => {
+    if (selectedEntityId) setLastEntityId(selectedEntityId);
+  }, [selectedEntityId]);
+  React.useEffect(() => {
+    setSearch('');
+    setEditingId(null);
+  }, [activeEntity?.id]);
 
   // "Import as new": the one deliberate way to give a collection's records
   // fresh ids (utils/reidentify.ts). Confirmed first, with what will
@@ -337,38 +352,32 @@ export function DataEntryPanel() {
     });
   };
 
-  // Auto-select first entity if none selected
-  React.useEffect(() => {
-    if (!activeEntityId && entities.length > 0) {
-      setActiveEntityId(entities[0].id);
-    } else if (activeEntityId && !entities.find((e) => e.id === activeEntityId)) {
-      setActiveEntityId(entities.length > 0 ? entities[0].id : null);
-    }
-  }, [entities, activeEntityId]);
-
-  if (entities.length === 0) {
-    return (
-      <div style={styles.container}>
-        <div style={styles.header}>Sample records</div>
-        <div style={styles.emptyState}>
-          Add a collection above, and the records it ships with are entered here.
-        </div>
-      </div>
-    );
-  }
-
-  const activeEntity = entities.find((e) => e.id === activeEntityId);
-  const records = activeEntity ? seedData.get(activeEntity.id) || [] : [];
+  if (!activeEntity) return null;
+  const records = seedData.get(activeEntity.id) ?? [];
+  const identities = recordIdentity.get(activeEntity.id);
+  const query = search.trim().toLowerCase();
+  const rows = records.map((record, idx) => ({ record, idx, id: identities?.[idx]?.id ?? String(idx) }))
+    .filter(({ record, id }) => !query || id === editingId || Object.values(record).some(value => {
+      const text = value != null && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
+      return text.toLowerCase().includes(query);
+    }));
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span>Sample records</span>
-        {activeEntity && (
+        <div className="bl-db-records-heading">
+          <span>Sample records</span>
           <span style={styles.recordCount}>
-            {records.length} record{records.length !== 1 ? 's' : ''}
+            {query ? `${rows.length} of ` : ''}{records.length} record{records.length !== 1 ? 's' : ''}
           </span>
-        )}
+        </div>
+        <div className="bl-db-record-actions">
+          {records.length > 0 && <input type="search" aria-label={`Search ${activeEntity.name} records`} placeholder="Search records"
+            className="bl-db-record-search" value={search} onChange={event => setSearch(event.target.value)} />}
+          <button type="button" className="bl-btn bl-btn-sm" onClick={() => { setSearch(''); addSeedRecord(activeEntity.id); }}>
+            + Add record
+          </button>
+        </div>
       </div>
 
       <div style={styles.tabs} role="group" aria-label="Collection">
@@ -376,12 +385,12 @@ export function DataEntryPanel() {
           <button
             key={entity.id}
             type="button"
-            aria-pressed={entity.id === activeEntityId}
+            aria-pressed={entity.id === activeEntity.id}
             style={{
               ...styles.tab,
-              ...(entity.id === activeEntityId ? styles.tabActive : {}),
+              ...(entity.id === activeEntity.id ? styles.tabActive : {}),
             }}
-            onClick={() => setActiveEntityId(entity.id)}
+            onClick={() => selectEntity(entity.id)}
           >
             {entity.name}
             {(seedData.get(entity.id)?.length || 0) > 0 && (
@@ -392,94 +401,93 @@ export function DataEntryPanel() {
       </div>
 
       <div style={styles.content}>
-        {activeEntity && (
-          <>
-            {records.length > 0 ? (
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    {activeEntity.fields.map((field) => (
-                      <th key={field.id} style={styles.th}>
-                        {field.name}
-                        {field.required && <span style={{ color: 'var(--danger)' }} title="Required" aria-label="required"> *</span>}
-                      </th>
-                    ))}
-                    <th style={{ ...styles.th, width: 40 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.map((record, idx) => (
-                    <tr key={idx}>
-                      {activeEntity.fields.map((field) => (
-                        <td key={field.id} style={styles.td}>
-                          <FieldInput
-                            field={field}
-                            value={record[field.name]}
-                            onChange={(value) => {
-                              updateSeedRecord(activeEntity.id, idx, {
-                                ...record,
-                                [field.name]: value,
-                              });
-                            }}
-                            entities={entities}
-                            seedData={seedData}
-                            recordIdentity={recordIdentity}
-                          />
-                        </td>
-                      ))}
-                      <td style={styles.td}>
-                        <button
-                          style={styles.deleteBtn}
-                          onClick={() => deleteSeedRecord(activeEntity.id, idx)}
-                          title="Delete record"
-                          aria-label={`Delete record ${idx + 1}`}
-                        >
-                          ×
-                        </button>
-                      </td>
-                    </tr>
+        {rows.length > 0 ? (
+          <table style={styles.table} aria-label={`${activeEntity.name} sample records`}>
+            <thead>
+              <tr>
+                {activeEntity.fields.map((field) => (
+                  <th key={field.id} style={styles.th}>
+                    {field.name}
+                    {field.required && <span style={{ color: 'var(--danger)' }} title="Required" aria-label="required"> *</span>}
+                  </th>
+                ))}
+                <th style={{ ...styles.th, width: 40 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ record, idx, id }) => (
+                <tr key={id} onFocus={() => setEditingId(id)} onBlur={event => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) setEditingId(null);
+                }}>
+                  {activeEntity.fields.map((field) => (
+                    <td key={field.id} style={styles.td}>
+                      <FieldInput
+                        field={field}
+                        value={record[field.name]}
+                        onChange={(value) => {
+                          updateSeedRecord(activeEntity.id, idx, {
+                            ...record,
+                            [field.name]: value,
+                          });
+                        }}
+                        entities={entities}
+                        seedData={seedData}
+                        recordIdentity={recordIdentity}
+                      />
+                    </td>
                   ))}
-                </tbody>
-              </table>
-            ) : (
-              <div style={styles.emptyState}>
-                No records yet. Add the rows this collection should start with.
-              </div>
-            )}
-
-            <div style={styles.footer}>
-              <button type="button" className="bl-btn bl-btn-sm" onClick={() => addSeedRecord(activeEntity.id)}>
-                + Add record
-              </button>
-              {records.length > 0 && (
-                <button
-                  type="button"
-                  className="bl-btn bl-btn-sm bl-btn-ghost"
-                  onClick={() => handleReidentify(activeEntity)}
-                  title="Give every record of this collection a new id and new timestamps, as if imported into a new app, and update the references that point at them"
-                  data-action="reidentify"
-                >
-                  Re-identify records…
-                </button>
-              )}
-              {lastReidentify?.entityId === activeEntity.id && (
-                <button
-                  type="button"
-                  className="bl-btn bl-btn-sm bl-btn-ghost"
-                  onClick={() => {
-                    if (useSchemaStore.getState().undoReidentify()) toast.info(`Restored the previous ids of ${activeEntity.name}`);
-                  }}
-                  data-action="undo-reidentify"
-                >
-                  Undo re-identify
-                </button>
-              )}
-              <span style={styles.footerHint}>
-                Records keep the ids they were imported with; re-identify only to seed a new app from this data.
-              </span>
-            </div>
-          </>
+                  <td style={styles.td}>
+                    <button
+                      style={styles.deleteBtn}
+                      onClick={() => deleteSeedRecord(activeEntity.id, idx)}
+                      title="Delete record"
+                      aria-label={`Delete record ${idx + 1}`}
+                    >
+                      ×
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : query ? (
+          <div style={styles.emptyState}>No matching records. <button type="button" className="bl-btn bl-btn-sm" onClick={() => setSearch('')}>Clear search</button></div>
+        ) : (
+          <div style={styles.emptyState}>
+            No records yet. Add the rows this collection should start with.
+          </div>
         )}
+
+        <div style={styles.footer}>
+          {isWeb && <details className="bl-db-example">
+            <summary>Read from JavaScript</summary>
+            <pre>{`import { db } from 'softn:db';\nconst rows = db.query(${JSON.stringify(activeEntity.name)});\nconst values = rows.map(row => row.data);`}</pre>
+          </details>}
+          {records.length > 0 && (
+            <button
+              type="button"
+              className="bl-btn bl-btn-sm bl-btn-ghost"
+              onClick={() => handleReidentify(activeEntity)}
+              title="Give every record of this collection a new id and new timestamps, as if imported into a new app, and update the references that point at them"
+              data-action="reidentify"
+            >
+              Re-identify records…
+            </button>
+          )}
+          {lastReidentify?.entityId === activeEntity.id && (
+            <button
+              type="button"
+              className="bl-btn bl-btn-sm bl-btn-ghost"
+              onClick={() => {
+                if (useSchemaStore.getState().undoReidentify()) toast.info(`Restored the previous ids of ${activeEntity.name}`);
+              }}
+              data-action="undo-reidentify"
+            >
+              Undo re-identify
+            </button>
+          )}
+          <span style={styles.footerHint}>These starter rows travel with the app and keep their record IDs.</span>
+        </div>
       </div>
     </div>
   );

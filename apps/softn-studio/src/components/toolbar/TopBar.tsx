@@ -82,10 +82,10 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
           onClick={actions.exportBundle}
           disabled={!actions.canExport}
           className="st-btn st-btn-sm"
-          title={hasFiles ? 'Export bundle: download the project as a .softn file' : 'No files to export'}
+          title={hasFiles ? (hosted ? 'Download the editable project as a ZIP' : 'Export bundle: download the project as a .softn file') : 'No files to export'}
         >
           <Icon name="export" size={15} />
-          <span>Export bundle</span>
+          <span>{hosted ? 'Download ZIP' : 'Export bundle'}</span>
         </button>
         <button
           type="button"

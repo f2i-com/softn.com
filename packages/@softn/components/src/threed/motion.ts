@@ -77,6 +77,25 @@ interface LookEase {
   restTransparent: boolean;
 }
 
+/** Camera-local offset & orientation for `attach: 'camera'` objects, eased between ticks. */
+export interface CarriedPose {
+  readonly pos: THREE.Vector3;
+  readonly quat: THREE.Quaternion;
+}
+
+interface CarriedEase extends CarriedPose {
+  node: THREE.Object3D;
+  at: number;
+  t: number;
+  ms: number;
+  pos: THREE.Vector3;
+  quat: THREE.Quaternion;
+  fromPos: THREE.Vector3;
+  toPos: THREE.Vector3;
+  fromQuat: THREE.Quaternion;
+  toQuat: THREE.Quaternion;
+}
+
 const isColor = (value: unknown): value is THREE.Color => !!value && (value as THREE.Color).isColor === true;
 const sameColor = (a: THREE.Color, b: THREE.Color): boolean => a.r === b.r && a.g === b.g && a.b === b.b;
 
@@ -88,12 +107,14 @@ export class Easer {
 
   private readonly nodes: NodeEase[] = [];
   private readonly looks: LookEase[] = [];
+  private readonly carried: CarriedEase[] = [];
   private readonly byNode = new WeakMap<THREE.Object3D, NodeEase>();
   private readonly byMaterial = new WeakMap<THREE.Material, LookEase>();
+  private readonly byCarried = new WeakMap<THREE.Object3D, CarriedEase>();
 
   /** Whether anything is on its way somewhere. */
   get busy(): boolean {
-    return this.nodes.length > 0 || this.looks.length > 0;
+    return this.nodes.length > 0 || this.looks.length > 0 || this.carried.length > 0;
   }
 
   /** Whether `node` is on its way somewhere. */
@@ -281,6 +302,77 @@ export class Easer {
     }
   }
 
+  /**
+   * Place or ease a camera-attached object's local offset & orientation over `ms`.
+   * Viewmodel objects (`attach: 'camera'`) are positioned relative to the active
+   * camera on every display frame, so easing their camera-local pose eliminates
+   * 30 Hz viewmodel stutter on 60–240 Hz monitors while keeping them locked to
+   * mouse-look turns with zero lag.
+   */
+  carryTo(
+    node: THREE.Object3D,
+    x: number,
+    y: number,
+    z: number,
+    toQuat: THREE.Quaternion,
+    ms: number,
+    isUpdate: boolean
+  ): void {
+    let rec = this.byCarried.get(node);
+    if (!rec) {
+      rec = {
+        node,
+        at: -1,
+        t: 0,
+        ms: 0,
+        pos: new THREE.Vector3(x, y, z),
+        quat: toQuat.clone(),
+        fromPos: new THREE.Vector3(x, y, z),
+        toPos: new THREE.Vector3(x, y, z),
+        fromQuat: toQuat.clone(),
+        toQuat: toQuat.clone(),
+      };
+      this.byCarried.set(node, rec);
+      return;
+    }
+
+    const toldPos = rec.at !== -1 ? rec.toPos : rec.pos;
+    const dx = x - toldPos.x;
+    const dy = y - toldPos.y;
+    const dz = z - toldPos.z;
+    const jumped = this.jump > 0 && dx * dx + dy * dy + dz * dz > this.jump * this.jump;
+
+    if (!isUpdate || !(ms > 0) || !this.live || jumped) {
+      rec.pos.set(x, y, z);
+      rec.toPos.set(x, y, z);
+      rec.quat.copy(toQuat);
+      rec.toQuat.copy(toQuat);
+      if (rec.at !== -1) this.releaseCarried(rec);
+      return;
+    }
+
+    const posSame = toldPos.x === x && toldPos.y === y && toldPos.z === z;
+    const toldQuat = rec.at !== -1 ? rec.toQuat : rec.quat;
+    const quatSame = Math.abs(toldQuat.dot(toQuat)) > 1 - 1e-12;
+    if (posSame && quatSame) return;
+
+    rec.fromPos.copy(rec.pos);
+    rec.toPos.set(x, y, z);
+    rec.fromQuat.copy(rec.quat);
+    rec.toQuat.copy(toQuat);
+    rec.t = 0;
+    rec.ms = ms;
+    if (rec.at === -1) {
+      rec.at = this.carried.length;
+      this.carried.push(rec);
+    }
+  }
+
+  /** Current camera-local pose for an `attach: 'camera'` object, if tracked. */
+  carriedPose(node: THREE.Object3D): CarriedPose | undefined {
+    return this.byCarried.get(node);
+  }
+
   /** One frame: `elapsedMs` since the last. */
   advance(elapsedMs: number): void {
     for (let i = this.nodes.length - 1; i >= 0; i--) {
@@ -327,6 +419,20 @@ export class Easer {
       if (!moving) this.release(ease);
     }
 
+    for (let i = this.carried.length - 1; i >= 0; i--) {
+      const rec = this.carried[i];
+      rec.t += elapsedMs;
+      if (rec.t >= rec.ms) {
+        rec.pos.copy(rec.toPos);
+        rec.quat.copy(rec.toQuat);
+        this.releaseCarried(rec);
+      } else {
+        const k = rec.t / rec.ms;
+        rec.pos.lerpVectors(rec.fromPos, rec.toPos, k);
+        rec.quat.slerpQuaternions(rec.fromQuat, rec.toQuat, k);
+      }
+    }
+
     for (let i = this.looks.length - 1; i >= 0; i--) {
       const look = this.looks[i];
       look.t += elapsedMs;
@@ -360,11 +466,23 @@ export class Easer {
       ease.at = -1;
     }
     this.nodes.length = 0;
+    for (let i = this.carried.length - 1; i >= 0; i--) {
+      const rec = this.carried[i];
+      rec.pos.copy(rec.toPos);
+      rec.quat.copy(rec.toQuat);
+      rec.at = -1;
+    }
+    this.carried.length = 0;
     for (let i = this.looks.length - 1; i >= 0; i--) this.arriveLook(this.looks[i]);
   }
 
   /** `node` is no longer an object of the scene, or no longer the node of one: leave it as it is. */
   forget(node: THREE.Object3D): void {
+    const held = this.byCarried.get(node);
+    if (held) {
+      if (held.at !== -1) this.releaseCarried(held);
+      this.byCarried.delete(node);
+    }
     const ease = this.byNode.get(node);
     if (!ease) return;
     ease.position.on = false;
@@ -439,6 +557,15 @@ export class Easer {
     look.at = -1;
   }
 
+  private releaseCarried(rec: CarriedEase): void {
+    const last = this.carried.pop() as CarriedEase;
+    if (last !== rec) {
+      this.carried[rec.at] = last;
+      last.at = rec.at;
+    }
+    rec.at = -1;
+  }
+
   private writeLook(look: LookEase, k: number): void {
     const mat = look.material;
     if (look.hasColor) (mat.color as THREE.Color).copy(look.fromColor).lerp(look.toColor, k);
@@ -464,4 +591,74 @@ export class Easer {
 /** An object's own `transition` where it gives one, and otherwise the one it inherits. */
 export function transitionOf(own: unknown, inherited: number): number {
   return typeof own === 'number' && Number.isFinite(own) && own >= 0 ? own : inherited;
+}
+
+/**
+ * Tracks whether updates are arriving from a periodic sub-frame-rate game loop
+ * (such as `<Loop interval={33} />` ticking at ~30 Hz while the screen draws
+ * at 60–240 Hz). Returns an interpolation duration in milliseconds once two
+ * consecutive multi-frame tick intervals have been observed, and `0` for
+ * single manual edits, frame-locked loops (`<Loop frame />`), or synchronous
+ * updates.
+ */
+export class TickCadence {
+  private lastAt = -1;
+  private framesSinceLast = 0;
+  private avgFrameMs = 0;
+  private streak = 0;
+  private smoothedMs = 0;
+
+  /** Record one rendered display frame (`dtMs` is the frame delta in ms). */
+  frame(dtMs = 0): void {
+    this.framesSinceLast++;
+    if (dtMs > 0.5 && dtMs < 120) {
+      this.avgFrameMs = this.avgFrameMs === 0 ? dtMs : this.avgFrameMs * 0.8 + dtMs * 0.2;
+    }
+  }
+
+  /** Seed the initial timestamp at scene mount without counting a tick. */
+  seed(now: number): void {
+    this.lastAt = now;
+    this.framesSinceLast = 0;
+    this.streak = 0;
+    this.smoothedMs = 0;
+  }
+
+  /** Clear cadence history when the scene pauses, resumes, or teleports. */
+  reset(): void {
+    this.lastAt = -1;
+    this.framesSinceLast = 0;
+    this.avgFrameMs = 0;
+    this.streak = 0;
+    this.smoothedMs = 0;
+  }
+
+  /** Record an update at `now` ms and return the active interpolation window (0 if none). */
+  update(now: number): number {
+    const frames = this.framesSinceLast;
+    this.framesSinceLast = 0;
+    if (this.lastAt < 0) {
+      this.lastAt = now;
+      return 0;
+    }
+    const dt = now - this.lastAt;
+    this.lastAt = now;
+
+    const active = this.streak >= 2;
+    const subFrameRate = frames >= 2 || (frames >= 1 && this.avgFrameMs > 0 && dt >= this.avgFrameMs * 1.35);
+    const qualifies = active
+      ? frames >= 1 && dt >= 14 && dt <= 115 && (subFrameRate || dt >= 22)
+      : subFrameRate && dt >= 22 && dt <= 95;
+
+    if (!qualifies) {
+      this.streak = 0;
+      this.smoothedMs = 0;
+      return 0;
+    }
+
+    const clamped = Math.min(85, Math.max(18, dt));
+    this.streak++;
+    this.smoothedMs = this.smoothedMs === 0 ? clamped : this.smoothedMs * 0.7 + clamped * 0.3;
+    return this.streak >= 2 ? Math.round(this.smoothedMs * 1.05) : 0;
+  }
 }

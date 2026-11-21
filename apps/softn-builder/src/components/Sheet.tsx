@@ -25,11 +25,9 @@ interface SheetProps {
   children: React.ReactNode;
   /** A sheet that needs the height: the logic editor, where lines are what is read. */
   tall?: boolean;
-  /** A press anywhere in the sheet, for a panel whose rows are what closes it (a file, picked). */
-  onPress?: (event: React.MouseEvent<HTMLDivElement>) => void;
 }
 
-export function Sheet({ title, onClose, children, tall = false, onPress }: SheetProps) {
+export function Sheet({ title, onClose, children, tall = false }: SheetProps) {
   const sheetRef = useModalFocus(true, onClose);
   return (
     <div className="bl-sheet-backdrop" onClick={onClose}>
@@ -42,10 +40,7 @@ export function Sheet({ title, onClose, children, tall = false, onPress }: Sheet
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        onClick={(event) => {
-          event.stopPropagation();
-          onPress?.(event);
-        }}
+        onClick={(event) => event.stopPropagation()}
       >
         {children}
         {/* What is done from the panel ("Deleted Heading.") is said here, inside the sheet:

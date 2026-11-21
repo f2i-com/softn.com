@@ -15,7 +15,7 @@
  */
 
 import type { LogicFileState, ProjectFileNode, UIFileState } from '../types/builder';
-import { isPythonLogicPath } from '@softn/core';
+import { isPythonLogicPath } from '@softn/core/authoring';
 import { stripSlash } from './values';
 import {
   MAIN_LOGIC_PATHS,

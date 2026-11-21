@@ -48,7 +48,7 @@ export function codeLanguageFor(path: string | undefined): CodeEditorLanguage {
   if (/\.(?:m?js|cjs|jsx|logic)$/.test(lower)) return 'javascript';
   if (/\.(?:css|scss|less)$/.test(lower)) return 'css';
   if (lower.endsWith('.json') || lower.endsWith('.xdb')) return 'json';
-  if (/\.(?:html?|ui|xml|svg)$/.test(lower)) return 'html';
+  if (/\.(?:html?|ui|vue|xml|svg)$/.test(lower)) return 'html';
   if (/\.(?:md|markdown)$/.test(lower)) return 'markdown';
   if (/\.(?:toml|ya?ml|ini|conf|cfg|env|sh|bash|zsh)$/.test(lower) || /(?:^|\/)(?:\.htaccess|dockerfile|makefile)$/.test(lower)) return 'shell';
   return 'plain';
@@ -56,6 +56,8 @@ export function codeLanguageFor(path: string | undefined): CodeEditorLanguage {
 
 /** Human-readable badge label for a file's syntax mode. */
 export function codeLanguageLabelFor(path: string | undefined): string {
+  if (path && /\.jsx$/i.test(path)) return 'React JSX';
+  if (path && /\.vue$/i.test(path)) return 'Vue component';
   switch (codeLanguageFor(path)) {
     case 'python':
       return 'Python';

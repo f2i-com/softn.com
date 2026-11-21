@@ -16,13 +16,13 @@ type Refused = Extract<HandSave, { ok: false }>;
  * so it is this file's editor that shows whenever the draft is of this file,
  * whatever redrew the canvas in between.
  */
-export function CodeFile({ path, source }: { path: string; source: string | null }): React.ReactElement | null {
+export function CodeFile({ path, source, onPreview }: { path: string; source: string | null; onPreview?: () => void }): React.ReactElement | null {
   const editing = useEditStore((s) => s.draft?.path === path);
   const file = useVFSStore((s) => s.files.get(path));
   // After the editor closes, the keyboard goes back to Edit, where it came from.
   const [returned, setReturned] = useState(false);
   useEffect(() => setReturned(false), [path]);
-  if (editing) return <FileEditor path={path} onClose={() => setReturned(true)} />;
+  if (editing) return <FileEditor path={path} onClose={() => setReturned(true)} onPreview={onPreview} />;
   if (source === null) return null;
   return (
     <CodeView
@@ -46,7 +46,7 @@ export function CodeFile({ path, source }: { path: string; source: string | null
  * Every refusal of a save is said in an alert, with what can be done about
  * it; nothing is written until a save is accepted (lib/handEdit.ts).
  */
-export function FileEditor({ path, onClose }: { path: string; onClose(): void }): React.ReactElement | null {
+export function FileEditor({ path, onClose, onPreview }: { path: string; onClose(): void; onPreview?: () => void }): React.ReactElement | null {
   const draft = useEditStore((s) => s.draft);
   const change = useEditStore((s) => s.change);
   const running = useAIStore((s) => s.agentState === 'building');
@@ -69,6 +69,7 @@ export function FileEditor({ path, onClose }: { path: string; onClose(): void })
     const outcome = saveHandEdit(options);
     if (outcome.ok) onClose();
     else setRefused(outcome);
+    return outcome.ok;
   }, [onClose]);
 
   const cancel = useCallback(() => {
@@ -152,6 +153,8 @@ export function FileEditor({ path, onClose }: { path: string; onClose(): void })
           <Icon name="save" size={14} />
           <span>Save</span>
         </button>
+        {onPreview && <button type="button" className="st-btn st-btn-sm" disabled={running}
+          onClick={() => { if (save()) onPreview(); }}>Save &amp; preview</button>}
       </div>
       {refused && (
         <div className="st-fileedit-refused" role="alert">

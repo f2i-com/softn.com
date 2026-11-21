@@ -1,5 +1,6 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
 import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage, resolveManifest } from '../lib/studioProject';
+import { projectContainerMode } from '../lib/sourceKinds';
 import { resetProjectSessionForImport } from '../lib/projectSession';
 import { READING_LIST } from './readingList';
 import { READING_LIST_PYTHON } from './readingListPython';
@@ -41,7 +42,7 @@ export const DEFAULT_EXAMPLE: ExampleProject = READING_LIST;
  * project an imported bundle would give them. The caller owns the
  * workspace-claim and the checkpoint that precede replacing a project.
  */
-export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE): string {
+export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE, kind: 'example' | 'starter' = 'example'): string {
   const projectId = resetProjectSessionForImport();
   useVFSStore.getState().openFiles(example.files);
 
@@ -49,13 +50,20 @@ export function openExampleInStores(example: ExampleProject = DEFAULT_EXAMPLE): 
   ws.setProjectName(example.name);
   const snapshot = useVFSStore.getState().getSnapshot();
   const blueprint = inferBlueprintFromFiles(example.name, snapshot);
-  ws.setBrief(inferBriefFromBlueprint(blueprint, projectLogicLanguage(snapshot), resolveManifest(snapshot)?.description));
+  const appFormat = projectContainerMode(snapshot) === 'web' ? 'container' : 'ui';
+  const inferredBrief = inferBriefFromBlueprint(blueprint, projectLogicLanguage(snapshot), resolveManifest(snapshot)?.description, appFormat);
+  ws.setBrief(inferredBrief);
   ws.setBlueprint(blueprint);
   ws.setBlueprintApproved(true);
-  ws.setTaskGraph(generateTaskGraph(blueprint));
+  ws.setTaskGraph(generateTaskGraph(blueprint, inferredBrief));
   ws.setActivePage(blueprint.pages[0]?.id ?? null);
   ws.setLeftPanel('files');
   ws.setMode('design');
+  if (kind === 'starter') {
+    ws.setActiveFilePath('index.html');
+    ws.addConsoleOutput(`Created "${example.name}" from the web starter.`);
+    return projectId;
+  }
   ws.addConsoleOutput(`Opened the example "${example.name}" (${example.files.length} files). It is a copy: change it freely.`);
   useAIStore.getState().addMessage({
     id: randomUUID(),

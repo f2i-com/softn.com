@@ -9,9 +9,7 @@
  * most apps are not containers. Read from the app's files, for every page it has:
  *
  *   - the container's Worker;
- *   - for each engine tier a page starts on, that engine's bindings, and the engine itself
- *     when it is one of the two only the container has (the others run on the engine the
- *     shell precaches);
+ *   - for each engine tier a page starts on, that engine and its bindings;
  *   - when a script imports `three`, the page's side of a 3D scene and Three.js, and the
  *     model loader when the app carries a model;
  *   - the code of a `<softn-chart>` or `<softn-datagrid>` it names.
@@ -21,8 +19,10 @@
  * does the result say `ready`. The app's own files are in the app cache already.
  */
 import type { ContainerRuntimeNeeds, ZippEngineTier } from '@softn/container';
-import { hostedContainerFiles, hostedContainerOptions } from '@softn/runtime-shell/containerHost';
-import { serviceWorkerControls, type OfflineInstallResult } from './offlineInstall';
+import { hostedContainerFiles, hostedContainerOptions, usesHostEngine } from '@softn/runtime-shell/containerHost';
+import { installFullEngine } from './installFullEngine';
+import type { OfflineInstallResult } from './offlineInstall';
+import { serviceWorkerControls } from './serviceWorkerControls';
 
 export interface ContainerInstallApp {
   /** The cache record's id, which installs dedupe on. */
@@ -48,6 +48,7 @@ export interface ContainerInstallOptions {
   /** Resolves true once something will keep what is fetched: a controlling service worker. */
   cacheHolder?: () => Promise<boolean>;
   fetch?: typeof globalThis.fetch;
+  installFullEngine?: typeof installFullEngine;
   /** @softn/container, loaded when the first container app is installed. */
   container?: () => Promise<ContainerInstallModule>;
   /** Where the container's files are and which Three.js a scene is drawn with; this build's outside tests. */
@@ -108,6 +109,9 @@ async function performInstall(app: ContainerInstallApp, options: ContainerInstal
   // (which answers from its own copy when it has one, and fetches and keeps it when not).
   const fetchFn = options.fetch ?? fetch;
   const files = hostedContainerFiles(needs.tiers, container, host.runtimeUrl, { backend: Boolean(needs.sqlite) });
+  const fullEngine = usesHostEngine(needs.tiers)
+    ? (options.installFullEngine ?? installFullEngine)(signal).then(() => true, () => false)
+    : true;
   const fetched = await Promise.all(
     files.map(async (url) => {
       try {
@@ -120,6 +124,7 @@ async function performInstall(app: ContainerInstallApp, options: ContainerInstal
       }
     })
   );
+  if (!(await fullEngine)) result.missing.push('engine:full');
   if (signal?.aborted) return cancelled();
   files.forEach((url, index) => {
     if (!fetched[index]) result.missing.push(url.slice(host.runtimeUrl.length));

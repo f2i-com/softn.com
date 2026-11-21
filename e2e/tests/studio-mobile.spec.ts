@@ -28,8 +28,21 @@ import { expect, test } from '@playwright/test';
 import { watchConsole } from '../helpers/console';
 import { DEMO } from '../helpers/demo';
 import { openMobileStudioWithDemo } from '../helpers/editors';
+import { keepShadowRoots, textIn } from '../helpers/container';
 
 const HANDOFF_ID = /[A-Za-z0-9-]{16,64}/;
+
+test('the source shortcut and Save & preview are reachable by touch', async ({ page }) => {
+  await keepShadowRoots(page);
+  await page.goto('/studio/');
+  await page.getByRole('button', { name: 'Create React starter', exact: true }).tap();
+  await page.getByRole('button', { name: 'Edit app.js', exact: true }).tap();
+  const source = page.getByRole('textbox', { name: 'Edit app.js' });
+  await source.fill((await source.inputValue()).replace('Finish a round', 'Finish the set'));
+  await page.getByRole('button', { name: 'Save & preview', exact: true }).tap();
+  await expect.poll(() => textIn(page, '#increment')).toBe('Finish the set');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
 
 test('the phone editor reaches Run, Publish and Export through its menu, and Run stages without moving the editor', async ({ page, context }, testInfo) => {
   const log = watchConsole(page, testInfo);
@@ -63,12 +76,13 @@ test('the phone editor reaches Run, Publish and Export through its menu, and Run
   const run = menu.getByRole('menuitem', { name: 'Run', exact: true });
   const publish = menu.getByRole('menuitem', { name: 'Publish', exact: true });
   const exportItem = menu.getByRole('menuitem', { name: /Export bundle/ });
+  const builder = menu.getByRole('menuitem', { name: /Open in Builder/ });
   await expect(run).toBeVisible();
   await expect(publish).toBeVisible();
   await expect(exportItem).toBeVisible();
   // Every item is inside the viewport: a menu wider than the phone is one
   // whose last action cannot be tapped.
-  for (const item of [run, publish, exportItem]) {
+  for (const item of [run, publish, exportItem, builder]) {
     const box = await item.boundingBox();
     expect(box, 'the item has a box').not.toBeNull();
     expect(box!.x, 'the item starts on screen').toBeGreaterThanOrEqual(0);
@@ -81,8 +95,10 @@ test('the phone editor reaches Run, Publish and Export through its menu, and Run
   await expect(run).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await expect(publish).toBeFocused();
-  await page.keyboard.press('End');
+  await page.keyboard.press('ArrowDown');
   await expect(exportItem).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(builder).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await expect(run).toBeFocused();
   await page.keyboard.press('Escape');

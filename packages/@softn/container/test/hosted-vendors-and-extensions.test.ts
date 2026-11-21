@@ -245,5 +245,48 @@ describe('Hosted /runtime/vendor/ Libraries, Zero-Build TypeScript, softn:db & <
     expect(legacyHandle.manifest.mode).toBe('legacy-ui');
     expect(legacyHandle.shadowRoot.textContent).toContain('OldV1App');
     legacyHandle.dispose();
+
+    // Custom on-demand `.ui` bridge mounts when supplied
+    const bridgedHost = document.createElement('div');
+    document.body.appendChild(bridgedHost);
+    let disposedBridge = false;
+    const bridgedHandle = await mountSoftNContainer(bridgedHost, {
+      isolation: 'inline',
+      legacyUiBridge: async (target, archive) => {
+        const badge = document.createElement('span');
+        badge.id = 'ui-bridged';
+        badge.textContent = `Bridged:${archive.manifest.name}:${archive.readText('ui/main.ui')?.includes('<Text>')}`;
+        target.appendChild(badge);
+        return {
+          dispose() {
+            disposedBridge = true;
+          },
+        };
+      },
+      source: {
+        'manifest.json': JSON.stringify({ name: 'BridgedUiApp', version: '1.0.0', main: 'ui/main.ui' }),
+        'ui/main.ui': `<App><Text>Legacy</Text></App>`,
+      },
+    });
+    expect(bridgedHandle.shadowRoot.querySelector('#ui-bridged')?.textContent).toBe('Bridged:BridgedUiApp:true');
+    bridgedHandle.dispose();
+    expect(disposedBridge).toBe(true);
+  });
+
+  it('does not evaluate unused hosted vendor shims inside plain JS containers', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      engineWasm: { lite: LITE_WASM },
+      source: {
+        'index.html': `<!DOCTYPE html><html><body><p id="probe"></p><script type="module">
+          document.getElementById('probe').textContent = String(typeof globalThis.__softnPreactCurrent);
+        </script></body></html>`,
+      },
+    });
+    await flushAsync(25);
+    expect(handle.shadowRoot.querySelector('#probe')?.textContent).toBe('undefined');
+    handle.dispose();
   });
 });

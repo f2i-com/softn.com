@@ -16,8 +16,8 @@ import { readProjectArchive } from '../src/lib/projectImport';
 
 const entries = vi.hoisted(() => ({ next: new Map<string, Uint8Array>() }));
 
-vi.mock('@softn/core', async (original) => ({
-  ...(await original<typeof import('@softn/core')>()),
+vi.mock('@softn/core/authoring', async (original) => ({
+  ...(await original<typeof import('@softn/core/authoring')>()),
   openBundleArchive: () => ({ readAll: () => entries.next, unsafeNames: () => [] }),
 }));
 

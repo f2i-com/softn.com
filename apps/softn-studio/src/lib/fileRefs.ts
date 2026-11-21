@@ -31,7 +31,7 @@
  * alone.
  */
 
-import { resolveBundlePath } from '@softn/core';
+import { resolveBundlePath } from '@softn/core/authoring';
 import { isPrivatePath, normalizeProjectPath } from './paths';
 
 /** A file moved from one path to another, or a folder with everything under it. */

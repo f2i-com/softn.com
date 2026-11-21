@@ -93,6 +93,18 @@ describe('which Worker scripts the page’s service worker does not reach', () =
 });
 
 describe('starting a module Worker', () => {
+  it('starts shared-site workers at their in-scope entry, including on an uncontrolled first visit', () => {
+    vi.stubGlobal('__SOFTN_WORKER_PATHS__', { shared: '/shared/assets/', entries: '/web/workers/' });
+    control(null);
+    startModuleWorker(new URL(`${ORIGIN}/shared/assets/core-runtime/runtime/script-worker.js`));
+    control(`${ORIGIN}/web/sw.js`);
+    startModuleWorker(`${ORIGIN}/shared/assets/zipWorker-AY6hx7tf.js`);
+    expect(started.map(({ url }) => String(url))).toEqual([
+      `${ORIGIN}/web/workers/script-worker.js`, `${ORIGIN}/web/workers/zipWorker-AY6hx7tf.js`,
+    ]);
+    expect(blobs).toEqual([]);
+  });
+
   it('is the plain constructor where the script is in scope, or nothing controls the page', () => {
     control(null);
     const url = new URL(`${ORIGIN}/shared/assets/core-runtime/runtime/script-worker.js`);

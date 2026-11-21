@@ -2,7 +2,25 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mountSoftNContainer } from '../src/index';
+import { sourceModuleHeader, GENERATED_SOURCE_HEADER } from '@softn/bundle-format/source-modules';
+import { ContainerArchive, mountSoftNContainer } from '../src/index';
+
+it.each(['file map', 'ZIP'])('checks component freshness before mounting a %s, including older exports', async format => {
+  const path = 'src/Card.jsx';
+  const files = { 'index.html': '<main></main>', [path]: 'export default () => <p>First</p>;' };
+  const module = '__softn_generated__/' + path + '.js';
+  const open = (code: string) => {
+    const entries = { ...files, [module]: code };
+    if (format === 'file map') return ContainerArchive.open(entries);
+    const bytes = Object.fromEntries(Object.entries(entries).map(([key, text]) => [key, strToU8(text)]));
+    return ContainerArchive.open(zipSync(bytes));
+  };
+  const prepared = await sourceModuleHeader(path, files[path]) + 'export default function Card() {}';
+  (await open(prepared)).dispose();
+  files[path] = files[path].replace('First', 'Second');
+  await expect(open(prepared)).rejects.toThrow(path + ' has changed');
+  (await open(GENERATED_SOURCE_HEADER + 'export default function Card() {}')).dispose();
+});
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LITE_WASM = path.join(PKG_ROOT, 'dist', 'runtime', 'engines', 'zipp-javascript-lite.wasm');

@@ -49,12 +49,12 @@ const LINKS: Array<{ href: string; label: string; detail: string; external?: boo
   {
     href: WEB_CONTAINERS_GUIDE_HREF,
     label: 'Full-Stack Web Containers',
-    detail: 'Bundle HTML/TS frontends with sandboxed PHP, JS/TS, Rust or Python backends & SQLite.',
+    detail: 'Bundle HTML/React/Vue/TS frontends with sandboxed PHP, JS/TS, Rust or Python backends & SQLite.',
   },
   {
     href: HOSTING_GUIDE_HREF,
     label: 'Multi-user ZIPP-sandboxed hosting',
-    detail: 'Run the exact same .softn container multi-user on softn-server or softn-host-php inside ZIPP.',
+    detail: 'Run the exact same .softn container multi-user on softn-server, softn-host-php, or FormLogic inside ZIPP.',
   },
   { href: FORMAT_GUIDE_HREF, label: 'Inside a .softn file', detail: 'The manifest, frontend, backend, SQLite seeds and permissions.' },
   { href: HTML_GUIDE_HREF, label: 'See HTML differences', detail: 'What carries across from an HTML page, and what SoftN adds.' },
@@ -127,7 +127,7 @@ export function ForDevelopers(): React.ReactElement {
           <p className="band-sub">
             Ship HTML5, CSS, TypeScript, Preact, React, Vue or Three.js alongside a real sandboxed backend (PHP/Slim 4,
             JS/TS, Rust, or Python) and SQLite database — running locally in your browser via ZIPP WASM + IndexedDB, or
-            hosted multi-user on <code>softn-server</code> inside ZIPP <code>safe-sandbox</code> with zero code changes.
+            hosted multi-user on <code>softn-server</code> or FormLogic inside ZIPP <code>safe-sandbox</code> with zero code changes.
           </p>
         </div>
         <div className="dev-grid">

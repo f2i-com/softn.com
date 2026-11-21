@@ -9,18 +9,18 @@
  * (scripts/build/shared-assets.mjs) and each app's service worker has the app's own folder
  * for its scope.
  *
- * A Worker started from a `blob:` address is the exception the rule itself makes: it takes
- * the service worker of the page that made it. So when the page is controlled and the
- * script lies outside that worker's folder, the Worker is started from a one-line module
- * that imports the script by its address. The import is then an ordinary request of a
- * controlled Worker, answered from the precache or a runtime cache like any other; inside
- * the script `import.meta.url` is still its own address, so what it names beside itself is
- * found where it was.
+ * In the shared site build, core-worker-assets.mjs writes tiny static imports in the
+ * app's own workers/ folder. Firefox chooses the controller by that entry's address,
+ * including for imports made by the Worker. Other hosts can still use a blob bootstrap
+ * where their browser inherits the page's controller for a blob module Worker.
  *
  * Everywhere else (an app built alone, whose workers are under its own base; a page no
  * service worker controls; the desktop and FormLogic hosts) the Worker is started as written,
  * and nothing here asks a host's policy for `worker-src blob:`.
  */
+
+/** Defined by the shared-site build only; standalone consumers keep their original worker URLs. */
+declare const __SOFTN_WORKER_PATHS__: { shared: string; entries: string } | undefined;
 
 /** Whether a Worker script at `href` would be fetched without the service worker that controls this page. */
 export function outsideServiceWorkerScope(href: string): boolean {
@@ -45,6 +45,12 @@ export function startModuleWorker(url: string | URL, options: WorkerOptions = {}
     href = new URL(url, typeof location !== 'undefined' ? location.href : undefined).href;
   } catch {
     return new Worker(url, settings);
+  }
+  if (typeof __SOFTN_WORKER_PATHS__ !== 'undefined') {
+    const shared = new URL(__SOFTN_WORKER_PATHS__.shared, location.href).href;
+    const relative = href.startsWith(shared) ? href.slice(shared.length) : '';
+    const entry = /^(?:core-runtime\/runtime\/((?:script|sandbox|model)-worker\.js)|(zipWorker-[\w-]+\.js))$/.exec(relative);
+    if (entry) return new Worker(new URL(__SOFTN_WORKER_PATHS__.entries + (entry[1] ?? entry[2]), location.href), settings);
   }
   if (!outsideServiceWorkerScope(href) || typeof URL.createObjectURL !== 'function') return new Worker(url, settings);
   const bootstrap = URL.createObjectURL(new Blob([`import ${JSON.stringify(href)};`], { type: 'text/javascript' }));

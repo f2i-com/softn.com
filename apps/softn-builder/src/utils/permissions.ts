@@ -21,7 +21,7 @@
  * changed in it.
  */
 
-import { CAPABILITIES, extractPermissions, inspectDeclaration, type AppPermissions, type Capability, type StoragePolicy } from '@softn/core';
+import { CAPABILITIES, extractPermissions, inspectDeclaration, type AppPermissions, type Capability, type StoragePolicy } from '@softn/core/authoring';
 
 export interface PermissionDeclaration {
   /** Capabilities the app asks for, in schema order. */

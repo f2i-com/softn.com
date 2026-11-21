@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
-import { assetObjectUrl } from '@softn/core';
+import { assetObjectUrl } from '@softn/core/authoring';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';

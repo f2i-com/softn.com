@@ -105,7 +105,7 @@ export function MobileProjectMenu(): React.ReactElement {
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         aria-label="Project actions"
-        title="Project actions: Run, Publish, Export bundle"
+        title={hosted ? `Project actions: ${saveLabel}, Download ZIP` : 'Project actions: Run, Publish, Export bundle'}
         onClick={() => (open ? close(false) : setOpen(true))}
         style={styles.trigger}
       >
@@ -126,7 +126,7 @@ export function MobileProjectMenu(): React.ReactElement {
               {item('Run', 'play', actions.canRun, actions.describe('runtime', 'Stage the bundle for the SoftN runtime'), actions.run)}
               {item('Publish', 'upload', actions.canPublish, actions.describe('publish', 'Publish directly to the SoftN directory'), () => setPublishOpen(true))}
             </>}
-          {item('Export bundle', 'export', actions.canExport, actions.canExport ? 'Download the project as a .softn file' : 'No files to export', actions.exportBundle)}
+          {item(hosted ? 'Download ZIP' : 'Export bundle', 'export', actions.canExport, actions.canExport ? (hosted ? 'Download the editable project as a ZIP' : 'Download the project as a .softn file') : 'No files to export', actions.exportBundle)}
           {/* The way across to the visual editor, where there is one beside this Studio (lib/builderFlip.ts). */}
           {actions.builderOffered && item(
             actions.openingBuilder ? 'Opening…' : 'Open in Builder',

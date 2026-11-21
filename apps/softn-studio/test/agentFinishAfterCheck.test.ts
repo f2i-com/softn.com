@@ -59,7 +59,7 @@ describe('finish after a check that failed', () => {
     const { run } = lastRun();
     expect(provider.count()).toBe(3);
     expect(run.status).toBe('finished');
-    expect(run.summary).toBe('Put the logic file back.');
+    expect(run.summary).toBe('The edits left the project files unchanged.');
     expect(text('ui/main.ui')).toContain('main.logic');
     // The refused finish is a row that says so, not a "Done".
     const refused = toolEntries().filter((e) => e.name === 'finish');
@@ -101,7 +101,7 @@ describe('finish after a check that failed', () => {
     await startAgentRun();
     expect(provider.count()).toBe(4);
     expect(lastRun().run.status).toBe('finished');
-    expect(lastRun().run.summary).toBe('Fixed.');
+    expect(lastRun().run.summary).toBe('The edits left the project files unchanged.');
   });
 
   it('is accepted after a check that passed, and after a write that no check has judged', async () => {
@@ -127,7 +127,7 @@ describe('finish after a check that failed', () => {
     say('Try a rename');
     await startAgentRun();
     expect(lastRun().run.status).toBe('finished');
-    expect(lastRun().run.summary).toBe('Mended without a check.');
+    expect(lastRun().run.summary).toBe('The edits left the project files unchanged.');
   });
 
   // The refusal tells the model to ask the person about an error it cannot fix. What the
@@ -151,7 +151,7 @@ describe('finish after a check that failed', () => {
     await answerAgentQuestion(lastRun().run.id, 'Yes, leave it');
     expect(provider.count()).toBe(4);
     expect(lastRun().run.status).toBe('finished');
-    expect(lastRun().run.summary).toMatch(/still to be written/);
+    expect(lastRun().run.summary).toContain('logic/gone.logic is referenced by ui/main.ui but is not in the bundle');
   });
 
   // "Summarize how this app is put together" is one of the chat's own suggestions. A run that
@@ -190,6 +190,6 @@ describe('finish after a check that failed', () => {
     await continueAgentRun(lastRun().run.id);
     expect(provider.count()).toBe(4);
     expect(lastRun().run.status).toBe('finished');
-    expect(lastRun().run.summary).toBe('Mended after all.');
+    expect(lastRun().run.summary).toBe('The edits left the project files unchanged.');
   });
 });

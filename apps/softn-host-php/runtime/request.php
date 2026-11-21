@@ -519,13 +519,17 @@ function softn_body_limit(mixed $route, mixed $global, bool $upload): ?int {
  */
 function softn_own_origin(array $server, bool $peerIsTrustedProxy): ?string {
     $host=strtolower((string)($server['HTTP_HOST']??''));
-    if(!preg_match('/^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|\[[0-9a-f:.]{2,45}\])(?::[0-9]{1,5})?$/D',$host))return null;
+    if(!preg_match('/^([a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|\[[0-9a-f:.]{2,45}\])(?::([0-9]{1,5}))?$/D',$host,$parts))return null;
     $https=(isset($server['HTTPS'])&&$server['HTTPS']!==''&&strtolower((string)$server['HTTPS'])!=='off')||strtolower((string)($server['REQUEST_SCHEME']??''))==='https';
     if($peerIsTrustedProxy&&isset($server['HTTP_X_FORWARDED_PROTO'])) {
         $proto=strtolower(trim(explode(',',(string)$server['HTTP_X_FORWARDED_PROTO'])[0]));
         if($proto==='https'||$proto==='http')$https=$proto==='https';
     }
-    return ($https?'https':'http').'://'.$host;
+    // Match the browser's serialized origin even if a proxy kept the port in Host.
+    $port=isset($parts[2])?(int)$parts[2]:null;
+    if($port!==null && $port>65535)return null;
+    $defaultPort=$https?443:80;
+    return ($https?'https':'http').'://'.$parts[1].($port===null||$port===$defaultPort?'':':'.$port);
 }
 
 /**

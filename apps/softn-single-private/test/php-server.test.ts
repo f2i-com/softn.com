@@ -8,7 +8,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import http from 'node:http';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,6 +82,7 @@ return [
  * it; what the host does with its settings is the same either way.
  */
 const FRESH = ['-d', 'opcache.enable=0'];
+const previewRouter = fileURLToPath(new URL('../scripts/preview-router.php', import.meta.url));
 
 let root: string;
 let server: ChildProcess | undefined;
@@ -91,7 +92,7 @@ let cookie = '';
 async function start(): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const port = 20000 + Math.floor(Math.random() * 20000);
-    const child = spawn(php, [...FRESH, '-S', `127.0.0.1:${port}`, '-t', join(root, 'webroot')], {
+    const child = spawn(php, [...FRESH, '-S', `127.0.0.1:${port}`, '-t', join(root, 'webroot'), previewRouter], {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     let exited = false;
@@ -138,6 +139,8 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
   beforeAll(async () => {
     root = mkdtempSync(join(tmpdir(), 'softn-serve-'));
     mkdirSync(join(root, 'webroot'));
+    mkdirSync(join(root, 'webroot/assets'));
+    writeFileSync(join(root, 'webroot/assets/worker.js'), 'self.postMessage("ready")');
     mkdirSync(join(root, 'private'));
     const pub = fileURLToPath(new URL('../php/', import.meta.url));
     for (const name of ['index.php', 'softn-serve.php'])
@@ -153,6 +156,13 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
   afterAll(() => {
     server?.kill();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('serves the preview worker with the isolation policy of its parent page', async () => {
+    const worker = await fetch(`${origin}/assets/worker.js`);
+    expect(worker.headers.get('cross-origin-embedder-policy')).toBe('credentialless');
+    expect(worker.headers.get('content-type')).toMatch(/javascript/);
+    expect(await worker.text()).toBe('self.postMessage("ready")');
   });
 
   it('renders the shell on the server with escaped settings, the icon link and the boot JSON', async () => {
@@ -605,6 +615,25 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
       expect((await response.json()).permissionMode).toBe('preapproved');
     } finally {
       writeFileSync(join(root, 'private/serve.config.php'), config());
+    }
+  });
+
+  it('identifies a new release when a deployment preserves its size and modification time', async () => {
+    const app = join(root, 'private/app.softn');
+    const fixedTime = new Date('2025-01-10T12:00:00Z');
+    const build = (title: string) => zipSync({ 'index.html': strToU8(`<h1>${title}</h1>`) }, { level: 0, mtime: fixedTime });
+    const releases = [build('Spring'), build('Summer')];
+    expect(releases[1].length).toBe(releases[0].length);
+    try {
+      for (const bytes of releases) {
+        writeFileSync(app, bytes);
+        utimesSync(app, fixedTime, fixedTime);
+        const response = await fetch(`${origin}/index.php?source`, { headers: withCookie() });
+        expect(response.status).toBe(200);
+        expect((await response.json()).digest).toBe(createHash('sha256').update(bytes).digest('hex'));
+      }
+    } finally {
+      writeFileSync(app, bundle);
     }
   });
 

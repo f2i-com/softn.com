@@ -1,7 +1,7 @@
 import { isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
-import { exportAsBundle } from '../../lib/exportBundle';
+import { exportAsBundle, projectDownloadName } from '../../lib/exportBundle';
 import { prepareHandoff, type HandoffDestination, type ReadyHandoff } from '../../lib/handoff';
 import { builderOffered, flipNavigation, prepareBuilderVisit } from '../../lib/builderFlip';
 
@@ -59,14 +59,14 @@ export interface ProjectActions {
 }
 
 /** Build and download the in-memory project. Storage is not involved. */
-export function exportCurrentProject(): { ok: true } | { ok: false; message: string } {
+export async function exportCurrentProject(): Promise<{ ok: true } | { ok: false; message: string }> {
   const files = useVFSStore.getState().files;
   const projectName = useWorkspaceStore.getState().projectName;
   const log = useWorkspaceStore.getState().addConsoleOutput;
   if (files.size === 0) return { ok: false, message: 'There are no files to export.' };
   try {
-    exportAsBundle(files, projectName);
-    log(`Exported ${files.size} files as ${projectName || 'app'}.softn`);
+    await exportAsBundle(files, projectName);
+    log(`Exported ${files.size} files as ${projectDownloadName(projectName)}`);
     return { ok: true };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -231,8 +231,8 @@ export function useProjectActions(): ProjectActions {
     openInBuilder: () => void openInBuilder(),
     run: () => void handOff('runtime'),
     publish: () => void handOff('publish'),
-    exportBundle: () => {
-      const outcome = exportCurrentProject();
+    exportBundle: async () => {
+      const outcome = await exportCurrentProject();
       setState((current) => ({ ...current, error: outcome.ok ? null : `Could not export the bundle: ${outcome.message}` }));
     },
     dismissReady: () => setState((current) => ({ ...current, ready: null })),

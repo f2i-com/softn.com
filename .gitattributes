@@ -1,3 +1,5 @@
+.gitattributes text eol=lf
+
 # Bundle sources are packed into .softn archives byte for byte, so an archive
 # and the file it was built from have to agree exactly. On Windows core.autocrlf
 # rewrites text files on checkout, and a packed copy then no longer matches.
@@ -9,6 +11,18 @@
 *.wgsl     text eol=lf
 packages/@softn/core/demo-bundle/**/*.json text eol=lf
 packages/@softn/core/demo-bundle/**/*.svg  text eol=lf
+
+# The editors embed these files as starter source and export their original bytes.
+packages/@softn/editor-shared/src/starters/*.js  text eol=lf
+packages/@softn/editor-shared/src/starters/*.jsx text eol=lf
+packages/@softn/editor-shared/src/starters/*.vue text eol=lf
+packages/@softn/editor-shared/src/starters/*.css text eol=lf
+
+# The offline example archives include these icons byte for byte.
+examples/offline-web-apps/*/icon.svg text eol=lf
+
+# The docs build writes this tracked manifest with LF, including on Windows.
+docs/generated/landing.json text eol=lf
 
 # The ZIPP engine (packages/@softn/core/wasm-zipp/) is generated, not committed.
 # The curated notices it installs are copied byte for byte and their digest is
@@ -27,7 +41,7 @@ packages/@softn/core/zipp-notices/THIRD_PARTY_LICENSES.txt text eol=lf
 # and a shebang that ends in CR breaks twice on a Windows checkout: Vite's
 # transform cannot parse it (two @softn/components suites failed on Windows for
 # exactly this reason while passing on Linux), and `env` goes looking for a
-# program called "node".
+# program called "node\r".
 *.mjs      text eol=lf
 *.cjs      text eol=lf
 

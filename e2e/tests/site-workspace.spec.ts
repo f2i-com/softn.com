@@ -5,9 +5,39 @@
  * application records, or API keys.
  */
 import { expect, test } from '@playwright/test';
+import { unzipSync } from 'fflate';
 import { watchConsole } from '../helpers/console';
 
 const BUNDLE_PATH = '/examples/Fieldnotes.softn';
+
+test('the offline examples link each editor and Runtime to the same downloadable app', async ({ page, request }) => {
+  await page.goto('/#offline-examples');
+  const picker = page.locator('#offline-examples');
+  const card = picker.getByRole('article');
+  for (const [framework, source] of [['Vanilla JS', 'app.js'], ['React', 'main.jsx'], ['Vue', 'App.vue']]) {
+    const choice = picker.getByRole('radio', { name: framework, exact: true });
+    await choice.focus();
+    await choice.press('Space');
+    await expect(choice).toBeChecked();
+    await expect(card.locator('.starter-source')).toHaveText(source);
+    await card.locator('img').evaluate((image: HTMLImageElement) => image.decode());
+    const download = card.getByRole('link', { name: /^Download / });
+    const bundle = await download.getAttribute('href');
+    expect(bundle).toMatch(/^\/examples\/[^/]+\.softn$/);
+    const archive = await request.get(bundle!);
+    expect(archive.ok()).toBe(true);
+    const bytes = new Uint8Array(await archive.body());
+    expect(Array.from(bytes.subarray(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    expect(Object.keys(unzipSync(bytes))).toContain(source);
+    for (const [label, path] of [[/^Run /, '/web/'], [/ in Builder$/, '/builder/'], [/ in Studio$/, '/studio/']] as const) {
+      const link = new URL((await card.getByRole('link', { name: label }).getAttribute('href'))!, page.url());
+      expect(link.origin).toBe(new URL(page.url()).origin);
+      expect(link.pathname).toBe(path);
+      expect(link.searchParams.get('open')).toBe(bundle);
+      if (path === '/builder/') expect(link.searchParams.get('view')).toBe('preview');
+    }
+  }
+});
 
 test.describe('landing workspace and the Fieldnotes teaching app', () => {
   test('the hero is the apps, under the two things a visitor came to do, and the steps start with playing one', async ({ page }, testInfo) => {

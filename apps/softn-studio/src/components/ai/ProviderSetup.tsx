@@ -26,9 +26,9 @@ interface ProviderSetupProps {
 }
 
 const CHOICES: { type: ProviderType; title: string; line: string; icon: 'desktop' | 'key' }[] = [
-  { type: 'local', title: 'Local model', line: 'Runs on your computer: free and private. Needs Ollama, LM Studio or another OpenAI-compatible server running.', icon: 'desktop' },
-  { type: 'openai', title: 'OpenAI API key', line: 'Uses your OpenAI account. OpenAI bills that account for what the AI does.', icon: 'key' },
-  { type: 'anthropic', title: 'Anthropic API key', line: 'Uses your Anthropic account. Anthropic bills that account for what the AI does.', icon: 'key' },
+  { type: 'local', title: 'Local model', line: 'Run Ollama, LM Studio or a compatible server on your computer.', icon: 'desktop' },
+  { type: 'openai', title: 'OpenAI API key', line: 'Use your own key. Usage is billed to your OpenAI account.', icon: 'key' },
+  { type: 'anthropic', title: 'Anthropic API key', line: 'Use your own key. Usage is billed to your Anthropic account.', icon: 'key' },
 ];
 
 const KEY_PAGES: Partial<Record<ProviderType, { href: string; label: string }>> = {

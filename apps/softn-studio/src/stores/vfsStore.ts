@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { classifyAsset } from '@softn/core';
+import { classifyAsset } from '@softn/core/authoring';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import type { VFSFile, VFSEvent } from '../types/studio';
 import { canonicalKey, resolveProjectPath } from '../lib/paths';

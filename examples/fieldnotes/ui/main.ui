@@ -146,7 +146,17 @@
           <div className="fn-empty">No tasks in this view. Add an idea or try another filter.</div>
           #end
         </section>
-        <aside><section className="fn-card fn-form"><h2>A new starting point</h2><p>Give your next step a name.</p><label htmlFor="fn-title">Task name</label><input id="fn-title" placeholder="What would you like to do?" maxLength={100} :bind={title} /><label htmlFor="fn-lane">Focus</label><select id="fn-lane" :bind={lane}><option value="Design">Design</option><option value="Build">Build</option><option value="Review">Review</option></select><button className="fn-add" @click={addTask}>＋ Add task</button>#if (error)<p className="fn-error" role="alert">{error}</p>#end</section><section className="fn-flow"><h3>Try the whole flow</h3><p>This form writes a task to the app's collection. Complete a task and watch the totals change.</p><div className="fn-flow-path">FORM → RECORD → DASHBOARD</div></section></aside>
+        <aside><section className="fn-card fn-form"><h2>A new starting point</h2>
+          #if (ready)
+          <p>Give your next step a name.</p>
+          <label htmlFor="fn-title">Task name</label><input id="fn-title" placeholder="What would you like to do?" maxLength={100} :bind={title} />
+          <label htmlFor="fn-lane">Focus</label><select id="fn-lane" :bind={lane}><option value="Design">Design</option><option value="Build">Build</option><option value="Review">Review</option></select>
+          <button className="fn-add" @click={addTask}>＋ Add task</button>
+          #if (error)<p className="fn-error" role="alert">{error}</p>#end
+          #else
+          <p role="status">Opening your tasks…</p>
+          #end
+        </section><section className="fn-flow"><h3>Try the whole flow</h3><p>This form writes a task to the app's collection. Complete a task and watch the totals change.</p><div className="fn-flow-path">FORM → RECORD → DASHBOARD</div></section></aside>
       </div>
       <p className="fn-status" role="status"><span className="fn-status-dot"></span><span>{message}</span></p>
     </main>

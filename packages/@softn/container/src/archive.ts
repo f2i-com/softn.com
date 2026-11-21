@@ -9,6 +9,8 @@
  */
 
 import { openBundleArchive, sha256Hex, type BundleArchive } from '@softn/bundle-format';
+import { readWebImportMap } from '@softn/bundle-format/web-imports';
+import { checkSourceModules, compiledSourcePath, GENERATED_SOURCE_HEADER } from '@softn/bundle-format/source-modules';
 import { inspectDeclaration, type Capability } from '@softn/bundle-format/capabilities';
 import { parseHtaccess, type ParsedHtaccess } from './htaccess';
 import type {
@@ -31,7 +33,7 @@ const MAX_RUNTIME_BLOBS = 512;
 const MAX_RUNTIME_BLOB_BYTES = 64 * 1024 * 1024;
 
 const TEXT_EXTENSIONS = new Set([
-  'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'mts', 'tsx', 'jsx',
+  'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'mts', 'tsx', 'jsx', 'vue',
   'py', 'php', 'phtml', 'inc', 'tpl', 'rs', 'toml', 'sql', 'htaccess',
   'ini', 'env', 'yml', 'yaml', 'lock',
   'json', 'importmap', 'svg', 'txt', 'md', 'csv', 'xml', 'ui',
@@ -48,6 +50,7 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   ts: 'text/typescript; charset=utf-8',
   tsx: 'text/tsx; charset=utf-8',
   jsx: 'text/jsx; charset=utf-8',
+  vue: 'text/plain; charset=utf-8',
   py: 'text/x-python; charset=utf-8',
   json: 'application/json; charset=utf-8',
   svg: 'image/svg+xml',
@@ -87,6 +90,15 @@ export function mimeTypeFor(path: string): string {
 
 export function isTextPath(path: string): boolean {
   return TEXT_EXTENSIONS.has(extOf(path));
+}
+
+/** Only script loading substitutes compiled JavaScript. Reading the file as data returns its authored source. */
+export function readRunnableModule(path: string, read: (file: string) => string | null | undefined): string | null {
+  const original = read(path);
+  if (original == null) return null;
+  const sidecar = compiledSourcePath(path);
+  const generated = sidecar && read(sidecar);
+  return generated?.startsWith(GENERATED_SOURCE_HEADER) ? generated : original;
 }
 
 /** Normalize a relative or virtual-origin URL to a clean VFS path (`assets/app.js`), or `null` if external/escaped. */
@@ -220,10 +232,42 @@ function detectSingleRootPrefix(names: readonly string[]): string {
     if (candidate === null) candidate = prefix;
     else if (candidate !== prefix) return '';
   }
-  return candidate ?? '';
+  return candidate && !isServerFile(candidate) ? candidate : '';
 }
 
-function extractHtmlHeadMeta(html: string): { title?: string; icon?: string; importMap: Record<string, string> } {
+/** Backend sources and SQLite migrations belong to the owner project, outside the guest VFS
+ *  unless the archive declares an embedded v2 container backend (`manifest.backend`, `databases`,
+ *  or zero-config PHP/Rust entry) that runs inside the sandboxed backend worker. */
+function isServerFile(path: string, keepContainerBackend = false): boolean {
+  if (/^(?:__softn_generated__\/)?private\//i.test(path)) return true;
+  if (keepContainerBackend) return false;
+  return /^(?:__softn_generated__\/)?(?:server|backend)\//i.test(path) || /\.sql$/i.test(path);
+}
+
+function hasEmbeddedContainerBackend(manifestText: string | null | undefined, names: readonly string[]): boolean {
+  let declaresFormLogicServer = false;
+  if (manifestText) {
+    try {
+      const parsed = JSON.parse(manifestText.replace(/^\uFEFF/, '')) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.backend && typeof parsed.backend === 'object' && !Array.isArray(parsed.backend)) return true;
+        if (Array.isArray(parsed.databases) && parsed.databases.length > 0) return true;
+        if (parsed.server && typeof parsed.server === 'object') declaresFormLogicServer = true;
+      }
+    } catch {
+      // Malformed manifest handled later by buildContainerMeta
+    }
+  }
+  if (declaresFormLogicServer || names.some((n) => /^server\/.*\.logic$/i.test(n))) return false;
+  return names.some((n) =>
+    n === 'index.php' ||
+    n === 'Cargo.toml' ||
+    /^(?:server|backend)\/(?:Cargo\.toml|index\.php|server\.(?:js|mjs|ts|py)|app\.py|main\.py|src\/main\.rs)$/i.test(n) ||
+    /^(?:db|database|migrations)\/[^/]+\.(?:json|sql)$/i.test(n)
+  );
+}
+
+function extractHtmlHeadMeta(html: string): { title?: string; icon?: string } {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
   const title = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : undefined;
 
@@ -231,22 +275,7 @@ function extractHtmlHeadMeta(html: string): { title?: string; icon?: string; imp
     ?? /<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["'](?:shortcut\s+)?icon["'][^>]*>/i.exec(html);
   const icon = iconMatch ? iconMatch[1].trim() : undefined;
 
-  const importMap: Record<string, string> = {};
-  const mapRegex = /<script\b[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = mapRegex.exec(html)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1]) as { imports?: Record<string, unknown> };
-      if (parsed && typeof parsed.imports === 'object' && parsed.imports !== null) {
-        for (const [k, v] of Object.entries(parsed.imports)) {
-          if (typeof v === 'string') importMap[k] = v;
-        }
-      }
-    } catch {
-      // Malformed importmap ignored safely.
-    }
-  }
-  return { title, icon, importMap };
+  return { title, icon };
 }
 
 export class ContainerArchive {
@@ -299,13 +328,17 @@ export class ContainerArchive {
       const zipArchive = openBundleArchive(bytes);
       const rawNames = zipArchive.names();
       const rawPrefix = detectSingleRootPrefix(rawNames);
+      const normalizedList = rawNames.map((n) => (rawPrefix && n.startsWith(rawPrefix) ? n.slice(rawPrefix.length) : n)).filter(Boolean);
+      const manifestRawName = rawNames.find((n) => (rawPrefix && n.startsWith(rawPrefix) ? n.slice(rawPrefix.length) : n) === 'manifest.json');
+      const peekManifestBytes = manifestRawName ? zipArchive.read(manifestRawName) : null;
+      const keepBackend = hasEmbeddedContainerBackend(peekManifestBytes ? new TextDecoder().decode(peekManifestBytes) : null, normalizedList);
       const normalizedNames = new Set<string>();
       const initialText = new Map<string, string>();
       const decoder = new TextDecoder();
 
       for (const rawName of rawNames) {
         const norm = rawPrefix && rawName.startsWith(rawPrefix) ? rawName.slice(rawPrefix.length) : rawName;
-        if (!norm) continue;
+        if (!norm || isServerFile(norm, keepBackend)) continue;
         normalizedNames.add(norm);
         if (isTextPath(norm)) {
           const entryBytes = zipArchive.read(rawName);
@@ -316,6 +349,7 @@ export class ContainerArchive {
         }
       }
 
+      await checkSourceModules(initialText);
       const { manifest, permissions, requestedCapabilities } = buildContainerMeta(
         normalizedNames,
         initialText,
@@ -339,32 +373,45 @@ export class ContainerArchive {
     // Unpacked file map
     const rawKeys = Object.keys(input).map((k) => k.replace(/\\/g, '/').replace(/^\/+/, ''));
     const rawPrefix = detectSingleRootPrefix(rawKeys);
+    const normalizedList = rawKeys.map((k) => (rawPrefix && k.startsWith(rawPrefix) ? k.slice(rawPrefix.length) : k)).filter(Boolean);
+    const decoder = new TextDecoder();
+    let peekManifestText: string | null = null;
+    for (const [origKey, val] of Object.entries(input)) {
+      const cleanKey = origKey.replace(/\\/g, '/').replace(/^\/+/, '');
+      const norm = rawPrefix && cleanKey.startsWith(rawPrefix) ? cleanKey.slice(rawPrefix.length) : cleanKey;
+      if (norm === 'manifest.json') {
+        peekManifestText = typeof val === 'string' ? val : decoder.decode(val);
+        break;
+      }
+    }
+    const keepBackend = hasEmbeddedContainerBackend(peekManifestText, normalizedList);
     const normalizedNames = new Set<string>();
     const initialText = new Map<string, string>();
     const initialBinary = new Map<string, Uint8Array>();
     const hashParts: string[] = [];
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
 
     for (const [origKey, val] of Object.entries(input)) {
       const cleanKey = origKey.replace(/\\/g, '/').replace(/^\/+/, '');
       const norm = rawPrefix && cleanKey.startsWith(rawPrefix) ? cleanKey.slice(rawPrefix.length) : cleanKey;
       if (!norm) continue;
+      // Preserve the identity used for storage when the author includes server files.
+      hashParts.push(`${norm}:${typeof val === 'string' ? val.length : val.byteLength}`);
+      if (isServerFile(norm, keepBackend)) continue;
       normalizedNames.add(norm);
       if (typeof val === 'string') {
         initialText.set(norm, val);
-        hashParts.push(`${norm}:${val.length}`);
       } else {
         if (isTextPath(norm)) {
           initialText.set(norm, decoder.decode(val));
         } else {
           initialBinary.set(norm, val);
         }
-        hashParts.push(`${norm}:${val.byteLength}`);
       }
     }
 
     const digest = await sha256Hex(encoder.encode(hashParts.sort().join('|')));
+    await checkSourceModules(initialText);
     const { manifest, permissions, requestedCapabilities } = buildContainerMeta(
       normalizedNames,
       initialText,
@@ -888,7 +935,7 @@ function discoverDatabases(names: ReadonlySet<string>, texts: ReadonlyMap<string
 
 function buildContainerMeta(
   names: ReadonlySet<string>,
-  texts: ReadonlyMap<string, string>,
+  texts: Map<string, string>,
   digest: string,
   fallbackName: string
 ): {
@@ -903,6 +950,10 @@ function buildContainerMeta(
       const parsed = JSON.parse(manifestText) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         rawManifest = parsed as Record<string, unknown>;
+        if (Object.hasOwn(rawManifest, 'server')) {
+          delete rawManifest.server;
+          texts.set('manifest.json', JSON.stringify(rawManifest));
+        }
       }
     } catch {
       throw new Error('Malformed manifest.json in .softn container');
@@ -1052,14 +1103,8 @@ function buildContainerMeta(
       ? 'legacy-ui'
       : 'web';
   const entryHtml = mode === 'web' && !ssrEntry ? rawEntryText : '';
-  const htmlMeta = entryHtml ? extractHtmlHeadMeta(entryHtml) : { importMap: {} };
-
-  const manifestImports: Record<string, string> = { ...htmlMeta.importMap };
-  if (rawManifest?.imports && typeof rawManifest.imports === 'object' && !Array.isArray(rawManifest.imports)) {
-    for (const [k, v] of Object.entries(rawManifest.imports as Record<string, unknown>)) {
-      if (typeof v === 'string') manifestImports[k] = v;
-    }
-  }
+  const htmlMeta = entryHtml ? extractHtmlHeadMeta(entryHtml) : {};
+  const manifestImports = readWebImportMap(entryHtml, rawManifest?.imports);
 
   const config =
     rawManifest?.config && typeof rawManifest.config === 'object'

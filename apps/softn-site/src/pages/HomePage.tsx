@@ -6,6 +6,7 @@ import { Arrow } from '../components/glyphs';
 import { CategoriesNotice, CategoryChips } from '../components/directory/Controls';
 import { LearnDocs } from '../components/LearnDocs';
 import { StartWays } from '../components/home/StartWays';
+import { OfflineExamples } from '../components/home/OfflineExamples';
 import { HowItWorks } from '../components/home/HowItWorks';
 import { WhyDifferent } from '../components/home/WhyDifferent';
 import { ForDevelopers } from '../components/home/ForDevelopers';
@@ -103,7 +104,7 @@ export function HomePage({
                 Full web apps — frontend and backend — sandboxed in your browser.
               </h1>
               <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-                Run complete web apps locally with zero install: standard HTML/TS frontends paired with sandboxed PHP (Slim 4), JS/TS, Rust, or Python backends and SQLite persisted in IndexedDB — or host the exact same <code>.softn</code> bundle multi-user inside ZIPP safe-sandbox.
+                Run complete web apps locally with zero install: standard HTML, React, Vue, or TypeScript frontends paired with sandboxed PHP (Slim 4), JS/TS, Rust, or Python backends and SQLite persisted in IndexedDB — or host the exact same <code>.softn</code> bundle multi-user inside ZIPP safe-sandbox.
               </p>
             </div>
             <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
@@ -171,7 +172,7 @@ export function HomePage({
 
           {(featured === null || featured.length >= 3) && (
             <div className="hero-shelf rise" style={{ animationDelay: '180ms' }}>
-              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
+              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} />}
               {featuredSeenAt !== null && (
                 <p className="hero-shelf-note muted" role="status">
                   The directory is not answering right now. This shelf is as it was on{' '}
@@ -187,6 +188,8 @@ export function HomePage({
           </ul>
         </div>
       </header>
+
+      <OfflineExamples />
 
       <section className="band band-featured" id="directory">
         <div className="wrap">

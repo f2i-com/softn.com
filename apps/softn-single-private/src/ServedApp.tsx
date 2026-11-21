@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Application, Failure, Loading, watchForStall, type RunnableApplication } from '@softn/single-shell';
+import { Application, Failure, Loading, type RunnableApplication } from '@softn/single-shell/SingleApp';
+import { watchForStall } from '@softn/single-shell/stall';
 import type { BootConfig } from './boot';
 import { loadServedApplication } from './load';
 

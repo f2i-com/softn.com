@@ -100,9 +100,9 @@ npm run package:single-private
 - `private/` — `app.softn`, `serve.config.php`, `shell.html` and a deny-all
   `.htaccess`. Put it **beside** the public directory, outside every document
   root. If it cannot be a sibling, set `$private` at the top of `index.php` to
-  its absolute path. The PHP user needs write access to it once, to generate
-  `secret.key` and `digest.cache`; otherwise set `secret` in the
-  configuration and copy the pin from `sha256sum app.softn`.
+  its absolute path. The PHP user needs write access to it once to generate
+  `secret.key`. For a read-only directory, set `secret` in the configuration.
+  When pinning a release, copy its digest from `sha256sum app.softn`.
 
 Replace `private/app.softn` with your application and edit
 `private/serve.config.php`:

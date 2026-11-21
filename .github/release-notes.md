@@ -10,11 +10,11 @@
 
 The backend download targets Linux x86-64 with Apache/PHP and process execution enabled. It is a generic, unconfigured distribution: install your own public and private app bundles and preserve existing configuration, keys and databases when upgrading. Native XDB synchronization remains a Rust-host feature.
 
-The complete website archive's name carries the tag of the zipp engine inside it. It ships no
-example apps: the directory starts empty, and `.softn` files dropped on any
-page of the site publish into it — one, or a folder at once, with the admin
-key from `data/config.json` lifting the hourly limit for the site owner. The
-example apps are published as `.softn` downloads with every
+The complete website archive includes three editable web starters under `/examples/`.
+Its filename identifies the bundled ZIPP version. The public app directory starts empty.
+Drop an app archive or a folder of archives onto the site to publish. Site owners can
+use the admin key from `data/config.json` to lift the hourly limit. The larger demo
+catalogue is available with every
 [softn-Examples release](https://github.com/f2i-com/softn-Examples/releases).
 The desktop loader and builder are not attached to releases; they build from
 this tag's manifests with `npm run tauri build` in their apps. `RELEASE-GUIDE.md`

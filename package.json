@@ -1,8 +1,8 @@
 {
   "name": "softn",
-  "version": "0.0.45",
+  "version": "0.0.48",
   "private": true,
-  "description": "SoftN UI Language and Engine",
+  "description": "Sandboxed web app runtime, Studio and Builder",
   "license": "Apache-2.0",
   "workspaces": [
     "packages/@softn/*",
@@ -53,6 +53,7 @@
     "dev:desktop:builder": "npm run tauri dev -w @softn/builder",
     "build:desktop": "npm run tauri -w @softn/loader -- build --debug --no-bundle && npm run tauri -w @softn/builder -- build --debug --no-bundle",
     "fetch:demos": "node scripts/demos/fetch-demos.mjs",
+    "install:demos": "node scripts/demos/manage-data.mjs install-demos",
     "fetch:zipp": "node packages/@softn/core/scripts/fetch-zipp-release.mjs",
     "screenshot:demos": "node scripts/demos/fetch-demos.mjs && node scripts/demos/screenshot-demos.mjs",
     "bench": "node scripts/bench/measure.mjs",
@@ -107,6 +108,7 @@
         "brace-expansion": "5.0.12"
       }
     },
-    "@isaacs/nonrecursive-glob-match": "1.0.3"
+    "@isaacs/nonrecursive-glob-match": "1.0.3",
+    "picomatch": "npm:@ryotsu/picomatch@4.0.7-a"
   }
 }

@@ -13,10 +13,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { detectProjectSqliteDatabases } from '../../utils/sqliteDatabase';
-import { SchemaDesigner } from './SchemaDesigner';
+import DatabaseWorkspace from './DatabaseWorkspace';
 import { SqliteDatabaseAdmin } from './SqliteDatabaseAdmin';
 
-export function DataWorkspace() {
+export function DataWorkspace({
+  hosted = false,
+  onSave,
+  saveLabel = 'Return to FormLogic',
+}: {
+  hosted?: boolean;
+  onSave?: () => void;
+  saveLabel?: string;
+}) {
   const projectId = useProjectStore((state) => state.projectId);
   const projectFormat = useProjectStore((state) => state.projectFormat);
   const source = useProjectStore((state) => state.source);
@@ -29,12 +37,13 @@ export function DataWorkspace() {
   );
 
   const hasSqlite = sqliteDbs.length > 0;
-  const [mode, setMode] = useState<'sqlite' | 'xdb'>(() => (hasSqlite || projectFormat === 'web' ? 'sqlite' : 'xdb'));
+  const preferSqlite = hasSqlite || (projectFormat === 'web' && !hosted);
+  const [mode, setMode] = useState<'sqlite' | 'xdb'>(() => (preferSqlite ? 'sqlite' : 'xdb'));
 
   // Automatically pick the right default view when opening a different project
   useEffect(() => {
-    setMode(hasSqlite || projectFormat === 'web' ? 'sqlite' : 'xdb');
-  }, [projectId, hasSqlite, projectFormat]);
+    setMode(preferSqlite ? 'sqlite' : 'xdb');
+  }, [projectId, preferSqlite]);
 
   const modeSwitch = (
     <div className="bl-seg" role="group" aria-label="Data engine">
@@ -82,7 +91,7 @@ export function DataWorkspace() {
         </div>
       ) : null}
       <div style={{ flex: 1, minHeight: 0 }}>
-        <SchemaDesigner />
+        <DatabaseWorkspace hosted={hosted} onSave={onSave ?? (() => {})} saveLabel={saveLabel} />
       </div>
     </div>
   );

@@ -22,8 +22,9 @@
  * and a logic file lost its mark).
  */
 
+import { webArchiveEntries } from '@softn/editor-shared/prepareWebSource';
 import { zipSync, strToU8 } from 'fflate';
-import { isUnsafeEntryName, openBundleArchive } from '@softn/core';
+import { isUnsafeEntryName, openBundleArchive } from '@softn/core/authoring';
 import { zeroConfigEntry } from '@softn/bundle-format/engine';
 import type {
   CanvasElement,
@@ -559,7 +560,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
   for (const [, logicFile] of options.logicFiles) {
     const path = stripSlash(logicFile.path);
     files[path] = fileBytes(logicFile.content, logicFile.bom);
-    if (isWebExport && !/\.(?:m?js|cjs|tsx?|mts|jsx|py|logic)$/i.test(path)) {
+    if (isWebExport && !/\.(?:m?js|cjs|tsx?|mts|jsx|vue|py|logic)$/i.test(path)) {
       textAssetPaths.push(path);
     } else {
       logicPaths.push(path);
@@ -587,13 +588,10 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
 
   debug('[exportMultiFileBundle] Creating bundle with', Object.keys(files).length, 'files');
 
-  return zip(files, options);
+  return zip(isWebExport ? await webArchiveEntries(files) : files, options);
 }
 
-/**
- * Parse a .softn bundle from ZIP data
- */
-export function parseBundle(data: Uint8Array): {
+interface ParsedBundle {
   manifest: BundleManifest;
   /** The manifest.json as it was in the archive. */
   manifestBytes: Uint8Array;
@@ -602,7 +600,10 @@ export function parseBundle(data: Uint8Array): {
   dropped: string[];
   /** True when `manifest.json` was synthesized from a zero-config HTML container. */
   synthesizedManifest?: boolean;
-} {
+}
+
+/** Parse a .softn bundle from ZIP data. */
+export function parseBundle(data: Uint8Array): ParsedBundle {
   // Validated read, shared with softn-web and softn-loader.
   //
   // This used to be a bare `unzipSync`: no size limits, no entry cap, no CRC
@@ -611,10 +612,12 @@ export function parseBundle(data: Uint8Array): {
   // catches an archive understating a file's size, which hands this reader a
   // truncated file while every other reader sees the whole one.
   const archive = openBundleArchive(data);
-  let files = archive.readAll();
   // What it left out is said when the project opens: saved again, the project has it no more.
-  const dropped = archive.unsafeNames();
+  return parseBundleFiles(archive.readAll(), archive.unsafeNames());
+}
 
+/** Read a validated archive's entries or files produced by a local starter. */
+export function parseBundleFiles(files: Map<string, Uint8Array>, dropped: string[] = []): ParsedBundle {
   // Unwrap a single top-level wrapper folder (e.g. `dist/index.html` -> `index.html`)
   if (!files.has('manifest.json') && !files.has('index.html') && !files.has('app.html') && files.size > 0) {
     let singlePrefix: string | null = null;

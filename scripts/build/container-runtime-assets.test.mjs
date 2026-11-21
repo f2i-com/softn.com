@@ -172,7 +172,8 @@ test('the dev server is told nothing and serves the package’s files from the b
   const plugin = containerRuntimeAssetPlugin({ runtimeDistRoot: runtime, env: {} });
   assert.equal(plugin.config({}, { command: 'serve' }), undefined);
   let middleware;
-  plugin.configureServer({ middlewares: { use(fn) { middleware = fn; } } });
+  const headers = { 'Cross-Origin-Embedder-Policy': 'credentialless', 'Cross-Origin-Opener-Policy': 'same-origin' };
+  plugin.configureServer({ config: { server: { headers } }, middlewares: { use(fn) { middleware = fn; } } });
   function request(url) {
     const result = { statusCode: 0, headers: {}, body: null, next: false };
     middleware({ url, headers: {} }, { set statusCode(value) { result.statusCode = value; }, setHeader(name, value) { result.headers[name] = value; }, end(body) { result.body = body; } }, () => { result.next = true; });
@@ -181,6 +182,7 @@ test('the dev server is told nothing and serves the package’s files from the b
   const worker = request('/studio/assets/container-runtime/container-worker.js?v=1');
   assert.equal(worker.statusCode, 200);
   assert.deepEqual(worker.body, RUNTIME['container-worker.js']);
+  for (const [name, value] of Object.entries(headers)) assert.equal(worker.headers[name], value);
   assert.match(worker.headers['Content-Type'], /^application\/javascript/);
   assert.equal(request('/assets/container-runtime/engines/zipp-typescript.wasm').headers['Content-Type'], 'application/wasm');
   for (const relative of ['missing.js', '../outside', '%2e%2e/outside', '%2fetc/passwd', 'engines%5c..%5coutside', '%zz']) {
@@ -197,11 +199,17 @@ test('in the site build an app names the shared folder and keeps none of its own
   const plugin = containerRuntimeAssetPlugin({ runtimeDistRoot: runtime, env });
   const digest = containerRuntimeDigest(runtime);
   assert.deepEqual(plugin.config({}, { command: 'build' }), {
-    define: { [`import.meta.env.${CONTAINER_RUNTIME_ENV}`]: JSON.stringify(`/shared/container-runtime/${digest}/`) },
+    define: {
+      [`import.meta.env.${CONTAINER_RUNTIME_ENV}`]: JSON.stringify(`/shared/container-runtime/${digest}/`),
+      'import.meta.env.VITE_SOFTN_CONTAINER_WORKER': JSON.stringify(`container-worker-${digest}.js`),
+    },
   });
   plugin.configResolved({ root: temp, build: { outDir: 'web' } });
   plugin.writeBundle({});
   assert.equal(fs.existsSync(path.join(temp, 'web', 'assets', 'container-runtime')), false);
+  const entry = `container-worker-${digest}.js`;
+  assert.equal(fs.readFileSync(path.join(temp, 'web', entry), 'utf8'), `import "/shared/container-runtime/${digest}/container-worker.js";\n`);
+  assert.ok(precacheEntries(path.join(temp, 'web'), { globPatterns: ['**/*.js'] }).some(({ url }) => url === entry));
   // What an app that installs everything precaches: the shared folder's files, by address.
   assert.deepEqual(sharedContainerPrecache(env, runtime), HOSTED.map((name) => ({ url: `/shared/container-runtime/${digest}/${name}`, revision: null })));
   assert.deepEqual(sharedContainerPrecache({}, runtime), []);
@@ -289,11 +297,11 @@ test('every app that mounts a container asks the host options for its folder and
     assert.ok(source.includes('hostedContainerOptions()'), `${file} mounts with hostedContainerOptions()`);
     assert.ok(!/assets\/container-runtime/.test(source), `${file} names the folder itself`);
   }
-  for (const app of ['web', 'studio', 'builder', 'single', 'single-private', 'loader']) {
-    const source = fs.readFileSync(path.join(root, `apps/softn-${app}/vite.config.ts`), 'utf8');
-    assert.ok(source.includes('containerRuntimeAssetPlugin()'), app);
+  for (const app of ['softn-web', 'softn-studio', 'softn-builder', 'softn-single', 'softn-single-private', 'softn-loader', 'formlogic-host']) {
+    const source = fs.readFileSync(path.join(root, `apps/${app}/vite.config.ts`), 'utf8');
+    // Embedded editors pass the shared FormLogic runtime directory to the plugin.
+    assert.match(source, /\bcontainerRuntimeAssetPlugin\s*\(/, app);
   }
-  assert.ok(fs.readFileSync(path.join(root, 'apps/formlogic-host/vite.config.ts'), 'utf8').includes('containerRuntimeAssetPlugin()'), 'formlogic-host');
   // The editors install everything they ship: in the site build that includes the shared folder.
   for (const app of ['studio', 'builder']) {
     const source = fs.readFileSync(path.join(root, `apps/softn-${app}/vite.config.ts`), 'utf8');

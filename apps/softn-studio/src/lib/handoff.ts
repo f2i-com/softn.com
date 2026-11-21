@@ -8,7 +8,7 @@
 
 import { prepareHandoff as prepare, destinationLabel, handoffBase as base, type HandoffDestination, type HandoffOutcome } from '@softn/editor-shared/handoff';
 import type { stageBundleHandoff } from '@softn/core';
-import { buildBundle } from './exportBundle';
+import { buildRunnableBundle } from './exportBundle';
 import { RUNTIME_URL, SITE_URL } from './siteUrls';
 import type { VFSFile } from '../types/studio';
 
@@ -30,8 +30,8 @@ export function prepareHandoff(
   to: HandoffDestination,
   files: Map<string, VFSFile>,
   projectName: string,
-  deps: { stage?: typeof stageBundleHandoff; sameOrigin?: (target: string) => boolean; build?: typeof buildBundle } = {},
+  deps: { stage?: typeof stageBundleHandoff; sameOrigin?: (target: string) => boolean; build?: (files: Map<string, VFSFile>) => Uint8Array | Promise<Uint8Array> } = {},
 ): Promise<HandoffOutcome> {
   const { build, ...rest } = deps;
-  return prepare({ to, bundle: () => (build ?? buildBundle)(files), name: projectName, source: 'studio', bases: BASES, ...rest });
+  return prepare({ to, bundle: () => (build ?? buildRunnableBundle)(files), name: projectName, source: 'studio', bases: BASES, ...rest });
 }

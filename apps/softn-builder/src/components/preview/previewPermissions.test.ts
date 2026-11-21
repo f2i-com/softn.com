@@ -70,7 +70,7 @@ async function open(): Promise<void> {
     root.render(React.createElement(LivePreview));
   });
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.dynamicImportSettled();
   });
 }
 

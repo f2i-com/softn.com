@@ -15,7 +15,7 @@
  * show nothing, which no one intends.
  */
 
-import { patternNames } from '@softn/core';
+import { patternNames } from '@softn/core/authoring';
 import type { BindingTarget, Expression, SoftNDocument, TemplateNode } from '@softn/core';
 
 /**

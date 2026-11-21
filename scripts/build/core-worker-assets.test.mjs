@@ -28,7 +28,7 @@ function fixture(t) {
   return { temp, core, files };
 }
 
-test('every browser runtime consumer registers assets before its PWA; the runtime leaves the workers\' files to the apps that need them, the editors install them', () => {
+test('every browser runtime consumer registers its worker assets before its PWA', () => {
   for (const name of ['web', 'builder', 'studio']) {
     const source = fs.readFileSync(path.join(root, `apps/softn-${name}/vite.config.ts`), 'utf8');
     assert.ok(source.includes("from '../../scripts/build/core-worker-assets.mjs'"), name);
@@ -38,7 +38,7 @@ test('every browser runtime consumer registers assets before its PWA; the runtim
     assert.ok(ignores >= 0, name);
     const block = source.slice(ignores, source.indexOf(']', ignores));
     if (name === 'web') assert.ok(block.includes("'**/core-runtime/**'"), name);
-    else assert.match(block, /^globIgnores:\s*\[$/, `${name} installs everything it ships`);
+    else assert.ok(!block.includes('core-runtime/'), `${name} keeps the shared Torch package available offline`);
   }
 });
 
@@ -51,6 +51,19 @@ test('production copies nested worker, WASM and licences byte-for-byte for each 
     plugin.writeBundle({});
     for (const [relative, bytes] of Object.entries(files)) assert.deepEqual(fs.readFileSync(path.join(output, 'assets/core-runtime', relative)), bytes);
   }
+});
+
+test('shared worker modules have static in-scope entries, including the Vite-built ZIP worker', t => {
+  const { temp, core } = fixture(t);
+  const plugin = coreWorkerAssetPlugin({ coreDistRoot: core, env: { SOFTN_SHARED_ASSETS: '/shared/assets/' } });
+  const config = plugin.config({ base: '/web/' }, { command: 'build' });
+  assert.deepEqual(JSON.parse(config.define.__SOFTN_WORKER_PATHS__), { shared: '/shared/assets/', entries: '/web/workers/' });
+  const dir = path.join(temp, 'web');
+  fs.mkdirSync(path.join(dir, 'assets'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'assets', 'zipWorker-abcdef12.js'), '/* archive worker */');
+  plugin.writeBundle({ dir });
+  assert.equal(fs.readFileSync(path.join(dir, 'workers/model-worker.js'), 'utf8').trim(), 'import "/shared/assets/core-runtime/runtime/model-worker.js";');
+  assert.equal(fs.readFileSync(path.join(dir, 'workers/zipWorker-abcdef12.js'), 'utf8').trim(), 'import "/shared/assets/zipWorker-abcdef12.js";');
 });
 
 test('development serves modules and binary data, preserving subpath prefixes and blocking fallback/traversal', t => {

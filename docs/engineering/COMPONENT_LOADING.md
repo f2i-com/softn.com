@@ -31,25 +31,37 @@ builds register the same way since 2026-10-20 (`registerRuntimeComponents`,
 or `ensureRuntimeComponents` in the plugin's generated modules): a preview,
 the Builder's canvas or a built app fetches a feature the first time a page
 draws it, so a page with a chart fetches the charts and a page with no
-`Scene3D` never fetches Three.js. The editors are installed whole: their
-service workers precache everything they ship (`globIgnores: []`), the
-features, Three.js and its addons, the QR decoder and the workers' files
-under `core-runtime/` included, so an installed Studio or Builder works
-offline with every feature, while a page still loads each one only when it
-draws it; `scripts/build/editor-offline.test.mjs` holds the two editors' builds to
-both halves. The Builder's entry fell from 2.4 MB to 1.1 MB. SoftN Web keeps
+`Scene3D` never fetches Three.js. Studio and Builder precache their editing
+tools, lite and TypeScript engines, Three.js and its addons, the QR decoder
+and the workers' files under `core-runtime/`. They leave the full ZIPP engine
+out of that install. The first preview that requires it downloads the
+content-hashed binary and saves it for offline previews.
+`scripts/build/editor-offline.test.mjs` checks the emitted precaches
+and the route for that binary. The Builder's entry fell from 2.4 MB to 1.1 MB. SoftN Web keeps
 the shell-only precache below, and installs each app it opens. Studio's agent check, which reads what a
 page shows, preloads every component the page names (on every branch) before
 it renders. The Builder's canvas draws the minimal set at once (it imports
 `minimal` itself) and any other component (a QRCode) as its stand-in until
 its feature has arrived.
 
-Since 2026-10-22 the shell itself carries only the start-up set
+Since 2026-10-22 the `.ui` surface carries only the start-up set
 (`essentials`): the layout, text and images, a button, a text field, a form
 and a list. The rest of what was the minimal set is five light groups, each
 a chunk a page fetches when it draws one of its components, and a page's
 first draw waits a moment for the ones its first screen names (below), so
 an app opens drawn rather than around placeholders.
+
+SoftN Web and the single-app shell load their `.ui` renderer and
+`@softn/components` through dynamic imports when opening an app on the legacy
+engine. Home and standard HTML/JS/TS containers can run without importing those
+modules. The build-graph tests for `softn-web` and `softn-single` check their
+static entry imports. SoftN Web’s service worker separately downloads some
+component chunks in the background during installation so a legacy app can open
+offline. The standalone single-app shell entry dropped to ~206 KB (~65 KB gzip). Across the site build
+(`scripts/build/build-site.mjs`), all apps compile to `es2022` and emit `.woff2`-only
+fonts into `/shared/assets/` so `vendor-three`, its 18 addons, `acorn`, and
+runtime chunks are deduplicated to one file per hash across `/`, `/web/`,
+`/play/`, `/studio/`, and `/builder/`.
 
 ## The entries of `@softn/components`
 
@@ -324,7 +336,8 @@ launcher says which of the two it is promising for each app.
 1. **Shell precache.** The precache glob (`scripts/build/pwa.mjs`, which writes each
    app's manifest and bundles its `sw.js` on Workbox's runtime) sweeps `dist` for js, css, html, svg,
    png, woff2 and wasm, minus:
-   `core-runtime/`, the demos, `assets/vendor-three-*.js`, the feature
+   `core-runtime/`, the container engines and worker, the full scripting engine
+   (`assets/zipp_wasm_bg-*.wasm`), the demos, `assets/vendor-three-*.js`, the feature
    chunks `assets/{scene3d,charts,editors,smart,media,animation,pickers,games,wasm}-*.js`, the
    Three addon chunks — `GLTFLoader-*`, `OBJLoader-*`, `FBXLoader-*`,
    `STLLoader-*`, `OrbitControls-*`, `RoomEnvironment-*`, `SkeletonUtils-*`,
@@ -335,22 +348,12 @@ launcher says which of the two it is promising for each app.
    core's own on-demand modules that only some apps reach —
    `ai-manager-*`, `model-host-*`, `ai-gpu-compute-manager-*`,
    `xdb-sync-*` (~200 KB), `xdb-server-sync-*` and `wasm-host-*`, what runs
-   an app's WebAssembly (`onDemandRuntimeChunks` in the config). What remains
-   is the shell: the entry, its CSS and fonts, the scripting engine's wasm,
-   the inflate worker (`zipWorker-*.js`), the XDB module every app opens
-   (`xdb-*.js`, which is not a sync runtime) and the five light component
-   groups (`assets/{controls,feedback,data,display,navigation}-*.js`,
-   `componentGroupChunks` in `scripts/build/on-demand-chunks.mjs`). The
-   groups left the entry on 2026-10-22 but not the precache: a page parses
-   only the ones it draws, and an app that draws one works offline as it did.
-   The build-graph test holds the precache to containing every file of the
-   entry closure, the inflate worker, the XDB module and each group with its
-   own static imports, and none of the feature, addon or on-demand chunks;
-   it also checks each excluded name was actually emitted, so the ignore
-   patterns cannot go stale silently. It holds each group to being an
-   `import()` that nothing imports statically, as it does each feature. The build after this change
-   precaches 44 entries, 6,315 KiB, down from 52 and 7,458 KiB (and 59 and
-   9,816 KiB in 0.0.7).
+   an app's WebAssembly (`onDemandRuntimeChunks` in the config). The shell
+   precaches its entry, shared host code, CSS, fonts and archive reader. The
+   build also reads Vite's manifest to exclude the classic renderer, classic
+   script support and every classic component group with its own static
+   dependencies. Files shared with the web host stay available offline.
+   `test/build-graph.test.ts` checks the emitted files and the shell's size.
 2. **Runtime caches.** A route for same-origin `/assets/*.js` with
    `CacheFirst`, cache name `softn-feature-chunks`, 80 entries, 30 days,
    statuses 0 and 200: the feature chunks, `vendor-three`, the Three addon
@@ -360,19 +363,43 @@ launcher says which of the two it is promising for each app.
    new names. The precache route is registered first and keeps answering for
    the shell's own files. A second route, `softn-worker-assets`, holds the
    script worker's files under `/assets/core-runtime/` (js, wasm, json) with
-   `NetworkFirst` (4 s network timeout, 40 entries, 30 days). The engine is
-   not among them: the page compiles the shell's one precached copy and posts
-   the module to every worker it starts, so `core-runtime/` carries none and
-   the offline install fetches none. The worker's
+   `NetworkFirst` (4 s network timeout, 40 entries, 30 days).
+   A separate same-origin `CacheFirst` route stores the full engine by its
+   content-hashed URL in `softn-full-engine`. A page that needs this engine
+   compiles it and posts the module to its workers. Runtime, Studio and Builder
+   can reuse the same copy on a shared-assets deployment. The worker's
    entry keeps one name across builds, `runtime/script-worker.js`, so a
    CacheFirst copy would outlive the release that made it and a worker from
    the previous release would be talking to this release's main thread.
    Online the current one is served and the copy refreshed; offline the
    copy answers.
+   The web container’s inline session (`assets/worker-runtime-*.js`) also uses the
+   hashed script cache. A browser with dedicated Workers runs `container-worker.js`,
+   which the per-app offline install fetches with the selected engine’s bindings.
+   A shared-assets deployment puts static Worker entries in each host's own
+   service-worker scope. They import the shared implementation so Firefox can
+   start a fresh Worker even when the server is disconnected. The archive
+   reader's entry is precached with the shell. The script, sandbox and model
+   worker entries are retained with classic script support.
+   Removing the inline session from the shell precache saved 417,701 bytes in the
+   measured site build (92,102 bytes served with Brotli).
+   A classic app also asks the active service worker to retain its renderer
+   and the component groups found across its pages. This explicitly covers
+   a first draw that fetched modules before the worker controlled the tab.
+   An update reads Runtime's installed-app records to carry these groups
+   forward. Web starters use the container installer and fetch no classic
+   renderer or component groups.
+
 3. **Per-app offline install** — `apps/softn-web/src/lib/offlineInstall.ts`,
    started by `App.tsx` in the background after an app opens while
    `navigator.onLine`, keyed by the app's cache record, aborted when its tab
-   closes. `requiredFeatures(source)` parses the composed source (every
+   closes. For a web container, the installer classifies each packaged HTML
+   page, including its local scripts, and installs the worker and engine assets
+   for the selected tiers. A lite-only bundle saves just its lite engine.
+   A secondary page that uses `Intl` also prepares the full binary, so its
+   first offline visit works. For a declarative app, script blocks, bundled
+   logic or page handlers trigger full-engine installation. Static pages can
+   be saved alone. `requiredFeatures(source)` parses the composed source (every
    page, every component the composer inlined) and keeps the tags of
    `collectAllComponentTags` that the default registry knows as loaders.
    `installAppOffline(app, { signal })` then:
@@ -437,7 +464,8 @@ launcher says which of the two it is promising for each app.
    the manifest's `config.server` sync are network features by nature and
    are not installed either; the shell precaches neither runtime.
 
-The launcher shows one of three words on every cached app's card, as text
+For a successful install against the current build, the launcher lists the
+engines recorded for that app. It shows one of three states on every card, as text
 rather than a colour: **Offline ready** (the record's install succeeded
 against this build; the tooltip notes when a model may still be a download),
 **Installing…** (an install is running for it now), or **Needs connection**

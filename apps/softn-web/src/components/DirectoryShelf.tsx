@@ -1,15 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
 import { listApps, type AppCard } from '../../../softn-site/src/lib/api';
 
+function subscribeConnection(refresh: () => void) {
+  window.addEventListener('online', refresh);
+  window.addEventListener('offline', refresh);
+  return () => {
+    window.removeEventListener('online', refresh);
+    window.removeEventListener('offline', refresh);
+  };
+}
+const isOnline = () => navigator.onLine !== false;
+
 /** Use the site's API client so this shelf and the directory show the same apps. */
 export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void }) {
+  const online = useSyncExternalStore(subscribeConnection, isOnline, () => true);
   const [apps, setApps] = useState<AppCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    if (!online) return;
     const controller = new AbortController();
     setLoading(true);
     setError(false);
@@ -30,7 +42,7 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [attempt]);
+  }, [attempt, online]);
 
   return (
     <section className="softn-launcher-section softn-explore" aria-labelledby="softn-explore-title">
@@ -40,16 +52,25 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
             Explore apps
           </h2>
         </div>
-        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
-          <a className="softn-explore-link" href={`${DEFAULT_URLS.apps}?category=business`}>
-            Business apps
-          </a>
-          <a className="softn-explore-link" href={DEFAULT_URLS.apps}>
-            Browse all apps <span aria-hidden="true">↗</span>
-          </a>
-        </div>
+        {online && (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
+            <a className="softn-explore-link" href={`${DEFAULT_URLS.apps}?category=business`}>
+              Business apps
+            </a>
+            <a className="softn-explore-link" href={DEFAULT_URLS.apps}>
+              Browse all apps <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        )}
       </div>
-      {loading ? (
+      {!online ? (
+        <div className="softn-explore-message" role="status">
+          <div>
+            <strong>You’re offline.</strong>
+            <p>Open a local file or an app saved for offline use. The directory will return when you reconnect.</p>
+          </div>
+        </div>
+      ) : loading ? (
         <div className="softn-explore-message" role="status">
           Loading apps from the directory…
         </div>

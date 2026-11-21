@@ -170,6 +170,7 @@ export interface DomPatcherCallbacks {
   onTitleChange?: (title: string) => void;
   onNavigate?: (href: string) => void;
   onFormSubmit?: (req: { action: string; method: string; encoded: string }) => void;
+  onExternalLink?: (href: string) => void;
   onCustomTag?: (tag: string) => void;
   onThreeOps?: (canvas: HTMLCanvasElement, canvasId: number, ops: ThreeSceneOp[]) => void;
   /** The app's script asks to save a file it made, just after a click or a key of the person's in the app. */
@@ -202,7 +203,6 @@ export class HostDomPatcher {
   /** The files of a file field as last read for the app, by the list the page holds for it. */
   private readonly pickedFiles = new WeakMap<HTMLInputElement, { list: FileList | null; change: Promise<unknown[]> }>();
   private readonly callbacks: DomPatcherCallbacks;
-  private heldForm: { event: Event; req: { action: string; method: string; encoded: string } } | null = null;
 
   private readonly listenedEvents = new Set<string>();
   private readonly cleanupFns: Array<() => void> = [];
@@ -278,8 +278,8 @@ export class HostDomPatcher {
   private encoding = 0;
   /** Until when no click or key is the person's word for a save: the rest of the press that asked for the last one. */
   private quietUntil = 0;
-  /** A link to a page of the app's that was clicked, held until the app's script has heard the click. */
-  private heldLink: { event: Event; href: string } | null = null;
+  /** Browser actions deferred until the guest has had a chance to cancel their event. */
+  private readonly heldDefaults = new WeakMap<Event, () => void>();
   private disposed = false;
 
   constructor(params: {
@@ -1655,6 +1655,50 @@ export class HostDomPatcher {
     return null;
   }
 
+  private followClickedLink(href: string): void {
+    if (isExternalHref(href)) this.callbacks.onExternalLink?.(href);
+    else this.callbacks.onNavigate?.(href);
+  }
+
+  private afterGuestEvent(event: Event, action: () => void): void {
+    if (this.listenedEvents.has(event.type)) this.heldDefaults.set(event, action);
+    else action();
+  }
+
+  /** Emit the browser's submit event without requesting a navigation or posting the form. */
+  private submitForm(form: HTMLFormElement, submitter: HTMLButtonElement | HTMLInputElement | null): void {
+    if (!this.owns(form) || (submitter && (submitter.form !== form || submitter.matches(':disabled')))) return;
+    if (!form.noValidate && !submitter?.formNoValidate && !HTMLFormElement.prototype.reportValidity.call(form)) return;
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
+  }
+
+  private submitOnEnter(event: Event): void {
+    const key = event as KeyboardEvent;
+    const field = this.originOf(event);
+    if (key.key !== 'Enter' || key.isComposing || key.keyCode === 229 || key.defaultPrevented ||
+        !(field instanceof HTMLInputElement) || !IMPLICIT_SUBMISSION_FIELDS.has(field.type) || !field.form) return;
+    const form = field.form;
+    if (!this.owns(form)) return;
+    event.preventDefault();
+    this.afterGuestEvent(event, () => {
+      if (field.form !== form || !this.owns(field)) return;
+      // form.elements omits image submit buttons. Search the form's own tree in document
+      // order so that form-associated controls outside its children are included too.
+      const root = form.getRootNode();
+      const scope = root === this.docRootEl.getRootNode() ? this.docRootEl : root as ShadowRoot;
+      let blockingFields = 0;
+      for (const control of scope.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button')) {
+        if (control.form !== form) continue;
+        if (isSubmitButton(control)) {
+          if (!control.matches(':disabled')) control.click();
+          return;
+        }
+        if (control instanceof HTMLInputElement && IMPLICIT_SUBMISSION_FIELDS.has(control.type)) blockingFields++;
+      }
+      if (blockingFields === 1) this.submitForm(form, null);
+    });
+  }
+
   /** Always keep input/select/focus state synced and block native form page navigations. */
   private installCoreInputSync(): void {
     const onSubmitCapture = (e: Event) => {
@@ -1687,11 +1731,7 @@ export class HostDomPatcher {
         params.append(submitter.name, submitter.value);
       }
       const req = { action, method, encoded: params.toString() };
-      if (this.listenedEvents.has('submit')) {
-        this.heldForm = { event: e, req };
-        return;
-      }
-      this.callbacks.onFormSubmit(req);
+      this.afterGuestEvent(e, () => this.callbacks.onFormSubmit?.(req));
     };
     // Every click on a link of the app's is the host's to carry out, never the browser's: the
     // link is an element of the embedding page, so followed natively it would move that
@@ -1701,6 +1741,16 @@ export class HostDomPatcher {
     // anything else does nothing. v0.0.43 left links out to the browser, `target="_top"`
     // and all.
     const onClickCapture = (e: Event) => {
+      const button = e.composedPath().find(isSubmitButton);
+      if (button?.form && this.owns(button) && this.owns(button.form)) {
+        if (e.defaultPrevented || (e as MouseEvent).button > 0 || button.matches(':disabled')) return;
+        const form = button.form;
+        // A sandboxed frame can suppress the native submit event altogether. Handle the
+        // activation once in every frame, after the guest can cancel the originating click.
+        e.preventDefault();
+        this.afterGuestEvent(e, () => this.submitForm(form, button));
+        return;
+      }
       // The link the click is on: the nearest one on its way out, through any shadow tree
       // of the app's (a link inside one, or one around an element that has one).
       const anchor = linkOnPath(e);
@@ -1720,7 +1770,7 @@ export class HostDomPatcher {
         if (to && this.owns(to)) to.scrollIntoView({ block: 'start' });
         return;
       }
-      if (isExternalHref(href)) {
+      if (isExternalHref(href) && !this.callbacks.onExternalLink) {
         if (typeof window !== 'undefined' && typeof window.open === 'function') window.open(href, '_blank', 'noopener,noreferrer');
         return;
       }
@@ -1730,11 +1780,7 @@ export class HostDomPatcher {
       // thread away, so the page waits for its answer (the listener below hands the click
       // over and follows the link if it was not cancelled). It was followed at once: the
       // "Home" link of a single-page app loaded the app again from the start.
-      if (this.listenedEvents.has('click')) {
-        this.heldLink = { event: e, href };
-        return;
-      }
-      this.callbacks.onNavigate?.(href);
+      this.afterGuestEvent(e, () => this.followClickedLink(href));
     };
     const onInputOrChange = (e: Event) => {
       const changes = this.extractInputSync(this.originOf(e));
@@ -1761,6 +1807,7 @@ export class HostDomPatcher {
     // leave (a click) passes more than one of these, and is handled at the first.
     this.listen('submit', oncePerEvent(onSubmitCapture), true);
     this.listen('click', oncePerEvent(onClickCapture), false);
+    this.listen('keydown', oncePerEvent(e => this.submitOnEnter(e)), false);
     this.listen('input', oncePerEvent(onInputOrChange), true);
     this.listen('change', oncePerEvent(onInputOrChange), true);
     for (const type of ACTIVATIONS) this.listen(type, onActivation, true);
@@ -1858,15 +1905,10 @@ export class HostDomPatcher {
       // document scrolled (window.addEventListener('scroll', …)).
       const targetEl = this.originOf(e);
       const nodeId = eventType === 'scroll' && targetEl === this.docRootEl ? -1 : this.findNearestNodeId(targetEl);
-      // A link held for this click (above): followed once the script has heard the click
-      // and not cancelled it, or now if the script is not going to hear it.
-      const held = this.heldLink && this.heldLink.event === e ? this.heldLink.href : null;
-      if (held !== null) this.heldLink = null;
-      const heldForm = this.heldForm && this.heldForm.event === e ? this.heldForm.req : null;
-      if (heldForm !== null) this.heldForm = null;
+      const held = this.heldDefaults.get(e);
+      this.heldDefaults.delete(e);
       if (nodeId === null) {
-        if (held !== null) this.callbacks.onNavigate?.(held);
-        if (heldForm !== null) this.callbacks.onFormSubmit?.(heldForm);
+        held?.();
         return;
       }
 
@@ -1882,13 +1924,10 @@ export class HostDomPatcher {
 
       const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this), this.origin());
       const answered =
-        held === null && heldForm === null
+        !held
           ? undefined
           : (eventBits: number) => {
-              if (!this.disposed && !(eventBits & 1)) {
-                if (held !== null) this.callbacks.onNavigate?.(held);
-                if (heldForm !== null) this.callbacks.onFormSubmit?.(heldForm);
-              }
+              if (!this.disposed && !(eventBits & 1)) held();
             };
       // A file field that changed: its files are read (for an app allowed them) and told
       // with the event, so that input.files is true by the time the script hears of it.
@@ -2140,6 +2179,13 @@ function deepestFocus(el: Element): Element {
 /** Whether a person types into an element: a field, or a region of the page that is edited in place. */
 function typedInto(el: Element): boolean {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || (el as HTMLElement).isContentEditable === true || el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '';
+}
+
+const IMPLICIT_SUBMISSION_FIELDS = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'date', 'month', 'week', 'time', 'datetime-local', 'number']);
+
+function isSubmitButton(node: EventTarget): node is (HTMLButtonElement | HTMLInputElement) & { type: 'submit' | 'image' } {
+  return (node instanceof HTMLButtonElement && node.type === 'submit') ||
+    (node instanceof HTMLInputElement && (node.type === 'submit' || node.type === 'image'));
 }
 
 /** The nearest link on an event's way out, through any shadow tree. */

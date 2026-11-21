@@ -21,7 +21,7 @@ import type {
 } from '../types/builder';
 import { TEXT_NODE_TYPE } from '../types/builder';
 import { debug } from './debug';
-import { pageLogicSources, parse as parseSoftN } from '@softn/core';
+import { pageLogicSources, parse as parseSoftN } from '@softn/core/authoring';
 import type {
   TemplateNode as AstTemplateNode,
   Expression as AstExpression,

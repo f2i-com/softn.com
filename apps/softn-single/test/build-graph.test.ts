@@ -142,6 +142,19 @@ describe.skipIf(!built)('softn-single build graph', () => {
     }
   });
 
+  it('keeps the .ui renderer and all @softn/components entries out of the container-first entry closure', () => {
+    for (const [key, chunk] of closure) {
+      expect(key, `entry closure imports @softn/components (${key})`).not.toMatch(/\/components\/dist\//);
+      expect(key, `entry closure imports UiApplicationSurface (${key})`).not.toMatch(/UiApplicationSurface/);
+      expect(chunk.file, `entry closure contains UiApplicationSurface (${chunk.file})`).not.toMatch(/\/UiApplicationSurface-/);
+      expect(readFileSync(resolve(dist, chunk.file), 'utf8').includes('[SoftNRenderer]'),
+        `classic renderer bundled into ${chunk.file}`).toBe(false);
+    }
+    const uiSurfaceKey = Object.keys(manifest).find((k) => /UiApplicationSurface\.tsx$/.test(k));
+    expect(uiSurfaceKey, 'UiApplicationSurface is a dynamic chunk of its own').toBeDefined();
+    expect(manifest[uiSurfaceKey!].isDynamicEntry).toBe(true);
+  });
+
   it(`stays under ${CLOSURE_CAP} bytes, per file and in total`, () => {
     for (const file of closureFiles) {
       expect(sizeOf(file), `${file} alone is ${sizeOf(file)} bytes`).toBeLessThan(CLOSURE_CAP);

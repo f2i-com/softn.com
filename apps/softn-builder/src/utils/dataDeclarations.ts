@@ -16,7 +16,7 @@
  * as it was written.
  */
 
-import { parse } from '@softn/core';
+import { parse } from '@softn/core/authoring';
 import { frameSource } from './sourceFrame';
 
 export type CollectionChange =

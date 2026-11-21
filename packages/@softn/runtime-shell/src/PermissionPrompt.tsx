@@ -13,7 +13,8 @@
  */
 
 import React, { useEffect, useId, useRef } from 'react';
-import { describeStoragePolicy, inspectDeclaration, type PermissionConfig } from '@softn/core';
+import { describeStoragePolicy, inspectDeclaration } from '@softn/bundle-format/capabilities';
+import type { PermissionConfig } from '@softn/core';
 import { CONSENT_STYLES } from './consentStyles';
 import type { ConsentWording } from './PermissionBar';
 

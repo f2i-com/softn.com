@@ -4,7 +4,7 @@
  *
  * The shell is trusted code in an opaque-origin iframe; the policy pins every
  * kind of loading to the trusted runtime directory before any app source is
- * accepted. It is written as a `<meta>` element at the top of `main.tsx`,
+ * accepted. It is written as a `<meta>` element by `entry.ts` before it imports the renderer,
  * which means it can only ever be TIGHTENED afterwards — a second meta policy
  * intersects with the first, it never widens it. So the policy has to be
  * decided before anything else happens, from the document alone, and a

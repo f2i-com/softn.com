@@ -18,7 +18,7 @@ import { composePreviewBundle } from './previewBundle';
 import { previewManifest } from './bundleExporter';
 import { entryFileId, linkedLogicFile, logicSrcOf, relativeImportPath } from './logicFiles';
 import { debug } from './debug';
-import { PYTHON_PACKAGES } from '@softn/core';
+import { PYTHON_PACKAGES } from '@softn/core/authoring';
 
 export interface PreviewSourceInput {
   /** The canvas: the active UI file's tree as it is being edited. */

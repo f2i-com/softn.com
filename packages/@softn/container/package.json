@@ -1,6 +1,6 @@
 {
   "name": "@softn/container",
-  "version": "0.0.45",
+  "version": "0.0.48",
   "description": "SoftN v2 Web App Container Runtime — React-free HTML/CSS/DOM sandbox powered by ZIPP WASM",
   "license": "Apache-2.0",
   "type": "module",

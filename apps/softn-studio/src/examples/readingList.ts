@@ -14,7 +14,7 @@ import { APP_ICON_PATH, appIconSvg } from '../lib/studioProject';
 export const READING_LIST: ExampleProject = {
   id: 'reading-list',
   name: 'Reading list (example)',
-  description: 'A small app that keeps a list of books to read. Open it, change a label, run it, export it.',
+  description: 'Browse a local book list and edit the pages that display it.',
   files: [
     {
       path: 'manifest.json',

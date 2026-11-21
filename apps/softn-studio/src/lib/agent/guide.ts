@@ -25,7 +25,7 @@
  * `logic/*.logic`, works the same: the agent edits whichever it is given.
  */
 
-import { SOFTN_PY_STDLIB_IMPORTS } from '@softn/core';
+import { SOFTN_PY_STDLIB_IMPORTS } from '@softn/core/authoring';
 
 // ---------------------------------------------------------------------------
 // Python material (core's contract: docs/engineering/ZIPP_LANGUAGES.md)
@@ -621,7 +621,7 @@ export function projectHasContainerBackend(manifestSource: string | undefined): 
 export const CONTAINER_BACKEND_SECTION = `## Sandboxed Container Backend (PHP, JS/TS, Rust, Python + SQLite)
 A SoftN v2 Web App Container can bundle a real HTTP backend and SQLite database directly inside the \`.softn\` archive.
 - **Local browser mode**: The backend executes inside a dedicated ZIPP WebAssembly Worker (\`LocalBackendTransport\`) with XDB SQLite persisted in IndexedDB — zero server required.
-- **Multi-user hosted mode**: The exact same \`.softn\` bundle runs on \`softn-server\` (\`apps/softn-host-rust\`) where every backend request executes inside ZIPP's \`safe-sandbox\` VM against a shared WAL SQLite database, and frontends talk to it via \`fetch('/api/...')\` with zero app code changes.
+- **Multi-user hosted mode**: The exact same \`.softn\` bundle runs on \`softn-server\` (\`apps/softn-host-rust\`) or FormLogic where every backend request executes inside ZIPP's \`safe-sandbox\` VM against a shared WAL SQLite database, and frontends talk to it via \`fetch('/api/...')\` with zero app code changes.
 
 ### \`manifest.json\` backend & database fields
 Keep these fields whenever you edit \`manifest.json\`:
@@ -654,6 +654,15 @@ Keep these fields whenever you edit \`manifest.json\`:
 - **PHP backend**: Standard \`$_SERVER['REQUEST_METHOD']\`, \`$_SERVER['REQUEST_URI']\`, \`file_get_contents('php://input')\`, \`http_response_code()\`, \`header()\`, and \`new PDO('sqlite:app.db')\` (which binds directly to the declared SQLite database).
 - **JS/TS backend**: Export or define \`function handleRequest(req)\` returning \`{ status, headers, body }\` and open SQLite with \`const db = sqlite.open('app.db');\` (\`db.query(sql, params)\`, \`db.first(sql, params)\`, \`db.execute(sql, params)\`).
 - **Frontend calls**: Use standard \`fetch('/api/...')\` — do NOT add same-origin \`/api/\` calls to \`permission.json\`.`;
+
+const CONTAINER_PRIVATE_BACKEND_SECTION = `## This app's private backend (server/)
+manifest.json has a \`server\` block: the app has a backend that runs on its host, not in the browser, with a private SQLite database. The app's real data belongs there, in tables, not in local storage.
+
+- **The \`server\` block.** Keep it whenever you rewrite manifest.json. \`entry\` is the backend file (\`server/main.logic\`); \`requires\` is \`{ "apiVersion": 1, "capabilities": ["sql"] }\`; \`database\` is \`{ "kind": "private-sqlite", "migrations": [ …every migration file, in order… ] }\`; \`routes\` lists every endpoint: \`{ "path": "/api/items", "method": "GET", "handler": "listItems", "transaction": "read", "authorization": "anonymous" }\`. A path starts with \`/api/\` and is matched exactly (no \`/:id\` segments: pass an id in the query or the body). Methods are GET, POST, PUT and DELETE; one route per method and path. A route that changes data needs \`"transaction": "write"\`; a \`"read"\` route cannot write. Keep \`config.server.allowedOrigins\` as it is.
+- **server/main.logic is JavaScript**, whatever the page's language. Each handler is a top-level \`function listItems(req)\`: \`req.body\` (an object), \`req.query\`, \`req.headers\`, \`req.method\`, \`req.path\`. It returns \`{ status: 200, body: { … } }\`, the body an object. Check its input and answer \`{ status: 422, body: { error: "…" } }\` when it is wrong. There are no timers in server logic (\`setTimeout\`, \`setInterval\`): a handler does its work before it returns.
+- **SQL.** \`softn.sql.query(sql, params)\` returns rows, \`softn.sql.first(sql, params)\` one row or null, and \`softn.sql.execute(sql, params)\` runs one INSERT, UPDATE, DELETE or REPLACE and returns \`{ changes, lastInsertRowid }\` (no rows, so no RETURNING: read a new row back with \`first\` by its \`lastInsertRowid\`). One statement per call, always with \`?\` parameters, never text built from input. It is SQLite: \`INTEGER PRIMARY KEY\` numbers rows itself (no SERIAL or AUTO_INCREMENT). A query may call only ${SQL_RUNTIME_FUNCTIONS.join(', ')}, and read ${SQL_TABLE_FUNCTIONS.join(' and ')} like a table — no clock or random functions: take the time from \`softn.time.now()\` (epoch seconds) and pass it as a parameter.
+- **Migrations** are numbered files, \`server/migrations/001.sql\`, \`002.sql\`, … each listed in \`database.migrations\`. Each runs once, in order. Never change or remove one that exists; to change a table, add the next file. A migration may call the query functions above and ${SQL_MIGRATION_EXTRA_FUNCTIONS.join(', ')}.
+- **Calling a FormLogic route.** Import \`{ api } from 'softn:api'\` in the web app. Use \`const response = await api.fetch("/api/items", { method: "POST", body: JSON.stringify({ title }) })\`. Check \`response.ok\` before reading \`await response.json()\`. FormLogic supplies the caller context. Verify backend SQL and route handlers with \`check_app\`.`;
 
 /**
  * System guide for SoftN v2 Web App Containers (`@softn/container`).
@@ -715,7 +724,8 @@ You can import these directly with **zero npm install and zero bundler** (note: 
 2. **Synchronous Local Database (\`softn:db\`)** — automatically seeded from \`xdb/*.xdb\`:
    \`\`\`ts
    import { db } from 'softn:db';
-   const rows = db.query('tasks'); // Returns flat records: [{ id, title, done, created_at, updated_at }] — read item.title directly (NOT item.data.title!)
+   const rows = db.query('tasks'); // Each row has an id and its fields under row.data.
+   const stop = db.subscribe('tasks', () => renderTasks(db.query('tasks'))); // Unsubscribe on unmount.
    const created = db.create('tasks', { title: 'Ship v2', done: false });
    db.update(created.id, { done: true });
    db.delete(created.id);
@@ -732,5 +742,5 @@ Drop these directly in HTML or \`htm\` templates (lazy-loaded automatically when
 
 ## Design Quality
 Match the brief's **${style}** aesthetic. Build complete, interactive, responsive UIs with realistic seeded data, clear typography, keyboard-friendly forms, and zero placeholder stubs.
-${containerBackend ? `\n${CONTAINER_BACKEND_SECTION}\n` : `\n## Optional Sandboxed Container Backend\nIf the user asks for an API backend (PHP, JS/TS, Rust, or Python) and SQLite inside this container, declare \`"backend": { "runtime": "php" | "javascript" | "typescript" | "rust" | "python", "entry": "backend/index.php", "mode": "api", "routes": ["/api/"] }\` and \`"databases": [{ "name": "app", "engine": "sqlite", "file": "app.db", "seedSql": "backend/schema.sql", "persist": true }]\` in \`manifest.json\`, then call \`fetch('/api/...')\` from frontend scripts. It runs locally in a ZIPP WASM Worker and deploys unchanged to multi-user \`softn-server\` ZIPP \`safe-sandbox\`.\n`}${backend ? `\n${PRIVATE_BACKEND_SECTION}\n` : ''}`;
+${containerBackend ? `\n${CONTAINER_BACKEND_SECTION}\n` : `\n## Optional Sandboxed Container Backend\nIf the user asks for an API backend (PHP, JS/TS, Rust, or Python) and SQLite inside this container, declare \`"backend": { "runtime": "php" | "javascript" | "typescript" | "rust" | "python", "entry": "backend/index.php", "mode": "api", "routes": ["/api/"] }\` and \`"databases": [{ "name": "app", "engine": "sqlite", "file": "app.db", "seedSql": "backend/schema.sql", "persist": true }]\` in \`manifest.json\`, then call \`fetch('/api/...')\` from frontend scripts. It runs locally in a ZIPP WASM Worker and deploys unchanged to multi-user \`softn-server\` ZIPP \`safe-sandbox\`.\n`}${backend ? `\n${CONTAINER_PRIVATE_BACKEND_SECTION}\n` : ''}`;
 }

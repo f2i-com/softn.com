@@ -158,9 +158,7 @@ struct Served {
 
 pub fn run(root: &Path, input: &str, guest: &Guest, migration: &Arc<Mutex<Option<Migration>>>) -> Answer {
     let mut stage = "configuration_read";
-    let mut db: Option<Rc<rusqlite::Connection>> = None;
-    let result = handle(root, input, guest, migration, &mut stage, &mut db);
-    let out = match result {
+    match handle(root, input, guest, migration, &mut stage) {
         Ok(answer) => answer,
         Err(error) => {
             // A busy database is a moment's load, not something to look into.
@@ -174,9 +172,7 @@ pub fn run(root: &Path, input: &str, guest: &Guest, migration: &Arc<Mutex<Option
                 answer(503, serde_json::json!({ "error": "The backend is unavailable. Check its private configuration.", "code": "backend_unavailable", "diagnostic": stage }))
             }
         }
-    };
-    drop(db);
-    out
+    }
 }
 
 fn handle(
@@ -185,7 +181,6 @@ fn handle(
     guest: &Guest,
     migration: &Arc<Mutex<Option<Migration>>>,
     stage: &mut &'static str,
-    db_slot: &mut Option<Rc<rusqlite::Connection>>,
 ) -> Result<Answer, HostError> {
     let root = root.to_path_buf();
     let config = read_json(&root.join("private/config.json"))?;
@@ -367,8 +362,7 @@ fn handle(
     if symlink(&file) {
         return Err(HostError::own("Invalid database"));
     }
-    let db = Rc::new(sql::open(&file)?);
-    *db_slot = Some(Rc::clone(&db));
+    let mut db = sql::open(&file)?;
     *stage = "database_lock";
     db.execute_batch("BEGIN IMMEDIATE").map_err(HostError::sqlite)?;
     let counted = (|| -> Result<Option<Answer>, HostError> {
@@ -415,7 +409,7 @@ fn handle(
                 )));
             }
             *migration.lock().unwrap() = Some(Migration { name: name.clone(), file: file_name, sha256: hash.clone(), marker: stopped_note.clone(), attempts: MIGRATION_ATTEMPTS });
-            migrations::apply(&db, &text)?;
+            migrations::apply(&mut db, &text)?;
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
             db.execute("INSERT INTO _migrations VALUES(?,?,?)", params![name, hash, now]).map_err(HostError::sqlite)?;
             *migration.lock().unwrap() = None;
@@ -488,8 +482,8 @@ fn handle(
         *byte = u8::from_str_radix(&key_hex[i * 2..i * 2 + 2], 16).map_err(HostError::library)?;
     }
     let host = Host {
-        db: Rc::clone(&db),
         sql: Rc::new(Sql::new(&db, events.map(Arc::new))?),
+        db: Rc::new(std::cell::RefCell::new(db)),
         crypto: Rc::new(Crypto::new(&key, hmac_domain, seal_domain)),
         capabilities: capabilities.clone(),
         source,

@@ -1,4 +1,7 @@
 import { zipSync } from 'fflate';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { webArchiveEntries } from '@softn/editor-shared/prepareWebSource';
+import { compiledSourcePath } from '@softn/bundle-format/source-modules';
 import type { ValidationError, VFSFile } from '../types/studio';
 import { bundleNameProblem, isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
 import { isPagePath, linkedScripts, projectContainerMode } from './sourceKinds';
@@ -211,7 +214,7 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
         ? !listedAssets.has(p) &&
           !/^assets\//i.test(p) &&
           !/(?:^|\/)(?:vendor|node_modules)\//i.test(p) &&
-          /\.(?:logic|m?js|tsx?|mts|jsx|py)$/i.test(p)
+          /\.(?:logic|m?js|tsx?|mts|jsx|vue|py)$/i.test(p)
         : linked.has(p) ||
           (!listedAssets.has(p) && (/\.(logic|py)$/i.test(p) || (/\.js$/i.test(p) && listedLogic.has(p)))))
   );
@@ -276,6 +279,8 @@ export interface BundleSummary {
   bytes: number;
   /** Files of the project the export leaves out: Studio's own notes under builder/. */
   privateFiles: number;
+  /** An export also includes ready-to-run modules beside these project files. */
+  componentSource?: true;
 }
 
 const summaries = new WeakMap<Map<string, VFSFile>, BundleSummary>();
@@ -295,7 +300,8 @@ export function bundleSummary(files: Map<string, VFSFile>): BundleSummary {
   for (const entry of entries.values()) bytes += entry.length;
   let privateFiles = 0;
   for (const path of files.keys()) if (isPrivatePath(normalizeProjectPath(path) ?? path)) privateFiles++;
-  const summary = { files: entries.size, bytes, privateFiles };
+  const summary: BundleSummary = { files: entries.size, bytes, privateFiles };
+  if (projectContainerMode(files) === 'web' && [...entries.keys()].some((path) => compiledSourcePath(path))) summary.componentSource = true;
   summaries.set(files, summary);
   return summary;
 }
@@ -306,7 +312,7 @@ export function bundleSummary(files: Map<string, VFSFile>): BundleSummary {
  * be right. Throws, naming the paths, when the plan has an error — a bundle
  * with a file missing from it is not the project.
  */
-export function buildBundle(files: Map<string, VFSFile>, level: 0 | 6 = 6): Uint8Array {
+function archiveEntries(files: Map<string, VFSFile>): Record<string, Uint8Array> {
   const plan = planBundle(files);
   const refused = plan.problems.filter((p) => p.level === 'error');
   if (refused.length > 0) {
@@ -319,25 +325,40 @@ export function buildBundle(files: Map<string, VFSFile>, level: 0 | 6 = 6): Uint
   if (Object.hasOwn(entries, '__proto__')) {
     throw new Error('Export refused: a file at the bundle\'s root may not be named "__proto__". Rename it.');
   }
-  return zipSync(entries, { level });
+  return entries;
+}
+
+/** An editable copy for an editor-to-editor handoff, even when a component is mid-edit. */
+export function buildBundle(files: Map<string, VFSFile>, level: 0 | 6 = 6): Uint8Array {
+  return zipSync(archiveEntries(files), { level });
+}
+
+/** A recipient can run these files offline without downloading an editor or compiler. */
+export async function buildRunnableBundle(files: Map<string, VFSFile>): Promise<Uint8Array> {
+  const entries = archiveEntries(files);
+  return zipSync(projectContainerMode(files) === 'web' ? await webArchiveEntries(entries) : entries, { level: 6 });
+}
+
+export function projectDownloadName(projectName: string): string {
+  return `${projectName || 'app'}.${isHostedEditor() ? 'zip' : 'softn'}`;
 }
 
 /**
- * Export VFS files as a .softn ZIP bundle.
+ * Export VFS files as a ZIP bundle.
  * Strips builder/ directory files from the output.
  */
-export function exportAsBundle(
+export async function exportAsBundle(
   files: Map<string, VFSFile>,
   projectName: string,
-): Uint8Array {
-  const result = buildBundle(files);
+): Promise<Uint8Array> {
+  const result = await buildRunnableBundle(files);
 
   // Trigger download
   const blob = new Blob([result as BlobPart], { type: 'application/zip' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${projectName || 'app'}.softn`;
+  a.download = projectDownloadName(projectName);
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 

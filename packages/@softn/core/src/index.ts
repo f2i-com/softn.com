@@ -15,6 +15,7 @@ export * from './runtime';
 
 // Loader exports
 export * from './loader';
+export { hasPageHandlers } from './document-shell/names';
 
 // Template generators
 export * from './templates';

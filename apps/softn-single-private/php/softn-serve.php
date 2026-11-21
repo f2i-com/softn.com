@@ -573,23 +573,6 @@ function softn_index(ZipArchive $zip): array
     return $index;
 }
 
-/** SHA-256 of the archive, cached beside it by size and mtime. */
-function softn_digest(string $private, string $bundle): string
-{
-    $size = filesize($bundle);
-    $mtime = filemtime($bundle);
-    $cache = $private . '/digest.cache';
-    $line = @file_get_contents($cache);
-    if (is_string($line)) {
-        $parts = explode(' ', trim($line));
-        if (count($parts) === 3 && $parts[0] === (string)$size && $parts[1] === (string)$mtime && preg_match('/^[a-f0-9]{64}$/', $parts[2])) return $parts[2];
-    }
-    $digest = hash_file('sha256', $bundle);
-    if ($digest === false) softn_fail(503, 'Application bundle is unavailable.');
-    @file_put_contents($cache, $size . ' ' . $mtime . ' ' . $digest . "\n", LOCK_EX);
-    return $digest;
-}
-
 /** The secret a file holds, when it holds a whole one: null for no file, an empty one, or one cut short. */
 function softn_secret_read(string $file): ?string
 {
@@ -920,9 +903,12 @@ function softn_shell(array $config, string $private): never
     exit;
 }
 
-function softn_source(array $config, string $private): never
+function softn_source(array $config): never
 {
-    $digest = softn_digest($private, $config['bundle']);
+    // Deployment tools can preserve the size and timestamp of a changed bundle.
+    // Compute its identity once per source response, including on read-only hosts.
+    $digest = hash_file('sha256', $config['bundle']);
+    if ($digest === false) softn_fail(503, 'Application bundle is unavailable.');
     if ($config['sha256'] !== null && !hash_equals($config['sha256'], $digest)) softn_fail(503, 'Application integrity check failed.');
     $zip = softn_open($config);
     $index = softn_index($zip);
@@ -1160,7 +1146,7 @@ if (array_key_exists('manifest', $_GET)) {
 }
 if (array_key_exists('source', $_GET)) {
     softn_guard($config, $privateReal);
-    softn_source($config, $privateReal);
+    softn_source($config);
 }
 if (array_key_exists('icon', $_GET)) {
     softn_guard($config, $privateReal);

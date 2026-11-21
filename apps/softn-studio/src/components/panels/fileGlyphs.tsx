@@ -1,5 +1,5 @@
 import React from 'react';
-import { classifyAsset } from '@softn/core';
+import { classifyAsset } from '@softn/core/authoring';
 import { isLogicPath, isPagePath } from '../../lib/sourceKinds';
 
 /**
@@ -156,6 +156,8 @@ export const Glyph: React.FC<{ name: GlyphName; size?: number; className?: strin
 
 /** What a file is, in a word, and the drawing that goes with it: from its name, as the runtime reads it. */
 export function fileKind(path: string): { glyph: GlyphName; word: string; language: boolean } {
+  if (/\.vue$/i.test(path)) return { glyph: 'logic', word: 'Vue component', language: true };
+  if (/\.jsx$/i.test(path)) return { glyph: 'logic', word: 'JSX', language: true };
   if (isPagePath(path)) return { glyph: 'page', word: 'page', language: true };
   if (isLogicPath(path)) return { glyph: 'logic', word: 'logic', language: true };
   if (/\.(php|phtml)$/i.test(path)) return { glyph: 'logic', word: 'PHP', language: true };

@@ -75,7 +75,11 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
 
   if (!blueprint || !brief) return null;
 
-  const pageFiles = pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0]);
+  const isContainer = brief.appFormat === 'container' || brief.logicLanguage === 'typescript';
+  const containerEntry = brief.logicLanguage === 'python' ? 'main.py' : brief.logicLanguage === 'typescript' ? 'app.ts' : 'main.js';
+  const pageFiles = isContainer
+    ? blueprint.pages.map(() => `index.html + ${containerEntry}`)
+    : pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0]);
 
   /** The plan with `pages` as its pages: in the brief the build is asked for, and, while the
       project is still the scaffold Generate wrote, in the files as well. */
@@ -91,7 +95,7 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
     const pristine = scaffold.length === current.length && scaffold.every((file) => vfs.readFile(file.path) === file.content);
     setBrief(nextBrief);
     setBlueprint(next);
-    setTaskGraph(generateTaskGraph(next));
+    setTaskGraph(generateTaskGraph(next, nextBrief));
     if (pristine) {
       vfs.reset();
       vfs.hydrateFiles(scaffoldProjectFiles(nextBrief, next));
@@ -247,7 +251,9 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
                       like a third path. */}
                   <div style={styles.rowSub}>{pageFiles[index]} · {page.layout.replace(/[-_]+/g, ' ')} layout</div>
                 </div>
-                <span style={styles.rowBadge}>{page.components.length} component{page.components.length === 1 ? '' : 's'}</span>
+                <span style={styles.rowBadge}>
+                  {isContainer ? 'HTML + DOM' : `${page.components.length} component${page.components.length === 1 ? '' : 's'}`}
+                </span>
               </div>
             ))}
           </section>

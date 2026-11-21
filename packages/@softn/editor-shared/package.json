@@ -1,6 +1,6 @@
 {
   "name": "@softn/editor-shared",
-  "version": "0.0.45",
+  "version": "0.0.48",
   "private": true,
   "description": "What Builder and Studio share and neither owns: the hand-off to the runtime and publish page, opening a bundle from a same-origin link, modal keyboard ownership, and the private FormLogic editor channel.",
   "license": "Apache-2.0",
@@ -11,6 +11,14 @@
     "./remoteOpen": "./src/remoteOpen.ts",
     "./useModalFocus": "./src/useModalFocus.ts",
     "./hostedEditor": "./src/hostedEditor.ts",
+    "./hostedDatabase": "./src/hostedDatabase.ts",
+    "./formlogicBackend": "./src/formlogicBackend.ts",
+    "./BackendEditor": "./src/BackendEditor.tsx",
+    "./backendEditor.css": "./src/backendEditor.css",
+    "./webStarters": "./src/webStarters.ts",
+    "./webSourceCompiler": "./src/webSourceCompiler.ts",
+    "./prepareWebSource": "./src/prepareWebSource.ts",
+    "./useCompilerOfflineNotice": "./src/useCompilerOfflineNotice.ts",
     "./useHostedSaveLabel": "./src/useHostedSaveLabel.ts",
     "./directPublish": "./src/directPublish.ts",
     "./PublishModal": "./src/PublishModal.tsx",
@@ -20,7 +28,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@softn/bundle-format": "*"
+    "@softn/bundle-format": "*",
+    "@vue/compiler-sfc": "^3.5.45",
+    "sucrase": "^3.35.1"
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0"
@@ -31,6 +41,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "typescript": "^5.3.0",
-    "vitest": "^4.1.12"
+    "vite": "^8.1.6",
+    "vitest": "^4.1.12",
+    "vue": "^3.5.45"
   }
 }

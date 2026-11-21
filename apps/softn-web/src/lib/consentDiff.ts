@@ -11,7 +11,7 @@
  */
 
 import type { BundleArchive, PermissionConfig } from '@softn/core';
-import { extractPermissions, readZip, requestedCapabilities, type BundleManifest } from '@softn/runtime-shell/bundleProcessor';
+import { extractPermissions, readZip, requestedCapabilities, type BundleManifest } from '@softn/runtime-shell/bundleFiles';
 import { declarationKey, type PreviousBuild } from '@softn/runtime-shell/consent';
 import { unwrapContainerZipEntries } from '@softn/runtime-shell/containerBundle';
 import type { CachedApp } from './appCache';

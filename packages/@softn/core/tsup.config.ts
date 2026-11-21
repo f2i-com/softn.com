@@ -6,6 +6,8 @@ import { copyWorkerFiles } from './scripts/worker-files.mjs';
 export default defineConfig({
   entry: [
     'src/index.ts',
+    'src/web-host.ts',
+    'src/authoring.ts',
     'src/parser/index.ts',
     'src/renderer/index.ts',
     'src/runtime/index.ts',

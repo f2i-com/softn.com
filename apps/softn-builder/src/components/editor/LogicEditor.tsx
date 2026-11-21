@@ -154,7 +154,7 @@ export function LogicEditor() {
                   ? 'JSON data or configuration file in the container'
                   : editorLanguage === 'python'
                     ? 'Python script — runs inside the isolated ZIPP WASM Worker'
-                    : 'ES module — runs inside the isolated ZIPP WASM Worker'
+                    : 'Preview runs the current source. Export includes your edits.'
               : editorLanguage === 'python'
                 ? 'Top-level names are state; functions are callable'
                 : 'Define state, computed values, and functions';
@@ -171,7 +171,7 @@ export function LogicEditor() {
           </span>
           <span style={styles.path} title={logicFile.path}>{logicFile.path}</span>
         </span>
-        <span style={styles.hint}>
+        <span className="bl-editor-hint" style={styles.hint}>
           {hintText}
         </span>
       </div>
@@ -179,6 +179,7 @@ export function LogicEditor() {
       <div style={styles.editorWrapper}>
         <CodeEditor
           value={logicFile.content}
+          path={projectFormat === 'web' ? logicFile.path : undefined}
           onChange={(next) => updateLogicFile(logicFile.id, next)}
           language={editorLanguage}
           height="100%"

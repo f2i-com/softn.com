@@ -39,6 +39,32 @@ afterEach(() => {
 });
 
 describe('runtime directory integration', () => {
+  it('waits for a connection and refreshes the shelf when it comes back', async () => {
+    const connection = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+    const fetch = vi.fn().mockResolvedValueOnce(reply([card()])).mockResolvedValueOnce(reply([card('second')]));
+    vi.stubGlobal('fetch', fetch);
+    const changeConnection = (online: boolean) => {
+      connection.mockReturnValue(online);
+      act(() => window.dispatchEvent(new Event(online ? 'online' : 'offline')));
+    };
+    try {
+      act(() => root.render(<DirectoryShelf onOpen={vi.fn()} />));
+      expect(container.querySelector('[role="status"]')?.textContent).toContain('offline');
+      expect(fetch).not.toHaveBeenCalled();
+      changeConnection(true);
+      await settle();
+      expect(container.querySelector('[aria-label="Run Fieldnotes"]')).toBeTruthy();
+      changeConnection(false);
+      expect(container.querySelector('[aria-label="Run Fieldnotes"]')).toBeNull();
+      changeConnection(true);
+      await settle();
+      expect(container.querySelector('[aria-label="Run second"]')).toBeTruthy();
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      connection.mockRestore();
+    }
+  });
+
   it('opens a listed bundle through the runtime callback without navigation', async () => {
     const fetch = vi.fn(async (_url: string, _init?: RequestInit) => reply([card()]));
     vi.stubGlobal('fetch', fetch);
@@ -104,6 +130,7 @@ describe('runtime directory integration', () => {
           running={[{ id: 'running', name: 'Notes' }]}
           onResume={onResume}
           onOpenFile={vi.fn()}
+          onOpenFolder={vi.fn()}
           onOpenCached={vi.fn()}
           onRemove={vi.fn()}
           onExportData={vi.fn()}
@@ -186,6 +213,7 @@ describe('an app on Home whose manifest description is not text', () => {
         <Launcher
           apps={[odd]}
           onOpenFile={vi.fn()}
+          onOpenFolder={vi.fn()}
           onOpenCached={vi.fn()}
           onRemove={vi.fn()}
           onExportData={vi.fn()}

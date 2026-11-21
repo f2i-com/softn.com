@@ -7,7 +7,7 @@ import type {
   ProjectBrief,
   VFSFile,
 } from '../types/studio';
-import { PYTHON_PACKAGES, parseXDBFile, readPythonPackages } from '@softn/core';
+import { PYTHON_PACKAGES, parseXDBFile, readPythonPackages } from '@softn/core/authoring';
 import { isPrivatePath } from './paths';
 import { isJavaScriptLogicPath } from './sourceKinds';
 
@@ -246,7 +246,15 @@ export function withRevisionNotesOf(next: Blueprint, previous: Pick<Blueprint, '
   return notes.length > 0 ? { ...next, assumptions: [...next.assumptions, ...notes] } : next;
 }
 
-export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
+export function generateTaskGraph(
+  blueprint: Blueprint,
+  brief?: Pick<ProjectBrief, 'appFormat' | 'logicLanguage'> | null,
+): AgentTask[] {
+  const isContainer = brief?.appFormat === 'container' || brief?.logicLanguage === 'typescript';
+  const containerEntry = brief?.logicLanguage === 'python' ? 'main.py' : brief?.logicLanguage === 'typescript' ? 'app.ts' : 'main.js';
+  const scaffoldedFiles = isContainer
+    ? [MAIN_PAGE_PATH, 'styles.css', containerEntry]
+    : [MAIN_PAGE_PATH, ...pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0])];
   return [
     {
       id: 'task-blueprint',
@@ -259,12 +267,12 @@ export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
     },
     {
       id: 'task-pages',
-      title: 'Scaffold pages',
-      description: 'Create the initial page shells and navigation.',
+      title: isContainer ? 'Scaffold web container' : 'Scaffold pages',
+      description: isContainer ? 'Create the HTML, CSS, and module entry shell.' : 'Create the initial page shells and navigation.',
       status: 'complete',
       dependencies: ['task-blueprint'],
       retries: 0,
-      files: [MAIN_PAGE_PATH, ...pageSlugs(blueprint.pages).map((slug) => pageFileCandidates(slug)[0])],
+      files: scaffoldedFiles,
     },
     {
       id: 'task-data',
@@ -1064,7 +1072,7 @@ function scaffoldV2ContainerFiles(
     },
     {
       path: 'builder/task-graph.json',
-      content: JSON.stringify(generateTaskGraph(blueprint), null, 2),
+      content: JSON.stringify(generateTaskGraph(blueprint, brief), null, 2),
     },
     {
       path: 'builder/component-map.json',
@@ -1409,12 +1417,18 @@ export function inferBlueprintFromFiles(projectName: string, files: Map<string, 
  * project's own — pass `projectLogicLanguage(files)` — so a Python bundle is
  * edited in Python from the first turn.
  */
-export function inferBriefFromBlueprint(blueprint: Blueprint, logicLanguage: LogicLanguage = 'javascript', description?: unknown): ProjectBrief {
+export function inferBriefFromBlueprint(
+  blueprint: Blueprint,
+  logicLanguage: LogicLanguage = 'javascript',
+  description?: unknown,
+  appFormat?: ProjectBrief['appFormat'],
+): ProjectBrief {
   // The manifest's description is the one the person typed when the app was made here, and
   // what its author wrote when it was made elsewhere; only a bundle that says nothing of
   // itself is described as an import.
   const said = typeof description === 'string' ? description.trim() : '';
   return {
+    ...(appFormat ? { appFormat } : {}),
     logicLanguage,
     appName: blueprint.appName,
     description: said || `Imported SoftN bundle for ${blueprint.appName}. Use AI to inspect, improve, and regenerate parts of the app without rewriting it from scratch.`,

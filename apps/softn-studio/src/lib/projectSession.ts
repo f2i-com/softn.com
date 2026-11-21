@@ -996,9 +996,12 @@ export interface RunSave {
  * run whose every save failed (storage full, storage blocked) ended
  * "Finished" with nothing stored.
  */
-export async function saveForRun(): Promise<RunSave> {
+export async function saveForRun(completedMessageId?: string): Promise<RunSave> {
   if (!running) return { failed: null, conflicts: [] };
   const result = await running.flush();
+  if (completedMessageId && lastConflicts?.parts.messages.includes(completedMessageId)) {
+    return { failed: { reason: 'conflict', message: 'Another tab saved a different version of this chat message.' }, conflicts: lastConflicts.parts.files };
+  }
   return { failed: result.ok ? null : { reason: result.reason, message: result.message }, conflicts: lastConflicts?.parts.files ?? [] };
 }
 

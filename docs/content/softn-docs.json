@@ -65,8 +65,8 @@
     "repositories": [
       {
         "url": "https://github.com/f2i-com/softn.com",
-        "ref": "dev",
-        "commit": "e1c68273311a2e7644bf5d08e3f508688d9fb49b"
+        "ref": "main",
+        "commit": "7f014dfc8ae90576de07045d47c745f677ccb73b"
       },
       {
         "url": "https://github.com/f2i-com/zipp.org",
@@ -80,7 +80,7 @@
       "The ZIPP commit is the source revision recorded in the installed engine’s SOURCE.json for release v0.0.37. ZIPP’s own source was not inspected.",
       "Code samples follow the syntax the current parser and composer accept but were not each executed. Fieldnotes and examples/torch-trainer are the runnable references.",
       "ZIPP’s website pages (Python, WebAssembly, architecture) were last read on 15 September 2026 and were not re-read for this edition.",
-      "No production deployment, private backend or FormLogic host was exercised. The hosting guides describe the repository’s packaging scripts and deployment guides.",
+      "The hosting guides cover the repository’s packaging scripts, deployment guides and local host behavior. Production deployments depend on the operator’s configuration.",
       "The documentation tests check the generator and the generated pages, not product runtime behaviour."
     ],
     "editorialPolicy": [
@@ -220,9 +220,9 @@
       "title": "SoftN root package.json",
       "url": "https://github.com/f2i-com/softn.com/blob/main/package.json",
       "kind": "repository-source",
-      "reviewedAt": "2026-10-21",
+      "reviewedAt": "2026-11-19",
       "retrieval": "retrieved",
-      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). The package version, 0.0.45, is not the ZIPP engine version."
+      "notes": "Workspace layout, root scripts and the Node engine requirement (>=24.19.0). SoftN v0.0.48 uses ZIPP v0.0.36."
     },
     {
       "id": "zipp-wasm",
@@ -256,7 +256,7 @@
       "title": "SoftN notes: JavaScript and Python in the ZIPP runtime",
       "url": "https://github.com/f2i-com/softn.com/blob/main/docs/engineering/ZIPP_LANGUAGES.md",
       "kind": "repository-documentation",
-      "reviewedAt": "2026-09-25",
+      "reviewedAt": "2026-11-19",
       "retrieval": "retrieved",
       "notes": "The authoritative description of the engine SoftN ships (ZIPP v0.0.37, its javascript-python-base engine, with the torch package loaded on demand), the Python app contract, torch and the engine variants."
     },
@@ -274,18 +274,18 @@
       "title": "SoftN Builder source",
       "url": "https://github.com/f2i-com/softn.com/tree/main/apps/softn-builder",
       "kind": "repository-source",
-      "reviewedAt": "2026-09-25",
+      "reviewedAt": "2026-11-18",
       "retrieval": "retrieved",
-      "notes": "View names, the Create New App dialog, the logic dock, file checks, handler suggestions, preview sizes and the Export Bundle dialog."
+      "notes": "Creating a project, editing source, organising files and data, responsive preview, and exporting the bundle."
     },
     {
       "id": "softn-studio-source",
       "title": "SoftN Studio source",
       "url": "https://github.com/f2i-com/softn.com/tree/main/apps/softn-studio",
       "kind": "repository-source",
-      "reviewedAt": "2026-09-25",
+      "reviewedAt": "2026-11-18",
       "retrieval": "retrieved",
-      "notes": "Provider presets, the brief, the blueprint review, preview composition, the validator, import and export, and the bundled examples."
+      "notes": "Web starters, providers, blueprint review, run summaries, file transactions, import, export and preview."
     },
     {
       "id": "softn-bundle-format",
@@ -349,6 +349,33 @@
       "reviewedAt": "2026-11-21",
       "retrieval": "retrieved",
       "notes": "Single-tenant (`run`) and multi-tenant (`serve-multi`) server hosting v1 private backends and v2 full-stack container backends strictly inside ZIPP safe-sandbox with shared WAL SQLite."
+    },
+    {
+      "id": "softn-web-examples",
+      "title": "Editable Vanilla JS, React and Vue examples",
+      "url": "https://github.com/f2i-com/softn.com/tree/main/examples/offline-web-apps",
+      "kind": "repository-source",
+      "reviewedAt": "2026-11-18",
+      "retrieval": "retrieved",
+      "notes": "The Trail Pack, Ratio Bar and Swatchbook projects and their original source files."
+    },
+    {
+      "id": "softn-editor-shared",
+      "title": "Studio and Builder project tools",
+      "url": "https://github.com/f2i-com/softn.com/tree/main/packages/@softn/editor-shared/src",
+      "kind": "repository-source",
+      "reviewedAt": "2026-11-18",
+      "retrieval": "retrieved",
+      "notes": "Framework starters, source compilation, project handoff, FormLogic migrations and backend editing."
+    },
+    {
+      "id": "softn-private-php",
+      "title": "PHP-served private single app guide",
+      "url": "https://github.com/f2i-com/softn.com/blob/main/docs/engineering/SINGLE_APP_PRIVATE.md",
+      "kind": "repository-source",
+      "reviewedAt": "2026-11-18",
+      "retrieval": "retrieved",
+      "notes": "Bundle validation, content digests, private storage, permissions and deployment checks."
     }
   ],
   "pages": [
@@ -389,7 +416,7 @@
               "type": "callout",
               "tone": "tip",
               "title": "New here?",
-              "text": "Read What is SoftN, then open the Fieldnotes example from the homepage and make one small change. A working app is the quickest map of the whole platform."
+              "text": "Open a homepage example in Studio or Builder, change a label, then preview the app. Choose Fieldnotes to try the classic UI designer."
             },
             {
               "type": "cards",
@@ -513,7 +540,7 @@
       "groupId": "start",
       "seo": {
         "title": "What is SoftN? | SoftN Docs",
-        "description": "What is SoftN? An open-source app platform: portable .softn files, visual and AI-assisted tools, app logic in JavaScript or Python, and browser or desktop hosts."
+        "description": "SoftN is an open-source sandbox for web and classic apps. Edit Vanilla JS, React or Vue in Studio or Builder, preview changes and share the project as an archive."
       },
       "updatedAt": "2026-11-21",
       "sourceIds": [
@@ -532,7 +559,7 @@
             },
             {
               "type": "paragraph",
-              "text": "That gives you several ways to start: explore an existing app, change a project in Builder, describe an idea in Studio with an AI provider you configure, or write the source yourself. These are different routes into the same editable app, not separate product formats."
+              "text": "Start from a working example, make a new project in Builder or describe an idea to your AI provider in Studio. You can move the exported source between the editors and test the same project in Runtime."
             }
           ]
         },
@@ -557,7 +584,7 @@
                 },
                 {
                   "term": ".softn",
-                  "description": "The ZIP-based app bundle you can export, share, reopen and customise."
+                  "description": "A ZIP-based project archive. Runtime also accepts a web app in a `.zip` with an `index.html` entry and its local scripts and assets."
                 }
               ]
             },
@@ -645,7 +672,8 @@
       "sourceIds": [
         "softn-readme",
         "softn-package",
-        "softn-languages"
+        "softn-languages",
+        "softn-web-examples"
       ],
       "sections": [
         {
@@ -654,7 +682,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The shortest route needs no installation and no AI provider. On the SoftN homepage, choose Open example in Builder under Fieldnotes: you can inspect the app, change a heading, preview it and export a bundle."
+              "text": "Choose Vanilla JS, React or Vue on the homepage to try an example in Runtime or edit it in Studio or Builder. To start a fresh project, pick a starter on Studio’s welcome screen or choose New in Builder. Each starter opens in Preview and works without installing packages or connecting an AI provider. Fieldnotes is the classic SoftN example."
             },
             {
               "type": "links",
@@ -672,12 +700,12 @@
                 {
                   "label": "Open Studio",
                   "href": "https://softn.com/studio/",
-                  "description": "Start from an example, or describe an app to your AI provider."
+                  "description": "Preview a web starter, explore an example or describe an app to your AI provider."
                 },
                 {
                   "label": "Open Runtime",
                   "href": "https://softn.com/web/",
-                  "description": "Open and run .softn bundles."
+                  "description": "Open a `.zip` or `.softn` app bundle."
                 }
               ]
             }
@@ -764,15 +792,15 @@
               "items": [
                 {
                   "title": "Open a working example",
-                  "text": "Use Fieldnotes, so you can compare your changes with an app that already works."
+                  "text": "Open one of the three web examples in Studio or Builder. For a tour of a classic app, choose Fieldnotes."
                 },
                 {
                   "title": "Change one visible thing",
-                  "text": "In the Design view, select a heading and change its Text Content in the properties panel. Check it in Preview before changing anything else."
+                  "text": "In a web example, edit a label in `app.js`, `main.jsx` or `App.vue` and preview the change. In Fieldnotes, select a heading in Builder’s Design view and change its Text Content."
                 },
                 {
                   "title": "Export and reopen",
-                  "text": "Export the .softn bundle, then open it again in Runtime or Builder to see what travelled with it."
+                  "text": "Export the project and open the download in Runtime. Once its Home card says Offline ready, disconnect and reopen the app. Check that your edited label appears and the app responds."
                 }
               ]
             },
@@ -966,7 +994,7 @@
       "id": "examples",
       "slug": "examples",
       "title": "Learn from SoftN examples",
-      "summary": "Use Fieldnotes as a source-level tour, find the examples that ship with the repository and Studio, then explore the wider catalogue with a focused question.",
+      "summary": "Try a Vanilla JS, React or Vue app, follow the source of the classic Fieldnotes example and explore the apps that ship with the repository and Studio.",
       "kind": "guide",
       "audience": [
         "app creators",
@@ -975,15 +1003,26 @@
       "groupId": "start",
       "seo": {
         "title": "Learn from SoftN examples | SoftN Docs",
-        "description": "Explore SoftN examples: Fieldnotes, the torch trainer, Studio’s reading lists and the wider catalogue. Inspect UI, logic, XDB seeds and exported bundles before customising."
+        "description": "Edit a Vanilla JS, React or Vue example in Studio or Builder. Explore Fieldnotes, the torch trainer, Studio’s reading lists and the wider app catalogue."
       },
       "updatedAt": "2026-11-21",
       "sourceIds": [
         "softn-readme",
         "torch-trainer-example",
-        "softn-studio-source"
+        "softn-studio-source",
+        "softn-web-examples"
       ],
       "sections": [
+        {
+          "id": "web-examples",
+          "title": "Try a web app in your editor",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "For a web app, use the framework picker on the homepage. Trail Pack (Vanilla JS) saves a packing checklist, Ratio Bar (React) calculates water from a coffee dose, and Swatchbook (Vue) saves a color palette. Open the example in Studio or Builder to edit `app.js`, `main.jsx` or `App.vue`, or open it directly in Runtime to try it first."
+            }
+          ]
+        },
         {
           "id": "fieldnotes",
           "title": "Fieldnotes: one complete small app",
@@ -1159,14 +1198,15 @@
       "groupId": "create",
       "seo": {
         "title": "SoftN Builder | SoftN Docs",
-        "description": "SoftN Builder: the Design, Data, Preview and Code views, new projects in JavaScript or Python, the logic dock, handler suggestions, torch, permissions and export."
+        "description": "Start a vanilla JavaScript, React or Vue app in Builder. Edit code, preview changes, design classic SoftN apps and export a portable bundle."
       },
       "updatedAt": "2026-11-21",
       "sourceIds": [
         "softn-builder-source",
         "softn-languages",
         "softn-readme",
-        "softn-container-source"
+        "softn-container-source",
+        "softn-editor-shared"
       ],
       "sections": [
         {
@@ -1189,11 +1229,15 @@
         },
         {
           "id": "new-project",
-          "title": "Start a project in JavaScript or Python",
+          "title": "Choose a web starter or a classic app",
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The Create New App dialog asks for an App Name, a Description, a Theme (Light, Dark or System), a Starter Template (Blank, Landing or Dashboard) and a Logic Language."
+              "text": "Choose New, then Web starter. Pick Vanilla JS, React or Vue. For React you can select JSX, and for Vue you can select Vue single-file component. Choose Create app to open Preview. Switch to Code to change app.js, App.jsx or App.vue. Open Preview again to run your edits. Preview a component format once online so Builder keeps its tools for offline editing. Export preserves the original files, local framework library and runnable JavaScript."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a classic app, choose Classic SoftN, pick a page layout and select JavaScript or Python. To start with an HTML layout in JavaScript, TypeScript or Python, choose Web layout."
             },
             {
               "type": "definitions",
@@ -1210,7 +1254,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Either way the project has `ui/main.ui`, linked to its logic with `<logic src>`, a starter counter in the logic file and an empty `assets/` folder. An app uses one language for all its logic."
+              "text": "A classic template links `ui/main.ui` to its JavaScript or Python logic with `<logic src>`."
             }
           ]
         },
@@ -1324,7 +1368,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The Preview view runs the app at Desktop (1440×900), Tablet (768×1024) or Mobile (390×844). It composes the app the way the runtime does, so a problem Run would refuse, such as an undeclared `import torch`, shows here first; for that one, Preview offers Enable torch."
+              "text": "Preview opens in Fit, using the space available in your workspace. Choose Desktop (1440×900), Tablet (768×1024) or Phone (390×844) to check a particular screen size. Switching sizes keeps the app running, so you can enter text on Desktop and check the same form on Phone. Preview also reports composition errors such as a classic app importing torch without declaring it."
             },
             {
               "type": "paragraph",
@@ -1338,11 +1382,11 @@
         },
         {
           "id": "data-preview",
-          "title": "Preview data and exported seeds are different jobs",
+          "title": "Preview records, seed data and hosted tables",
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Preview has its own test records, while the Data view holds the seeds the bundle carries. An app that looks populated in Preview may still need careful seeds for a first-time user."
+              "text": "Preview records let you try a form or query. The Data view lets you edit the seed records a new installation starts with. If you build a FormLogic backend, you can also define a hosted table here. Saving the project into FormLogic applies its migration to the app’s private SQLite database."
             },
             {
               "type": "callout",
@@ -1413,7 +1457,7 @@
       "id": "studio",
       "slug": "studio",
       "title": "SoftN Studio",
-      "summary": "Describe an app to an AI provider you choose, approve a plan, then inspect, test and keep the result as editable source in JavaScript or Python.",
+      "summary": "Start from a Vanilla JS, React or Vue project, or build a classic app with your AI provider. Review the files Studio changed, preview the result and keep the editable source.",
       "kind": "guide",
       "audience": [
         "app creators",
@@ -1429,7 +1473,8 @@
         "softn-studio-source",
         "softn-languages",
         "softn-readme",
-        "softn-container-source"
+        "softn-container-source",
+        "softn-editor-shared"
       ],
       "sections": [
         {
@@ -1463,11 +1508,11 @@
             },
             {
               "type": "paragraph",
-              "text": "On a first visit Studio asks you to connect one before anything else. After connecting it lists the provider’s own models for you to choose from, and Test connection explains a failure in plain words (a wrong key, a local server without CORS). The key is kept in this browser’s local storage, not encrypted, and sent only to the provider, straight from the browser. Settings lists your providers and opens the same setup to add or edit one."
+              "text": "To use AI generation, connect a provider on the welcome screen or in Settings. Studio lists the provider’s available models. Test connection can identify a wrong key or a local server that needs CORS. Studio stores the key in this browser’s local storage and sends it directly to the provider."
             },
             {
               "type": "paragraph",
-              "text": "AI generation is not required. From the dashboard you can Start a new app, Import a bundle (`.softn`, `.zip` or `.json`) or Start from an example, which needs no key: Reading list, in JavaScript, and Reading list in Python."
+              "text": "To work without AI, choose a web starter on the welcome screen or dashboard. Choose React JSX to work in App.jsx or Vue SFC to work in App.vue. From Preview, use Edit to open the source file, then Save & preview to try your change. Preview a component format once online to keep its tools for offline editing in Studio. Export bundle includes the original files, local dependencies and runnable JavaScript. Open the download in Runtime and wait for Offline ready on its Home card before disconnecting."
             }
           ]
         },
@@ -1502,6 +1547,10 @@
             {
               "type": "paragraph",
               "text": "Approve and build on the blueprint, or any message in the chat, starts a run. The AI works in steps with tools: it lists, reads and searches files, writes a file or makes an exact edit inside one, looks up components and the SoftN guides, checks the app, inspects what the preview shows, and calls the app’s own functions to test that they work. It keeps a short plan you can watch, asks you a question when the brief leaves something open, and finishes with a summary."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a question, the final Answer shows what the AI found. “No files changed” marks a run without edits. For an edit, Change summary uses the changes Studio actually saved and can show the old and new text for a small replacement. Expand the steps in the timeline to inspect the file diffs and validation results. The completed result is saved with the conversation."
             },
             {
               "type": "paragraph",
@@ -1594,6 +1643,10 @@
               "text": "An external AI provider can involve its own credentials, limits and charges. Review the configuration and the provider’s terms before sending content. Never put a private access token in app source or a downloadable bundle."
             },
             {
+              "type": "paragraph",
+              "text": "To use LM Studio, load a chat model, start its local API server and enable CORS for browser requests. In Studio’s provider setup choose Local model, then LM Studio. Enter the server address shown by LM Studio, connect, select the model, test the connection and save. Try asking which file contains a button label, then ask Studio to change it and check the result in Preview."
+            },
+            {
               "type": "callout",
               "tone": "warning",
               "title": "Generation is not validation",
@@ -1675,7 +1728,7 @@
       "groupId": "create",
       "seo": {
         "title": "SoftN Runtime | SoftN Docs",
-        "description": "SoftN Runtime: open .softn bundles, browse apps, use the saved browser library, switch running apps, and see how it picks the engine for JavaScript or Python logic."
+        "description": "Open .zip and .softn apps, switch running apps, and use the offline library. See when Runtime downloads ZIPP Lite, the full engine and classic components."
       },
       "updatedAt": "2026-11-21",
       "sourceIds": [
@@ -1691,7 +1744,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Runtime opens and runs `.softn` bundles. On the web, at `/web/`, it opens a bundle from the + button or a file dropped on the page, runs apps from the directory and keeps a library of what you opened in this browser. The desktop loader is a Tauri app (`npm run dev:desktop` in a checkout)."
+              "text": "On Runtime Home at `/web/`, use Open file or drop a `.zip` or `.softn` app on the page. Use Open folder to try a web app with an `index.html` entry. For projects with a separate build step, open the built output folder. Home keeps a library of the apps you open in this browser. The desktop loader is available with `npm run dev:desktop` in a checkout."
             },
             {
               "type": "paragraph",
@@ -1701,11 +1754,11 @@
         },
         {
           "id": "engines",
-          "title": "One engine for both languages",
+          "title": "Which engine an app loads",
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Runtime reads the app before it starts. Logic files ending `.py` make it a Python app, anything else a JavaScript one, and both run in the same engine: ZIPP’s javascript-python-base module, one WebAssembly file for both languages. A bundle the composer refuses, for example one that mixes the two languages or imports torch without declaring it, does not start, and the message says what to change."
+              "text": "Vanilla JS, React and Vue starters use ZIPP Lite. Runtime checks the scripts in each packaged web page. Locale-aware JavaScript features such as `Intl` require the full engine, while TypeScript and Python select their corresponding engines. Classic `.ui` apps load the classic renderer and the component groups their pages use. Classic apps with script logic also load the full engine. Runtime saves the dependencies each app needs for offline use."
             }
           ]
         },
@@ -2054,7 +2107,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "A `.softn` file is a ZIP-based app bundle holding the editable client material SoftN needs to load an app. It is the handoff between creation tools and runtimes: export an app, reopen it and change its source."
+              "text": "A `.softn` file is a ZIP-based app bundle. Runtime also accepts `.zip` web apps with an `index.html` entry and local scripts and assets. Studio and Builder include the original JSX or Vue component source and runnable JavaScript when you export one of their component starters. Reopen that project in either editor to change the source again."
             },
             {
               "type": "paragraph",
@@ -2070,7 +2123,7 @@
               "type": "code",
               "language": "text",
               "code": "my-app.softn\n├── manifest.json\n├── permission.json\n├── index.html\n├── pages/\n├── main.js\n├── xdb/\n└── assets/",
-              "caption": "The layout Studio writes for a new project; a Python app has `main.py` in place of `main.js`. Builder’s new projects, and bundles made before, keep their pages in `ui/` and their logic in `logic/`. Exact files depend on the app."
+              "caption": "A classic Studio project. A Python app uses `main.py` in place of `main.js`. Classic Builder projects and older bundles can keep pages in `ui/` and logic in `logic/`. A web starter uses an HTML entry and framework-specific source files."
             },
             {
               "type": "definitions",
@@ -2639,7 +2692,7 @@
         "title": "HTML and SoftN | SoftN Docs",
         "description": "What carries across from HTML into SoftN, what SoftN adds, and what to do with scripts from other sites, packages, embeds and server code."
       },
-      "updatedAt": "2026-11-03",
+      "updatedAt": "2026-11-18",
       "sourceIds": [
         "softn-readme",
         "softn-core-source"
@@ -2649,6 +2702,10 @@
           "id": "side-by-side",
           "title": "The same page, two ways",
           "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Choose Open folder on Runtime Home and select the folder containing `index.html`. Plain JavaScript starters run directly. For JSX or Vue single-file components, open the .softn export from Studio or Builder, or bring the output of your usual build. The editors keep the original component files alongside the runnable modules. The rest of this guide describes HTML in SoftN’s optional v1 UI language."
+            },
             {
               "type": "paragraph",
               "text": "A SoftN page can be written as an HTML page is written. Here is one small page as browser code would write it, working on the page through `document`, and then with SoftN’s additions, keeping the name in state."
@@ -2775,9 +2832,9 @@
                   "Nothing to change; Python lives in its own file"
                 ],
                 [
-                  "Scripts from other sites, a framework’s build (React, Vue)",
-                  "Not supported: not loaded",
-                  "Copy the code into the project, or rewrite the components with SoftN markup"
+                  "Scripts from other sites and compiled frameworks",
+                  "The v1 UI language reads local scripts as page logic",
+                  "Keep page logic in the project. For compiled React or Vue, open the build folder in the web container."
                 ],
                 [
                   "`import` between the project’s files",
@@ -2893,7 +2950,8 @@
         "softn-languages",
         "softn-core-source",
         "zipp-wasm",
-        "zipp-architecture"
+        "zipp-architecture",
+        "softn-container-source"
       ],
       "sections": [
         {
@@ -3052,7 +3110,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "SoftN ships ZIPP v0.0.37’s javascript-python-base engine: JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB compressed), without torch. ZIPP’s verified torch package is installed beside it and loaded only for apps that declare torch. Neither is committed to the repository. `npm run fetch:zipp`, and the build and test scripts when it is missing, install the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, check it against that release’s SHA256SUMS and record its provenance in SOURCE.json."
+              "text": "SoftN v0.0.49 ships ZIPP v0.0.37. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB with Brotli) loaded on demand, while web starters run on ZIPP Lite (~770 kB with Brotli). ZIPP’s verified torch package is installed beside it and loaded only for apps that declare torch. Neither is committed to the repository. `npm run fetch:zipp`, and the build and test scripts when it is missing, install the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, check it against that release’s SHA256SUMS and record its provenance in SOURCE.json."
             },
             {
               "type": "paragraph",
@@ -3652,6 +3710,16 @@
               "text": "Think of a collection as records of one kind, such as clients or tasks. Think separately about its schema, its starting seed records and the live records someone creates while using the app."
             },
             {
+              "type": "paragraph",
+              "text": "In Builder, open Data to design a local collection and its seed records. In Studio, open Files → Database or ask the AI to create a local collection with the fields you need. Studio writes an editable XDB file and adds it to the manifest. Vanilla JavaScript, React and Vue apps can import the same local database API."
+            },
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "import { db } from 'softn:db';\nconst note = db.create('notes', { title: 'First note' });\nconst titles = db.query('notes').map(row => row.data.title);\nconst stop = db.subscribe('notes', () => console.log(db.query('notes')));\ndb.update(note.id, { title: 'Edited offline' });\nstop();",
+              "caption": "Observe a local collection. React and Vue components can unsubscribe when they unmount."
+            },
+            {
               "type": "callout",
               "tone": "note",
               "title": "Python apps",
@@ -4003,12 +4071,12 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "SoftN connects an editable UI language, application logic and records. It is easiest to understand with the renderer, the script engine, the database and the host kept as separate responsibilities."
+              "text": "A web project opens in the web container. A classic project opens in the UI parser and renderer. Each runs its app logic with ZIPP and can use the storage and capabilities the host grants."
             },
             {
               "type": "code",
               "language": "text",
-              "code": "Editable .softn client bundle\n  |\n  +-- .ui source ----------> SoftN parser / renderer --> React interface\n  |\n  +-- .logic or .py -------> ZIPP (WebAssembly) -------> app behaviour\n  |\n  +-- XDB seeds and assets\n\nThe source composer checks and joins the pieces before anything runs.\nHost integration connects behaviour to app-scoped records\nand to explicitly supported, granted capabilities.\n\nOptional private backend\n  authenticated actions --> server logic (JavaScript) / server database",
+              "code": "Editable client archive\n  |\n  +-- index.html + scripts -> web container / sandbox DOM\n  |\n  +-- classic .ui source ----------> SoftN parser / renderer --> React interface\n  |\n  +-- .logic or .py -------> ZIPP (WebAssembly) -------> app behaviour\n  |\n  +-- XDB seeds and assets\n\nThe classic source composer checks and joins a classic app’s pages and logic.\nHost integration connects behaviour to app-scoped records\nand to explicitly supported, granted capabilities.\n\nOptional private backend\n  authenticated actions --> server logic (JavaScript) / server database",
               "caption": "A responsibility map. A backend is separate from the public client download."
             }
           ]
@@ -4023,7 +4091,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Authors work in SoftN’s source format. React is part of the host’s rendering, not a separate React project every app author maintains."
+              "text": "A web starter has its own HTML, styles and JavaScript. React and Vue projects can keep editable `.jsx` or `.vue` files alongside the runnable modules. The classic route uses the host’s React-based renderer for `.ui` pages."
             }
           ]
         },
@@ -4043,7 +4111,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "ZIPP compiles JavaScript or Python to register bytecode and runs it. In the browser, the WebAssembly build uses its interpreter rather than the native JIT tiers. SoftN’s engine is ZIPP’s javascript-python-base build, which carries both languages in one module, with torch added as a separate package only when an app declares it; a JavaScript app and a Python app use separate engine instances."
+              "text": "ZIPP compiles JavaScript or Python to register bytecode. The browser’s WebAssembly build uses its interpreter. SoftN web containers choose an engine for their scripts, starting with ZIPP Lite for ordinary JavaScript. The full `javascript-python-base` build carries both languages in one module. Classic logic and web containers that need the full engine load it on demand. Each app runs with its own state, and apps that declare torch can use its separate package."
             },
             {
               "type": "paragraph",
@@ -4782,7 +4850,7 @@
         "title": "Machine learning with torch | SoftN Docs",
         "description": "Use torch in a SoftN Python app: declare it in manifest.json, train tensors and torch.nn models on the CPU in the browser, show results as state and keep the page responsive."
       },
-      "updatedAt": "2026-10-14",
+      "updatedAt": "2026-11-18",
       "sourceIds": [
         "softn-languages",
         "torch-trainer-example",
@@ -4888,7 +4956,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "`examples/torch-trainer` in the repository trains `nn.Linear` to learn y = 2x + 1 from five points, showing the loss, the learned weight and bias, and a prediction as you train. Build it with `node examples/torch-trainer/build.mjs`, then open `TorchTrainer.softn` in the runtime at `/web/` with the + button, or drop the file on the page."
+              "text": "`examples/torch-trainer` in the repository trains `nn.Linear` to learn y = 2x + 1 from five points, showing the loss, the learned weight and bias, and a prediction as you train. Build it with `node examples/torch-trainer/build.mjs`, then open `TorchTrainer.softn` in the runtime at `/web/` using Open file, or drop the file on the page."
             },
             {
               "type": "links",
@@ -5536,6 +5604,10 @@
             },
             {
               "type": "paragraph",
+              "text": "Open the app online and wait for Offline ready on its Runtime Home card. The card lists the engines prepared for that build. A vanilla, React or Vue bundle can stay entirely on the lite JavaScript engine. If another bundled page needs the full engine, for example to format dates with Intl, Runtime saves it before marking the app ready. Studio and Builder also keep the full engine after a preview first needs it."
+            },
+            {
+              "type": "paragraph",
               "text": "Test the actual app flow offline, not only whether its first screen opens. A form might be local while its submit action or background image still depends on a server."
             }
           ]
@@ -5659,7 +5731,7 @@
         "title": "Python logic | SoftN Docs",
         "description": "Write SoftN app logic in Python: .py files, state and global, handlers, modules, import softn, what Python lacks, reserved names and the refusals that explain them."
       },
-      "updatedAt": "2026-10-27",
+      "updatedAt": "2026-11-18",
       "sourceIds": [
         "softn-languages",
         "softn-core-source",
@@ -5818,7 +5890,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "Only ZIPP’s Python builds run Python; SoftN ships javascript-python-base everywhere. A host that loads the JavaScript-only `zipp-web` engine, such as a FormLogic workspace whose owner chose the smaller engine, refuses a Python app by name before it compiles a line."
+              "text": "Python needs a Python-capable ZIPP engine. Runtime, Studio and Builder load the full `javascript-python-base` engine for apps with Python logic. A FormLogic workspace configured to use the JavaScript-only `zipp-web` engine reports an unsupported Python app before compilation."
             },
             {
               "type": "links",
@@ -6128,7 +6200,8 @@
         "softn-single-guide",
         "softn-package",
         "zipp-wasm",
-        "softn-container-source"
+        "softn-container-source",
+        "softn-private-php"
       ],
       "sections": [
         {
@@ -6320,7 +6393,7 @@
               "items": [
                 "Static: `softn-app-static-v<version>.zip`. HTML, the engine and your bundle, on any HTTPS host.",
                 "Static with a private backend: `softn-app-static-with-backend-linux-x64-v<version>.zip` adds a `backend/` folder with softn-runner, which answers each request without Node, a bundled Linux x64 Node for operator request hooks and the WebSocket bridge, SQLite and the ZIPP engine, behind Apache and PHP and enabled by the operator. The release archive carries softn-runner; one you build with `npm run package:single -- --with-backend` carries it only when given `--runner-dir apps/softn-runner/dist` (where `node apps/softn-runner/build.mjs --target x86_64-unknown-linux-musl` writes the runner and its licences), and without it every request runs on the bundled Node.",
-                "Served privately: `softn-app-private-v<version>.zip` keeps the `.softn` in a private directory and serves the page and each entry from PHP, so the archive is never on a URL. `softn-app-private-with-backend-linux-x64-v<version>.zip` is that variant with the backend."
+                "Served privately: `softn-app-private-v<version>.zip` keeps the `.softn` in a private directory and serves the page and each entry from PHP, so the archive is never on a URL. `softn-app-private-with-backend-linux-x64-v<version>.zip` is that variant with the backend. When replacing a pinned archive, update its configured SHA-256 digest. PHP checks the archive contents even if the file size and modification time match the previous copy."
               ]
             },
             {
@@ -6572,10 +6645,11 @@
         "title": "SoftN and FormLogic | SoftN Docs",
         "description": "SoftN and FormLogic: editable starter exports with local XDB, connected iframe apps, softn.backend.call and named backend actions owned by the host, and engine choice."
       },
-      "updatedAt": "2026-09-25",
+      "updatedAt": "2026-11-18",
       "sourceIds": [
         "softn-readme",
-        "softn-languages"
+        "softn-languages",
+        "softn-editor-shared"
       ],
       "sections": [
         {
@@ -6590,6 +6664,15 @@
               "type": "paragraph",
               "text": "There are two integration paths: converting a supported form into a local-first starter app, and running an app as a connected workspace under FormLogic. Choose the path before assuming what an export contains."
             }
+          ]
+        },
+        {
+          "id": "native-api",
+          "title": "Give a web app its own API",
+          "blocks": [
+            { "type": "paragraph", "text": "In FormLogic, create an app, choose Vanilla JS, React or Vue and open it in Studio or Builder. Define a shared FormLogic table in Studio’s database designer or Builder’s Data view. Each new table adds a numbered SQL migration. Open Files → Backend in Studio or Files → API in Builder to add a route, edit its handler and save the backend." },
+            { "type": "paragraph", "text": "Save the project back to FormLogic, or import the full project archive there. FormLogic installs the backend and applies pending migrations to the app’s private SQLite database. Test a write in the hosted app, then reopen the app and read the saved record. For members-only data, check the FormLogic caller identity in each handler that reads or writes a row. The owner’s downloadable project includes the handlers and migrations. Guests receive the client files." },
+            { "type": "code", "language": "javascript", "code": "import { api } from 'softn:api';\nconst response = await api.fetch('/api/status');\nif (!response.ok) throw new Error('Status request failed');\nconst status = await response.json();", "caption": "Call the starter route from vanilla JavaScript, React or Vue while the app is hosted in FormLogic." }
           ]
         },
         {

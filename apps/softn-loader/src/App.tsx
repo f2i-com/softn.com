@@ -6,18 +6,18 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { registerRuntimeComponents } from '@softn/components/lazy';
-import { Spinner } from '@softn/components/essentials';
-import { ThemeProvider } from '@softn/components/theme';
 import {
-  SoftNWithXDB,
-  XDBStorageNotice,
   extractPermissions,
   readManifest,
   type ComposedBundleSource,
   type PermissionConfig,
   type AppAssetResolver,
 } from '@softn/core';
+import {
+  getLoadedUiLoaderSurface,
+  preloadUiLoaderSurface,
+  type LoadedUiLoaderSurface,
+} from './uiSurfaceLoader';
 // The bundle pipeline the browser hosts use: one archive reader, composer,
 // XDB seed, asset and import resolver, judged by the same rules. The loader
 // kept a copy of each, and the copies had drifted.
@@ -83,11 +83,6 @@ async function restoreFromBackup(dataId: string, backup: string): Promise<void> 
 
 // Compile-time constant from Vite define
 declare const __ANDROID__: boolean;
-
-// The components, as the browser runtimes register them: the start-up set
-// now, every other component (the light groups, charts, editors, Scene3D and
-// Three.js, media) loaded the first time an app draws it.
-registerRuntimeComponents();
 
 // Check if running in Tauri
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
@@ -176,6 +171,7 @@ function App(): React.ReactElement {
     setBundlePath(path);
     setOpenRevision((revision) => revision + 1);
   }, []);
+  const [uiSurface, setUiSurface] = useState<LoadedUiLoaderSurface | null>(getLoadedUiLoaderSurface);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [mainSource, setMainSource] = useState<string>('');
@@ -618,10 +614,13 @@ function App(): React.ReactElement {
         setContainerDeclaredPermissions(null);
         setContainerGrantedCapabilities([]);
 
-        // Load XDB data from bundle (await for Tauri backend). Seeding stops
-        // as soon as another selection replaces this load.
-        await loadXDBData(textFiles, parsedManifest, dataId, () => active);
+        // Load XDB data from bundle (await for Tauri backend) and warm `.ui` surface in parallel.
+        const [, loadedUiSurface] = await Promise.all([
+          loadXDBData(textFiles, parsedManifest, dataId, () => active),
+          preloadUiLoaderSurface(),
+        ]);
         if (!active) return;
+        setUiSurface(loadedUiSurface);
 
         // Set window icon from bundle (desktop only)
         if (!isMobile) {
@@ -772,42 +771,43 @@ function App(): React.ReactElement {
     {installationChoice?.kind === 'upgrade-unresolved' && <UnresolvedUpgradeDialog choice={installationChoice} />}
     {installationChoice?.kind === 'recovery-required' && <RecoveryRequiredDialog choice={installationChoice} />}
     {!bundlePath && !loading ? <DesktopWelcome onOpen={openFilePicker} canOpen={isTauri || isMobile} dragging={isDragOver} error={error} />
-      : loading ? <div className="desktop-state" role="status"><Spinner size="lg" /><p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
+      : loading ? <div className="desktop-state" role="status">{uiSurface ? <uiSurface.Spinner size="lg" /> : null}<p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
       : error && failedWhileUpgrading ? <UpgradeAwareError error={error} upgrade={upgradeInProgress} onHome={goHome} />
       : error ? <div className="desktop-state" role="alert"><h1>We couldn’t open this app</h1><p className="desktop-error">{error.message}</p><p>{bundlePath}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>
+      : containerBundle ? (
+        <WebContainerView
+          key={runtimeAppId ?? undefined}
+          source={containerBundle}
+          appId={runtimeAppId ?? 'desktop-app'}
+          declaredPermissions={containerDeclaredPermissions ?? undefined}
+          grantedCapabilities={containerGrantedCapabilities}
+          theme={
+            _manifest?.config?.theme?.mode === 'light' || _manifest?.config?.theme?.mode === 'dark'
+              ? _manifest.config.theme.mode
+              : 'auto'
+          }
+          onReady={handleAppLoaded}
+          onTitleChange={(title) => {
+            if (isTauri && !isMobile && title) {
+              void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${title} — SoftN`)).catch(() => {});
+            }
+          }}
+          loading={(status) => (
+            <div className="desktop-state" role="status">
+              {uiSurface ? <uiSurface.Spinner size="lg" /> : null}
+              <p>{status?.message || 'Starting your app…'}</p>
+            </div>
+          )}
+          error={(err) => <UpgradeAwareError error={err} upgrade={upgradeInProgress} onHome={goHome} />}
+        />
+      )
+      : !uiSurface ? <div className="desktop-state" role="status"><p>Starting your app…</p></div>
       // The side the project declares (the manifest's `config.theme.mode`, as
       // written) over this shell's own theme and the device, as in the web
       // runtime; the rule that weighs them is the provider's.
-      : <ThemeProvider followHost followSystem declaredMode={_manifest?.config?.theme?.mode} box={THEME_BOX}>
-        <XDBStorageNotice appId={runtimeAppId ?? undefined} />
-        {containerBundle ? (
-          <WebContainerView
-            key={runtimeAppId ?? undefined}
-            source={containerBundle}
-            appId={runtimeAppId ?? 'desktop-app'}
-            declaredPermissions={containerDeclaredPermissions ?? undefined}
-            grantedCapabilities={containerGrantedCapabilities}
-            theme={
-              _manifest?.config?.theme?.mode === 'light' || _manifest?.config?.theme?.mode === 'dark'
-                ? _manifest.config.theme.mode
-                : 'auto'
-            }
-            onReady={handleAppLoaded}
-            onTitleChange={(title) => {
-              if (isTauri && !isMobile && title) {
-                void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${title} — SoftN`)).catch(() => {});
-              }
-            }}
-            loading={(status) => (
-              <div className="desktop-state" role="status">
-                <Spinner size="lg" />
-                <p>{status?.message || 'Starting your app…'}</p>
-              </div>
-            )}
-            error={(err) => <UpgradeAwareError error={err} upgrade={upgradeInProgress} onHome={goHome} />}
-          />
-        ) : (
-        <SoftNWithXDB
+      : <uiSurface.ThemeProvider followHost followSystem declaredMode={_manifest?.config?.theme?.mode} box={THEME_BOX}>
+        <uiSurface.XDBStorageNotice appId={runtimeAppId ?? undefined} />
+        <uiSurface.SoftNWithXDB
           key={runtimeAppId ?? undefined}
           source={mainSource}
           executionPreference={_manifest?.config?.execution === 'worker' ? 'worker' : 'main'}
@@ -825,12 +825,11 @@ function App(): React.ReactElement {
           {...serverConfig}
           onLoad={handleAppLoaded}
           functions={{ asset: (path: unknown) => typeof path === 'string' ? assetResolver?.(path) || '' : '' }}
-          loading={<div className="desktop-state" role="status"><Spinner size="lg" /><p>Starting your app…</p></div>}
+          loading={<div className="desktop-state" role="status"><uiSurface.Spinner size="lg" /><p>Starting your app…</p></div>}
           error={(err) => <UpgradeAwareError error={err} upgrade={upgradeInProgress} onHome={goHome} />}
         />
-        )}
         {upgradeNotice && <p role="status" className="desktop-error">{upgradeNotice}</p>}
-      </ThemeProvider>}
+      </uiSurface.ThemeProvider>}
   </DesktopShell>;
 }
 

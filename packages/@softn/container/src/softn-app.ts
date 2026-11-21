@@ -251,22 +251,30 @@ async function loadArchiveSource(
   return source;
 }
 
+function browserStorage(): Storage | undefined {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Where an app's kept data goes in the embedding page's localStorage: `<base>ls:<key>` for
  * what its script keeps through localStorage, `<base>db` for its records. The base is the
  * host's (`storagePrefix`), or `softn-v2:<appId>:`.
  */
-function loadPersistedStorage(base: string): Record<string, string> {
+function loadPersistedStorage(base: string, storage: Storage | undefined = browserStorage()): Record<string, string> {
   // No prototype: a key of the app's may be `__proto__`, which a plain object does not keep
   // as its own, so it was not counted against the quota and the app could keep it twice over.
   const out: Record<string, string> = Object.create(null) as Record<string, string>;
-  if (typeof localStorage === 'undefined') return out;
+  if (!storage) return out;
   const prefix = `${base}ls:`;
   try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
       if (k && k.startsWith(prefix)) {
-        const val = localStorage.getItem(k);
+        const val = storage.getItem(k);
         if (val !== null) out[k.slice(prefix.length)] = val;
       }
     }
@@ -294,12 +302,12 @@ function tellNeighbours(base: string, self: (key: string) => void, keys: readonl
 }
 
 /** The keys the app's localStorage holds in the page's, as they are named there. */
-function persistedStorageKeys(base: string): string[] {
+function persistedStorageKeys(base: string, storage: Storage | undefined = browserStorage()): string[] {
   const keys: string[] = [];
-  if (typeof localStorage === 'undefined') return keys;
+  if (!storage) return keys;
   try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
       if (k && k.startsWith(`${base}ls:`)) keys.push(k);
     }
   } catch {
@@ -312,23 +320,24 @@ function persistedStorageKeys(base: string): string[] {
 function applyPersistedStorageOp(
   base: string,
   op: 'set' | 'remove' | 'clear',
-  key?: string,
-  value?: string
+  key: string | undefined,
+  value: string | undefined,
+  storage: Storage | undefined
 ): boolean {
-  if (typeof localStorage === 'undefined') return false;
+  if (!storage) return false;
   const prefix = `${base}ls:`;
   try {
     if (op === 'set' && key !== undefined && value !== undefined) {
-      localStorage.setItem(prefix + key, value);
+      storage.setItem(prefix + key, value);
     } else if (op === 'remove' && key !== undefined) {
-      localStorage.removeItem(prefix + key);
+      storage.removeItem(prefix + key);
     } else if (op === 'clear') {
       const toRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
+      for (let i = 0; i < storage.length; i++) {
+        const k = storage.key(i);
         if (k && k.startsWith(prefix)) toRemove.push(k);
       }
-      for (const k of toRemove) localStorage.removeItem(k);
+      for (const k of toRemove) storage.removeItem(k);
     }
     return true;
   } catch {
@@ -337,10 +346,10 @@ function applyPersistedStorageOp(
   }
 }
 
-function loadPersistedDb(base: string): Record<string, unknown[]> {
-  if (typeof localStorage === 'undefined') return {};
+function loadPersistedDb(base: string, storage: Storage | undefined): Record<string, unknown[]> {
+  if (!storage) return {};
   try {
-    const raw = localStorage.getItem(`${base}db`);
+    const raw = storage.getItem(`${base}db`);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -356,18 +365,18 @@ function loadPersistedDb(base: string): Record<string, unknown[]> {
  * the Worker counts too, but what is written to the embedding page's storage is decided
  * here, where the app's script has no say.
  */
-export function savePersistedDbCollection(base: string, collection: string, records: unknown[], quotaBytes: number): boolean {
-  if (typeof localStorage === 'undefined') return false;
+export function savePersistedDbCollection(base: string, collection: string, records: unknown[], quotaBytes: number, storage = browserStorage()): boolean {
+  if (!storage) return false;
   // The name is the app's word, and a key of an object here: not one that is the object's own
   // machinery (`__proto__` would replace what the records are kept in).
   if (typeof collection !== 'string' || !collection || collection === '__proto__' || collection === 'constructor' || collection === 'prototype') return true;
   if (!Array.isArray(records)) return true;
   try {
-    const current = loadPersistedDb(base);
+    const current = loadPersistedDb(base, storage);
     current[collection] = records;
     const text = JSON.stringify(current);
     if (text.length * 2 > quotaBytes) return false;
-    localStorage.setItem(`${base}db`, text);
+    storage.setItem(`${base}db`, text);
     return true;
   } catch {
     // The page's storage is full or closed to this page: the caller says so.
@@ -376,16 +385,16 @@ export function savePersistedDbCollection(base: string, collection: string, reco
 }
 
 /** What the app's IndexedDB databases are kept as there: `<base>idb:<name>`, each a text. */
-function loadPersistedIdb(base: string): Record<string, string> {
+function loadPersistedIdb(base: string, storage: Storage | undefined = browserStorage()): Record<string, string> {
   // No prototype, as above: a part named `__proto__` is counted too.
   const out: Record<string, string> = Object.create(null) as Record<string, string>;
-  if (typeof localStorage === 'undefined') return out;
+  if (!storage) return out;
   const prefix = `${base}idb:`;
   try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
       if (!key || !key.startsWith(prefix)) continue;
-      const value = localStorage.getItem(key);
+      const value = storage.getItem(key);
       if (value !== null) out[key.slice(prefix.length)] = value;
     }
   } catch {
@@ -395,9 +404,9 @@ function loadPersistedIdb(base: string): Record<string, string> {
 }
 
 /** The bytes they take, as the Worker counts them. */
-function persistedIdbBytes(base: string): number {
+function persistedIdbBytes(base: string, storage: Storage | undefined = browserStorage()): number {
   let bytes = 0;
-  for (const [name, value] of Object.entries(loadPersistedIdb(base))) bytes += (name.length + value.length) * 2;
+  for (const [name, value] of Object.entries(loadPersistedIdb(base, storage))) bytes += (name.length + value.length) * 2;
   return bytes;
 }
 
@@ -406,20 +415,20 @@ function persistedIdbBytes(base: string): number {
  * `quotaBytes` for everything the app keeps: the Worker counts too, but what is written to
  * the embedding page's storage is decided here.
  */
-export function savePersistedIdb(base: string, name: string, value: string | null, quotaBytes: number): boolean {
-  if (typeof localStorage === 'undefined') return false;
+export function savePersistedIdb(base: string, name: string, value: string | null, quotaBytes: number, storage: Storage | undefined = browserStorage()): boolean {
+  if (!storage) return false;
   if (typeof name !== 'string' || name.length > 1024) return true;
   const key = `${base}idb:${name}`;
   try {
     if (value === null) {
-      localStorage.removeItem(key);
+      storage.removeItem(key);
       return true;
     }
     if (typeof value !== 'string') return true;
-    const old = localStorage.getItem(key);
-    const others = persistedStorageBytes(base) + persistedDbBytes(base) + persistedIdbBytes(base) - (old === null ? 0 : (name.length + old.length) * 2);
+    const old = storage.getItem(key);
+    const others = persistedStorageBytes(base, storage) + persistedDbBytes(base, storage) + persistedIdbBytes(base, storage) - (old === null ? 0 : (name.length + old.length) * 2);
     if (others + (name.length + value.length) * 2 > quotaBytes) return false;
-    localStorage.setItem(key, value);
+    storage.setItem(key, value);
     return true;
   } catch {
     // The page's storage is full or closed to this page: the caller says so.
@@ -428,17 +437,17 @@ export function savePersistedIdb(base: string, name: string, value: string | nul
 }
 
 /** The bytes the app's kept localStorage takes in the embedding page's, as the Worker counts them. */
-function persistedStorageBytes(base: string): number {
+function persistedStorageBytes(base: string, storage: Storage | undefined): number {
   let bytes = 0;
-  for (const [key, value] of Object.entries(loadPersistedStorage(base))) bytes += (key.length + value.length) * 2;
+  for (const [key, value] of Object.entries(loadPersistedStorage(base, storage))) bytes += (key.length + value.length) * 2;
   return bytes;
 }
 
 /** The bytes the app's kept records take there. */
-function persistedDbBytes(base: string): number {
-  if (typeof localStorage === 'undefined') return 0;
+function persistedDbBytes(base: string, storage: Storage | undefined): number {
+  if (!storage) return 0;
   try {
-    return (localStorage.getItem(`${base}db`)?.length ?? 0) * 2;
+    return (storage.getItem(`${base}db`)?.length ?? 0) * 2;
   } catch {
     return 0;
   }
@@ -450,15 +459,15 @@ function persistedDbBytes(base: string): number {
  * storage. The two were each held to the whole quota and never added up, so an app kept twice
  * its quota; and a value written over was counted as if the old one stayed.
  */
-export function storageWriteFits(base: string, key: string, value: string, quotaBytes: number): boolean {
+export function storageWriteFits(base: string, key: string, value: string, quotaBytes: number, storage = browserStorage()): boolean {
   let replaced = 0;
   try {
-    const old = typeof localStorage === 'undefined' ? null : localStorage.getItem(`${base}ls:${key}`);
+    const old = !storage ? null : storage.getItem(`${base}ls:${key}`);
     if (old !== null) replaced = (key.length + old.length) * 2;
   } catch {
     replaced = 0;
   }
-  return persistedStorageBytes(base) + persistedDbBytes(base) + persistedIdbBytes(base) - replaced + (key.length + value.length) * 2 <= quotaBytes;
+  return persistedStorageBytes(base, storage) + persistedDbBytes(base, storage) + persistedIdbBytes(base, storage) - replaced + (key.length + value.length) * 2 <= quotaBytes;
 }
 
 /**
@@ -545,7 +554,7 @@ export async function mountSoftNContainer(
     mountDiv.style.cssText = 'width:100%;height:100%';
     if (owns()) shadowRoot.appendChild(mountDiv);
     const { mountLegacyUiBundle } = await import('./compat/legacy-ui');
-    const legacyHandle = await mountLegacyUiBundle(mountDiv, archive, runtimeUrl);
+    const legacyHandle = await mountLegacyUiBundle(mountDiv, archive, runtimeUrl, options.legacyUiBridge);
     options.onReady?.({
       manifest: archive.manifest,
       engineTier: 'lite',
@@ -592,6 +601,7 @@ export async function mountSoftNContainer(
   let currentTransport: WorkerTransport | null = null;
   let threeHost: SplitRealmSceneHost | null = null;
   const persistStorage = options.persistStorage !== false;
+  const storage = persistStorage ? options.storage ?? browserStorage() : undefined;
   // What another tab keeps for the same app, told to its Worker as it happens: each tab reads
   // what the other kept before it writes over it. (Each kept the stores it had read when it
   // started, so the same app open in two tabs wrote the other's records away.)
@@ -1231,8 +1241,10 @@ export async function mountSoftNContainer(
     }
   };
 
-  const navigateTo = async (rawTarget: string, pushHistory = true): Promise<void> => {
-    const base = `${VIRTUAL_ORIGIN}${currentUrlPath.startsWith('/') ? currentUrlPath : `/${currentUrlPath}`}`;
+  const navigateTo = async (rawTarget: string, pushHistory = true, fromRoot = false): Promise<void> => {
+    const base = fromRoot
+      ? `${VIRTUAL_ORIGIN}/`
+      : `${VIRTUAL_ORIGIN}${currentUrlPath.startsWith('/') ? currentUrlPath : `/${currentUrlPath}`}`;
     const parsed = new URL(rawTarget || '/', base);
     const urlPath = `${parsed.pathname}${parsed.search}`;
     const pathname = parsed.pathname;
@@ -1290,7 +1302,18 @@ export async function mountSoftNContainer(
     await mountPage(basePathForAssets, html, finalUrlPath);
   };
 
-  const mountPage = async (pagePath: string, overrideHtml?: string, virtualUrlPath?: string): Promise<void> => {
+  // An app can follow a link while its first worker is still starting. Its caller
+  // should wait for the replacement page, even when the original worker never replies.
+  let pendingPage: ((replacement?: Promise<void>) => void) | undefined;
+  const mountPage = (pagePath: string, overrideHtml?: string, virtualUrlPath?: string): Promise<void> => {
+    const previous = pendingPage;
+    pendingPage = undefined;
+    const next = loadPage(pagePath, overrideHtml, virtualUrlPath);
+    previous?.(next);
+    return next;
+  };
+
+  const loadPage = async (pagePath: string, overrideHtml?: string, virtualUrlPath?: string): Promise<void> => {
     // A mount the element no longer shows draws nothing: the root is the newer mount's.
     if (disposed || !owns()) return;
     teardownPage();
@@ -1595,6 +1618,7 @@ export async function mountSoftNContainer(
         onTitleChange: (title) => {
           options.onTitleChange?.(title);
         },
+        onExternalLink: options.onExternalLink,
         onNavigate: (href) => {
           void navigateTo(href, true).catch((err) => options.onError?.(err instanceof Error ? err : new Error(String(err))));
         },
@@ -1626,13 +1650,41 @@ export async function mountSoftNContainer(
     // Boot Worker (or inline session when `isolation: 'inline'` or `Worker` is absent in JSDOM)
     await new Promise<void>((resolveReady, rejectReady) => {
       let settledReady = false;
+      pendingPage = resolveReady;
+
+      const replyToRequest = async (msg: Extract<WorkerToHostMsg, { type: 'host-request' }>) => {
+        const transport = currentTransport;
+        if (!transport || currentPatcher !== patcher || !owns()) return;
+        const { action, input } = msg.payload;
+        let result: unknown;
+        try {
+          if (msg.kind !== 'backend.call' || !options.backendCall) throw new Error('This app has no connected backend.');
+          // FormLogic's native JSON route accepts uploads up to its six-MiB transport limit.
+          const limit = action === 'nativeRequest' ? 6 * 1024 * 1024 : 32768;
+          if (typeof action !== 'string' || !/^[a-z][a-zA-Z0-9_-]{0,63}$/.test(action) || typeof input !== 'string' || input.length > limit) {
+            throw new Error('Invalid backend request.');
+          }
+          const args: unknown = JSON.parse(input);
+          if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Backend input must be an object.');
+          result = await options.backendCall(action, args as Record<string, unknown>);
+        } catch (error) {
+          result = { error: error instanceof Error ? error.message : 'Backend request failed.' };
+        }
+        if (!disposed && owns() && currentTransport === transport) {
+          transport.post({ type: 'host-reply', requestId: msg.requestId, ok: true, result });
+        }
+      };
 
       const onWorkerMessage = (msg: WorkerToHostMsg) => {
-        if (disposed) return;
+        if (disposed || !owns() || currentPatcher !== patcher) {
+          resolveReady();
+          return;
+        }
         switch (msg.type) {
           case 'ready':
             if (!settledReady) {
               settledReady = true;
+              pendingPage = undefined;
               emitStatus({
                 phase: 'ready',
                 message: 'Ready',
@@ -1765,15 +1817,15 @@ export async function mountSoftNContainer(
             break;
 
           case 'storage-write':
-            if (!persistStorage) break;
+            if (!persistStorage || !owns() || currentPatcher !== patcher) break;
             // A value that would take what the app keeps past its quota is not kept: the
             // Worker refuses it first, and this holds whatever the Worker sends.
-            if (msg.op === 'set' && (typeof msg.key !== 'string' || typeof msg.value !== 'string' || !storageWriteFits(storageBase, msg.key, msg.value, limits.storageQuotaBytes))) {
+            if (msg.op === 'set' && (typeof msg.key !== 'string' || typeof msg.value !== 'string' || !storageWriteFits(storageBase, msg.key, msg.value, limits.storageQuotaBytes, storage))) {
               break;
             }
             {
-              const changed = msg.op === 'clear' ? persistedStorageKeys(storageBase) : typeof msg.key === 'string' ? [`${storageBase}ls:${msg.key}`] : [];
-              const kept = applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value);
+              const changed = msg.op === 'clear' ? persistedStorageKeys(storageBase, storage) : typeof msg.key === 'string' ? [`${storageBase}ls:${msg.key}`] : [];
+              const kept = applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value, storage);
               storageKept(kept);
               if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
                 liveSession.localStorage[msg.key] = msg.value;
@@ -1791,8 +1843,8 @@ export async function mountSoftNContainer(
 
           case 'db-write':
             // Its records take what its localStorage has left of the one quota.
-            if (persistStorage) {
-              storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes - persistedStorageBytes(storageBase) - persistedIdbBytes(storageBase)));
+            if (persistStorage && owns() && currentPatcher === patcher) {
+              storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes - persistedStorageBytes(storageBase, storage) - persistedIdbBytes(storageBase, storage), storage));
             }
             break;
 
@@ -1815,6 +1867,10 @@ export async function mountSoftNContainer(
             break;
 
           case 'host-request': {
+            if (msg.kind === 'backend.call') {
+              void replyToRequest(msg);
+              break;
+            }
             const sender = currentTransport;
             const requestId = msg.requestId;
             const reply = (ok: boolean, result?: unknown, error?: string) => {
@@ -1936,6 +1992,7 @@ export async function mountSoftNContainer(
             options.onError?.(err);
             if (!settledReady && msg.fatal) {
               settledReady = true;
+              pendingPage = undefined;
               rejectReady(err);
             } else if (msg.fatal) {
               // Stopped after it started: the host's own error page is for an app that never did.
@@ -1991,7 +2048,7 @@ export async function mountSoftNContainer(
             idbChannel.onmessage = (event: MessageEvent) => idbToldElsewhere((event.data as { names?: unknown } | null)?.names);
           }
         }
-
+        if (disposed || !owns() || currentPatcher !== patcher) { resolveReady(); return; }
         const initMsg: HostToWorkerMsg = {
           type: 'init',
           appId,
@@ -2011,10 +2068,10 @@ export async function mountSoftNContainer(
           grantedCapabilities: [...grantedCaps],
           permissions,
           initialStorage: persistStorage
-            ? Object.assign(Object.create(null) as Record<string, string>, liveSession.localStorage, loadPersistedStorage(storageBase))
+            ? Object.assign(Object.create(null) as Record<string, string>, liveSession.localStorage, loadPersistedStorage(storageBase, storage))
             : {},
           initialSessionStorage: persistStorage ? { ...liveSession.sessionStorage } : {},
-          initialDbRecords: persistStorage ? loadPersistedDb(storageBase) : {},
+          initialDbRecords: persistStorage ? loadPersistedDb(storageBase, storage) : {},
           initialIdb,
           idbApart: idbBacking?.kind === 'indexeddb',
           ...(backendRouting ? { backendRouting } : {}),
@@ -2023,13 +2080,14 @@ export async function mountSoftNContainer(
         };
 
         if (useWorkerIsolation) {
-          const workerUrl = `${runtimeUrl}container-worker.js`;
+          const workerUrl = options.workerUrl ?? `${runtimeUrl}container-worker.js`;
           // Behind the embedding page's service worker wherever the folder is (worker-start.ts).
           const worker = startModuleWorker(workerUrl, { name: `softn:${appId}` });
           worker.addEventListener('message', (ev: MessageEvent<WorkerToHostMsg>) => {
             onWorkerMessage(ev.data);
           });
           worker.addEventListener('error', (ev) => {
+            if (disposed || !owns() || currentPatcher !== patcher) return;
             const err = new Error(ev.message || 'Container Worker crashed');
             options.onError?.(err);
             if (settledReady) showStopped(`what runs it stopped (${err.message}).`);
@@ -2054,6 +2112,7 @@ export async function mountSoftNContainer(
           if (paused) worker.postMessage({ type: 'pause' } satisfies HostToWorkerMsg);
         } else {
           const { ContainerWorkerSession } = await import('./worker-runtime');
+          if (disposed || !owns() || currentPatcher !== patcher) { resolveReady(); return; }
           const inlineSession = new ContainerWorkerSession(
             (m) => onWorkerMessage(m),
             async () =>
@@ -2077,15 +2136,28 @@ export async function mountSoftNContainer(
         }
       });
     });
+    if (!disposed && owns() && currentPatcher === patcher) options.onPageChange?.(pagePath, archive.manifest);
   };
 
+  const initialPage = options.initialPage;
+  const resolvedInitialPage =
+    initialPage && /\.html?$/i.test(initialPage) && archive.names().includes(initialPage)
+      ? initialPage
+      : undefined;
   const restoredUrlPath =
-    !options.initialPath && persistStorage && savedSession?.urlPath && savedSession.urlPath.startsWith('/')
+    !options.initialPath && !resolvedInitialPage && persistStorage && savedSession?.urlPath && savedSession.urlPath.startsWith('/')
       ? savedSession.urlPath
       : undefined;
 
   if (options.initialPath) {
     await navigateTo(options.initialPath, true);
+  } else if (resolvedInitialPage) {
+    const initialFrontendPath = archive.toFrontendVfsPath(resolvedInitialPage);
+    const initialUrl = /(^|\/)index\.html?$/i.test(initialFrontendPath)
+      ? '/' + initialFrontendPath.replace(/(^|\/)index\.html?$/i, '$1')
+      : `/${initialFrontendPath}`;
+    recordHistory(initialUrl, true);
+    await mountPage(resolvedInitialPage);
   } else if (restoredUrlPath) {
     const restoredPathname = new URL(restoredUrlPath, `${VIRTUAL_ORIGIN}/`).pathname;
     const resolvedHtml = archive.resolveFrontendPath(restoredPathname, archive.manifest.main);
@@ -2148,7 +2220,7 @@ export async function mountSoftNContainer(
     frameRoot: shadowRoot,
     backendTransport,
     async navigate(path: string) {
-      await navigateTo(path, true);
+      await navigateTo(path, true, true);
     },
     listVirtualDirectory(dirPath = ''): VirtualDirEntry[] {
       return archive.listVirtualDirectory(dirPath);
@@ -2190,6 +2262,8 @@ export async function mountSoftNContainer(
     dispose() {
       if (disposed) return;
       disposed = true;
+      pendingPage?.();
+      pendingPage = undefined;
       if (typeof window !== 'undefined') {
         window.removeEventListener('storage', onStorage);
         window.removeEventListener('pagehide', onPageHideFlush);

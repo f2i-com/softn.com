@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { strToU8 } from 'fflate';
-import { assetObjectUrl, classifyAsset } from '@softn/core';
+import { assetObjectUrl, classifyAsset } from '@softn/core/authoring';
 import { toast } from '../../stores/notificationStore';
 import { useFilesStore } from '../../stores/filesStore';
 import type { AssetFile } from '../../types/builder';

@@ -21,11 +21,14 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 import { containerBundle } from '../helpers/bundle';
 import { watchConsole } from '../helpers/console';
+import { cachedWasm, fullEngine, liteEngine, requestedWasm } from '../helpers/engines';
+import { test as offlineTest } from '../helpers/offlineSite';
 import { centreOf, clickIn, keepShadowRoots, openBundle, seeIn, shown, textIn } from '../helpers/container';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import path from 'node:path';
 
 const SHARED_FOLDER = /^\/shared\/container-runtime\/[0-9a-f]{12}\//;
 
@@ -105,6 +108,13 @@ test('a plain JavaScript app runs in its Worker on the lite engine, from the sit
   const log = watchConsole(page, testInfo);
   await keepShadowRoots(page);
   const fetched = watchRuntimeRequests(page);
+  const jsAssets: string[] = [];
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.startsWith('/shared/assets/') && pathname.endsWith('.js')) {
+      jsAssets.push(pathname);
+    }
+  });
   try {
     await openBundle(page, 'PlainCounter.softn', containerBundle({ 'index.html': COUNTER }));
     await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Count: 0');
@@ -121,10 +131,56 @@ test('a plain JavaScript app runs in its Worker on the lite engine, from the sit
     expect(folder.every((entry) => SHARED_FOLDER.test(entry.path)), JSON.stringify(folder)).toBe(true);
     expect(folder.filter((entry) => entry.status !== 200)).toEqual([]);
     expect([...new Set(names(folder))]).toEqual(['container-worker.js', 'engines/zipp-javascript-lite.glue.js', 'engines/zipp-javascript-lite.wasm']);
+    // Container-first guarantee: opening `/web/` and running a JS Web Container never loads the `.ui` surface or component chunks.
+    expect(
+      jsAssets.filter((p) => /\/(UiAppSurface|UiApplicationSurface|lazy|scene3d|charts|editors|smart|media|animation|pickers|games)-/.test(p)),
+      JSON.stringify(jsAssets),
+    ).toEqual([]);
     expect(log.uncaught).toEqual([]);
   } finally {
     await log.attach('plain-counter');
   }
+});
+
+test('opening a web app folder runs nested modules and keeps its saved data when reopened', async ({ page }, testInfo) => {
+  const folder = testInfo.outputPath('FolderCounter');
+  const assets = path.join(folder, 'assets');
+  fs.mkdirSync(assets, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'index.html'), `<!doctype html>
+    <title>Folder Counter</title>
+    <button id="count">Starting…</button>
+    <script type="module" src="./assets/main.js"></script>`);
+  fs.writeFileSync(path.join(assets, 'main.js'), `
+    import { step } from './step.js';
+    const button = document.getElementById('count');
+    let count = Number(localStorage.getItem('count') || 0);
+    button.textContent = String(count);
+    button.addEventListener('click', () => {
+      count += step;
+      localStorage.setItem('count', String(count));
+      button.textContent = String(count);
+    });`);
+  const stepFile = path.join(assets, 'step.js');
+  fs.writeFileSync(stepFile, 'export const step = 2;');
+
+  await keepShadowRoots(page);
+  const openFolder = async () => {
+    await page.goto('/web/');
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Open folder', exact: true }).click();
+    await (await chooser).setFiles(folder);
+  };
+
+  await openFolder();
+  await expect.poll(() => textIn(page, '#count'), { timeout: 60_000 }).toBe('0');
+  await clickIn(page, '#count');
+  await expect.poll(() => textIn(page, '#count')).toBe('2');
+
+  // A fresh page and a changed file timestamp still identify the same app by its contents.
+  const stamp = new Date('2000-01-01T00:00:00Z');
+  fs.utimesSync(stepFile, stamp, stamp);
+  await openFolder();
+  await expect.poll(() => textIn(page, '#count'), { timeout: 60_000 }).toBe('2');
 });
 
 test('an app that formats with Intl runs on the engine the runtime already has, under that engine’s bindings', async ({ page }, testInfo) => {
@@ -265,7 +321,7 @@ const TWO_PAGES_PRICES = page_(
   `document.getElementById('out').textContent = 'Total: ' + new Intl.NumberFormat('en-US').format(1234567.891);`
 );
 
-test('a web container opened once online is installed, and opens from Home and runs with the network gone', async ({ page, context, browserName }, testInfo) => {
+offlineTest('a web container opened once online is installed, and opens from Home and runs with the network gone', async ({ page, context, offlineSite, browserName }, testInfo) => {
   // Measured: Playwright's WebKit on Windows cannot reload any page a service worker serves
   // once the network is off ("WebKit encountered an internal error", a page of three lines
   // and a worker of four as well); Chromium and Firefox do. The install itself is checked
@@ -273,15 +329,19 @@ test('a web container opened once online is installed, and opens from Home and r
   test.skip(browserName === 'webkit' && process.platform === 'win32', 'Playwright’s WebKit on Windows does not reload a page from its service worker offline');
   test.setTimeout(240_000);
   const log = watchConsole(page, testInfo);
+  const requests = requestedWasm(context);
   await keepShadowRoots(page);
   const NAME = 'Offline Shop';
   try {
-    await page.goto('/web/');
+    await page.goto(offlineSite.origin + '/web/');
     await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
     // The install waits for the service worker to control the page; so does this.
     await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller), null, { timeout: 60_000 });
+    // A new Home installation has no apps. Its service worker must not fetch the full engine.
+    expect((await cachedWasm(page)).filter((path) => fullEngine.test(path))).toEqual([]);
+    expect([...requests].filter((path) => fullEngine.test(path))).toEqual([]);
     const chooser = page.waitForEvent('filechooser');
-    await page.getByRole('button', { name: 'Open a .softn file', exact: true }).click();
+    await page.getByRole('button', { name: 'Open file', exact: true }).click();
     await (await chooser).setFiles({
       name: 'OfflineShop.softn',
       mimeType: 'application/octet-stream',
@@ -293,8 +353,12 @@ test('a web container opened once online is installed, and opens from Home and r
     await page.locator('.softn-frame-home').first().click();
     const card = page.getByRole('button', { name: `Open ${NAME}`, exact: true });
     await expect(card.locator('.softn-launcher-offline')).toHaveAttribute('data-state', 'ready', { timeout: 120_000 });
+    await expect(card).toHaveAccessibleDescription(/Lite JavaScript \+ Full engine/);
+    const installed = await cachedWasm(page);
+    expect(installed.filter((path) => fullEngine.test(path))).toHaveLength(1);
+    expect(installed.filter((path) => liteEngine.test(path))).toHaveLength(1);
 
-    await context.setOffline(true);
+    offlineSite.disconnect();
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
     await page.getByRole('button', { name: `Open ${NAME}`, exact: true }).click();
@@ -310,7 +374,6 @@ test('a web container opened once online is installed, and opens from Home and r
     await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Total: 1,234,567.891');
     expect(log.uncaught).toEqual([]);
   } finally {
-    await context.setOffline(false);
     await log.attach('offline-container');
   }
 });

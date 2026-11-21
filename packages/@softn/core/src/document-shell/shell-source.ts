@@ -4600,6 +4600,11 @@ var __softnShell = (function (win) {
       // the element as this and the event as event, as a browser runs it.
       // One SoftN reads (onclick="save()") is SoftN's, and is not here.
       for (var key in seed.a || {}) initAttr(node, key, String(seed.a[key]));
+      // Web containers keep inline handlers apart from attributes that may reach the host.
+      // Install them inside the guest while constructing the live element.
+      if (seed.h && !inert && !r.island) {
+        for (var handler in seed.h) initAttr(node, handler, String(seed.h[handler]));
+      }
       var id = getAttr(r, 'id');
       if (id && !inert) idIndex(id, node, true);
       if (seed.c) for (var i = 0; i < seed.c.length; i++) build(seed.c[i], node, inert);

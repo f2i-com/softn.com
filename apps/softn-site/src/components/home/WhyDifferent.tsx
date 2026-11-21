@@ -31,7 +31,7 @@ export function WhyDifferent(): React.ReactElement {
           <li className="why">
             <h3 className="why-name">Written the way you already know</h3>
             <p className="why-copy">
-              Build standard v2 web containers (HTML, TypeScript, Preact, PHP/Slim 4, SQLite) or classic SoftN apps where
+              Build standard v2 web containers (HTML, React, Vue, TypeScript, Preact, PHP/Slim 4, Rust, SQLite) or classic SoftN apps where
               pages read like HTML and logic is JavaScript or Python. Builder and Studio open each other’s work.{' '}
               <a href={HTML_GUIDE_HREF}>HTML and SoftN</a>
             </p>

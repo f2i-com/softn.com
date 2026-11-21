@@ -404,16 +404,20 @@ describe('the dashboard asks for a provider first', () => {
     expect(needsProviderSetup({ hosted: false, providerCount: 0, setupSkipped: false, projectCount: 2 })).toBe(false);
   });
 
-  it('shows the setup before everything else, and locks the rest until it is done or skipped', () => {
+  it('offers web starters alongside AI setup and the way into examples', () => {
     const onNewProject = vi.fn();
     const onSkip = vi.fn();
-    render(<Dashboard onNewProject={onNewProject} onOpenExample={() => {}} examples={[example]} ai={{ gate: true, onSkip }} />);
+    render(<Dashboard onNewProject={onNewProject} onCreateStarter={vi.fn()} onOpenExample={() => {}} examples={[example]} ai={{ gate: true, onSkip }} />);
     const first = container.querySelector('.st-home-inner')!.firstElementChild!;
-    expect(first.querySelector('h1')?.textContent).toBe('Connect an AI provider.');
+    expect(first.querySelector('h1')?.textContent).toBe('Create your first app');
+    expect(first.querySelector('.st-onboard-card h2')?.textContent).toBe('Connect an AI provider');
+    const choices = [...first.querySelectorAll('button[aria-label^="Create "][aria-label$=" starter"]')];
+    expect(choices.map((choice) => choice.getAttribute('aria-label'))).toEqual([
+      'Create Vanilla JS starter', 'Create React starter', 'Create React JSX starter', 'Create Vue starter', 'Create Vue SFC starter',
+    ]);
     expect(first.querySelector('.st-setup')).toBeTruthy();
-    const locked = container.querySelector('.st-home-locked')!;
-    expect(locked.hasAttribute('inert')).toBe(true);
-    expect(locked.textContent).toContain('Start a new app');
+    expect(container.querySelector('#studio-home-title')).toBeNull();
+    expect(container.querySelector('.st-example')).toBeNull();
     click('Explore examples without AI');
     expect(onSkip).toHaveBeenCalledOnce();
   });

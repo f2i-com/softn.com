@@ -17,11 +17,11 @@ const DESIGN_ONLY: readonly WorkspaceView[] = ['design'];
 
 export function viewsFor(
   fileType: 'ui' | 'logic' | 'asset' | null | undefined,
-  projectFormat?: 'ui' | 'web'
+  projectFormat: 'ui' | 'web' = 'ui',
 ): readonly WorkspaceView[] {
+  if (fileType === 'asset') return DESIGN_ONLY;
   if (projectFormat === 'web') return WEB_VIEWS;
   if (fileType === 'logic') return LOGIC_VIEWS;
-  if (fileType === 'asset') return DESIGN_ONLY;
   return ALL_VIEWS;
 }
 

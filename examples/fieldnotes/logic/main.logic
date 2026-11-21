@@ -6,6 +6,7 @@ let shown = [];
 let activeCount = 0;
 let doneCount = 0;
 let totalCount = 0;
+let ready = false;
 let message = "Your sample workspace is ready. Try adding a task.";
 let error = "";
 
@@ -62,4 +63,5 @@ function showTasks(value) {
 
 function _init() {
   refresh();
+  ready = true;
 }

@@ -14,6 +14,12 @@ import { createHash } from 'node:crypto';
 /** Exports the engine has and no other module in a SoftN build does (gpu-lab kernels, the WASI guest). */
 export const ZIPP_ENGINE_EXPORTS = ['zippProfile', 'zipp_start', 'engine_evalInContext'];
 
+/** The two container-specific builds, in the shared runtime's content-addressed folder. */
+export function containerEngineBundle(name, version) {
+  const tier = /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-(javascript-lite|typescript)\.wasm$/.exec(name)?.[1];
+  return tier ? `zipp-${version}-${tier === 'typescript' ? 'javascript-typescript' : tier}.wasm` : null;
+}
+
 /**
  * Exports ZIPP's torch package module (`zipp_torch.wasm`) has, which its loader
  * `zipp_torch.js` reads, and which neither the engine nor anything else in a
@@ -276,8 +282,14 @@ export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_CO
     else variantAt.set(place, { id, sha256: record.sha256 });
   }
   const copies = [...entries.keys()].filter((name) => isZippEngineWasm(bytesOf(name)));
+  const sums = Buffer.from(bytesOf('zipp/RELEASE-SHA256SUMS') ?? []).toString().split(/\r?\n/);
   for (const name of copies) {
     const digest = createHash('sha256').update(bytesOf(name)).digest('hex');
+    const bundle = containerEngineBundle(name, source.version);
+    if (bundle) {
+      if (!sums.some(line => line.trim().split(/\s+\*?/).join(' ') === `${digest} ${bundle}`)) problems.push(`${name} differs from ${bundle} in the ZIPP release checksums`);
+      continue;
+    }
     const variant = variantAt.get(name);
     if (variant) {
       if (digest !== variant.sha256) problems.push(`${name} is a ZIPP engine, but not the ${variant.id} variant of ZIPP ${source.release} (${variant.sha256.slice(0, 12)})`);
@@ -285,7 +297,7 @@ export function archiveEngineProblems(entries, source, { known = KNOWN_ENGINE_CO
   }
   for (const name of copies) {
     const tree = engineFree.find((prefix) => name.startsWith(prefix));
-    if (tree) problems.push(`${name} is a copy of the ZIPP engine in ${tree}, which takes the engine from FormLogic's page; the archive carries it once, in zipp/`);
+    if (tree && !containerEngineBundle(name, source.version)) problems.push(`${name} is a copy of the ZIPP engine in ${tree}, which takes the engine from FormLogic's page; the archive carries it once, in zipp/`);
   }
   for (const pattern of known) if (!copies.some((name) => pattern.test(name))) problems.push(`no ZIPP engine matches ${pattern}; FormLogic takes a copy from there`);
   for (const [name, { id }] of variantAt) if (!copies.includes(name)) problems.push(`no ZIPP engine at ${name}; SOURCE.json records the ${id} variant there`);

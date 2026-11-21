@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
+import { woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -19,7 +20,7 @@ const env = (globalThis as { process?: { env?: Record<string, string | undefined
 // Containers with embedded sandboxed backends identically to SoftN Web.
 
 export default defineConfig({
-  plugins: [react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin()],
+  plugins: [woff2OnlyFontsPlugin(), react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin()],
   clearScreen: false,
   server: {
     port: 1431,

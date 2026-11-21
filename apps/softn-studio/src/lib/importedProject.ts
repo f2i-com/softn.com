@@ -2,8 +2,9 @@ import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
 import { asProject, type ProjectImportEntry } from './projectImport';
 import { resetProjectSessionForImport } from './projectSession';
 import { generateTaskGraph, inferBlueprintFromFiles, inferBriefFromBlueprint, projectLogicLanguage, resolveManifest } from './studioProject';
+import { projectContainerMode } from './sourceKinds';
 import { randomUUID } from '@softn/bundle-format/crypto';
-import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
+import { hostedWebContainersEnabled, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 
 /** The app's name as the imported manifest gives it, or null when it gives none that can be read. */
 function manifestName(batch: ProjectImportEntry[]): string | null {
@@ -34,7 +35,7 @@ export function openImportedInStores(fileName: string, imported: ProjectImportEn
   // whatever was inside: a second download of Counter Club opened as "Counter Club (1)".
   const importedProjectName = opener.name?.trim() || manifestName(imported) || fileName.replace(/\.(softn|zip|json)$/i, '');
   // A zipped website is the web container it is everywhere else, except in a hosted editor, which has none.
-  const batch = asProject(imported, importedProjectName, { container: !isHostedEditor() });
+  const batch = asProject(imported, importedProjectName, { container: !isHostedEditor() || hostedWebContainersEnabled() });
   useVFSStore.getState().openFiles(batch);
 
   const importedWorkspace = useWorkspaceStore.getState();
@@ -42,11 +43,12 @@ export function openImportedInStores(fileName: string, imported: ProjectImportEn
   importedWorkspace.setProjectName(importedProjectName);
   const importedSnapshot = importedVFS.getSnapshot();
   const inferredBlueprint = inferBlueprintFromFiles(importedProjectName, importedSnapshot);
-  const inferredBrief = inferBriefFromBlueprint(inferredBlueprint, projectLogicLanguage(importedSnapshot), resolveManifest(importedSnapshot)?.description);
+  const appFormat = projectContainerMode(importedSnapshot) === 'web' ? 'container' : 'ui';
+  const inferredBrief = inferBriefFromBlueprint(inferredBlueprint, projectLogicLanguage(importedSnapshot), resolveManifest(importedSnapshot)?.description, appFormat);
   importedWorkspace.setBrief(inferredBrief);
   importedWorkspace.setBlueprint(inferredBlueprint);
   importedWorkspace.setBlueprintApproved(true);
-  importedWorkspace.setTaskGraph(generateTaskGraph(inferredBlueprint));
+  importedWorkspace.setTaskGraph(generateTaskGraph(inferredBlueprint, inferredBrief));
   importedWorkspace.setActivePage(inferredBlueprint.pages[0]?.id ?? null);
   // Open AI first so imported bundles are ready for AI-guided editing. setLeftPanel toggles a
   // panel that is already open, and the session reset above has just left the AI panel open:

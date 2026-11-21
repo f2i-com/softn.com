@@ -5,7 +5,12 @@ The parent retains authentication and connects named backend actions through a M
 
 ## Engine handoff
 
-The shell announces `formlogic:ready` with the ZIPP version and SHA-256 from the core package's
+FormLogic selects the frame from the app manifest. Web apps open the container frame with
+`index.html?format=web`. A basic JavaScript page downloads the lite engine. When a page
+needs a full-engine feature such as `Intl.NumberFormat`, the frame requests the matching
+engine from FormLogic over its existing port. The frame reuses that engine for later pages.
+
+The classic shell announces `formlogic:ready` with the ZIPP version and SHA-256 from the core package's
 `wasm-zipp/SOURCE.json`. FormLogic checks both values against the engine it installed before
 initializing the app. The `formlogic:init` message supplies the bundle, app ID, theme, channel
 port and `zippWasm` ArrayBuffer. The shell configures that source before rendering SoftN.
@@ -35,6 +40,10 @@ to open. A parent that never sees `shown: 1` gets no `shown` and waits for nothi
 (transparent by default). Someone who asked for less motion sees it pulse slowly instead of spin.
 
 ## The app's other pages, and where it is
+
+For a web container, FormLogic opens `index.html?format=web` and supplies its client files over the same port. The frame announces `places: 1`. When a bundled HTML page opens, it reports the root-relative page file so FormLogic can keep it in the app URL. Reopening that URL boots the named file directly. A link saved before a page was removed opens the current main page instead. Client-side router history within an HTML document belongs to the running app.
+
+The web frame also announces `links: 1`. Clicking an external web link hands its address to FormLogic’s confirmation UI. For a file input, the frame passes along FormLogic’s file grant before the first guest script runs.
 
 An app written as a site has more than one page file. A link from one to another
 (`<a href="about.html">`, a NavItem's `navigate`, `location.href = …` in a page's code) used to be
@@ -369,10 +378,16 @@ version that worked when the newest has a problem. The frame adds what is its ow
   is `kept` and the page showing stays.
 
 Test the queue, the engine handshake, the protocol, the policy, media, seeding, updates and
-places with `node --test apps/formlogic-host/test/*.mjs`. `update-live.test.mjs` and
+places with `node --test "apps/formlogic-host/test/*.test.mjs"`. `update-live.test.mjs` and
 `place-live.test.mjs` run core's built renderer and the installed engine in a jsdom page, so they
 need `packages/@softn/core` built (and `packages/@softn/components`, for the NavItem in the
 second), as `place.test.mjs` does for core's reading of which files are pages.
+
+To exercise the built web frame, run
+`node apps/formlogic-host/test/web-frame.smoke.mjs chromium` from the SoftN checkout.
+The same check accepts `firefox` or `webkit`. Set `FORMLOGIC_REPO` to a FormLogic checkout
+with its backend dependencies installed to exercise a real PHP handler and SQLite write.
+The check also reopens a saved page and tries a file input with each host permission setting.
 
 ## Updating
 

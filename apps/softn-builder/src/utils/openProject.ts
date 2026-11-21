@@ -37,7 +37,7 @@ import { useSchemaStore } from '../stores/schemaStore';
 import { ensureFieldIds } from './schemaFields';
 import { useFilesStore } from '../stores/filesStore';
 import { fetchSameOriginBundle, isAbort } from '@softn/editor-shared/remoteOpen';
-import { classifyAsset, readPythonPackages } from '@softn/core';
+import { classifyAsset, readPythonPackages } from '@softn/core/authoring';
 import { loadBundle, type LoadedBundle } from './bundleLoader';
 import { base64ToBytes, bytesToBase64 } from './base64';
 import { isObject } from './values';
@@ -537,6 +537,18 @@ export function commitProjectSnapshot(snapshot: ProjectSnapshot): void {
     const files = useFilesStore.getState();
     if (snapshot.files.kind === 'bundle') {
       files.loadFromBundle(snapshot.files.uiFiles, snapshot.files.logicFiles, snapshot.files.assetFiles, snapshot.files.mainFileId);
+      if (snapshot.project.projectFormat === 'web') {
+        const scripts = [...snapshot.files.logicFiles.values()];
+        const components = scripts.filter((file) => /\.(jsx|vue)$/i.test(file.path));
+        const roots = components.filter((file) => /(?:^|\/)App\.(jsx|vue)$/i.test(file.path));
+        const source = components.length === 1 ? components[0] : roots.length === 1 ? roots[0] : null;
+        if (source) {
+          // Preview always opens the HTML entry. Code should open the component the person authored.
+          const styles = scripts.find((file) => file.path === 'styles.css');
+          if (styles) files.openFile(styles.id);
+          files.openFile(source.id);
+        }
+      }
       // The file store must hold the same tree the canvas is given, or the
       // first flush reads the theme it put there as an edit and rewrites the
       // file's source. This is the copy on open, not an edit.

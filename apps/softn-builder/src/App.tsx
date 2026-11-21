@@ -4,6 +4,7 @@
 
 import React, { lazy, Suspense, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ProductBar } from '@softn/brand';
+import type { StarterFile } from '@softn/editor-shared/webStarters';
 import { StatusBar } from './components/StatusBar';
 import { AssetView } from './components/files/AssetView';
 import { Sheet } from './components/Sheet';
@@ -12,15 +13,11 @@ import { ExportDialog } from './components/toolbar/ExportDialog';
 import { BuilderPublishDialog } from './components/toolbar/BuilderPublishDialog';
 import { ShortcutsDialog } from './components/toolbar/ShortcutsDialog';
 import { NewProjectDialog, type NewProjectConfig } from './components/toolbar/NewProjectDialog';
-import { ComponentPalette } from './components/panels/ComponentPalette';
-import { PropertyPanel } from './components/panels/PropertyPanel';
-import { TreeView } from './components/panels/TreeView';
-import { DataPanel } from './components/panels/DataPanel';
-import { Canvas } from './components/canvas/Canvas';
 import { LogicEditor } from './components/editor/LogicEditor';
 import { ExtraFileEditor } from './components/editor/ExtraFileEditor';
 import { SourceView } from './components/editor/SourceView';
 import { LivePreview } from './components/preview/LivePreview';
+import { ensureUiRuntimeRegistered } from './utils/uiRuntimeLoader';
 import { FileNavigator, FileTabs } from './components/files';
 import { useCanvasStore } from './stores/canvasStore';
 import { useProjectStore } from './stores/projectStore';
@@ -65,13 +62,20 @@ import { PANEL_WIDTHS, canvasWidthWith, useWorkspaceLayout, type PanelId } from 
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
 import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
+import { useCompilerOfflineNotice } from '@softn/editor-shared/useCompilerOfflineNotice';
 import { pageInHand, viewsFor } from './utils/workspaceViews';
 import { startNewProject } from './utils/newProject';
 import { keepSavedPoint, markUnsaved } from './utils/savedPoint';
 
-// The data workspace (SQLite / XDB explorer + visual collections designer)
+// The data workspace (SQLite / XDB explorer + visual collections / FormLogic tables designer)
 // loads the first time the Data view opens, not with the editor.
 const DataWorkspace = lazy(() => import('./components/schema').then((m) => ({ default: m.DataWorkspace })));
+// Visual `.ui` canvas and palette panels load only when editing a `.ui` project.
+const Canvas = lazy(() => import('./components/canvas/Canvas').then((m) => ({ default: m.Canvas })));
+const ComponentPalette = lazy(() => import('./components/panels/ComponentPalette').then((m) => ({ default: m.ComponentPalette })));
+const PropertyPanel = lazy(() => import('./components/panels/PropertyPanel').then((m) => ({ default: m.PropertyPanel })));
+const TreeView = lazy(() => import('./components/panels/TreeView').then((m) => ({ default: m.TreeView })));
+const DataPanel = lazy(() => import('./components/panels/DataPanel').then((m) => ({ default: m.DataPanel })));
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -232,6 +236,7 @@ function sayOpenedWithWarnings(warnings: readonly string[]): void {
 }
 
 function App() {
+  useCompilerOfflineNotice('builder', toast.success);
   useUnsavedChanges();
   const hostSaveLabel = useHostedSaveLabel();
   const [view, setView] = useState<ViewMode>('design');
@@ -243,11 +248,16 @@ function App() {
   // one, and on a phone none, each a sheet opened over the canvas
   // (hooks/usePanelsThatFit.ts).
   const { mode: layoutMode, open: panelOpen, setOpen: setPanelOpen } = useWorkspaceLayout();
+  // A web project has one sidebar. The canvas's three-panel fitting rules apply to .ui projects.
+  const [webFilesOpen, setWebFilesOpen] = useState(true);
   const sheets = layoutMode === 'sheets';
   const [sheet, setSheet] = useState<SheetName | null>(null);
-  const sheetRef = useRef(sheet);
-  sheetRef.current = sheet;
-  const closeSheet = useCallback(() => setSheet(null), []);
+  const webFilesButton = useRef<HTMLButtonElement>(null);
+  const closeSheet = useCallback(() => {
+    setSheet(null);
+    // This button is inside the inert workspace. Restore it after the dialog has closed.
+    if (webFilesButton.current) requestAnimationFrame(() => webFilesButton.current?.focus());
+  }, []);
   // A window that has widened has its panels beside the canvas again.
   useEffect(() => {
     if (!sheets) setSheet(null);
@@ -285,13 +295,17 @@ function App() {
   const shellRef = useRef<HTMLDivElement | null>(null);
 
   const openShortcuts = useCallback(() => setShowShortcuts(true), []);
-  const handleCreateNewProject = useCallback((config: NewProjectConfig) => {
+  const creatingFromGeneration = useRef(0);
+  const handleCreateNewProject = useCallback((config: NewProjectConfig, starterFiles?: StarterFile[]) => {
+    if (useProjectStore.getState().workspaceGeneration !== creatingFromGeneration.current) {
+      throw new Error('The open project changed. Close this dialog and choose New again.');
+    }
+    startNewProject(config, starterFiles);
     fileHandleRef.current = null;
     forgetDesktopFile();
     remoteOpenRef.current?.abort();
     clearStoredSession();
-    startNewProject(config);
-    setView('design');
+    setView(starterFiles ? 'preview' : 'design');
     setShowNewProjectDialog(false);
     toast.success(`Created ${config.name}`);
   }, []);
@@ -311,6 +325,7 @@ function App() {
     }))) {
       return;
     }
+    creatingFromGeneration.current = useProjectStore.getState().workspaceGeneration;
     setShowNewProjectDialog(true);
   }, []);
 
@@ -373,9 +388,12 @@ function App() {
   const applySnapshotRef = useRef(applySnapshot);
   applySnapshotRef.current = applySnapshot;
   useEffect(() => connectHostedEditor({
-    open: async bytes => applySnapshotRef.current(prepareProjectSnapshot(await loadBundle(bytes))),
+    open: async (bytes, _name, { preview }) => {
+      const snapshot = prepareProjectSnapshot(await loadBundle(bytes));
+      applySnapshotRef.current(preview ? { ...snapshot, view: 'preview' } : snapshot);
+    },
     export: buildProjectBundle,
-  }), []);
+  }, { projectZip: true }), []);
   // The project the page starts with is in no file and has nothing to lose:
   // an edit undone in it leaves it as clean as it was. Opening or restoring
   // a project holds it against what that project was kept as instead.
@@ -548,6 +566,17 @@ function App() {
 
   // Sync active file with canvas when file selection changes
   const projectFormat = useProjectStore((state) => state.projectFormat);
+  const webProject = projectFormat === 'web';
+  const filesOpen = webProject ? webFilesOpen : panelOpen.files;
+  const showFiles = (open: boolean) => {
+    if (webProject) setWebFilesOpen(open);
+    else setPanelOpen('files', open);
+  };
+  useEffect(() => {
+    if (projectFormat !== 'web') {
+      void ensureUiRuntimeRegistered().catch(() => toast.error('Classic components are unavailable. Reconnect and reopen the app to load them.'));
+    }
+  }, [projectFormat]);
   const activeFileId = useFilesStore((state) => state.activeFileId);
   const fileNodes = useFilesStore((state) => state.nodes);
   const activeNode = activeFileId ? fileNodes.get(activeFileId) : null;
@@ -587,30 +616,15 @@ function App() {
   // The page being left is put into its file, and the one opened onto the canvas.
   useActiveFileOnCanvas();
 
-  // A file pressed in the Files sheet is what the person asked to see: the
-  // sheet goes away, for the file that was open already as for another. Not
-  // for a folder, a button of the row or of the panel, or a name being typed
-  // there, which is how a new file is made and named.
-  const pickedInFilesSheet = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (sheetRef.current !== 'files') return;
-    const target = event.target as HTMLElement;
-    const row = target.closest('[data-file-row]');
-    if (!row || !row.hasAttribute('aria-selected') || target.closest('button, input, [role="menu"]')) return;
-    setTimeout(() => {
-      const active = document.activeElement;
-      if (active instanceof HTMLInputElement && active.closest('.bl-sheet')) return;
-      setSheet((open) => (open === 'files' ? null : open));
-    }, 0);
-  }, []);
-
   // The app running beside the canvas has a pane of its own in the canvas's
   // column, and is drawn only where the canvas keeps a phone's width beside
   // it. Asked for where it does not fit, the panels that are in its way are
   // put away, Files first; a panel opened again later takes the room back.
+  const webEditorWidth = windowWidth - (webFilesOpen ? PANEL_WIDTHS.files : PANEL_WIDTHS.rail) - 24;
   const columnWidth = sheets
     ? 0
-    : projectFormat === 'web'
-      ? windowWidth - (panelOpen.files ? PANEL_WIDTHS.files : PANEL_WIDTHS.rail)
+    : webProject
+      ? webEditorWidth
       : canvasWidthWith(windowWidth, panelOpen);
   const previewFits = columnWidth >= CANVAS_BESIDE_PREVIEW + PREVIEW_PANE_MIN;
   const canPreviewBeside = projectFormat === 'web' ? (hasActiveFile && !isAssetFileActive) : pageOpen;
@@ -622,6 +636,10 @@ function App() {
     }
     flushCanvasToActiveFile();
     setBesidePreview(true);
+    if (webProject) {
+      if (!previewFits) setWebFilesOpen(false);
+      return;
+    }
     const open = { ...panelOpen };
     for (const panel of ['files', 'components', 'properties'] as const) {
       if (canvasWidthWith(window.innerWidth, open) >= CANVAS_BESIDE_PREVIEW + PREVIEW_PANE_MIN) break;
@@ -629,17 +647,17 @@ function App() {
       open[panel] = false;
       setPanelOpen(panel, false);
     }
-  }, [previewBeside, panelOpen, setPanelOpen]);
+  }, [previewBeside, webProject, previewFits, panelOpen, setPanelOpen]);
 
   /** A panel beside the canvas, or the rail it is put away to. */
   const sidePanel = (panel: PanelId, name: string, width: number, body: React.ReactNode, mark = false) =>
-    panelOpen[panel] ? (
+    (panel === 'files' ? filesOpen : panelOpen[panel]) ? (
       <div data-panel={name} className="bl-panel" style={{ width, minWidth: width }}>
         {body}
       </div>
     ) : (
       // The rail is the panel's place in the row, so F6 still finds it there.
-      <button type="button" data-panel={name} className="bl-rail" style={{ width: PANEL_WIDTHS.rail }} onClick={() => setPanelOpen(panel, true)} aria-label={`Show ${name.toLowerCase()} panel`}>
+      <button type="button" data-panel={name} className="bl-rail" style={{ width: PANEL_WIDTHS.rail }} onClick={() => panel === 'files' ? showFiles(true) : setPanelOpen(panel, true)} aria-label={`Show ${name.toLowerCase()} panel`}>
         <span>{name}</span>
         {mark && <i aria-hidden="true" title="Something is selected" />}
       </button>
@@ -658,17 +676,30 @@ function App() {
     <>
       <div className="bl-tabrow">
         <FileTabs />
+        {webProject && sheets && (
+          <div className="bl-tabrow-tools">
+            <button ref={webFilesButton} type="button" className="bl-workspace-tool" onClick={() => setSheet('files')} data-sheet-button="files" aria-haspopup="dialog">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+                <path d="M2 4a1 1 0 0 1 1-1h3l2 2h5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+              </svg>
+              Files
+            </button>
+          </div>
+        )}
         {/* What is done to the whole canvas, at the end of its row of tabs. */}
         {canPreviewBeside && !sheets && (
           <div className="bl-tabrow-tools">
             <button
               type="button"
-              className="bl-mini"
+              className="bl-workspace-tool"
               aria-pressed={previewBeside}
               onClick={togglePreviewBeside}
               data-action="preview-beside"
-              title={previewBeside ? 'Hide the app running beside the canvas' : 'Run the app beside the canvas, and see each change as you make it'}
+              title={previewBeside ? 'Hide split preview' : 'Show the running app beside your work'}
             >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" aria-hidden="true">
+                <rect x="1.75" y="3" width="12.5" height="10" rx="1.4" /><path d="M8.5 3v10" />
+              </svg>
               Live preview
             </button>
           </div>
@@ -679,7 +710,7 @@ function App() {
           <div style={styles.emptyFileState}>
             <div style={styles.emptyFileTitle}>No file is open</div>
             <div style={styles.emptyFileHint}>
-              {sheets ? 'Open Files below and choose one to start editing.' : 'Choose a file in the Files panel to start editing.'}
+              Choose a file in Files to start editing.
             </div>
           </div>
         </div>
@@ -691,7 +722,7 @@ function App() {
             </div>
             {previewBeside && (
               <div data-panel="Preview">
-                <LivePreview initialDevice="mobile" beside />
+                <LivePreview beside />
               </div>
             )}
           </div>
@@ -712,7 +743,7 @@ function App() {
             </div>
             {previewBeside && (
               <div data-panel="Preview">
-                <LivePreview initialDevice="mobile" beside />
+                <LivePreview beside />
               </div>
             )}
           </div>
@@ -727,12 +758,14 @@ function App() {
             {projectFormat === 'web' ? (
               <SourceView />
             ) : (
-              <Canvas onShowComponents={sheets || !panelOpen.components ? showComponents : undefined} byTouch={sheets} />
+              <Suspense fallback={null}>
+                <Canvas onShowComponents={sheets || !panelOpen.components ? showComponents : undefined} byTouch={sheets} />
+              </Suspense>
             )}
           </div>
           {previewBeside && (
             <div data-panel="Preview">
-              <LivePreview initialDevice="mobile" beside />
+              <LivePreview beside />
             </div>
           )}
         </div>
@@ -770,27 +803,29 @@ function App() {
           <div style={styles.designShell}>
             <div style={styles.main}>
               {/* Each part of the workspace is a panel F6 goes to (utils/panelFocus.ts). */}
-              {panelOpen.files ? (
+              {filesOpen ? (
                 <div data-panel="Files" style={{ display: 'contents' }}>
-                  <FileNavigator onToggleDock={() => setPanelOpen('files', false)} />
+                  <FileNavigator onToggleDock={() => showFiles(false)} />
                 </div>
               ) : (
                 sidePanel('files', 'Files', PANEL_WIDTHS.files, null)
               )}
 
-              {projectFormat !== 'web' && sidePanel('components', 'Components', PANEL_WIDTHS.components, <ComponentPalette onToggleDock={() => setPanelOpen('components', false)} />)}
+              {projectFormat !== 'web' && sidePanel('components', 'Components', PANEL_WIDTHS.components, <Suspense fallback={null}><ComponentPalette onToggleDock={() => setPanelOpen('components', false)} /></Suspense>)}
 
               <div style={styles.centerWithTabs}>{middle}</div>
 
               {projectFormat !== 'web' && (panelOpen.properties ? (
                 <div className="bl-panel" style={{ width: PANEL_WIDTHS.properties, minWidth: PANEL_WIDTHS.properties }}>
-                  <div data-panel="Properties" style={styles.rightPanelTop}>
-                    <PropertyPanel onToggleDock={() => setPanelOpen('properties', false)} />
-                  </div>
-                  <div data-panel="Hierarchy" style={styles.rightPanelBottom}>
-                    <TreeView collapsed={foldHierarchy} onToggle={() => setFoldHierarchy((folded) => !folded)} />
-                    <DataPanel collapsed={foldData} onToggle={() => setFoldData((folded) => !folded)} />
-                  </div>
+                  <Suspense fallback={null}>
+                    <div data-panel="Properties" style={styles.rightPanelTop}>
+                      <PropertyPanel onToggleDock={() => setPanelOpen('properties', false)} />
+                    </div>
+                    <div data-panel="Hierarchy" style={styles.rightPanelBottom}>
+                      <TreeView collapsed={foldHierarchy} onToggle={() => setFoldHierarchy((folded) => !folded)} />
+                      <DataPanel collapsed={foldData} onToggle={() => setFoldData((folded) => !folded)} />
+                    </div>
+                  </Suspense>
                 </div>
               ) : (
                 sidePanel('properties', 'Properties', PANEL_WIDTHS.properties, null, somethingSelected)
@@ -803,7 +838,7 @@ function App() {
         return (
           <div style={sheets ? styles.mainSheets : styles.main}>
             <div data-panel="Preview" style={{ flex: 1, height: '100%', minWidth: 0, overflow: 'hidden' }}>
-              <LivePreview initialDevice={sheets ? 'mobile' : 'desktop'} />
+              <LivePreview />
             </div>
           </div>
         );
@@ -824,19 +859,11 @@ function App() {
         );
 
       case 'data':
-        if (isHostedEditor()) return (
-          <section style={{ padding: 'clamp(16px, 3vw, 32px)', maxWidth: 760, lineHeight: 1.7, overflow: 'auto' }} aria-label="FormLogic app data">
-            <h1 style={{ fontFamily: 'var(--display)', fontSize: 20, letterSpacing: '-0.02em', marginBottom: 12 }}>Your app data lives in FormLogic</h1>
-            <p>Browse and edit your app’s records in FormLogic: a SoftN app’s Data tab, or a forms app’s Data &amp; forms. To add a table or a column, add the next numbered migration in the app’s source, or ask AI Studio.</p>
-            <p style={{ marginTop: 12 }}>Builder’s standalone database designer creates local XDB collections. Those are separate from your hosted database, so change the hosted schema in FormLogic.</p>
-            <button type="button" className="bl-btn bl-btn-primary bl-btn-lg" onClick={() => void saveCurrentProject()} style={{ marginTop: 24 }}>{hostSaveLabel ?? 'Return to FormLogic'}</button>
-          </section>
-        );
         return (
           <div style={sheets ? styles.mainSheets : styles.main}>
             <div data-panel="Data" style={{ flex: 1, minWidth: 0 }}>
               <Suspense fallback={<div role="status" style={{ padding: 24, color: 'var(--dim)' }}>Opening the data explorer…</div>}>
-                <DataWorkspace />
+                <DataWorkspace hosted={isHostedEditor()} onSave={() => void saveCurrentProject()} saveLabel={hostSaveLabel ?? 'Return to FormLogic'} />
               </Suspense>
             </div>
           </div>
@@ -850,13 +877,13 @@ function App() {
   const openSheet = () => {
     switch (sheet) {
       case 'components':
-        return <ComponentPalette onToggleDock={closeSheet} onAdded={closeSheet} />;
+        return <Suspense fallback={null}><ComponentPalette onToggleDock={closeSheet} onAdded={closeSheet} /></Suspense>;
       case 'properties':
-        return <PropertyPanel onToggleDock={closeSheet} />;
+        return <Suspense fallback={null}><PropertyPanel onToggleDock={closeSheet} /></Suspense>;
       case 'hierarchy':
-        return <TreeView onClose={closeSheet} />;
+        return <Suspense fallback={null}><TreeView onClose={closeSheet} /></Suspense>;
       case 'files':
-        return <FileNavigator onToggleDock={closeSheet} />;
+        return <FileNavigator onToggleDock={closeSheet} onFileOpened={closeSheet} />;
       case 'logic':
         return (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -877,6 +904,16 @@ function App() {
         {/* Everything behind a dialog or a sheet goes inert while it is open,
             so Tab and a screen reader cannot reach the page under it. */}
         <div ref={shellRef} className="bl-shell" style={styles.shell}>
+          <a
+            className="bl-skip-link"
+            href="#builder-workspace"
+            onClick={(event) => {
+              event.preventDefault();
+              document.getElementById('builder-workspace')?.focus();
+            }}
+          >
+            Skip to the work area
+          </a>
           {/* The same bar as the site, the runtime and Studio: the way between them. */}
           {!isHostedEditor() && <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
             void openCompanionUrl(href).catch(() => toast.error('Could not open the Softn website.'));
@@ -897,14 +934,16 @@ function App() {
             activeFileType={activeFileType}
           />
 
-          {renderMainContent()}
+          <main id="builder-workspace" style={styles.shell} tabIndex={-1} aria-label="Builder work area">
+            {renderMainContent()}
+          </main>
         </div>
 
         {/* A panel of a phone's editor, over the canvas (components/Sheet.tsx). */}
         {sheet !== null && (
           // A sheet of its own for each panel: going from one to the next from the bar
           // moves the focus into the new one, and gives it back to the button pressed.
-          <Sheet key={sheet} title={DOCK.find((entry) => entry.name === sheet)!.label} onClose={closeSheet} tall={sheet === 'logic'} onPress={pickedInFilesSheet}>
+          <Sheet key={sheet} title={DOCK.find((entry) => entry.name === sheet)!.label} onClose={closeSheet} tall={sheet === 'logic'}>
             {openSheet()}
           </Sheet>
         )}
@@ -916,7 +955,7 @@ function App() {
 
       {/* The panels of a phone's editor: the bar stays under an open sheet,
           so the next panel is one press away. */}
-      {sheets && view === 'design' && (
+      {sheets && view === 'design' && !webProject && (
         <nav className="bl-dock" aria-label="Panels" {...(modalOpen ? INERT : {})}>
           {DOCK.map(({ name, label, icon }) => (
             <button

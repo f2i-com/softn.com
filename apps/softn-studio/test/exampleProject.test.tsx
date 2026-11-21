@@ -18,10 +18,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dashboard } from '../src/components/layout/Dashboard';
 import { useProjectActions } from '../src/components/common/ProjectActions';
 import { DEFAULT_EXAMPLE, EXAMPLES, openExampleInStores } from '../src/examples';
-import { buildBundle } from '../src/lib/exportBundle';
+import { buildBundle, buildRunnableBundle } from '../src/lib/exportBundle';
+import { readProjectArchive } from '../src/lib/projectImport';
+import { pageScriptToEdit } from '../src/lib/sourceKinds';
 import { validateProject } from '../src/lib/validator';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../src/stores';
 import { inspectBundle } from '@softn/core';
+import { COMPONENT_STARTERS, WEB_STARTERS, createWebStarter } from '@softn/editor-shared/webStarters';
 
 let container: HTMLDivElement;
 let root: Root | null = null;
@@ -54,6 +57,25 @@ function probeActions(): ReturnType<typeof useProjectActions> {
 }
 
 describe('the bundled example', () => {
+  it.each([...WEB_STARTERS, ...Object.values(COMPONENT_STARTERS)])('opens an editable $label starter with Run and Export available', async (starter) => {
+    const files = await createWebStarter(starter.id);
+    openExampleInStores({ ...starter, files }, 'starter');
+    const workspace = useWorkspaceStore.getState();
+    expect(workspace.projectName).toBe(starter.name);
+    expect(workspace.activeFilePath).toBe('index.html');
+    expect(useAIStore.getState().messages).toEqual([]);
+    const source = useVFSStore.getState().files;
+    expect(validateProject(source, workspace.blueprint)).toEqual([]);
+    const html = String(source.get('index.html')!.content);
+    expect(pageScriptToEdit('index.html', html, source)).toBe(starter.sourceFile);
+    const archive = await buildRunnableBundle(source);
+    expect(inspectBundle(archive)).toMatchObject({ name: starter.name, main: 'index.html', problem: null });
+    const reopened = readProjectArchive(archive);
+    expect(reopened).toHaveLength(files.length);
+    expect(reopened.find(({ path }) => path === starter.sourceFile)?.content).toBe(source.get(starter.sourceFile)!.content);
+    expect(probeActions()).toMatchObject({ canRun: true, canExport: true });
+  });
+
   it('opens as a complete project whose manifest passes the validator, with Run and Export enabled', () => {
     const projectId = openExampleInStores();
     const ws = useWorkspaceStore.getState();

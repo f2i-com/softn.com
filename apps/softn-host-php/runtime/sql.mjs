@@ -165,9 +165,8 @@ const QUERY=new Set(['SELECT','WITH','VALUES']),EXECUTE=new Set(['INSERT','UPDAT
  * the handler's. A statement that inserted nothing answered with that id.
  * SQLite has no statement that clears it, so the host inserts row 0 of a
  * table of its own in the connection's temporary schema, which no app SQL
- * can name (the authorizer refuses everything outside `main`). The same on
- * the Rust host (bridges/sql.rs forget_last_insert), which keeps a
- * connection from one request to the next.
+ * can name (the authorizer refuses everything outside `main`). The Rust
+ * hosts reset the counter directly through SQLite's C API.
  */
 const FORGET_LAST_INSERT='CREATE TEMP TABLE IF NOT EXISTS _softn_last_insert(id INTEGER PRIMARY KEY); INSERT OR REPLACE INTO temp._softn_last_insert(id) VALUES(0);';
 

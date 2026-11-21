@@ -80,7 +80,7 @@ describe('a run whose write meets another tab’s change to the same file', () =
     const { run } = lastRun();
     expect(provider.count()).toBe(2);
     expect(run.status).toBe('finished');
-    expect(run.summary).toMatch(/not saved here yet/);
+    expect(run.summary).toContain('Changes to ui/main.ui are only in this tab');
     // What the run said is so: this tab has its edit, storage has the other tab's.
     expect(text('ui/main.ui')).toContain('>Today<');
     expect(await storedMain(id)).toContain('>Tasks, from the other tab<');
@@ -103,7 +103,7 @@ describe('a run whose write meets another tab’s change to the same file', () =
     const { run } = lastRun();
     expect(provider.count()).toBe(3);
     expect(run.status).toBe('finished');
-    expect(run.summary).toMatch(/another tab changed it too/);
+    expect(run.summary).toContain('another tab saved a different version');
     const finishes = run.entries.filter((e) => e.kind === 'tool' && e.name === 'finish') as Array<{ status: string }>;
     expect(finishes.map((e) => e.status)).toEqual(['error', 'ok']);
   });

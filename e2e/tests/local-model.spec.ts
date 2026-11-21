@@ -64,7 +64,7 @@ async function openBundle(page: Page, buffer: Buffer): Promise<void> {
   await page.goto('/web/');
   await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
   const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open a .softn file', exact: true }).click();
+  await page.getByRole('button', { name: 'Open file', exact: true }).click();
   await (await chooser).setFiles({ name: 'LocalModel.softn', mimeType: 'application/octet-stream', buffer });
   await expect(page.getByRole('heading', { name: 'Local Model', exact: true })).toBeVisible({ timeout: 60_000 });
 }

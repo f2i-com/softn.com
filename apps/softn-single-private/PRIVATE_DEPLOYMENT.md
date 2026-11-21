@@ -46,9 +46,10 @@ text once and each image, sound or model as its own entry behind a signed
 viewer cookie, and the `.softn` file has no URL. A browser must still
 receive what it executes, so this is delivery control, not copy protection.
 
-The PHP user needs write access to `private/` once, to generate `secret.key`
-and `digest.cache`; otherwise set `secret` in the configuration and copy the
-`sha256` pin from `sha256sum app.softn`.
+The PHP user needs write access to `private/` once to generate a viewer secret.
+For a read-only directory, set `secret` in the configuration. To pin a release,
+set `sha256` to the output digest of `sha256sum app.softn` and update it when
+you replace the bundle.
 
 An edit to `serve.config.php` can take a couple of seconds to show: PHP's
 opcache keeps the compiled file for `opcache.revalidate_freq` seconds (two by

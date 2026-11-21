@@ -82,7 +82,7 @@ export function ProductBar({ current, urls, links, onNavigate, sticky = false, c
   return (
     <nav className="softn-bar" data-sticky={sticky ? 'true' : 'false'} aria-label="SoftN">
       <div className="softn-bar-inner">
-        <a className="softn-bar-mark" href={href.home} onClick={navigate} aria-current={current === 'home' ? 'page' : undefined}>
+        <a className="softn-bar-mark" href={href.home} onClick={navigate} aria-label="SoftN home" aria-current={current === 'home' ? 'page' : undefined}>
           <Mark size={22} radius={6} />
           softn
         </a>

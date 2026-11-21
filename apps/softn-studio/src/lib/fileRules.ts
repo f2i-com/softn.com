@@ -15,7 +15,7 @@
  * numbered (`logo-2.png`) and never written over.
  */
 
-import { MAX_ZIP_INPUT_BYTES, classifyAsset, pythonModuleName } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, classifyAsset, pythonModuleName } from '@softn/core/authoring';
 import { keptAsBytes } from './fileKinds';
 import { bundleNameProblem, canonicalKey, isPrivatePath } from './paths';
 import { isTextEntry, namedAsText } from './projectImport';
@@ -218,7 +218,7 @@ export function belongsAtTheTop(path: string): boolean {
   return (
     isPagePath(path) ||
     isLogicPath(path) ||
-    /\.(css|json|xdb|sql|ts|tsx|jsx|php|phtml|rs|toml|ya?ml|ini)$/i.test(path) ||
+    /\.(css|json|xdb|sql|ts|tsx|jsx|vue|php|phtml|rs|toml|ya?ml|ini)$/i.test(path) ||
     /(?:^|\/)\.htaccess$/i.test(path)
   );
 }

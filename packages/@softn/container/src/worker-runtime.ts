@@ -13,7 +13,7 @@
  */
 
 import { shellPrelude } from '../../core/src/document-shell/shell-source';
-import { bytesToBase64, mimeTypeFor, piecesSize, piecesToBytes, resolveVfsPath, VIRTUAL_ORIGIN } from './archive';
+import { bytesToBase64, mimeTypeFor, piecesSize, piecesToBytes, readRunnableModule, resolveVfsPath, VIRTUAL_ORIGIN } from './archive';
 import { matchBackendTarget, type BackendRoutingConfig, type ParsedBackendTarget } from './backend-transport';
 import { encodePng, replayCanvasCommands } from './canvas-replay';
 import { canvasSide } from './host-policy';
@@ -33,6 +33,7 @@ import {
   utf8Length,
 } from './esm-linker';
 import { GUEST_EXTENSIONS_SOURCE } from './guest-canvas-and-ext';
+import { BUILTIN_VENDOR_MODULES } from './guest-vendors';
 import { transformJsx } from './jsx-transform';
 import { GUEST_BROWSER_GLOBALS_SOURCE } from './guest-browser-globals';
 import { GUEST_WEB_APIS_SOURCE } from './guest-web-apis';
@@ -176,22 +177,19 @@ const WORKER_ROUTED_KINDS = new Set(['stream.open', 'stream.body', 'stream.next'
 /** Of those, the ones answered never: their numbers are let go of at once. */
 const WORKER_UNANSWERED_KINDS = new Set(['stream.body', 'stream.close', 'ws.send', 'ws.close']);
 
-/** The modules every engine's program defines (guest-canvas-and-ext.ts), the app's and each of its Workers'. */
+/** The modules every engine's program defines eagerly (guest-canvas-and-ext.ts), the app's and each of its Workers'. */
 const BUILTIN_MODULES = [
   'softn:db',
   'softn:storage',
   'softn:net',
+  'softn:backend',
+  'softn:api',
   'softn:sqlite',
-  'softn-vendor:marked',
-  'softn-vendor:preact',
-  'softn-vendor:preact/hooks',
   'softn-vendor:react',
   'softn-vendor:react-dom',
   'softn-vendor:react-dom/client',
   'softn-vendor:react/jsx-runtime',
   'softn-vendor:react/jsx-dev-runtime',
-  'softn-vendor:htm',
-  'softn-vendor:three',
 ];
 
 /** The name of a part of one of the app's IndexedDB databases: its description, a store's list of pages, a page. Nothing else is read, written or listed. */
@@ -410,7 +408,7 @@ const WARNING_MARK = '⁣softn:warn⁣';
 const WARNINGS_MARKED = `(function () { var c = globalThis.console; if (!c || typeof c.error !== 'function') return; var error = c.error; c.warn = function () { var a = Array.prototype.slice.call(arguments); a.unshift(${JSON.stringify(WARNING_MARK)}); return error.apply(c, a); }; })();`;
 
 const LS_SYNC_OPS = ['ls.getItem', 'ls.setItem', 'ls.removeItem', 'ls.clear'];
-const APP_SYNC_OPS = ['app.esm.resolve', 'app.vfs.fetch', 'app.idb.keys', 'app.idb.read', 'app.idb.write', 'app.idb.remove', 'app.canvas.image', 'app.canvas.dataurl', 'app.canvas.pixels', 'app.webgl', 'app.three', 'app.session', 'app.bytes.decode', 'app.idb.begin', 'app.idb.end', 'app.script.prepare', 'app.scripts.placed'];
+const APP_SYNC_OPS = ['app.esm.resolve', 'app.vfs.fetch', 'app.xdb.watch', 'app.idb.keys', 'app.idb.read', 'app.idb.write', 'app.idb.remove', 'app.canvas.image', 'app.canvas.dataurl', 'app.canvas.pixels', 'app.webgl', 'app.three', 'app.session', 'app.bytes.decode', 'app.idb.begin', 'app.idb.end', 'app.script.prepare', 'app.scripts.placed'];
 
 interface DbRecord {
   id: string;
@@ -418,6 +416,13 @@ interface DbRecord {
   updated_at: string;
   _deleted?: boolean;
   [key: string]: unknown;
+}
+
+/** Keep the original flat web fields while giving each row the XDB data view used by Studio. */
+function guestRecord(record: DbRecord): DbRecord {
+  const { id: _id, created_at: _created, updated_at: _updated, _deleted, deleted: _tombstone, collection: _collection, data, ...fields } = record;
+  if (data !== undefined && (!data || typeof data !== 'object' || Array.isArray(data))) return record;
+  return { ...record, data: { ...data as Record<string, unknown>, ...fields } };
 }
 
 export class ContainerWorkerSession {
@@ -437,7 +442,8 @@ export class ContainerWorkerSession {
   private grantedCapabilities = new Set<Capability>();
   private instructionsPerTurn = 100_000_000;
   private storageQuotaBytes = 5 * 1024 * 1024;
-  /** What the app's records take of that quota, as last kept (`recordBytes()` then). */
+  /** Sizes of persisted JSON snapshots, in UTF-16 bytes. Untouched bundled seeds take no quota. */
+  private readonly savedCollectionBytes = new Map<string, number>();
   private recordBytesKept = 0;
   private language: 'javascript' | 'typescript' | 'python' = 'javascript';
 
@@ -445,6 +451,9 @@ export class ContainerWorkerSession {
   private localStoreBytes = 0;
   private readonly dbCollections = new Map<string, Map<string, DbRecord>>();
   private dbRecordSeq = 1;
+  private readonly watchedCollections = new Set<string>();
+  private readonly changedCollections = new Set<string>();
+  private notifyDbTimer?: ReturnType<typeof setTimeout>;
   /**
    * The Worker's own copy of each canvas the app draws on, for the app to read back at once
    * (`toDataURL`, `getImageData`): kept only for an app whose own code names one of the two.
@@ -541,7 +550,8 @@ export class ContainerWorkerSession {
   private backendRouting?: BackendRoutingConfig;
   private hasSqlite = false;
   private pageBaseUrl = `${VIRTUAL_ORIGIN}/`;
-  private nextHostReqId = 1;
+  /** High base so Worker-initiated host requests never collide with guest callback IDs. */
+  private nextHostReqId = 1_000_000_000;
   private readonly pendingHostReqs = new Map<
     number,
     { resolve: (val: unknown) => void; reject: (err: Error) => void }
@@ -581,6 +591,8 @@ export class ContainerWorkerSession {
           this.pendingHostReqs.delete(msg.requestId);
           if (msg.ok) pending.resolve(msg.result);
           else pending.reject(new Error(msg.error || 'Host request failed'));
+        } else {
+          this.resolveCallbackAndFlush(msg.requestId, msg.ok ? msg.result : { error: msg.error });
         }
         break;
       }
@@ -686,7 +698,11 @@ export class ContainerWorkerSession {
     // Seed DB from `.xdb` files inside the bundle + persisted host DB records
     this.seedDatabase(msg.initialDbRecords);
     // What the page holds of the app's records already, which its localStorage shares a quota with.
-    this.recordBytesKept = Object.keys(msg.initialDbRecords).length > 0 ? JSON.stringify(msg.initialDbRecords).length * 2 : 0;
+    for (const [name, rows] of Object.entries(msg.initialDbRecords)) {
+      const size = JSON.stringify({ [name]: rows }).length * 2;
+      this.recordBytesKept = this.bytesAfterSaving(name, size);
+      this.savedCollectionBytes.set(name, size);
+    }
 
     try {
       const bindings = await loadZippEngine({
@@ -732,8 +748,13 @@ export class ContainerWorkerSession {
 
       this.language = msg.engineTier === 'typescript' ? 'typescript' : 'javascript';
 
-      // Pre-register built-in module names so static graph walk skips them
-      for (const builtin of BUILTIN_MODULES) this.definedModules.add(builtin);
+      // Pre-register built-in capability & core runtime module names.
+      // Optional hosted vendor libraries (`preact`, `htm`, `marked`, `three`) are NOT
+      // pre-registered here so plain JS / Vite apps pay zero VM evaluation cost for unused
+      // vendor shims; they are linked on demand by `collectModuleGraph` and `esm.load`.
+      for (const builtin of BUILTIN_MODULES) {
+        this.definedModules.add(builtin);
+      }
 
       // Pre-link all reachable VFS & inline-supplied vendor ES modules
       const factoryBlocks: string[] = [];
@@ -782,7 +803,7 @@ export class ContainerWorkerSession {
       if (importsThreeVendor && typeof OffscreenCanvas === 'function') {
         const [nativeLoaded, threeVendorSource] = await Promise.all([
           this.threeHost.ensureLoaded(this.runtimeUrl),
-          this.fetchVendorModuleSource('three'),
+          this.fetchExternalVendorModuleSource('three'),
         ]);
         if (nativeLoaded && threeVendorSource && !this.disposed) {
           this.mirrorCanvases = true;
@@ -793,12 +814,18 @@ export class ContainerWorkerSession {
             closingIdx >= 0
               ? `${transformedThree.factoryCode.slice(0, closingIdx)}\nif (typeof globalThis.__softnPatchThreeNative === 'function') globalThis.__softnPatchThreeNative(__exports);\n});`
               : transformedThree.factoryCode;
-          factoryBlocks.unshift(patchedFactory);
-          // Shift `onDemand` indices by +1 because we prepended one block
-          const shifted = new Map<number, string>();
-          for (const [idx, url] of onDemand) shifted.set(idx + 1, url);
-          onDemand.clear();
-          for (const [idx, url] of shifted) onDemand.set(idx, url);
+          // Replace the lightweight built-in three proxy block if collectModuleGraph already added it.
+          const existingIdx = factoryBlocks.findIndex((b) => b.startsWith('__softnModules.define("softn-vendor:three"'));
+          if (existingIdx >= 0) {
+            factoryBlocks[existingIdx] = patchedFactory;
+          } else {
+            factoryBlocks.unshift(patchedFactory);
+            // Shift `onDemand` indices by +1 because we prepended one block
+            const shifted = new Map<number, string>();
+            for (const [idx, url] of onDemand) shifted.set(idx + 1, url);
+            onDemand.clear();
+            for (const [idx, url] of shifted) onDemand.set(idx, url);
+          }
         }
       }
 
@@ -924,7 +951,6 @@ export class ContainerWorkerSession {
         GUEST_WEB_APIS_SOURCE,
         // IndexedDB, kept through the Worker's own store.
         GUEST_INDEXEDDB_SOURCE,
-        `__softnHydrateInlineHandlers(${JSON.stringify(msg.seed.body)});`,
         ...modules,
         // What a classic script declares, made the page's (both kinds use it); and the scripts
         // too long for eval, each a function run in its turn below.
@@ -944,6 +970,7 @@ export class ContainerWorkerSession {
         `function __softnContainerStorage(key, oldValue, newValue) { if (typeof globalThis.__softnStorageChanged === 'function') globalThis.__softnStorageChanged(key, oldValue, newValue); }`,
         `function __softnContainerWorkerMessage(id, packed) { if (typeof globalThis.__softnWorkerFromWorker === 'function') globalThis.__softnWorkerFromWorker(id, packed); }`,
         `function __softnContainerWorkerError(id, message) { if (typeof globalThis.__softnWorkerFailedAt === 'function') globalThis.__softnWorkerFailedAt(id, message); }`,
+        `function __softnContainerDbChanged(names) { return globalThis.__softnDbChanged(names); }`,
         `function __softnScriptFailed(err) { console.error('[SoftN] Script startup error:', err && err.stack ? err.stack : String(err)); }`,
         // A warning and an error are one stream to the engine. A warning is written with a
         // mark in front, which drainConsole reads and takes off, so a host hears each as it is.
@@ -1071,7 +1098,8 @@ export class ContainerWorkerSession {
 });`;
       return { factoryCode, staticImports: [], dynamicImports: [] };
     }
-    const source = /\.(?:tsx|jsx)$/i.test(lower) ? transformJsx(code) : code;
+    const isCompiledSidecar = code !== this.textFiles[filePath];
+    const source = !isCompiledSidecar && /\.(?:tsx|jsx)$/i.test(lower) ? transformJsx(code) : code;
     return transformEsModule(source, moduleUrl);
   }
 
@@ -1094,8 +1122,8 @@ export class ContainerWorkerSession {
     for (const spec of staticImports) {
       const resolved = resolveModuleSpecifier(spec, filePath, this.importMap, (p) => p in this.textFiles);
       if (resolved.kind === 'vfs' && !defined.has(resolved.url)) {
-        const depCode = this.textFiles[resolved.path];
-        if (depCode !== undefined) {
+        const depCode = readRunnableModule(resolved.path, (path) => this.textFiles[path]);
+        if (depCode !== null) {
           await this.collectModuleGraph(depCode, resolved.path, resolved.url, outBlocks, collected, named, defined);
         }
       } else if (resolved.kind === 'vendor' && !defined.has(resolved.url)) {
@@ -1128,8 +1156,8 @@ export class ContainerWorkerSession {
       const resolved = resolveModuleSpecifier(spec, from, this.importMap, (p) => p in this.textFiles);
       if (resolved.kind !== 'vfs' || seen.has(resolved.url)) continue;
       seen.add(resolved.url);
-      const code = this.textFiles[resolved.path];
-      if (code === undefined) continue;
+      const code = readRunnableModule(resolved.path, (path) => this.textFiles[path]);
+      if (code === null) continue;
       const { factoryCode, staticImports, dynamicImports } = this.transformModuleByPath(code, resolved.path, resolved.url);
       // What it imports is loaded on demand with it: looked through too.
       for (const next of [...staticImports, ...dynamicImports]) queue.push({ spec: next, from: resolved.path });
@@ -1168,14 +1196,11 @@ export class ContainerWorkerSession {
     return { url, blocks, urls: collected };
   }
 
-  private async fetchVendorModuleSource(name: string): Promise<string | null> {
-    // The host's own copy, by its own name (not one the object has from Object.prototype).
+  private async fetchExternalVendorModuleSource(name: string): Promise<string | null> {
     if (Object.prototype.hasOwnProperty.call(this.vendorModules, name)) {
       const given = this.vendorModules[name];
       return typeof given === 'string' ? given : null;
     }
-    // A name of plain segments only, asked of the runtime's own folder without the person's
-    // cookies: a library from there is a file anyone may have.
     if (!safeVendorName(name)) return null;
     const base = this.runtimeUrl.replace(/\/?$/, '/');
     try {
@@ -1185,6 +1210,19 @@ export class ContainerWorkerSession {
       // Vendor file not hosted externally
     }
     return null;
+  }
+
+  private async fetchVendorModuleSource(name: string): Promise<string | null> {
+    // The host's own copy, by its own name (not one the object has from Object.prototype).
+    if (Object.prototype.hasOwnProperty.call(this.vendorModules, name)) {
+      const given = this.vendorModules[name];
+      return typeof given === 'string' ? given : null;
+    }
+    // Built-in on-demand vendor shims (marked, preact, htm, three proxy) — zero VM cost unless imported.
+    if (Object.prototype.hasOwnProperty.call(BUILTIN_VENDOR_MODULES, name)) {
+      return BUILTIN_VENDOR_MODULES[name];
+    }
+    return this.fetchExternalVendorModuleSource(name);
   }
 
   private handleEvent(
@@ -1461,6 +1499,10 @@ export class ContainerWorkerSession {
     if (this.disposed || !this.engine) return;
 
     switch (kind) {
+      case 'backend.call':
+        this.postToHost({ type: 'host-request', requestId: callId, kind, payload: { action: args[0], input: args[1] } });
+        return;
+
       case 'timer.set': {
         const timerId = Number(args[0]);
         const delayMs = Math.max(0, Math.min(Number(args[1]) || 0, 86_400_000));
@@ -1531,8 +1573,8 @@ export class ContainerWorkerSession {
           if (resolved.kind === 'vfs') {
             const blocks: string[] = [];
             const collected: string[] = [];
-            const src = this.textFiles[resolved.path];
-            if (src === undefined) throw new Error(`Module not found in container: ${resolved.path}`);
+            const src = readRunnableModule(resolved.path, (path) => this.textFiles[path]);
+            if (src === null) throw new Error(`Module not found in container: ${resolved.path}`);
             await this.collectModuleGraph(src, resolved.path, resolved.url, blocks, collected, undefined, defined);
             this.resolveCallbackAndFlush(callId, this.moduleReply(resolved.url, blocks, collected, 'vfs', defined));
             return;
@@ -2447,13 +2489,17 @@ export class ContainerWorkerSession {
     // as the page counts them, by the one text they are kept as, so that the two agree on
     // the write that does not fit.
     const persistCollection = (name: string) => {
-      const records = this.recordBytes();
-      if (this.localStoreBytes + records + this.idbSharedBytes() > this.storageQuotaBytes) {
+      if (!name || ['__proto__', 'constructor', 'prototype'].includes(name)) throw new Error('Invalid collection name.');
+      const records = [...getCollection(name).values()];
+      const size = JSON.stringify({ [name]: records }).length * 2;
+      const total = this.bytesAfterSaving(name, size);
+      if (this.localStoreBytes + total + this.idbSharedBytes() > this.storageQuotaBytes) {
         throw new Error('QuotaExceededError: container storage quota exceeded');
       }
-      this.recordBytesKept = records;
-      const col = getCollection(name);
-      this.postToHost({ type: 'db-write', collection: name, records: [...col.values()] });
+      this.postToHost({ type: 'db-write', collection: name, records });
+      this.recordBytesKept = total;
+      this.savedCollectionBytes.set(name, size);
+      if (this.watchedCollections.has(name)) this.notifyCollectionChanged(name);
     };
     /**
      * Keep a change to a collection, or take it back: a change the quota refuses is undone
@@ -2480,19 +2526,15 @@ export class ContainerWorkerSession {
             : typeof optsRaw === 'string' && optsRaw
               ? (JSON.parse(optsRaw) as { filter?: Record<string, unknown> } | null)
               : null;
-        return [...col.values()].filter((r) => {
-          if (r._deleted) return false;
-          if (opts?.filter) {
-            for (const [fk, fv] of Object.entries(opts.filter)) {
-              if (r[fk] !== fv) return false;
-            }
-          }
-          return true;
-        });
+        const filter = opts?.filter && typeof opts.filter === 'object' ? opts.filter : opts;
+        const wanted = Object.entries(filter ?? {});
+        return [...col.values()].filter((r) => !r._deleted && !r.deleted &&
+          wanted.every(([field, value]) => Object.hasOwn(r, field) && r[field] === value)
+        ).map(guestRecord);
       },
       get: (collectionRaw: unknown, idRaw: unknown) => {
         const rec = getCollection(String(collectionRaw ?? '')).get(String(idRaw ?? ''));
-        return rec && !rec._deleted ? rec : null;
+        return rec && !rec._deleted && !rec.deleted ? guestRecord(rec) : null;
       },
       create: (collectionRaw: unknown, dataRaw: unknown) => {
         const collection = String(collectionRaw ?? '');
@@ -2515,7 +2557,7 @@ export class ContainerWorkerSession {
           if (before) col.set(id, before);
           else col.delete(id);
         });
-        return rec;
+        return guestRecord(rec);
       },
       update: (idRaw: unknown, dataRaw: unknown) => {
         const id = String(idRaw ?? '');
@@ -2527,7 +2569,7 @@ export class ContainerWorkerSession {
               : {};
         for (const [colName, col] of this.dbCollections) {
           const existing = col.get(id);
-          if (existing && !existing._deleted) {
+          if (existing && !existing._deleted && !existing.deleted) {
             const updated: DbRecord = {
               ...existing,
               ...patch,
@@ -2536,7 +2578,7 @@ export class ContainerWorkerSession {
             };
             col.set(id, updated);
             commit(colName, () => col.set(id, existing));
-            return updated;
+            return guestRecord(updated);
           }
         }
         return null;
@@ -2545,7 +2587,7 @@ export class ContainerWorkerSession {
         const id = String(idRaw ?? '');
         for (const [colName, col] of this.dbCollections) {
           const existing = col.get(id);
-          if (existing) {
+          if (existing && !existing._deleted && !existing.deleted) {
             // A new record in the old one's place, so that the old one is there to put back.
             col.set(id, { ...existing, _deleted: true, updated_at: new Date().toISOString() });
             commit(colName, () => col.set(id, existing));
@@ -2569,6 +2611,12 @@ export class ContainerWorkerSession {
     const appCall = (kindRaw: unknown, argsRaw: unknown) => {
         const kind = String(kindRaw ?? '');
         const args = Array.isArray(argsRaw) ? argsRaw : [];
+        if (kind === 'xdb.watch') {
+          const name = String(args[0] ?? '');
+          if (args[1] === '1') this.watchedCollections.add(name);
+          else this.watchedCollections.delete(name);
+          return null;
+        }
         if (kind === 'esm.resolve') {
           const specifier = String(args[0] ?? '');
           const importerUrl = String(args[1] ?? '');
@@ -3946,16 +3994,10 @@ export class ContainerWorkerSession {
       else this.decodeWaiting.push(start);
     });
   }
-  /**
-   * What the app's records take in the embedding page's storage, in bytes: the one text the
-   * page keeps them all as (softn-app.ts's savePersistedDbCollection), counted the same way.
-   */
-  private recordBytes(): number {
-    if (this.dbCollections.size === 0) return 0;
-    // No prototype: a collection may be called `__proto__`, and is counted like any other.
-    const all: Record<string, DbRecord[]> = Object.create(null);
-    for (const [name, col] of this.dbCollections) all[name] = [...col.values()];
-    return JSON.stringify(all).length * 2;
+  private bytesAfterSaving(name: string, size: number): number {
+    // When joining two JSON objects, their adjacent braces become one comma (two bytes less).
+    const replacedBytes = this.savedCollectionBytes.get(name) ?? (this.savedCollectionBytes.size ? 2 : 0);
+    return this.recordBytesKept - replacedBytes + size;
   }
 
   private seedDatabase(persisted: Record<string, unknown[]>): void {
@@ -3984,9 +4026,11 @@ export class ContainerWorkerSession {
         // Ignore malformed seed file
       }
     }
-    // 2. Overlay persisted user records
+    // Each saved collection is a complete snapshot. Merging seeds back into one would
+    // resurrect a hard-deleted starter record every time its app reopened.
     for (const [colName, list] of Object.entries(persisted)) {
-      const col = this.dbCollections.get(colName) ?? new Map<string, DbRecord>();
+      if (!Array.isArray(list)) continue;
+      const col = new Map<string, DbRecord>();
       for (const item of list) {
         if (item && typeof item === 'object' && 'id' in item) {
           const rec = item as DbRecord;
@@ -3995,6 +4039,24 @@ export class ContainerWorkerSession {
       }
       this.dbCollections.set(colName, col);
     }
+  }
+
+  private notifyCollectionChanged(name: string): void {
+    this.changedCollections.add(name);
+    if (this.notifyDbTimer !== undefined) return;
+    this.notifyDbTimer = setTimeout(() => {
+      this.notifyDbTimer = undefined;
+      if (this.disposed || !this.engine) return;
+      const names = [...this.changedCollections];
+      this.changedCollections.clear();
+      try {
+        this.engine.renewInstructionBudget();
+        this.callGuest('__softnContainerDbChanged', [names]);
+        this.drainTurn();
+      } catch (err) {
+        this.reportGuestError('db-subscription', err);
+      }
+    }, 0);
   }
 
   private drainConsole(): void {
@@ -4062,6 +4124,7 @@ export class ContainerWorkerSession {
   }
 
   dispose(): void {
+    clearTimeout(this.notifyDbTimer);
     if (this.disposed) return;
     for (const worker of [...this.appWorkers.values()]) this.endAppWorker(worker);
     this.disposed = true;

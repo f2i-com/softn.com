@@ -1,11 +1,7 @@
-import { normalizeManifest, preloadRememberedFirstDraw } from '@softn/core';
-import {
-  assembleApplication,
-  fetchBytes,
-  localUrl,
-  type BundleManifest,
-  type RunnableApplication,
-} from '@softn/single-shell';
+import { normalizeManifest } from '@softn/core/web-host';
+import { assembleApplication } from '@softn/single-shell/assemble';
+import { fetchBytes, localUrl } from '@softn/single-shell/config';
+import type { BundleManifest, RunnableApplication } from '@softn/single-shell';
 import { createServedAssetResolver, entryUrl } from './assets';
 
 /**
@@ -148,9 +144,6 @@ export async function loadServedApplication(
   const backendUrl = pack.backendUrl !== undefined ? localUrl(pack.backendUrl, base) : undefined;
   const textFiles = new Map(Object.entries(pack.text));
   const appId = 'served:' + url.pathname + ':' + pack.id;
-  // What this app's first screen waited for last time, started before the
-  // pack is composed (core's first-draw-memory).
-  preloadRememberedFirstDraw(appId);
   const { raw: _manifest, ...app } = await assembleApplication({
     textFiles,
     // Shape was checked in parsePack; this is the read that decides whether

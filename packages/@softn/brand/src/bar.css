@@ -38,21 +38,18 @@
   padding-inline: var(--gutter);
 }
 
-/* Two classes deep on purpose. In the runtime this bar shares a document
-   with whatever stylesheet the running app brought, and a bundle's plain
-   `a { text-decoration: underline }` — one element selector — must not
-   redraw the way out of the app. */
-.softn-bar .softn-bar-mark,
-.softn-bar .softn-bar-links a,
-.softn-bar .softn-bar-repo,
-.softn-bar .softn-bar-extra a,
-.softn-bar button {
+/* Outrank a guest's bare link styles while letting the mark, controls and
+   current destination below supply their own type, borders and colors. */
+.softn-bar :where(a, button) {
   color: inherit;
   text-decoration: none;
+  cursor: pointer;
+}
+
+.softn-bar button {
   background: none;
   border: none;
   font: inherit;
-  cursor: pointer;
 }
 
 .softn-bar :focus-visible {
@@ -66,6 +63,7 @@
 .softn-bar-mark {
   display: inline-flex;
   align-items: center;
+  min-height: 2.75rem;
   gap: 0.5rem;
   font-family: var(--display);
   font-weight: 800;
@@ -107,17 +105,19 @@
   border-bottom: 2px solid transparent;
   /* Balances the underline so the label stays vertically centred. */
   border-top: 2px solid transparent;
-  transition: color 160ms var(--ease);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
   white-space: nowrap;
 }
 
 .softn-bar-links a:hover {
   color: var(--paper);
+  background-color: var(--inset);
 }
 
-.softn-bar-links a[aria-current='page'] {
+.softn-bar-links a:is([aria-current='page'], [aria-current='true']) {
   color: var(--paper);
   border-bottom-color: var(--paper);
+  font-weight: 600;
 }
 
 /* ── Right side ────────────────────────────────────────────────── */
@@ -130,13 +130,12 @@
 
 /* Deliberately uncoloured: coral means the language and mint means the machine,
    and a theme switch is neither. */
-.softn-theme-toggle {
+.softn-bar .softn-theme-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.875rem;
-  height: 1.875rem;
-  margin-right: -0.25rem;
+  width: 2.25rem;
+  height: 2.25rem;
   border-radius: 6px;
   color: var(--dim);
   transition:
@@ -144,12 +143,15 @@
     background 160ms var(--ease);
 }
 
-.softn-theme-toggle:hover {
+.softn-bar .softn-theme-toggle:hover {
   color: var(--paper);
   background: var(--ink-3);
 }
 
 .softn-bar-repo {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
   font-family: var(--mono);
   font-size: 0.75rem;
   color: var(--dim);
@@ -193,7 +195,7 @@
     flex-wrap: wrap;
     height: auto;
     row-gap: 0;
-    padding-top: 0.375rem;
+    column-gap: 0.625rem;
     min-height: 2.75rem;
   }
 
@@ -201,7 +203,7 @@
     order: 1;
     width: calc(100% + var(--gutter) * 2);
     margin-inline: calc(var(--gutter) * -1);
-    padding-inline: max(0.5rem, calc(var(--gutter) - 0.5rem));
+    padding-inline: clamp(0.5rem, 2.5vw, 1rem);
     justify-content: space-between;
     gap: 0;
     overflow-x: auto;
@@ -218,7 +220,9 @@
 
   .softn-bar-links a {
     flex: none;
-    padding-block: 0.6875rem;
+    justify-content: center;
+    min-height: 2.75rem;
+    padding-block: 0;
     padding-inline: 0.25rem;
     border-top: 0;
   }
@@ -229,12 +233,12 @@
 }
 
 @media (pointer: coarse) {
-  .softn-theme-toggle {
+  .softn-bar .softn-theme-toggle {
     width: 2.75rem;
     height: 2.75rem;
   }
 
   .softn-bar-repo {
-    padding-block: 0.75rem;
+    min-height: 2.75rem;
   }
 }

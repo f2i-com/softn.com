@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { assetObjectUrl, classifyAsset } from '@softn/core';
+import { assetObjectUrl, classifyAsset } from '@softn/core/authoring';
 import { Icon } from '../common/Icon';
 import '../../styles/code.css';
 

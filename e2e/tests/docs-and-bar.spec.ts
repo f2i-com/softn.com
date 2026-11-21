@@ -53,7 +53,7 @@ test('/docs/ serves a guide, and a guide that does not exist is a 404', async ({
 test.describe('at 390 px', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  for (const [where, path, expected] of [['the site', '/', PRODUCTS], ['the runtime', '/web/', PRODUCTS]] as const) {
+  for (const [where, path] of [['the site', '/'], ['the runtime', '/web/'], ['Studio', '/studio/'], ['Builder', '/builder/']] as const) {
   test(`on ${where}, the product bar shows every destination without scrolling`, async ({
     page,
   }, testInfo) => {
@@ -63,12 +63,17 @@ test.describe('at 390 px', () => {
       const bar = page.getByRole('navigation', { name: 'SoftN', exact: true }).first();
       await expect(bar).toBeVisible({ timeout: 30_000 });
       const links = bar.locator('.softn-bar-links a');
-      await expect(links).toHaveCount(expected.length);
-      for (const [i, product] of expected.entries()) {
+      await expect(links).toHaveCount(PRODUCTS.length);
+      for (const [i, product] of PRODUCTS.entries()) {
         const link = links.nth(i);
         await expect(link).toHaveText(product.label);
         await expect(link).toHaveAttribute('href', product.href);
         await expect(link).toBeInViewport({ ratio: 1 });
+        if (product.href === path) {
+          await expect(link).toHaveAttribute('aria-current', 'page');
+          const underline = await link.evaluate((node) => getComputedStyle(node).borderBottomWidth);
+          expect(parseFloat(underline), 'the current tool has a visible underline').toBeGreaterThan(0);
+        }
       }
       const strip = bar.locator('.softn-bar-links');
       expect(

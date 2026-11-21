@@ -21,7 +21,7 @@
  * agent's next write as "changed since you read it", executeTool.ts.)
  */
 
-import { classifyAsset } from '@softn/core';
+import { classifyAsset } from '@softn/core/authoring';
 import { useAIStore } from '../stores/aiStore';
 import { hasUnsavedDraft, useEditStore } from '../stores/editStore';
 import { useVFSStore } from '../stores/vfsStore';

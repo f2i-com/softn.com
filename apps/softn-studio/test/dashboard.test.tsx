@@ -57,6 +57,34 @@ describe('Dashboard recent projects', () => {
     act(() => input.dispatchEvent(new Event('change', { bubbles: true })));
   }
 
+  it('opens the selected JSX or single-file component alongside the plain JavaScript starters', async () => {
+    const createStarter = vi.fn().mockResolvedValue(undefined);
+    mount({ onCreateStarter: createStarter });
+    for (const [label, file] of [['React', 'app.js'], ['React JSX', 'App.jsx'], ['Vue', 'app.js'], ['Vue SFC', 'App.vue']]) {
+      await act(async () => { container.querySelector<HTMLButtonElement>(`[aria-label="Create ${label} starter"]`)!.click(); });
+      expect(createStarter).toHaveBeenLastCalledWith(expect.objectContaining({ label, sourceFile: file }));
+    }
+  });
+
+  it('can import and retry a project on first visit without AI setup', async () => {
+    const onImportProject = vi.fn().mockResolvedValueOnce({ ok: false, message: 'Invalid project' }).mockResolvedValueOnce({ ok: true });
+    const onSkip = vi.fn();
+    mount({ onImportProject, onCreateStarter: vi.fn(), ai: { gate: true, onSkip } });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const picker = vi.spyOn(input, 'click');
+    const button = [...container.querySelectorAll('button')].find((item) => item.textContent?.includes('Import a bundle'));
+    act(() => button!.click());
+    expect(picker).toHaveBeenCalledOnce();
+    selectFile('Starter.zip');
+    await flush();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Invalid project');
+    selectFile('Starter.zip');
+    await flush();
+    expect(onImportProject).toHaveBeenCalledTimes(2);
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it('accepts uppercase bundle extensions and announces a failed import beside the actions', async () => {
     const onImportProject = vi.fn(async () => ({ ok: false as const, message: 'The archive checksum is invalid.' }));
     mount({ onImportProject });
@@ -92,7 +120,7 @@ describe('Dashboard recent projects', () => {
   // The first-visit step is taken off the page when it is done or skipped, and the button
   // that was pressed goes with it: the focus fell to the page, and a person at the keyboard
   // was left above the site's own links with the page they had just unlocked far below.
-  it('puts the keyboard on Start a new app when the AI step is done or skipped', () => {
+  it('puts the keyboard on Start a new app when skipping and there are no examples', () => {
     const named = (name: string) => [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === name)!;
     root = createRoot(container);
     const draw = (gate: boolean) => act(() => root.render(
@@ -105,6 +133,18 @@ describe('Dashboard recent projects', () => {
     act(() => skip.click());
     expect(named('Explore examples without AI')).toBeUndefined();
     expect(document.activeElement).toBe(named('Start a new app'));
+  });
+
+  it('takes Explore examples to the first runnable example', () => {
+    root = createRoot(container);
+    const draw = (gate: boolean) => act(() => root.render(
+      <Dashboard onNewProject={() => {}} onOpenExample={() => {}} ai={{ gate, onSkip: () => draw(false) }} />,
+    ));
+    draw(true);
+    const explore = container.querySelector<HTMLButtonElement>('.st-onboard-skip button')!;
+    explore.focus();
+    act(() => explore.click());
+    expect(document.activeElement).toBe(container.querySelector('.st-example'));
   });
 
   // On a phone the way in without a key was under the whole setup form, about 1000px down a

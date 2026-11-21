@@ -9,7 +9,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { flushSync } from 'react-dom';
 import type { EditMarks, LiveApp, PermissionConfig, PythonProject } from '@softn/core';
-import { ManifestError, createLiveApp, preloadRememberedFirstDraw, readManifest } from '@softn/core';
+import { ManifestError, readManifest } from '@softn/core/web-host';
 import { randomUUID } from '@softn/bundle-format/crypto';
 import {
   createAssetResolver,
@@ -17,8 +17,6 @@ import {
   extractIconDataUrl,
   extractPermissions,
   firstScreenAssets,
-  loadXDBData,
-  processBundle,
   readZip,
   requestedCapabilities,
   withheldPermissions,
@@ -26,7 +24,7 @@ import {
   type BundleManifest,
   type DisposableImportResolver,
   type ZipResult,
-} from '@softn/runtime-shell/bundleProcessor';
+} from '@softn/runtime-shell/bundleFiles';
 import { warmFirstScreen, type FirstScreenWarmup } from '@softn/runtime-shell/zipWarmup';
 import {
   WEB_CONTAINER_SOURCE_SENTINEL,
@@ -53,6 +51,7 @@ import {
 import { findPlaceholder, findRunningTab } from './tabIdentity';
 import { describePreviousBuild, previousBuildFor, type PreviousBuild } from './consentDiff';
 import { hasDraft } from './editIndex';
+import { preloadUiAppSurface } from './uiSurfaceLoader';
 
 export interface OpenTab {
   id: string;
@@ -161,7 +160,8 @@ export interface OpenBundleHost {
     source: string,
     execution: 'worker' | 'main' | undefined,
     capabilities: string[],
-    pythonPackages?: readonly string[]
+    python?: PythonProject,
+    textFiles?: ReadonlyMap<string, string>,
   ) => void;
   /** The same for a web container, whose needs are read from its archive (lib/containerOfflineInstall.ts). */
   installContainerOffline?: (tabId: string, record: CachedApp, archive: Uint8Array) => void;
@@ -255,12 +255,8 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
   const placeholderClosed = (): boolean =>
     placeholderId !== undefined && !host.tabs().some((t) => t.id === placeholderId);
 
-  // The app's identity (below), started beside the archive's read: as soon
-  // as it is known, what its first screen waited for last time is started
-  // too (core's first-draw-memory), while the rest of the open goes on. A
-  // failure is the await's below to report.
+  // The app's identity (below), started beside the archive's read.
   const origin = computeAppOrigin(data);
-  origin.then(preloadRememberedFirstDraw, () => {});
 
   try {
     if (isForeground()) host.setError(null);
@@ -439,7 +435,12 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     let preIncludedLogicPaths: string[] | undefined;
     let python: PythonProject | undefined;
     let parseProblem: string | undefined;
+    let live: LiveApp | undefined;
     if (!containerCheck.isWebContainer) {
+      const { createLiveApp, preloadRememberedFirstDraw, loadXDBData, processBundle } = await preloadUiAppSurface();
+      if (placeholderClosed()) return null;
+      live = existingTab?.live ?? createLiveApp();
+      preloadRememberedFirstDraw(appOrigin);
       mark('softn:xdb-seed:start');
       try {
         await loadXDBData(textFiles, manifest, appOrigin);
@@ -472,7 +473,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // meanwhile is kept for the answer (nothing of it happens before) and is
     // done when the person allows it. "Not now" turns that off (`onAsking`).
     const runningConfig = hasGrant ? permissionConfig : withheldPermissions(permissionConfig, { asking: true });
-    const importResolver = createImportResolver(textFiles, runningConfig);
+    const importResolver = containerCheck.isWebContainer ? undefined : createImportResolver(textFiles, runningConfig);
 
     // Unconditional, and before any consent: the app is about to run and
     // can already write records into its own database, and removing it from
@@ -480,7 +481,10 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // remove them with. Origin dedup means opening it again is an update.
     // The record comes back for the offline install below, which is keyed
     // by it and writes its outcome onto it.
-    const cachedRecord = await cacheApp(data, manifest, icon, directorySlug, requested, request.fromLink);
+    const cachedRecord = await cacheApp(data, {
+      name: manifest.name, version: manifest.version, description: manifest.description,
+      format: containerCheck.isWebContainer ? 'web' : 'classic',
+    }, icon, directorySlug, requested, request.fromLink);
 
     if (cachedAppId) {
       await updateLastOpened(cachedAppId);
@@ -504,7 +508,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // below sends them.
       if (placeholderClosed()) {
         warmup?.abort();
-        importResolver.dispose();
+        importResolver?.dispose();
         return null;
       }
 
@@ -562,7 +566,9 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       // Kept with what was asked, which is all it answers.
       void recordPermissionGrant(now?.appId ?? appOrigin, grantedPerms, declaration);
 
-      const grantedResolver = createImportResolver((now?.textFiles as Map<string, string> | undefined) ?? textFiles, permissionConfig);
+      const grantedResolver = containerCheck.isWebContainer
+        ? undefined
+        : createImportResolver((now?.textFiles as Map<string, string> | undefined) ?? textFiles, permissionConfig);
       // The resolver being replaced is read out of the updater's own
       // `prev`, not out of the tabs as last rendered. Those are only
       // refreshed on render, so two activations in one frame both read the
@@ -607,7 +613,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       // dispose() is idempotent, so a StrictMode-doubled updater reporting
       // the same outcome twice is harmless.
       if (adopted) superseded?.dispose();
-      else grantedResolver.dispose();
+      else grantedResolver?.dispose();
     };
 
     // "Not now" and "Review permissions": the app is told whether there is
@@ -642,13 +648,13 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
         ? undefined
         : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, previous: previousBuild, onAllow, onAsking },
       importResolver,
-      assetResolver: createAssetResolver(binaryFiles, textFiles),
+      assetResolver: containerCheck.isWebContainer ? undefined : createAssetResolver(binaryFiles, textFiles),
       logicBasePath,
       preIncludedLogicPaths,
       python,
       textFiles,
       parseProblem,
-      live: existingTab?.live ?? createLiveApp(),
+      live,
       execution: manifest.config?.execution,
       themeMode: manifest.config?.theme?.mode,
       ...server,
@@ -680,7 +686,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       // A web container needs the container's own files, not SoftN's components.
       host.installContainerOffline?.(tabId, cachedRecord, data);
     } else if (cachedRecord) {
-      host.installOffline(tabId, cachedRecord, source, manifest.config?.execution, requested, python?.packages);
+      host.installOffline(tabId, cachedRecord, source, manifest.config?.execution, requested, python, textFiles);
     }
     return appName;
   } catch (err) {

@@ -30,7 +30,7 @@ import { ModelLights, MODEL_LIGHT_KEY, type Scene3DModelLights } from './model-l
 import { ModelParts, namesParts, type PartProperty, type Scene3DPart } from './model-parts';
 import { ParticleSprites, particleShapeOf, SHARED_SPRITE_KEY, type ParticleShape } from './particle-sprites';
 import { nearestHit, PICKABLE_KEY } from './picking';
-import { Easer, transitionOf } from './motion';
+import { Easer, TickCadence, transitionOf } from './motion';
 import { orientationOf, pointsSomewhere, rotationOrderOf } from './pointing';
 import { placeInstances } from './instances';
 import {
@@ -1198,28 +1198,40 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
   switch (shape) {
     case 'box':
       return new THREE.BoxGeometry(w, h, d);
-    case 'sphere':
-      return new THREE.SphereGeometry(r, 32, 32);
-    case 'cylinder':
-      return new THREE.CylinderGeometry(r, r, h, 32);
+    case 'sphere': {
+      const ws = r <= 0.06 ? 12 : r <= 0.25 ? 16 : r <= 0.8 ? 20 : 28;
+      const hs = r <= 0.06 ? 8 : r <= 0.25 ? 12 : r <= 0.8 ? 16 : 20;
+      return new THREE.SphereGeometry(r, ws, hs);
+    }
+    case 'cylinder': {
+      const segs = r <= 0.06 ? 12 : r <= 0.3 ? 16 : 24;
+      return new THREE.CylinderGeometry(r, r, h, segs);
+    }
     case 'capsule': {
       const capR = obj.radius ?? 0.5;
       const capH = Math.max(0.01, (obj.height ?? 1) - 2 * capR);
-      return new THREE.CapsuleGeometry(capR, capH, 8, 16);
+      const capSegs = capR <= 0.05 ? 4 : capR <= 0.2 ? 6 : 8;
+      const radSegs = capR <= 0.05 ? 8 : capR <= 0.2 ? 12 : 16;
+      return new THREE.CapsuleGeometry(capR, capH, capSegs, radSegs);
     }
     case 'prism':
       return createPrismGeometry(w, h, d);
-    case 'cone':
-      return new THREE.ConeGeometry(r, h, 32);
+    case 'cone': {
+      const segs = r <= 0.06 ? 10 : r <= 0.3 ? 16 : 24;
+      return new THREE.ConeGeometry(r, h, segs);
+    }
     case 'plane':
       return new THREE.PlaneGeometry(w, h);
     // The tube was a fixed 0.4m, so any ring smaller than that came out as a
     // solid ball — a 4cm mug handle rendered as a 90cm sphere. Scale it with
     // the radius instead; at r = 1 this is what the old constant gave.
-    case 'torus':
-      return new THREE.TorusGeometry(r, obj.tube ?? r * 0.4, 16, 100);
+    case 'torus': {
+      const rSegs = r <= 0.08 ? 8 : r <= 0.35 ? 12 : 14;
+      const tSegs = r <= 0.08 ? 24 : r <= 0.35 ? 40 : 64;
+      return new THREE.TorusGeometry(r, obj.tube ?? r * 0.4, rSegs, tSegs);
+    }
     case 'ring':
-      return new THREE.RingGeometry(r * 0.5, r, 32);
+      return new THREE.RingGeometry(r * 0.5, r, 24);
     case 'dodecahedron':
       return new THREE.DodecahedronGeometry(r);
     case 'icosahedron':
@@ -1228,6 +1240,76 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
       return new THREE.OctahedronGeometry(r);
     default:
       return new THREE.BoxGeometry(w, h, d);
+  }
+}
+
+const GEOMETRY_POOL_KEY = '__softnGeomLease';
+
+interface GeometryLease {
+  key: string;
+  geom: THREE.BufferGeometry;
+  refs: number;
+  pool: Map<string, GeometryLease>;
+}
+
+type GeometryPool = Map<string, GeometryLease>;
+
+function geometryKey(obj: Scene3DObject): string {
+  const shape = obj.type === 'instanced' ? (obj.shape ?? 'box') : obj.type;
+  const w = obj.width ?? 1;
+  const h = obj.height ?? 1;
+  const d = obj.depth ?? 1;
+  const r = obj.radius ?? 0.5;
+  switch (shape) {
+    case 'sphere':
+    case 'ring':
+    case 'dodecahedron':
+    case 'icosahedron':
+    case 'octahedron':
+      return `${shape}:${r}`;
+    case 'cylinder':
+    case 'cone':
+    case 'capsule':
+      return `${shape}:${r}:${h}`;
+    case 'plane':
+      return `plane:${w}:${h}`;
+    case 'torus':
+      return `torus:${r}:${obj.tube ?? r * 0.4}`;
+    case 'prism':
+      return `prism:${w}:${h}:${d}`;
+    case 'box':
+    default:
+      return `box:${w}:${h}:${d}`;
+  }
+}
+
+function acquireGeometry(pool: GeometryPool | undefined, obj: Scene3DObject): THREE.BufferGeometry {
+  if (!pool) return createGeometry(obj);
+  const key = geometryKey(obj);
+  let lease = pool.get(key);
+  if (!lease) {
+    const geom = createGeometry(obj);
+    geom.computeBoundingSphere();
+    lease = { key, geom, refs: 0, pool };
+    geom.userData[GEOMETRY_POOL_KEY] = lease;
+    pool.set(key, lease);
+  }
+  lease.refs++;
+  return lease.geom;
+}
+
+function releaseGeometry(geom: THREE.BufferGeometry | undefined): void {
+  if (!geom) return;
+  const lease = geom.userData?.[GEOMETRY_POOL_KEY] as GeometryLease | undefined;
+  if (!lease) {
+    geom.dispose();
+    return;
+  }
+  lease.refs--;
+  if (lease.refs <= 0) {
+    lease.pool.delete(lease.key);
+    delete geom.userData[GEOMETRY_POOL_KEY];
+    geom.dispose();
   }
 }
 
@@ -1864,7 +1946,7 @@ function disposeObject3D(obj: THREE.Object3D) {
     // and colours on the GPU; without it they waited for the collector, at
     // every rebuild of a count that changed.
     if ((obj as THREE.InstancedMesh).isInstancedMesh) (obj as THREE.InstancedMesh).dispose();
-    mesh.geometry?.dispose();
+    releaseGeometry(mesh.geometry);
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     for (const mat of materials) {
       if (!mat) continue;
@@ -1995,20 +2077,21 @@ const RECEIVE_KEY = '__softnReceive';
  * `cursor` and `interactive` did nothing on anything else.
  */
 function tagNode(node: THREE.Object3D, spec: Scene3DObject, parentId?: string): void {
-  node.userData.__softnId = spec.id;
-  if (parentId !== undefined) node.userData.__softnParentId = parentId;
-  if (spec.cursor) node.userData.__softnCursor = spec.cursor;
-  else delete node.userData.__softnCursor;
-  if (spec.interactive) node.userData.__softnInteractive = spec.interactive;
-  else delete node.userData.__softnInteractive;
-  if (typeof spec.pickable === 'boolean') node.userData[PICKABLE_KEY] = spec.pickable;
-  else delete node.userData[PICKABLE_KEY];
+  const data = node.userData;
+  data.__softnId = spec.id;
+  if (parentId !== undefined) data.__softnParentId = parentId;
+  if (spec.cursor) data.__softnCursor = spec.cursor;
+  else if ('__softnCursor' in data) delete data.__softnCursor;
+  if (spec.interactive) data.__softnInteractive = spec.interactive;
+  else if ('__softnInteractive' in data) delete data.__softnInteractive;
+  if (typeof spec.pickable === 'boolean') data[PICKABLE_KEY] = spec.pickable;
+  else if (PICKABLE_KEY in data) delete data[PICKABLE_KEY];
   // Its own word on shadows, where it gave one: what passDownShadows reads
   // to tell a child that said so from one that takes its group's.
-  if (typeof spec.castShadow === 'boolean') node.userData[CAST_KEY] = spec.castShadow;
-  else delete node.userData[CAST_KEY];
-  if (typeof spec.receiveShadow === 'boolean') node.userData[RECEIVE_KEY] = spec.receiveShadow;
-  else delete node.userData[RECEIVE_KEY];
+  if (typeof spec.castShadow === 'boolean') data[CAST_KEY] = spec.castShadow;
+  else if (CAST_KEY in data) delete data[CAST_KEY];
+  if (typeof spec.receiveShadow === 'boolean') data[RECEIVE_KEY] = spec.receiveShadow;
+  else if (RECEIVE_KEY in data) delete data[RECEIVE_KEY];
 }
 
 /** Take off a node what `tagNode` put on it: it is no longer an object of the scene itself. */
@@ -2061,12 +2144,13 @@ function applyInherited(node: THREE.Object3D, obj: Scene3DObject): void {
 
 /** What the render loop reads off a group's child to keep it moving (`animate`). */
 function tagChildMotion(node: THREE.Object3D, spec: Scene3DObject): void {
+  const data = node.userData;
   if (spec.animate) {
-    node.userData.__softnAnimate = spec.animate;
-    node.userData.__softnBaseY = spec.position?.y ?? 0;
+    data.__softnAnimate = spec.animate;
+    data.__softnBaseY = spec.position?.y ?? 0;
   } else {
-    delete node.userData.__softnAnimate;
-    delete node.userData.__softnBaseY;
+    if ('__softnAnimate' in data) delete data.__softnAnimate;
+    if ('__softnBaseY' in data) delete data.__softnBaseY;
   }
 }
 
@@ -2108,8 +2192,12 @@ interface GroupBuild {
   /** The scene's easer, and the `transition` these children have unless they give their own. */
   easer?: Easer;
   ms?: number;
+  /** Inherited material-look transition (explicit `transition` only, so hit-flashes stay crisp). */
+  lookMs?: number;
   /** The scene's hold on the pictures round and soft particles are drawn with. */
   sprites?: ParticleSprites;
+  /** Per-scene reference-counted primitive geometry pool. */
+  geometries?: GeometryPool;
 }
 
 const EMPTY_MODEL_KEY = '__softnEmptyModel';
@@ -2128,7 +2216,10 @@ function createEmptyModel(): THREE.Group {
 function createSubObject(child: Scene3DObject, parentId: string, build: GroupBuild): THREE.Object3D {
   let sub: THREE.Object3D;
   if (child.type === 'group') {
-    sub = createGroup(child, build);
+    const ms = transitionOf(child.transition, build.ms ?? 0);
+    const lookMs = transitionOf(child.transition, build.lookMs ?? 0);
+    const within = ms === build.ms && lookMs === build.lookMs ? build : { ...build, ms, lookMs };
+    sub = createGroup(child, within);
   } else if (child.type === 'particles') {
     sub = createParticles(child, build.sprites);
   } else if (child.type === 'instanced') {
@@ -2137,7 +2228,7 @@ function createSubObject(child: Scene3DObject, parentId: string, build: GroupBui
     // A model with no URL to load is nothing to draw, here as at the top level.
     sub = child.modelUrl ? build.models.create(child, parentId) : createEmptyModel();
   } else {
-    const geom = createGeometry(child);
+    const geom = acquireGeometry(build.geometries, child);
     const mat = createMaterial(child, build.policy);
     sub = new THREE.Mesh(geom, mat);
   }
@@ -2185,18 +2276,19 @@ function patchSubObject(
   // This child's own `transition`, or its group's: its children's in turn.
   const easer = build.easer;
   const ms = transitionOf(next.transition, build.ms ?? 0);
+  const lookMs = transitionOf(next.transition, build.lookMs ?? 0);
   if (loads) {
-    if (!build.models.patch(node, next, ms)) return false;
+    if (!build.models.patch(node, next, lookMs)) return false;
   } else if (next.type === 'model') {
     // No file to load: an empty node, with nothing of its own to bring up to date.
     if (!node.userData[EMPTY_MODEL_KEY]) return false;
   } else if (next.type === 'group') {
-    const within = ms === build.ms ? build : { ...build, ms };
+    const within = ms === build.ms && lookMs === build.lookMs ? build : { ...build, ms, lookMs };
     reconcileGroupChildren(node as THREE.Group, prev.children, next.children, next.id, within);
   } else if (next.type === 'particles') {
     const points = node as THREE.Points;
     if (particleLookChanged(prev, next)) {
-      writeParticleMaterialEased(points.material as THREE.PointsMaterial, next, easer, ms, build.sprites);
+      writeParticleMaterialEased(points.material as THREE.PointsMaterial, next, easer, lookMs, build.sprites);
     }
     updateParticles(points, next);
   } else if (next.type === 'instanced') {
@@ -2207,20 +2299,20 @@ function patchSubObject(
     ) {
       return false;
     }
-    updateInstanced(node as THREE.InstancedMesh, prev, next, easer, ms);
+    updateInstanced(node as THREE.InstancedMesh, prev, next, easer, lookMs);
   } else {
     const mesh = node as THREE.Mesh;
     if (needsGeometryUpdate(prev, next)) {
-      mesh.geometry.dispose();
-      mesh.geometry = createGeometry(next);
+      releaseGeometry(mesh.geometry);
+      mesh.geometry = acquireGeometry(build.geometries, next);
     }
-    updateMeshMaterial(mesh, prev, next, build.policy, easer, ms);
+    updateMeshMaterial(mesh, prev, next, build.policy, easer, lookMs);
   }
   tagNode(node, next, node.userData.__softnParentId as string | undefined);
   tagChildMotion(node, next);
   // As an update, so an axis that `animate` is turning is left to it; with
   // no `animate` every axis is the spec's, as it always was.
-  applyTransform(node, next, true, easer, ms, false);
+  applyTransform(node, next, true, easer, ms, false, prev);
   return true;
 }
 
@@ -2308,17 +2400,20 @@ const restAngles = new THREE.Euler();
  * (motion.ts). `top` is false for a group's child: its shadows are settled
  * by the pass its top-level group makes, which knows what it inherits.
  */
+const ORIGIN = { x: 0, y: 0, z: 0 } as const;
+
 function applyTransform(
   mesh: THREE.Object3D,
   obj: Scene3DObject,
   isUpdate: boolean,
   easer?: Easer,
   ms = 0,
-  top = true
+  top = true,
+  prev?: Scene3DObject
 ) {
   const anim = obj.animate;
   // A camera-attached object is placed by the render loop from its offset;
-  // its own position and rotation fields are read there, not here.
+  // its camera-local offset & orientation are eased via `easer.carryTo`.
   const carried = obj.attach === 'camera';
   let over = isUpdate ? ms : 0;
 
@@ -2330,6 +2425,19 @@ function applyTransform(
     mesh.position.set(0, 0, 0);
     mesh.quaternion.identity();
     over = 0;
+  }
+
+  if (carried && easer) {
+    const off = obj.position ?? ORIGIN;
+    const rot = obj.rotation;
+    if (rot) {
+      const order = rotationOrderOf(obj.rotationOrder);
+      restAngles.set(rot.x, rot.y, rot.z, order);
+      facing.setFromEuler(restAngles);
+    } else {
+      facing.identity();
+    }
+    easer.carryTo(mesh, off.x, off.y, off.z, facing, over, isUpdate);
   }
 
   if (obj.position && !carried) {
@@ -2381,6 +2489,18 @@ function applyTransform(
     const sz = typeof s === 'number' ? s : s.z;
     if (!easer || !easer.scaleTo(mesh, sx, sy, sz, over)) mesh.scale.set(sx, sy, sz);
   }
+
+  const inheritedUnchanged =
+    isUpdate &&
+    prev !== undefined &&
+    obj.type !== 'group' &&
+    obj.type !== 'model' &&
+    (prev.attach === 'camera') === carried &&
+    (!carried || !needsMaterialRebuild(prev, obj)) &&
+    (prev.castShadow ?? false) === (obj.castShadow ?? false) &&
+    (prev.receiveShadow ?? false) === (obj.receiveShadow ?? false);
+
+  if (inheritedUnchanged) return;
 
   if (top) {
     applyInherited(mesh, obj);
@@ -2737,6 +2857,19 @@ interface MeshEntry {
   cameras?: ModelCameras;
   /** For a loaded model whose object speaks of its `lights`: the lights that are in it (model-lights.ts). */
   lights?: ModelLights;
+  /** Cached whether this object or any of its group children specifies `cursor` or `interactive`. */
+  hasCursor?: boolean;
+}
+
+function specHasCursor(obj: Scene3DObject): boolean {
+  if (obj.cursor || obj.interactive) return true;
+  if (Array.isArray(obj.children)) {
+    for (let i = 0; i < obj.children.length; i++) {
+      const child = obj.children[i];
+      if (child && typeof child === 'object' && specHasCursor(child)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -3383,7 +3516,7 @@ export function Scene3D({
   staticObjects,
   lights,
   camera: cameraProp,
-  transition = 0,
+  transition,
   jumpDistance = 4,
   background = '#1a1a2e',
   sky,
@@ -3477,45 +3610,57 @@ export function Scene3D({
   // a group's children) is still seen to be unchanged below.
   const screening = useMemo(() => ({ allowUrl, assets }), [allowUrl, assets]);
   const screenedRef = useRef(new WeakMap<Scene3DObject, { by: object; out: Scene3DObject }>());
-  const safeObjects = useMemo<Scene3DObject[]>(() => {
-    const seen = screenedRef.current;
-    const screenedUrl = (written: string): string | undefined => {
-      const url = resolveBundleSrc(written, screening.assets);
-      return screening.allowUrl(url) ? url : undefined;
-    };
-    const screened = (obj: Scene3DObject): Scene3DObject => {
-      const known = seen.get(obj);
-      if (known && known.by === screening) return known.out;
-      let out = obj;
-      if (obj.textureUrl) {
-        const textureUrl = screenedUrl(obj.textureUrl);
-        if (textureUrl !== obj.textureUrl) out = { ...out, textureUrl };
+  const screenList = useCallback(
+    (arr: Scene3DObject[] | undefined): Scene3DObject[] => {
+      if (!Array.isArray(arr) || arr.length === 0) return [];
+      const seen = screenedRef.current;
+      const screenedUrl = (written: string): string | undefined => {
+        const url = resolveBundleSrc(written, screening.assets);
+        return screening.allowUrl(url) ? url : undefined;
+      };
+      const screened = (obj: Scene3DObject): Scene3DObject => {
+        const known = seen.get(obj);
+        if (known && known.by === screening) return known.out;
+        let out = obj;
+        if (obj.textureUrl) {
+          const textureUrl = screenedUrl(obj.textureUrl);
+          if (textureUrl !== obj.textureUrl) out = { ...out, textureUrl };
+        }
+        if (obj.modelUrl) {
+          const modelUrl = screenedUrl(obj.modelUrl);
+          if (modelUrl !== obj.modelUrl) out = { ...out, modelUrl };
+        }
+        if (Array.isArray(obj.children)) {
+          let changed = false;
+          const children = new Array<Scene3DObject>(obj.children.length);
+          for (let i = 0; i < obj.children.length; i++) {
+            const child = obj.children[i];
+            const next = child && typeof child === 'object' ? screened(child) : child;
+            children[i] = next;
+            if (next !== child) changed = true;
+          }
+          if (changed) out = { ...out, children };
+        }
+        seen.set(obj, { by: screening, out });
+        return out;
+      };
+      const out: Scene3DObject[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        const obj = arr[i];
+        if (obj && typeof obj.id === 'string' && obj.id.length > 0) {
+          out.push(screened(obj));
+        }
       }
-      if (obj.modelUrl) {
-        const modelUrl = screenedUrl(obj.modelUrl);
-        if (modelUrl !== obj.modelUrl) out = { ...out, modelUrl };
-      }
-      if (Array.isArray(obj.children)) {
-        const children = obj.children.map((child) => (child && typeof child === 'object' ? screened(child) : child));
-        if (children.some((c, i) => c !== obj.children![i])) out = { ...out, children };
-      }
-      if (out !== obj) seen.set(obj, { by: screening, out });
       return out;
-    };
-    const usable = (arr: Scene3DObject[] | undefined) =>
-      Array.isArray(arr)
-        ? arr
-            .filter(
-              (obj): obj is Scene3DObject => !!obj && typeof obj.id === 'string' && obj.id.length > 0
-            )
-            .map(screened)
-        : [];
-    const dynamic = usable(objects);
-    const fixed = usable(staticObjects);
-    // Statics first, so ids stay in the order the scene declared them and a
-    // dynamic object with a clashing id still wins the later reconcile pass.
-    return fixed.length === 0 ? dynamic : fixed.concat(dynamic);
-  }, [objects, staticObjects, screening]);
+    },
+    [screening]
+  );
+  const safeStaticObjects = useMemo<Scene3DObject[]>(() => screenList(staticObjects), [staticObjects, screenList]);
+  const safeDynamicObjects = useMemo<Scene3DObject[]>(() => screenList(objects), [objects, screenList]);
+  const safeObjects = useMemo<Scene3DObject[]>(
+    () => (safeStaticObjects.length === 0 ? safeDynamicObjects : safeStaticObjects.concat(safeDynamicObjects)),
+    [safeStaticObjects, safeDynamicObjects]
+  );
   // The environment, as the two things it can be: the studio room, or a
   // panorama of the app's own. The panorama's address is a path in the
   // bundle or a URL, resolved and judged as a model's is; what the policy
@@ -3626,6 +3771,7 @@ export function Scene3D({
   const autoRotateRef = useRef({ autoRotate, autoRotateSpeed });
   autoRotateRef.current = { autoRotate, autoRotateSpeed };
   const meshMapRef = useRef<Map<string, MeshEntry>>(new Map());
+  const geometryPoolRef = useRef<GeometryPool>(new Map());
   const loadVersionRef = useRef<Map<string, number>>(new Map());
   const animationMapRef = useRef<Map<string, AnimationEntry>>(new Map());
   const lightMapRef = useRef<Map<string, THREE.Light>>(new Map());
@@ -3701,8 +3847,30 @@ export function Scene3D({
   easer.jump = Number.isFinite(jumpDistance) ? Math.max(0, jumpDistance) : 4;
   const jumpRef = useRef(easer.jump);
   jumpRef.current = easer.jump;
+  const explicitTransition = transition !== undefined;
+  const explicitTransitionRef = useRef(explicitTransition);
+  explicitTransitionRef.current = explicitTransition;
   const transitionRef = useRef(0);
-  transitionRef.current = transitionOf(transition, 0);
+  transitionRef.current = transitionOf(transition ?? 0, 0);
+  const objectTickCadenceRef = useRef<TickCadence | null>(null);
+  if (!objectTickCadenceRef.current) objectTickCadenceRef.current = new TickCadence();
+  const camTickCadenceRef = useRef<TickCadence | null>(null);
+  if (!camTickCadenceRef.current) camTickCadenceRef.current = new TickCadence();
+  const prevObjectsPropRef = useRef<Scene3DObject[] | undefined>(undefined);
+  const objectsPropRef = useRef(objects);
+  objectsPropRef.current = objects;
+  const autoTransformMsRef = useRef(0);
+  const hasInteractiveCursorRef = useRef(false);
+  const camLinearRef = useRef({
+    posOn: false,
+    posT: 0,
+    posMs: 0,
+    posFrom: new THREE.Vector3(),
+    lookOn: false,
+    lookT: 0,
+    lookMs: 0,
+    lookFrom: new THREE.Vector3(),
+  });
   const orbitRef = useRef(orbit);
   orbitRef.current = orbit;
   // This scene's hold on the pictures round and soft particles are drawn
@@ -3886,6 +4054,9 @@ export function Scene3D({
     // Capture the collections owned by this renderer instance. Cleanup must
     // dispose exactly these resources even if a later setup updates a ref.
     const meshMap = meshMapRef.current;
+    const geometryPool = geometryPoolRef.current;
+    const objectTickCadence = objectTickCadenceRef.current as TickCadence;
+    const camTickCadence = camTickCadenceRef.current as TickCadence;
     const loadVersions = loadVersionRef.current;
     const animationMap = animationMapRef.current;
     const lightMap = lightMapRef.current;
@@ -4256,8 +4427,13 @@ export function Scene3D({
           askForPointerFrame();
         }
       } else if (!isLocked()) {
-        hoverAt = { x: event.clientX, y: event.clientY };
-        askForPointerFrame();
+        if (onHoverRef.current || onHoverChangeRef.current || hasInteractiveCursorRef.current) {
+          hoverAt = { x: event.clientX, y: event.clientY };
+          askForPointerFrame();
+        } else if (hovered !== null) {
+          hovered = null;
+          canvas.style.cursor = restingCursor();
+        }
       }
     };
 
@@ -4449,6 +4625,8 @@ export function Scene3D({
     // puts it, eased or at once as any other move is, and for orbit controls
     // turning about what it was looking at.
     const stopFollowing = (cam: SceneCamera) => {
+      camLinearRef.current.posOn = false;
+      camLinearRef.current.lookOn = false;
       const controls = controlsRef.current;
       if (controls) {
         controls.target.copy(lookNowRef.current);
@@ -4484,6 +4662,7 @@ export function Scene3D({
       if (!cam) return;
       const dt = clockRef.current.getDelta();
       const elapsed = clockRef.current.getElapsedTime();
+      const elapsedMs = dt * 1000;
       // Scale rotation by delta time (values are per-frame at 60fps ≈ 0.01667s)
       const dtScale = dt / 0.01667;
 
@@ -4491,11 +4670,22 @@ export function Scene3D({
       // nothing part of the way: whatever changed meanwhile is where it is.
       const resumed = resumedRef.current;
       resumedRef.current = false;
+      const camLinear = camLinearRef.current;
+      if (resumed) {
+        objectTickCadence.reset();
+        camTickCadence.reset();
+        autoTransformMsRef.current = 0;
+        camLinear.posOn = false;
+        camLinear.lookOn = false;
+      } else if (wantRunningRef.current) {
+        objectTickCadence.frame(elapsedMs);
+        camTickCadence.frame(elapsedMs);
+      }
       // What `transition` is taking somewhere goes on its way (motion.ts).
       // From here on a change is eased; while the scene was not being drawn
       // it was written at once.
       easer.live = wantRunningRef.current;
-      if (easer.busy) easer.advance(dt * 1000);
+      if (easer.busy) easer.advance(elapsedMs);
 
       // `animate`: a turn and a bob the scene keeps up by itself, for a
       // top-level object and for a group's child alike.
@@ -4525,7 +4715,6 @@ export function Scene3D({
       animationMap.forEach((entry) => advanceAnimation(entry, dt));
       // A model's named parts are written after its clip and its appearance:
       // where `parts` speaks of a node it has the last word (model-parts.ts).
-      const elapsedMs = dt * 1000;
       meshMap.forEach((entry) => {
         if (entry.model) applyModelAppearance(entry.model, entry.spec.appearance, dt);
         if (entry.parts) entry.parts.frame(elapsedMs);
@@ -4600,13 +4789,28 @@ export function Scene3D({
       // turn it was part of the way through is dropped, so the camera stays
       // as they leave it when the controls go.
       const placed = !through && (following || !controls);
-      if (!placed) aimingRef.current = false;
+      if (!placed) {
+        aimingRef.current = false;
+        camLinear.posOn = false;
+        camLinear.lookOn = false;
+      }
 
-      // Ease toward the last position the host gave, frame-rate independent.
-      if (smoothing > 0 && placed) {
+      // Ease toward the last position the host gave: linear across periodic
+      // game-loop ticks (eliminating exponential-lerp velocity sawtooth), or
+      // frame-rate-independent exponential smoothing otherwise.
+      if (placed) {
         if (resumed) {
-          cam.position.copy(camTargetRef.current);
-        } else {
+          camLinear.posOn = false;
+          if (smoothing > 0) cam.position.copy(camTargetRef.current);
+        } else if (camLinear.posOn && !following) {
+          camLinear.posT += elapsedMs;
+          if (camLinear.posT >= camLinear.posMs) {
+            camLinear.posOn = false;
+            cam.position.copy(camTargetRef.current);
+          } else {
+            cam.position.lerpVectors(camLinear.posFrom, camTargetRef.current, camLinear.posT / camLinear.posMs);
+          }
+        } else if (smoothing > 0) {
           cam.position.lerp(camTargetRef.current, 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale));
         }
       }
@@ -4618,11 +4822,30 @@ export function Scene3D({
       if (aimingRef.current && placed && !mouseLook) {
         const look = lookNowRef.current;
         const want = lookTargetRef.current;
-        if (smoothing > 0 && !resumed) look.lerp(want, 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale));
-        else look.copy(want);
-        if (!following && look.distanceToSquared(want) < 1e-10) {
+        if (resumed) {
+          camLinear.lookOn = false;
           look.copy(want);
-          if (!(smoothing > 0) || cam.position.distanceToSquared(camTargetRef.current) < 1e-14) aimingRef.current = false;
+        } else if (camLinear.lookOn && !following) {
+          camLinear.lookT += elapsedMs;
+          if (camLinear.lookT >= camLinear.lookMs) {
+            camLinear.lookOn = false;
+            look.copy(want);
+          } else {
+            look.lerpVectors(camLinear.lookFrom, want, camLinear.lookT / camLinear.lookMs);
+          }
+        } else if (smoothing > 0) {
+          look.lerp(want, 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale));
+        } else {
+          look.copy(want);
+        }
+        if (!following && !camLinear.lookOn && look.distanceToSquared(want) < 1e-10) {
+          look.copy(want);
+          if (
+            !camLinear.posOn &&
+            (!(smoothing > 0) || cam.position.distanceToSquared(camTargetRef.current) < 1e-14)
+          ) {
+            aimingRef.current = false;
+          }
         }
         cam.lookAt(look);
       }
@@ -4705,11 +4928,18 @@ export function Scene3D({
       });
       meshMap.forEach((entry) => {
         if (entry.spec.attach !== 'camera') return;
-        const off = entry.spec.position ?? { x: 0, y: 0, z: 0 };
+        const held = easer.carriedPose(entry.mesh);
+        if (held) {
+          attachedOffset.copy(held.pos).applyQuaternion(cam.quaternion).add(cam.position);
+          entry.mesh.position.copy(attachedOffset);
+          entry.mesh.quaternion.copy(cam.quaternion).multiply(held.quat);
+          return;
+        }
+        const off = entry.spec.position ?? ORIGIN;
         attachedOffset.set(off.x, off.y, off.z).applyQuaternion(cam.quaternion).add(cam.position);
         entry.mesh.position.copy(attachedOffset);
         const rot = entry.spec.rotation;
-        attachedRotation.set(rot?.x ?? 0, rot?.y ?? 0, rot?.z ?? 0);
+        attachedRotation.set(rot?.x ?? 0, rot?.y ?? 0, rot?.z ?? 0, rotationOrderOf(entry.spec.rotationOrder));
         entry.mesh.quaternion.copy(cam.quaternion).multiply(attachedQuat.setFromEuler(attachedRotation));
       });
 
@@ -4755,6 +4985,10 @@ export function Scene3D({
     const loop = new FrameLoop(clockRef.current, renderFrame);
     loopRef.current = loop;
     renderFrame();
+    const mountNow = performance.now();
+    objectTickCadence.reset();
+    camTickCadence.reset();
+    camTickCadence.seed(mountNow);
     loop.setRunning(wantRunningRef.current);
 
     if (!readyFiredRef.current) {
@@ -4798,6 +5032,8 @@ export function Scene3D({
       standingRef.current = false;
       meshMap.forEach((entry) => discardEntry(scene, entry));
       meshMap.clear();
+      geometryPool.forEach((lease) => lease.geom.dispose());
+      geometryPool.clear();
       // Nor is a camera of one of its models left to look through.
       modelView.on = false;
       modelView.model = null;
@@ -5053,6 +5289,18 @@ export function Scene3D({
     if (!wantRunning) {
       easer.finishAll();
       easer.live = false;
+      objectTickCadenceRef.current?.reset();
+      camTickCadenceRef.current?.reset();
+      autoTransformMsRef.current = 0;
+      if (camLinearRef.current.posOn) {
+        camLinearRef.current.posOn = false;
+        cameraRef.current?.position.copy(camTargetRef.current);
+      }
+      if (camLinearRef.current.lookOn) {
+        camLinearRef.current.lookOn = false;
+        lookNowRef.current.copy(lookTargetRef.current);
+        cameraRef.current?.lookAt(lookNowRef.current);
+      }
       // And the parts of models that were on their way.
       meshMapRef.current.forEach((entry) => entry.parts?.finish());
       childModelsRef.current.forEach((child) => child.parts?.finish());
@@ -5228,60 +5476,108 @@ export function Scene3D({
     // A camera that follows an object is placed and aimed by the render
     // loop. What the prop says meanwhile is kept for when it stops.
     const following = followStateRef.current.held;
+    const camLinear = camLinearRef.current;
+    const camTickCadence = camTickCadenceRef.current as TickCadence;
     // Whether this update put the camera somewhere else, and whether it was
     // put there at once or is on its way.
     let moved = false;
     let arrived = false;
 
-    if (cameraProp.position) {
-      const posKey = JSON.stringify(cameraProp.position);
-      if (posKey !== lastCamPosRef.current) {
-        lastCamPosRef.current = posKey;
-        if (!following) {
-          moved = true;
-          camTargetRef.current.set(cameraProp.position.x, cameraProp.position.y, cameraProp.position.z);
-          // A jump larger than a few metres is a teleport, not a step: no
-          // easing. Nor while orbit controls steer, which the easing would
-          // pull against for as long as they did.
-          if (!smooth || controls || (jump > 0 && camTargetRef.current.distanceTo(cam.position) > jump)) {
-            cam.position.copy(camTargetRef.current);
-            arrived = true;
-          }
-          // Reset orbit controls target when camera moves programmatically
-          if (controls && cameraProp.lookAt) {
-            controls.target.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
-          }
+    const posKey = cameraProp.position ? JSON.stringify(cameraProp.position) : null;
+    const posChanged = posKey !== null && posKey !== lastCamPosRef.current;
+    const lookAtKey = cameraProp.lookAt && !enableMouseLook ? JSON.stringify(cameraProp.lookAt) : null;
+    const lookChanged = lookAtKey !== null && lookAtKey !== lastCamLookAtRef.current;
+
+    let camAutoMs = 0;
+    if ((posChanged || lookChanged) && !following && !controls) {
+      camAutoMs =
+        explicitTransitionRef.current && transitionRef.current === 0
+          ? 0
+          : camTickCadence.update(performance.now());
+    } else if ((posChanged || lookChanged) && (following || controls)) {
+      camTickCadence.reset();
+      camLinear.posOn = false;
+      camLinear.lookOn = false;
+    }
+
+    if (posChanged && cameraProp.position) {
+      lastCamPosRef.current = posKey as string;
+      if (!following) {
+        moved = true;
+        const toldPos = smooth || camLinear.posOn ? camTargetRef.current : cam.position;
+        const stepDist = Math.hypot(
+          cameraProp.position.x - toldPos.x,
+          cameraProp.position.y - toldPos.y,
+          cameraProp.position.z - toldPos.z
+        );
+        camTargetRef.current.set(cameraProp.position.x, cameraProp.position.y, cameraProp.position.z);
+        // A jump larger than a few metres is a teleport, not a step: no
+        // easing. Nor while orbit controls steer, which the easing would
+        // pull against for as long as they did.
+        const jumped = jump > 0 && stepDist > jump;
+        if (jumped) camTickCadence.reset();
+        if (controls || jumped) {
+          camLinear.posOn = false;
+          cam.position.copy(camTargetRef.current);
+          arrived = true;
+        } else if (camAutoMs > 0 && easerRef.current?.live) {
+          camLinear.posFrom.copy(cam.position);
+          camLinear.posT = 0;
+          camLinear.posMs = camAutoMs;
+          camLinear.posOn = true;
+        } else if (smooth) {
+          camLinear.posOn = false;
+        } else {
+          camLinear.posOn = false;
+          cam.position.copy(camTargetRef.current);
+          arrived = true;
+        }
+        // Reset orbit controls target when camera moves programmatically
+        if (controls && cameraProp.lookAt) {
+          controls.target.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
         }
       }
     }
     // Skip lookAt updates when mouse look owns the camera direction
-    if (cameraProp.lookAt && !enableMouseLook) {
-      const lookAtKey = JSON.stringify(cameraProp.lookAt);
-      if (lookAtKey !== lastCamLookAtRef.current) {
-        lastCamLookAtRef.current = lookAtKey;
-        lookAtRef.current = cameraProp.lookAt;
-        if (following) {
-          // The render loop's, until it stops following.
-        } else if (controls) {
-          controls.target.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
+    if (lookChanged && cameraProp.lookAt) {
+      lastCamLookAtRef.current = lookAtKey as string;
+      lookAtRef.current = cameraProp.lookAt;
+      if (following) {
+        // The render loop's, until it stops following.
+      } else if (controls) {
+        camLinear.lookOn = false;
+        controls.target.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
+      } else {
+        // How far the point has been moved in this one update: from where the
+        // view was last told to look, while it is still turning there, and
+        // from where it looks otherwise (as for an object that is eased:
+        // motion.ts has why it is not measured from where the view has got to).
+        const told = aimingRef.current ? lookTargetRef.current : lookNowRef.current;
+        const stepLook = Math.hypot(
+          cameraProp.lookAt.x - told.x,
+          cameraProp.lookAt.y - told.y,
+          cameraProp.lookAt.z - told.z
+        );
+        const want = lookTargetRef.current.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
+        const turn = want.distanceTo(lookNowRef.current);
+        const jumped = jump > 0 && stepLook > jump;
+        if (jumped) camTickCadence.reset();
+        if (turn > 1e-9 && !jumped && camAutoMs > 0 && easerRef.current?.live) {
+          camLinear.lookFrom.copy(lookNowRef.current);
+          camLinear.lookT = 0;
+          camLinear.lookMs = camAutoMs;
+          camLinear.lookOn = true;
+          aimingRef.current = true;
+        } else if (smooth && turn > 1e-9 && !jumped) {
+          // With `cameraSmoothing` the view turns there over the next
+          // frames, as the position moves: it used to snap on the tick.
+          camLinear.lookOn = false;
+          aimingRef.current = true;
         } else {
-          // How far the point has been moved in this one update: from where the
-          // view was last told to look, while it is still turning there, and
-          // from where it looks otherwise (as for an object that is eased:
-          // motion.ts has why it is not measured from where the view has got to).
-          const told = aimingRef.current ? lookTargetRef.current : lookNowRef.current;
-          const moved = Math.hypot(cameraProp.lookAt.x - told.x, cameraProp.lookAt.y - told.y, cameraProp.lookAt.z - told.z);
-          const want = lookTargetRef.current.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
-          const turn = want.distanceTo(lookNowRef.current);
-          if (smooth && turn > 1e-9 && !(jump > 0 && moved > jump)) {
-            // With `cameraSmoothing` the view turns there over the next
-            // frames, as the position moves: it used to snap on the tick.
-            aimingRef.current = true;
-          } else {
-            aimingRef.current = false;
-            lookNowRef.current.copy(want);
-            cam.lookAt(want);
-          }
+          camLinear.lookOn = false;
+          aimingRef.current = false;
+          lookNowRef.current.copy(want);
+          cam.lookAt(want);
         }
       }
     }
@@ -5293,11 +5589,11 @@ export function Scene3D({
     // nor under mouse look or a follow, which have the direction.
     if (moved && cameraProp.lookAt && !controls && !enableMouseLook) {
       lookTargetRef.current.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
-      if (!smooth) lookNowRef.current.copy(lookTargetRef.current);
+      if (!smooth && !camLinear.lookOn) lookNowRef.current.copy(lookTargetRef.current);
       // Now, if the camera is already there; and by the render loop on every
       // frame of its way there, and of its turn if it is part-way through one.
-      if (arrived) cam.lookAt(lookNowRef.current);
-      aimingRef.current = smooth;
+      if (arrived && !camLinear.lookOn) cam.lookAt(lookNowRef.current);
+      aimingRef.current = smooth || camLinear.posOn || camLinear.lookOn;
     }
 
     // The camera's shape: each number that is given and has changed. Near
@@ -5635,15 +5931,31 @@ export function Scene3D({
     if (!scene) return;
 
     const meshMap = meshMapRef.current;
+    const geometryPool = geometryPoolRef.current;
     const animationMap = animationMapRef.current;
     const required = requiredAssetsRef.current as RequiredAssets;
     const policy = policyRef.current;
-    // The scene's `transition`: how long a change to an object that was
-    // already there takes, unless the object gives its own.
-    const sceneMs = transitionRef.current;
+    if (objectsPropRef.current !== prevObjectsPropRef.current) {
+      prevObjectsPropRef.current = objectsPropRef.current;
+      autoTransformMsRef.current = explicitTransitionRef.current
+        ? 0
+        : (objectTickCadenceRef.current as TickCadence).update(performance.now());
+    }
+    const explicitSceneMs = explicitTransitionRef.current ? transitionRef.current : undefined;
+    const defaultTransformMs = explicitSceneMs ?? autoTransformMsRef.current;
+    const defaultLookMs = explicitSceneMs ?? 0;
     const sprites = spritesRef.current as ParticleSprites;
-    const build: GroupBuild = { policy, models: childModelHostRef.current as ChildModelHost, easer, ms: sceneMs, sprites };
-    const currentIds = new Set(safeObjects.map((o) => o.id));
+    const build: GroupBuild = {
+      policy,
+      models: childModelHostRef.current as ChildModelHost,
+      easer,
+      ms: defaultTransformMs,
+      lookMs: defaultLookMs,
+      sprites,
+      geometries: geometryPool,
+    };
+    const currentIds = new Set<string>();
+    for (let i = 0; i < safeObjects.length; i++) currentIds.add(safeObjects[i].id);
 
     const reportModel = (id: string, load: ModelLoadState) => {
       onModelStateRef.current?.({ objectId: id, ...load });
@@ -5701,6 +6013,7 @@ export function Scene3D({
         baseY: obj.position?.y ?? 0,
         loadVersion: version,
         load: pending,
+        hasCursor: specHasCursor(obj),
       });
       reportModel(obj.id, pending);
 
@@ -5742,6 +6055,7 @@ export function Scene3D({
             baseY: spec.position?.y ?? 0,
             loadVersion: version,
             instance,
+            hasCursor: specHasCursor(spec),
           });
           const animEntry = startModelAnimation(loaded, animations, spec, undefined, (event) =>
             onAnimationRef.current?.(event)
@@ -5766,11 +6080,20 @@ export function Scene3D({
         });
     };
 
+    let anyCursor = false;
+
     // Add or update meshes
     for (const obj of safeObjects) {
       const existing = meshMap.get(obj.id);
+      if (existing && existing.spec === obj) {
+        if (existing.hasCursor) anyCursor = true;
+        continue;
+      }
+      const hasCursor = specHasCursor(obj);
+      if (hasCursor) anyCursor = true;
       // How long a change to this object takes: its own `transition`, or the scene's.
-      const ms = transitionOf(obj.transition, sceneMs);
+      const ms = transitionOf(obj.transition, defaultTransformMs);
+      const lookMs = transitionOf(obj.transition, defaultLookMs);
 
       if (obj.type === 'model' && obj.modelUrl) {
         const url = obj.modelUrl;
@@ -5803,10 +6126,10 @@ export function Scene3D({
               fitModel(model, existing.info, obj.fit);
             }
             tagNode(existing.mesh, obj);
-            applyTransform(existing.mesh, obj, true, easer, ms);
+            applyTransform(existing.mesh, obj, true, easer, ms, true, existing.spec);
           }
           if (needsMaterialUpdate(existing.spec, obj)) {
-            applyMaterialOverrides(model ?? existing.mesh, obj, easer, ms);
+            applyMaterialOverrides(model ?? existing.mesh, obj, easer, lookMs);
           }
           // Re-apply only on spec change — see applyAnimationSpec's guard note
           const animEntry = animationMap.get(obj.id);
@@ -5827,6 +6150,7 @@ export function Scene3D({
           if (model && existing.spec.lights !== obj.lights) lightModel(existing, model, obj);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
+          existing.hasCursor = hasCursor;
         }
       } else if (obj.type === 'model') {
         // A model with no file to load: none named, or one the permission
@@ -5835,16 +6159,17 @@ export function Scene3D({
         // (geometry, material and all) on every reconcile.
         if (existing && existing.spec.type === 'model' && !existing.spec.modelUrl) {
           tagNode(existing.mesh, obj);
-          applyTransform(existing.mesh, obj, true, easer, ms);
+          applyTransform(existing.mesh, obj, true, easer, ms, true, existing.spec);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
+          existing.hasCursor = hasCursor;
         } else {
           if (existing) remove(obj.id, existing);
           const empty = createEmptyModel();
           tagNode(empty, obj);
           applyTransform(empty, obj, false, easer);
           scene.add(empty);
-          meshMap.set(obj.id, { mesh: empty, spec: obj, baseY: obj.position?.y ?? 0 });
+          meshMap.set(obj.id, { mesh: empty, spec: obj, baseY: obj.position?.y ?? 0, hasCursor });
         }
       } else if (obj.type === 'instanced') {
         // One mesh for many copies. A change of count, shape or texture
@@ -5863,18 +6188,19 @@ export function Scene3D({
           tagNode(mesh, obj);
           applyTransform(mesh, obj, false, easer);
           scene.add(mesh);
-          meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
+          meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0, hasCursor });
         } else if (existing) {
           // The batch as a whole is eased; where each copy stands is not.
-          updateInstanced(existing.mesh as THREE.InstancedMesh, existing.spec, obj, easer, ms);
+          updateInstanced(existing.mesh as THREE.InstancedMesh, existing.spec, obj, easer, lookMs);
           tagNode(existing.mesh, obj);
-          applyTransform(existing.mesh, obj, true, easer, ms);
+          applyTransform(existing.mesh, obj, true, easer, ms, true, existing.spec);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
+          existing.hasCursor = hasCursor;
         }
       } else if (obj.type === 'group') {
         // A group's `transition` is its children's, unless a child gives its own.
-        const within = ms === sceneMs ? build : { ...build, ms };
+        const within = ms === defaultTransformMs && lookMs === defaultLookMs ? build : { ...build, ms, lookMs };
         if (!existing || existing.spec.type !== 'group') {
           if (existing) remove(obj.id, existing);
           const group = createGroup(obj, within);
@@ -5885,6 +6211,7 @@ export function Scene3D({
             spec: obj,
             baseY: obj.position?.y ?? 0,
             animated: animatedChildren(group),
+            hasCursor,
           });
         } else {
           // The children are reconciled by id; the group itself is patched.
@@ -5899,9 +6226,10 @@ export function Scene3D({
             existing.animated = animatedChildren(existing.mesh);
           }
           tagNode(existing.mesh, obj);
-          applyTransform(existing.mesh, obj, true, easer, ms);
+          applyTransform(existing.mesh, obj, true, easer, ms, true, existing.spec);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
+          existing.hasCursor = hasCursor;
         }
       } else if (obj.type === 'particles') {
         if (!existing || existing.spec.type !== 'particles') {
@@ -5910,55 +6238,59 @@ export function Scene3D({
           tagNode(points, obj);
           applyTransform(points, obj, false, easer);
           scene.add(points);
-          meshMap.set(obj.id, { mesh: points, spec: obj, baseY: obj.position?.y ?? 0 });
+          meshMap.set(obj.id, { mesh: points, spec: obj, baseY: obj.position?.y ?? 0, hasCursor });
         } else {
           // Its colour, size, opacity and fog are written into the material
           // it has; a new colour or size used to make the whole cloud anew.
           const points = existing.mesh as THREE.Points;
           if (particleLookChanged(existing.spec, obj)) {
-            writeParticleMaterialEased(points.material as THREE.PointsMaterial, obj, easer, ms, sprites);
+            writeParticleMaterialEased(points.material as THREE.PointsMaterial, obj, easer, lookMs, sprites);
           }
           updateParticles(points, obj);
           tagNode(points, obj);
-          applyTransform(existing.mesh, obj, true, easer, ms);
+          applyTransform(existing.mesh, obj, true, easer, ms, true, existing.spec);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
+          existing.hasCursor = hasCursor;
         }
       } else if (!existing) {
         // Primitive objects — create synchronously
-        const geometry = createGeometry(obj);
+        const geometry = acquireGeometry(geometryPool, obj);
         const material = createMaterial(obj, policy);
         const mesh = new THREE.Mesh(geometry, material);
         tagNode(mesh, obj);
         applyTransform(mesh, obj, false, easer);
         scene.add(mesh);
-        meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
+        meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0, hasCursor });
       } else {
         // Primitive update
         if (existing.spec.type === 'model' || existing.spec.type === 'instanced' || existing.spec.type === 'group' || existing.spec.type === 'particles') {
           // Switching from a model/batch/group/particles to a primitive — remove the old mesh
           remove(obj.id, existing);
-          const geometry = createGeometry(obj);
+          const geometry = acquireGeometry(geometryPool, obj);
           const material = createMaterial(obj, policy);
           const mesh = new THREE.Mesh(geometry, material);
           tagNode(mesh, obj);
           applyTransform(mesh, obj, false, easer);
           scene.add(mesh);
-          meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
+          meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0, hasCursor });
         } else {
           const existingMesh = existing.mesh as THREE.Mesh;
           if (needsGeometryUpdate(existing.spec, obj)) {
-            existingMesh.geometry.dispose();
-            existingMesh.geometry = createGeometry(obj);
+            releaseGeometry(existingMesh.geometry);
+            existingMesh.geometry = acquireGeometry(geometryPool, obj);
           }
-          updateMeshMaterial(existingMesh, existing.spec, obj, policy, easer, ms);
+          updateMeshMaterial(existingMesh, existing.spec, obj, policy, easer, lookMs);
           tagNode(existingMesh, obj);
-          applyTransform(existing.mesh, obj, true, easer, ms);
+          applyTransform(existing.mesh, obj, true, easer, ms, true, existing.spec);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
+          existing.hasCursor = hasCursor;
         }
       }
     }
+
+    hasInteractiveCursorRef.current = anyCursor;
 
     // What was found by id before is looked for afresh; and a pointer at
     // rest over something that has just left the scene is looked under again.
@@ -6088,7 +6420,7 @@ export function Scene3D({
         ...(isFullscreen ? { background: '#000' } : style),
       }}
     >
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <div ref={containerRef} style={{ width: '100%', height: '100%', contain: 'strict' }} />
       {/* Page content pinned to places in the scene (`<SceneAnchor>`), laid
           over the canvas and moved by the render loop. The layer itself is
           not seen and takes no pointer: each anchor shows itself once the

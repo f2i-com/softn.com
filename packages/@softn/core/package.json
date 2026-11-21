@@ -1,6 +1,6 @@
 {
   "name": "@softn/core",
-  "version": "0.0.45",
+  "version": "0.0.48",
   "description": "SoftN UI Language Core Engine",
   "license": "Apache-2.0",
   "repository": {
@@ -23,6 +23,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./web-host": {
+      "types": "./dist/web-host.d.ts",
+      "default": "./dist/web-host.js"
+    },
+    "./authoring": {
+      "types": "./dist/authoring.d.ts",
+      "default": "./dist/authoring.js"
     },
     "./parser": {
       "types": "./dist/parser/index.d.ts",

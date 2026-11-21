@@ -633,16 +633,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Create the release if this is the first run for the tag; a retry
-          # attaches to the one that exists. `--clobber` lets a retry replace
-          # an archive from a run that failed after uploading.
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          # Keep a new release private until every verified asset is attached.
+          # A draft prepared before tagging or left by a failed upload can resume here.
+          if ! draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
             prerelease=""
             if [[ "$RELEASE_TAG" == *-* ]]; then prerelease="--prerelease"; fi
-            # release/RELEASE-NOTES.md is .github/release-notes.md with the
-            # downloads table filled in from scripts/release/release-packages.mjs.
-            gh release create "$RELEASE_TAG" --title "SoftN $RELEASE_TAG" $prerelease --notes-file release/RELEASE-NOTES.md \
-              || echo "release already exists; attaching to it"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "SoftN $RELEASE_TAG" $prerelease --notes-file release/RELEASE-NOTES.md
+            draft=true
           fi
           gh release upload "$RELEASE_TAG" release/*.zip release/*.sha256 release/RELEASE-GUIDE.md --clobber
+          if [[ "$draft" == true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --notes-file release/RELEASE-NOTES.md
+          fi
           echo "attached: $(ls release | tr '\n' ' ')"

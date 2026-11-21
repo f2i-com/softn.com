@@ -6,7 +6,7 @@
  * do something core's cannot: `lite` starts a plain web app on 2.8 MB instead of 6.6, and
  * `typescript` runs TypeScript. The other tiers ask for nothing more than the
  * JavaScript-and-Python engine, which is the engine every SoftN host runs its v1 apps on and
- * most have on the device already (the runtime and the editors install it): the Python tiers
+ * hosts download when an app needs it: the Python tiers
  * are that engine, and the `javascript` tier is its JavaScript, `Intl` and `Temporal`
  * included. A host that also kept those engines in the container's folder shipped the first
  * twice and a 4.9 MB subset of it once more (v0.0.43 did, in each of four apps). So the
@@ -18,13 +18,14 @@
  * WebContainerView, Studio and Builder through their previews), so none of them can name a
  * folder the build did not write or ask the folder for an engine it does not hold.
  */
-import { zippEngineForWorker } from '@softn/core';
 import type { SoftNContainerOptions, ZippEngineTier } from '@softn/container';
 
 interface HostEnv {
   BASE_URL?: string;
   /** Written by containerRuntimeAssetPlugin: the folder of this build, or the site's one shared folder. */
   VITE_SOFTN_CONTAINER_RUNTIME?: string;
+  /** A shared deployment keeps a tiny worker entry in each host's own service-worker scope. */
+  VITE_SOFTN_CONTAINER_WORKER?: string;
 }
 
 /**
@@ -53,7 +54,8 @@ export function containerRuntimeUrl(
 }
 
 /** Core's engine, compiled once for the page: asked for only when an app needs one of its tiers. */
-const coreEngine = (): Promise<WebAssembly.Module> => zippEngineForWorker();
+const coreEngine = (): Promise<WebAssembly.Module> =>
+  import('@softn/core/web-host').then((m) => m.zippEngineForWorker());
 
 /**
  * The app's own Three.js, which every SoftN host bundles for its 3D components: the chunk
@@ -69,9 +71,12 @@ const ownThree = (): Promise<unknown> => import('three');
  * loads the bindings that go with the engine it is handed, so core's runs under its own
  * whichever tier asked.
  */
-export function hostedContainerOptions(): Required<Pick<SoftNContainerOptions, 'runtimeUrl' | 'engineWasm' | 'hostThree'>> {
+export function hostedContainerOptions(
+  env: HostEnv | undefined = (import.meta as unknown as { env?: HostEnv }).env
+): Required<Pick<SoftNContainerOptions, 'runtimeUrl' | 'engineWasm' | 'hostThree'>> & Pick<SoftNContainerOptions, 'workerUrl'> {
   return {
-    runtimeUrl: containerRuntimeUrl(),
+    runtimeUrl: containerRuntimeUrl(env),
+    ...(env?.VITE_SOFTN_CONTAINER_WORKER ? { workerUrl: `${(env.BASE_URL ?? './').replace(/\/?$/, '/')}${env.VITE_SOFTN_CONTAINER_WORKER}` } : {}),
     engineWasm: { javascript: coreEngine, python: coreEngine, 'python-torch': coreEngine },
     hostThree: ownThree,
   };
@@ -81,10 +86,14 @@ export function hostedContainerOptions(): Required<Pick<SoftNContainerOptions, '
 const CORE_ENGINE_TIERS: ReadonlySet<ZippEngineTier> = new Set(['javascript', 'python', 'python-torch']);
 const CORE_ENGINE_META = { variant: 'javascript-python-base' };
 
+export function usesHostEngine(tiers: readonly ZippEngineTier[]): boolean {
+  return tiers.some((tier) => CORE_ENGINE_TIERS.has(tier));
+}
+
 /**
  * The files of the container's folder an app on `tiers` is run with, as whole addresses: the
  * Worker, each tier's bindings, and the engine of a tier whose engine is the folder's. A tier
- * that runs on core's engine has no engine here to fetch (the page has core's already) and
+ * that runs on core's engine fetches it at the host's own URL and
  * runs under that engine's bindings.
  *
  * For a host that installs an app before the network goes (the runtime's offline install).

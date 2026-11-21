@@ -24,6 +24,18 @@ const bool = (description: string) => ({ type: 'boolean', description });
 
 export const AGENT_TOOLS: ToolSpec[] = [
   {
+    name: 'design_database',
+    description: 'Create a local XDB collection or a FormLogic private SQLite table with typed fields. Read manifest.json first. Creates editable source and updates the manifest together. FormLogic tables get an integer primary key called id automatically and a new migration. Edit handlers separately to expose rows to an authorized caller.',
+    inputSchema: { type: 'object', properties: {
+      target: { type: 'string', description: 'Where records are stored.', enum: ['local', 'formlogic'] },
+      name: str('Collection or table name. Start with a letter.'),
+      fields: { type: 'array', description: 'Fields in display order.', items: { type: 'object', properties: {
+        name: str('Field name'), type: { type: 'string', enum: ['string', 'number', 'integer', 'boolean', 'date', 'email', 'url'] },
+        required: bool('Whether the field is required.'),
+      }, required: ['name', 'type'] } },
+    }, required: ['target', 'name', 'fields'] },
+  },
+  {
     name: 'list_files',
     description: 'List the project\'s files as a tree, each with its size and kind (page, logic, data, config, asset). Private editor state is not listed.',
     inputSchema: { type: 'object', properties: { prefix: str('Only list files under this folder, e.g. "pages/". Optional.') }, required: [] },
@@ -31,7 +43,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
   {
     name: 'read_file',
     description:
-      'Read a text file, with line numbers. Give start_line/end_line (1-based, inclusive) to read part of a long file. A binary file answers with its type and size. Read a file before you edit it: edit_file needs it read in this run, write_file on an existing file needs it read whole.',
+      'Read the exact source text beneath a header naming the file and line range. Give start_line/end_line (1-based, inclusive) to read part of a long file. A binary file answers with its type and size. Read a file before you edit it: edit_file needs it read in this run, write_file on an existing file needs it read whole.',
     inputSchema: {
       type: 'object',
       properties: { path: str('Project path, e.g. "index.html".'), start_line: int('First line to read. Optional.'), end_line: int('Last line to read. Optional.') },
@@ -156,24 +168,70 @@ export const AGENT_TOOLS: ToolSpec[] = [
   {
     name: 'finish',
     description:
-      'End the run once the request is done and check_app is clean (or you have explained what remains). The summary is shown to the person: what you built or changed, in a few sentences.',
-    inputSchema: { type: 'object', properties: { summary: str('What was built or changed, and anything the person should know.') }, required: ['summary'] },
+      'End the run and show the person your answer. For a question, put the direct answer in the summary. For an edit, report the actual changes once check_app is clean or you have explained what remains.',
+    inputSchema: { type: 'object', properties: { summary: str('The answer to the question or a short account of the changes made in this run.') }, required: ['summary'] },
   },
 ];
+
+export type AgentAppMode = 'web' | 'legacy-ui';
 
 export const TOOL_NAMES = new Set(AGENT_TOOLS.map((t) => t.name));
 
 /** The tools that change files. */
-export const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'rename_file']);
+export const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'rename_file', 'design_database']);
+
+const LEGACY_UI_ONLY_TOOLS = new Set(['lookup_components', 'run_app_function']);
+
+export function agentToolsForMode(mode: AgentAppMode = 'legacy-ui'): ToolSpec[] {
+  if (mode !== 'web') return AGENT_TOOLS;
+  return AGENT_TOOLS.filter((t) => !LEGACY_UI_ONLY_TOOLS.has(t.name)).map((t) => {
+    if (t.name === 'rename_file') {
+      return {
+        ...t,
+        description: 'Move or rename a file, keeping its content. Update any references to it (ES module imports, <script src>, <link href>, manifest.json) with edit_file.',
+      };
+    }
+    if (t.name === 'check_app') {
+      return {
+        ...t,
+        description:
+          'Validate manifest.json, permission.json, HTML/CSS/module references, and boot the Web App Container headlessly inside the ZIPP WASM sandbox. Reports syntax/module errors, missing files, runtime exceptions, console errors, and visible rendered text. Studio also runs it automatically after each step that changes files.',
+        inputSchema: {
+          type: 'object',
+          properties: { page: str('An HTML page (e.g. "index.html") to render instead of the manifest\'s main. Optional.') },
+          required: [],
+        },
+      };
+    }
+    if (t.name === 'inspect_preview') {
+      return {
+        ...t,
+        inputSchema: {
+          type: 'object',
+          properties: { page: str('An HTML page (e.g. "index.html"); default the manifest\'s main.') },
+          required: [],
+        },
+      };
+    }
+    if (t.name === 'read_docs') {
+      return {
+        ...t,
+        description:
+          'Read one of SoftN\'s published guides as text, by its slug from the guide index in your instructions, optionally narrowed to one section by adding # and the section\'s name (e.g. "xdb-data" or "permissions#declaration").',
+      };
+    }
+    return t;
+  });
+}
 
 /** Anthropic Messages API `tools`. */
-export function anthropicTools(): Array<{ name: string; description: string; input_schema: ToolSpec['inputSchema'] }> {
-  return AGENT_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+export function anthropicTools(mode: AgentAppMode = 'legacy-ui'): Array<{ name: string; description: string; input_schema: ToolSpec['inputSchema'] }> {
+  return agentToolsForMode(mode).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
 }
 
 /** OpenAI-compatible Chat Completions `tools`. */
-export function openAITools(): Array<{ type: 'function'; function: { name: string; description: string; parameters: ToolSpec['inputSchema'] } }> {
-  return AGENT_TOOLS.map((t) => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+export function openAITools(mode: AgentAppMode = 'legacy-ui'): Array<{ type: 'function'; function: { name: string; description: string; parameters: ToolSpec['inputSchema'] } }> {
+  return agentToolsForMode(mode).map((t) => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
 }
 
 /**
@@ -182,21 +240,24 @@ export function openAITools(): Array<{ type: 'function'; function: { name: strin
  * to get wrong — and is what the prompt teaches; a JSON object body is also
  * accepted.
  */
-export function textProtocolGuide(): string {
-  const lines = AGENT_TOOLS.map((t) => {
+export function textProtocolGuide(mode: AgentAppMode = 'legacy-ui'): string {
+  const tools = agentToolsForMode(mode);
+  const lines = tools.map((t) => {
     const params = Object.entries(t.inputSchema.properties)
       .map(([name, p]) => `${name}${t.inputSchema.required.includes(name) ? '' : '?'} (${p.type}): ${p.description}`)
       .join('; ');
     return `- **${t.name}** — ${t.description}${params ? `\n  Arguments: ${params}` : ''}`;
   });
+  const sampleOld = mode === 'web' ? '<h1>Hello</h1>' : '<Text>Hello</Text>';
+  const sampleNew = mode === 'web' ? '<h1>Hello, world</h1>' : '<Text>Hello, world</Text>';
   return `## Calling tools (text protocol)
 
 This provider does not carry tool calls natively, so you call tools by writing blocks in your reply. Each block is one call:
 
 <tool_call name="edit_file">
 <arg name="path">index.html</arg>
-<arg name="old_string"><Text>Hello</Text></arg>
-<arg name="new_string"><Text>Hello, world</Text></arg>
+<arg name="old_string">${sampleOld}</arg>
+<arg name="new_string">${sampleNew}</arg>
 </tool_call>
 
 An argument's value is written raw between <arg> and </arg> — file content exactly as it should be, no escaping. Arrays, objects, numbers and booleans are written as JSON (\`<arg name="replace_all">true</arg>\`). You may instead write a JSON object as the block's body: \`<tool_call name="read_file">{"path": "index.html"}</tool_call>\`.

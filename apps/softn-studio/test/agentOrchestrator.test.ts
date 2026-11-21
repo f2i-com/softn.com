@@ -188,7 +188,7 @@ describe('what the model has read is what it may replace', () => {
     const content = useVFSStore.getState().readFile('logic/app.logic') as string;
     expect(content).toContain('function begin()');
     expect(content).toContain('SENTINEL-TAIL-7f3a');
-    expect(lastMessage().content).toBe('Done.');
+    expect(lastMessage().content).toBe('Updated logic/app.logic.');
   });
 
   it('refuses to overwrite a file edited while the request was in flight', async () => {

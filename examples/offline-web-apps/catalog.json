@@ -1,0 +1,5 @@
+[
+  {"id": "vanilla", "file": "TrailPack", "name": "Trail Pack", "framework": "Vanilla JS", "source": "app.js", "description": "A day-hike checklist that remembers your packed gear."},
+  {"id": "react", "file": "RatioBar", "name": "Ratio Bar", "framework": "React", "source": "main.jsx", "description": "A pour-over calculator that adjusts the water as you change the coffee dose."},
+  {"id": "vue", "file": "Swatchbook", "name": "Swatchbook", "framework": "Vue", "source": "App.vue", "description": "A pocket palette book that saves your favorite four-color combination."}
+]

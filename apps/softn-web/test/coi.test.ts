@@ -17,10 +17,11 @@ const SCOPE = 'https://softn.test/web/';
 type FetchHandler = (event: { request: Request; respondWith(answer: Promise<Response>): void }) => void;
 
 /** Runs coi.js against caches by name, each a map from address to a response, matched as the Cache API does. */
-function install(stores: Record<string, Record<string, () => Response>>, network?: () => Promise<Response>) {
+function install(stores: Record<string, Record<string, () => Response>>, network?: () => Promise<Response>, classicRevisions = {}) {
   let handler: FetchHandler | undefined;
   const self = {
     registration: { scope: SCOPE },
+    __SOFTN_SW__: { classicRevisions },
     addEventListener: (type: string, listener: FetchHandler) => { if (type === 'fetch') handler = listener; },
   };
   const strip = (url: string) => url.split('?')[0];
@@ -88,6 +89,20 @@ describe('coi.js with the site failing', () => {
 });
 
 describe('coi.js offline', () => {
+  it('starts the active build’s classic worker when two revisions are installed', async () => {
+    const file = 'workers/script-worker.js';
+    const url = SCOPE + file;
+    const answer = install({ ['softn-classic-assets-' + SCOPE]: {
+      [url + '?__WB_REVISION__=new']: () => new Response('waiting'),
+      [url + '?__WB_REVISION__=old']: () => new Response('active'),
+    } }, undefined, { [file]: 'old' });
+    const request = new Request(url);
+    Object.defineProperty(request, 'destination', { value: 'worker' });
+    const response = await answer(request);
+    expect(await response.text()).toBe('active');
+    expect(response.headers.get('cross-origin-embedder-policy')).toBe('credentialless');
+  });
+
   it("answers SoftN Web's page from the site's cache, not from what an app put in the model cache", async () => {
     const answer = install({
       // Made first, as a model loaded before the site's caches were filled would make it.

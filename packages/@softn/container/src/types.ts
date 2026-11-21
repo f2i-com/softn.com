@@ -402,6 +402,8 @@ export interface SoftNContainerOptions {
   source: Uint8Array | ArrayBuffer | string | Record<string, string | Uint8Array>;
   /** Base URL where `/runtime/` assets (`engines/`, `vendor/`, `ui/`, `compat/`) are served. */
   runtimeUrl?: string;
+  /** Dedicated-worker entry in the host's service-worker scope when its runtime files are shared. */
+  workerUrl?: string;
   /**
    * A tier's engine from the host instead of from `runtimeUrl`'s `engines/` folder: its bytes, a
    * compiled module, an address, or a function that answers one of those. A function is asked
@@ -475,6 +477,10 @@ export interface SoftNContainerOptions {
    * its own and lists, moves and removes it by that prefix: the container's is then with it.
    */
   storagePrefix?: string;
+  /** App-scoped storage supplied by an embedding host, including opaque-origin frames. */
+  storage?: Storage;
+  /** Dispatch a named action to this app's backend. The host authorizes each action. */
+  backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
   /** Theme preference (`'light' | 'dark' | 'auto'`). */
   theme?: 'light' | 'dark' | 'auto';
   /** Execution mode: `'worker'` (default in browser) or `'inline'` (used in Node/JSDOM tests where Web Workers are unavailable). */
@@ -483,6 +489,21 @@ export interface SoftNContainerOptions {
   persistStorage?: boolean;
   /** Resource limits. */
   limits?: ContainerLimits;
+  /**
+   * Optional on-demand bridge for SoftN's `.ui` interface language (`mode === 'legacy-ui'`).
+   * Loaded only when an archive declares `.ui` pages instead of a Web Container HTML entry.
+   */
+  legacyUiBridge?: (
+    mountTarget: HTMLElement,
+    archive: {
+      readonly manifest: ContainerManifest;
+      readonly permissions: ContainerPermissions;
+      readonly digest: string;
+      names(): string[];
+      readText(path: string): string | null;
+      readBytes(path: string): Uint8Array | null;
+    }
+  ) => Promise<{ dispose(): void }>;
   /** Console callback for guest `console.*` output. */
   onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
   /** Title change callback (`document.title = ...`). */
@@ -491,6 +512,12 @@ export interface SoftNContainerOptions {
   onError?: (error: Error) => void;
   /** Live startup progress callback (opening archive, loading SQLite/backend WASM, migrations, starting UI). */
   onStatus?: (status: ContainerBootStatus) => void;
+  /** Open this HTML file in the archive, or the main page if the file no longer exists. */
+  initialPage?: string;
+  /** The HTML page that finished opening, including the first one. */
+  onPageChange?: (path: string, manifest: ContainerManifest) => void;
+  /** Let an embedding host present a web link clicked by the user. */
+  onExternalLink?: (href: string) => void;
   /** Ready callback once initial scripts + `DOMContentLoaded` complete. */
   onReady?: (info: { manifest: ContainerManifest; engineTier: ZippEngineTier; capabilitiesRequested: Capability[] }) => void;
 }

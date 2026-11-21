@@ -15,8 +15,12 @@ export interface LegacyMountHandle {
 export async function mountLegacyUiBundle(
   mountTarget: HTMLElement,
   archive: ContainerArchive,
-  runtimeUrl = '/runtime/'
+  runtimeUrl = '/runtime/',
+  customBridge?: (mountTarget: HTMLElement, archive: ContainerArchive) => Promise<LegacyMountHandle>
 ): Promise<LegacyMountHandle> {
+  if (customBridge) {
+    return await customBridge(mountTarget, archive);
+  }
   // Attempt workspace / host dynamic import of legacy v1 renderer if installed,
   // else load standalone `/runtime/compat/v1-bridge.js`.
   try {

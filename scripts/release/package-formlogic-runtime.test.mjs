@@ -16,7 +16,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readArchive } from '../lib/archive.mjs';
-import { isZippEngineWasm, isZippTorchPackageWasm, wasmExportNames, wasmImportNames } from '../lib/zipp-engine-copy.mjs';
+import { containerEngineBundle, isZippEngineWasm, isZippTorchPackageWasm, wasmExportNames, wasmImportNames } from '../lib/zipp-engine-copy.mjs';
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
 import { HOSTED_ENGINES_PROTOCOL, LOGIC_LANGUAGES_PROTOCOL, RUNTIME_ENGINES, RUNTIME_FEATURES } from '../../apps/formlogic-host/src/engineInit.ts';
 import { INSTALLED_FILES, PACKAGE_INSTALLED_FILES, VARIANT_INSTALLED_FILES } from '../../packages/@softn/core/scripts/fetch-zipp-release.mjs';
@@ -209,7 +209,11 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     // primary does not and exports a subset, which is what lets one glue run both.
     const copies = [...entries.keys()].filter((n) => isZippEngineWasm(bytes(n))).sort();
     const VARIANT_AT = 'zipp-web/zipp_wasm_bg.wasm';
-    for (const n of copies) assert.equal(sha256(bytes(n)), n === VARIANT_AT ? web.sha256 : source.sha256, `${n} is the installed ${n === VARIANT_AT ? 'variant' : 'engine'}`);
+    for (const n of copies) {
+      const bundle = containerEngineBundle(n, source.version);
+      if (bundle) assert.ok(bytes('zipp/RELEASE-SHA256SUMS').toString().includes(`${sha256(bytes(n))}  ${bundle}`));
+      else assert.equal(sha256(bytes(n)), n === VARIANT_AT ? web.sha256 : source.sha256, `${n} is the installed ${n === VARIANT_AT ? 'variant' : 'engine'}`);
+    }
     assert.equal(copies.filter((n) => sha256(bytes(n)) === web.sha256).length, 1, 'the variant digest appears once');
     assert.equal(copies.filter((n) => sha256(bytes(n)) === source.sha256).length, 2, 'the primary digest appears twice');
     assert.deepEqual(wasmImportNames(bytes(VARIANT_AT)).filter((i) => !wasmImportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(i)), []);
@@ -218,6 +222,8 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
       /^zipp\/zipp_wasm_bg\.wasm$/,
       /^native-runtime\/wasm\/zipp_wasm_bg\.wasm$/,
       /^zipp-web\/zipp_wasm_bg\.wasm$/,
+      /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-javascript-lite\.wasm$/,
+      /^hosted-runtime\/assets\/container-runtime\/[0-9a-f]{12}\/engines\/zipp-typescript\.wasm$/,
     ];
     for (const pattern of known) assert.equal(copies.filter((n) => pattern.test(n)).length, 1, `one engine at ${pattern}`);
     assert.equal(copies.length, known.length, `no engine copy outside the known places: ${copies.join(', ')}`);

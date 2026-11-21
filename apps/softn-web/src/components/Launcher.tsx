@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
 import { currentBuildId, groupByApp, hasStoredData, holdsNothingOfItsOwn, isOfflineReady, type CachedApp } from '../lib/appCache';
 import { DirectoryShelf } from './DirectoryShelf';
@@ -28,6 +28,7 @@ interface LauncherProps {
   onStop?: (id: string) => void;
   onStopAll?: () => void;
   onOpenFile: (file: File) => void | Promise<void>;
+  onOpenFolder: (files: File[]) => void | Promise<void>;
   onOpenCached: (app: CachedApp) => void;
   /** Open a directory bundle without leaving this runtime's running apps. */
   onOpenUrl?: (url: string) => void;
@@ -54,6 +55,16 @@ function formatDate(ts: number): string {
   if (diffHrs < 24) return `${diffHrs}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
   return d.toLocaleDateString();
+}
+
+function installedEngines(features: readonly string[]): string[] {
+  const labels: string[] = [];
+  if (features.includes('engine:lite')) labels.push('Lite JavaScript');
+  if (features.includes('engine:typescript')) labels.push('TypeScript');
+  if (['engine:full', 'engine:javascript', 'engine:python', 'engine:python-torch'].some((tier) => features.includes(tier))) {
+    labels.push('Full engine');
+  }
+  return labels;
 }
 
 /**
@@ -84,7 +95,7 @@ function offlineStatus(
       label: 'Offline ready',
       title: online.includes('ai')
         ? 'Opens without a connection, with a model it has loaded before. A model it has not loaded yet is a download.'
-        : 'Opens without a connection: everything it can reach is kept in this browser.',
+        : 'The app and its required runtime files are saved in this browser. Online services still need a connection.',
     };
   }
   // Three different reasons, and they used to share one sentence: an install
@@ -111,6 +122,7 @@ export function Launcher({
   onStop,
   onStopAll,
   onOpenFile,
+  onOpenFolder,
   onOpenCached,
   onOpenUrl,
   onRemove,
@@ -120,6 +132,8 @@ export function Launcher({
   onImportData,
 }: LauncherProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const canChooseFolder = typeof HTMLInputElement !== 'undefined' && 'webkitdirectory' in HTMLInputElement.prototype;
   // The same place the product bar's "Apps" goes, so the two agree.
   const directoryHref = DEFAULT_URLS.apps;
   const handleFileSelect = useCallback(
@@ -135,7 +149,10 @@ export function Launcher({
     [onOpenFile]
   );
 
-  const groups = groupByApp(apps);
+  const groups = useMemo(() => groupByApp(apps), [apps]);
+  const [search, setSearch] = useState('');
+  const query = groups.length > 1 ? search.trim().toLowerCase() : '';
+  const visibleGroups = query ? groups.filter(({ name }) => name.toLowerCase().includes(query)) : groups;
 
   // One hidden picker for every card's "Import data…": the card it was
   // pressed on is remembered until the file arrives.
@@ -170,22 +187,47 @@ export function Launcher({
                   rather than on <body> (see App's focus effect). */}
               <h1 className="softn-launcher-title" id="softn-workspace" tabIndex={-1}>Your app workspace</h1>
               <p className="softn-launcher-sub">
-                Pick up a saved app, discover something from the directory, or open a <code>.softn</code> file.
-                Your apps keep their data in this browser.
+                <span id="softn-open-file-hint">Open or drop a <code>.softn</code> or <code>.zip</code> file.</span>
+                {canChooseFolder && (
+                  <span id="softn-open-folder-hint"> For a web starter, choose the folder with <code>index.html</code>. If your project uses a build step, choose its output folder (usually <code>dist</code>).</span>
+                )}
               </p>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', flexWrap: 'wrap' }}>
+            <div className="softn-launcher-actions">
               <input
                 ref={fileInputRef}
                 type="file"
                 accept=".softn,.zip"
                 onChange={handleFileSelect}
-                style={{ display: 'none' }}
+                hidden
               />
-              <button className="softn-launcher-open" type="button" onClick={() => fileInputRef.current?.click()}>
-                Open a .softn file
+              <button className="softn-launcher-open" type="button" aria-describedby="softn-open-file-hint" onClick={() => fileInputRef.current?.click()}>
+                Open file
               </button>
-              <span className="softn-launcher-hint">or drop one anywhere on this page</span>
+              {canChooseFolder && (
+                <>
+                  <input
+                    ref={folderInputRef}
+                    type="file"
+                    {...{ webkitdirectory: '' }}
+                    multiple
+                    hidden
+                    onChange={(event) => {
+                      const files = Array.from(event.currentTarget.files ?? []);
+                      event.currentTarget.value = '';
+                      if (files.length) void onOpenFolder(files);
+                    }}
+                  />
+                  <button
+                    className="softn-launcher-open softn-launcher-folder"
+                    type="button"
+                    aria-describedby="softn-open-folder-hint"
+                    onClick={() => folderInputRef.current?.click()}
+                  >
+                    Open folder
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -250,7 +292,13 @@ export function Launcher({
               <div className="softn-launcher-section-head">
                 <div className="softn-launcher-section-heading">
                   <h2 className="softn-launcher-section-title">Your apps</h2>
-                  <span className="softn-launcher-section-count">{groups.length}</span>
+                  {groups.length > 1 && (
+                    <input className="softn-library-search" type="search" aria-label="Find a saved app"
+                      placeholder="Find a saved app" value={search} onChange={(event) => setSearch(event.target.value)} />
+                  )}
+                  <span className="softn-launcher-section-count" role="status">
+                    {query ? `${visibleGroups.length} of ${groups.length}` : groups.length}
+                  </span>
                 </div>
                 {onRemoveAll && (
                   <button
@@ -263,8 +311,9 @@ export function Launcher({
                   </button>
                 )}
               </div>
+              {visibleGroups.length === 0 && <p className="softn-launcher-sub">No saved apps match “{search.trim()}”.</p>}
               <div className="softn-launcher-grid">
-                {groups.map((group) => {
+                {visibleGroups.map((group) => {
                   // One card per app. Every build the browser still holds sits
                   // behind it, because identity is the bundle's digest and a
                   // rebuild is genuinely a different app — correct for what it
@@ -277,6 +326,7 @@ export function Launcher({
                   // and would be offered ahead of the one with the person's data.
                   const dataSource = olderVersions.find((v) => !holdsNothingOfItsOwn(v.origin));
                   const offline = offlineStatus(app, installing);
+                  const engines = offline.state === 'ready' ? installedEngines(app.offline?.features ?? []) : [];
                   const describedBy = `softn-launcher-card-${app.id}`;
                   return (
                     // The card was a `role="button"` div holding real buttons
@@ -291,7 +341,7 @@ export function Launcher({
                         type="button"
                         className="softn-launcher-card-open"
                         aria-label={`Open ${app.name}`}
-                        aria-describedby={describedBy}
+                        aria-describedby={`${describedBy}-meta ${describedBy}`}
                         onClick={() => onOpenCached(app)}
                       >
                         {/* Phrasing content only, as a button may hold. */}
@@ -301,7 +351,10 @@ export function Launcher({
                           </span>
                           <span style={{ minWidth: 0 }}>
                             <span className="softn-launcher-card-name">{app.name}</span>
-                            <span className="softn-launcher-card-meta">v{app.version}</span>
+                            <span id={`${describedBy}-meta`} className="softn-launcher-card-meta">
+                              v{app.version}{app.format === 'web' && ' · Web app'}{app.format === 'classic' && ' · Classic SoftN'}
+                              {engines.length > 0 && ` · ${engines.join(' + ')}`}
+                            </span>
                           </span>
                         </span>
                         <span id={describedBy} className="softn-launcher-card-text">
@@ -441,7 +494,7 @@ export function Launcher({
             </section>
           ) : (
             <div className="softn-launcher-empty">
-              <strong>Your library starts here.</strong> Apps you open appear here so you can return to them.
+              <strong>Your library starts here.</strong> Apps you open are saved in this browser so you can return to them.
               Open a <strong>.softn</strong> file, explore <a href={`${directoryHref}?category=business`}>Business Apps</a>, or choose any app from <a href={directoryHref}>the directory</a>.
             </div>
           )}

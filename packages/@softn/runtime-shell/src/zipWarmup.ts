@@ -19,7 +19,8 @@
  * says what a partial-fetch design would need instead.
  */
 
-import { ScopedWorker, type BundleArchive } from '@softn/core';
+import { ScopedWorker } from '@softn/core/web-host';
+import type { BundleArchive } from '@softn/core';
 import type { ZipWorkerRequest, ZipWorkerResponse } from './zipWorker';
 
 /**

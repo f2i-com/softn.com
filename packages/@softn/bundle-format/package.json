@@ -1,6 +1,6 @@
 {
   "name": "@softn/bundle-format",
-  "version": "0.0.45",
+  "version": "0.0.48",
   "private": true,
   "description": "The .softn bundle contract every SoftN surface shares: the archive reader, the inspector, permission declarations and the page-to-page hand-off. No engine, no React.",
   "license": "Apache-2.0",
@@ -12,6 +12,9 @@
     ".": "./src/index.ts",
     "./zip": "./src/zip.ts",
     "./engine": "./src/engine.ts",
+    "./source-modules": "./src/source-modules.ts",
+    "./web-imports": "./src/web-imports.ts",
+    "./offline-assets": "./src/offline-assets.ts",
     "./inspect": "./src/inspect.ts",
     "./handoff": "./src/handoff.ts",
     "./capabilities": "./src/capabilities.ts",

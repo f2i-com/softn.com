@@ -8,6 +8,8 @@
  * rewrite its migrations freely.
  */
 
+import { nextMigrationFile } from '@softn/editor-shared/hostedDatabase';
+
 const MIGRATION = /^server\/migrations\/[^/]+\.sql$/;
 let applied = new Map<string, string>();
 
@@ -45,17 +47,6 @@ export function appliedMigrationPaths(): string[] {
   return [...applied.keys()];
 }
 
-/** The next free migration name after the applied ones and any the project already has, e.g. server/migrations/002.sql. */
-function nextMigration(projectPaths: Iterable<string>): string {
-  let highest = 0;
-  for (const path of [...applied.keys(), ...projectPaths]) {
-    if (!path.endsWith('.sql')) continue;
-    const number = /(\d+)[^/]*\.sql$/.exec(path);
-    if (number) highest = Math.max(highest, Number(number[1]));
-  }
-  return `server/migrations/${String(highest + 1).padStart(3, '0')}.sql`;
-}
-
 /**
  * Why `change` to `path` is refused, or null when it may go ahead. Writing a migration back with
  * exactly the text it has is not a change. `projectPaths`: the project's files, so the next
@@ -66,5 +57,6 @@ export function appliedMigrationRefusal(path: string, change: 'replace' | 'edit'
   if (was === undefined) return null;
   if (change === 'replace' && next === was) return null;
   const verb = change === 'delete' ? 'be deleted' : change === 'rename' ? 'be renamed' : 'change';
-  return `${path} has already run on this app's database on its host, so it cannot ${verb}: the host refuses to start when a migration it ran is changed or missing. Keep it as it is and put the change in a new migration, ${nextMigration(projectPaths)}, listed after it in manifest.json's server.database.migrations (a new column is ALTER TABLE … ADD COLUMN …; a new table is CREATE TABLE …).`;
+  const nextPath = nextMigrationFile([...applied.keys(), ...projectPaths]);
+  return `${path} has already run on this app's database on its host, so it cannot ${verb}: the host refuses to start when a migration it ran is changed or missing. Keep it as it is and put the change in a new migration, ${nextPath}, listed in manifest.json's server.database.migrations (a new column is ALTER TABLE … ADD COLUMN …; a new table is CREATE TABLE …).`;
 }

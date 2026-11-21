@@ -17,7 +17,7 @@
  * printed as the parser prints it, and named in `expressionProps`.
  */
 
-import { parse } from '@softn/core';
+import { parse } from '@softn/core/authoring';
 import type { CanvasElement } from '../types/builder';
 import { getComponentMeta } from './componentRegistry';
 import { printExpressionSafe } from './expressionPrinter';

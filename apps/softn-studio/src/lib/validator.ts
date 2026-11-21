@@ -1,4 +1,4 @@
-import { classifyAsset, composeBundleSource, inspectEntries } from '@softn/core';
+import { classifyAsset, composeBundleSource, inspectEntries } from '@softn/core/authoring';
 import type { ValidationError, VFSFile, Blueprint } from '../types/studio';
 import { planBundle } from './exportBundle';
 import { pageParseProblems } from './pageDiagnostics';

@@ -4,9 +4,10 @@ import { softnPwa } from '../../scripts/build/pwa.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
+import { exampleBundlesPlugin } from '../../scripts/dev/example-bundles.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
-import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
+import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
 import { devOnlyPublicPlugin } from '../../scripts/build/dev-only-public.mjs';
 import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
@@ -29,6 +30,8 @@ export default defineConfig({
   base: env.VITE_BASE || '/',
   plugins: [
     retireServiceWorkersPlugin(),
+    exampleBundlesPlugin(),
+    woff2OnlyFontsPlugin(),
     react(),
     coreWorkerAssetPlugin(),
     containerRuntimeAssetPlugin(),
@@ -69,12 +72,13 @@ export default defineConfig({
         ],
       },
       workbox: {
+        classicRoots: ['src/components/UiAppSurface.tsx', 'src/lib/offlineInstall.ts'],
+        classicRuntime: true,
+        classicSharedRoots: ['../../packages/@softn/container/dist/index.js'],
         // Every document the worker serves gets the isolation headers, from
         // the precache as much as from the network — see public/coi.js.
         importScripts: ['coi.js'],
-        // `wasm` is not optional: the scripting engine is a .wasm, so without
-        // it every bundle fails to run offline. It is also larger than
-        // Workbox's 2 MiB default cap, which would silently skip the file.
+        // Engine WASM files are selected during each app's offline install.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
         // assets/core-runtime/ holds the files of @softn/core's dist that its
         // workers reach (packages/@softn/core/scripts/worker-files.mjs), put
@@ -97,8 +101,8 @@ export default defineConfig({
         // the model worker is a core-runtime asset), and the peer and
         // server sync runtimes (~200 KB, for apps that asked for `sync` or
         // configured a server). What is precached is the shell: the entry,
-        // what it imports statically, the engine's wasm, the inflate worker
-        // and the XDB module every app opens. Everything else is fetched
+        // what it imports statically and the inflate worker shared by both app
+        // formats. The classic renderer brings XDB when needed. Everything else is fetched
         // the first time a document or a script needs it and kept by the
         // runtime rule below. So there are three tiers: the shell precache
         // (this glob), the runtime cache of hashed chunks
@@ -114,6 +118,10 @@ export default defineConfig({
         globIgnores: [
           '**/core-runtime/**',
           '**/container-runtime/**',
+          // The inline container session. Browsers run container-worker.js, which each
+          // app's offline install fetches. The hashed-chunk route keeps an inline session
+          // if one is used.
+          '**/assets/worker-runtime-*.js',
           '**/demos/**',
           '**/business-demos/**',
           ...onDemandGlobIgnores,
@@ -175,7 +183,7 @@ export default defineConfig({
   // built files (scripts/build/shared-assets.mjs); elsewhere, Vite's own URLs.
   experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
   build: {
-    target: 'es2020',
+    target: 'es2022',
     // In a development build only (scripts/build/sourcemaps.mjs).
     sourcemap: buildSourcemaps(),
     // dist/.vite/manifest.json: the entry's static import closure, which

@@ -15,7 +15,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-vi.mock('@softn/core', async (importOriginal) => ({
+vi.mock('@softn/core/web-host', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   takeBundleHandoff: vi.fn(() => Promise.reject(new Error('IndexedDB is unavailable'))),
 }));

@@ -23,7 +23,7 @@ import type { ProviderConfig } from '../../types/studio';
 import { AIProviderError, isOpenAIHost, isRecord, postProviderJSON, postProviderStream, sanitizeCount } from '../aiProvider';
 import { providerEndpoints } from '../providerConnection';
 import { AnthropicStream, OpenAIStream, type StreamSink } from './stream';
-import { AGENT_TOOLS, anthropicTools, openAITools, TOOL_NAMES } from './tools';
+import { AGENT_TOOLS, agentToolsForMode, anthropicTools, openAITools, TOOL_NAMES, type AgentAppMode } from './tools';
 import type { AgentToolCall, AgentTurn, ToolProtocol } from './types';
 
 /**
@@ -42,6 +42,8 @@ export interface AgentRequest {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxOutputTokens: number;
+  /** Default `legacy-ui`. Filters `.ui`-only tools when `web`. */
+  appMode?: AgentAppMode;
   /** Default `off`. */
   stream?: StreamMode;
   /** Where a streamed reply's pieces go as they arrive. */
@@ -180,9 +182,9 @@ export async function sendAgentRequest(provider: ProviderConfig, request: AgentR
 
   let body: Record<string, unknown>;
   if (protocol === 'anthropic') {
-    body = { model: request.model, max_tokens: request.maxOutputTokens, system: cachedSystem(request.system), tools: cachedTools(anthropicTools()), messages: withCacheBreakpoints(encodeAnthropic(request.turns)) };
+    body = { model: request.model, max_tokens: request.maxOutputTokens, system: cachedSystem(request.system), tools: cachedTools(anthropicTools(request.appMode)), messages: withCacheBreakpoints(encodeAnthropic(request.turns)) };
   } else if (protocol === 'openai') {
-    body = { model: request.model, ...outputCap, tools: openAITools(), messages: [{ role: 'system', content: request.system }, ...encodeOpenAI(request.turns)] };
+    body = { model: request.model, ...outputCap, tools: openAITools(request.appMode), messages: [{ role: 'system', content: request.system }, ...encodeOpenAI(request.turns)] };
   } else if (anthropicWire) {
     // Text protocol over the provider's plain chat shape.
     body = { model: request.model, max_tokens: request.maxOutputTokens, system: cachedSystem(request.system), messages: withCacheBreakpoints(encodeText(request.turns)) };
@@ -229,7 +231,7 @@ async function sendHosted(request: AgentRequest): Promise<AgentReply> {
     const reply = await requestHostedAIReply(
       {
         messages: [{ role: 'system', content: request.system }, ...encodeHosted(request.turns)],
-        tools: AGENT_TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+        tools: agentToolsForMode(request.appMode).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
         maxOutputTokens: request.maxOutputTokens,
       },
       request.signal,

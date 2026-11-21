@@ -6,7 +6,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
 import { Footer } from '../src/components/Footer';
-import { StartWays } from '../src/components/home/StartWays';
+import { ForDevelopers } from '../src/components/home/ForDevelopers';
 import { WhyDifferent } from '../src/components/home/WhyDifferent';
 import { highlight, languageOf } from '../src/lib/highlight';
 import { runsLabel } from '../src/lib/format';
@@ -15,7 +15,7 @@ const text = (element: React.ReactElement) => renderToStaticMarkup(element).repl
 
 it('names both logic languages wherever the site describes the engine', () => {
   expect(text(<Footer />)).toMatch(/engine for JavaScript\s+and Python/);
-  expect(text(<StartWays />)).toContain('choose JavaScript or Python');
+  expect(text(<ForDevelopers />)).toMatch(/JavaScript[\s\S]+Python/);
   expect(text(<WhyDifferent />)).toContain('logic is JavaScript or Python');
 });
 

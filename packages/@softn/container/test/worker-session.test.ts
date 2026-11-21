@@ -24,6 +24,47 @@ async function mount(source: Record<string, string | Uint8Array>) {
   return { handle, number };
 }
 
+describe('hosted page navigation', () => {
+  it('waits for a startup redirect and tells its host which HTML file actually opened', async () => {
+    const pages: string[] = [];
+    const handle = await mountSoftNContainer(document.createElement('div'), {
+      isolation: 'inline', engineWasm: { lite: LITE_WASM },
+      source: {
+        'index.html': '<p>Home</p>',
+        'start.html': '<script>location.href = "pages/dashboard.html";</script>',
+        'pages/dashboard.html': '<main id="dashboard">Dashboard</main>',
+      },
+      initialPage: 'start.html',
+      onPageChange: path => pages.push(path),
+    });
+    try {
+      expect(handle.shadowRoot.querySelector('#dashboard')?.textContent).toBe('Dashboard');
+      expect(pages).toEqual(['pages/dashboard.html']);
+      await handle.navigate('index.html');
+      expect(pages).toEqual(['pages/dashboard.html', 'index.html']);
+    } finally { handle.dispose(); }
+  });
+});
+
+describe('HTML event attributes', () => {
+  it('installs nested handlers in the guest before the first app script runs', async () => {
+    const { handle, number } = await mount({
+      'index.html': `<!doctype html><main><section><button id="add" onclick="this.textContent = String(Number(this.textContent) + 1)">0</button></section></main>
+        <script>document.getElementById('add').click();</script>`,
+    });
+    try {
+      const button = handle.shadowRoot.querySelector<HTMLButtonElement>('#add')!;
+      expect(button.hasAttribute('onclick')).toBe(false);
+      expect(number('add')).toBe(1);
+      button.click();
+      await settle();
+      expect(number('add')).toBe(2);
+    } finally {
+      handle.dispose();
+    }
+  });
+});
+
 describe('an app that is not on screen', () => {
   beforeEach(() => {
     localStorage.clear();

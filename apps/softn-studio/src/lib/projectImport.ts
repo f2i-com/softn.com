@@ -1,4 +1,5 @@
-import { MAX_ZIP_INPUT_BYTES, classifyAsset, openBundleArchive } from '@softn/core';
+import { isGeneratedSourceModule } from '@softn/bundle-format/source-modules';
+import { MAX_ZIP_INPUT_BYTES, classifyAsset, openBundleArchive } from '@softn/core/authoring';
 import { zeroConfigEntry } from '@softn/bundle-format/engine';
 import { canonicalKey, normalizeProjectPath } from './paths';
 import { keptAsBytes, readsAsText } from './fileKinds';
@@ -22,7 +23,7 @@ export interface ProjectImportEntry {
  * carries as an image, and source formats core's registry has no entry for,
  * which it would carry as opaque bytes. Text is lossless for both on export.
  */
-const SOURCE_TEXT = /\.(svg|ts|tsx|jsx|yaml|yml|toml|php|phtml|sql|rs|ini|htaccess)$/i;
+const SOURCE_TEXT = /\.(svg|ts|tsx|jsx|vue|yaml|yml|toml|php|phtml|sql|rs|ini|htaccess)$/i;
 const SOURCE_TEXT_BASENAME = /(?:^|\/)\.htaccess$/i;
 
 /**
@@ -55,8 +56,7 @@ export function namedAsText(path: string): boolean {
  * zip ran in the container when opened in the runtime, was previewed and exported as a SoftN app after a trip through
  * Studio, and was a container again if its page happened to be called `home.html`.
  *
- * `container: false` is the hosted editor's (FormLogic's), whose build carries no container to preview one in: there a
- * site with an `index.html` is the SoftN HTML page it always was.
+ * A host with only the classic renderer passes `container: false` to keep its HTML page format.
  */
 export function asProject(entries: ProjectImportEntry[], name: string, { container = true }: { container?: boolean } = {}): ProjectImportEntry[] {
   const has = (path: string) => entries.some((entry) => entry.path === path);
@@ -97,6 +97,7 @@ export function hasZipSignature(data: Uint8Array): boolean {
  */
 export function readProjectArchive(data: Uint8Array, leftOut?: (names: string[]) => void): ProjectImportEntry[] {
   const decoder = new TextDecoder();
+  const sourceDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let archive: Map<string, Uint8Array>;
   let dropped: string[];
   try {
@@ -139,9 +140,10 @@ export function readProjectArchive(data: Uint8Array, leftOut?: (names: string[])
       throw new Error(`Archive contains colliding project paths: ${rawPath}`);
     }
     canonicalPaths.add(canonicalPath);
+    if (path.startsWith('__softn_generated__/') && isGeneratedSourceModule(path, decoder.decode(content))) continue;
     entries.push({
       path,
-      content: isTextEntry(path, content) ? decoder.decode(content) : content,
+      content: /\.(jsx|vue)$/i.test(path) ? sourceDecoder.decode(content) : isTextEntry(path, content) ? decoder.decode(content) : content,
     });
   }
   return entries;

@@ -32,12 +32,10 @@ async function boot(): Promise<void> {
   if (written?.textContent) adoptHeadMetas(pageHeadMetas(written.textContent));
   // The app is drawn in this document, whichever page it was written in.
   const page = { ...(window.__softnPage ?? { pageUrl: location.href, runtimeScripts: [] }), documentUrl: location.href };
-  const [{ createRoot }, { registerRuntimeComponents }, shell] = await Promise.all([
+  const [{ createRoot }, shell] = await Promise.all([
     import('react-dom/client'),
-    import('@softn/components/lazy'),
     import('./page-shell'),
   ]);
-  registerRuntimeComponents();
   // What the browser drew of the page, or the plaintext `softn.js` turned the
   // rest of it into, is not the app: the app is drawn from the page's text.
   document.body.replaceChildren();

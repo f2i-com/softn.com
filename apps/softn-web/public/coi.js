@@ -43,6 +43,17 @@ self.addEventListener('fetch', (event) => {
     return undefined;
   };
   const cachedCopy = async () => {
+    // A classic worker entry keeps its public name. Its cache key includes this
+    // build's revision so an update can be installed alongside the active worker.
+    const scope = self.registration.scope;
+    if (req.destination === 'worker' && req.url.startsWith(scope)) {
+      const revision = self.__SOFTN_SW__?.classicRevisions?.[req.url.slice(scope.length)];
+      if (revision) {
+        const key = new URL(req.url);
+        key.searchParams.set('__WB_REVISION__', revision);
+        return (await caches.open('softn-classic-assets-' + scope)).match(key.href);
+      }
+    }
     const res = await fromSiteCaches(req);
     if (res || req.mode !== 'navigate') return res;
     return fromSiteCaches(new URL('./index.html', self.registration.scope).href);

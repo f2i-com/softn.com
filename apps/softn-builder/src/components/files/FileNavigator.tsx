@@ -4,6 +4,7 @@
 
 import React, { useState, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { strToU8 } from 'fflate';
+import { createPortal } from 'react-dom';
 import { useFilesStore } from '../../stores/filesStore';
 import { askConfirm } from '../../utils/confirm';
 import { useProjectStore } from '../../stores/projectStore';
@@ -17,6 +18,9 @@ import { COMPONENTS_FOLDER, createComponentFile, pageFolderBeside } from '../../
 import { ASSETS_FOLDER, PICTURE_PATTERN, addAssetFiles, replaceAsset, replacedWords, replacementAccept } from '../../utils/addAssets';
 import { flushHeldPage, renameInProject, type RenameOutcome } from '../../utils/renameInProject';
 import { toast } from '../../stores/notificationStore';
+import { readBuilderBackendFiles, applyBuilderBackendFiles } from '../../utils/backendFiles';
+
+const BackendEditor = React.lazy(() => import('@softn/editor-shared/BackendEditor'));
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -24,7 +28,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     background: 'var(--ink-2)',
-    borderRight: '1px solid var(--line-soft)',
+    border: '1px solid var(--line-soft)',
+    borderRadius: 10,
     width: PANEL_WIDTHS.files,
     minWidth: PANEL_WIDTHS.files,
   },
@@ -220,6 +225,7 @@ interface ContextMenuState {
 
 interface FileNavigatorProps {
   onToggleDock?: () => void;
+  onFileOpened?: () => void;
 }
 
 /** Where a context menu opens, from a pointer or from a row a key was pressed on. */
@@ -272,6 +278,7 @@ function focusFrom(row: HTMLElement, to: 1 | -1 | 'first' | 'last' | 'parent' | 
 
 interface FileNodeProps {
   node: ProjectFileNode;
+  visualProject: boolean;
   depth: number;
   isActive: boolean;
   onSelect: (id: string) => void;
@@ -286,6 +293,7 @@ interface FileNodeProps {
 
 function FileNode({
   node,
+  visualProject,
   depth,
   isActive,
   onSelect,
@@ -332,7 +340,7 @@ function FileNode({
   // lazily by the hook a moment after the source settles; a file with no
   // source yet (new, unsaved) has nothing to assess and gets no mark.
   const uiFile = useFilesStore((state) =>
-    node.type === 'file' && node.fileType === 'ui' ? state.uiFiles.get(node.id) : undefined
+    visualProject && node.type === 'file' && node.fileType === 'ui' ? state.uiFiles.get(node.id) : undefined
   );
   const { fidelity } = useSourceFidelity(uiFile);
   const sourceOnly = fidelity !== null && !fidelity.lossless;
@@ -487,6 +495,7 @@ function FileNode({
               <FileNode
                 key={childId}
                 node={childNode}
+                visualProject={visualProject}
                 depth={depth + 1}
                 isActive={activeFileId === childId}
                 onSelect={onSelect}
@@ -517,7 +526,9 @@ function rootFilesOf(nodes: Map<string, ProjectFileNode>): string[] {
     .map((node) => node.id);
 }
 
-export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
+export function FileNavigator({ onToggleDock, onFileOpened }: FileNavigatorProps) {
+  const [backendFor, setBackendFor] = useState<string | null>(null);
+  const backendProject = useProjectStore(s => s.projectId);
   const {
     nodes,
     rootFolders,
@@ -565,6 +576,8 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     }
     return { extraPrimary: primary, extraVendor: vendor };
   }, [retainedSource.extraEntries]);
+  const pageAction = projectFormat === 'web' ? 'New HTML page' : 'New UI file';
+  const codeAction = projectFormat === 'web' ? 'New code file' : 'New logic file';
 
   // A logic file named without an extension takes the project's language,
   // which is the language of the logic its entry file links: an app's logic
@@ -617,8 +630,9 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
   const handleSelect = useCallback(
     (id: string) => {
       openFile(id);
+      onFileOpened?.();
     },
-    [openFile]
+    [openFile, onFileOpened]
   );
 
   // Which row holds the tree's one stop. The row last moved to keeps it
@@ -732,10 +746,10 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
   const quickCreateFolder = useCallback((): string => {
     if (!quickCreateType) return '';
     if (quickCreateParentPath) return quickCreateParentPath;
-    if (quickCreateType === 'ui' && quickCreateAs === 'component') return COMPONENTS_FOLDER;
     const beside = resolveDefaultParentPath(quickCreateType);
-    return quickCreateType === 'ui' ? pageFolderBeside(beside) : beside;
-  }, [quickCreateType, quickCreateParentPath, quickCreateAs, resolveDefaultParentPath]);
+    if (projectFormat === 'web' || quickCreateType !== 'ui') return beside;
+    return quickCreateAs === 'component' ? COMPONENTS_FOLDER : pageFolderBeside(beside);
+  }, [quickCreateType, quickCreateParentPath, quickCreateAs, projectFormat, resolveDefaultParentPath]);
 
   const handleQuickCreateSubmit = useCallback(() => {
     if (!quickCreateType) return;
@@ -747,7 +761,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     const created = attempt(() => {
       if (quickCreateType === 'folder') {
         createFolder(parentPath, trimmed);
-      } else if (quickCreateType === 'ui' && quickCreateAs === 'component') {
+      } else if (projectFormat !== 'web' && quickCreateType === 'ui' && quickCreateAs === 'component') {
         // In the folder asked for from a folder's menu, and with the other components otherwise.
         createComponentFile(trimmed, parentPath);
       } else if (quickCreateType === 'ui') {
@@ -769,7 +783,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
         }
         // `.py`, `.ts`, `.js`, `.css`, `.json`, etc. keep their explicit extension when typed.
         const named = projectFormat === 'web'
-          ? (/\.(?:m?js|cjs|tsx?|mts|jsx|py|css|json|md|txt|logic)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`)
+          ? (/\.(?:m?js|cjs|tsx?|mts|jsx|vue|py|css|json|md|txt|logic)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`)
           : (/\.(logic|py)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`);
         createFile(parentPath, named, 'logic');
       }
@@ -777,6 +791,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     if (!created) return;
 
     handleQuickCreateCancel();
+    if (quickCreateType !== 'folder') onFileOpened?.();
   }, [
     quickCreateType,
     quickCreateAs,
@@ -787,6 +802,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     setExtraEntry,
     openExtraFile,
     handleQuickCreateCancel,
+    onFileOpened,
     attempt,
     logicExtension,
     projectFormat,
@@ -997,7 +1013,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               <span style={styles.menuIcon}>
                 <FileGlyph kind="ui" />
               </span>
-              New UI file
+              {pageAction}
             </div>
             <div
               style={{
@@ -1013,7 +1029,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               <span style={styles.menuIcon}>
                 <FileGlyph kind="logic" />
               </span>
-              New logic file
+              {codeAction}
             </div>
             <div
               style={{
@@ -1113,22 +1129,26 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
 
   return (
     <div style={styles.container}>
+      {backendFor === backendProject && createPortal(<React.Suspense fallback={null}><BackendEditor
+        readFiles={readBuilderBackendFiles} applyFiles={applyBuilderBackendFiles} onClose={() => setBackendFor(null)}
+      /></React.Suspense>, document.getElementById('root') ?? document.body)}
       <div style={styles.header}>
         <span style={styles.title}>Files</span>
         <div style={styles.actions}>
+          <button type="button" className="bl-mini" aria-label="FormLogic backend" title="Edit FormLogic backend" onClick={() => setBackendFor(backendProject)}>API</button>
           <button
             className="bl-mini"
             onClick={() => handleQuickCreateStart('ui')}
-            title="New UI file"
-            aria-label="New UI file"
+            title={pageAction}
+            aria-label={pageAction}
           >
             <FileGlyph kind="ui" size={12} />
           </button>
           <button
             className="bl-mini"
             onClick={() => handleQuickCreateStart('logic')}
-            title="New logic file"
-            aria-label="New logic file"
+            title={codeAction}
+            aria-label={codeAction}
           >
             <FileGlyph kind="logic" size={12} />
           </button>
@@ -1195,7 +1215,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
           <div style={styles.quickCreateTop}>
             <div>
               <div style={styles.quickCreateLabel}>
-                {quickCreateType === 'folder' ? 'New folder' : quickCreateType === 'ui' ? 'New UI file' : 'New logic file'}
+                {quickCreateType === 'folder' ? 'New folder' : quickCreateType === 'ui' ? pageAction : codeAction}
               </div>
               <div style={styles.quickCreateSub}>
                 {`in ${quickCreateFolder()}/`}
@@ -1205,7 +1225,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               ×
             </button>
           </div>
-          {quickCreateType === 'ui' && (
+          {quickCreateType === 'ui' && projectFormat !== 'web' && (
             <div role="radiogroup" aria-label="Kind of UI file" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginBottom: 8 }}>
               {(['page', 'component'] as const).map((kind) => (
                 <button
@@ -1243,7 +1263,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               quickCreateType === 'folder'
                 ? 'Folder name'
                 : quickCreateType === 'ui'
-                  ? 'Component.ui'
+                  ? projectFormat === 'web' ? 'about.html' : 'Component.ui'
                   : `utils${logicExtension}`
             }
             autoFocus
@@ -1281,6 +1301,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
             <FileNode
               key={folderId}
               node={folder}
+              visualProject={projectFormat !== 'web'}
               depth={0}
               isActive={activeExtraPath === null && activeFileId === folderId}
               onSelect={handleSelect}

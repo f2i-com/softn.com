@@ -17,6 +17,7 @@ const probe = spawnSync(php, ['--version'], { encoding: 'utf8' });
 if (probe.status !== 0) throw Error('PHP was not found. Install PHP 8.1+ or set PHP=/path/to/php.');
 const port = Number(process.env.PORT || 1456);
 console.log(`softn-single-private preview: http://127.0.0.1:${port}/`);
-const child = spawn(php, ['-S', `127.0.0.1:${port}`, '-t', webroot], { stdio: 'inherit' });
+const router = path.join(app, 'scripts/preview-router.php');
+const child = spawn(php, ['-S', `127.0.0.1:${port}`, '-t', webroot, router], { stdio: 'inherit' });
 child.on('exit', (code) => process.exit(code ?? 0));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill());

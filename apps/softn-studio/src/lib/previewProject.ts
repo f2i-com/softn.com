@@ -9,7 +9,7 @@ import {
   type XDBBundleData,
   type XDBRecord,
   type XDBService,
-} from '@softn/core';
+} from '@softn/core/authoring';
 import type { VFSFile } from '../types/studio';
 import { normalizeManifestForBundle } from './exportBundle';
 import { isPrivatePath, normalizeProjectPath } from './paths';

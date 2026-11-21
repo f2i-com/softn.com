@@ -1,4 +1,4 @@
-import { classifyAsset } from '@softn/core';
+import { classifyAsset } from '@softn/core/authoring';
 import type { VFSFile } from '../types/studio';
 import { isPrivatePath, normalizeProjectPath } from './paths';
 import { resolveProjectRelativePath } from './projectImport';

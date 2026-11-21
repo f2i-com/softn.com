@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
 import { useProjectStore } from '../../stores/projectStore';
 import { useHistoryStore } from '../../stores/historyStore';
@@ -200,6 +201,7 @@ export function Toolbar({
 }: ToolbarProps) {
   const { name, isDirty, projectFormat } = useProjectStore();
   const { canUndo, canRedo } = useHistoryStore();
+  const hosted = isHostedEditor();
   const { canInstall, promptInstall } = useInstallPrompt();
   // Hosted, the host's own name for saving back to it, so its button and this one agree.
   const saveLabel = useHostedSaveLabel() ?? 'Save';
@@ -207,12 +209,14 @@ export function Toolbar({
   const pageHeld = useCanvasStore((state) => state.pageId !== null);
 
   const views = viewsFor(activeFileType, projectFormat);
+  const viewLabel = (v: 'design' | 'preview' | 'code' | 'data') =>
+    projectFormat === 'web' && v === 'design' ? 'Code' : VIEW_LABELS[v];
   // The history is the canvas's, so the two buttons are offered where the
   // canvas's page is worked on: in Design, with the page open or a logic
   // file in the middle while the panels hold the page. In Data they were
   // live, and took an element off a page that was not on the screen while
   // the collection just added stayed.
-  const canvasShown = pageInHand(view, activeFileType, pageHeld);
+  const canvasShown = projectFormat !== 'web' && pageInHand(view, activeFileType, pageHeld);
   const undoable = canvasShown && canUndo();
   const redoable = canvasShown && canRedo();
   const elsewhere = view === 'code' ? 'steps the canvas, in Design; the code editor has its own' : 'steps the canvas, in Design';
@@ -232,18 +236,22 @@ export function Toolbar({
         </span>
       )}
 
-      <div style={styles.divider} data-toolbar-divider="" />
+      {projectFormat !== 'web' && (
+        <>
+          <div style={styles.divider} data-toolbar-divider="" />
 
-      {/* The words of these two, and of New and Open, are put out of sight
-          where the row is short (data-compact, builder.css); the name each
-          has is said either way. */}
-      <button className="bl-tool" data-compact="1" data-tool="undo" aria-label="Undo" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${keys('Z')})` : `Undo ${elsewhere}`}>
-        <IconUndo /> <span className="bl-tool-label">Undo</span>
-      </button>
+          {/* The words of these two, and of New and Open, are put out of sight
+              where the row is short (data-compact, builder.css); the name each
+              has is said either way. */}
+          <button className="bl-tool" data-compact="1" data-tool="undo" aria-label="Undo" onClick={undoCanvas} disabled={!undoable} title={canvasShown ? `Undo (${keys('Z')})` : `Undo ${elsewhere}`}>
+            <IconUndo /> <span className="bl-tool-label">Undo</span>
+          </button>
 
-      <button className="bl-tool" data-compact="1" data-tool="redo" aria-label="Redo" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${keys('Y')})` : `Redo ${elsewhere}`}>
-        <IconRedo /> <span className="bl-tool-label">Redo</span>
-      </button>
+          <button className="bl-tool" data-compact="1" data-tool="redo" aria-label="Redo" onClick={redoCanvas} disabled={!redoable} title={canvasShown ? `Redo (${keys('Y')})` : `Redo ${elsewhere}`}>
+            <IconRedo /> <span className="bl-tool-label">Redo</span>
+          </button>
+        </>
+      )}
 
       <div style={styles.spacer} data-toolbar-spacer="" />
 
@@ -254,9 +262,9 @@ export function Toolbar({
               key={v}
               aria-pressed={view === v}
               onClick={() => onViewChange(v)}
-              title={`${VIEW_LABELS[v]} (${withMod(String(VIEW_KEYS[v]))})`}
+              title={`${viewLabel(v)} (${withMod(String(VIEW_KEYS[v]))})`}
             >
-              {VIEW_LABELS[v]}
+              {viewLabel(v)}
             </button>
           ))}
         </div>
@@ -268,7 +276,7 @@ export function Toolbar({
         <IconNew /> <span className="bl-tool-label">New</span>
       </button>
 
-      <button className="bl-tool" data-compact="2" aria-label="Open" onClick={onOpen} title={`Open a .softn file (${withMod('O')})`}>
+      <button className="bl-tool" data-compact="2" aria-label="Open" onClick={onOpen} title={`${hosted ? 'Open a project ZIP' : 'Open a .softn file'} (${withMod('O')})`}>
         <IconOpen /> <span className="bl-tool-label">Open</span>
       </button>
 
@@ -287,17 +295,17 @@ export function Toolbar({
       {/* Export had no control anywhere in the app. Its only route was
           Ctrl+Shift+E, a shortcut whose condition could never be true, so the
           feature was unreachable by any means. */}
-      <button className="bl-tool" data-compact="3" data-tool="export" aria-label="Export" onClick={onExport} title={`Export, run or publish (${withMod('Shift+E')})`}>
+      <button className="bl-tool" data-compact="3" data-tool="export" aria-label="Export" onClick={onExport} title={`${hosted ? 'Export project ZIP' : 'Export, run or publish'} (${withMod('Shift+E')})`}>
         <IconExport /> <span className="bl-tool-label">Export</span>
       </button>
 
-      {onPublish && (
+      {!hosted && onPublish && (
         <button className="bl-tool" data-compact="3" data-tool="publish" aria-label="Publish" onClick={onPublish} title="Publish directly to the SoftN directory">
           <IconPublish /> <span className="bl-tool-label">Publish</span>
         </button>
       )}
 
-      {canInstall && (
+      {!hosted && canInstall && (
         <button className="bl-tool" data-compact="3" aria-label="Install" onClick={promptInstall} title="Install SoftN Builder as an app">
           <IconInstall /> <span className="bl-tool-label">Install</span>
         </button>

@@ -1,13 +1,15 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { softnPwa } from '../../scripts/build/pwa.mjs';
+import { starterVendorsPlugin } from '../../scripts/build/starter-vendors.mjs';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
 import { containerRuntimeAssetPlugin, sharedContainerPrecache } from '../../scripts/build/container-runtime-assets.mjs';
 import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker.mjs';
+import { exampleBundlesPlugin } from '../../scripts/dev/example-bundles.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
-import { sharedRenderBuiltUrl } from '../../scripts/build/shared-assets.mjs';
-import { vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
+import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
+import { fullEngineGlob, fullEngineRuntimeCaching, vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -20,10 +22,15 @@ const base = isTauri ? './' : env.VITE_BASE || '/';
 
 export default defineConfig({
   plugins: [
+    starterVendorsPlugin(),
     retireServiceWorkersPlugin(),
+    exampleBundlesPlugin(),
+    woff2OnlyFontsPlugin(),
     react(),
     coreWorkerAssetPlugin(),
-    ...(env.VITE_FORMLOGIC_EDITOR === '1' ? [] : [containerRuntimeAssetPlugin()]),
+    containerRuntimeAssetPlugin(env.VITE_FORMLOGIC_EDITOR === '1'
+      ? { env: { SOFTN_SHARED_CONTAINER_RUNTIME: '/hosted-runtime/assets/container-runtime/' } }
+      : {}),
     // What runs as script: this deployment's files only (scripts/build/script-policy.mjs). Not in
     // the desktop build, whose webview has a policy of its own. FormLogic frames this page as a
     // document of its own, so it needs the policy as much as a site does.
@@ -65,25 +72,30 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // `wasm` matters here: @softn/core runs bundles through a wasm engine,
-        // so leaving it out would break preview offline.
+        // Install the editor tools and lite previews for offline use. The full engine
+        // enters the shared runtime cache when a project first asks for it.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
-        // A complete install: everything the Builder ships, so an installed
-        // Builder works offline with every feature. The canvas and preview
-        // still load each one (charts, editors, Scene3D with Three.js, the QR
-        // decoder, the workers' files under core-runtime/) only when a page
-        // draws or asks for it, so this is what installing downloads, not what
-        // a page loads.
-        globIgnores: [],
+        globIgnores: [fullEngineGlob],
+        sourceCompilers: true,
+        // Web projects need the code editor and preview offline. A full-tier web
+        // preview also imports web-host to compile the engine it has downloaded.
+        classicSharedRoots: [
+          '../../packages/@softn/components/dist/code-editor.js',
+          'src/components/preview/ContainerPreviewRuntime.tsx',
+          '../../packages/@softn/core/dist/web-host.js',
+        ],
+        classicRoots: [
+          'src/components/preview/ClassicPreviewSurface.ts',
+          'src/components/canvas/Canvas.tsx',
+          '../../packages/@softn/components/dist/lazy.js',
+        ],
+        runtimeCaching: [fullEngineRuntimeCaching],
         // What a web-container preview runs on (@softn/container's Worker, the engines
         // core does not carry, the vendor modules): under assets/ in a build of the
         // Builder alone, where the globs find it; in the site build in the one folder
         // all four apps share, which is installed from there.
         additionalManifestEntries: env.VITE_FORMLOGIC_EDITOR === '1' ? [] : sharedContainerPrecache(),
-        // Every file fits inside 8 MiB — the largest is the ZIPP engine at
-        // ~6.3 MiB (javascript-python-base; torch is a package of ~2 MiB under
-        // core-runtime/). Raise this rather than let Workbox skip a file,
-        // because a skipped precache entry fails only offline.
+        // Large offline tools include the TypeScript engine and the QR decoder.
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
     }),
@@ -100,13 +112,10 @@ export default defineConfig({
   experimental: { renderBuiltUrl: sharedRenderBuiltUrl },
   build: {
     outDir: isTauri ? 'dist-desktop' : 'dist',
-    // Tauri ships a known webview with each platform, so that build compiles
-    // straight for the engine it will run on. The web build names no target and
-    // takes Vite's default baseline instead: raising it drops Safari 15.0-15.3,
-    // the iOS the apple-mobile-web-app-* meta tags in index.html exist for.
-    ...(isTauri && {
-      target: env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari15',
-    }),
+    // Tauri ships a known webview with each platform; the web build matches
+    // the ES2022 baseline of softn-site, softn-web, softn-studio, and softn-single
+    // so shared chunks (Three.js, addons, core modules) hash identically in /shared/assets/.
+    target: isTauri ? (env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari15') : 'es2022',
     minify: !env.TAURI_ENV_DEBUG,
     // A debug desktop build, or a development build (scripts/build/sourcemaps.mjs).
     sourcemap: !!env.TAURI_ENV_DEBUG || buildSourcemaps(),

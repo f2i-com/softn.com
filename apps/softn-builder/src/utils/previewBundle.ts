@@ -1,4 +1,4 @@
-import { assetObjectUrl, composeBundleSource, rewriteBundleLogicImports, type AppAssetResolver } from '@softn/core';
+import { assetObjectUrl, composeBundleSource, rewriteBundleLogicImports, type AppAssetResolver } from '@softn/core/authoring';
 import type { AssetFile } from '../types/builder';
 
 /**

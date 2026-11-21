@@ -36,11 +36,22 @@ export async function centreOf(page: Page, selector: string): Promise<{ x: numbe
   const box = await page.evaluate((sel) => {
     for (const root of (window as unknown as { __softnRoots?: ShadowRoot[] }).__softnRoots ?? []) {
       const el = root.querySelector(sel);
-      if (el) {
+      if (el?.isConnected) {
         // Where a person would have to scroll to it first, so does this.
         el.scrollIntoView({ block: 'center', inline: 'center' });
         const r = el.getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        let x = r.left + r.width / 2;
+        let y = r.top + r.height / 2;
+        // Builder portals the app into a scaled device iframe. Mouse input
+        // uses top-level viewport coordinates, including that frame's scale.
+        let frame = el.ownerDocument.defaultView?.frameElement as HTMLIFrameElement | null;
+        while (frame) {
+          const bounds = frame.getBoundingClientRect();
+          x = bounds.left + (frame.clientLeft + x) * bounds.width / frame.offsetWidth;
+          y = bounds.top + (frame.clientTop + y) * bounds.height / frame.offsetHeight;
+          frame = frame.ownerDocument.defaultView?.frameElement as HTMLIFrameElement | null;
+        }
+        return { x, y };
       }
     }
     return null;
@@ -99,6 +110,7 @@ export function seeIn(page: Page, selector: string): Promise<Seen | null> {
     let count = 0;
     let focused = false;
     for (const root of (window as unknown as WithRoots).__softnRoots ?? []) {
+      if (!root.host.isConnected) continue;
       const all = root.querySelectorAll(sel);
       count += all.length;
       if (!first && all.length > 0) {
@@ -140,11 +152,11 @@ export function seeIn(page: Page, selector: string): Promise<Seen | null> {
 /** The text of the first element in a container that matches `selector`; null when nothing matches. */
 export const textIn = async (page: Page, selector: string): Promise<string | null> => (await seeIn(page, selector))?.text ?? null;
 
-/** Open `buffer` through the workspace's "Open a .softn file" button. */
+/** Open `buffer` through the workspace's "Open file" button. */
 export async function openBundle(page: Page, name: string, buffer: Buffer): Promise<void> {
   await page.goto('/web/');
   await expect(page.getByRole('heading', { name: 'Your app workspace', exact: true })).toBeVisible({ timeout: 60_000 });
   const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open a .softn file', exact: true }).click();
+  await page.getByRole('button', { name: 'Open file', exact: true }).click();
   await (await chooser).setFiles({ name, mimeType: 'application/octet-stream', buffer });
 }
