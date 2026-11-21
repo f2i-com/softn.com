@@ -357,51 +357,84 @@ export function migrateAppStorage(fromAppId: string, toAppId: string): DataTrans
  * the records, and the keys its script kept through localStorage itself,
  * which the first version of this left behind.
  */
+const CONTAINER_IDB_VERSION = 2;
+
+/**
+ * Open a container-owned IndexedDB store safely: always creates the object store
+ * in `onupgradeneeded` so clearing or backing up an app before any container has
+ * run can never leave behind a version-1 database with zero object stores.
+ */
+function openContainerStoreDb(name: string, storeName: string, version = CONTAINER_IDB_VERSION, retried = false): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(name, version);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(storeName)) {
+          db.createObjectStore(storeName);
+        }
+      };
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          try { db.close(); } catch { /* ignore */ }
+        };
+        if (!db.objectStoreNames.contains(storeName)) {
+          const nextVersion = (typeof db.version === 'number' && db.version >= 1 ? db.version : version) + 1;
+          try { db.close(); } catch { /* ignore */ }
+          if (!retried) {
+            void openContainerStoreDb(name, storeName, nextVersion, true).then(resolve);
+            return;
+          }
+          resolve(null);
+          return;
+        }
+        resolve(db);
+      };
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
 function clearContainerIndexedDb(prefix: string): void {
   if (typeof indexedDB === 'undefined') return;
-  try {
-    const req1 = indexedDB.open('softn-container-session', 1);
-    req1.onsuccess = () => {
-      const db = req1.result;
-      try {
-        if (db.objectStoreNames.contains('sessions')) {
-          const tx = db.transaction('sessions', 'readwrite');
-          tx.objectStore('sessions').delete(prefix);
-        }
-      } catch {
-        // ignore
-      } finally {
-        try { db.close(); } catch { /* ignore */ }
-      }
-    };
-  } catch {
-    // ignore
-  }
-  try {
-    const req2 = indexedDB.open('softn-container-sqlite', 1);
-    req2.onsuccess = () => {
-      const db = req2.result;
-      try {
-        if (db.objectStoreNames.contains('blobs')) {
-          const tx = db.transaction('blobs', 'readwrite');
-          const store = tx.objectStore('blobs');
-          const curReq = store.openCursor();
-          curReq.onsuccess = () => {
-            const cur = curReq.result;
-            if (!cur) return;
-            if (String(cur.key).startsWith(prefix)) cur.delete();
-            cur.continue();
-          };
-        }
-      } catch {
-        // ignore
-      } finally {
-        try { db.close(); } catch { /* ignore */ }
-      }
-    };
-  } catch {
-    // ignore
-  }
+  void openContainerStoreDb('softn-container-session', 'sessions').then((db) => {
+    if (!db) return;
+    try {
+      const tx = db.transaction('sessions', 'readwrite');
+      tx.objectStore('sessions').delete(prefix);
+      tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } };
+      tx.onerror = () => { try { db.close(); } catch { /* ignore */ } };
+      tx.onabort = () => { try { db.close(); } catch { /* ignore */ } };
+    } catch {
+      try { db.close(); } catch { /* ignore */ }
+    }
+  });
+  void openContainerStoreDb('softn-container-sqlite', 'blobs').then((db) => {
+    if (!db) return;
+    try {
+      const tx = db.transaction('blobs', 'readwrite');
+      const store = tx.objectStore('blobs');
+      const curReq = store.openCursor();
+      curReq.onsuccess = () => {
+        const cur = curReq.result;
+        if (!cur) return;
+        if (String(cur.key).startsWith(prefix)) cur.delete();
+        cur.continue();
+      };
+      tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } };
+      tx.onerror = () => { try { db.close(); } catch { /* ignore */ } };
+      tx.onabort = () => { try { db.close(); } catch { /* ignore */ } };
+    } catch {
+      try { db.close(); } catch { /* ignore */ }
+    }
+  });
 }
 
 /** Snapshot of one build's localStorage and container IndexedDB state for Undo after removal. */
@@ -436,21 +469,14 @@ function syncKeysForOrigin(origin: string): string[] {
 }
 
 function readContainerIndexedDb(prefix: string): Promise<{ session?: unknown; blobs: Array<[IDBValidKey, unknown]> }> {
-  if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') {
-    return Promise.resolve({ blobs: [] });
-  }
-  const readSession = new Promise<unknown>((resolve) => {
-    try {
-      const req = indexedDB.open('softn-container-session', 1);
-      req.onerror = () => resolve(undefined);
-      req.onsuccess = () => {
-        const db = req.result;
+  const readSession = openContainerStoreDb('softn-container-session', 'sessions').then(
+    (db) =>
+      new Promise<unknown>((resolve) => {
+        if (!db) {
+          resolve(undefined);
+          return;
+        }
         try {
-          if (!db.objectStoreNames.contains('sessions')) {
-            db.close();
-            resolve(undefined);
-            return;
-          }
           const tx = db.transaction('sessions', 'readonly');
           const getReq = tx.objectStore('sessions').get(prefix);
           getReq.onsuccess = () => {
@@ -465,24 +491,17 @@ function readContainerIndexedDb(prefix: string): Promise<{ session?: unknown; bl
           try { db.close(); } catch { /* ignore */ }
           resolve(undefined);
         }
-      };
-    } catch {
-      resolve(undefined);
-    }
-  });
-  const readBlobs = new Promise<Array<[IDBValidKey, unknown]>>((resolve) => {
-    try {
-      const req = indexedDB.open('softn-container-sqlite', 1);
-      req.onerror = () => resolve([]);
-      req.onsuccess = () => {
-        const db = req.result;
+      })
+  );
+  const readBlobs = openContainerStoreDb('softn-container-sqlite', 'blobs').then(
+    (db) =>
+      new Promise<Array<[IDBValidKey, unknown]>>((resolve) => {
+        if (!db) {
+          resolve([]);
+          return;
+        }
         const found: Array<[IDBValidKey, unknown]> = [];
         try {
-          if (!db.objectStoreNames.contains('blobs')) {
-            db.close();
-            resolve([]);
-            return;
-          }
           const tx = db.transaction('blobs', 'readonly');
           const curReq = tx.objectStore('blobs').openCursor();
           curReq.onerror = () => {
@@ -503,66 +522,46 @@ function readContainerIndexedDb(prefix: string): Promise<{ session?: unknown; bl
           try { db.close(); } catch { /* ignore */ }
           resolve(found);
         }
-      };
-    } catch {
-      resolve([]);
-    }
-  });
+      })
+  );
   return Promise.all([readSession, readBlobs]).then(([session, blobs]) => ({ session, blobs }));
 }
 
 async function writeContainerIndexedDb(prefix: string, session: unknown, blobs: Array<[IDBValidKey, unknown]>): Promise<void> {
-  if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') return;
   if (session !== undefined) {
-    await new Promise<void>((resolve) => {
-      try {
-        const req = indexedDB.open('softn-container-session', 1);
-        req.onupgradeneeded = () => {
-          if (!req.result.objectStoreNames.contains('sessions')) req.result.createObjectStore('sessions');
-        };
-        req.onerror = () => resolve();
-        req.onsuccess = () => {
-          const db = req.result;
-          try {
-            const tx = db.transaction('sessions', 'readwrite');
-            tx.objectStore('sessions').put(session, prefix);
-            tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
-            tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
-          } catch {
-            try { db.close(); } catch { /* ignore */ }
-            resolve();
-          }
-        };
-      } catch {
-        resolve();
-      }
-    });
+    const db = await openContainerStoreDb('softn-container-session', 'sessions');
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction('sessions', 'readwrite');
+          tx.objectStore('sessions').put(session, prefix);
+          tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          tx.onabort = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+        } catch {
+          try { db.close(); } catch { /* ignore */ }
+          resolve();
+        }
+      });
+    }
   }
   if (blobs.length > 0) {
-    await new Promise<void>((resolve) => {
-      try {
-        const req = indexedDB.open('softn-container-sqlite', 1);
-        req.onupgradeneeded = () => {
-          if (!req.result.objectStoreNames.contains('blobs')) req.result.createObjectStore('blobs');
-        };
-        req.onerror = () => resolve();
-        req.onsuccess = () => {
-          const db = req.result;
-          try {
-            const tx = db.transaction('blobs', 'readwrite');
-            const store = tx.objectStore('blobs');
-            for (const [k, v] of blobs) store.put(v, k);
-            tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
-            tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
-          } catch {
-            try { db.close(); } catch { /* ignore */ }
-            resolve();
-          }
-        };
-      } catch {
-        resolve();
-      }
-    });
+    const db = await openContainerStoreDb('softn-container-sqlite', 'blobs');
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction('blobs', 'readwrite');
+          const store = tx.objectStore('blobs');
+          for (const [k, v] of blobs) store.put(v, k);
+          tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          tx.onabort = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+        } catch {
+          try { db.close(); } catch { /* ignore */ }
+          resolve();
+        }
+      });
+    }
   }
 }
 

@@ -6,6 +6,13 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.50
+
+- Fixes `Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.` when opening Web Container apps (such as the PHP/SQLite business apps) in a browser that previously cleared or backed up an app in `/web/`.
+- `apps/softn-web`'s container storage helpers (`appCacheStorage.ts`) now always open `softn-container-session` and `softn-container-sqlite` with `onupgradeneeded` so clearing or backing up apps can never leave behind empty store-less databases.
+- Bumps `softn-container-session` and `softn-container-sqlite` to IndexedDB version 2 (with dynamic `version + 1` self-healing in `session-store.ts`, `local-backend-transport.ts`, and `idb-backing.ts`) so browsers already affected by empty v1 databases automatically recover on next open without losing existing valid v1 data.
+- Pins the demo catalogue to `f2i-com/softn-Examples` `v1.1.0` (29 full-stack PHP/SQLite business apps with live dashboard screenshots, plus `Outerstead`, `Urbanward`, `Outermate`, `Scorchline`, `PotatoPeeler`, and `Showcase`).
+
 ## v0.0.49
 
 - Upgrades the browser engines, FormLogic runtime package and backend runners to **ZIPP v0.0.37** and **XDB SQLite 3 WASM v0.1.0**, adding full-stack sandboxed container backends (`php` / Slim 4, `javascript`, `typescript`, `rust`, `python`) with persistent SQLite databases (`LocalBackendTransport` in the browser and ZIPP `safe-sandbox` multi-user execution in `softn-server`, `softn-host-php`, and FormLogic).

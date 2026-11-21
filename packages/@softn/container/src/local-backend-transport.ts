@@ -32,20 +32,39 @@ import type {
 
 const SQLITE_IDB_NAME = 'softn-container-sqlite';
 const SQLITE_IDB_STORE = 'blobs';
+// v2 upgrades any pre-existing empty v1 DB that an older reader opened without onupgradeneeded.
+const SQLITE_IDB_VERSION = 2;
 
-function openSqliteIdb(): Promise<IDBDatabase | null> {
+function openSqliteIdb(version = SQLITE_IDB_VERSION, retried = false): Promise<IDBDatabase | null> {
   if (typeof indexedDB === 'undefined') return Promise.resolve(null);
   return new Promise((resolve) => {
     try {
-      const req = indexedDB.open(SQLITE_IDB_NAME, 1);
+      const req = indexedDB.open(SQLITE_IDB_NAME, version);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(SQLITE_IDB_STORE)) {
           db.createObjectStore(SQLITE_IDB_STORE);
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          try { db.close(); } catch { /* ignore */ }
+        };
+        if (!db.objectStoreNames.contains(SQLITE_IDB_STORE)) {
+          const nextVersion = (typeof db.version === 'number' && db.version >= 1 ? db.version : version) + 1;
+          try { db.close(); } catch { /* ignore */ }
+          if (!retried) {
+            void openSqliteIdb(nextVersion, true).then(resolve);
+            return;
+          }
+          resolve(null);
+          return;
+        }
+        resolve(db);
+      };
       req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
     } catch {
       resolve(null);
     }
@@ -73,28 +92,34 @@ async function loadPersistedBlobs(
   if (idb) {
     try {
       await new Promise<void>((resolve) => {
-        const tx = idb.transaction(SQLITE_IDB_STORE, 'readonly');
-        const store = tx.objectStore(SQLITE_IDB_STORE);
-        const curReq = store.openCursor();
-        curReq.onsuccess = () => {
-          const cur = curReq.result;
-          if (!cur) return;
-          const k = String(cur.key);
-          if (k.startsWith(sqlPrefix)) {
-            const val = cur.value;
-            if (val instanceof Uint8Array) dbs[k.slice(sqlPrefix.length)] = val;
-            else if (val instanceof ArrayBuffer) dbs[k.slice(sqlPrefix.length)] = new Uint8Array(val);
-          } else if (k === ovKey && typeof cur.value === 'string') {
-            phpOverlay = cur.value;
-          } else if (k === rustOvKey && typeof cur.value === 'string') {
-            rustOverlay = cur.value;
-          } else if (k === cookiesKey && typeof cur.value === 'string') {
-            cookies = cur.value;
-          }
-          cur.continue();
-        };
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
+        try {
+          const tx = idb.transaction(SQLITE_IDB_STORE, 'readonly');
+          const store = tx.objectStore(SQLITE_IDB_STORE);
+          const curReq = store.openCursor();
+          curReq.onsuccess = () => {
+            const cur = curReq.result;
+            if (!cur) return;
+            const k = String(cur.key);
+            if (k.startsWith(sqlPrefix)) {
+              const val = cur.value;
+              if (val instanceof Uint8Array) dbs[k.slice(sqlPrefix.length)] = val;
+              else if (val instanceof ArrayBuffer) dbs[k.slice(sqlPrefix.length)] = new Uint8Array(val);
+            } else if (k === ovKey && typeof cur.value === 'string') {
+              phpOverlay = cur.value;
+            } else if (k === rustOvKey && typeof cur.value === 'string') {
+              rustOverlay = cur.value;
+            } else if (k === cookiesKey && typeof cur.value === 'string') {
+              cookies = cur.value;
+            }
+            cur.continue();
+          };
+          curReq.onerror = () => resolve();
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
       });
     } finally {
       try { idb.close(); } catch { /* ignore */ }
@@ -134,17 +159,23 @@ export async function clearBackendPersistedBlobs(storagePrefix: string): Promise
   if (idb) {
     try {
       await new Promise<void>((resolve) => {
-        const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
-        const store = tx.objectStore(SQLITE_IDB_STORE);
-        const curReq = store.openCursor();
-        curReq.onsuccess = () => {
-          const cur = curReq.result;
-          if (!cur) return;
-          if (String(cur.key).startsWith(storagePrefix)) cur.delete();
-          cur.continue();
-        };
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
+        try {
+          const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
+          const store = tx.objectStore(SQLITE_IDB_STORE);
+          const curReq = store.openCursor();
+          curReq.onsuccess = () => {
+            const cur = curReq.result;
+            if (!cur) return;
+            if (String(cur.key).startsWith(storagePrefix)) cur.delete();
+            cur.continue();
+          };
+          curReq.onerror = () => resolve();
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
       });
     } finally {
       try { idb.close(); } catch { /* ignore */ }
@@ -169,10 +200,15 @@ async function savePersistedBlob(key: string, value: Uint8Array | string): Promi
   if (idb) {
     try {
       await new Promise<void>((resolve) => {
-        const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
-        tx.objectStore(SQLITE_IDB_STORE).put(value, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
+        try {
+          const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
+          tx.objectStore(SQLITE_IDB_STORE).put(value, key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
       });
     } finally {
       try { idb.close(); } catch { /* ignore */ }

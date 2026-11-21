@@ -44,36 +44,50 @@ const BACKING_STORE = 'idb';
 
 let opening: Promise<IDBDatabase> | null = null;
 
+function openBackingVersion(version: number, retried: boolean): Promise<IDBDatabase> {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    let request: IDBOpenDBRequest;
+    try {
+      request = indexedDB.open(BACKING_DB, version);
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(BACKING_STORE)) db.createObjectStore(BACKING_STORE);
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      // A newer page of the site upgrading it: this one lets go, and opens it again when next asked.
+      db.onversionchange = () => {
+        db.close();
+        opening = null;
+      };
+      db.onclose = () => {
+        opening = null;
+      };
+      if (!db.objectStoreNames.contains(BACKING_STORE)) {
+        const nextVersion = (typeof db.version === 'number' && db.version >= 1 ? db.version : version) + 1;
+        try { db.close(); } catch { /* ignore */ }
+        if (!retried) {
+          openBackingVersion(nextVersion, true).then(resolve, reject);
+          return;
+        }
+        reject(new Error('IndexedDB backing store is missing'));
+        return;
+      }
+      resolve(db);
+    };
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB could not be opened'));
+    request.onblocked = () => reject(new Error('IndexedDB is held open by another page of the site'));
+  });
+}
+
 /** The page's own database for every app's parts, opened once a page. */
 function backingDb(): Promise<IDBDatabase> {
   if (!opening) {
-    opening = new Promise<IDBDatabase>((resolve, reject) => {
-      let request: IDBOpenDBRequest;
-      try {
-        request = indexedDB.open(BACKING_DB, 1);
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
-        return;
-      }
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains(BACKING_STORE)) db.createObjectStore(BACKING_STORE);
-      };
-      request.onsuccess = () => {
-        const db = request.result;
-        // A newer page of the site upgrading it: this one lets go, and opens it again when next asked.
-        db.onversionchange = () => {
-          db.close();
-          opening = null;
-        };
-        db.onclose = () => {
-          opening = null;
-        };
-        resolve(db);
-      };
-      request.onerror = () => reject(request.error ?? new Error('IndexedDB could not be opened'));
-      request.onblocked = () => reject(new Error('IndexedDB is held open by another page of the site'));
-    }).catch((error: unknown) => {
+    opening = openBackingVersion(1, false).catch((error: unknown) => {
       opening = null;
       throw error;
     });

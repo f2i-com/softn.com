@@ -666,7 +666,7 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
-from the official `javascript-python-base` module. SoftN v0.0.49 uses ZIPP v0.0.37.
+from the official `javascript-python-base` module. SoftN v0.0.50 uses ZIPP v0.0.37.
 Web starters download the lite JavaScript engine (779 kB with Brotli). Apps that need
 the full JavaScript and experimental Python module download 6.58 MB (1.65 MB with Brotli).
 Since ZIPP 0.0.26 each engine module carries its own JavaScript bindings in a `zipp.glue` section, which the install

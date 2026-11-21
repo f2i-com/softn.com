@@ -16,6 +16,7 @@ import {
   loadContainerSession,
   saveContainerSession,
   clearContainerSession,
+  clearBackendPersistedBlobs,
 } from '../src/index';
 import { ThreeWorkerHost } from '../src/three-worker-host';
 import { GUEST_THREE_NATIVE_SOURCE, hasBundledThree, instrumentBundledThree } from '../src/guest-three-native';
@@ -142,6 +143,109 @@ describe('IndexedDB container session store', () => {
 
     await clearContainerSession('app:pit:');
     expect(await loadContainerSession('app:pit:')).toBeNull();
+  });
+
+  it('self-heals a pre-existing store-less v1 or v2 IndexedDB without throwing NotFoundError', async () => {
+    const dbState = new Map<string, { version: number; stores: Map<string, Map<string, unknown>> }>();
+    // Simulate a poisoned version-1 DB with zero object stores (created by a caller without onupgradeneeded)
+    // AND a poisoned version-2 DB with zero object stores to prove dynamic version+1 recovery too.
+    dbState.set('softn-container-session', { version: 1, stores: new Map() });
+    dbState.set('softn-container-sqlite', { version: 2, stores: new Map() });
+
+    (globalThis as { indexedDB?: unknown }).indexedDB = {
+      open: (name: string, requestedVersion = 1) => {
+        const req: { result?: unknown; onsuccess?: () => void; onerror?: () => void; onupgradeneeded?: () => void } = {};
+        queueMicrotask(() => {
+          let state = dbState.get(name);
+          const needsUpgrade = !state || requestedVersion > state.version;
+          if (!state) {
+            state = { version: requestedVersion, stores: new Map() };
+            dbState.set(name, state);
+          } else if (needsUpgrade) {
+            state.version = requestedVersion;
+          }
+          const db = {
+            version: state.version,
+            objectStoreNames: { contains: (s: string) => state!.stores.has(s) },
+            createObjectStore: (s: string) => {
+              if (!state!.stores.has(s)) state!.stores.set(s, new Map());
+              return {};
+            },
+            close: () => {},
+            transaction: (storeName: string) => {
+              const storeMap = state!.stores.get(storeName);
+              if (!storeMap) {
+                throw new DOMException(
+                  "Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.",
+                  'NotFoundError'
+                );
+              }
+              const tx: {
+                oncomplete?: () => void;
+                onerror?: () => void;
+                onabort?: () => void;
+                objectStore: () => Record<string, unknown>;
+              } = {
+                objectStore: () => ({
+                  get: (k: string) => {
+                    const r: { result?: unknown; onsuccess?: () => void; onerror?: () => void } = {};
+                    queueMicrotask(() => {
+                      r.result = storeMap.get(k);
+                      r.onsuccess?.();
+                    });
+                    return r;
+                  },
+                  put: (v: unknown, k: string) => {
+                    storeMap.set(k, structuredClone(v));
+                    queueMicrotask(() => tx.oncomplete?.());
+                    return {};
+                  },
+                  delete: (k: string) => {
+                    storeMap.delete(k);
+                    queueMicrotask(() => tx.oncomplete?.());
+                    return {};
+                  },
+                  openCursor: () => {
+                    const r: { result?: unknown; onsuccess?: () => void; onerror?: () => void } = {};
+                    queueMicrotask(() => {
+                      r.result = null;
+                      r.onsuccess?.();
+                      tx.oncomplete?.();
+                    });
+                    return r;
+                  },
+                }),
+              };
+              return tx;
+            },
+          };
+          req.result = db;
+          if (needsUpgrade) req.onupgradeneeded?.();
+          req.onsuccess?.();
+        });
+        return req;
+      },
+    };
+
+    // Previously threw NotFoundError: One of the specified object stores was not found
+    expect(await loadContainerSession('prop:1:')).toBeNull();
+    expect(dbState.get('softn-container-session')?.version).toBe(2);
+    expect(dbState.get('softn-container-session')?.stores.has('sessions')).toBe(true);
+
+    expect(
+      await saveContainerSession('prop:1:', {
+        urlPath: '/jobs',
+        sessionStorage: {},
+        localStorage: { ok: '1' },
+        updatedAt: 99,
+      })
+    ).toBe(true);
+    expect((await loadContainerSession('prop:1:'))?.urlPath).toBe('/jobs');
+
+    // Even a store-less v2 sqlite DB self-heals by upgrading to v3
+    await clearBackendPersistedBlobs('prop:1:');
+    expect(dbState.get('softn-container-sqlite')?.version).toBe(3);
+    expect(dbState.get('softn-container-sqlite')?.stores.has('blobs')).toBe(true);
   });
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "softn",
-  "version": "0.0.49",
+  "version": "0.0.50",
   "private": true,
   "description": "Sandboxed web app runtime, Studio and Builder",
   "license": "Apache-2.0",
