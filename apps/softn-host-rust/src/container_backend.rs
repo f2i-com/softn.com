@@ -1311,7 +1311,7 @@ impl RequestSqlBridge {
             "open" => {
                 match self.config.resolve_db_path(arg(0)) {
                     Ok(path) => match SqlStorageConfig::open_configured_connection(path.as_deref()) {
-                        Ok(conn) => {
+                        Ok(mut conn) => {
                             let abort = self.abort.clone();
                             conn.progress_handler(
                                 1000,
@@ -1454,7 +1454,7 @@ impl RequestSqlBridge {
 
     fn run_query(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        let columns: Vec<String> = stmt.column_names().iter().map(|s| (*s).to_owned()).collect();
+        let columns: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         Self::bind_params(&mut stmt, params_raw)?;
         let mut rows = stmt.raw_query();
         let mut out_rows: Vec<Value> = Vec::new();

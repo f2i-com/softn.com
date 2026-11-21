@@ -91,9 +91,9 @@
     "category": "tools",
     "tags": "emulator,dos,x86,doom",
     "primary": "#48d080",
-    "size": 13861774,
+    "size": 13861658,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/SoftDOS.softn",
-    "sha256": "fac18b16bd4369c400997b24b92a1a5b95f102a3d9578c766b892c7f887dfb5d"
+    "sha256": "3e540b926ebbf0cfe8c5c80aee058b44577e3b682422f2122bee35f9e7a0837f"
   },
   {
     "id": "showcase",
@@ -259,9 +259,9 @@
     "category": "strategy",
     "tags": "strategy,stealth,prison",
     "primary": "#efba72",
-    "size": 8410468,
+    "size": 8410418,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/Outermate.softn",
-    "sha256": "87add408fef4c123d9ea08aec194134ca9f02f7afc249749a0aed19550cf2f88"
+    "sha256": "b7a95fc6bb36b3f99250d0d19da336305820aa73b6f74e51b8af361ee8ec0c6b"
   },
   {
     "id": "outerstead",
@@ -271,9 +271,9 @@
     "category": "strategy",
     "tags": "strategy,colony,survival",
     "primary": "#c5ad77",
-    "size": 16502386,
+    "size": 16501746,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/Outerstead.softn",
-    "sha256": "74fd08edab24c7aa18a4d8a54a91c9e381c3329ded66a82d5160a93e03d2f6ac"
+    "sha256": "c2b857cd0ee3a7e7c7f55ce338d506554d7b1024069fe4939e968c47dc19b1cf"
   },
   {
     "id": "convenience-store-at-the-end-of-the-universe",
@@ -283,9 +283,9 @@
     "category": "story",
     "tags": "story,narrative,sci-fi",
     "primary": "#e1bc7b",
-    "size": 3159000,
+    "size": 3158821,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/ConvenienceStoreAtTheEndOfTheUniverse.softn",
-    "sha256": "052cc0539d21ab580a7a24c4dbf254b1ca6cd57c7bf8352e817fffff2707b87c"
+    "sha256": "298da7d339671c9a3c8aadc7a701c3d066fb9c0c64a0d4a23c5e0307c3dcd2fa"
   },
   {
     "id": "do-not-press-the-duck",
@@ -295,9 +295,9 @@
     "category": "games",
     "tags": "comedy,interactive,arcade",
     "primary": "#f6ca50",
-    "size": 2177771,
+    "size": 2177642,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/DoNotPressTheDuck.softn",
-    "sha256": "1aa965beab33be828f455baffed73f05257758f000b208096305117fae36ea71"
+    "sha256": "690e7967d506ddb78e7128c58b8166e19abbf4f03be4a919ecb4313c0f179450"
   },
   {
     "id": "express-delivery-snail",
@@ -307,9 +307,9 @@
     "category": "games",
     "tags": "delivery,puzzle,arcade",
     "primary": "#bd7048",
-    "size": 663995,
+    "size": 663865,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/ExpressDeliverySnail.softn",
-    "sha256": "3ee3a6df0b4d406f1094b6a9b80760442142963cc09153ccf1d26d9278140c9e"
+    "sha256": "a92ec4dfeb7878624d73e182ccbda075970aadb028e852d9c193938a7e1f0375"
   },
   {
     "id": "first-drive",
@@ -319,9 +319,9 @@
     "category": "simulations",
     "tags": "3d,lunar,cinema",
     "primary": "#4b6b94",
-    "size": 21144185,
+    "size": 21144174,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/FirstDrive.softn",
-    "sha256": "1b8be21527467dbfb97c05cc6b7acefc30d66134085c1362fea317c8289e6838"
+    "sha256": "1ef41f39a3016c470f6ce95af5a88adbec88cc27c802f0cc489cf47399715a93"
   },
   {
     "id": "frog-employee-of-the-month",
@@ -331,9 +331,9 @@
     "category": "games",
     "tags": "platformer,physics,comedy",
     "primary": "#80cf73",
-    "size": 609790,
+    "size": 609652,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/FrogEmployeeOfTheMonth.softn",
-    "sha256": "8ca291fb26db3f539ab7df700180f2354af08a70ef86e25d51b19173102820a5"
+    "sha256": "2884ea1fb8c5f9171ea7f87e3775977e0134665f3371ea5fc573816d56480414"
   },
   {
     "id": "lastsound3d",
@@ -355,9 +355,9 @@
     "category": "games",
     "tags": "exploration,sandbox,comedy",
     "primary": "#64748b",
-    "size": 717893,
+    "size": 717721,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/PigeonMunicipalEmployee.softn",
-    "sha256": "0954d2a44dcc165dd36230da7585c0a773ee5e3e9e2d4ce50c29aa60fb33cc64"
+    "sha256": "235dac6144a33c1470da6cc3dcc27d4850863b4075eb701a6204aa3e56c584f2"
   },
   {
     "id": "please-do-not-feed-the-moon",
@@ -367,9 +367,9 @@
     "category": "story",
     "tags": "story,narrative,surreal",
     "primary": "#b8d5bd",
-    "size": 1827314,
+    "size": 1827195,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/PleaseDoNotFeedTheMoon.softn",
-    "sha256": "7aa7007c4e348ea4ee27bd87573e95649cba0b81df65778262368bd181a63b68"
+    "sha256": "ed4e4540c1a2490d82625df8e1b6f51955282eaed32da47045ed8f563a462911"
   },
   {
     "id": "racelab",
@@ -415,9 +415,9 @@
     "category": "strategy",
     "tags": "3d,city-builder,strategy",
     "primary": "#b9d9b8",
-    "size": 2491705,
+    "size": 2491451,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/Urbanward.softn",
-    "sha256": "89218fbc68b008e843257e871039e2ba1882ad3e567d9b7d991afa853485bcac"
+    "sha256": "358170d4ec4d2979bc8f812c2933ce8baf9c92cc6621dd1c08a3d9e9f7afca84"
   },
   {
     "id": "very-normal-post-office",
@@ -427,9 +427,9 @@
     "category": "games",
     "tags": "inspection,arcade,comedy",
     "primary": "#385347",
-    "size": 274597,
+    "size": 274295,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.6/VeryNormalPostOffice.softn",
-    "sha256": "1c72a045dc5bb99e7ee0c5627ce6f5bce77d3d2145f517545e03b99a160ac1c3"
+    "sha256": "aeb154d2bb69a4ba58b324b2d03b2fd52f123c8a275cf0f2083583a972bb8c8d"
   },
   {
     "id": "mine-management",
