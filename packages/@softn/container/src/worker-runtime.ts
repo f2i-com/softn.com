@@ -1826,12 +1826,12 @@ export class ContainerWorkerSession {
             return;
           }
           // Full-duplex backend WebSocket bridged through Host -> BackendTransport.openWebSocket
-          const virtualWs = {
+          const virtualWsState = {
             readyState: 0,
             protocol: protocols[0] ?? '',
             extensions: '',
             send: (payload: string | Uint8Array) => {
-              if (virtualWs.readyState !== 1) return;
+              if (virtualWsState.readyState !== 1) return;
               const isBin = payload instanceof Uint8Array;
               void this.requestHost('backend.ws.send', {
                 id,
@@ -1840,8 +1840,8 @@ export class ContainerWorkerSession {
               }).catch(() => undefined);
             },
             close: (code = 1000, reason = '') => {
-              if (virtualWs.readyState === 3) return;
-              virtualWs.readyState = 3;
+              if (virtualWsState.readyState === 3) return;
+              virtualWsState.readyState = 3;
               void this.requestHost('backend.ws.close', { id, code, reason }).catch(() => undefined);
               if (!socket.over) {
                 socket.events.push({ t: 'close', code, reason, wasClean: true });
@@ -1849,7 +1849,8 @@ export class ContainerWorkerSession {
                 this.pumpSocket(id);
               }
             },
-          } as unknown as WebSocket;
+          };
+          const virtualWs = virtualWsState as unknown as WebSocket;
           const socket: OpenSocket = {
             ws: virtualWs,
             events: [],
@@ -1863,7 +1864,7 @@ export class ContainerWorkerSession {
             : wsBackendTarget.path;
           void this.requestHost('backend.ws.open', { id, path: wsPath, protocols }).catch((err) => {
             if (socket.over) return;
-            virtualWs.readyState = 3;
+            virtualWsState.readyState = 3;
             socket.events.push({ t: 'error' });
             socket.events.push({
               t: 'close',
@@ -2694,6 +2695,30 @@ export class ContainerWorkerSession {
                 return this.mirrorOf(cid, w, h)?.canvas ?? null;
               },
               getImageBitmap: (ref) => this.mirrorPictures.get(ref)?.bitmap ?? null,
+              getArchiveBytes: (relPath) => {
+                const norm = String(relPath || '').replace(/^\.\/+/, '').replace(/^\/+/, '');
+                if (!norm) return null;
+                const bin = this.binaryFiles[norm];
+                if (bin) return bin;
+                const txt = this.textFiles[norm];
+                if (typeof txt === 'string') return new TextEncoder().encode(txt);
+                return null;
+              },
+              onAsyncDirty: () => {
+                if (this.disposed || !this.threeHost.hasActiveRenderers()) return;
+                for (const frame of this.threeHost.takeDirtyFrames()) {
+                  this.postToHost(
+                    {
+                      type: 'webgl-frame',
+                      canvasId: frame.canvasId,
+                      bitmap: frame.bitmap,
+                      width: frame.width,
+                      height: frame.height,
+                    },
+                    [frame.bitmap]
+                  );
+                }
+              },
             });
           }
           if (sub === 'raycast') {

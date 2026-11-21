@@ -3,10 +3,11 @@
  */
 
 import React, { useState, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { strToU8 } from 'fflate';
 import { useFilesStore } from '../../stores/filesStore';
 import { askConfirm } from '../../utils/confirm';
 import { useProjectStore } from '../../stores/projectStore';
-import { dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
+import { blankLogicFile, dockLogicFile, entryFileId, logicLanguageOf } from '../../utils/logicFiles';
 import { useShallow } from 'zustand/react/shallow';
 import { useSourceFidelity } from '../../utils/useSourceFidelity';
 import type { ProjectFileNode } from '../../types/builder';
@@ -547,6 +548,23 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
   const rootFileIds = useMemo(() => rootFilesOf(nodes), [nodes]);
   const retainedSource = useProjectStore((state) => state.source);
   const projectFormat = useProjectStore((state) => state.projectFormat);
+  const activeExtraPath = useProjectStore((state) => state.activeExtraPath);
+  const openExtraFile = useProjectStore((state) => state.openExtraFile);
+  const setExtraEntry = useProjectStore((state) => state.setExtraEntry);
+  const deleteExtraEntry = useProjectStore((state) => state.deleteExtraEntry);
+  const [addingExtra, setAddingExtra] = useState(false);
+  const [newExtraPath, setNewExtraPath] = useState('');
+  const [showVendorExtras, setShowVendorExtras] = useState(false);
+
+  const { extraPrimary, extraVendor } = useMemo(() => {
+    const primary: string[] = [];
+    const vendor: string[] = [];
+    for (const p of [...retainedSource.extraEntries.keys()].sort((a, b) => a.localeCompare(b))) {
+      if (/(?:^|\/)(?:vendor|node_modules)\//i.test(p)) vendor.push(p);
+      else primary.push(p);
+    }
+    return { extraPrimary: primary, extraVendor: vendor };
+  }, [retainedSource.extraEntries]);
 
   // A logic file named without an extension takes the project's language,
   // which is the language of the logic its entry file links: an app's logic
@@ -738,6 +756,17 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
           : (trimmed.endsWith('.ui') ? trimmed : `${trimmed}.ui`);
         createFile(parentPath, uiName, 'ui');
       } else {
+        // Backend & non-frontend files (PHP, Rust, SQL, TOML, YAML, .htaccess, or anything under server/ / backend/)
+        // go straight into `source.extraEntries` so they can be edited freely without polluting manifest.files.logic.
+        const isBackendExt =
+          /\.(?:php|phtml|rs|go|c|cpp|h|hpp|sql|toml|ya?ml|ini|conf|cfg|sh|bash|zsh)$/i.test(trimmed) ||
+          /(?:^|\/)(?:\.htaccess|dockerfile|makefile)$/i.test(trimmed);
+        const targetPath = parentPath ? `${parentPath}/${trimmed}` : trimmed;
+        if (isBackendExt || /^(?:server|backend)\//i.test(targetPath)) {
+          const savedPath = setExtraEntry(targetPath, strToU8(blankLogicFile(targetPath)));
+          openExtraFile(savedPath);
+          return;
+        }
         // `.py`, `.ts`, `.js`, `.css`, `.json`, etc. keep their explicit extension when typed.
         const named = projectFormat === 'web'
           ? (/\.(?:m?js|cjs|tsx?|mts|jsx|py|css|json|md|txt|logic)$/i.test(trimmed) ? trimmed : `${trimmed}${logicExtension}`)
@@ -755,6 +784,8 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
     quickCreateFolder,
     createFolder,
     createFile,
+    setExtraEntry,
+    openExtraFile,
     handleQuickCreateCancel,
     attempt,
     logicExtension,
@@ -1251,7 +1282,7 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
               key={folderId}
               node={folder}
               depth={0}
-              isActive={activeFileId === folderId}
+              isActive={activeExtraPath === null && activeFileId === folderId}
               onSelect={handleSelect}
               onContextMenu={handleContextMenu}
               onRequestRename={setRenamingId}
@@ -1262,6 +1293,237 @@ export function FileNavigator({ onToggleDock }: FileNavigatorProps) {
             />
           );
         })}
+      </div>
+      <div
+        data-extra-files-section=""
+        style={{
+          borderTop: '1px solid var(--line-soft)',
+          padding: '8px 0',
+          maxHeight: '42%',
+          overflow: 'auto',
+          flexShrink: 0,
+          background: 'var(--ink-2)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0 12px 6px',
+            gap: 6,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: '0.03em',
+              textTransform: 'uppercase',
+              color: 'var(--dim)',
+            }}
+          >
+            Backend &amp; other files{extraPrimary.length + extraVendor.length > 0 ? ` (${extraPrimary.length + extraVendor.length})` : ''}
+          </span>
+          <button
+            type="button"
+            className="bl-mini"
+            data-action="add-extra-file"
+            title="Add a backend or project file (e.g. server/index.php, server/main.rs, Cargo.toml)"
+            aria-label="Add backend or project file"
+            onClick={() => {
+              setAddingExtra((v) => !v);
+              setNewExtraPath('');
+            }}
+          >
+            +
+          </button>
+        </div>
+        {addingExtra && (
+          <div style={{ padding: '0 12px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <input
+              type="text"
+              aria-label="Backend or project file path"
+              style={styles.quickCreateInput}
+              placeholder="server/index.php or backend/main.rs"
+              value={newExtraPath}
+              onChange={(e) => setNewExtraPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const clean = newExtraPath.trim();
+                  if (!clean) return;
+                  const ok = attempt(() => {
+                    const saved = setExtraEntry(clean, strToU8(blankLogicFile(clean)));
+                    openExtraFile(saved);
+                  });
+                  if (ok) {
+                    setAddingExtra(false);
+                    setNewExtraPath('');
+                  }
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setAddingExtra(false);
+                  setNewExtraPath('');
+                }
+              }}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                type="button"
+                className="bl-btn bl-btn-sm"
+                style={{ flex: 1 }}
+                onClick={() => {
+                  setAddingExtra(false);
+                  setNewExtraPath('');
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="bl-btn bl-btn-sm bl-btn-primary"
+                style={{ flex: 1 }}
+                onClick={() => {
+                  const clean = newExtraPath.trim();
+                  if (!clean) return;
+                  const ok = attempt(() => {
+                    const saved = setExtraEntry(clean, strToU8(blankLogicFile(clean)));
+                    openExtraFile(saved);
+                  });
+                  if (ok) {
+                    setAddingExtra(false);
+                    setNewExtraPath('');
+                  }
+                }}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        )}
+        {extraPrimary.length === 0 && extraVendor.length === 0 ? (
+          <div style={{ padding: '2px 12px 4px', fontSize: 11.5, color: 'var(--dimmer)' }}>
+            PHP, Rust, SQL, TOML &amp; server files appear here.
+          </div>
+        ) : (
+          <div>
+            {extraPrimary.map((entryPath) => {
+              const isOpen = activeExtraPath === entryPath;
+              const ext = entryPath.split('.').pop()?.toUpperCase() ?? '';
+              return (
+                <div
+                  key={entryPath}
+                  data-extra-file={entryPath}
+                  style={{
+                    ...styles.node,
+                    ...(isOpen ? styles.nodeActive : {}),
+                    fontSize: 12,
+                    padding: '2px 8px 2px 12px',
+                  }}
+                  title={entryPath}
+                >
+                  <button
+                    type="button"
+                    onClick={() => openExtraFile(entryPath)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      flex: 1,
+                      minWidth: 0,
+                      border: 'none',
+                      background: 'transparent',
+                      color: 'inherit',
+                      textAlign: 'left',
+                      font: 'inherit',
+                      cursor: 'pointer',
+                      padding: '2px 0',
+                    }}
+                  >
+                    <span style={{ ...styles.name, fontFamily: 'var(--mono)' }}>{entryPath}</span>
+                    {ext && ext.length <= 5 && (
+                      <span style={{ fontSize: 9.5, fontFamily: 'var(--mono)', color: 'var(--dimmer)', flexShrink: 0 }}>
+                        {ext}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Delete ${entryPath}`}
+                    title={`Delete ${entryPath}`}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: 'var(--dimmer)',
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      padding: '0 2px',
+                      lineHeight: 1,
+                    }}
+                    onClick={() => {
+                      void askConfirm(`Delete "${entryPath}" from this project?`, {
+                        title: 'Delete file',
+                        confirmLabel: 'Delete',
+                        danger: true,
+                      }).then((yes) => {
+                        if (yes) deleteExtraEntry(entryPath);
+                      });
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+            {extraVendor.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => setShowVendorExtras((v) => !v)}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'var(--dim)',
+                    fontSize: 11.5,
+                    padding: '4px 12px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {showVendorExtras ? '▾' : '▸'} Dependencies ({extraVendor.length} vendor files)
+                </button>
+                {showVendorExtras &&
+                  extraVendor.map((entryPath) => (
+                    <div
+                      key={entryPath}
+                      data-extra-file={entryPath}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openExtraFile(entryPath)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openExtraFile(entryPath);
+                        }
+                      }}
+                      style={{
+                        ...styles.node,
+                        ...(activeExtraPath === entryPath ? styles.nodeActive : {}),
+                        paddingLeft: 20,
+                        fontSize: 11.5,
+                      }}
+                      title={entryPath}
+                    >
+                      <span style={{ ...styles.name, fontFamily: 'var(--mono)' }}>{entryPath}</span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {renderContextMenu()}
     </div>

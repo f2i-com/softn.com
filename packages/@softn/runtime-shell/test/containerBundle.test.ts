@@ -157,8 +157,8 @@ describe('the files of the container’s folder an app is run with', () => {
       meta?.variant === 'javascript-python-base' ? 'zipp-python-base.glue.js' : `zipp-${tier === 'lite' ? 'javascript-lite' : tier}.glue.js`,
   };
   const FOLDER = 'https://softn.test/shared/container-runtime/e03138f892dd/';
-  const names = (tiers: Parameters<typeof hostedContainerFiles>[0]) =>
-    hostedContainerFiles(tiers, container, FOLDER).map((url) => url.slice(FOLDER.length)).sort();
+  const names = (tiers: Parameters<typeof hostedContainerFiles>[0], options?: Parameters<typeof hostedContainerFiles>[3]) =>
+    hostedContainerFiles(tiers, container, FOLDER, options).map((url) => url.slice(FOLDER.length)).sort();
 
   it('are the Worker, and for the two engines only the container has, the engine and its bindings', () => {
     expect(names(['lite'])).toEqual(['container-worker.js', 'engines/zipp-javascript-lite.glue.js', 'engines/zipp-javascript-lite.wasm']);
@@ -179,5 +179,37 @@ describe('the files of the container’s folder an app is run with', () => {
       'engines/zipp-python-base.glue.js',
     ]);
     expect(names([])).toEqual(['container-worker.js']);
+  });
+
+  it('includes backend-worker and xdb-wasm for php/rust tiers and any embedded backend', () => {
+    expect(names(['lite', 'php'])).toEqual([
+      'backend-worker.js',
+      'container-worker.js',
+      'engines/xdb-wasm.glue.js',
+      'engines/xdb-wasm.wasm',
+      'engines/zipp-javascript-lite.glue.js',
+      'engines/zipp-javascript-lite.wasm',
+      'engines/zipp-php.glue.js',
+      'engines/zipp-php.wasm',
+    ]);
+    expect(names(['lite', 'typescript'], { backend: true })).toEqual([
+      'backend-worker.js',
+      'container-worker.js',
+      'engines/xdb-wasm.glue.js',
+      'engines/xdb-wasm.wasm',
+      'engines/zipp-javascript-lite.glue.js',
+      'engines/zipp-javascript-lite.wasm',
+      'engines/zipp-typescript.glue.js',
+      'engines/zipp-typescript.wasm',
+    ]);
+    expect(names(['lite', 'javascript'], { backend: true })).toEqual([
+      'backend-worker.js',
+      'container-worker.js',
+      'engines/xdb-wasm.glue.js',
+      'engines/xdb-wasm.wasm',
+      'engines/zipp-javascript-lite.glue.js',
+      'engines/zipp-javascript-lite.wasm',
+      'engines/zipp-python-base.glue.js',
+    ]);
   });
 });

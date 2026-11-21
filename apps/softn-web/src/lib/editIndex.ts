@@ -41,6 +41,33 @@ export async function forgetEdits(origin: string): Promise<void> {
   }
 }
 
+/** Capture any edit draft before removing an app so Undo can restore it without eagerly loading edit chunks. */
+export async function peekEdits(origin: string): Promise<unknown> {
+  const hadIndex = hasDraft(origin);
+  let saved: unknown = null;
+  try {
+    const mod = await import('../edit/drafts');
+    saved = await mod.readKept(origin);
+  } catch {
+    // Offline or chunk unavailable.
+  }
+  return saved ? { draft: saved, indexed: hadIndex } : null;
+}
+
+/** Restore an edit draft previously captured by peekEdits. */
+export async function restoreEdits(origin: string, captured: unknown): Promise<void> {
+  if (!captured || typeof captured !== 'object') return;
+  const { draft, indexed } = captured as { draft?: unknown; indexed?: boolean };
+  if (!draft) return;
+  try {
+    const mod = await import('../edit/drafts');
+    await mod.restoreDraft(draft as Parameters<typeof mod.restoreDraft>[0]);
+    if (indexed) noteDraft(origin, true);
+  } catch {
+    // Ignore if draft store is unavailable.
+  }
+}
+
 export function noteDraft(origin: string, has: boolean): void {
   const edited = editedApps();
   if (edited.includes(origin) === has) return;

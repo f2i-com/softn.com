@@ -217,9 +217,27 @@ final class Bundle
             if ($name === '') throw new ApiError(400, 'The manifest has no name.');
             $version = Text::clean(is_string($manifest['version'] ?? null) ? $manifest['version'] : '', 32);
             if ($version === '') throw new ApiError(400, 'The manifest has no version.');
+            $backendRuntime = null;
+            if (is_array($manifest['backend'] ?? null) && is_string($manifest['backend']['runtime'] ?? null)) {
+                $rt = strtolower(trim($manifest['backend']['runtime']));
+                if ($rt !== '') $backendRuntime = $rt;
+            }
+            $isV2 = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true || $inferredHtmlEntry !== null || $backendRuntime !== null);
+            $frontendRoot = is_string($manifest['frontendRoot'] ?? null) ? trim(str_replace('\\', '/', $manifest['frontendRoot']), '/') : '';
             $main = is_string($manifest['main'] ?? null) ? $manifest['main'] : '';
+            if ($main === '' && $isV2) {
+                if ($frontendRoot !== '' && isset($files[$frontendRoot . '/index.html'])) $main = $frontendRoot . '/index.html';
+                elseif (isset($files['index.html'])) $main = 'index.html';
+                elseif (is_array($manifest['backend'] ?? null) && is_string($manifest['backend']['entry'] ?? null)) $main = $manifest['backend']['entry'];
+            }
             if ($main === '') throw new ApiError(400, 'The manifest names no entry file (main).');
-            if (!isset($files[$main])) throw new ApiError(400, "The manifest's entry file is not in the bundle: $main");
+            if (!isset($files[$main])) {
+                if ($frontendRoot !== '' && isset($files[$frontendRoot . '/' . ltrim($main, '/')])) {
+                    $main = $frontendRoot . '/' . ltrim($main, '/');
+                } else {
+                    throw new ApiError(400, "The manifest's entry file is not in the bundle: $main");
+                }
+            }
             $description = Text::clean(is_string($manifest['description'] ?? null) ? $manifest['description'] : '', 600, true);
 
             $capabilities = [];
@@ -228,11 +246,24 @@ final class Bundle
             else $capabilities = self::legacyCapabilities($manifest['permissions'] ?? null);
             $execution = 'main';
             $config = is_array($manifest['config'] ?? null) ? $manifest['config'] : [];
-            if (($config['execution'] ?? null) === 'worker') $execution = 'worker';
+            if (($config['execution'] ?? null) === 'worker' || $isV2) $execution = 'worker';
 
             $icon = null;
-            $iconPath = is_string($manifest['icon'] ?? null) ? $manifest['icon'] : '';
-            if ($iconPath !== '' && isset($files[$iconPath]) && $files[$iconPath]['size'] <= self::MAX_ICON_BYTES) {
+            $iconCandidates = [];
+            $declaredIcon = is_string($manifest['icon'] ?? null) ? trim(str_replace('\\', '/', $manifest['icon']), '/') : '';
+            if ($declaredIcon !== '') {
+                $iconCandidates[] = $declaredIcon;
+                if ($frontendRoot !== '' && !str_starts_with($declaredIcon, $frontendRoot . '/')) {
+                    $iconCandidates[] = $frontendRoot . '/' . $declaredIcon;
+                }
+            }
+            // Auto-discover standard icon paths inside dropped/bundled apps when manifest.icon is omitted.
+            foreach (['icon.svg', 'icon.png', 'icon.webp', 'assets/icon.svg', 'assets/icon.png', 'assets/icon.webp', 'favicon.svg', 'favicon.png'] as $fallbackIcon) {
+                if ($frontendRoot !== '') $iconCandidates[] = $frontendRoot . '/' . $fallbackIcon;
+                $iconCandidates[] = $fallbackIcon;
+            }
+            foreach (array_unique($iconCandidates) as $iconPath) {
+                if ($iconPath === '' || !isset($files[$iconPath]) || $files[$iconPath]['size'] > self::MAX_ICON_BYTES) continue;
                 $bytes = (string) self::readEntry($handle, $files[$iconPath], true);
                 $mime = Images::sniff($bytes);
                 // The icon is the card's picture when there is no
@@ -249,7 +280,14 @@ final class Bundle
                 } elseif (preg_match('/\.svg$/i', $iconPath) && self::safeSvg($bytes)) {
                     $mime = 'image/svg+xml';
                 }
-                if ($mime !== null) $icon = [$bytes, $mime];
+                if ($mime !== null) {
+                    $icon = [$bytes, $mime];
+                    break;
+                }
+                // If an explicitly declared icon failed security/budget checks, do not silently fall back to another file.
+                if ($declaredIcon !== '' && ($iconPath === $declaredIcon || ($frontendRoot !== '' && $iconPath === $frontendRoot . '/' . $declaredIcon))) {
+                    break;
+                }
             }
         } finally {
             fclose($handle);
@@ -263,6 +301,8 @@ final class Bundle
             'capabilities' => $capabilities,
             'storagePolicies' => $storagePolicies,
             'execution' => $execution,
+            'engine' => $isV2 ? 2 : 1,
+            'backendRuntime' => $backendRuntime,
             'icon' => $icon,
             'size' => $size,
             'sha256' => hash_file('sha256', $path) ?: '',
@@ -307,6 +347,104 @@ final class Bundle
     public static function jsonText(string $bytes): string
     {
         return str_starts_with($bytes, "\xEF\xBB\xBF") ? substr($bytes, 3) : $bytes;
+    }
+
+    /**
+     * Whether a bundle path belongs to the server-side backend or database and
+     * must be omitted from a client-only bundle when an operator withholds the
+     * backend source on a server-hosted app.
+     */
+    private static function isBackendPrivatePath(string $name, string $backendRoot = ''): bool
+    {
+        $clean = ltrim(str_replace('\\', '/', $name), '/');
+        if ($clean === '') return true;
+        if ($backendRoot !== '' && ($clean === $backendRoot || str_starts_with($clean, $backendRoot . '/'))) return true;
+        if (str_starts_with($clean, 'server/') || str_starts_with($clean, 'backend/')) return true;
+        return preg_match('#(?:^|/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|composer\.json|composer\.lock|seed\.json)$|\.(?:php|phtml|inc|tpl|rs|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh)$#i', $clean) === 1;
+    }
+
+    /**
+     * Build (or reuse) a client-only `.softn` bundle stripped of backend code,
+     * databases, and server secrets, for a server-hosted app with
+     * `withhold_backend: true`. Cached at `$cachePath`.
+     */
+    public static function clientBundlePath(string $bundlePath, string $cachePath): string
+    {
+        if (is_file($cachePath) && @filemtime($cachePath) >= @filemtime($bundlePath)) {
+            return $cachePath;
+        }
+        $src = new ZipArchive();
+        if ($src->open($bundlePath, ZipArchive::RDONLY) !== true) {
+            throw new ApiError(500, 'Could not read bundle to build client package.');
+        }
+        $manifestEntry = self::manifestName($src);
+        $prefix = $manifestEntry !== null && str_contains($manifestEntry, '/') ? substr($manifestEntry, 0, strrpos($manifestEntry, '/') + 1) : '';
+        $manifest = null;
+        if ($manifestEntry !== null) {
+            $raw = $src->getFromName($manifestEntry, self::MAX_MANIFEST_BYTES);
+            if (is_string($raw)) {
+                $decoded = json_decode(self::jsonText($raw), true, 32);
+                if (is_array($decoded)) $manifest = $decoded;
+            }
+        }
+        $backendRoot = '';
+        if (is_array($manifest['backend'] ?? null)) {
+            if (is_string($manifest['backend']['root'] ?? null)) {
+                $backendRoot = trim(str_replace('\\', '/', $manifest['backend']['root']), '/');
+            } elseif (is_string($manifest['backend']['entry'] ?? null) && str_contains($manifest['backend']['entry'], '/')) {
+                $entryDir = explode('/', trim(str_replace('\\', '/', $manifest['backend']['entry']), '/'))[0];
+                if ($entryDir !== '' && $entryDir !== 'assets' && $entryDir !== 'css' && $entryDir !== 'js') {
+                    $backendRoot = $entryDir;
+                }
+            }
+        }
+        $dir = dirname($cachePath);
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            $src->close();
+            throw new ApiError(503, 'Cannot create client bundle cache folder.');
+        }
+        $tmp = $dir . '/.client-' . bin2hex(random_bytes(6)) . '.softn';
+        $dst = new ZipArchive();
+        if ($dst->open($tmp, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            $src->close();
+            throw new ApiError(503, 'Cannot create client bundle archive.');
+        }
+        try {
+            $written = 0;
+            for ($i = 0; $i < $src->numFiles; $i++) {
+                $name = (string) $src->getNameIndex($i);
+                if ($name === '' || str_ends_with($name, '/')) continue;
+                $rel = $prefix !== '' && str_starts_with($name, $prefix) ? substr($name, strlen($prefix)) : $name;
+                if ($manifestEntry !== null && $name === $manifestEntry) {
+                    $cleanManifest = is_array($manifest) ? $manifest : [];
+                    unset($cleanManifest['backend'], $cleanManifest['databases'], $cleanManifest['ssrEntry']);
+                    $cleanManifest['engine'] = 2;
+                    $dst->addFromString($rel, json_encode($cleanManifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+                    $written++;
+                    continue;
+                }
+                if (self::isBackendPrivatePath($rel, $backendRoot)) continue;
+                $bytes = $src->getFromIndex($i);
+                if (!is_string($bytes)) continue;
+                $dst->addFromString($rel, $bytes);
+                $written++;
+            }
+            if ($written === 0) {
+                throw new ApiError(400, 'This server-hosted app has no separate client frontend to package.');
+            }
+            $dst->close();
+            $src->close();
+            if (!@rename($tmp, $cachePath)) {
+                @unlink($tmp);
+                throw new ApiError(503, 'Cannot store client bundle archive.');
+            }
+            return $cachePath;
+        } catch (Throwable $e) {
+            @$dst->close();
+            @$src->close();
+            if (is_file($tmp)) @unlink($tmp);
+            throw $e;
+        }
     }
 
     /**
@@ -863,18 +1001,55 @@ final class Bundle
     }
 
     /**
-     * The bundle's files, for reading on the app page: every path, with the
-     * text of the ones a person would read. Binary files and anything past
-     * the size caps are listed without content.
+     * Classify a bundle entry path into a viewer kind + safe MIME type.
      *
-     * @return array{files: array<int, array{path: string, size: int, text: string|null}>, truncated: bool}
+     * @return array{kind: 'text'|'image'|'audio'|'video'|'binary', mime: string}
+     */
+    public static function classifySourceEntry(string $name): array
+    {
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        return match ($ext) {
+            'png' => ['kind' => 'image', 'mime' => 'image/png'],
+            'jpg', 'jpeg' => ['kind' => 'image', 'mime' => 'image/jpeg'],
+            'gif' => ['kind' => 'image', 'mime' => 'image/gif'],
+            'webp' => ['kind' => 'image', 'mime' => 'image/webp'],
+            'svg' => ['kind' => 'image', 'mime' => 'image/svg+xml'],
+            'ico' => ['kind' => 'image', 'mime' => 'image/x-icon'],
+            'bmp' => ['kind' => 'image', 'mime' => 'image/bmp'],
+            'avif' => ['kind' => 'image', 'mime' => 'image/avif'],
+            'mp3' => ['kind' => 'audio', 'mime' => 'audio/mpeg'],
+            'wav' => ['kind' => 'audio', 'mime' => 'audio/wav'],
+            'ogg', 'oga' => ['kind' => 'audio', 'mime' => 'audio/ogg'],
+            'flac' => ['kind' => 'audio', 'mime' => 'audio/flac'],
+            'm4a' => ['kind' => 'audio', 'mime' => 'audio/mp4'],
+            'aac' => ['kind' => 'audio', 'mime' => 'audio/aac'],
+            'opus' => ['kind' => 'audio', 'mime' => 'audio/opus'],
+            'mp4', 'm4v' => ['kind' => 'video', 'mime' => 'video/mp4'],
+            'webm' => ['kind' => 'video', 'mime' => 'video/webm'],
+            'ogv' => ['kind' => 'video', 'mime' => 'video/ogg'],
+            'mov' => ['kind' => 'video', 'mime' => 'video/quicktime'],
+            'woff', 'woff2', 'ttf', 'otf', 'eot', 'wasm', 'db', 'sqlite', 'sqlite3',
+            'zip', 'gz', 'tar', '7z', 'rar', 'pdf', 'bin', 'dat', 'glb', 'exe', 'dll', 'so', 'dylib', 'pyc', 'o', 'a'
+                => ['kind' => 'binary', 'mime' => 'application/octet-stream'],
+            default => ['kind' => 'text', 'mime' => 'text/plain; charset=utf-8'],
+        };
+    }
+
+    /**
+     * The bundle's files, for reading on the app page: every path, with the
+     * text of every UTF-8 source/config file (PHP, Rust, Python, JS/TS, SQL,
+     * UI, logic, TOML, YAML, .htaccess, SVG, etc.) and rich media metadata
+     * for images, audio, and video so the viewer can render or play them inline.
+     *
+     * @return array{files: array<int, array{path: string, size: int, text: string|null, kind: string, mime: string}>, truncated: bool}
      */
     public static function listSource(string $path): array
     {
         $zip = new ZipArchive();
         if ($zip->open($path, ZipArchive::RDONLY) !== true) throw new ApiError(500, 'The stored bundle does not open.');
         $files = [];
-        $budget = 2 * 1024 * 1024;
+        $budget = 6 * 1024 * 1024;
+        $maxFileBytes = 512 * 1024;
         $truncated = false;
         try {
             for ($i = 0; $i < $zip->numFiles; $i++) {
@@ -883,23 +1058,80 @@ final class Bundle
                 $name = (string) $stat['name'];
                 if ($name === '' || str_ends_with($name, '/')) continue;
                 $size = (int) $stat['size'];
+                $classified = self::classifySourceEntry($name);
+                $kind = $classified['kind'];
+                $mime = $classified['mime'];
                 $text = null;
-                if (preg_match('/\.(ui|logic|py|json|md|txt|css|js|ts|html|svg|csv|xml|yml|yaml|toml|ini)$/i', $name) && $size <= 256 * 1024 && $budget > 0) {
+                $isSvg = $mime === 'image/svg+xml';
+                $wantsText = $kind === 'text' || $isSvg;
+                if ($wantsText && $size <= $maxFileBytes && $budget > 0) {
                     $bytes = $zip->getFromIndex($i);
-                    if (is_string($bytes) && mb_check_encoding($bytes, 'UTF-8')) {
+                    if (is_string($bytes) && !str_contains($bytes, "\0") && mb_check_encoding($bytes, 'UTF-8')) {
                         $text = $bytes;
                         $budget -= strlen($bytes);
+                    } elseif (!$isSvg) {
+                        $kind = 'binary';
+                        $mime = 'application/octet-stream';
                     }
-                } elseif ($size > 256 * 1024 || $budget <= 0) {
+                } elseif ($wantsText && ($size > $maxFileBytes || $budget <= 0)) {
                     $truncated = true;
                 }
-                $files[] = ['path' => $name, 'size' => $size, 'text' => $text];
+                $files[] = ['path' => $name, 'size' => $size, 'text' => $text, 'kind' => $kind, 'mime' => $mime];
             }
         } finally {
             $zip->close();
         }
         usort($files, fn($a, $b) => strcmp($a['path'], $b['path']));
         return ['files' => $files, 'truncated' => $truncated];
+    }
+
+    /**
+     * Read one entry from a stored bundle for safe inline media playback or
+     * on-demand inspection in the View Source panel.
+     *
+     * @return array{bytes: string, mime: string, kind: string, size: int}
+     */
+    public static function readSourceFile(string $bundlePath, string $entryPath): array
+    {
+        $entryPath = ltrim($entryPath, '/');
+        if ($entryPath === '' || str_contains($entryPath, '\\') || str_contains($entryPath, "\0") || preg_match('#(^|/)\.\.(/|$)#', $entryPath)) {
+            throw new ApiError(400, 'Invalid source file path.');
+        }
+        $zip = new ZipArchive();
+        if ($zip->open($bundlePath, ZipArchive::RDONLY) !== true) {
+            throw new ApiError(500, 'The stored bundle does not open.');
+        }
+        try {
+            $idx = $zip->locateName($entryPath);
+            if ($idx === false) {
+                throw new ApiError(404, 'File not found in bundle.');
+            }
+            $stat = $zip->statIndex($idx);
+            $size = is_array($stat) ? (int) $stat['size'] : 0;
+            // Cap single streamed source/media preview at 25 MB to keep memory bounded.
+            if ($size > 25 * 1024 * 1024) {
+                throw new ApiError(413, 'This file is too large to preview inline; download the bundle to open it.');
+            }
+            $bytes = $zip->getFromIndex($idx);
+            if (!is_string($bytes)) {
+                throw new ApiError(500, 'Could not read entry from bundle.');
+            }
+        } finally {
+            $zip->close();
+        }
+        $classified = self::classifySourceEntry($entryPath);
+        $kind = $classified['kind'];
+        $mime = $classified['mime'];
+        if ($mime === 'image/svg+xml' && !self::safeSvg($bytes)) {
+            // Unsafe SVG is never served as image/svg+xml; fall back to plain text.
+            $mime = 'text/plain; charset=utf-8';
+        } elseif ($kind === 'text') {
+            $mime = !str_contains($bytes, "\0") && mb_check_encoding($bytes, 'UTF-8')
+                ? 'text/plain; charset=utf-8'
+                : 'application/octet-stream';
+            if ($mime === 'application/octet-stream') $kind = 'binary';
+        }
+        return ['bytes' => $bytes, 'mime' => $mime, 'kind' => $kind, 'size' => strlen($bytes)];
     }
 }
 

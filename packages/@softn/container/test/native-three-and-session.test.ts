@@ -411,7 +411,7 @@ fn main() {
     const overlay = JSON.parse(overlayJson) as { writes: Record<string, string>; deleted: string[] };
     const b64 = overlay.writes['data/.secret'];
     expect(typeof b64).toBe('string');
-    const decoded = Array.from(Buffer.from(b64, 'base64'));
+    const decoded = Array.from(atob(b64), (ch) => ch.charCodeAt(0));
     expect(decoded).toEqual([0x00, 0x7f, 0x80, 0xfe, 0xff, 0xc3, 0x28, 0xa0, 0xa1, 0x99]);
   });
 });

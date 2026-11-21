@@ -62,11 +62,15 @@ final class Storage
     /** One record's bytes, in SQL: see `usedBytes` for why each column is cast. */
     private const RECORD_BYTES = 'LENGTH(CAST(collection AS BLOB)) + LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(data AS BLOB))';
 
+    /** @var array<string, string> App directory paths captured before releasing the catalogue lock. */
+    private static array $resolvedDirs = [];
+
     private static function path(string $slug): string
     {
         // The folder as it is, never made here: a storage request reaches
         // this after it has let the catalogue go.
-        return Catalog::path($slug) . '/storage.sqlite';
+        $dir = self::$resolvedDirs[$slug] ?? Catalog::path($slug);
+        return $dir . '/storage.sqlite';
     }
 
     /** @var resource|null This request's shared hold on storage.lock. */
@@ -98,6 +102,7 @@ final class Storage
 
     public static function leaveCatalogue(): void
     {
+        self::$resolvedDirs = Catalog::allPaths();
         if (self::$busy === null) {
             $lock = @fopen(Config::dataDir() . '/storage.lock', 'c');
             if ($lock === false || !flock($lock, LOCK_SH)) throw new ApiError(503, 'The directory is busy.');

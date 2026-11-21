@@ -37,6 +37,15 @@ export interface BundleInspection {
   /** The Python packages `config.python.packages` asks the runtime for, e.g. `['torch']`. */
   pythonPackages: string[];
   iconDataUrl: string | null;
+  /** Optional embedded container backend runtime (e.g. 'php', 'js', 'python', 'rust'). */
+  backendRuntime?: string | null;
+  /** Optional author string read from manifest.author. */
+  manifestAuthor?: string;
+  /** Optional category / subcategory hints read from manifest.json. */
+  manifestCategory?: string;
+  manifestSubcategory?: string;
+  /** Optional tags read from manifest.tags. */
+  manifestTags?: string[];
   /** The first error, for the one line a drop zone shows and a submit button reads. */
   problem: string | null;
   report: BundleReportLine[];
@@ -296,6 +305,11 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     icon?: unknown;
     engine?: unknown;
     container?: unknown;
+    backend?: unknown;
+    author?: unknown;
+    category?: unknown;
+    subcategory?: unknown;
+    tags?: unknown;
     config?: { execution?: unknown; python?: unknown };
     files?: Record<string, unknown>;
     permissions?: unknown;
@@ -439,19 +453,44 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   }
 
   let iconDataUrl: string | null = null;
+  const iconToDataUrl = (filePath: string, bytes: Uint8Array): string | null => {
+    const ext = filePath.split('.').pop()?.toLowerCase();
+    const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : null;
+    return mime ? `data:${mime};base64,${toBase64(bytes)}` : null;
+  };
   if (typeof manifest.icon === 'string' && manifest.icon) {
     const icon = resolved.get(manifest.icon);
     if (!icon) warn(`The manifest names an icon the bundle does not have: ${manifest.icon}. The card will show an initial.`);
     else if (icon.length > MAX_ICON_BYTES) warn(`The icon is ${fmt(icon.length)}; the directory shows icons up to ${fmt(MAX_ICON_BYTES)}, so the card will show an initial.`);
     else {
-      const ext = manifest.icon.split('.').pop()?.toLowerCase();
-      const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : null;
-      if (mime) iconDataUrl = `data:${mime};base64,${toBase64(icon)}`;
-      else warn(`The icon ${manifest.icon} is not a PNG, JPEG, WebP or SVG, so the directory will not show it.`);
+      iconDataUrl = iconToDataUrl(manifest.icon, icon);
+      if (!iconDataUrl) warn(`The icon ${manifest.icon} is not a PNG, JPEG, WebP or SVG, so the directory will not show it.`);
     }
   } else {
-    warn('No icon: the card will show the first letter of the name.');
+    for (const candidate of ['icon.svg', 'icon.png', 'icon.webp', 'assets/icon.svg', 'assets/icon.png', 'assets/icon.webp', 'favicon.svg', 'favicon.png']) {
+      const bytes = resolved.get(candidate);
+      if (bytes && bytes.length > 0 && bytes.length <= MAX_ICON_BYTES) {
+        iconDataUrl = iconToDataUrl(candidate, bytes);
+        if (iconDataUrl) break;
+      }
+    }
+    if (!iconDataUrl) warn('No icon: the card will show the first letter of the name.');
   }
+
+  const backendObj = manifest.backend && typeof manifest.backend === 'object' ? (manifest.backend as Record<string, unknown>) : null;
+  const backendRuntime = typeof backendObj?.runtime === 'string' && backendObj.runtime.trim() ? backendObj.runtime.trim().toLowerCase() : null;
+  const rawAuthor = manifest.author;
+  const manifestAuthor =
+    typeof rawAuthor === 'string'
+      ? rawAuthor.trim() || undefined
+      : rawAuthor && typeof rawAuthor === 'object' && typeof (rawAuthor as { name?: unknown }).name === 'string'
+        ? (rawAuthor as { name: string }).name.trim() || undefined
+        : undefined;
+  const manifestCategory = typeof manifest.category === 'string' && manifest.category.trim() ? manifest.category.trim() : undefined;
+  const manifestSubcategory = typeof manifest.subcategory === 'string' && manifest.subcategory.trim() ? manifest.subcategory.trim() : undefined;
+  const manifestTags = Array.isArray(manifest.tags)
+    ? manifest.tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim()).slice(0, 8)
+    : undefined;
 
   // Size is not a rule, but it is a wait on a phone before the first frame.
   const large = paths.filter((p) => resolved.get(p)!.length > LARGE_FILE_BYTES);
@@ -471,5 +510,10 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     execution,
     pythonPackages,
     iconDataUrl,
+    backendRuntime,
+    manifestAuthor,
+    manifestCategory,
+    manifestSubcategory,
+    manifestTags,
   });
 }

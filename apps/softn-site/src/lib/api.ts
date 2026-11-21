@@ -6,17 +6,35 @@
 
 import { isEditKey } from './keyStore';
 
+export type HostingMode = 'browser' | 'server' | 'hybrid';
+export type HostingFilter = 'browser' | 'server' | 'hybrid' | 'backend';
+
+export interface AppHosting {
+  mode: HostingMode;
+  serverHosted: boolean;
+  browserSupported: boolean;
+  backendUrl: string | null;
+  customBackendUrl: string | null;
+  withholdBackend: boolean;
+  sandbox: 'zipp-safe-sandbox' | 'browser-wasm-sandbox' | null;
+}
+
 export interface AppCard {
   slug: string;
   name: string;
   description: string;
   author: string;
   category: string;
+  subcategory?: string | null;
+  categoryPath?: string;
   tags: string[];
   capabilities: string[];
   /** Storage collection policies by name; `*` is the default for the rest. Empty when none are declared. */
   storagePolicies: Record<string, string>;
   execution: 'main' | 'worker';
+  engine?: 1 | 2;
+  backendRuntime?: string | null;
+  hosting?: AppHosting;
   /**
    * The site owner has marked the app trusted (an `app.json` beside its
    * versions on the server): its play page grants what it declares from the
@@ -52,8 +70,14 @@ export interface AppCard {
     run: string;
     /** The play page; null for a linked app, as are the rest below. */
     play: string | null;
+    /** Play locally in the user's browser sandbox (null when backend is server-only). */
+    playLocal?: string | null;
     /** The full runtime, with its launcher and tabs. */
     runtime: string | null;
+    /** Full runtime forced into local browser sandbox mode (`?mode=local`). */
+    runtimeLocal?: string | null;
+    /** Hosted ZIPP safe-sandbox backend base URL when server-hosted. */
+    backend?: string | null;
     bundle: string | null;
     download: string | null;
     studio: string | null;
@@ -85,14 +109,30 @@ export interface AppDetail extends AppCard {
   droppedVersions?: number[];
 }
 
-export interface Category {
+export interface Subcategory {
   id: string;
+  slug: string;
+  parent: string;
   name: string;
   description: string;
   emoji: string;
   status: string;
   suggested: boolean;
   apps: number;
+}
+
+export interface Category {
+  id: string;
+  slug?: string;
+  parent?: string | null;
+  name: string;
+  description: string;
+  emoji: string;
+  status: string;
+  suggested: boolean;
+  apps: number;
+  directApps?: number;
+  subcategories?: Subcategory[];
 }
 
 export interface Comment {
@@ -111,23 +151,36 @@ export interface Page<T> {
 }
 
 /** The capability filters the directory offers; the server knows the same names. */
-export type CapabilityFilter = 'nonet' | 'storage' | 'worker' | 'none';
+export type CapabilityFilter = 'nonet' | 'storage' | 'worker' | 'none' | 'backend';
 
 export interface ListParams {
   q?: string;
   category?: string;
+  subcategory?: string;
   tag?: string;
   author?: string;
   cap?: CapabilityFilter | '';
+  hosting?: HostingFilter | '';
   sort?: string;
   page?: number;
   perPage?: number;
 }
 
+export type SourceFileKind = 'text' | 'image' | 'audio' | 'video' | 'binary';
+
 export interface SourceFile {
   path: string;
   size: number;
   text: string | null;
+  kind?: SourceFileKind;
+  mime?: string;
+}
+
+/** Whether the directory allows public publishers to choose server/hybrid hosting (configured in data/config.json; off by default). */
+let publicServerHostingAllowed = false;
+
+export function isPublicServerHostingAllowed(): boolean {
+  return publicServerHostingAllowed;
 }
 
 export class ApiError extends Error {
@@ -165,9 +218,11 @@ export async function listApps(params: ListParams, signal?: AbortSignal): Promis
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
   if (params.category && params.category !== 'all') qs.set('category', params.category);
+  if (params.subcategory && params.subcategory !== 'all') qs.set('subcategory', params.subcategory);
   if (params.tag) qs.set('tag', params.tag);
   if (params.author) qs.set('author', params.author);
   if (params.cap) qs.set('cap', params.cap);
+  if (params.hosting) qs.set('hosting', params.hosting);
   if (params.sort) qs.set('sort', params.sort);
   if (params.page && params.page > 1) qs.set('page', String(params.page));
   if (params.perPage) qs.set('perPage', String(params.perPage));
@@ -180,11 +235,13 @@ export async function getApp(slug: string, signal?: AbortSignal): Promise<AppDet
 }
 
 export async function getCategories(signal?: AbortSignal): Promise<Category[]> {
-  return (await call<{ categories: Category[] }>('/categories', { signal })).categories;
+  const r = await call<{ categories: Category[]; allowPublicServerHosting?: boolean }>('/categories', { signal });
+  publicServerHostingAllowed = r.allowPublicServerHosting === true;
+  return r.categories;
 }
 
-export async function suggestCategory(name: string, description: string, emoji: string): Promise<Category> {
-  return (await call<{ category: Category }>('/categories', jsonBody({ name, description, emoji }))).category;
+export async function suggestCategory(name: string, description: string, emoji: string, parent?: string): Promise<Category> {
+  return (await call<{ category: Category }>('/categories', jsonBody({ name, description, emoji, ...(parent ? { parent } : {}) }))).category;
 }
 
 export async function getComments(slug: string, page = 1, signal?: AbortSignal): Promise<Page<Comment>> {
@@ -215,17 +272,28 @@ export async function getSource(slug: string, version?: number, signal?: AbortSi
   return call(`/apps/${encodeURIComponent(slug)}/source${v}`, { signal });
 }
 
+export function sourceFileUrl(slug: string, filePath: string, version?: number, download = false): string {
+  const qs = new URLSearchParams({ path: filePath });
+  if (version) qs.set('v', String(version));
+  if (download) qs.set('download', '1');
+  return `/api/apps/${encodeURIComponent(slug)}/source/file?${qs}`;
+}
+
 export interface PublishFields {
   bundle: File;
   name?: string;
   description?: string;
   author?: string;
   category?: string;
+  subcategory?: string;
   tags?: string;
   notes?: string;
   parent?: string;
   thumbnail?: Blob | null;
   website?: string;
+  hosting?: HostingMode;
+  backendUrl?: string;
+  withholdBackend?: boolean;
   /** The site owner's key from data/config.json: not held to the hourly publish limit. */
   adminKey?: string;
 }
@@ -241,10 +309,11 @@ export interface Published {
 export async function publish(fields: PublishFields): Promise<Published> {
   const fd = new FormData();
   fd.append('bundle', fields.bundle, fields.bundle.name || 'app.softn');
-  for (const key of ['name', 'description', 'author', 'category', 'tags', 'notes', 'parent', 'website'] as const) {
+  for (const key of ['name', 'description', 'author', 'category', 'subcategory', 'tags', 'notes', 'parent', 'website', 'hosting', 'backendUrl'] as const) {
     const v = fields[key];
     if (typeof v === 'string' && v !== '') fd.append(key, v);
   }
+  if (fields.withholdBackend) fd.append('withholdBackend', '1');
   if (fields.thumbnail) fd.append('thumbnail', fields.thumbnail, 'thumbnail.png');
   const headers: Record<string, string> = {};
   if (fields.adminKey && fields.adminKey.trim() !== '') headers['X-Admin-Key'] = fields.adminKey.trim();
@@ -260,8 +329,12 @@ export interface ListingFields {
   description?: string;
   author?: string;
   category?: string;
+  subcategory?: string | null;
   tags?: string;
   primary?: string;
+  hosting?: HostingMode;
+  backendUrl?: string | null;
+  withholdBackend?: boolean;
   /** The whole list of remixes to keep off the app's page. */
   hiddenRemixes?: string[];
 }

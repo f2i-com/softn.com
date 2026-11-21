@@ -291,7 +291,13 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     for (const [path, bytes] of files) {
       if (consumed.has(path) || path.endsWith('/') || path === 'manifest.json' || path === 'permission.json') continue;
       if (path.startsWith('server/') || /\.xdb$/i.test(path)) continue;
-      if (/\.(?:m?js|cjs|tsx?|mts|jsx|py|css|json|md|txt)$/i.test(path)) {
+      // Keep bulky third-party dependency trees (e.g. PHP Composer vendor/ or node_modules/)
+      // in extraEntries so they round-trip into preview & export without crowding the code tree.
+      if (/(?:^|\/)(?:vendor|node_modules)\//i.test(path)) continue;
+      if (
+        /\.(?:m?js|cjs|tsx?|mts|jsx|py|php|phtml|sql|rs|toml|ini|ya?ml|css|json|md|txt)$/i.test(path) ||
+        /(?:^|\/)\.htaccess$/i.test(path)
+      ) {
         consumed.add(path);
         const fileId = generateFileId();
         logicFiles.set(fileId, {
@@ -418,6 +424,9 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       if (consumed.has(path) || path.endsWith('/') || path === 'manifest.json' || path === 'permission.json') continue;
       if (path.startsWith('server/')) continue;
       if (path === manifest.icon) continue;
+      // Keep vendored dependency trees and backend database/source files in extraEntries rather than UI assets
+      if (/(?:^|\/)(?:vendor|node_modules)\//i.test(path)) continue;
+      if (/\.(?:php|phtml|sql|rs|toml|ini|db|sqlite|sqlite3|htaccess)$/i.test(path)) continue;
       if (classifyAsset(path).binary || path.startsWith('assets/')) {
         consumed.add(path);
         assets.set(path, bytes);

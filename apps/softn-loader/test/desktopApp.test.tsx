@@ -5,12 +5,18 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 // `open` stands for the person's choice in the native picker, which the
 // `pick_softn_bundle` command returns.
-const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), theme: vi.fn(), files: new Map<string, string>(), id: { value: 'bundle-test' }, failCompose: { value: false } }));
+const bridge = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), listen: vi.fn(), drag: vi.fn(), title: vi.fn(), runner: vi.fn(), container: vi.fn(), theme: vi.fn(), files: new Map<string, string>(), id: { value: 'bundle-test' }, failCompose: { value: false } }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
 vi.mock('@softn/components/lazy', () => ({ registerRuntimeComponents() {} }));
 vi.mock('@softn/components/essentials', () => ({ Spinner: () => <span>Loading</span> }));
 vi.mock('@softn/components/theme', () => ({ ThemeProvider: (props: Record<string, unknown> & { children: React.ReactNode }) => { bridge.theme(props); return props.children; } }));
+vi.mock('@softn/runtime-shell/WebContainerView', () => ({
+  WebContainerView: (props: Record<string, unknown>) => {
+    bridge.container(props);
+    return <p>Running v2 web container</p>;
+  },
+}));
 vi.mock('@softn/core', async (importOriginal) => ({
   // Core's real reads and rules — the manifest, the permissions, consent and
   // egress — are what the loader reads through; only the renderer is a stand-in.
@@ -426,4 +432,37 @@ it('picks and reads a bundle on Android through the native side, which the page 
   expect(bridge.invoke.mock.calls).toContainEqual(['bind_data_identity', { bundleId: 'bundle-test', dataId: 'bundle-test', name: 'Fieldnotes', version: '', start: true }]);
   expect(bridge.open).not.toHaveBeenCalled();
   expect(host.textContent).toContain('Running the selected app');
+});
+
+it('mounts full-stack v2 web container bundles through WebContainerView with consent gating', async () => {
+  bridge.files.clear();
+  bridge.files.set(
+    'manifest.json',
+    JSON.stringify({
+      name: 'BrewDesk',
+      version: '1.0.0',
+      engine: 2,
+      main: 'public/index.html',
+      frontendRoot: 'public',
+      backend: { runtime: 'php', entry: 'server/public/index.php', mode: 'api', routes: ['/api/'] },
+    })
+  );
+  bridge.files.set('public/index.html', '<!doctype html><html><body>Hi</body></html>');
+  bridge.files.set('server/public/index.php', '<?php echo "{}";');
+  bridge.files.set('permission.json', JSON.stringify({ permissions: { net: { enabled: true } } }));
+
+  await mount();
+  await click('Open app');
+  expect(host.textContent).toContain('Running v2 web container');
+  expect(bridge.runner).not.toHaveBeenCalled();
+  expect(bridge.container.mock.lastCall?.[0]).toMatchObject({
+    appId: 'bundle-test',
+    grantedCapabilities: [],
+  });
+
+  await click('Allow');
+  expect(bridge.container.mock.lastCall?.[0]).toMatchObject({
+    appId: 'bundle-test',
+    grantedCapabilities: ['net'],
+  });
 });

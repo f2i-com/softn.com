@@ -1166,6 +1166,9 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   },
 
   openFile: (id) => {
+    if (useProjectStore.getState().activeExtraPath !== null) {
+      useProjectStore.getState().closeExtraFile();
+    }
     set((state) => {
       if (state.openTabs.includes(id)) {
         return { activeFileId: id };
@@ -1202,6 +1205,9 @@ export const useFilesStore = create<FilesStore>((set, get) => {
   },
 
   setActiveFile: (id) => {
+    if (id !== null && useProjectStore.getState().activeExtraPath !== null) {
+      useProjectStore.getState().closeExtraFile();
+    }
     set({ activeFileId: id });
   },
 

@@ -33,12 +33,12 @@ function softn_query(string $queryString, int $maxPairs=256): array {
  * @param array<string,mixed> $server
  * @return array<string,string>
  */
-function softn_request_headers(array $server): array {
+function softn_request_headers(array $server, bool $includeCookie=false): array {
     $headers=[];
     foreach($server as $key=>$value) {
         if(!is_string($key)||!is_string($value)||!str_starts_with($key,'HTTP_'))continue;
         $name=strtolower(str_replace('_','-',substr($key,5)));
-        if($name===''||$name==='cookie'||$name==='proxy-authorization'||$name==='authorization')continue;
+        if($name===''||(!$includeCookie&&$name==='cookie')||$name==='proxy-authorization'||$name==='authorization')continue;
         $headers[$name]=$value;
         if(count($headers)>=100)break;
     }
@@ -115,12 +115,45 @@ const SOFTN_RUNNER_BINARY='softn-runner-linux-x86_64';
  * @param mixed $config private/config.json, decoded
  * @return array{runner:'softn-runner'|'node',binary:string,command:list<string>}
  */
-function softn_runner_choice(string $backend, mixed $config, string $os=PHP_OS_FAMILY, ?string $machine=null): array {
+/**
+ * Whether an installed bundle declares a v2 container backend (PHP/JS/TS/Python/Rust)
+ * executed inside ZIPP WASM `safe-sandbox` rather than a v1 `server/*.logic` bundle.
+ */
+function softn_is_container_manifest(mixed $manifest): bool {
+    return is_array($manifest)
+        && is_array($manifest['backend'] ?? null)
+        && is_string($manifest['backend']['runtime'] ?? null)
+        && trim($manifest['backend']['runtime']) !== ''
+        && is_string($manifest['backend']['entry'] ?? null)
+        && trim($manifest['backend']['entry']) !== '';
+}
+
+/**
+ * Whether a request path belongs to a v2 container backend's declared route prefixes
+ * (defaults to `['/api/']`; `/api/meta` is always accepted for host setup diagnostics).
+ */
+function softn_container_route_matches(array $manifest, string $path): bool {
+    if ($path === '/api/meta') return true;
+    $routes = $manifest['backend']['routes'] ?? null;
+    if (!is_array($routes) || $routes === []) $routes = ['/api/'];
+    foreach ($routes as $prefix) {
+        if (!is_string($prefix) || $prefix === '') continue;
+        $clean = str_starts_with($prefix, '/') ? $prefix : '/' . $prefix;
+        if ($clean === '/' || $clean === '/*') return true;
+        $bare = rtrim($clean, '/');
+        if ($path === $bare || str_starts_with($path, $clean) || str_starts_with($path, $bare . '/')) return true;
+    }
+    return false;
+}
+
+function softn_runner_choice(string $backend, mixed $config, string $os=PHP_OS_FAMILY, ?string $machine=null, mixed $manifest=null): array {
     $config=is_array($config)?$config:[];
     $machine??=function_exists('php_uname')?php_uname('m'):'';
+    if($manifest===null&&is_file($backend.'/app/manifest.json'))$manifest=json_decode((string)@file_get_contents($backend.'/app/manifest.json'),true);
     $binary=$backend.'/bin/'.SOFTN_RUNNER_BINARY;
     $hooks=($config['enableRequestHook']??null)===true||($config['enableAfterRequestHook']??null)===true;
-    if($os==='Linux'&&($machine===''||in_array(strtolower($machine),['x86_64','amd64'],true))&&($config['runner']??null)!=='node'&&!$hooks&&is_file($binary))
+    // v2 container backends (PHP/JS/TS/Python/Rust) run inside Node + ZIPP WASM safe-sandbox.
+    if(!softn_is_container_manifest($manifest)&&$os==='Linux'&&($machine===''||in_array(strtolower($machine),['x86_64','amd64'],true))&&($config['runner']??null)!=='node'&&!$hooks&&is_file($binary))
         return ['runner'=>'softn-runner','binary'=>$binary,'command'=>[$binary]];
     return ['runner'=>'node','binary'=>$backend.'/bin/node','command'=>softn_runner_command($backend)];
 }
@@ -517,6 +550,13 @@ function softn_origin_allowed(?string $origin, mixed $allowed, ?string $ownOrigi
  * @return array{status:int,body:string}|null
  */
 function softn_runner_result(string $output): ?array {
+    if(preg_match('/\A\{"status":([1-5][0-9]{2}),"headers":/',$output)&&str_ends_with($output,'}')) {
+        $decoded=json_decode($output,true);
+        if(!is_array($decoded)||!is_int($decoded['status']??null)||!is_array($decoded['headers']??null)||!is_string($decoded['bodyBase64']??null))return null;
+        $raw=base64_decode($decoded['bodyBase64'],true);
+        if(!is_string($raw))return null;
+        return ['status'=>$decoded['status'],'headers'=>$decoded['headers'],'bodyRaw'=>$raw];
+    }
     if(!preg_match('/\A\{"status":([2-5][0-9]{2}),"body":/',$output,$match)||!str_ends_with($output,'}'))return null;
     $body=substr($output,strlen($match[0]),-1);
     if($body==='')return null;

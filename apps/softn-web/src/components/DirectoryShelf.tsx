@@ -40,9 +40,14 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
             Explore apps
           </h2>
         </div>
-        <a className="softn-explore-link" href={DEFAULT_URLS.apps}>
-          Browse all apps <span aria-hidden="true">↗</span>
-        </a>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
+          <a className="softn-explore-link" href={`${DEFAULT_URLS.apps}?category=business`}>
+            Business apps
+          </a>
+          <a className="softn-explore-link" href={DEFAULT_URLS.apps}>
+            Browse all apps <span aria-hidden="true">↗</span>
+          </a>
+        </div>
       </div>
       {loading ? (
         <div className="softn-explore-message" role="status">

@@ -23,6 +23,7 @@ import { installAppOffline, type OfflineInstallResult } from './lib/offlineInsta
 import { installContainerOffline } from './lib/containerOfflineInstall';
 import { whenIdle } from './lib/idle';
 import {
+  captureAppStorageBackup,
   getCachedApp,
   getCachedApps,
   copyAppData,
@@ -42,14 +43,17 @@ import {
   getCachedAppByOrigin,
   removeAppData,
   removeCachedApp,
+  restoreAppStorageBackup,
+  restoreCachedApp,
   setOfflineState,
+  type AppStorageBackup,
   type CachedApp,
 } from './lib/appCache';
 import { displayNameFor, findCachedAppTab, findTabForAddress } from './lib/tabIdentity';
 import { openBundle, type OpenBundleHost, type OpenBundleRequest, type OpenTab } from './lib/openBundle';
 import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress, tabLink } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl, directorySlugOf } from './lib/remoteBundle';
-import { forgetEdits } from './lib/editIndex';
+import { forgetEdits, peekEdits, restoreEdits } from './lib/editIndex';
 import { reopenTab } from './lib/reopenTab';
 import type { EditHost } from './edit/host';
 
@@ -112,13 +116,11 @@ function slugOfName(name: string): string {
   return (s || 'app').slice(0, 48);
 }
 
-async function lookupCatalogBundle(
-  catalogPath: string,
-  dirPrefix: string,
-  wanted: string
-): Promise<string | null> {
+async function demoBundleUrlFor(appName: string): Promise<string | null> {
+  // The general dev demo catalogue is only served in development.
+  if (!import.meta.env.DEV) return null;
   try {
-    const response = await fetch(publicPath(catalogPath, import.meta.env.BASE_URL), {
+    const response = await fetch(publicPath('demos/index.json', import.meta.env.BASE_URL), {
       credentials: 'same-origin',
       cache: 'no-cache',
     });
@@ -129,6 +131,7 @@ async function lookupCatalogBundle(
       : Array.isArray((parsed as { demos?: unknown }).demos)
         ? ((parsed as { demos: unknown[] }).demos)
         : [];
+    const wanted = slugOfName(appName);
     for (const entry of entries) {
       if (!entry || typeof entry !== 'object') continue;
       const { slug, id, name, file } = entry as {
@@ -144,23 +147,13 @@ async function lookupCatalogBundle(
         id === wanted ||
         (typeof name === 'string' && slugOfName(name) === wanted)
       ) {
-        return publicPath(`${dirPrefix}/${file}`, import.meta.env.BASE_URL);
+        return publicPath(`demos/${file}`, import.meta.env.BASE_URL);
       }
     }
   } catch {
     // No catalogue is not an error: the cache is the next place to look.
   }
   return null;
-}
-
-async function demoBundleUrlFor(appName: string): Promise<string | null> {
-  const wanted = slugOfName(appName);
-  // Hosted browser-sandboxed full-stack business demos are available in both dev and production.
-  const businessHit = await lookupCatalogBundle('business-demos/index.json', 'business-demos', wanted);
-  if (businessHit) return businessHit;
-  // The general dev demo catalogue is only served in development.
-  if (!import.meta.env.DEV) return null;
-  return lookupCatalogBundle('demos/index.json', 'demos', wanted);
 }
 
 /** The URL as the history API sees it, base and query included. */
@@ -245,6 +238,19 @@ function readEntry(): {
   }
   if (openValue) return { openValue, appName: null, page: null, embedded, backTo, linkedFrom: null };
   return { openValue: null, ...parseAppUrl(), embedded, backTo, linkedFrom: sameOriginPath(params.get('from')) };
+}
+
+/** Snapshot of a removed app (or batch) kept in memory for single-step Undo. */
+interface RemovedAppUndoItem {
+  app: CachedApp;
+  storage: AppStorageBackup | null;
+  edits: unknown;
+}
+
+interface RuntimeToast {
+  id: number;
+  text: string;
+  canUndo?: boolean;
 }
 
 /** A line on Home, and the one thing to do about it when there is one. */
@@ -676,12 +682,46 @@ function App(): React.ReactElement {
         let data: Uint8Array;
         // The slug the directory answered with, for one the address only spelt.
         let slug = directorySlug;
+        let hostedBackendUrl: string | undefined;
         try {
+          // Resolve optional server-hosted ZIPP safe-sandbox backend metadata in parallel
+          // for directory apps (respecting `?mode=local` for hybrid apps).
+          const forceLocal =
+            typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('mode') === 'local';
+          const hostingPromise: Promise<string | undefined> = directorySlug
+            ? fetch(`/api/apps/${encodeURIComponent(directorySlug)}`, {
+                signal: controller.signal,
+                credentials: 'same-origin',
+              })
+                .then(async (res) => {
+                  if (!res.ok) return undefined;
+                  const json = (await res.json()) as {
+                    app?: {
+                      hosting?: {
+                        serverHosted?: boolean;
+                        browserSupported?: boolean;
+                        backendUrl?: string | null;
+                        withholdBackend?: boolean;
+                      };
+                    };
+                  };
+                  const h = json?.app?.hosting;
+                  if (!h?.serverHosted || typeof h.backendUrl !== 'string' || !h.backendUrl) return undefined;
+                  if (forceLocal && h.browserSupported && !h.withholdBackend) return undefined;
+                  return h.backendUrl;
+                })
+                .catch(() => undefined)
+            : Promise.resolve(undefined);
+
           // Named for the loading screen's progress only when this tab is the
           // one on screen: a tab restored in the background is not.
-          const fetched = await fetchRemoteBundle(url, controller.signal, isForeground() ? displayName : undefined);
+          const [fetched, resolvedBackend] = await Promise.all([
+            fetchRemoteBundle(url, controller.signal, isForeground() ? displayName : undefined),
+            hostingPromise,
+          ]);
           data = fetched.data;
           slug = fetched.directorySlug ?? directorySlug;
+          hostedBackendUrl = resolvedBackend;
         } catch (err) {
           // An abort is the user closing the tab, not a failure to report.
           if (controller.signal.aborted) return null;
@@ -709,6 +749,7 @@ function App(): React.ReactElement {
             fileName: `${displayName}.softn`,
             initialPage,
             directorySlug: slug,
+            backendUrl: hostedBackendUrl,
             placeholderId: skeletonTabId,
             isForeground,
             // Someone else's app, from the directory or a link: the runtime's
@@ -754,6 +795,35 @@ function App(): React.ReactElement {
    * line here is what a request Home can answer itself gets.
    */
   const [notice, setNotice] = useState<HomeNotice | null>(null);
+  const [toast, setToast] = useState<RuntimeToast | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastSeqRef = useRef(0);
+  const lastRemovedRef = useRef<{ label: string; items: RemovedAppUndoItem[] } | null>(null);
+
+  const dismissToast = useCallback(() => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast(null);
+  }, []);
+
+  const showToast = useCallback((text: string, options?: { canUndo?: boolean; durationMs?: number }) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    const id = ++toastSeqRef.current;
+    setToast({ id, text, canUndo: options?.canUndo });
+    const duration = options?.durationMs ?? (options?.canUndo ? 8000 : 4000);
+    toastTimerRef.current = setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast((current) => (current?.id === id ? null : current));
+    }, duration);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   // Home keeps apps mounted. Restoring/deleting their storage while they are
   // running would leave stale in-memory records that can overwrite the change,
@@ -941,27 +1011,47 @@ function App(): React.ReactElement {
     setApps(await getCachedApps());
   }, [canChangeAppData]);
 
-  /** Handle removing a cached app */
+  /** Remove a single cached app immediately (no confirm modal) and keep it as the single Undo target. */
   const handleRemove = useCallback(async (id: string) => {
-    // Take the build's saved records with it. Leaving them behind meant every
-    // removal orphaned data that nothing could reach or clear again.
     const going = await getCachedApp(id);
     if (!going || !canChangeAppData(going)) return;
-    if (!window.confirm(`Remove “${going.name}” v${going.version} and its saved data from this browser? Export its data first if you want to keep a backup.`)) return;
-    const dropped = removeAppData(going?.origin);
-    // Its rooms' keys and offline caches too, which hold a copy of every
-    // record the rooms carried.
+    const storage = await captureAppStorageBackup(going.origin);
+    const edits = going.origin ? await peekEdits(going.origin) : null;
+    const dropped = removeAppData(going.origin);
     if (going.origin) await forgetAppSync(going.origin);
     await removeCachedApp(id);
-    // And what the person changed in it with the editor, which is kept beside
-    // it: what runs, and what was typed and never shown.
     if (going.origin) await forgetEdits(going.origin);
     if (dropped > 0) {
-      debug(`[SoftN Web] Removed "${going?.name}" v${going?.version} and its ${dropped} saved keys.`);
+      debug(`[SoftN Web] Removed "${going.name}" v${going.version} and its ${dropped} saved keys.`);
+    }
+    lastRemovedRef.current = {
+      label: `“${going.name}” v${going.version}`,
+      items: [{ app: going, storage, edits }],
+    };
+    const updatedApps = await getCachedApps();
+    setApps(updatedApps);
+    showToast(`Removed “${going.name}” v${going.version}.`, { canUndo: true });
+  }, [canChangeAppData, showToast]);
+
+  /** Restore whichever app (or remove-all batch) was removed most recently. */
+  const handleUndoRemove = useCallback(async () => {
+    const entry = lastRemovedRef.current;
+    if (!entry || entry.items.length === 0) {
+      dismissToast();
+      return;
+    }
+    lastRemovedRef.current = null;
+    for (const item of entry.items) {
+      await restoreCachedApp(item.app);
+      await restoreAppStorageBackup(item.storage);
+      if (item.app.origin && item.edits) {
+        await restoreEdits(item.app.origin, item.edits);
+      }
     }
     const updatedApps = await getCachedApps();
     setApps(updatedApps);
-  }, [canChangeAppData]);
+    showToast(`Restored ${entry.label}.`, { canUndo: false, durationMs: 3500 });
+  }, [dismissToast, showToast]);
 
   /**
    * Hand the running app's bundle back as a file. What is downloaded is the
@@ -1046,6 +1136,50 @@ function App(): React.ReactElement {
     },
     [claimNavigation]
   );
+
+  /** Close every running app tab and return to Home. */
+  const handleStopAll = useCallback(() => {
+    const running = [...openTabsRef.current];
+    if (running.length === 0) return;
+    for (const tab of running) {
+      handleCloseTab(tab.id, true);
+    }
+    setNotice(null);
+    showToast(`Closed ${running.length} running app${running.length === 1 ? '' : 's'}.`, { durationMs: 3500 });
+  }, [handleCloseTab, showToast]);
+
+  /** Stop all running apps and remove every saved app (with single-step Undo). */
+  const handleRemoveAll = useCallback(async () => {
+    const running = [...openTabsRef.current];
+    for (const tab of running) {
+      handleCloseTab(tab.id, true);
+    }
+    if (running.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const all = await getCachedApps();
+    if (all.length === 0) {
+      if (running.length > 0) {
+        showToast(`Closed ${running.length} running app${running.length === 1 ? '' : 's'}.`, { durationMs: 3500 });
+      }
+      return;
+    }
+    const backups: RemovedAppUndoItem[] = [];
+    for (const going of all) {
+      const storage = await captureAppStorageBackup(going.origin);
+      const edits = going.origin ? await peekEdits(going.origin) : null;
+      removeAppData(going.origin);
+      if (going.origin) await forgetAppSync(going.origin);
+      await removeCachedApp(going.id);
+      if (going.origin) await forgetEdits(going.origin);
+      backups.push({ app: going, storage, edits });
+    }
+    const label = all.length === 1 ? `“${all[0].name}” v${all[0].version}` : `${all.length} apps`;
+    lastRemovedRef.current = { label, items: backups };
+    setNotice(null);
+    setApps(await getCachedApps());
+    showToast(`Removed ${label}.`, { canUndo: true });
+  }, [handleCloseTab, showToast]);
 
   /** Select a tab */
   const handleSelectTab = useCallback((id: string | null) => {
@@ -1643,10 +1777,12 @@ function App(): React.ReactElement {
               running={openTabs.map((t) => ({ id: t.id, name: displayNameFor(t, openTabs), icon: t.icon }))}
               onResume={(id) => handleSelectTab(id)}
               onStop={(id) => handleCloseTab(id, true)}
+              onStopAll={handleStopAll}
               onOpenFile={openLocalFile}
               onOpenCached={handleOpenCached}
               onOpenUrl={(url) => { void openFromUrl(url, claimNavigation()); }}
               onRemove={handleRemove}
+              onRemoveAll={() => { void handleRemoveAll(); }}
               onAdoptData={handleAdoptData}
               onExportData={handleExportData}
               onImportData={(app, file) => void handleImportData(app, file)}
@@ -1699,6 +1835,7 @@ function App(): React.ReactElement {
               }
               webContainer={tab.webContainer}
               bundleData={tab.bundleData}
+              backendUrl={tab.backendUrl}
             />
           ))}
         </div>
@@ -1715,6 +1852,28 @@ function App(): React.ReactElement {
           </EditorBoundary>
         )}
         </div>
+        {toast && (
+          <div className="softn-toast" role="status" aria-live="polite" data-softn-host="">
+            <span className="softn-toast-text">{toast.text}</span>
+            {toast.canUndo && (
+              <button
+                type="button"
+                className="softn-toast-undo"
+                onClick={() => { void handleUndoRemove(); }}
+              >
+                Undo
+              </button>
+            )}
+            <button
+              type="button"
+              className="softn-toast-dismiss"
+              onClick={dismissToast}
+              aria-label="Dismiss notification"
+            >
+              &times;
+            </button>
+          </div>
+        )}
       </div>
     </DropZone>
   );

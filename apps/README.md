@@ -8,37 +8,24 @@ except `shared/`, which is one file kept for FormLogic.
 
 | Folder | In one line | Runs where | Ships as |
 | --- | --- | --- | --- |
-| [`softn-site/`](#softn-site) | softn.com: the landing page, the app directory pages and the publish form | Browser, at `/` | Part of `softn-website-<tag>-zipp-<engine>.zip` |
-| [`softn-web/`](#softn-web) | The browser runtime: open a `.softn` app and use it | Browser, at `/web/` | Part of the website archive |
-| [`softn-builder/`](#softn-builder) | The visual editor: pages, components, data, source, preview, export | Browser at `/builder/`, and as a desktop app | Part of the website archive; a Tauri build for desktop |
-| [`softn-studio/`](#softn-studio) | The AI studio: a brief in plain language becomes an app you can edit and export | Browser, at `/studio/` | Part of the website archive |
-| [`softn-single/`](#softn-single) | One app on its own page, unbranded: a spinner, a permission bar, the app | Browser, on your web host, and at `/play/<slug>` on the site | `softn-app-static-<tag>.zip`, and with a backend `softn-app-static-with-backend-linux-x64-<tag>.zip` |
-| [`softn-single-private/`](#softn-single-private) | The same single app, but PHP renders the page and the `.softn` file never sits on a URL | PHP web host | `softn-app-private-<tag>.zip`, and with a backend `softn-app-private-with-backend-linux-x64-<tag>.zip` |
-| [`softn-api/`](#softn-api) | The directory API behind softn.com: catalogue, publish, play, rate, comment, remix, per-app storage | PHP, at `/api/` beside the site | Part of the website archive |
-| [`softn-host-php/`](#softn-host-php) | The on-demand server host: PHP starts a bundled Node process per request to run an app's private `.logic` on the ZIPP engine | Apache/PHP on Linux x64 | The `backend/` folder of the two `…-php-linux-x64-…` archives |
-| [`softn-host-rust/`](#softn-host-rust) | `softn-server`: the native private backend with persistent connections and XDB sync | Anywhere Rust builds; behind a reverse proxy | Built from source (`cargo build --release`) |
-| [`softn-loader/`](#softn-loader) | The desktop runtime ("SoftN"): opens `.softn` files natively, stores records in SQLite | Windows, macOS, Linux and Android through Tauri | Installers from `npm run tauri build`; not attached to releases |
-| [`formlogic-host/`](#formlogic-host) | The trusted shell FormLogic embeds to run an app inside its own product | An opaque-origin iframe inside FormLogic | `hosted-runtime/` in `softn-formlogic-runtime-<tag>.zip`, which FormLogic fetches from the release |
+| [`softn-site/`](#softn-site) | softn.com: the landing page, the app directory pages (with Business Apps category and flexible hosting filters) and the publish form | Browser, at `/` | Part of `softn-website-<tag>-zipp-<engine>.zip` |
+| [`softn-web/`](#softn-web) | The browser runtime: open v2 full-stack Web Containers (frontend + ZIPP WASM backend + IndexedDB SQLite) and v1 `.softn` apps, with Close all, Remove all and Toast+Undo library controls | Browser, at `/web/` | Part of the website archive |
+| [`softn-builder/`](#softn-builder) | Hybrid IDE: v2 Web Container editor (HTML/CSS/TS/PHP/Rust/SQL) + mini-phpMyAdmin XDB SQLite 3 explorer + 107-component visual editor for v1 `.ui` apps, auto-restore, Clear and `.softn` export | Browser at `/builder/`, and as a desktop app | Part of the website archive; a Tauri build for desktop |
+| [`softn-studio/`](#softn-studio) | The AI studio: a brief in plain language becomes a full-stack v2 Web Container (with optional PHP/JS/TS + SQLite backend) or v1 `.ui` app you can edit and export | Browser, at `/studio/` | Part of the website archive |
+| [`softn-single/`](#softn-single) | One app on its own page, unbranded: runs v2 full-stack containers (`backendUrl` or local WASM backend) and v1 apps with a spinner and permission bar | Browser, on your web host, and at `/play/<slug>` on the site | `softn-app-static-<tag>.zip`, and with a backend `softn-app-static-with-backend-linux-x64-<tag>.zip` |
+| [`softn-single-private/`](#softn-single-private) | The same single app, but PHP renders the page, withholds server/backend source when configured (`backendUrl`), and keeps `.softn` off public URLs | PHP web host | `softn-app-private-<tag>.zip`, and with a backend `softn-app-private-with-backend-linux-x64-<tag>.zip` |
+| [`softn-api/`](#softn-api) | The directory API behind softn.com: catalogue, publish, play, rate, comment, remix, flexible `browser`/`server`/`hybrid` container hosting in ZIPP `safe-sandbox`, and per-app storage | PHP, at `/api/` beside the site | Part of the website archive |
+| [`softn-host-php/`](#softn-host-php) | The on-demand server host: PHP starts a bundled runner per request to execute v1 `server/*.logic` or v2 container backends (`php`, `js`/`ts`, `rust`, `python`) inside ZIPP `safe-sandbox` | Apache/PHP on Linux x64 | The `backend/` folder of the two `…-php-linux-x64-…` archives |
+| [`softn-host-rust/`](#softn-host-rust) | `softn-server`: the native multi-user host for v1 server API v1 + XDB sync and v2 full-stack container backends (`php`, `js`/`ts`, `rust`, `python` + WAL SQLite) strictly inside ZIPP `safe-sandbox` | Anywhere Rust builds; behind a reverse proxy | Built from source (`cargo build --release`) |
+| [`softn-loader/`](#softn-loader) | The desktop runtime ("SoftN"): opens v2 Web App Containers and v1 `.softn` files natively, with local XDB SQLite storage | Windows, macOS, Linux and Android through Tauri | Installers from `npm run tauri build`; not attached to releases |
+| [`formlogic-host/`](#formlogic-host) | The trusted shell FormLogic embeds to run both v2 Web Containers (bridging `/api/*` via `containerHttp`) and v1 `.ui` apps inside its own product | An opaque-origin iframe inside FormLogic | `hosted-runtime/` in `softn-formlogic-runtime-<tag>.zip`, which FormLogic fetches from the release |
 | [`shared/`](#shared) | One re-export file kept at a path FormLogic checks | Build time only | Nothing |
 
 ## How they fit together
 
-A `.softn` file is the unit everything agrees on: a zip with a manifest, a
-`permission.json`, `.ui` pages, `.logic` scripts, data seeds and assets. You
-make one in Studio (from a brief) or Builder (by hand), or FormLogic exports one
-for you. You then open it in the web runtime or the desktop runtime, publish it
-to the directory so it has a page and a play button, or host it yourself on one
-page with the single-app runtime. If the app needs a server (private logic,
-SQLite, routes), that server is either the PHP host (no daemon; a process per
-request) or the Rust host (a long-running service with sync). The site is the
-front door to all of the browser apps: the build script composes `softn-site`,
-`softn-web`, `softn-builder`, `softn-studio`, `softn-single` (under `/play/`)
-and the docs into one `dist/` that the directory API serves from.
+A `.softn` file is the unit everything agrees on: either a **v2 Web App Container** (standard HTML/CSS/JS/TS/React/Vue/Three.js frontend plus optional sandboxed `backend` in PHP/Slim 4, JS/TS, Rust or Python and XDB SQLite 3 `databases`) or a **classic v1 bundle** (manifest, `permission.json`, `.ui` pages, `.logic`/`.py` scripts, XDB seeds and assets). You make one in Studio (from a brief) or Builder (visually, in code, and in the built-in XDB SQLite explorer), or FormLogic exports one for you. You then open it in the web runtime or the desktop runtime, publish it to the directory (choosing `browser`, `server` or `hybrid` hosting), or host it yourself on one page with the single-app runtime. If the app needs a multi-user server, both the PHP host (`softn-host-php`) and the Rust host (`softn-host-rust` / `softn-server`) run v1 `server/*.logic` and v2 container backends strictly inside ZIPP `safe-sandbox` — never native OS PHP, Python or shell execution. The site is the front door to all of the browser apps: the build script composes `softn-site`, `softn-web`, `softn-builder`, `softn-studio`, `softn-single` (under `/play/`) and the docs into one `dist/` that the directory API serves from.
 
-Every app renders through the same `@softn/core` renderer and runs `.logic` in
-the same ZIPP WebAssembly sandbox, so an app behaves the same in each of them.
-What differs is who owns the page, where the data lives and which
-capabilities the host is willing to grant.
+Every v2 Web Container runs inside `@softn/container` (Worker-isolated ZIPP WASM + closed Shadow DOM + XDB SQLite 3) and every v1 app renders through `@softn/core` on the same ZIPP WebAssembly sandbox, so an app behaves the same in each of them. What differs is who owns the page, where the data lives and which capabilities the host is willing to grant.
 
 ## The browser apps
 
@@ -55,23 +42,14 @@ not depend on `@softn/core`; the engine is a megabyte it has no use for.
 
 ### softn-web
 
-The runtime people use on softn.com: a launcher that opens a bundle from a
-file, a link or the directory, then renders it with a slim bar over the app
-(home, fullscreen, menu). It caches bundles, remembers local apps and asks
-for capabilities with a permission prompt. `?open=<url>` and `/web/app/<slug>`
-are its entry links.
+The runtime people use on softn.com: a launcher that opens v2 full-stack Web Containers (including local ZIPP WASM backends + IndexedDB-persisted XDB SQLite 3) and v1 `.softn` bundles from a file, a link or the directory, then renders them with a slim bar over the app (home, fullscreen, menu). It caches bundles, remembers local apps, supports **Close all** and **Remove all** with instant removal + floating **Toast & Undo** (no blocking confirmation dialogs), and asks for capabilities with a permission prompt. `?open=<url>`, `/web/app/<slug>`, and `?mode=local` (to run hybrid directory apps strictly in the browser sandbox) are its entry links.
 
 - Run: `npm run dev:web` (port 1420). Test: `npm test -w @softn/web`.
 - Ships inside the website archive under `web/`.
 
 ### softn-builder
 
-The visual editor. Pages on a canvas with an inspector, a component palette,
-a schema editor for collections and relationships, a data view for seed
-records, a source view for files the canvas cannot safely rewrite, live
-previews at desktop, tablet and phone widths, and an export dialog that
-inspects the bundle before it leaves. The same code runs as a desktop app
-through Tauri (`src-tauri/`), where it gets native open and save dialogs.
+The hybrid IDE for both v2 Web App Containers and v1 `.ui` apps. Supports scaffolding full-stack containers (`PHP + SQLite`, `JS API + SQLite`, `TS API + SQLite`), editing HTML/CSS/TS/PHP/Rust/SQL/`.htaccess` files side-by-side, managing embedded XDB SQLite 3 databases in a **mini-phpMyAdmin explorer** (schema creation/alteration, indexes, full CRUD, SQL console, `.sql`/`.db` export, live sync back to the bundle), a 107-component visual canvas and ER collection editor for v1 apps, automatic session restore on reopen with a toolbar **Clear** action, live previews at desktop/tablet/phone widths, and validated `.softn` export. The same code runs as a desktop app through Tauri (`src-tauri/`), where it gets native open and save dialogs.
 
 - Run: `npm run dev:builder` (port 1422) or `npm run dev:desktop:builder`.
 - Test: `npm test -w @softn/builder`; desktop styles: `npm run test:desktop`.

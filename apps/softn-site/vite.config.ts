@@ -24,9 +24,9 @@ export default defineConfig(({ mode }) => {
   // paths, making this Vite server the one public origin for all four apps.
   const webRuntimeTarget = env.VITE_WEB_PROXY_TARGET || env.VITE_WEB_URL || 'http://localhost:1420';
   const appProxies = [
-    ['/web', env.VITE_WEB_PROXY_TARGET],
-    ['/builder', env.VITE_BUILDER_PROXY_TARGET],
-    ['/studio', env.VITE_STUDIO_PROXY_TARGET],
+    ['/web/', env.VITE_WEB_PROXY_TARGET],
+    ['/builder/', env.VITE_BUILDER_PROXY_TARGET],
+    ['/studio/', env.VITE_STUDIO_PROXY_TARGET],
     ['/api', env.VITE_API_PROXY_TARGET],
   ].filter((entry): entry is [string, string] => Boolean(entry[1]));
   const demoProxy = {
@@ -37,14 +37,46 @@ export default defineConfig(({ mode }) => {
     ...(env.VITE_WEB_PROXY_TARGET && { rewrite: (url: string) => `/web${url}` }),
   };
 
+  // Match production .htaccess / nginx: `/web`, `/builder`, `/studio` without a
+  // trailing slash redirect to their canonical directory URLs so Vite's base
+  // check never answers 404 when a developer types `/studio` or `/builder`.
+  const canonicalAppSlashesPlugin = {
+    name: 'softn-canonical-app-slashes',
+    configureServer(server: {
+      middlewares: {
+        use: (
+          fn: (
+            req: { url?: string },
+            res: { statusCode: number; setHeader: (k: string, v: string) => void; end: () => void },
+            next: () => void,
+          ) => void,
+        ) => void;
+      };
+    }) {
+      server.middlewares.use((req, res, next) => {
+        const match = /^\/(web|builder|studio)(\?.*)?$/.exec(req.url ?? '');
+        if (match) {
+          res.statusCode = 308;
+          res.setHeader('Location', `/${match[1]}/${match[2] ?? ''}`);
+          res.end();
+          return;
+        }
+        next();
+      });
+    },
+  };
+
   return {
     // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
-    plugins: [retireServiceWorkersPlugin(), docsDevPlugin(), react(), scriptPolicyPlugin()],
+    plugins: [canonicalAppSlashesPlugin, retireServiceWorkersPlugin(), docsDevPlugin(), react(), scriptPolicyPlugin()],
     server: {
       port: env.VITE_PORT ? Number(env.VITE_PORT) : 1421,
       strictPort: true,
       proxy: Object.fromEntries([
-        ...appProxies.map(([route, target]) => [route, { target, changeOrigin: true, ws: true }]),
+        // Preserve the browser's Host header for `/api` so PHP's same-origin
+        // check (`Cors::requestOrigin()`) sees the real site origin (e.g.
+        // localhost:1420) instead of the private loopback API port.
+        ...appProxies.map(([route, target]) => [route, { target, changeOrigin: route !== '/api', ws: true }]),
         // In a deployed build the site and the runtime sit under one origin and
         // `/demos` is a plain directory. Proxying it in dev keeps the fetch
         // same-origin in both places, so the demo shelf needs no CORS handling

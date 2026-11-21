@@ -87,6 +87,8 @@ interface AppRunnerProps {
   webContainer?: boolean;
   /** Raw `.softn`/`.zip` archive bytes for `WebContainerView`. */
   bundleData?: Uint8Array;
+  /** Optional hosted ZIPP safe-sandbox backend URL for server-hosted container apps. */
+  backendUrl?: string;
 }
 
 interface ErrorBoundaryState {
@@ -172,7 +174,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, onCancelOpen, serverUrl, serverToken, serverCollections, storageEndpoint, live, onUpdate, editMarks, onShownPage, webContainer, bundleData }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ tabId, source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, python, textFiles, parseProblem, executionPreference, themeMode, permissionConfig, consent, onPageChange, onReady, onCancelOpen, serverUrl, serverToken, serverCollections, storageEndpoint, live, onUpdate, editMarks, onShownPage, webContainer, bundleData, backendUrl }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
   // What the app is waiting on the permission bar for, and whether allowing
   // will start it again, as its renderer says: the bar says both before it
@@ -415,6 +417,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                 // With the build's other data, so Home counts it, Remove clears it and an
                 // update can bring it forward (lib/appCacheStorage.ts).
                 storagePrefix={containerStoragePrefix(runtimeAppId)}
+                backendUrl={backendUrl}
                 initialPage={initialPage}
                 declaredPermissions={consent?.config ?? permissionConfig}
                 grantedCapabilities={containerGrants}

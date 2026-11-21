@@ -125,7 +125,7 @@ function decodeTypedArray(typeCode: string, b64: string): ArrayBufferView | Arra
   if (bytes.byteLength > MAX_WEBGL_UPLOAD_BYTES) {
     throw new RangeError('WebGL buffer upload exceeds size limit');
   }
-  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   switch (typeCode) {
     case 'f32': return new Float32Array(buf);
     case 'f64': return new Float64Array(buf);
@@ -240,7 +240,10 @@ export class WebGLWorkerHost {
         isWebGL2 = Boolean(gl);
       } else {
         gl = (canvas.getContext('webgl', contextOpts) ??
-          canvas.getContext('experimental-webgl', contextOpts)) as WebGLRenderingContext | null;
+          (canvas.getContext as (id: string, opts?: WebGLContextAttributes) => RenderingContext | null)(
+            'experimental-webgl',
+            contextOpts
+          )) as WebGLRenderingContext | null;
       }
     } catch {
       return null;

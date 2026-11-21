@@ -9,6 +9,7 @@ import { AssetView } from './components/files/AssetView';
 import { Sheet } from './components/Sheet';
 import { Toolbar } from './components/toolbar/Toolbar';
 import { ExportDialog } from './components/toolbar/ExportDialog';
+import { BuilderPublishDialog } from './components/toolbar/BuilderPublishDialog';
 import { ShortcutsDialog } from './components/toolbar/ShortcutsDialog';
 import { NewProjectDialog, type NewProjectConfig } from './components/toolbar/NewProjectDialog';
 import { ComponentPalette } from './components/panels/ComponentPalette';
@@ -17,6 +18,7 @@ import { TreeView } from './components/panels/TreeView';
 import { DataPanel } from './components/panels/DataPanel';
 import { Canvas } from './components/canvas/Canvas';
 import { LogicEditor } from './components/editor/LogicEditor';
+import { ExtraFileEditor } from './components/editor/ExtraFileEditor';
 import { SourceView } from './components/editor/SourceView';
 import { LivePreview } from './components/preview/LivePreview';
 import { FileNavigator, FileTabs } from './components/files';
@@ -25,6 +27,8 @@ import { useProjectStore } from './stores/projectStore';
 import { useFilesStore } from './stores/filesStore';
 import { openBundleFile, loadBundle } from './utils/bundleLoader';
 import {
+  clearBuilderWorkspace,
+  clearStoredSession,
   commitProjectSnapshot,
   openRemoteBundle,
   prepareProjectSnapshot,
@@ -51,7 +55,7 @@ import { startFromStudio } from './utils/studioVisit';
 import { StudioOrigin } from './components/toolbar/StudioOrigin';
 import { useUnsavedChanges } from './hooks/useUnsavedChanges';
 import { useRecoveryCopy } from './hooks/useRecoveryCopy';
-import { recoveryOf, restoreOffer } from './utils/recoveryCopy';
+import { recoveryOf } from './utils/recoveryCopy';
 import { SESSION_ASSETS_KEY, joinStoredSession } from './utils/storedAssets';
 import { readLocalStorage } from './utils/safeStorage';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
@@ -65,9 +69,9 @@ import { pageInHand, viewsFor } from './utils/workspaceViews';
 import { startNewProject } from './utils/newProject';
 import { keepSavedPoint, markUnsaved } from './utils/savedPoint';
 
-// The data designer and its diagram library (@xyflow with d3, about 160 KB)
-// load the first time the Data view opens, not with the editor.
-const SchemaDesigner = lazy(() => import('./components/schema').then((m) => ({ default: m.SchemaDesigner })));
+// The data workspace (SQLite / XDB explorer + visual collections designer)
+// loads the first time the Data view opens, not with the editor.
+const DataWorkspace = lazy(() => import('./components/schema').then((m) => ({ default: m.DataWorkspace })));
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -266,6 +270,7 @@ function App() {
   const [foldHierarchy, setFoldHierarchy] = useState(false);
   const [foldData, setFoldData] = useState(true);
   const [showExportDialog, setShowExportDialog] = useState(false);
+  const [showPublishDialog, setShowPublishDialog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
 
@@ -284,10 +289,20 @@ function App() {
     fileHandleRef.current = null;
     forgetDesktopFile();
     remoteOpenRef.current?.abort();
+    clearStoredSession();
     startNewProject(config);
     setView('design');
     setShowNewProjectDialog(false);
     toast.success(`Created ${config.name}`);
+  }, []);
+
+  const handleClear = useCallback(() => {
+    remoteOpenRef.current?.abort();
+    fileHandleRef.current = null;
+    forgetDesktopFile();
+    clearBuilderWorkspace();
+    setView('design');
+    toast.info('Builder cleared');
   }, []);
 
   const handleNew = useCallback(async () => {
@@ -393,7 +408,8 @@ function App() {
     }
 
     if (action.kind === 'restore-prompt') {
-      // The session's text, with the project's assets put back into it from their own record.
+      // Automatically load the saved local session without prompting on every visit.
+      // Use "Clear" in the toolbar to wipe the workspace and remove the saved session.
       const assetsRaw = readLocalStorage(SESSION_ASSETS_KEY);
       let joined: ReturnType<typeof joinStoredSession>;
       let snapshot: ProjectSnapshot;
@@ -407,28 +423,14 @@ function App() {
         toast.error(`The saved session could not be restored. ${setAsideUnrestored(action.raw, e, assetsRaw)}`);
         return;
       }
-      // A copy of unsaved work says so, and what of the project is not in it (utils/recoveryCopy.ts).
-      // Asked in the Builder's own dialog, which may mount after this runs; the
-      // answer is for the workspace it was asked about.
-      const generation = useProjectStore.getState().workspaceGeneration;
-      // Until it is restored, what is stored is set aside before anything is written over it:
-      // "Not now", or a change made before the question is answered (utils/openProject.ts).
-      noteRestoreOffered();
-      void askConfirm(restoreOffer(action.raw, joined.assets), { title: 'Restore your work?', confirmLabel: 'Restore', cancelLabel: 'Not now' }).then((yes) => {
-        if (!yes || useProjectStore.getState().workspaceGeneration !== generation) return;
-        try {
-          applySnapshotRef.current(snapshot);
-          // Restored: it is this tab's work now, and the next write is its copy, unless another
-          // tab has kept its own there since the offer was made (that is set aside first).
-          restoredFromStore(action.raw);
-          // It was not saved when it was kept, and is not now: it says "Unsaved",
-          // leaving asks first, and undoing an edit does not make it saved.
-          if (recoveryOf(action.raw)) markUnsaved();
-        } catch (e) {
-          console.error('[App] Failed to restore session:', e);
-          toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. ${setAsideUnrestored(action.raw, e, assetsRaw)}`);
-        }
-      });
+      try {
+        applySnapshotRef.current(snapshot);
+        restoredFromStore(action.raw);
+        if (recoveryOf(action.raw)) markUnsaved();
+      } catch (e) {
+        console.error('[App] Failed to restore session:', e);
+        toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. ${setAsideUnrestored(action.raw, e, assetsRaw)}`);
+      }
       return;
     }
 
@@ -521,7 +523,7 @@ function App() {
     setView(next);
   }, []);
   const confirmOpen = useConfirmStore((state) => state.queue.length > 0);
-  const modalOpen = showExportDialog || showNewProjectDialog || showShortcuts || confirmOpen;
+  const modalOpen = showExportDialog || showPublishDialog || showNewProjectDialog || showShortcuts || confirmOpen;
 
   const handleExport = useCallback(() => {
     setShowExportDialog(true);
@@ -561,16 +563,26 @@ function App() {
     changeView, canvas: pageInHand(view, activeFileType, pageHeld),
   });
   const isLogicFileActive = activeFileType === 'logic';
-  const isAssetFileActive = activeFileType === 'asset';
-  const hasActiveFile = !!activeNode;
-  const pageOpen = hasActiveFile && !isLogicFileActive && !isAssetFileActive;
+  const activeExtraPath = useProjectStore((state) => state.activeExtraPath);
+  const isAssetFileActive = activeExtraPath === null && activeFileType === 'asset';
+  const hasActiveFile = !!activeNode || activeExtraPath !== null;
+  const pageOpen = activeExtraPath === null && hasActiveFile && !isLogicFileActive && !isAssetFileActive;
+
+  // For v2 web container projects (which do not use the Components/Properties
+  // panels), open the Files panel automatically on desktop so frontend and
+  // backend files are immediately accessible.
+  useEffect(() => {
+    if (projectFormat === 'web' && !sheets) {
+      setPanelOpen('files', true);
+    }
+  }, [projectFormat, sheets, setPanelOpen]);
 
   // Auto-switch view to 'design' when the active file type doesn't support the current view
   useEffect(() => {
-    if (!viewsFor(activeFileType).includes(view)) {
+    if (!viewsFor(activeFileType, projectFormat).includes(view)) {
       setView('design');
     }
-  }, [activeFileType, view]);
+  }, [activeFileType, projectFormat, view]);
 
   // The page being left is put into its file, and the one opened onto the canvas.
   useActiveFileOnCanvas();
@@ -671,6 +683,23 @@ function App() {
             </div>
           </div>
         </div>
+      ) : activeExtraPath !== null ? (
+        projectFormat === 'web' ? (
+          <div className="bl-split">
+            <div data-panel="Canvas">
+              <ExtraFileEditor path={activeExtraPath} />
+            </div>
+            {previewBeside && (
+              <div data-panel="Preview">
+                <LivePreview initialDevice="mobile" beside />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div data-panel="Canvas" style={styles.centerTop}>
+            <ExtraFileEditor path={activeExtraPath} />
+          </div>
+        )
       ) : isAssetFileActive ? (
         <div data-panel="Canvas" style={styles.centerTop}>
           <AssetView />
@@ -783,7 +812,13 @@ function App() {
         return (
           <div style={sheets ? styles.mainSheets : styles.main}>
             <div data-panel="Code" style={{ flex: 1, minWidth: 0 }}>
-              <SourceView />
+              {activeExtraPath !== null ? (
+                <ExtraFileEditor path={activeExtraPath} />
+              ) : isLogicFileActive ? (
+                <LogicEditor />
+              ) : (
+                <SourceView />
+              )}
             </div>
           </div>
         );
@@ -800,8 +835,8 @@ function App() {
         return (
           <div style={sheets ? styles.mainSheets : styles.main}>
             <div data-panel="Data" style={{ flex: 1, minWidth: 0 }}>
-              <Suspense fallback={<div role="status" style={{ padding: 24, color: 'var(--dim)' }}>Opening the data designer…</div>}>
-                <SchemaDesigner />
+              <Suspense fallback={<div role="status" style={{ padding: 24, color: 'var(--dim)' }}>Opening the data explorer…</div>}>
+                <DataWorkspace />
               </Suspense>
             </div>
           </div>
@@ -855,8 +890,10 @@ function App() {
             isSaving={isSaving}
             onNew={handleNew}
             onOpen={handleOpen}
+            onClear={!isHostedEditor() ? handleClear : undefined}
             onShortcuts={openShortcuts}
             onExport={handleExport}
+            onPublish={!isHostedEditor() ? () => setShowPublishDialog(true) : undefined}
             activeFileType={activeFileType}
           />
 
@@ -899,7 +936,16 @@ function App() {
         </nav>
       )}
 
-      <ExportDialog isOpen={showExportDialog} onClose={() => setShowExportDialog(false)} exportProject={exportCurrentProject} />
+      <ExportDialog
+        isOpen={showExportDialog}
+        onClose={() => setShowExportDialog(false)}
+        exportProject={exportCurrentProject}
+        onDirectPublish={!isHostedEditor() ? () => {
+          setShowExportDialog(false);
+          setShowPublishDialog(true);
+        } : undefined}
+      />
+      <BuilderPublishDialog isOpen={showPublishDialog} onClose={() => setShowPublishDialog(false)} />
       <ShortcutsDialog isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
       <NewProjectDialog
         isOpen={showNewProjectDialog}

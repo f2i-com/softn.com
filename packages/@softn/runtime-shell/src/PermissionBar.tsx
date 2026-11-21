@@ -105,7 +105,7 @@ export const CAPABILITY_PHRASE: Record<Capability, string> = {
   net: 'the internet',
   camera: 'pictures from your camera',
   mic: 'recordings from your microphone',
-  files: 'your files',
+  files: 'a file chooser to open or save files',
   qr: 'QR codes it scans',
   ai: 'AI models it downloads',
   gpu: 'your graphics card',

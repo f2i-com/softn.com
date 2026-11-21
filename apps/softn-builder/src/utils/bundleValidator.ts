@@ -23,8 +23,8 @@ export interface ValidationResult {
 }
 
 /** The file groups the runtime reads (packages/@softn/core inspect.ts FILE_GROUPS). */
-export type FileGroup = 'ui' | 'logic' | 'server' | 'xdb' | 'assets';
-export const FILE_GROUPS: readonly FileGroup[] = ['ui', 'logic', 'server', 'xdb', 'assets'];
+export type FileGroup = 'ui' | 'logic' | 'server' | 'backend' | 'xdb' | 'assets';
+export const FILE_GROUPS: readonly FileGroup[] = ['ui', 'logic', 'server', 'backend', 'xdb', 'assets'];
 
 export interface ResolvedEntry {
   /** The archive path the file was found at: the project's path for it from here on. */
@@ -161,6 +161,25 @@ export function validateBundle(
         }
       } catch {
         result.warnings.push(`XDB file "${xdbPath}" contains invalid JSON`);
+      }
+    }
+  }
+
+  // Validate embedded v2 container backend entry if declared
+  const backend = (manifest as { backend?: unknown }).backend;
+  if (backend !== undefined) {
+    if (!isObject(backend)) {
+      error('manifest.backend must be an object with runtime and entry');
+    } else {
+      const runtime = backend.runtime;
+      const entry = backend.entry;
+      if (typeof runtime !== 'string' || !['php', 'rust', 'javascript', 'typescript', 'python'].includes(runtime)) {
+        error(`manifest.backend.runtime must be one of php, rust, javascript, typescript, or python`);
+      }
+      if (typeof entry !== 'string' || !entry.trim()) {
+        error('manifest.backend.entry must name a backend entry file in the bundle');
+      } else if (!resolveEntry(files, entry)) {
+        error(`manifest.backend.entry "${entry}" is not in the bundle.`);
       }
     }
   }

@@ -700,6 +700,55 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
       const notes = await source({ 'readme.md': strToU8('# notes'), 'docs/a.md': strToU8('a') });
       expect(notes.status).toBe(503);
       expect(notes.text).toBe('Invalid application manifest.');
+
+      // Full-stack v2 container (Slim 4 PHP + SQLite):
+      // 1) Without backendUrl -> browser-sandboxed local mode delivers manifest.backend, databases,
+      //    frontendRoot, and server/ PHP files so the browser's ZIPP WASM sandbox can run them.
+      const fullstackFiles = {
+        'manifest.json': strToU8(
+          JSON.stringify({
+            engine: 2,
+            name: 'BrewDesk',
+            version: '1.0.0',
+            main: 'public/index.html',
+            frontendRoot: 'public',
+            backend: { runtime: 'php', entry: 'server/public/index.php', mode: 'api', routes: ['/api/'] },
+            databases: [{ name: 'app', engine: 'sqlite', file: 'app.db', seedSql: 'server/migrations/001.sql', persist: true }],
+          })
+        ),
+        'public/index.html': strToU8(page('BrewDesk')),
+        'server/public/index.php': strToU8('<?php echo json_encode(["ok" => true]);'),
+        'server/public/.htaccess': strToU8('RewriteEngine On'),
+        'server/migrations/001.sql': strToU8('CREATE TABLE items (id INTEGER PRIMARY KEY);'),
+        'data/seed.db': new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]),
+      };
+      const localPack = await source(fullstackFiles);
+      expect(localPack.status).toBe(200);
+      expect(localPack.pack.backendUrl).toBeUndefined();
+      expect(localPack.pack.manifest.frontendRoot).toBe('public');
+      expect(localPack.pack.manifest.backend).toMatchObject({ runtime: 'php', entry: 'server/public/index.php' });
+      expect(localPack.pack.manifest.databases).toHaveLength(1);
+      expect(localPack.pack.text['server/public/index.php']).toContain('json_encode');
+      expect(localPack.pack.text['server/public/.htaccess']).toContain('RewriteEngine');
+      expect(localPack.pack.entries['data/seed.db']).toBe(6);
+
+      // 2) With backendUrl -> remote multi-user server mode redacts backend/databases from manifest
+      //    and withholds all backend source, SQL, .htaccess, and SQLite files from ?source and ?entry=.
+      writeFileSync(join(root, 'private/serve.config.php'), config(`'viewerToken' => false, 'backendUrl' => '/multi/',`));
+      const remotePack = await source(fullstackFiles);
+      expect(remotePack.status).toBe(200);
+      expect(remotePack.pack.backendUrl).toBe('/multi/');
+      expect(remotePack.pack.manifest.frontendRoot).toBe('public');
+      expect(remotePack.pack.manifest.backend).toBeUndefined();
+      expect(remotePack.pack.manifest.databases).toBeUndefined();
+      expect(Object.keys(remotePack.pack.text)).toEqual(['public/index.html']);
+      expect(remotePack.pack.entries['data/seed.db']).toBeUndefined();
+      expect((await fetch(`${origin}/index.php?entry=data/seed.db`)).status).toBe(404);
+      expect((await fetch(`${origin}/index.php?entry=server/public/index.php`)).status).toBe(404);
+
+      // Cross-origin or traversal backendUrl is rejected 503.
+      writeFileSync(join(root, 'private/serve.config.php'), config(`'backendUrl' => 'https://evil.example/api',`));
+      expect((await fetch(`${origin}/`)).status).toBe(503);
     } finally {
       writeFileSync(join(root, 'private/app.softn'), bundle);
       writeFileSync(join(root, 'private/serve.config.php'), config());

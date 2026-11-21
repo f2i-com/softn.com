@@ -1,7 +1,7 @@
 {
   "eyebrow": "Learn SoftN",
   "title": "An app you can understand, edit and keep.",
-  "description": "Start with a working example, learn the pieces as you need them, and choose where your app runs.",
+  "description": "Run full web apps — frontend and sandboxed backend + SQLite — right in your browser, or host the exact same .softn bundle multi-user inside ZIPP safe-sandbox.",
   "cta": {
     "label": "Explore the documentation",
     "href": "/docs/"
@@ -9,32 +9,32 @@
   "cards": [
     {
       "label": "What is SoftN?",
-      "description": "An introduction to the editable app format, the tools around it, and the choices you keep after building an app.",
+      "description": "One portable .softn bundle for frontend UI, sandboxed backend code and SQLite data — editable and runnable locally or hosted.",
       "href": "/docs/what-is-softn/"
     },
     {
+      "label": "Full-Stack Web Containers",
+      "description": "Run HTML/CSS/JS/TS frontends alongside sandboxed PHP, JS/TS, Rust or Python backends and SQLite in the browser or on softn-server.",
+      "href": "/docs/web-containers/"
+    },
+    {
       "label": "Build your first SoftN app",
-      "description": "Make a small change to Fieldnotes, then explore a counter that connects interface, state and an event handler.",
+      "description": "Make a small change to Fieldnotes, then explore how UI, state and handlers connect inside a portable app.",
       "href": "/docs/first-app/"
     },
     {
       "label": "SoftN Builder",
-      "description": "Design the interface, write logic in JavaScript or Python, model data and preview a portable app in one editable workspace.",
+      "description": "Design interfaces, scaffold PHP or JS/TS + SQLite container backends, manage SQLite tables and records, and preview live in one workspace.",
       "href": "/docs/builder/"
     },
     {
-      "label": "App logic in JavaScript or Python",
-      "description": "Write an app’s behaviour in JavaScript or Python: state, handlers, host capabilities, and machine learning with torch in Python.",
-      "href": "/docs/logic-zipp/"
-    },
-    {
       "label": "The .softn app format",
-      "description": "What a bundle contains, how its manifest configures logic and packages, and how to think about source, seeds and permissions.",
+      "description": "Manifest v2 container fields (backend, databases, frontendRoot), permissions, seeds and how bundles stay portable.",
       "href": "/docs/softn-app-format/"
     },
     {
-      "label": "Hosting and deploying SoftN apps",
-      "description": "Choose between opening a bundle, publishing an app, hosting one website or connecting a private backend.",
+      "label": "Hosting and multi-user sandboxing",
+      "description": "Run locally in the browser or host multi-user with softn-server — every backend request still runs inside ZIPP safe-sandbox.",
       "href": "/docs/hosting/"
     }
   ]

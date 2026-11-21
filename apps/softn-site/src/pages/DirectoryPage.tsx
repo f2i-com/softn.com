@@ -1,15 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { listApps, type AppCard as AppCardData, type CapabilityFilter, type Category } from '../lib/api';
+import { listApps, type AppCard as AppCardData, type CapabilityFilter, type Category, type HostingFilter } from '../lib/api';
 import { navigate, type Route } from '../lib/router';
 import { AppGrid } from '../components/directory/AppCard';
-import { CAP_FILTERS, SORTS, CapabilityChips, CategoriesNotice, CategoryChips, Pagination, SearchBox, SortSelect } from '../components/directory/Controls';
+import { CAP_FILTERS, HOSTING_FILTERS, SORTS, CapabilityChips, CategoriesNotice, CategoryChips, HostingChips, Pagination, SearchBox, SortSelect, SubcategoryChips } from '../components/directory/Controls';
 
 interface Filters {
   q: string;
   category: string;
+  subcategory: string;
   tag: string;
   author: string;
   cap: CapabilityFilter | '';
+  hosting: HostingFilter | '';
   sort: string;
   page: number;
 }
@@ -22,10 +24,14 @@ function selectedSort(raw: string | null | undefined, q: string): string {
 function buildUrl(f: Partial<Filters>): string {
   const qs = new URLSearchParams();
   if (f.q) qs.set('q', f.q);
-  if (f.category && f.category !== 'all') qs.set('category', f.category);
+  if (f.category && f.category !== 'all') {
+    qs.set('category', f.category);
+    if (f.subcategory && f.subcategory !== 'all') qs.set('subcategory', f.subcategory);
+  }
   if (f.tag) qs.set('tag', f.tag);
   if (f.author) qs.set('author', f.author);
   if (f.cap) qs.set('cap', f.cap);
+  if (f.hosting) qs.set('hosting', f.hosting);
   // Searching defaults to relevance; browsing defaults to trending. Only
   // omit the applicable default, or Trending silently becomes Best match.
   const sort = selectedSort(f.sort, f.q ?? '');
@@ -37,6 +43,10 @@ function buildUrl(f: Partial<Filters>): string {
 
 function asCap(v: string | null): CapabilityFilter | '' {
   return CAP_FILTERS.some((c) => c.id === v) ? (v as CapabilityFilter) : '';
+}
+
+function asHosting(v: string | null): HostingFilter | '' {
+  return HOSTING_FILTERS.some((h) => h.id === v) ? (v as HostingFilter) : '';
 }
 
 /**
@@ -74,16 +84,29 @@ export function DirectoryPage({
   onRetryCategories: () => void;
 }): React.ReactElement {
   const q = route.query.get('q') ?? '';
-  const category = route.query.get('category') ?? 'all';
+  const rawCat = route.query.get('category') ?? 'all';
+  const rawSub = route.query.get('subcategory') ?? '';
+  let category = rawCat;
+  let subcategory = rawSub;
+  if (rawCat.includes('/')) {
+    const [cPart, sPart] = rawCat.split('/', 2);
+    category = cPart || 'all';
+    if (!subcategory && sPart) subcategory = sPart;
+  } else if (!subcategory && (rawCat === 'story' || rawCat === 'strategy') && !categories.some((c) => c.id === rawCat)) {
+    category = 'games';
+    subcategory = rawCat;
+  }
+  if (category === 'all') subcategory = '';
   const tag = route.query.get('tag') ?? '';
   const author = route.query.get('author') ?? '';
   const cap = asCap(route.query.get('cap'));
+  const hosting = asHosting(route.query.get('hosting'));
   const rawSort = route.query.get('sort');
   const sort = selectedSort(rawSort, q);
   const rawPage = route.query.get('page');
   const page = parsePageParam(rawPage);
-  const filters: Filters = { q, category, tag, author, cap, sort, page };
-  const filtered = Boolean(q || category !== 'all' || tag || author || cap);
+  const filters: Filters = { q, category, subcategory, tag, author, cap, hosting, sort, page };
+  const filtered = Boolean(q || category !== 'all' || subcategory || tag || author || cap || hosting);
 
   // Three things the listing can be: not loaded yet (no reply so far), a
   // reply with nothing in it, and a request that failed. They used to share
@@ -97,7 +120,10 @@ export function DirectoryPage({
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const current = categories.find((c) => c.id === category);
+  const currentSub = current?.subcategories?.find((s) => s.slug === subcategory);
+  const visibleSubs = (current?.subcategories ?? []).filter((s) => s.apps > 0 || s.slug === subcategory);
   const capName = CAP_FILTERS.find((c) => c.id === cap)?.name;
+  const hostingName = HOSTING_FILTERS.find((h) => h.id === hosting)?.name;
 
   // The title names what the list is narrowed to, in the order the heading
   // over the grid does, so a tab or a bookmark says which list it is.
@@ -107,13 +133,17 @@ export function DirectoryPage({
       : author
         ? `Apps by ${author} — SoftN`
         : category !== 'all'
-          ? `${current?.name ?? category} apps — SoftN`
+          ? subcategory
+            ? `${currentSub?.name ?? subcategory} — ${current?.name ?? category} — SoftN`
+            : `${current?.name ?? category} apps — SoftN`
           : tag
             ? `Apps tagged #${tag} — SoftN`
-            : capName
-              ? `Apps: ${capName} — SoftN`
-              : 'Apps — SoftN';
-  }, [q, author, category, current?.name, tag, capName]);
+            : hostingName
+              ? `Apps: ${hostingName} — SoftN`
+              : capName
+                ? `Apps: ${capName} — SoftN`
+                : 'Apps — SoftN';
+  }, [q, author, category, subcategory, current?.name, currentSub?.name, tag, hostingName, capName]);
 
   // An address that says page=abc, page=0 or page=1 means page 1, and the
   // address is made to say so — replaced, so back does not return to it.
@@ -125,7 +155,7 @@ export function DirectoryPage({
   useEffect(() => {
     const ac = new AbortController();
     setLoading(true);
-    listApps({ q, category, tag, author, cap, sort: sort === 'relevance' ? undefined : sort, page, perPage: 24 }, ac.signal)
+    listApps({ q, category, subcategory: subcategory || undefined, tag, author, cap, hosting, sort: sort === 'relevance' ? undefined : sort, page, perPage: 24 }, ac.signal)
       .then((r) => {
         // A reply for a request this page has moved past is never painted,
         // whether or not the request honoured the abort.
@@ -149,10 +179,12 @@ export function DirectoryPage({
       });
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, category, tag, author, cap, sort, page, attempt]);
+  }, [q, category, subcategory, tag, author, cap, hosting, sort, page, attempt]);
 
   const go = (next: Partial<Filters>) => {
-    navigate(buildUrl({ ...filters, page: 1, ...next }));
+    const merged: Partial<Filters> = { ...filters, page: 1, ...next };
+    if ('category' in next && !('subcategory' in next)) merged.subcategory = '';
+    navigate(buildUrl(merged));
   };
 
   // What the listing is showing, in the section's own heading. The page is
@@ -160,19 +192,23 @@ export function DirectoryPage({
   let heading: React.ReactNode = 'All apps';
   if (q) heading = <>Matching “{q}”</>;
   else if (author) heading = <>By {author}</>;
+  else if (current && subcategory) heading = <>{current.emoji} {current.name} <span className="muted" aria-hidden="true">›</span> {currentSub ? `${currentSub.emoji} ${currentSub.name}` : subcategory}</>;
   else if (current) heading = <>{current.emoji} {current.name}</>;
   // The category is known by id even when the categories request failed.
-  else if (category !== 'all') heading = <>In {category}</>;
+  else if (category !== 'all') heading = <>In {category}{subcategory ? ` / ${subcategory}` : ''}</>;
   else if (tag) heading = <>Tagged #{tag}</>;
+  else if (hostingName) heading = hostingName;
   else if (cap) heading = CAP_FILTERS.find((c) => c.id === cap)?.name ?? 'All apps';
 
   const count = loading ? (loaded ? 'Updating results…' : 'Loading…') : total === 0 ? 'Nothing matches.' : `${total} app${total === 1 ? '' : 's'}${pages > 1 ? `, page ${page} of ${pages}` : ''}`;
   const empty = loaded && !loading && !error && total === 0;
   const activeFilters = [
     ...(q ? [{ label: `Search: ${q}`, clear: { q: '' } }] : []),
-    ...(category !== 'all' ? [{ label: `Category: ${current?.name ?? category}`, clear: { category: 'all' } }] : []),
+    ...(category !== 'all' ? [{ label: `Category: ${current?.name ?? category}`, clear: { category: 'all', subcategory: '' } }] : []),
+    ...(subcategory ? [{ label: `Subcategory: ${currentSub?.name ?? subcategory}`, clear: { subcategory: '' } }] : []),
     ...(tag ? [{ label: `Tag: #${tag}`, clear: { tag: '' } }] : []),
     ...(author ? [{ label: `Author: ${author}`, clear: { author: '' } }] : []),
+    ...(hosting ? [{ label: HOSTING_FILTERS.find((item) => item.id === hosting)!.name, clear: { hosting: '' as const } }] : []),
     ...(cap ? [{ label: CAP_FILTERS.find((item) => item.id === cap)!.name, clear: { cap: '' as const } }] : []),
   ];
 
@@ -187,10 +223,10 @@ export function DirectoryPage({
                 <>
                   Everything {author} has published. <a href={buildUrl({ ...filters, author: '', page: 1 })}>All authors</a>
                 </>
-              ) : current?.description && !q ? (
-                current.description
+              ) : (currentSub?.description || current?.description) && !q ? (
+                currentSub?.description || current?.description
               ) : (
-                <>Each one is a single file. Press play and it runs here, in a sandbox, with nothing to install.</>
+                <>Each one is a single file. Run it locally inside your browser sandbox, or hosted multi-user on SoftN inside ZIPP safe-sandbox.</>
               )}
             </p>
           </div>
@@ -204,22 +240,52 @@ export function DirectoryPage({
             {categories.length > 0 && (
               <>
                 <div className="directory-categories-desktop">
-                  <CategoryChips categories={categories} selected={category} hrefFor={(id) => buildUrl({ ...filters, page: 1, category: id })} onSelect={(id) => go({ category: id })} />
+                  <CategoryChips
+                    categories={categories}
+                    selected={category}
+                    hrefFor={(id) => buildUrl({ ...filters, page: 1, category: id, subcategory: '' })}
+                    onSelect={(id) => go({ category: id, subcategory: '' })}
+                  />
+                  {current && (
+                    <SubcategoryChips
+                      parent={current}
+                      selected={subcategory}
+                      hrefFor={(subSlug) => buildUrl({ ...filters, page: 1, category: current.id, subcategory: subSlug })}
+                      onSelect={(subSlug) => go({ category: current.id, subcategory: subSlug })}
+                    />
+                  )}
                 </div>
                 <label className="sort directory-categories-mobile">
                   <span className="sort-label">Category</span>
-                  <select aria-label="Filter apps by category" value={category} onChange={(event) => go({ category: event.target.value })}>
+                  <select aria-label="Filter apps by category" value={category} onChange={(event) => go({ category: event.target.value, subcategory: '' })}>
                     <option value="all">All categories</option>
                     {category !== 'all' && !current && <option value={category}>{category}</option>}
                     {categories.map((item) => <option key={item.id} value={item.id}>{item.name}{item.apps ? ` · ${item.apps}` : ''}</option>)}
                   </select>
                 </label>
+                {current && visibleSubs.length > 0 && (
+                  <label className="sort directory-categories-mobile">
+                    <span className="sort-label">Subcategory</span>
+                    <select aria-label={`Filter ${current.name} by subcategory`} value={subcategory} onChange={(event) => go({ category: current.id, subcategory: event.target.value })}>
+                      <option value="">All {current.name}{current.apps ? ` · ${current.apps}` : ''}</option>
+                      {visibleSubs.map((sub) => <option key={sub.slug} value={sub.slug}>{sub.name}{sub.apps ? ` · ${sub.apps}` : ''}</option>)}
+                    </select>
+                  </label>
+                )}
               </>
             )}
             <div className="directory-caps-desktop">
+              <HostingChips selected={hosting} onSelect={(id) => go({ hosting: id })} />
               <CapabilityChips selected={cap} onSelect={(id) => go({ cap: id })} />
             </div>
-            {/* The same four choices as one field on a phone, where the pills were two rows of two under the category. */}
+            {/* The same choices as compact fields on a phone. */}
+            <label className="sort directory-caps-mobile">
+              <span className="sort-label">Hosting</span>
+              <select aria-label="Filter apps by hosting mode" value={hosting} onChange={(event) => go({ hosting: asHosting(event.target.value) })}>
+                <option value="">Any hosting</option>
+                {HOSTING_FILTERS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
             <label className="sort directory-caps-mobile">
               <span className="sort-label">What it can reach</span>
               <select aria-label="Filter apps by what they can reach" value={cap} onChange={(event) => go({ cap: asCap(event.target.value) })}>

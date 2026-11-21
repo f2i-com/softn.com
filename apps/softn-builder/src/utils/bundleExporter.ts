@@ -319,28 +319,35 @@ function composeManifest(
 
   manifest.name = options.name;
   manifest.version = options.version;
-  manifest.description = options.description;
+  if (!retained || 'description' in retained || options.description !== '') {
+    manifest.description = options.description;
+  }
   manifest.main = main;
   if (iconPath) manifest.icon = iconPath;
   else delete manifest.icon;
 
-  const files = isObject(manifest.files) ? { ...manifest.files } : {};
-  // Each group is the project's list. A group with nothing in it is written
-  // for a project made here, and for a manifest that had the group; a
-  // manifest that listed no `xdb` or no `assets` is not given an empty one.
-  const had = isObject(retained?.files) ? retained.files : null;
-  const group = (name: string, paths: string[]): void => {
-    if (!retained || paths.length > 0 || (had !== null && name in had)) files[name] = paths;
-    else delete files[name];
-  };
-  group('ui', groups.ui);
-  group('logic', exportedLogicPaths(retained ?? null, groups.logic));
-  group('xdb', groups.xdb);
-  group('assets', groups.assets);
-  manifest.files = files;
+  // Web containers (`engine: 2`) do not require a `files` index in manifest.json.
+  // If an opened v2 manifest omitted `files`, keep it omitted so untouched exports
+  // round-trip byte-for-byte.
+  if (!retained || !isWeb || 'files' in retained) {
+    const files = isObject(manifest.files) ? { ...manifest.files } : {};
+    // Each group is the project's list. A group with nothing in it is written
+    // for a project made here, and for a manifest that had the group; a
+    // manifest that listed no `xdb` or no `assets` is not given an empty one.
+    const had = isObject(retained?.files) ? retained.files : null;
+    const group = (name: string, paths: string[]): void => {
+      if (!retained || paths.length > 0 || (had !== null && name in had)) files[name] = paths;
+      else delete files[name];
+    };
+    group('ui', groups.ui);
+    group('logic', exportedLogicPaths(retained ?? null, groups.logic));
+    group('xdb', groups.xdb);
+    group('assets', groups.assets);
+    manifest.files = files;
+  }
 
   const config = isObject(manifest.config) ? { ...manifest.config } : {};
-  if (isWeb && config.execution === undefined) {
+  if (!retained && isWeb && config.execution === undefined) {
     config.execution = 'worker';
   }
   const previousName = typeof retained?.name === 'string' ? retained.name : null;

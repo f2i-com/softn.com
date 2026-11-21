@@ -64,6 +64,15 @@ describe('single application configuration', () => {
     });
     expect(parseConfig(config, base).directory).toBeUndefined();
   });
+  it('resolves same-origin backendUrl and rejects cross-origin backendUrl', () => {
+    expect(parseConfig({ ...config, backendUrl: './backend' }, base).backendUrl).toBe(
+      'https://example.test/nested/backend'
+    );
+    expect(parseConfig({ ...config, backendUrl: '/' }, base).backendUrl).toBe(
+      'https://example.test/'
+    );
+    expect(() => parseConfig({ ...config, backendUrl: 'https://evil.test/api' }, base)).toThrow();
+  });
   it('validates declarations without broadening malformed or missing permissions', () => {
     expect(
       parsePermissions({ permissions: { net: { enabled: true, allowed_hosts: ['example.test'] } } })

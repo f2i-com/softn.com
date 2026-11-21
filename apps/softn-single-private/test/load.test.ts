@@ -186,3 +186,33 @@ it('reports each piece of the pack as it arrives, so a slow download keeps its d
   expect(app.config.title).toBe('Example');
   expect(arrived).toBeGreaterThanOrEqual(pieces);
 });
+
+it('forwards same-origin backendUrl and supports frontendRoot for v2 containers', async () => {
+  serve(
+    pack({
+      backendUrl: './backend',
+      manifest: {
+        engine: 2,
+        name: 'BrewDesk',
+        version: '1.0.0',
+        main: 'index.html',
+        frontendRoot: 'public',
+        files: {},
+      },
+      text: {
+        'public/index.html': '<!doctype html><html><body>BrewDesk</body></html>',
+      },
+      entries: {},
+    })
+  );
+  const app = await loadServedApplication('/games/index.php', base, new AbortController().signal);
+  expect(app.webContainer).toBe(true);
+  expect(app.config.backendUrl).toBe('https://example.test/games/backend');
+  expect(app.containerFiles?.['public/index.html']).toContain('BrewDesk');
+  app.assets.dispose();
+
+  serve(pack({ backendUrl: 'https://evil.test/api' }));
+  await expect(
+    loadServedApplication('/games/index.php', base, new AbortController().signal)
+  ).rejects.toThrow('Files must be on the same origin');
+});

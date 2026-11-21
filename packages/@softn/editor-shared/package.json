@@ -12,6 +12,8 @@
     "./useModalFocus": "./src/useModalFocus.ts",
     "./hostedEditor": "./src/hostedEditor.ts",
     "./useHostedSaveLabel": "./src/useHostedSaveLabel.ts",
+    "./directPublish": "./src/directPublish.ts",
+    "./PublishModal": "./src/PublishModal.tsx",
     "./package.json": "./package.json"
   },
   "scripts": {

@@ -210,6 +210,58 @@ function softn_withheld(string $name, array $withhold): bool
     return false;
 }
 
+/**
+ * Bundle-aware withholding policy for v1 and v2 containers.
+ *
+ * - v1 bundles and static v2 containers (no declared `backend`): always withhold `server/`.
+ * - v2 containers configured with a remote `backendUrl` (multi-user host): withhold `server/`,
+ *   `backend/`, the declared backend entry folder, and backend source/database files
+ *   (.php, .phtml, .rs, .sql, .db, .sqlite, .sqlite3, .htaccess) so backend code never leaks.
+ * - v2 containers running locally in the browser (`backendUrl === null`) with a declared `backend`:
+ *   allow the bundle's backend files (e.g. `backend/` or `server/` for Slim 4 apps) to reach the
+ *   browser's local ZIPP WASM sandbox unless explicitly listed in the operator's `withhold`.
+ */
+function softn_withheld_for_bundle(string $name, array $withhold, array $manifest, ?string $backendUrl): bool
+{
+    $lower = strtolower($name);
+    $isContainer = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
+    $hasDeclaredBackend = $isContainer && is_array($manifest['backend'] ?? null);
+    if ($backendUrl !== null && $isContainer) {
+        if (str_starts_with($lower, 'server/') || str_starts_with($lower, 'backend/')) return true;
+        $entry = is_string($manifest['backend']['entry'] ?? null)
+            ? strtolower(ltrim(str_replace('\\', '/', $manifest['backend']['entry']), '/'))
+            : '';
+        if ($entry !== '') {
+            if ($lower === $entry) return true;
+            $slash = strpos($entry, '/');
+            if ($slash !== false && str_starts_with($lower, substr($entry, 0, $slash + 1))) return true;
+        }
+        $base = basename($lower);
+        if ($base === '.htaccess' || preg_match('/\.(?:php|phtml|rs|sql|db|sqlite|sqlite3)$/', $base) === 1) return true;
+    } elseif (!$hasDeclaredBackend) {
+        if (str_starts_with($lower, 'server/')) return true;
+    }
+    foreach ($withhold as $pattern) {
+        $pattern = strtolower($pattern);
+        if (str_ends_with($pattern, '/')) {
+            if (str_starts_with($lower, $pattern)) return true;
+        } elseif ($pattern === $lower || fnmatch($pattern, $lower)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function softn_is_container_text(string $name, bool $isContainer): bool
+{
+    if (softn_classify($name)[1] === 'text') return true;
+    if (!$isContainer) return false;
+    $base = strtolower(basename($name));
+    if ($base === '.htaccess') return true;
+    $ext = strtolower((string)pathinfo($name, PATHINFO_EXTENSION));
+    return in_array($ext, ['htm', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'php', 'phtml', 'rs', 'toml'], true);
+}
+
 function softn_config(string $private): array
 {
     $file = $private . '/serve.config.php';
@@ -217,7 +269,7 @@ function softn_config(string $private): array
     $raw = require $file;
     if (!is_array($raw)) softn_fail(503, 'serve.config.php must return an array.');
     $known = ['id', 'title', 'description', 'lang', 'bundle', 'theme', 'loadingText', 'permissionMode', 'permissions', 'sha256',
-        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot', 'pwa', 'frameAncestors'];
+        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot', 'pwa', 'frameAncestors', 'backendUrl'];
     foreach (array_keys($raw) as $key) {
         if (!in_array($key, $known, true)) softn_fail(503, 'Unknown setting in serve.config.php: ' . $key);
     }
@@ -268,12 +320,22 @@ function softn_config(string $private): array
             softn_fail(503, 'frameAncestors must list origins such as https://example.com (scheme, host and optional port, nothing else).');
         }
     }
+    $backendUrl = $raw['backendUrl'] ?? null;
+    if ($backendUrl !== null) {
+        if (!is_string($backendUrl) || trim($backendUrl) === '' || strlen($backendUrl) > 512
+            || preg_match('/[\s"<>#]/', $backendUrl)
+            || str_contains($backendUrl, '://')
+            || str_starts_with($backendUrl, '//')
+            || str_contains($backendUrl, '..')) {
+            softn_fail(503, 'backendUrl must be a same-origin path (such as / or ./backend).');
+        }
+    }
     return [
         'id' => $id, 'title' => $title, 'description' => $description, 'lang' => $lang, 'bundle' => $bundle, 'theme' => $theme,
         'loadingText' => $loadingText, 'permissionMode' => $permissionMode, 'permissions' => $permissions, 'sha256' => $sha256,
         'viewerToken' => $viewerToken, 'tokenLifetime' => $tokenLifetime, 'secret' => $secret, 'withhold' => array_values($withhold),
         'cacheSeconds' => $cacheSeconds, 'allowPrivateInWebroot' => $allowPrivateInWebroot, 'pwa' => $pwa,
-        'frameAncestors' => array_values($frameAncestors),
+        'frameAncestors' => array_values($frameAncestors), 'backendUrl' => $backendUrl,
     ];
 }
 
@@ -717,7 +779,16 @@ function softn_manifest(ZipArchive $zip): array
     $engine = is_array($manifest) ? ($manifest['engine'] ?? null) : null;
     $engineIsContainer = (is_int($engine) || is_float($engine)) && (float)$engine === 2.0;
     $isV2 = is_array($manifest) && ($engineIsContainer || ($manifest['container'] ?? null) === true);
-    if (!is_array($manifest) || !is_string($manifest['name'] ?? null) || !is_string($manifest['main'] ?? null) || (!$isV2 && !is_array($manifest['files'] ?? null))) {
+    $frontendRoot = ($isV2 && is_string($manifest['frontendRoot'] ?? null))
+        ? trim(str_replace('\\', '/', $manifest['frontendRoot']), '/')
+        : '';
+    $main = is_string($manifest['main'] ?? null) ? $manifest['main'] : '';
+    if ($main === '' && $isV2) {
+        if ($frontendRoot !== '' && $zip->locateName($frontendRoot . '/index.html') !== false) $main = $frontendRoot . '/index.html';
+        elseif ($zip->locateName('index.html') !== false) $main = 'index.html';
+        elseif (is_array($manifest['backend'] ?? null) && is_string($manifest['backend']['entry'] ?? null)) $main = $manifest['backend']['entry'];
+    }
+    if (!is_array($manifest) || !is_string($manifest['name'] ?? null) || $main === '' || (!$isV2 && !is_array($manifest['files'] ?? null))) {
         softn_fail(503, 'Invalid application manifest.');
     }
     $files = [];
@@ -729,19 +800,33 @@ function softn_manifest(ZipArchive $zip): array
     $out = [
         'name' => $manifest['name'],
         'version' => is_string($manifest['version'] ?? null) ? $manifest['version'] : '0.0.0',
-        'main' => $manifest['main'],
+        'main' => $main,
         'files' => (object)$files,
     ];
     if ($engineIsContainer) $out['engine'] = 2;
     if (($manifest['container'] ?? null) === true) $out['container'] = true;
     if ($isV2) {
         // What the container reads of a manifest beyond the fields here
-        // (packages/@softn/container/src/archive.ts): its import map and its
-        // theme. Left out, an app's `imports` resolved nothing on this host and
-        // did on every other.
+        // (packages/@softn/container/src/archive.ts): its import map, theme,
+        // static frontend root, SSR entry, embedded backend, and SQLite databases.
         if (is_array($manifest['imports'] ?? null)) {
             $imports = array_filter($manifest['imports'], 'is_string');
             if ($imports !== []) $out['imports'] = (object)$imports;
+        }
+        if (is_array($manifest['importMap'] ?? null)) {
+            $out['importMap'] = $manifest['importMap'];
+        }
+        if ($frontendRoot !== '' && softn_entry_ok($frontendRoot)) {
+            $out['frontendRoot'] = $frontendRoot;
+        }
+        if (is_string($manifest['ssrEntry'] ?? null) && softn_entry_ok($manifest['ssrEntry'])) {
+            $out['ssrEntry'] = $manifest['ssrEntry'];
+        }
+        if (is_array($manifest['backend'] ?? null)) {
+            $out['backend'] = $manifest['backend'];
+        }
+        if (is_array($manifest['databases'] ?? null)) {
+            $out['databases'] = $manifest['databases'];
         }
         if (in_array($manifest['theme'] ?? null, ['light', 'dark'], true)) $out['theme'] = $manifest['theme'];
     }
@@ -848,15 +933,20 @@ function softn_source(array $config, string $private): never
         if (!is_array($declared)) softn_fail(503, 'The permission sidecar is not valid JSON.');
     }
     $isContainer = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
+    $backendUrl = $config['backendUrl'] ?? null;
+    $clientManifest = $manifest;
+    if ($isContainer && $backendUrl !== null) {
+        // In multi-user remote backend mode, never expose backend entry paths or database metadata to the browser.
+        unset($clientManifest['backend'], $clientManifest['databases'], $clientManifest['ssrEntry']);
+    }
     $text = [];
     $entries = [];
     $total = 0;
     foreach ($index as $name => $entry) {
         // An array's key that reads as a whole number is one: a file called "2024".
         $name = (string)$name;
-        if ($name === 'manifest.json' || softn_withheld($name, $config['withhold'])) continue;
-        $ext = strtolower((string)pathinfo($name, PATHINFO_EXTENSION));
-        $isText = softn_classify($name)[1] === 'text' || ($isContainer && in_array($ext, ['htm', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts'], true));
+        if ($name === 'manifest.json' || softn_withheld_for_bundle($name, $config['withhold'], $manifest, $backendUrl)) continue;
+        $isText = softn_is_container_text($name, $isContainer);
         if (!$isText) {
             $entries[$name] = $entry['size'];
             continue;
@@ -868,7 +958,7 @@ function softn_source(array $config, string $private): never
         $text[$name] = $content;
     }
     $zip->close();
-    $pack = json_encode([
+    $payload = [
         'version' => 1,
         'id' => $config['id'],
         'title' => $config['title'],
@@ -876,11 +966,15 @@ function softn_source(array $config, string $private): never
         'loadingText' => $config['loadingText'],
         'permissionMode' => $config['permissionMode'],
         'digest' => $digest,
-        'manifest' => $manifest,
+        'manifest' => $clientManifest,
         'declared' => $declared,
         'text' => (object)$text,
         'entries' => (object)$entries,
-    ], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES);
+    ];
+    if ($backendUrl !== null) {
+        $payload['backendUrl'] = $backendUrl;
+    }
+    $pack = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES);
     if ($pack === false) softn_fail(503, 'The application source could not be encoded.');
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
@@ -891,17 +985,21 @@ function softn_source(array $config, string $private): never
 
 function softn_entry(array $config, string $name, bool $icon): never
 {
-    if (!softn_entry_ok($name) || $name === 'manifest.json' || softn_withheld($name, $config['withhold'])) softn_fail(404, 'No such entry.');
+    if (!softn_entry_ok($name) || $name === 'manifest.json') softn_fail(404, 'No such entry.');
     $zip = softn_open($config);
+    $manifest = softn_manifest($zip);
+    $backendUrl = $config['backendUrl'] ?? null;
+    if (softn_withheld_for_bundle($name, $config['withhold'], $manifest, $backendUrl)) softn_fail(404, 'No such entry.');
     if ($icon) {
-        $found = softn_icon_entry($zip, softn_manifest($zip));
+        $found = softn_icon_entry($zip, $manifest);
         if ($found === null || $found['name'] !== $name) softn_fail(404, 'No such entry.');
     }
     $stat = $zip->statName($name);
     if ($stat === false) softn_fail(404, 'No such entry.');
+    $isContainer = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
     [$mime, $kind] = softn_classify($name);
     // Text travels in the source pack; an entry URL for it is a probe, not a render.
-    if ($kind === 'text') softn_fail(404, 'No such entry.');
+    if ($kind === 'text' || softn_is_container_text($name, $isContainer)) softn_fail(404, 'No such entry.');
     $size = (int)$stat['size'];
     if ($size > SOFTN_MAX_ENTRY) softn_fail(503, 'Entry exceeds the size limit.');
     $etag = '"' . dechex((int)$stat['crc']) . '-' . $size . '"';

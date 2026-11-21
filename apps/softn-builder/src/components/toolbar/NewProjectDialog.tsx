@@ -7,6 +7,7 @@ import { dialogStyles } from './dialogStyles';
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
 export type NewProjectFormat = 'ui' | 'web';
 export type NewProjectLanguage = LogicLanguage | 'typescript';
+export type NewProjectBackend = 'none' | 'php' | 'javascript' | 'typescript';
 
 export interface NewProjectConfig {
   name: string;
@@ -15,6 +16,8 @@ export interface NewProjectConfig {
   template: StarterTemplate;
   /** `'web'` for SoftN v2 Web App Containers (HTML + CSS + JS/TS/Python); `'ui'` (default) for visual `.ui` apps. */
   format?: NewProjectFormat;
+  /** Optional embedded sandboxed backend (ZIPP WASM + SQLite) for Web Container projects. */
+  backend?: NewProjectBackend;
   /**
    * The language of the app's logic. An app has one: the runtime refuses a
    * bundle whose logic mixes the two, so it is chosen when the app is made.
@@ -162,6 +165,13 @@ const WEB_LANGUAGES: { key: NewProjectLanguage; title: string; description: stri
   { key: 'python', title: 'Python', description: 'Runs on the ZIPP Python engine, with optional torch.', path: 'main.py' },
 ];
 
+const WEB_BACKENDS: { key: NewProjectBackend; title: string; description: string; path: string }[] = [
+  { key: 'none', title: 'Frontend only', description: 'No embedded backend server; local browser state only.', path: 'No backend' },
+  { key: 'php', title: 'PHP + SQLite', description: 'Sandboxed PHP 8 API with persistent SQLite via ZIPP WASM.', path: 'backend/index.php' },
+  { key: 'javascript', title: 'JS API + SQLite', description: 'Sandboxed JavaScript HTTP handler + persistent SQLite.', path: 'backend/server.js' },
+  { key: 'typescript', title: 'TS API + SQLite', description: 'Sandboxed TypeScript HTTP handler + persistent SQLite.', path: 'backend/server.ts' },
+];
+
 export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialogProps) {
   const dialogRef = useModalFocus(isOpen, onClose, 'input');
   const fieldId = useId();
@@ -170,6 +180,7 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [template, setTemplate] = useState<StarterTemplate>('blank');
   const [format, setFormat] = useState<NewProjectFormat>('ui');
+  const [backend, setBackend] = useState<NewProjectBackend>('none');
   const [language, setLanguage] = useState<NewProjectLanguage>('javascript');
   const [torch, setTorch] = useState(false);
 
@@ -180,6 +191,7 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
     setTheme('system');
     setTemplate('blank');
     setFormat('ui');
+    setBackend('none');
     setLanguage('javascript');
     setTorch(false);
   }, [isOpen]);
@@ -194,7 +206,7 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
       description: description.trim(),
       theme,
       template,
-      ...(format === 'web' ? { format: 'web' as const } : {}),
+      ...(format === 'web' ? { format: 'web' as const, backend } : {}),
       language,
       pythonPackages: language === 'python' && torch ? ['torch'] : [],
     });
@@ -313,6 +325,34 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
               </label>
             )}
           </fieldset>
+
+          {format === 'web' && (
+            <fieldset style={styles.fieldset}>
+              <legend style={styles.label}>Sandboxed backend (optional)</legend>
+              <div style={styles.cards}>
+                {WEB_BACKENDS.map((option) => (
+                  <label
+                    key={option.key}
+                    className="bl-choice"
+                    data-checked={backend === option.key}
+                    style={{ position: 'relative', display: 'block' }}
+                  >
+                    <input
+                      type="radio"
+                      name={`${fieldId}-backend`}
+                      value={option.key}
+                      checked={backend === option.key}
+                      onChange={() => setBackend(option.key)}
+                      style={styles.radio}
+                    />
+                    <span style={styles.cardTitle}>{option.title}</span>
+                    <span style={styles.cardDesc}>{option.description}</span>
+                    <span style={styles.cardPath}>{option.path}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           <div>
             <span id={`${fieldId}-templates`} style={styles.label}>Start from</span>

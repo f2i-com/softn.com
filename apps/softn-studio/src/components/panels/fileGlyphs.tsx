@@ -158,10 +158,14 @@ export const Glyph: React.FC<{ name: GlyphName; size?: number; className?: strin
 export function fileKind(path: string): { glyph: GlyphName; word: string; language: boolean } {
   if (isPagePath(path)) return { glyph: 'page', word: 'page', language: true };
   if (isLogicPath(path)) return { glyph: 'logic', word: 'logic', language: true };
+  if (/\.(php|phtml)$/i.test(path)) return { glyph: 'logic', word: 'PHP', language: true };
+  if (/\.rs$/i.test(path)) return { glyph: 'logic', word: 'Rust', language: true };
+  if (/\.sql$/i.test(path)) return { glyph: 'data', word: 'SQL', language: true };
   if (/\.xdb$/i.test(path)) return { glyph: 'data', word: 'data', language: true };
+  if (/(?:^|\/)\.htaccess$/i.test(path) || /\.(toml|ini)$/i.test(path)) return { glyph: 'settings', word: 'config', language: false };
   if (/\.json$/i.test(path)) return { glyph: 'settings', word: path === 'manifest.json' || path === 'permission.json' ? 'settings' : 'JSON', language: false };
   if (/\.css$/i.test(path)) return { glyph: 'style', word: 'styles', language: false };
-  if (/\.(md|txt|csv|sql|ya?ml|toml)$/i.test(path)) return { glyph: 'text', word: 'text', language: false };
+  if (/\.(md|txt|csv|ya?ml)$/i.test(path)) return { glyph: 'text', word: 'text', language: false };
   if (/\.pdf$/i.test(path)) return { glyph: 'document', word: 'PDF', language: false };
   const { kind } = classifyAsset(path);
   if (kind === 'image') return { glyph: 'picture', word: 'picture', language: false };

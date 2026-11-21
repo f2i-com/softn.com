@@ -4,6 +4,7 @@ import { resetProjectSessionForImport } from '../lib/projectSession';
 import { READING_LIST } from './readingList';
 import { READING_LIST_PYTHON } from './readingListPython';
 import { CONTAINER_FIELDNOTES } from './containerFieldnotes';
+import { CONTAINER_FULLSTACK_NOTES } from './containerFullstackNotes';
 import { randomUUID } from '@softn/bundle-format/crypto';
 
 /**
@@ -23,7 +24,12 @@ export interface ExampleProject {
   files: Array<{ path: string; content: string }>;
 }
 
-export const EXAMPLES: readonly ExampleProject[] = [READING_LIST, READING_LIST_PYTHON, CONTAINER_FIELDNOTES];
+export const EXAMPLES: readonly ExampleProject[] = [
+  READING_LIST,
+  READING_LIST_PYTHON,
+  CONTAINER_FIELDNOTES,
+  CONTAINER_FULLSTACK_NOTES,
+];
 
 export const DEFAULT_EXAMPLE: ExampleProject = READING_LIST;
 

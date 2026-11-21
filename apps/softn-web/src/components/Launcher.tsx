@@ -1,7 +1,6 @@
 import React, { useCallback, useRef } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
 import { currentBuildId, groupByApp, hasStoredData, holdsNothingOfItsOwn, isOfflineReady, type CachedApp } from '../lib/appCache';
-import { BusinessDemosShelf } from './BusinessDemosShelf';
 import { DirectoryShelf } from './DirectoryShelf';
 
 /*
@@ -27,11 +26,13 @@ interface LauncherProps {
   running?: RunningApp[];
   onResume?: (id: string) => void;
   onStop?: (id: string) => void;
+  onStopAll?: () => void;
   onOpenFile: (file: File) => void | Promise<void>;
   onOpenCached: (app: CachedApp) => void;
   /** Open a directory bundle without leaving this runtime's running apps. */
   onOpenUrl?: (url: string) => void;
   onRemove: (id: string) => void;
+  onRemoveAll?: () => void;
   /** Save this build's records as a file. */
   onExportData: (app: CachedApp) => void;
   /** Replace this build's records with the records in a file exported here. */
@@ -108,10 +109,12 @@ export function Launcher({
   running = [],
   onResume,
   onStop,
+  onStopAll,
   onOpenFile,
   onOpenCached,
   onOpenUrl,
   onRemove,
+  onRemoveAll,
   onAdoptData,
   onExportData,
   onImportData,
@@ -199,8 +202,20 @@ export function Launcher({
             // genuinely executing.
             <section className="softn-launcher-section" style={{ marginTop: 0 }} aria-label="Running now">
               <div className="softn-launcher-section-head">
-                <h2 className="softn-launcher-section-title">Running now</h2>
-                <span className="softn-launcher-section-count">{running.length}</span>
+                <div className="softn-launcher-section-heading">
+                  <h2 className="softn-launcher-section-title">Running now</h2>
+                  <span className="softn-launcher-section-count">{running.length}</span>
+                </div>
+                {onStopAll && (
+                  <button
+                    type="button"
+                    className="softn-launcher-section-action"
+                    onClick={onStopAll}
+                    title="Close all running apps"
+                  >
+                    Close all
+                  </button>
+                )}
               </div>
               <div className="softn-launcher-running">
                 {running.map((tab) => (
@@ -233,8 +248,20 @@ export function Launcher({
           {groups.length > 0 ? (
             <section className="softn-launcher-section" style={{ marginTop: running.length > 0 ? undefined : 0 }}>
               <div className="softn-launcher-section-head">
-                <h2 className="softn-launcher-section-title">Your apps</h2>
-                <span className="softn-launcher-section-count">{groups.length}</span>
+                <div className="softn-launcher-section-heading">
+                  <h2 className="softn-launcher-section-title">Your apps</h2>
+                  <span className="softn-launcher-section-count">{groups.length}</span>
+                </div>
+                {onRemoveAll && (
+                  <button
+                    type="button"
+                    className="softn-launcher-section-action softn-launcher-section-action--danger"
+                    onClick={onRemoveAll}
+                    title="Close running apps and remove all saved apps from this browser"
+                  >
+                    Remove all
+                  </button>
+                )}
               </div>
               <div className="softn-launcher-grid">
                 {groups.map((group) => {
@@ -415,10 +442,9 @@ export function Launcher({
           ) : (
             <div className="softn-launcher-empty">
               <strong>Your library starts here.</strong> Apps you open appear here so you can return to them.
-              Try a browser-sandboxed business app below, open a <strong>.softn</strong> file, or choose an app from <a href={directoryHref}>the directory</a>.
+              Open a <strong>.softn</strong> file, explore <a href={`${directoryHref}?category=business`}>Business Apps</a>, or choose any app from <a href={directoryHref}>the directory</a>.
             </div>
           )}
-          {onOpenUrl && <BusinessDemosShelf onOpen={onOpenUrl} />}
           </div>
           {onOpenUrl && <DirectoryShelf onOpen={onOpenUrl} />}
           </div>

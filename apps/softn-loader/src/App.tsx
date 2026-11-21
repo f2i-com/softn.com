@@ -39,6 +39,7 @@ import { computeBundleAppId, desktopBundleFiles, isSoftnPath } from './bundleFil
 // versions wrote them.
 import { grantKey, hasSavedGrant, requestedCapabilities, saveGrant, withheldPermissions } from '@softn/runtime-shell/consent';
 import { PermissionBar, DESKTOP_WORDING, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
+import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
 import { createNativeFetch, createNativeNetFetch } from './nativeNetFetch';
 import { shortIdentity, type PendingUpgrade } from './installations';
 import { bindDataIdentity, chooseDataIdentity, nativeInvoke } from './nativeIdentity';
@@ -170,12 +171,17 @@ function App(): React.ReactElement {
   const selectionRevision = useRef(0);
   const selectBundle = useCallback((path: string) => {
     selectionRevision.current += 1;
+    setLoading(true);
+    setError(null);
     setBundlePath(path);
     setOpenRevision((revision) => revision + 1);
   }, []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [mainSource, setMainSource] = useState<string>('');
+  const [containerBundle, setContainerBundle] = useState<Uint8Array | null>(null);
+  const [containerDeclaredPermissions, setContainerDeclaredPermissions] = useState<PermissionConfig | null>(null);
+  const [containerGrantedCapabilities, setContainerGrantedCapabilities] = useState<string[]>([]);
   const [_manifest, setManifest] = useState<BundleManifest | null>(null);
   const [runtimeAppId, setRuntimeAppId] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -418,14 +424,61 @@ function App(): React.ReactElement {
         // checked, when something asks for it (the manifest, the composer,
         // the icon, an asset()). Disposing the asset resolver releases the archive.
         // A bundle zipped as its folder is looked inside, as the browser runtime
-        // does, and a web container is refused in words that say what it is
-        // (bundleFile.ts): this loader has no engine for one.
-        const { textFiles, binaryFiles } = desktopBundleFiles(data);
+        // does, and a v2 web container runs via @softn/container (WebContainerView).
+        const { textFiles, binaryFiles, isWebContainer, inferredManifest } = desktopBundleFiles(data);
 
         // The one manifest read every host shares (core's readManifest): a
         // manifest without `files` opens, and one that cannot run is refused
         // in the inspector's words rather than as a raw SyntaxError.
-        const parsedManifest = readManifest<BundleManifest>(textFiles);
+        let parsedManifest: BundleManifest;
+        if (inferredManifest) {
+          parsedManifest = inferredManifest as BundleManifest;
+        } else if (isWebContainer) {
+          let rawObj: Record<string, unknown> | null = null;
+          try {
+            const rawText = textFiles.get('manifest.json');
+            if (rawText) {
+              const parsed = JSON.parse(rawText);
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                rawObj = parsed as Record<string, unknown>;
+              }
+            }
+          } catch {
+            // Invalid JSON falls through to readManifest for its standard ManifestError.
+          }
+          const rawFrontendRoot =
+            rawObj && typeof rawObj.frontendRoot === 'string'
+              ? rawObj.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+              : '';
+          const backendEntry =
+            rawObj && rawObj.backend && typeof (rawObj.backend as { entry?: unknown }).entry === 'string'
+              ? String((rawObj.backend as { entry: string }).entry)
+              : '';
+          const hasPath = (p: string) =>
+            textFiles.has(p) ||
+            binaryFiles.has(p) ||
+            (rawFrontendRoot !== '' &&
+              (textFiles.has(`${rawFrontendRoot}/${p.replace(/^\/+/, '')}`) ||
+                binaryFiles.has(`${rawFrontendRoot}/${p.replace(/^\/+/, '')}`)));
+          if (rawObj && (typeof rawObj.main !== 'string' || !rawObj.main.trim())) {
+            const fallbackMain =
+              (rawFrontendRoot && hasPath(`${rawFrontendRoot}/index.html`) && `${rawFrontendRoot}/index.html`) ||
+              (hasPath('index.html') && 'index.html') ||
+              (backendEntry && hasPath(backendEntry) && backendEntry) ||
+              '';
+            if (fallbackMain) {
+              const patched = new Map(textFiles);
+              patched.set('manifest.json', JSON.stringify({ ...rawObj, main: fallbackMain }));
+              parsedManifest = readManifest<BundleManifest>(patched, { has: hasPath });
+            } else {
+              parsedManifest = readManifest<BundleManifest>(textFiles, { has: hasPath });
+            }
+          } else {
+            parsedManifest = readManifest<BundleManifest>(textFiles, { has: hasPath });
+          }
+        } else {
+          parsedManifest = readManifest<BundleManifest>(textFiles);
+        }
 
         // Keep this load's parsed config in the closure as well as state. React
         // state updates are asynchronous; reading `permissionConfig` below
@@ -513,6 +566,57 @@ function App(): React.ReactElement {
           cleanup();
           return;
         }
+
+        if (isWebContainer) {
+          // Set window icon from bundle (desktop only), then release the v1 reader;
+          // WebContainerView opens the raw bytes directly in its isolated Worker.
+          if (!isMobile) {
+            await setWindowIconFromBundle(binaryFiles, parsedManifest);
+          }
+          binaryFiles.release();
+          if (!active) return;
+
+          const onAllowContainer = () => {
+            if (!active) return;
+            saveGrant(consentKey);
+            setPermissionConfig(declaredConfig);
+            setContainerGrantedCapabilities(requested);
+            setConsent(null);
+          };
+
+          if (!isMobile && (parsedManifest.config?.window?.title || parsedManifest.name)) {
+            try {
+              const windowModule = await import('@tauri-apps/api/window');
+              if (!active) return;
+              const appWindow = windowModule.getCurrentWindow();
+              await appWindow.setTitle(`Opening ${parsedManifest.config?.window?.title || parsedManifest.name} — SoftN`);
+            } catch {
+              // Window API not available
+            }
+          }
+          if (!active) return;
+          setPermissionConfig(runningConfig);
+          setContainerDeclaredPermissions(declaredConfig);
+          setContainerGrantedCapabilities(alreadyGranted ? requested : []);
+          setConsent(alreadyGranted ? null : {
+            config: declaredConfig,
+            capabilities: requested,
+            appName: parsedManifest.name,
+            onAllow: onAllowContainer,
+          });
+          setImportResolver(undefined);
+          setAssetResolver(undefined);
+          setServerConfig(resolvedServerConfig);
+          setRuntimeAppId(dataId);
+          setMainSource('');
+          setContainerBundle(data);
+          setLoading(false);
+          return;
+        }
+
+        setContainerBundle(null);
+        setContainerDeclaredPermissions(null);
+        setContainerGrantedCapabilities([]);
 
         // Load XDB data from bundle (await for Tauri backend). Seeding stops
         // as soon as another selection replaces this load.
@@ -621,6 +725,9 @@ function App(): React.ReactElement {
     setFailedWhileUpgrading(false);
     setManifest(null);
     setMainSource('');
+    setContainerBundle(null);
+    setContainerDeclaredPermissions(null);
+    setContainerGrantedCapabilities([]);
     setRuntimeAppId(null);
     setAssetResolver(undefined);
     setImportResolver(undefined);
@@ -629,6 +736,29 @@ function App(): React.ReactElement {
       void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle('SoftN — Desktop runtime')).catch(() => {});
     }
   };
+
+  const handleAppLoaded = useCallback(() => {
+    // A staged upgrade is complete only now that the new package started (R2-SN-03).
+    const upgrade = upgradeInProgress.current;
+    if (upgrade) {
+      const outcome = finishUpgrade(upgrade);
+      if (outcome.finalized) {
+        upgradeInProgress.current = null;
+      } else {
+        // The pending record is still the truth. The app is NOT left
+        // running on unfinalized data (R3-SN-01): it is closed with the
+        // pending record intact, so reopening the file resumes the same
+        // operation with the same backup, and the older package stays
+        // gated until then.
+        upgradeInProgress.current = null;
+        setError(new UpgradeBlockedError(`The app started, but the upgrade could not be recorded (${outcome.reason}). It was closed so the pre-upgrade backup stays valid: free storage in this runtime and reopen the file to finish the upgrade. Your data is intact.`));
+        return;
+      }
+    }
+    if (isTauri && !isMobile) {
+      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${_manifest?.config?.window?.title || _manifest?.name || 'App'} — SoftN`)).catch(() => {});
+    }
+  }, [_manifest]);
 
   const running = Boolean(bundlePath) && !loading && !error;
   // Runtime chrome, above the app and outside its theme, so the bundle cannot
@@ -650,6 +780,33 @@ function App(): React.ReactElement {
       // runtime; the rule that weighs them is the provider's.
       : <ThemeProvider followHost followSystem declaredMode={_manifest?.config?.theme?.mode} box={THEME_BOX}>
         <XDBStorageNotice appId={runtimeAppId ?? undefined} />
+        {containerBundle ? (
+          <WebContainerView
+            key={runtimeAppId ?? undefined}
+            source={containerBundle}
+            appId={runtimeAppId ?? 'desktop-app'}
+            declaredPermissions={containerDeclaredPermissions ?? undefined}
+            grantedCapabilities={containerGrantedCapabilities}
+            theme={
+              _manifest?.config?.theme?.mode === 'light' || _manifest?.config?.theme?.mode === 'dark'
+                ? _manifest.config.theme.mode
+                : 'auto'
+            }
+            onReady={handleAppLoaded}
+            onTitleChange={(title) => {
+              if (isTauri && !isMobile && title) {
+                void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${title} — SoftN`)).catch(() => {});
+              }
+            }}
+            loading={(status) => (
+              <div className="desktop-state" role="status">
+                <Spinner size="lg" />
+                <p>{status?.message || 'Starting your app…'}</p>
+              </div>
+            )}
+            error={(err) => <UpgradeAwareError error={err} upgrade={upgradeInProgress} onHome={goHome} />}
+          />
+        ) : (
         <SoftNWithXDB
           key={runtimeAppId ?? undefined}
           source={mainSource}
@@ -666,32 +823,12 @@ function App(): React.ReactElement {
           permissionConfig={permissionConfig ?? undefined}
           netFetchHandler={netFetchHandler}
           {...serverConfig}
-          onLoad={() => {
-            // A staged upgrade is complete only now that the new package started (R2-SN-03).
-            const upgrade = upgradeInProgress.current;
-            if (upgrade) {
-              const outcome = finishUpgrade(upgrade);
-              if (outcome.finalized) {
-                upgradeInProgress.current = null;
-              } else {
-                // The pending record is still the truth. The app is NOT left
-                // running on unfinalized data (R3-SN-01): it is closed with the
-                // pending record intact, so reopening the file resumes the same
-                // operation with the same backup, and the older package stays
-                // gated until then.
-                upgradeInProgress.current = null;
-                setError(new UpgradeBlockedError(`The app started, but the upgrade could not be recorded (${outcome.reason}). It was closed so the pre-upgrade backup stays valid: free storage in this runtime and reopen the file to finish the upgrade. Your data is intact.`));
-                return;
-              }
-            }
-            if (isTauri && !isMobile) {
-              void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${_manifest?.config?.window?.title || _manifest?.name || 'App'} — SoftN`)).catch(() => {});
-            }
-          }}
+          onLoad={handleAppLoaded}
           functions={{ asset: (path: unknown) => typeof path === 'string' ? assetResolver?.(path) || '' : '' }}
           loading={<div className="desktop-state" role="status"><Spinner size="lg" /><p>Starting your app…</p></div>}
           error={(err) => <UpgradeAwareError error={err} upgrade={upgradeInProgress} onHome={goHome} />}
         />
+        )}
         {upgradeNotice && <p role="status" className="desktop-error">{upgradeNotice}</p>}
       </ThemeProvider>}
   </DesktopShell>;

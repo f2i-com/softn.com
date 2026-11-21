@@ -13,22 +13,38 @@ takes a zip upload.
 - A writable `data/` directory beside `api/` (the build creates it; `GET /api/health` reports whether it is writable)
 - Upload limits large enough for a bundle; `api/.user.ini` asks for 64 MB on PHP-FPM and CGI hosts, and `GET /api/health` says whether the host agreed (see "Limits")
 
-## Add an app by copying a folder
+## Add an app by dragging a `.softn` or copying a folder
 
-Put a valid bundle here (lower-case letters, digits and hyphens in the folder name):
+The directory supports both a **categorized folder tree** (recommended; enabled via `"folderLayout": "categorized"` in `data/config.json` or automatically once category folders exist) and legacy flat `data/apps/<slug>/` folders:
 
 ```text
 data/
   apps/
-    urbanward/
-      v1.softn
-      app.json           generated on discovery; kept with the app
-      icon.svg           extracted from a declared bundle icon, when present (an SVG only
-                         when it parses as a script-free icon: see Bundle::safeSvg)
-      thumb.png          optional: reference it as app.thumb in app.json
-      storage.sqlite     optional app-owned saved data, not directory metadata
+    games/
+      category.json      auto-created display metadata (full name, emoji, description) + cached app counts
+      3d/
+        category.json    subcategory display metadata (e.g. "3D & First-Person") + cached app list
+        blockscape/
+          v1.softn       versioned bundles (v1.softn, v2.softn, ... — keeps full version & git push history)
+          app.json       generated automatically if missing; kept with the app
+          icon.svg       auto-extracted from manifest.icon or icon.* / assets/icon.* / favicon.*
+          thumb.webp     optional; auto-captured by booting the app if missing (when autoThumbnail / SOFTN_AUTO_THUMB=1)
+          storage.sqlite optional app-owned saved data, not directory metadata
+      arcade/
+        category.json
+        duck-dash.softn  <-- drag & drop a .softn directly into any category/subcategory folder!
+    business/
+      category.json
+      hospitality/
+        category.json
+        brewdesk-cafe-ops/
+          v1.softn
+          app.json
+          icon.svg
+          thumb.webp
+          backend-data/  SQLite databases & uploads when hosted on SoftN
   sequences.json         monotonic comment identifier allocation
-  categories.json        category definitions
+  categories.json        category definitions & visitor suggestions
   ratelimits/            expiring visitor action windows, in 256 small files
   cache/bundles.json     disposable bundle inspection cache
   catalog.lock           stable process lock; never delete it while serving
@@ -36,19 +52,22 @@ data/
   config.json            private site configuration and keys
 ```
 
-The next API request discovers new folders and `.softn` files. There is no
-SQL registration step or server restart. Prefer `v1.softn`, `v2.softn`, etc.
-Other safe `.softn` filenames are accepted and assigned a stable version
-number in `app.json`. Upload a bundle with a temporary extension, then rename
-it to `.softn` when complete. Removing a bundle removes that version from the
-listing; removing the folder removes the app. A folder with no valid bundles
-is not listed. Invalid bundles are skipped. A folder whose `app.json` is
-malformed or invalid, or that cannot be read or written, is skipped with the
-reason in the PHP error log; its files are never touched or replaced with
-empty metadata, it keeps its slug so nothing is published over it, and the
-rest of the directory is served. Repair the file and the app is listed again
-on the next request. A bundle that would repeat a version number already
-held by another file in the folder is skipped, not the app.
+### Drag-and-drop ingestion, dynamic updates & `category.json`
+
+- **Drag & drop a `.softn` file** straight into `data/apps/`, `data/apps/<category>/`, or `data/apps/<category>/<subcategory>/`. On the next API request (or immediately via the live dev watcher in `npm run dev` / `node scripts/demos/manage-data.mjs watch`):
+  - The bundle is validated and moved into `<slug>/v1.softn` (or bumped to `v2.softn`, `v3.softn`, … when dropping a newer version of an existing app, keeping full version history and deduplicating identical SHA-256 drops).
+  - Its icon is extracted automatically from `manifest.icon` (or standard fallbacks `icon.svg`, `icon.png`, `icon.webp`, `assets/icon.*`, `favicon.*`, subject to `Bundle::safeSvg` for SVG).
+  - `app.json` is created automatically if missing.
+  - If no `thumb.*` image exists and `autoThumbnail: true` (or `SOFTN_AUTO_THUMB=1`, enabled automatically in `npm run dev`) is active, SoftN boots the app in headless Chromium/Edge via `scripts/demos/auto-thumb.mjs` and saves a `1280×800` `thumb.webp` beside the bundle.
+- **Categories & subcategories live on disk**:
+  - Main categories (`games`, `business`, `simulations`, `tools`, `creative`, `productivity`, `education`, `ai`, `experiments`, `demos`, `other`, or any custom folder) can contain both direct app folders and subcategory subfolders (`games/3d`, `games/arcade`, `games/strategy`, `games/story`, `games/retro`, `business/hospitality`, etc.).
+  - Every category and subcategory folder gets an automatic `category.json` that stores its full display `name` (independent of the folder slug, e.g. folder `3d` -> `"name": "3D & First-Person"`), `description`, `emoji`, `sort`, `status`, and a dynamically maintained `cache` (`appCount`, `directAppCount`, `subcategories`, `apps`). Custom edits to `name`, `emoji`, `description`, or `sort` in `category.json` are preserved while `cache` stays automatically up to date.
+  - Moving an app folder to another category or subcategory folder on disk automatically updates its `app.json` (`category` / `subcategory`) and recalculates both `category.json` caches.
+  - Selecting a main category (`GET /api/apps?category=games`) returns all apps in that category **and** all of its subcategories; selecting a subcategory (`GET /api/apps?category=games&subcategory=3d` or `?category=games/3d`) filters to that subcategory.
+- **Version history & `git push`**:
+  - Prefer `v1.softn`, `v2.softn`, etc. (numeric suffixes like `my-app-v2.softn` are also recognized). Each version pushed over `git push` keeps its versioned `.softn` file and records its commit & tree history in `app.json` (private to the server, never exposed in public JSON responses).
+- **Resilience**:
+  - Upload a bundle with a temporary extension, then rename it to `.softn` when complete. Removing a bundle removes that version from the listing; removing the folder removes the app. Invalid bundles are skipped. A folder whose `app.json` is malformed or invalid is skipped with the reason in the PHP error log without touching its files; repair the file and the app returns on the next request. A bundle that would repeat a version number already held by another file in the folder is skipped, not the app.
 
 You can also provide this minimal `app.json` alongside a new bundle:
 
@@ -58,10 +77,22 @@ You can also provide this minimal `app.json` alongside a new bundle:
   "app": {
     "name": "Urbanward",
     "category": "games",
+    "subcategory": "strategy",
     "description": "Build a city that tells a story.",
     "tags": ["city", "simulation"]
   }
 }
+```
+
+### Managing `data/apps/` from the CLI
+
+```bash
+node scripts/demos/manage-data.mjs list                          # list all apps, categories/subcategories & hosting
+node scripts/demos/manage-data.mjs organize                      # organize flat apps into category/subcategory folders + category.json
+node scripts/demos/manage-data.mjs sync --thumbs                 # trigger catalogue scan + auto-screenshot missing thumbnails
+node scripts/demos/manage-data.mjs watch                         # watch data/apps/ for dropped .softn bundles & folder moves
+node scripts/demos/auto-thumb.mjs --missing                      # boot apps missing thumb.* and save 1280×800 thumb.webp
+node scripts/demos/manage-data.mjs set <slug> --category games --subcategory 3d --hosting browser
 ```
 
 ### Link an app hosted elsewhere
@@ -104,6 +135,35 @@ error log, like any invalid `app.json`. A folder with neither a bundle nor a
 `play_url` is still not listed. If a `.softn` is later added to the folder
 the address keeps precedence; remove `play_url` to turn the listing into an
 ordinary hosted app.
+
+### Hosting modes (`browser`, `server`, `hybrid`)
+
+Every v2 Web Container app in `data/apps/<slug>/` can choose how its backend runs:
+
+| `hosting` value | How the app runs |
+|---|---|
+| `"browser"` *(default)* | Visitors download the `.softn` bundle and their browser runs the frontend, embedded backend, and SQLite database locally inside the browser sandbox — nothing runs on the server. |
+| `"server"` | SoftN hosts the app's backend at `/api/apps/<slug>/backend/...` strictly inside ZIPP WebAssembly `safe-sandbox` engines (never native OS PHP/Python/shell), with shared multi-user WAL SQLite stored under `data/apps/<slug>/backend-data/databases/`. Set `"withhold_backend": true` to serve a stripped client-only `.softn` to browsers so backend source files stay server-side. |
+| `"hybrid"` | Hosted on SoftN's ZIPP `safe-sandbox` by default, **and** visitors can also run the full `.softn` locally in their browser sandbox (`/play/<slug>?mode=local` or `/web/app/<slug>?mode=local`). |
+
+Optional `app.json` fields inside `app`:
+
+```json
+{
+  "schemaVersion": 1,
+  "app": {
+    "name": "BrewDesk",
+    "category": "business",
+    "hosting": "hybrid",
+    "backend_url": null,
+    "withhold_backend": false
+  }
+}
+```
+
+- `backend_url` (or `backendUrl`): optional override pointing to an external or custom same-origin SoftN backend endpoint instead of `/api/apps/<slug>/backend`.
+- `withhold_backend` (or `withholdBackend`): when `hosting` is `"server"`, strips `server/`, `backend/`, `.php`, `.rs`, `.sql`, `.sqlite`, and secrets from the client bundle served by `/bundle.softn` and `/source`.
+- Manage `data/apps/` entries from the command line with `node scripts/demos/manage-data.mjs`.
 
 Missing fields are filled on discovery. A generated file contains `app`
 (listing fields, counters and hashed edit key), `versions`, `comments`,

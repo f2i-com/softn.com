@@ -1,5 +1,6 @@
 use crate::bridges::{db::NativeDbBridge, env::NativeEnvBridge, fs::NativeFsBridge, http::NativeHttpBridge};
 use crate::bundle::{self, ServerManifest};
+use crate::container_backend::ContainerBackendRuntime;
 use crate::pool::ServerDb;
 use crate::runtime::{BridgeSet, ServerRuntime};
 use crate::sync::SyncManager;
@@ -13,6 +14,8 @@ pub struct AppContext {
     pub data_dir: PathBuf,
     pub db: ServerDb,
     pub runtime: Option<Arc<ServerRuntime>>,
+    /// Embedded v2 container backend executed inside the ZIPP `safe-sandbox` VM.
+    pub container_backend: Option<Arc<ContainerBackendRuntime>>,
     pub sync_manager: Arc<SyncManager>,
     /// Auth token for API routes (same token used for sync).
     /// Stored here for quick access in the API auth middleware.
@@ -234,6 +237,9 @@ impl AppContext {
             None
         };
 
+        // Embedded v2 container backend (PHP / Rust / JS / TS / Python) — 100% ZIPP safe-sandbox
+        let container_backend = ContainerBackendRuntime::load(&manifest, &bundle_path, &data_dir, workers)?;
+
         // Sync limits — tunable via manifest config.server for small VPS
         // deployments where the auto-detected CPU-based defaults may not fit.
         let sync_manager = SyncManager::with_stream(
@@ -250,6 +256,7 @@ impl AppContext {
             data_dir,
             db,
             runtime,
+            container_backend,
             sync_manager,
             auth_token,
             shutdown,

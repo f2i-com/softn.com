@@ -465,21 +465,32 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, options: &ServeOptions, conn
         }
     }
 
-    // Serve client bundle files
-    let bundle_path = ctx.bundle_path.clone();
-    for &prefix in ALLOWED_STATIC_DIRS {
-        let dir = bundle_path.join(prefix);
-        router = router.nest_service(
-            &format!("/{}", prefix),
-            ServeDir::new(dir),
-        );
+    // Serve client bundle files (legacy bundles use ALLOWED_STATIC_DIRS; v2 container
+    // bundles serve safe frontendRoot assets and route backend calls via ZIPP safe-sandbox)
+    let has_container_backend = ctx.container_backend.is_some();
+    if !has_container_backend {
+        let bundle_path = ctx.bundle_path.clone();
+        for &prefix in ALLOWED_STATIC_DIRS {
+            let dir = bundle_path.join(prefix);
+            router = router.nest_service(
+                &format!("/{}", prefix),
+                ServeDir::new(dir),
+            );
+        }
     }
 
     let guard = HostGuard { policy: policy.clone(), proxy: options.trusted_proxy.clone(), exempt_health: true };
     let body_time = bundle::body_timeout(&ctx.manifest);
+    let router = if has_container_backend {
+        router
+            .route("/", axum::routing::any(container_fallback_single))
+            .fallback(container_fallback_single)
+    } else {
+        router
+            .fallback(not_found)
+            .method_not_allowed_fallback(method_not_allowed)
+    };
     router
-        .fallback(not_found)
-        .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(max_body))
         .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(REQUEST_BODY_TIMEOUT))
         .layer(axum::middleware::from_fn_with_state(body_time, limit_body_time))
@@ -581,13 +592,17 @@ fn build_multi_tenant_router(
             }
         }
 
-        // Static files
-        for &prefix in ALLOWED_STATIC_DIRS {
-            let dir = tenant.bundle_path.join(prefix);
-            tenant_router = tenant_router.nest_service(
-                &format!("/{}", prefix),
-                ServeDir::new(dir),
-            );
+        // Static files (legacy bundles use ALLOWED_STATIC_DIRS; container bundles serve safe
+        // frontend assets + ZIPP-sandboxed backend routes through container_fallback_tenant)
+        let has_container_backend = tenant.container_backend.is_some();
+        if !has_container_backend {
+            for &prefix in ALLOWED_STATIC_DIRS {
+                let dir = tenant.bundle_path.join(prefix);
+                tenant_router = tenant_router.nest_service(
+                    &format!("/{}", prefix),
+                    ServeDir::new(dir),
+                );
+            }
         }
 
         // Convert tenant router to Router<()> by baking in its state. The
@@ -595,9 +610,33 @@ fn build_multi_tenant_router(
         // not make a name acceptable here.
         let guard = HostGuard { policy: policy.clone(), proxy: options.trusted_proxy.clone(), exempt_health: false };
         let body_time = bundle::body_timeout(&tenant.manifest);
+        let tenant_router = if has_container_backend {
+            tenant_router
+                .route("/", axum::routing::any(container_fallback_tenant))
+                .fallback(container_fallback_tenant)
+        } else {
+            tenant_router
+                .fallback(not_found)
+                .method_not_allowed_fallback(method_not_allowed)
+        };
+        let tenant_router_root = if has_container_backend {
+            let cors_root = build_cors(&policy);
+            let guard_root = HostGuard { policy: policy.clone(), proxy: options.trusted_proxy.clone(), exempt_health: false };
+            Some(
+                Router::new()
+                    .route(&format!("/{}/", tenant_id), axum::routing::any(container_root_tenant))
+                    .layer(DefaultBodyLimit::max(max_body))
+                    .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(REQUEST_BODY_TIMEOUT))
+                    .layer(axum::middleware::from_fn_with_state(body_time, limit_body_time))
+                    .layer(cors_root)
+                    .layer(axum::Extension(policy.clone()))
+                    .layer(axum::middleware::from_fn_with_state(guard_root, guard_host))
+                    .with_state(tenant_arc.clone()),
+            )
+        } else {
+            None
+        };
         let tenant_router: Router<()> = tenant_router
-            .fallback(not_found)
-            .method_not_allowed_fallback(method_not_allowed)
             .layer(DefaultBodyLimit::max(max_body))
             .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(REQUEST_BODY_TIMEOUT))
             .layer(axum::middleware::from_fn_with_state(body_time, limit_body_time))
@@ -609,6 +648,9 @@ fn build_multi_tenant_router(
         let path = format!("/{}", tenant_id);
         tracing::debug!("Nesting tenant router at {}", path);
         app = app.nest(&path, tenant_router);
+        if let Some(root_router) = tenant_router_root {
+            app = app.merge(root_router);
+        }
     }
 
     app
@@ -881,6 +923,200 @@ async fn not_found() -> axum::response::Response {
 
 async fn method_not_allowed() -> axum::response::Response {
     json_error(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed.", "method_not_allowed")
+}
+
+/// Serve a v2 container request (static frontend asset OR ZIPP-sandboxed backend route).
+async fn serve_container_request(
+    backend: Arc<crate::container_backend::ContainerBackendRuntime>,
+    api_limiter: Option<&crate::limiter::AddressLimiter>,
+    info: ConnectInfo<SocketAddr>,
+    proxy: TrustedProxy,
+    policy: RequestPolicy,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let peer_is_proxy = proxy.is_proxy(info.0.ip());
+    let method_str = method.as_str().to_owned();
+    let req_path = uri.path().to_owned();
+    let query = uri.query().unwrap_or("").to_owned();
+
+    let route_to_backend = backend.should_route_to_backend(&method_str, &req_path);
+    if !route_to_backend {
+        return match backend.resolve_static_asset(&req_path) {
+            Ok(Some((mime, bytes))) => {
+                let mut builder = axum::http::Response::builder()
+                    .status(StatusCode::OK)
+                    .header(axum::http::header::CONTENT_TYPE, mime);
+                if method == axum::http::Method::HEAD {
+                    builder = builder.header(axum::http::header::CONTENT_LENGTH, bytes.len());
+                    builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
+                } else {
+                    builder.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| not_found_sync())
+                }
+            }
+            Ok(None) => not_found_sync(),
+            Err(403) => json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden"),
+            Err(code) => json_error(
+                StatusCode::from_u16(code).unwrap_or(StatusCode::NOT_FOUND),
+                "Not found.",
+                "not_found",
+            ),
+        };
+    }
+
+    if let Some(rejection) = check_origin(&policy, &headers, peer_is_proxy) {
+        return rejection;
+    }
+    let client_ip = extract_client_ip(&headers, info.0.ip(), &proxy);
+    if let Some(rejection) = check_rate(api_limiter, client_ip) {
+        return rejection;
+    }
+
+    let body = match axum::body::Bytes::from_request(request, &()).await {
+        Ok(b) => b.to_vec(),
+        Err(rejection) => return body_rejection(rejection),
+    };
+
+    let host_hdr = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost")
+        .to_owned();
+    let https = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+    let req_headers: Vec<(String, String)> = headers
+        .iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.as_str().to_owned(), vs.to_owned())))
+        .collect();
+
+    let resp = backend
+        .dispatch(crate::container_backend::ContainerHttpRequest {
+            method: method_str,
+            path: req_path,
+            query,
+            headers: req_headers,
+            body,
+            client_ip: client_ip.to_string(),
+            host: host_hdr,
+            https,
+        })
+        .await;
+
+    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut builder = axum::http::Response::builder().status(status);
+    for (k, v) in resp.headers {
+        let lower = k.to_ascii_lowercase();
+        if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" {
+            continue;
+        }
+        if let (Ok(name), Ok(val)) = (
+            axum::http::header::HeaderName::from_bytes(k.as_bytes()),
+            axum::http::header::HeaderValue::from_str(&v),
+        ) {
+            builder = builder.header(name, val);
+        }
+    }
+    let out_body = if method == axum::http::Method::HEAD {
+        axum::body::Body::empty()
+    } else {
+        axum::body::Body::from(resp.body)
+    };
+    builder
+        .body(out_body)
+        .unwrap_or_else(|_| json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid backend response.", "host_error"))
+}
+
+fn not_found_sync() -> axum::response::Response {
+    json_error(StatusCode::NOT_FOUND, "Endpoint not found.", "not_found")
+}
+
+async fn container_fallback_single(
+    State(ctx): State<Arc<AppContext>>,
+    info: ConnectInfo<SocketAddr>,
+    axum::Extension(proxy): axum::Extension<TrustedProxy>,
+    axum::Extension(policy): axum::Extension<RequestPolicy>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let Some(backend) = ctx.container_backend.clone() else {
+        return not_found_sync();
+    };
+    serve_container_request(
+        backend,
+        ctx.api_limiter.as_deref(),
+        info,
+        proxy,
+        policy,
+        method,
+        uri,
+        headers,
+        request,
+    )
+    .await
+}
+
+async fn container_fallback_tenant(
+    State(tenant): State<Arc<TenantContext>>,
+    info: ConnectInfo<SocketAddr>,
+    axum::Extension(proxy): axum::Extension<TrustedProxy>,
+    axum::Extension(policy): axum::Extension<RequestPolicy>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let Some(backend) = tenant.container_backend.clone() else {
+        return not_found_sync();
+    };
+    serve_container_request(
+        backend,
+        tenant.api_limiter.as_deref(),
+        info,
+        proxy,
+        policy,
+        method,
+        uri,
+        headers,
+        request,
+    )
+    .await
+}
+
+async fn container_root_tenant(
+    State(tenant): State<Arc<TenantContext>>,
+    info: ConnectInfo<SocketAddr>,
+    axum::Extension(proxy): axum::Extension<TrustedProxy>,
+    axum::Extension(policy): axum::Extension<RequestPolicy>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let Some(backend) = tenant.container_backend.clone() else {
+        return not_found_sync();
+    };
+    let root_uri = match uri.query() {
+        Some(q) => format!("/?{q}").parse::<axum::http::Uri>().unwrap_or_else(|_| axum::http::Uri::from_static("/")),
+        None => axum::http::Uri::from_static("/"),
+    };
+    serve_container_request(
+        backend,
+        tenant.api_limiter.as_deref(),
+        info,
+        proxy,
+        policy,
+        method,
+        root_uri,
+        headers,
+        request,
+    )
+    .await
 }
 
 /// A body the host would not read: over the size limit (413), too slow
@@ -2644,5 +2880,143 @@ mod sync_upgrade_tests {
         send_text(&mut b, &create("s3", "secrets")).await;
         let told = read_message(&mut a).await;
         assert_eq!(told["ops"][0]["recordId"], "s3", "{told}");
+    }
+
+    #[tokio::test]
+    async fn multi_tenant_v2_container_serves_frontend_and_runs_php_in_zipp_safe_sandbox() {
+        let root = crate::test_dirs::temp_path("softn-v2-multi", "");
+        let bundle = root.join("bundles").join("brew");
+        std::fs::create_dir_all(bundle.join("public")).unwrap();
+        std::fs::create_dir_all(bundle.join("server/public")).unwrap();
+        std::fs::create_dir_all(bundle.join("server/migrations")).unwrap();
+        let manifest = serde_json::json!({
+            "engine": 2,
+            "id": "brew",
+            "name": "Brew Multi",
+            "version": "1.0.0",
+            "main": "public/index.html",
+            "frontendRoot": "public",
+            "backend": {
+                "runtime": "php",
+                "entry": "server/public/index.php",
+                "mode": "api",
+                "routes": ["/api/"]
+            },
+            "databases": [
+                {
+                    "name": "app",
+                    "engine": "sqlite",
+                    "file": "app.db",
+                    "seedSql": "server/migrations/001.sql",
+                    "persist": true
+                }
+            ]
+        });
+        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(bundle.join("public/index.html"), b"<!doctype html><h1>Brew Multi</h1>").unwrap();
+        std::fs::write(
+            bundle.join("server/migrations/001.sql"),
+            b"CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);",
+        )
+        .unwrap();
+        std::fs::write(
+            bundle.join("server/public/index.php"),
+            br#"<?php
+header('Content-Type: application/json');
+$pdo = new PDO('sqlite:app');
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+if ($method === 'POST') {
+    $data = json_decode(file_get_contents('php://input'), true) ?: [];
+    $stmt = $pdo->prepare('INSERT INTO items (name) VALUES (?)');
+    $stmt->execute([$data['name'] ?? 'unnamed']);
+    http_response_code(201);
+    echo json_encode(['created' => $data['name'] ?? 'unnamed']);
+} else {
+    $rows = $pdo->query('SELECT id, name FROM items ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    echo json_encode(['items' => $rows]);
+}
+"#,
+        )
+        .unwrap();
+
+        let manager = TenantManager::load(&root.join("bundles"), Some(&root.join("data")), Some(1), false).unwrap();
+        let ids = manager.tenant_ids();
+        assert_eq!(ids, vec!["brew"], "unexpected tenants: {ids:?}");
+        assert!(manager.get("brew").unwrap().container_backend.is_some(), "container_backend was None!");
+        let (conn_tx, conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+        std::mem::forget(conn_rx);
+        let router = build_multi_tenant_router(manager, &test_options(false), conn_tx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve_router(listener, router, HEADER_READ_TIMEOUT, std::future::pending()));
+
+        async fn send_http(addr: SocketAddr, req: &str) -> (u16, String) {
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut buf = Vec::new();
+            s.read_to_end(&mut buf).await.unwrap();
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+            let status = head
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|c| c.parse::<u16>().ok())
+                .unwrap_or(0);
+            (status, body.to_string())
+        }
+
+        // 1. Static frontend served from frontendRoot (both `/brew/` and `/brew`).
+        let (st, html) = send_http(addr, &format!("GET /brew/ HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")).await;
+        assert_eq!(st, 200, "GET /brew/ failed: {html}");
+        assert!(html.contains("Brew Multi"), "{html}");
+        let (st_no_slash, html2) = send_http(addr, &format!("GET /brew HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")).await;
+        assert_eq!(st_no_slash, 200, "GET /brew failed: {html2}");
+        assert!(html2.contains("Brew Multi"), "{html2}");
+
+        // 2. Client manifest redacts backend & databases.
+        let (st, mf) = send_http(addr, &format!("GET /brew/manifest.json HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")).await;
+        assert_eq!(st, 200);
+        let parsed: serde_json::Value = serde_json::from_str(&mf).unwrap();
+        assert!(parsed.get("backend").is_none(), "{mf}");
+        assert!(parsed.get("databases").is_none(), "{mf}");
+
+        // 3. Backend source & SQL migrations blocked.
+        let (st_php, _) = send_http(addr, &format!("GET /brew/server/public/index.php HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")).await;
+        assert!(st_php == 403 || st_php == 404, "php leaked: {st_php}");
+        let (st_sql, _) = send_http(addr, &format!("GET /brew/server/migrations/001.sql HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")).await;
+        assert!(st_sql == 403 || st_sql == 404, "sql leaked: {st_sql}");
+
+        // 4. Foreign Origin rejected 403 on backend API.
+        let post_body = r#"{"name":"Flat White"}"#;
+        let (st_evil, _) = send_http(
+            addr,
+            &format!(
+                "POST /brew/api/items HTTP/1.1\r\nHost: {addr}\r\nOrigin: https://evil.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                post_body.len(),
+                post_body
+            ),
+        )
+        .await;
+        assert_eq!(st_evil, 403);
+
+        // 5. Same-origin browser POST executes PHP inside ZIPP safe-sandbox and persists to WAL SQLite.
+        let (st_post, post_resp) = send_http(
+            addr,
+            &format!(
+                "POST /brew/api/items HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                post_body.len(),
+                post_body
+            ),
+        )
+        .await;
+        assert_eq!(st_post, 201, "{post_resp}");
+        assert!(post_resp.contains("Flat White"), "{post_resp}");
+
+        // 6. GET reads back the persisted WAL SQLite row.
+        let (st_get, get_resp) = send_http(addr, &format!("GET /brew/api/items HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nConnection: close\r\n\r\n")).await;
+        assert_eq!(st_get, 200, "{get_resp}");
+        let list: serde_json::Value = serde_json::from_str(&get_resp).unwrap();
+        assert_eq!(list["items"][0]["name"], "Flat White");
     }
 }

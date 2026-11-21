@@ -69,7 +69,7 @@ final class Apps
      */
     private static function uniqueSlug(string $base, bool $seed = false): string {
         $rows = Catalog::all(); $retired = Catalog::retiredSlugs(); $slug=$base;
-        $free = static fn(string $s): bool => !isset($rows[$s]) && !is_dir(Catalog::path($s))
+        $free = static fn(string $s): bool => !isset($rows[$s]) && !Catalog::hasFolder($s)
             && (!isset($retired[$s]) || ($seed && ($retired[$s]['seed'] ?? false) === true));
         for ($n=2;$n<1000;$n++) { if ($free($slug)) return $slug; $slug=substr($base,0,44).'-'.$n; }
         // Past a thousand of one name (every name with no Latin letter in it is
@@ -158,6 +158,86 @@ final class Apps
         return ($row['trusted'] ?? false) === true;
     }
 
+    /**
+     * How this app is hosted and executed:
+     * - `browser`: downloaded as a `.softn` bundle and executed completely inside the user's browser sandbox.
+     * - `server`: hosted on SoftN (or a custom backend URL) with server-side execution strictly inside ZIPP `safe-sandbox`.
+     * - `hybrid`: hosted on SoftN by default, AND visitors can choose to run locally in their browser sandbox (`?mode=local`).
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    public static function hostingInfo(array $row): array
+    {
+        $slug = (string) $row['slug'];
+        $playUrl = self::playUrl($row);
+        $rawMode = $row['hosting'] ?? 'browser';
+        $mode = is_string($rawMode) && in_array($rawMode, ['browser', 'server', 'hybrid'], true) ? $rawMode : 'browser';
+        $backendRuntime = is_string($row['backend_runtime'] ?? null) && $row['backend_runtime'] !== '' ? $row['backend_runtime'] : null;
+        $hasBackend = $backendRuntime !== null;
+        $customUrl = is_string($row['backend_url'] ?? null) && $row['backend_url'] !== '' ? $row['backend_url'] : null;
+        $serverEnabled = Config::get('allowServerHosting', true) === true;
+        $serverHosted = $playUrl === null && ($mode === 'server' || $mode === 'hybrid') && ($customUrl !== null || ($hasBackend && $serverEnabled));
+        $backendUrl = $serverHosted ? ($customUrl ?? "/api/apps/$slug/backend") : null;
+        $withholdBackend = $playUrl === null && $mode === 'server' && $serverHosted && (bool) ($row['withhold_backend'] ?? false);
+        $browserSupported = $playUrl === null && ($mode === 'browser' || $mode === 'hybrid' || !$serverHosted);
+        return [
+            'mode' => $serverHosted ? $mode : 'browser',
+            'serverHosted' => $serverHosted,
+            'browserSupported' => $browserSupported,
+            'backendUrl' => $backendUrl,
+            'customBackendUrl' => $customUrl,
+            'withholdBackend' => $withholdBackend,
+            'sandbox' => $serverHosted && $customUrl === null ? 'zipp-safe-sandbox' : ($hasBackend ? 'browser-wasm-sandbox' : null),
+        ];
+    }
+
+    private static function parseHosting(mixed $value, bool $hasBackend, ?string $customUrl, bool $byAdmin = false): string
+    {
+        if ($value === null || $value === '') return 'browser';
+        if (!is_string($value)) throw new ApiError(400, 'hosting must be browser, server, or hybrid.');
+        $mode = strtolower(trim($value));
+        if (!Catalog::validHosting($mode)) throw new ApiError(400, 'hosting must be browser, server, or hybrid.');
+        if ($mode === 'server' || $mode === 'hybrid') {
+            if (!$byAdmin && Config::get('allowPublicServerHosting', false) !== true) {
+                throw new ApiError(
+                    403,
+                    'Server-hosted publishing is disabled on this SoftN directory. Published apps always run locally in the visitor\'s browser sandbox; the site owner can enable server hosting per app in app.json or set allowPublicServerHosting to true in data/config.json.'
+                );
+            }
+            if ($customUrl === null && Config::get('allowServerHosting', true) !== true) {
+                throw new ApiError(403, 'Server-hosted backends are disabled on this SoftN directory.');
+            }
+            if (!$hasBackend && $customUrl === null) {
+                throw new ApiError(400, 'Server or hybrid hosting requires a bundle with a manifest backend or a custom backendUrl.');
+            }
+        }
+        return $mode;
+    }
+
+    private static function parseBackendUrl(mixed $value): ?string
+    {
+        if ($value === null || $value === '') return null;
+        if (!is_string($value)) throw new ApiError(400, 'backendUrl must be text.');
+        $url = trim($value);
+        if ($url === '') return null;
+        if (!Catalog::validBackendUrl($url)) {
+            throw new ApiError(400, 'backendUrl must be a same-origin path (/...) or an http(s) URL of at most 300 characters.');
+        }
+        return $url;
+    }
+
+    private static function parseBoolFlag(mixed $value): int
+    {
+        if (is_bool($value)) return $value ? 1 : 0;
+        if (is_int($value)) return $value !== 0 ? 1 : 0;
+        if (is_string($value)) {
+            $v = strtolower(trim($value));
+            return in_array($v, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
+        }
+        return 0;
+    }
+
     // ── Presentation ───────────────────────────────────────────────────────
 
     /**
@@ -172,6 +252,8 @@ final class Apps
         $bundle = "/api/apps/$slug/bundle.softn";
         $playUrl = self::playUrl($row);
         $external = $playUrl === null ? null : ['url' => $playUrl, 'host' => (string) (parse_url($playUrl, PHP_URL_HOST) ?: '')];
+        $hosting = self::hostingInfo($row);
+        $backendRuntime = is_string($row['backend_runtime'] ?? null) && $row['backend_runtime'] !== '' ? $row['backend_runtime'] : null;
         $count = (int) $row['rating_count'];
         $parent = null;
         // Any slug, `0` included, which `empty` takes for none. And only a
@@ -181,18 +263,25 @@ final class Apps
             $pr = ($rows ?? Catalog::all())[$row['parent_slug']] ?? null;
             if ($pr && !$pr['hidden']) $parent = ['slug' => $pr['slug'], 'name' => $pr['name']];
         }
+        $cat = (string) $row['category'];
+        $sub = is_string($row['subcategory'] ?? null) && $row['subcategory'] !== '' ? $row['subcategory'] : null;
         return [
             'slug' => $slug,
             'name' => (string) $row['name'],
             'description' => (string) $row['description'],
             'author' => (string) $row['author'],
-            'category' => (string) $row['category'],
+            'category' => $cat,
+            'subcategory' => $sub,
+            'categoryPath' => $sub !== null ? "$cat/$sub" : $cat,
             'tags' => json_decode((string) $row['tags'], true) ?: [],
             'capabilities' => json_decode((string) $row['capabilities'], true) ?: [],
             // By collection name; `*` is the default for the rest. Always an
             // object on the wire, so a page can index it without checking.
             'storagePolicies' => (object) Storage::policiesOf($row),
             'execution' => (string) $row['execution'],
+            'engine' => (int) ($row['engine'] ?? 1),
+            'backendRuntime' => $backendRuntime,
+            'hosting' => $hosting,
             // The operator's word, from the app's app.json: the play page
             // runs a trusted app with its declared access granted, no bar.
             'trusted' => self::isTrusted($row),
@@ -227,9 +316,12 @@ final class Apps
                 // launcher and tabs, is still reachable as `runtime`.
                 'run' => $playUrl ?? "/play/$slug",
                 'play' => $external ? null : "/play/$slug",
+                'playLocal' => $external || !$hosting['browserSupported'] ? null : ($hosting['serverHosted'] ? "/play/$slug?mode=local" : "/play/$slug"),
                 'runtime' => $external ? null : "/web/app/$slug",
+                'runtimeLocal' => $external || !$hosting['browserSupported'] ? null : ($hosting['serverHosted'] ? "/web/app/$slug?mode=local" : "/web/app/$slug"),
+                'backend' => $hosting['backendUrl'],
                 'bundle' => $external ? null : $bundle,
-                'download' => $external ? null : "$bundle?download=1",
+                'download' => $external ? null : ($hosting['withholdBackend'] ? "$bundle?client=1&download=1" : "$bundle?download=1"),
                 'studio' => $external ? null : '/studio/?open=' . rawurlencode($bundle),
                 'builder' => $external ? null : '/builder/?open=' . rawurlencode($bundle),
                 'remix' => $external ? null : "/publish?remix=$slug",
@@ -332,16 +424,51 @@ final class Apps
 
     /** @param array<string, string> $q @return array<string, mixed> */
     public static function list(array $q): array {
-        $search=Text::clean($q['q']??'',80);$category=Text::clean($q['category']??'',40);$tag=strtolower(Text::clean($q['tag']??'',24));$author=Text::clean($q['author']??'',40);$cap=Text::clean($q['cap']??'',16);
+        $search=Text::clean($q['q']??'',80);$rawCategory=Text::clean($q['category']??'',80);$rawSub=Text::clean($q['subcategory']??'',40);$tag=strtolower(Text::clean($q['tag']??'',24));$author=Text::clean($q['author']??'',40);$cap=Text::clean($q['cap']??'',16);$hostingFilter=strtolower(Text::clean($q['hosting']??'',16));
+        $category = $rawCategory;
+        $subcategory = $rawSub;
+        $legacyCategory = null;
+        if ($category !== '' && $category !== 'all') {
+            if (str_contains($category, '/')) {
+                [$cPart, $sPart] = explode('/', $category, 2);
+                $category = trim($cPart);
+                if ($subcategory === '' && trim($sPart) !== '') $subcategory = trim($sPart);
+            } elseif ($subcategory === '' && ($alias = Categories::legacyAlias($category)) !== null) {
+                $legacyCategory = strtolower($category);
+                [$category, $subcategory] = $alias;
+            }
+        }
+        if ($subcategory === 'all') $subcategory = '';
         $sort=in_array($q['sort']??'',self::SORTS,true)?$q['sort']:($search!==''?'relevance':'trending');
         $perPage=max(1,min(48,(int)($q['perPage']??24)));$page=max(1,min(500,(int)($q['page']??1)));
         $rows=[];$since=time()-7*86400;$all=Catalog::all();
         foreach ($all as $r) {
-            if ($r['hidden'] || ($category!=='' && $category!=='all' && $r['category']!==$category)) continue;
+            if ($r['hidden']) continue;
+            $rCat = (string) $r['category'];
+            $rSub = is_string($r['subcategory'] ?? null) && $r['subcategory'] !== '' ? $r['subcategory'] : '';
+            if ($category !== '' && $category !== 'all') {
+                if ($legacyCategory !== null) {
+                    $matchesLegacy = ($rCat === $legacyCategory) || ($rCat === $category && $rSub === $subcategory);
+                    if (!$matchesLegacy) continue;
+                } else {
+                    if ($rCat !== $category) continue;
+                    if ($subcategory !== '' && $rSub !== $subcategory) continue;
+                }
+            } elseif ($subcategory !== '' && $rSub !== $subcategory) {
+                continue;
+            }
             $tags=json_decode($r['tags'],true)?:[];$caps=json_decode($r['capabilities'],true)?:[];
             if ($tag!=='' && !in_array($tag,$tags,true)) continue;
             if ($author!=='' && mb_strtolower($r['author'])!==mb_strtolower($author)) continue;
-            if (($cap==='none' && $caps) || ($cap==='nonet' && in_array('net',$caps,true)) || ($cap==='storage' && !in_array('storage',$caps,true)) || ($cap==='worker' && $r['execution']!=='worker')) continue;
+            $hasBackend = is_string($r['backend_runtime'] ?? null) && $r['backend_runtime'] !== '';
+            if (($cap==='none' && $caps) || ($cap==='nonet' && in_array('net',$caps,true)) || ($cap==='storage' && !in_array('storage',$caps,true)) || ($cap==='worker' && $r['execution']!=='worker') || ($cap==='backend' && !$hasBackend)) continue;
+            if ($hostingFilter !== '') {
+                $h = self::hostingInfo($r);
+                if ($hostingFilter === 'browser' && !$h['browserSupported']) continue;
+                if ($hostingFilter === 'server' && !$h['serverHosted']) continue;
+                if ($hostingFilter === 'hybrid' && $h['mode'] !== 'hybrid') continue;
+                if ($hostingFilter === 'backend' && !$hasBackend) continue;
+            }
             $text=mb_strtolower($r['name'].' '.$r['description'].' '.implode(' ',$tags).' '.$r['author']);
             $words=preg_split('/\s+/u',trim(mb_strtolower($search)))?:[];
             if ($search!=='' && array_filter($words,fn($w)=>!str_contains($text,$w))) continue;
@@ -361,7 +488,7 @@ final class Apps
             return strcmp($a['slug'],$b['slug']);
         });
         $total=count($rows);
-        return ['apps'=>array_map(fn($r)=>self::card($r,$all),array_slice($rows,($page-1)*$perPage,$perPage)),'page'=>$page,'perPage'=>$perPage,'total'=>$total,'pages'=>max(1,(int)ceil($total/$perPage)),'sort'=>$sort,'query'=>$search,'category'=>$category];
+        return ['apps'=>array_map(fn($r)=>self::card($r,$all),array_slice($rows,($page-1)*$perPage,$perPage)),'page'=>$page,'perPage'=>$perPage,'total'=>$total,'pages'=>max(1,(int)ceil($total/$perPage)),'sort'=>$sort,'query'=>$search,'category'=>$category,'subcategory'=>$subcategory];
     }
 
     // ── Publishing ─────────────────────────────────────────────────────────
@@ -377,16 +504,27 @@ final class Apps
      * @param array<string, mixed>|null $info
      * @return array{app: array<string, mixed>, editKey: string|null}
      */
-    public static function create(string $bundlePath, array $opts, string $source = 'upload', ?string $parentSlug = null, ?array $info = null): array
+    public static function create(string $bundlePath, array $opts, string $source = 'upload', ?string $parentSlug = null, ?array $info = null, bool $byAdmin = false): array
     {
         $info ??= Bundle::inspect($bundlePath);
         $name = Text::clean($opts['name'] ?? '', 64) ?: $info['name'];
         $description = Text::clean($opts['description'] ?? '', 600, true) ?: $info['description'];
         $author = Text::clean($opts['author'] ?? '', 40) ?: (self::authorFromManifest($info['manifest']) ?? 'Anonymous');
-        $category = Categories::resolve(Text::clean($opts['category'] ?? '', 40));
+        [$category, $subcategory] = Categories::resolvePair(
+            Text::clean($opts['category'] ?? '', 80),
+            Text::clean($opts['subcategory'] ?? '', 40)
+        );
         $tags = Text::tags($opts['tags'] ?? null);
         $notes = Text::clean($opts['notes'] ?? '', 400, true);
         $primary = self::color($opts['primary'] ?? null) ?? self::color($info['manifest']['config']['theme']['primary'] ?? null);
+        $backendRuntime = is_string($info['backendRuntime'] ?? null) && $info['backendRuntime'] !== '' ? $info['backendRuntime'] : null;
+        $allowPublicHosting = $byAdmin || $source === 'seed' || Config::get('allowPublicServerHosting', false) === true;
+        $backendUrl = $allowPublicHosting ? self::parseBackendUrl($opts['backendUrl'] ?? $opts['backend_url'] ?? null) : null;
+        if (!$allowPublicHosting && (($opts['backendUrl'] ?? $opts['backend_url'] ?? null) !== null && trim((string) ($opts['backendUrl'] ?? $opts['backend_url'])) !== '')) {
+            throw new ApiError(403, 'Server-hosted publishing is disabled on this SoftN directory.');
+        }
+        $hosting = self::parseHosting($opts['hosting'] ?? null, $backendRuntime !== null, $backendUrl, $allowPublicHosting);
+        $withholdBackend = $hosting === 'server' ? self::parseBoolFlag($opts['withholdBackend'] ?? $opts['withhold_backend'] ?? 0) : 0;
 
         Catalog::boot();
         self::refuseKeysOf($info, 'bundle');
@@ -402,6 +540,7 @@ final class Apps
             $rootSlug = is_string($parent['root_slug']) && $parent['root_slug'] !== '' ? $parent['root_slug'] : $parent['slug'];
         }
         $editKey = $source === 'seed' ? null : bin2hex(random_bytes(20));
+        Catalog::allocateDir($slug, $category, $subcategory);
         $dir = self::dir($slug);
         $file = 'v1.softn';
         try {
@@ -409,13 +548,14 @@ final class Apps
             $icon = self::storeIcon($dir, $info['icon']);
             $now = time();
             $app=array_replace(Catalog::defaults($slug),[
-                'name'=>$name,'description'=>$description,'author'=>$author,'category'=>$category,'tags'=>json_encode($tags),'parent_slug'=>$parentSlug,'root_slug'=>$rootSlug,
-                'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),
+                'name'=>$name,'description'=>$description,'author'=>$author,'category'=>$category,'subcategory'=>$subcategory,'tags'=>json_encode($tags),'parent_slug'=>$parentSlug,'root_slug'=>$rootSlug,
+                'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'engine'=>(int)($info['engine']??1),'backend_runtime'=>$backendRuntime,'hosting'=>$hosting,'backend_url'=>$backendUrl,'withhold_backend'=>$withholdBackend,'storage_policies'=>json_encode((object)$info['storagePolicies']),
                 'icon'=>$icon,'primary_color'=>$primary,'edit_key_hash'=>$editKey===null?null:hash('sha256',$editKey),'source'=>$source,'size'=>$info['size'],'created_at'=>$now,'updated_at'=>$now
             ]);
             // Where the seed filed its demo, so that the sync can tell its own filing from the operator's later one: see Seed::ifEmpty.
-            if ($source === 'seed') $app['seed_category'] = $category;
+            if ($source === 'seed') { $app['seed_category'] = $category; $app['seed_subcategory'] = $subcategory; }
             Catalog::put($slug,['app'=>$app,'versions'=>[['slug'=>$slug,'version'=>1,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>$notes,'created_at'=>$now]],'comments'=>[],'ratings'=>[],'runsDaily'=>[]]);
+            if (Catalog::usesCategorizedLayout($category, $subcategory)) Catalog::syncCategoryCaches();
         } catch (Throwable $e) {
             // A folder with a bundle and no app.json is discovered on the
             // next request as an app of its own, with no edit key — the
@@ -589,8 +729,10 @@ final class Apps
         $icons=self::iconFiles($dir);
         try {
             $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();
-            $doc['versions'][]=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
-            $doc['app']=array_replace($doc['app'],['latest_version'=>$next,'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon,'size'=>$info['size'],'updated_at'=>$now]);
+            $verEntry=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
+            if($pushed!==null){$verEntry['commit']=$pushed['commit'];$verEntry['tree']=$pushed['tree'];}
+            $doc['versions'][]=$verEntry;
+            $doc['app']=array_replace($doc['app'],['latest_version'=>$next,'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'engine'=>(int)($info['engine']??1),'backend_runtime'=>$info['backendRuntime']??null,'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon,'size'=>$info['size'],'updated_at'=>$now]);
             // What the versions after this one are held to: this version's own
             // declaration while it has storage (the same rules, or the operator's
             // new ones), and otherwise what was in force before it, which a
@@ -635,7 +777,10 @@ final class Apps
         $info = Bundle::inspect($bundlePath);
         $name = Text::clean($meta['name'] ?? '', 64) ?: $info['name'];
         $description = Text::clean($meta['description'] ?? '', 600, true) ?: $info['description'];
-        $category = Categories::resolve(Text::clean($meta['category'] ?? '', 40));
+        [$category, $subcategory] = Categories::resolvePair(
+            Text::clean($meta['category'] ?? '', 80),
+            Text::clean($meta['subcategory'] ?? '', 40)
+        );
         $tags = Text::tags($meta['tags'] ?? null);
         $primary = self::color($meta['primary'] ?? null) ?? self::color($info['manifest']['config']['theme']['primary'] ?? null);
 
@@ -654,23 +799,29 @@ final class Apps
         // The demo is filed where its index says unless the operator has
         // filed it elsewhere since the seed last did: that filing is theirs.
         $refiled=isset($doc['app']['seed_category'])&&$doc['app']['seed_category']!==$doc['app']['category'];
+        $nextCat=$refiled?$doc['app']['category']:$category;
+        $nextSub=$refiled?($doc['app']['subcategory']??null):$subcategory;
         if((int)($doc['app']['latest_version']??1)===1)
-        $doc['app']=array_replace($doc['app'],['name'=>$name,'description'=>$description,'category'=>$refiled?$doc['app']['category']:$category,'seed_category'=>$refiled?$doc['app']['seed_category']:$category,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
+        $doc['app']=array_replace($doc['app'],['name'=>$name,'description'=>$description,'category'=>$nextCat,'subcategory'=>$nextSub,'seed_category'=>$refiled?$doc['app']['seed_category']:$category,'seed_subcategory'=>$refiled?($doc['app']['seed_subcategory']??null):$subcategory,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'engine'=>(int)($info['engine']??1),'backend_runtime'=>$info['backendRuntime']??null,'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
         foreach($doc['versions'] as &$v)if((int)$v['version']===1)$v=array_replace($v,['file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'created_at'=>$now]);
         unset($v);Catalog::put($slug,$doc);
+        if (!$refiled) Catalog::moveAppFolder($slug, $nextCat, $nextSub);
     }
 
     /** @param array<string, mixed> $fields @return array<string, mixed> */
-    public static function patch(string $slug, array $fields): array
+    public static function patch(string $slug, array $fields, bool $byAdmin = false): array
     {
         $row = self::row($slug, true);
         // Text, before it is read as text: a list or an object in one of
         // these was "Array to string conversion", which is a 500 to the caller.
-        foreach (['name', 'description', 'author', 'category', 'primary'] as $f) {
+        foreach (['name', 'description', 'author', 'category', 'subcategory', 'primary', 'hosting', 'backendUrl', 'backend_url'] as $f) {
             if (isset($fields[$f]) && !is_scalar($fields[$f])) throw new ApiError(400, "$f must be text.");
         }
         $sets = [];
         $params = [':slug' => $slug];
+        $moveCategory = false;
+        $nextCat = (string) $row['category'];
+        $nextSub = is_string($row['subcategory'] ?? null) && $row['subcategory'] !== '' ? $row['subcategory'] : null;
         if (isset($fields['name'])) {
             $name = Text::clean((string) $fields['name'], 64);
             if ($name === '') throw new ApiError(400, 'The name cannot be empty.');
@@ -685,9 +836,25 @@ final class Apps
             $sets[] = 'author = :author';
             $params[':author'] = Text::clean((string) $fields['author'], 40) ?: 'Anonymous';
         }
-        if (isset($fields['category'])) {
+        if (isset($fields['category']) || array_key_exists('subcategory', $fields)) {
+            $rawCat = isset($fields['category']) ? Text::clean((string) $fields['category'], 80) : (string) $row['category'];
+            $hasExplicitSub = array_key_exists('subcategory', $fields);
+            $rawSub = $hasExplicitSub ? Text::clean((string) ($fields['subcategory'] ?? ''), 40) : '';
+            if (isset($fields['category']) && str_contains($rawCat, '/')) {
+                [$nextCat, $nextSub] = Categories::resolvePair($rawCat, $rawSub);
+            } elseif ($hasExplicitSub) {
+                [$nextCat, $nextSub] = Categories::resolvePair($rawCat, $rawSub);
+            } else {
+                [$resolvedCat, $resolvedSub] = Categories::resolvePair($rawCat, '');
+                $nextCat = $resolvedCat;
+                // Keep existing subcategory only if main category did not change and input wasn't a legacy alias.
+                $nextSub = $resolvedSub ?? ($nextCat === (string) $row['category'] ? $nextSub : null);
+            }
             $sets[] = 'category = :category';
-            $params[':category'] = Categories::resolve(Text::clean((string) $fields['category'], 40));
+            $params[':category'] = $nextCat;
+            $sets[] = 'subcategory = :subcategory';
+            $params[':subcategory'] = $nextSub;
+            $moveCategory = true;
         }
         if (array_key_exists('tags', $fields)) {
             $sets[] = 'tags = :tags';
@@ -701,6 +868,36 @@ final class Apps
             $sets[] = 'hidden = :hidden';
             $params[':hidden'] = $fields['hidden'] ? 1 : 0;
         }
+        $allowPublicHosting = $byAdmin || Config::get('allowPublicServerHosting', false) === true;
+        $nextBackendUrl = $row['backend_url'] ?? null;
+        if (array_key_exists('backendUrl', $fields) || array_key_exists('backend_url', $fields)) {
+            $rawUrl = array_key_exists('backendUrl', $fields) ? $fields['backendUrl'] : $fields['backend_url'];
+            if (!$allowPublicHosting && $rawUrl !== null && trim((string) $rawUrl) !== '') {
+                throw new ApiError(403, 'Server-hosted publishing is disabled on this SoftN directory.');
+            }
+            $nextBackendUrl = self::parseBackendUrl($rawUrl);
+            $sets[] = 'backend_url = :backend_url';
+            $params[':backend_url'] = $nextBackendUrl;
+        }
+        $nextHosting = (string) ($row['hosting'] ?? 'browser');
+        if (array_key_exists('hosting', $fields)) {
+            $hasBackend = is_string($row['backend_runtime'] ?? null) && $row['backend_runtime'] !== '';
+            $nextHosting = self::parseHosting($fields['hosting'], $hasBackend, is_string($nextBackendUrl) ? $nextBackendUrl : null, $allowPublicHosting);
+            $sets[] = 'hosting = :hosting';
+            $params[':hosting'] = $nextHosting;
+            if ($nextHosting !== 'server') {
+                $sets[] = 'withhold_backend = :withhold_backend';
+                $params[':withhold_backend'] = 0;
+            }
+        }
+        if (array_key_exists('withholdBackend', $fields) || array_key_exists('withhold_backend', $fields)) {
+            $rawWithhold = array_key_exists('withholdBackend', $fields) ? $fields['withholdBackend'] : $fields['withhold_backend'];
+            if (!$allowPublicHosting && self::parseBoolFlag($rawWithhold) === 1) {
+                throw new ApiError(403, 'Server-hosted publishing is disabled on this SoftN directory.');
+            }
+            $sets[] = 'withhold_backend = :withhold_backend';
+            $params[':withhold_backend'] = $nextHosting === 'server' ? self::parseBoolFlag($rawWithhold) : 0;
+        }
         // Not a change to the app itself, so its updated_at stays as it was.
         if (array_key_exists('hiddenRemixes', $fields)) {
             Catalog::patch($slug, ['hidden_remixes' => json_encode(self::hiddenRemixes($slug, $fields['hiddenRemixes']))]);
@@ -710,6 +907,7 @@ final class Apps
         $sets[] = 'updated_at = :now';
         $params[':now'] = time();
         unset($params[':slug']);$changes=[];foreach($params as $k=>$v){$field=substr($k,1);$field=match($field){'primary'=>'primary_color','now'=>'updated_at',default=>$field};$changes[$field]=$v;}Catalog::patch($slug,$changes);
+        if ($moveCategory) Catalog::moveAppFolder($slug, $nextCat, $nextSub);
         return self::detail(self::row($slug, true));
     }
 
@@ -978,9 +1176,10 @@ SVG;
 
 final class Categories
 {
-    /** The categories the site starts with. A visitor can suggest more. */
+    /** The main categories the site starts with. A visitor can suggest more, or create folders under data/apps/. */
     private const CORE = [
-        ['games', 'Games', 'Things to play', '🎮', 10],
+        ['business', 'Business Apps', 'Full-stack business operations apps with sandboxed backends and SQLite', '🏢', 5],
+        ['games', 'Games', 'Things to play across 3D, arcade, strategy, story and retro', '🎮', 10],
         ['simulations', 'Simulations', 'Interactive worlds, ecosystems and models', '🌐', 15],
         ['tools', 'Tools', 'Utilities that do one job well', '🧰', 20],
         ['creative', 'Creative', 'Drawing, music, generators', '🎨', 30],
@@ -988,14 +1187,63 @@ final class Categories
         ['education', 'Learning', 'Teach, quiz, explain', '📚', 50],
         ['ai', 'AI', 'Apps that run a model', '🤖', 60],
         ['experiments', 'Experiments', 'Trying something out', '🧪', 70],
-        ['demos', 'Examples', 'Sample apps that show what SoftN can do, not things to rely on', '🧩', 80],
+        ['demos', 'Examples', 'Interactive apps showing what SoftN Web Containers can do', '🧩', 80],
         ['other', 'Other', 'Everything else', '📦', 90],
     ];
 
-    /** `$rows` with the categories the site starts with. @param array<string, array<string, mixed>> $rows */
+    /** Default subcategories nested under main categories. Folder category.json files override display fields. */
+    private const CORE_SUBCATEGORIES = [
+        ['games', '3d', '3D & First-Person', '3D worlds, voxel sandboxes, survival and mazes', '🧊', 10],
+        ['games', 'arcade', 'Arcade & Comedy', 'Fast-paced reflexes, satire and pick-up-and-play games', '🕹️', 20],
+        ['games', 'strategy', 'Strategy & Management', 'Cities, colonies, tactics and resource management', '🏗️', 30],
+        ['games', 'story', 'Story & Narrative', 'Interactive dramas, mysteries and atmospheric fiction', '📖', 40],
+        ['games', 'retro', 'Retro & Tabletop', 'Card games, tabletop classics and pocket-sized throwbacks', '🃏', 50],
+        ['games', 'puzzle', 'Puzzle & Brain', 'Logic puzzles, riddles and brain teasers', '🧠', 60],
+        ['business', 'hospitality', 'Hospitality & Events', 'Cafes, restaurants, catering, venues and short-stay ops', '☕', 10],
+        ['business', 'field-trades', 'Field & Trades', 'Workshops, farms, plumbing, cleaning, pet care and site diaries', '🔧', 20],
+        ['business', 'healthcare-wellness', 'Health, Beauty & Coaching', 'Clinics, salons, coaching studios and tutoring', '🩺', 30],
+        ['business', 'operations', 'Operations & Fleet', 'Fleet tracking, job invoicing and device repair benches', '🚚', 40],
+        ['business', 'retail-inventory', 'Retail & Inventory', 'POS workflows, stock control and purchase orders', '🛒', 50],
+        ['business', 'people-support', 'People & Support', 'Reception desks, customer service and HR operations', '👥', 60],
+        ['business', 'finance-compliance', 'Finance & Compliance', 'Accounting, bookkeeping, OHS and quality management', '📊', 70],
+    ];
+
+    /** Legacy top-level category ids that moved into subcategories under games. */
+    private const LEGACY_ALIASES = [
+        'story' => ['games', 'story'],
+        'strategy' => ['games', 'strategy'],
+    ];
+
+    /** @return array{0: string, 1: string}|null */
+    public static function legacyAlias(string $id): ?array {
+        $key = strtolower(trim($id));
+        return self::LEGACY_ALIASES[$key] ?? null;
+    }
+
+    /** Built-in display metadata for a core main category (`games`) or subcategory (`games/3d`). */
+    public static function defaultMetaFor(string $id): ?array {
+        foreach (self::CORE as [$cid, $name, $desc, $emoji, $sort]) {
+            if ($cid === $id) {
+                return ['id' => $cid, 'slug' => $cid, 'parent' => null, 'name' => $name, 'description' => $desc, 'emoji' => $emoji, 'sort' => $sort, 'status' => 'core'];
+            }
+        }
+        foreach (self::CORE_SUBCATEGORIES as [$parent, $slug, $name, $desc, $emoji, $sort]) {
+            if ("$parent/$slug" === $id) {
+                return ['id' => $id, 'slug' => $slug, 'parent' => $parent, 'name' => $name, 'description' => $desc, 'emoji' => $emoji, 'sort' => $sort, 'status' => 'core'];
+            }
+        }
+        return null;
+    }
+
+    /** `$rows` with the main categories the site starts with. @param array<string, array<string, mixed>> $rows */
     private static function withCore(array $rows): array {
+        foreach (array_keys(self::LEGACY_ALIASES) as $legacy) {
+            if (isset($rows[$legacy]) && ($rows[$legacy]['status'] ?? '') === 'core' && empty($rows[$legacy]['parent'])) {
+                unset($rows[$legacy]);
+            }
+        }
         foreach(self::CORE as [$id,$name,$desc,$emoji,$sort]) {
-            if(isset($rows[$id]) && $rows[$id]['status']!=='core')continue;
+            if(isset($rows[$id]) && ($rows[$id]['status']??'')!=='core')continue;
             $rows[$id]=['id'=>$id,'name'=>$name,'description'=>$desc,'emoji'=>$emoji,'status'=>'core','sort'=>$sort,'created_at'=>$rows[$id]['created_at']??time()];
         }
         return $rows;
@@ -1026,63 +1274,253 @@ final class Categories
         }
     }
 
+    /**
+     * Merge built-in categories/subcategories, categories.json overrides/suggestions,
+     * and folder-discovered category.json metadata into one normalized map keyed by id.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private static function merged(): array {
+        $rows = [];
+        foreach (self::readable() as $id => $r) {
+            if (!is_array($r)) continue;
+            $cid = (string) ($r['id'] ?? $id);
+            $parent = is_string($r['parent'] ?? null) && $r['parent'] !== '' ? $r['parent'] : (str_contains($cid, '/') ? explode('/', $cid, 2)[0] : null);
+            $slug = is_string($r['slug'] ?? null) && $r['slug'] !== '' ? $r['slug'] : ($parent !== null ? substr($cid, strlen($parent) + 1) : $cid);
+            $rows[$cid] = [
+                'id' => $cid,
+                'slug' => $slug,
+                'parent' => $parent,
+                'name' => (string) ($r['name'] ?? $slug),
+                'description' => (string) ($r['description'] ?? ''),
+                'emoji' => (string) ($r['emoji'] ?? ($parent !== null ? '📂' : '📁')),
+                'status' => (string) ($r['status'] ?? 'approved'),
+                'sort' => (int) ($r['sort'] ?? 100),
+                'created_at' => (int) ($r['created_at'] ?? 0),
+            ];
+        }
+        foreach (self::CORE_SUBCATEGORIES as [$parent, $slug, $name, $desc, $emoji, $sort]) {
+            $id = "$parent/$slug";
+            if (!isset($rows[$id])) {
+                $rows[$id] = [
+                    'id' => $id,
+                    'slug' => $slug,
+                    'parent' => $parent,
+                    'name' => $name,
+                    'description' => $desc,
+                    'emoji' => $emoji,
+                    'status' => 'core',
+                    'sort' => $sort,
+                    'created_at' => 0,
+                ];
+            }
+        }
+        // Folder category.json takes precedence for display name/description/emoji/sort/status
+        // so operators can customize a category's full name directly inside its folder.
+        foreach (Catalog::folderCategories() as $id => $meta) {
+            $rows[$id] = [
+                'id' => (string) $meta['id'],
+                'slug' => (string) $meta['slug'],
+                'parent' => $meta['parent'],
+                'name' => (string) $meta['name'],
+                'description' => (string) $meta['description'],
+                'emoji' => (string) $meta['emoji'],
+                'status' => (string) $meta['status'],
+                'sort' => (int) $meta['sort'],
+                'created_at' => $rows[$id]['created_at'] ?? 0,
+            ];
+        }
+        return $rows;
+    }
+
+    private static function titleize(string $slug): string {
+        $parts = array_filter(explode('-', $slug), static fn($p) => $p !== '');
+        if ($parts === []) return 'Category';
+        return implode(' ', array_map(static fn($p) => strlen($p) <= 2 && ctype_alnum($p) ? strtoupper($p) : ucfirst($p), $parts));
+    }
+
     /** @return array<int, array<string, mixed>> */
     public static function all(bool $includeHidden = false): array
     {
         self::ensure();
-        $rows=array_values(self::readable());$apps=Catalog::all();
-        foreach($rows as &$r)$r['app_count']=count(array_filter($apps,fn($a)=>$a['category']===$r['id']&&!$a['hidden']));unset($r);
-        usort($rows,fn($a,$b)=>[in_array($a['status'],['core','approved'])?0:1,$a['sort'],$a['name']]<=>[in_array($b['status'],['core','approved'])?0:1,$b['sort'],$b['name']]);
-        $out = [];
-        foreach ($rows as $r) {
+        $merged = self::merged();
+        $apps = Catalog::all();
+
+        $mainTotal = [];
+        $mainDirect = [];
+        $subCount = [];
+        foreach ($apps as $a) {
+            if (!empty($a['hidden'])) continue;
+            $c = (string) ($a['category'] ?? 'other');
+            $s = is_string($a['subcategory'] ?? null) && $a['subcategory'] !== '' ? $a['subcategory'] : null;
+            $mainTotal[$c] = ($mainTotal[$c] ?? 0) + 1;
+            if ($s !== null) {
+                $sid = "$c/$s";
+                $subCount[$sid] = ($subCount[$sid] ?? 0) + 1;
+                if (!isset($merged[$sid])) {
+                    $def = self::defaultMetaFor($sid);
+                    $merged[$sid] = $def ?? ['id' => $sid, 'slug' => $s, 'parent' => $c, 'name' => self::titleize($s), 'description' => '', 'emoji' => '📂', 'status' => 'approved', 'sort' => 200, 'created_at' => 0];
+                }
+            } else {
+                $mainDirect[$c] = ($mainDirect[$c] ?? 0) + 1;
+            }
+        }
+
+        $mains = [];
+        $subsByParent = [];
+        foreach ($merged as $r) {
             if (!$includeHidden && $r['status'] === 'hidden') continue;
+            if ($r['parent'] !== null) {
+                $subsByParent[$r['parent']][] = $r;
+            } else {
+                $mains[] = $r;
+            }
+        }
+
+        $cmp = static fn($a, $b) => [in_array($a['status'], ['core', 'approved'], true) ? 0 : 1, $a['sort'], $a['name']] <=> [in_array($b['status'], ['core', 'approved'], true) ? 0 : 1, $b['sort'], $b['name']];
+        usort($mains, $cmp);
+
+        $out = [];
+        foreach ($mains as $r) {
+            $id = $r['id'];
+            $subRows = $subsByParent[$id] ?? [];
+            usort($subRows, $cmp);
+            $subs = [];
+            foreach ($subRows as $sr) {
+                $subs[] = [
+                    'id' => $sr['id'],
+                    'slug' => $sr['slug'],
+                    'parent' => $id,
+                    'name' => $sr['name'],
+                    'description' => $sr['description'],
+                    'emoji' => $sr['emoji'],
+                    'status' => $sr['status'],
+                    'suggested' => $sr['status'] === 'suggested',
+                    'apps' => (int) ($subCount[$sr['id']] ?? 0),
+                ];
+            }
             $out[] = [
-                'id' => $r['id'],
+                'id' => $id,
+                'slug' => $r['slug'],
+                'parent' => null,
                 'name' => $r['name'],
                 'description' => $r['description'],
                 'emoji' => $r['emoji'],
                 'status' => $r['status'],
                 'suggested' => $r['status'] === 'suggested',
-                'apps' => (int) $r['app_count'],
+                'apps' => (int) ($mainTotal[$id] ?? 0),
+                'directApps' => (int) ($mainDirect[$id] ?? 0),
+                'subcategories' => $subs,
             ];
         }
         return $out;
     }
 
-    /** A category id the visitor gave, or 'other'. */
+    /**
+     * Resolve a main category and optional subcategory (supporting `"games/3d"`,
+     * `("games", "3d")`, display names, folder categories, and legacy aliases).
+     *
+     * @return array{0: string, 1: string|null}
+     */
+    public static function resolvePair(string $category, string $subcategory = ''): array {
+        self::ensure();
+        $catText = trim($category);
+        $subText = trim($subcategory);
+        if (str_contains($catText, '/')) {
+            [$cPart, $sPart] = explode('/', $catText, 2);
+            $catText = trim($cPart);
+            if ($subText === '') $subText = trim($sPart);
+        }
+        if ($catText === '') return ['other', null];
+        if (($alias = self::legacyAlias($catText)) !== null) {
+            return [$alias[0], $subText !== '' ? (Apps::slugOf($subText) ?: $alias[1]) : $alias[1]];
+        }
+        $merged = self::merged();
+        $catSlug = Apps::slugOf($catText);
+        $catLower = mb_strtolower($catText);
+        $resolvedCat = 'other';
+        foreach ($merged as $r) {
+            if ($r['parent'] !== null || $r['status'] === 'hidden') continue;
+            if (($catSlug !== '' && $r['id'] === $catSlug) || mb_strtolower($r['name']) === $catLower) {
+                $resolvedCat = $r['id'];
+                break;
+            }
+        }
+        if ($subText === '') return [$resolvedCat, null];
+
+        $subSlug = Apps::slugOf($subText);
+        $subLower = mb_strtolower($subText);
+        $resolvedSub = null;
+        foreach ($merged as $r) {
+            if ($r['parent'] !== $resolvedCat || $r['status'] === 'hidden') continue;
+            if (($subSlug !== '' && ($r['slug'] === $subSlug || $r['id'] === "$resolvedCat/$subSlug")) || mb_strtolower($r['name']) === $subLower) {
+                $resolvedSub = $r['slug'];
+                break;
+            }
+        }
+        return [$resolvedCat, $resolvedSub];
+    }
+
+    /** A main category id the visitor gave, or 'other'. */
     public static function resolve(string $given): string {
-        self::ensure();$id=Apps::slugOf($given);$name=mb_strtolower(trim($given));
-        // Nothing given is `other`, whatever categories there are.
-        if($name==='')return 'other';
-        foreach(self::readable() as $r)if($r['status']!=='hidden' && (($id!=='' && $r['id']===$id) || mb_strtolower($r['name'])===$name))return $r['id'];
-        return 'other';
+        return self::resolvePair($given)[0];
     }
 
     /**
-     * A visitor's suggestion. It becomes usable at once, marked as suggested,
-     * so an app can be filed under it today; the site owner approves, renames
-     * or hides it later with the admin key.
+     * A visitor's suggestion (for a main category or, when `$parent` is given,
+     * a subcategory under that main category). It becomes usable at once,
+     * marked as suggested; the site owner approves, renames or hides it later.
      *
      * @return array<string, mixed>
      */
-    public static function suggest(string $name, string $description, string $emoji): array
+    public static function suggest(string $name, string $description, string $emoji, ?string $parent = null): array
     {
         self::ensure();
         $name = Text::clean($name, 32);
         if (mb_strlen($name) < 2) throw new ApiError(400, 'A category name needs at least two characters.');
-        // A name with nothing a slug can hold (one not in Latin letters)
-        // gets an id of its own, from the name: they all used to share `app`,
-        // so a second such suggestion was answered with the first one's
-        // category.
-        $id = Apps::slugOf($name);
-        if ($id === '') $id = 'c-' . substr(hash('sha256', mb_strtolower($name)), 0, 12);
-        $rows=Catalog::categories();
-        foreach($rows as $r)if($r['id']===$id||mb_strtolower($r['name'])===mb_strtolower($name))return self::one($r['id']);
+        $parentId = null;
+        if ($parent !== null && trim($parent) !== '') {
+            $merged = self::merged();
+            $pSlug = Apps::slugOf($parent);
+            $pLower = mb_strtolower(trim($parent));
+            foreach ($merged as $r) {
+                if ($r['parent'] !== null || $r['status'] === 'hidden') continue;
+                if (($pSlug !== '' && $r['id'] === $pSlug) || mb_strtolower($r['name']) === $pLower) {
+                    $parentId = $r['id'];
+                    break;
+                }
+            }
+            if ($parentId === null) throw new ApiError(400, 'No such parent category.');
+        }
+        $slug = Apps::slugOf($name);
+        if ($slug === '') $slug = 'c-' . substr(hash('sha256', mb_strtolower($name)), 0, 12);
+        $id = $parentId !== null ? "$parentId/$slug" : $slug;
+        $rows = Catalog::categories();
+        $allMerged = self::merged();
+        foreach ($allMerged as $r) {
+            if ($r['parent'] !== $parentId) continue;
+            if ($r['id'] === $id || mb_strtolower($r['name']) === mb_strtolower($name)) return self::one($r['id']);
+        }
         // Only those that show count: hidden ones filled the room for good, with no way to delete them.
-        if(count(array_filter($rows,static fn($r)=>($r['status']??'')!=='hidden'))>=200)throw new ApiError(400,'There are already as many categories as the directory will hold.');
+        if (count(array_filter($rows, static fn($r) => ($r['status'] ?? '') !== 'hidden')) >= 200) throw new ApiError(400, 'There are already as many categories as the directory will hold.');
         $emoji = Text::clean($emoji, 4);
         if ($emoji !== '' && !preg_match('/^\p{So}\p{M}*(\x{200D}\p{So}\p{M}*)*$/u', $emoji)) $emoji = '';
-        $rows[$id]=['id'=>$id,'name'=>$name,'description'=>Text::clean($description,120),'emoji'=>$emoji?:'🏷️','status'=>'suggested','sort'=>500,'created_at'=>time()];Catalog::saveCategories($rows);
+        $entry = [
+            'id' => $id,
+            'slug' => $slug,
+            'parent' => $parentId,
+            'name' => $name,
+            'description' => Text::clean($description, 120),
+            'emoji' => $emoji ?: ($parentId !== null ? '📂' : '🏷️'),
+            'status' => 'suggested',
+            'sort' => 500,
+            'created_at' => time(),
+        ];
+        $rows[$id] = $entry;
+        Catalog::saveCategories($rows);
+        if (Catalog::usesCategorizedLayout($parentId ?? $slug, $parentId !== null ? $slug : null)) {
+            Catalog::writeCategoryMeta($parentId ?? $slug, $parentId !== null ? $slug : null, $entry);
+        }
         return self::one($id);
     }
 
@@ -1091,16 +1529,45 @@ final class Categories
     {
         foreach (self::all(true) as $c) {
             if ($c['id'] === $id) return $c;
+            foreach ($c['subcategories'] ?? [] as $sub) {
+                if ($sub['id'] === $id) return $sub;
+            }
         }
         throw new ApiError(404, 'No such category.');
     }
 
     /** @param array<string, mixed> $fields @return array<string, mixed> */
     public static function update(string $id, array $fields): array {
-        self::one($id);$rows=Catalog::categories();$r=$rows[$id];
-        if(isset($fields['status'])&&in_array($fields['status'],['core','approved','suggested','hidden'],true))$r['status']=$fields['status'];
-        foreach(['name'=>32,'description'=>120,'emoji'=>4] as $k=>$max)if(isset($fields[$k])){if(!is_scalar($fields[$k]))throw new ApiError(400,"$k must be text.");$v=Text::clean((string)$fields[$k],$max);if($k!=='name'||$v!=='')$r[$k]=$v;}
-        if(isset($fields['sort']))$r['sort']=(int)$fields['sort'];
-        $rows[$id]=$r;Catalog::saveCategories($rows);return self::one($id);
+        $existing = self::one($id);
+        $rows = Catalog::categories();
+        $r = $rows[$id] ?? [
+            'id' => $existing['id'],
+            'slug' => $existing['slug'],
+            'parent' => $existing['parent'],
+            'name' => $existing['name'],
+            'description' => $existing['description'],
+            'emoji' => $existing['emoji'],
+            'status' => $existing['status'],
+            'sort' => 100,
+            'created_at' => time(),
+        ];
+        if (isset($fields['status']) && in_array($fields['status'], ['core', 'approved', 'suggested', 'hidden'], true)) $r['status'] = $fields['status'];
+        foreach (['name' => 32, 'description' => 120, 'emoji' => 4] as $k => $max) {
+            if (isset($fields[$k])) {
+                if (!is_scalar($fields[$k])) throw new ApiError(400, "$k must be text.");
+                $v = Text::clean((string) $fields[$k], $max);
+                if ($k !== 'name' || $v !== '') $r[$k] = $v;
+            }
+        }
+        if (isset($fields['sort'])) $r['sort'] = (int) $fields['sort'];
+        $rows[$id] = $r;
+        Catalog::saveCategories($rows);
+        $parent = $existing['parent'];
+        $catSlug = $parent ?? $existing['slug'];
+        $subSlug = $parent !== null ? $existing['slug'] : null;
+        if (Catalog::usesCategorizedLayout($catSlug, $subSlug) || isset(Catalog::folderCategories()[$id])) {
+            Catalog::writeCategoryMeta($catSlug, $subSlug, $r);
+        }
+        return self::one($id);
     }
 }

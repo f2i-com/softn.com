@@ -173,7 +173,7 @@ export function parseHtaccess(source: string, dirPrefix = ''): ParsedHtaccess {
   let filesMatchDenied = false;
 
   const lines = source.split(/\r?\n/);
-  for (let rawLine of lines) {
+  for (const rawLine of lines) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 

@@ -6,7 +6,7 @@ import React from 'react';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { CodeEditor } from './CodeEditor';
-import { codeLanguageFor, codeLanguageLabelFor, editorLanguageFor } from './logicLanguage';
+import { codeLanguageFor, codeLanguageLabelFor } from './logicLanguage';
 import { dockLogicFile, entryFileId } from '../../utils/logicFiles';
 import { dockInlineLogicHolder } from '../../utils/inlineLogic';
 import { toast } from '../../stores/notificationStore';
@@ -136,20 +136,28 @@ export function LogicEditor() {
   // the runtime: a `.py` logic file is Python. Getting this wrong is not
   // cosmetic — the highlighter would mark correct Python as broken, and its
   // auto-indent would fight code whose indentation is the program.
-  const editorLanguage = projectFormat === 'web' ? codeLanguageFor(logicFile.path) : editorLanguageFor(logicFile.path);
-  const badgeLabel = projectFormat === 'web' ? codeLanguageLabelFor(logicFile.path) : (editorLanguage === 'python' ? 'Python' : 'JavaScript');
+  const editorLanguage = codeLanguageFor(logicFile.path);
+  const badgeLabel = codeLanguageLabelFor(logicFile.path);
   const hintText =
-    projectFormat === 'web'
-      ? editorLanguage === 'css'
-        ? 'Container stylesheet — scoped inside the Shadow DOM'
-        : editorLanguage === 'json'
-          ? 'JSON data or configuration file in the container'
-          : editorLanguage === 'python'
-            ? 'Python script — runs inside the isolated ZIPP WASM Worker'
-            : 'ES module — runs inside the isolated ZIPP WASM Worker'
-      : editorLanguage === 'python'
-        ? 'Top-level names are state; functions are callable'
-        : 'Define state, computed values, and functions';
+    editorLanguage === 'php'
+      ? 'PHP backend source — runs inside the isolated ZIPP WASM sandbox'
+      : editorLanguage === 'rust'
+        ? 'Rust backend source — compiled & run inside the SoftN sandbox'
+        : editorLanguage === 'sql'
+          ? 'SQL schema / migration script for the app database'
+          : editorLanguage === 'shell'
+            ? 'Configuration or script file bundled with the app'
+            : projectFormat === 'web'
+              ? editorLanguage === 'css'
+                ? 'Container stylesheet — scoped inside the Shadow DOM'
+                : editorLanguage === 'json'
+                  ? 'JSON data or configuration file in the container'
+                  : editorLanguage === 'python'
+                    ? 'Python script — runs inside the isolated ZIPP WASM Worker'
+                    : 'ES module — runs inside the isolated ZIPP WASM Worker'
+              : editorLanguage === 'python'
+                ? 'Top-level names are state; functions are callable'
+                : 'Define state, computed values, and functions';
 
   return (
     <div style={styles.container}>

@@ -21,6 +21,10 @@ vi.mock('../src/lib/appCache', async (importOriginal) => {
     updateLastOpened: vi.fn(async () => {}),
     setOfflineState: vi.fn(async () => {}),
     removeCachedApp: vi.fn(async (id: string) => { cache.apps = cache.apps.filter((app) => app.id !== id); }),
+    restoreCachedApp: vi.fn(async (app: CachedApp) => {
+      cache.apps = [...cache.apps.filter((item) => item.id !== app.id), app];
+      return true;
+    }),
   };
 });
 
@@ -155,7 +159,7 @@ describe('runtime app-data actions', () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
-  it('offers to stop the running app, after which Remove asks as it does for a stopped one', async () => {
+  it('offers to stop the running app, after which Remove removes it immediately with an Undo toast', async () => {
     localStorage.setItem(dataKey(current), 'original note');
     await mount();
     await startAndReturnHome();
@@ -167,7 +171,10 @@ describe('runtime app-data actions', () => {
     expect(notice()).toBeNull();
     expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(0);
     await click('[aria-label="Remove Data guard test"]');
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('and its saved data from this browser'));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(removeCachedApp).toHaveBeenCalledWith(current.id);
+    expect(localStorage.getItem(dataKey(current))).toBeNull();
+    expect(container.querySelector('.softn-toast')?.textContent).toContain('Removed “Data guard test” v2.0.0');
   });
 
   it('rejects importing into a running app before even reading the file', async () => {
@@ -223,19 +230,68 @@ describe('runtime app-data actions', () => {
     expect(localStorage.getItem(dataKey(current))).toBe('original note');
   });
 
-  it('asks before removing a stopped app; Cancel retains its bundle and data', async () => {
+  it('removes a stopped app immediately without confirm and restores it + its data on Undo (last removal only)', async () => {
     localStorage.setItem(dataKey(current), 'original note');
+    localStorage.setItem(dataKey(older), 'older note');
     await mount();
     await startAndReturnHome();
     await click('[aria-label="Stop Data guard test"]');
+
+    // Remove current version — no confirm box, instant removal + toast with Undo.
     await click('[aria-label="Remove Data guard test"]');
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('and its saved data from this browser'));
-    expect(localStorage.getItem(dataKey(current))).toBe('original note');
-    expect(removeCachedApp).not.toHaveBeenCalled();
-    confirm.mockReturnValue(true);
-    await click('[aria-label="Remove Data guard test"]');
+    expect(confirm).not.toHaveBeenCalled();
     expect(localStorage.getItem(dataKey(current))).toBeNull();
     expect(removeCachedApp).toHaveBeenCalledWith(current.id);
+    expect(container.querySelector('.softn-toast')?.textContent).toContain('Removed “Data guard test” v2.0.0');
+
+    // Undo restores the removed app and its saved data.
+    await click('.softn-toast-undo');
+    expect(cache.apps.some((a) => a.id === current.id)).toBe(true);
+    expect(localStorage.getItem(dataKey(current))).toBe('original note');
+    expect(container.querySelector('.softn-toast')?.textContent).toContain('Restored “Data guard test” v2.0.0');
+
+    // Removing two apps in sequence only allows undoing the last one removed.
+    await click('[aria-label="Remove Data guard test"]');
+    await click('[aria-label="Remove Data guard test"]');
+    expect(cache.apps).toHaveLength(0);
+    await click('.softn-toast-undo');
+    expect(cache.apps.map((a) => a.id)).toEqual([older.id]);
+    expect(localStorage.getItem(dataKey(older))).toBe('older note');
+    expect(localStorage.getItem(dataKey(current))).toBeNull();
+  });
+
+  it('closes all running apps and removes all saved apps with Undo', async () => {
+    localStorage.setItem(dataKey(current), 'current note');
+    localStorage.setItem(dataKey(older), 'older note');
+    await mount();
+    await startAndReturnHome();
+    expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(1);
+
+    // Close all stops running apps while keeping saved apps.
+    const closeAll = [...container.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Close all')!;
+    expect(closeAll).toBeDefined();
+    act(() => closeAll.click());
+    await settle();
+    expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(0);
+    expect(cache.apps).toHaveLength(2);
+
+    // Remove all clears running and saved apps without prompting, and Undo restores them.
+    await startAndReturnHome();
+    const removeAll = [...container.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Remove all')!;
+    expect(removeAll).toBeDefined();
+    act(() => removeAll.click());
+    await settle();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.softn-launcher-run')).toHaveLength(0);
+    expect(cache.apps).toHaveLength(0);
+    expect(localStorage.getItem(dataKey(current))).toBeNull();
+    expect(localStorage.getItem(dataKey(older))).toBeNull();
+    expect(container.querySelector('.softn-toast')?.textContent).toContain('Removed 2 apps');
+
+    await click('.softn-toast-undo');
+    expect(cache.apps).toHaveLength(2);
+    expect(localStorage.getItem(dataKey(current))).toBe('current note');
+    expect(localStorage.getItem(dataKey(older))).toBe('older note');
   });
 
   it("removing a stopped app removes what its sync rooms kept: their keys and offline caches", async () => {

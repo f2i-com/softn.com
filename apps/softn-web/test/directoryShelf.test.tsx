@@ -18,7 +18,7 @@ const card = (slug = 'fieldnotes') => ({
 const reply = (apps: unknown[]) => ({
   ok: true,
   status: 200,
-  text: async () =>
+  text: async (): Promise<string> =>
     JSON.stringify({ ok: true, apps, total: apps.length, pages: 1, page: 1, perPage: 6 }),
 });
 async function settle() {
@@ -90,10 +90,7 @@ describe('runtime directory integration', () => {
 
   it('keeps file and running-app controls usable when the directory fails, then retries', async () => {
     let directoryCalls = 0;
-    const fetch = vi.fn(async (url: string) => {
-      if (String(url).includes('business-demos/index.json')) {
-        return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
-      }
+    const fetch = vi.fn(async () => {
       directoryCalls += 1;
       if (directoryCalls === 1) throw new Error('offline');
       return reply([card()]);

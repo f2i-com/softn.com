@@ -83,6 +83,18 @@ function decrement() {
 export function blankLogicFile(path: string): string {
   const name = path.split('/').pop() ?? path;
   const lower = name.toLowerCase();
+  if (lower.endsWith('.php') || lower.endsWith('.phtml')) {
+    return `<?php\ndeclare(strict_types=1);\n\n// ${name}\n`;
+  }
+  if (lower.endsWith('.rs')) {
+    return `// ${name}\n\nfn main() {\n}\n`;
+  }
+  if (lower.endsWith('.sql')) {
+    return `-- ${name}\n\n`;
+  }
+  if (lower.endsWith('.toml') || lower.endsWith('.yaml') || lower.endsWith('.yml') || lower.endsWith('.ini') || lower.endsWith('.sh')) {
+    return `# ${name}\n\n`;
+  }
   if (lower.endsWith('.css')) {
     return `/* ${name} */\n\n`;
   }

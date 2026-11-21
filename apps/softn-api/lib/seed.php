@@ -69,6 +69,19 @@ final class Seed
         'gpu-demo' => 'demos', 'three-demo' => 'demos', 'ai-demo' => 'demos', 'foundation-fixture' => 'demos',
     ];
 
+    private const SUBCATEGORY = [
+        'maze-escape-3d' => '3d', 'blockscape' => '3d', 'dead-hours' => '3d',
+        'snake-game' => 'arcade', 'do-not-press-the-duck' => 'arcade', 'express-delivery-snail' => 'arcade',
+        'frog-employee-of-the-month' => 'arcade', 'pigeon-municipal-employee' => 'arcade',
+        'potato-peeler' => 'arcade', 'very-normal-post-office' => 'arcade', 'blockfall' => 'arcade',
+        'mine-management' => 'strategy', 'outermate' => 'strategy', 'outerstead' => 'strategy',
+        'scorchline' => 'strategy', 'urbanward' => 'strategy',
+        'convenience-store-at-the-end-of-the-universe' => 'story', 'lastsound3d' => 'story',
+        'please-do-not-feed-the-moon' => 'story', 'promptly-unemployed' => 'story', 'the-night-window' => 'story',
+        'pocket' => 'retro', 'texas-holdem' => 'retro', 'the-office' => 'retro',
+        'twenty48' => 'puzzle',
+    ];
+
     private const TAGS = [
         'snake-game' => 'arcade,classic', 'pocket' => 'emulator,handheld,retro', 'maze-escape-3d' => '3d,maze',
         'texas-holdem' => 'cards,poker', 'promptly-unemployed' => 'story,comedy',
@@ -87,8 +100,18 @@ final class Seed
      */
     public static function ifEmpty(?string $from = null): void
     {
-        if ($from === null && !Config::get('seedDemos', true)) return;
         $dir = Config::dataDir();
+        $bundledDemos = dirname(__DIR__, 2) . '/demos';
+        $hasBundledDemos = is_file("$bundledDemos/index.json");
+        if ($from === null) {
+            // Respect explicit config.json setting if present. Otherwise keep data/ empty by
+            // default, seeding automatically only for an explicit `--with-demos` build that
+            // placed demos/index.json right beside api/.
+            $rawCfg = is_file("$dir/config.json") ? json_decode((string) @file_get_contents("$dir/config.json"), true) : null;
+            $hasExplicitSetting = is_array($rawCfg) && array_key_exists('seedDemos', $rawCfg);
+            $shouldSeed = $hasExplicitSetting ? (bool) $rawCfg['seedDemos'] : $hasBundledDemos;
+            if (!$shouldSeed) return;
+        }
         $flag = "$dir/seeded";
         Catalog::boot();
         Categories::ensure();
@@ -98,7 +121,7 @@ final class Seed
         // (apps/softn-api, in dev and the tests) may reach for the runtime's
         // fetched bundles or a built dist/ instead — a built site tested
         // inside the checkout must not pick up the developer's bundles.
-        $demos = $from ?? dirname(__DIR__, 2) . '/demos';
+        $demos = $from ?? $bundledDemos;
         if ($from === null && !is_dir($demos) && basename(dirname(__DIR__)) === 'softn-api') {
             $candidate = dirname(__DIR__, 3) . '/apps/softn-web/public/demos';
             if (is_dir($candidate)) $demos = $candidate;
@@ -112,8 +135,22 @@ final class Seed
         $index = json_decode((string) file_get_contents($indexPath), true);
         if (!is_array($index)) return;
 
-        // Bring seeded app categories up to date
-        foreach (self::CATEGORY as $slug => $cat) {
+        // Bring seeded app categories up to date: index.json's own category wins
+        // over the legacy built-in table, while operator re-filings stay intact.
+        $desiredCategories = [];
+        foreach (self::CATEGORY as $k => $v) {
+            $desiredCategories[$k] = [$v, self::SUBCATEGORY[$k] ?? null];
+        }
+        foreach ($index as $entry) {
+            if (!is_array($entry) || !is_string($entry['file'] ?? null)) continue;
+            $entryId = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file']));
+            $rawCat = is_string($entry['category'] ?? null) && $entry['category'] !== '' ? $entry['category'] : (self::CATEGORY[$entryId] ?? null);
+            $rawSub = is_string($entry['subcategory'] ?? null) && $entry['subcategory'] !== '' ? $entry['subcategory'] : (self::SUBCATEGORY[$entryId] ?? '');
+            if ($rawCat !== null) {
+                $desiredCategories[$entryId] = Categories::resolvePair($rawCat, $rawSub);
+            }
+        }
+        foreach ($desiredCategories as $slug => [$cat, $sub]) {
             // Seeded rows only: a visitor's app that happens to hold one of
             // these slugs keeps the category its publisher chose.
             $row=Catalog::all()[$slug]??null;
@@ -125,7 +162,11 @@ final class Seed
             // from before this was recorded was held to the table on every
             // request, so the category it has is the seed's.
             if(($row['seed_category']??$row['category'])!==$row['category'])continue;
-            if($row['category']!==$cat || !isset($row['seed_category']))Catalog::patch($slug,['category'=>$cat,'seed_category'=>$cat]);
+            $curSub = is_string($row['subcategory'] ?? null) && $row['subcategory'] !== '' ? $row['subcategory'] : null;
+            if($row['category']!==$cat || $curSub!==$sub || !isset($row['seed_category'])) {
+                Catalog::patch($slug,['category'=>$cat,'subcategory'=>$sub,'seed_category'=>$cat,'seed_subcategory'=>$sub]);
+                Catalog::moveAppFolder($slug, $cat, $sub);
+            }
         }
 
         $existing=array_values(Catalog::all());
@@ -169,17 +210,17 @@ final class Seed
                 // name. The path is put together here rather than asked of
                 // Catalog::path, which throws for a link and would take the
                 // listing down with it.
-                if (!isset($existingMap[$id]) && Catalog::validSlug($id) && is_dir("$dir/apps/$id")) continue;
+                if (!isset($existingMap[$id]) && Catalog::validSlug($id) && Catalog::hasFolder($id)) continue;
                 $currentMeta = [
                     'slug' => $id,
                     'name' => is_string($entry['name'] ?? null) ? $entry['name'] : null,
                     'description' => is_string($entry['description'] ?? null) ? $entry['description'] : null,
-                    // An index can name these itself (the softn-apps folder does,
-                    // for games from their own repositories); the built-in
-                    // examples keep their tables.
+                    // An index can name these itself (e.g. vanilla-examples or
+                    // external catalogues); legacy built-in tables are fallback.
                     'author' => is_string($entry['author'] ?? null) && $entry['author'] !== '' ? $entry['author'] : 'SoftN',
-                    'category' => self::CATEGORY[$id] ?? (is_string($entry['category'] ?? null) && $entry['category'] !== '' ? $entry['category'] : 'demos'),
-                    'tags' => self::TAGS[$id] ?? (is_string($entry['tags'] ?? null) ? $entry['tags'] : ''),
+                    'category' => (is_string($entry['category'] ?? null) && $entry['category'] !== '') ? $entry['category'] : (self::CATEGORY[$id] ?? 'demos'),
+                    'subcategory' => (is_string($entry['subcategory'] ?? null) && $entry['subcategory'] !== '') ? $entry['subcategory'] : (self::SUBCATEGORY[$id] ?? ''),
+                    'tags' => (is_string($entry['tags'] ?? null) && $entry['tags'] !== '') ? $entry['tags'] : (self::TAGS[$id] ?? ''),
                     'primary' => is_string($entry['primary'] ?? null) ? $entry['primary'] : null,
                 ];
 

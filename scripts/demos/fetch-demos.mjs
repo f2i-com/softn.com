@@ -366,11 +366,18 @@ async function main() {
         verified++;
         continue;
       }
+      if (entry.source === 'local') {
+        problems.push(`${entry.file} on disk does not match its pinned digest; run node scripts/demos/sync-local-demos.mjs`);
+        continue;
+      }
       if (checkOnly) {
         problems.push(`${entry.file} on disk does not match its pinned digest`);
         continue;
       }
       console.log(`  ${entry.file} does not match its pinned digest; fetching`);
+    } else if (entry.source === 'local') {
+      problems.push(`${entry.file} is a local demo bundle that is missing on disk; run node scripts/demos/sync-local-demos.mjs`);
+      continue;
     } else if (checkOnly) {
       problems.push(`${entry.file} is missing`);
       continue;

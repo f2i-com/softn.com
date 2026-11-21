@@ -103,10 +103,14 @@
           "enum": [
             "softn",
             "javascript",
+            "typescript",
             "json",
             "sh",
             "text",
             "python",
+            "php",
+            "sql",
+            "rust",
             "html",
             "css"
           ]

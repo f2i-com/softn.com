@@ -1053,6 +1053,38 @@ export function setAsideBeforeWriting(storage: { getItem?: (key: string) => stri
   return { kind: 'set-aside', name };
 }
 
+/**
+ * Remove the stored builder session, its stored assets, owner marker, and
+ * quarantined recovery records so clearing or replacing a project will not
+ * bring old work back on the next visit.
+ */
+export function clearStoredSession(): void {
+  pendingSetAside = null;
+  judged = null;
+  removeLocalStorage(SESSION_STORAGE_KEY);
+  removeLocalStorage(SESSION_ASSETS_KEY);
+  removeLocalStorage(SESSION_ASSETS_HEAD_KEY);
+  removeLocalStorage(QUARANTINE_STORAGE_KEY);
+  removeLocalStorage(QUARANTINE_ASSETS_KEY);
+  removeLocalStorage('softn.builder.session.owner.v1');
+}
+
+/**
+ * Reset the entire Builder workspace to a clean, empty starter project and
+ * wipe the stored session so reloading opens cleanly without restoring or
+ * prompting about old work.
+ */
+export function clearBuilderWorkspace(): void {
+  clearStoredSession();
+  useHistoryStore.getState().clear();
+  useCanvasStore.getState().reset();
+  useSchemaStore.getState().reset();
+  useFilesStore.getState().reset();
+  useProjectStore.getState().reset();
+  useProjectStore.getState().markClean();
+  keepSavedPoint();
+}
+
 export type RemoteOpenOutcome =
   | { kind: 'opened'; snapshot: ProjectSnapshot }
   | { kind: 'superseded' }

@@ -721,6 +721,71 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit, revi
                 <p style={{ ...s.hint, margin: '10px 0 0' }}>
                   One language for the whole app: the runtime refuses a bundle that mixes them.
                 </p>
+                {isV2Container && (
+                  <div style={{ marginTop: 18 }}>
+                    <div id="brief-backend-label" style={s.label}>Sandboxed backend</div>
+                    <div
+                      role="group"
+                      aria-labelledby="brief-backend-label"
+                      style={{ ...s.radioGroup, flexDirection: m ? 'column' : 'row', flexWrap: 'wrap' }}
+                    >
+                      {[
+                        {
+                          id: 'none' as const,
+                          label: 'Frontend only',
+                          ext: 'Browser',
+                          desc: 'Pure client-side container with local XDB collections.',
+                        },
+                        {
+                          id: 'php' as const,
+                          label: 'PHP + SQLite',
+                          ext: '.php',
+                          desc: 'Sandboxed PHP (PDO/Slim 4) & SQLite in ZIPP WASM or multi-user server.',
+                        },
+                        {
+                          id: 'javascript' as const,
+                          label: 'JS API + SQLite',
+                          ext: '.js',
+                          desc: 'Sandboxed JavaScript HTTP API handler with SQLite.',
+                        },
+                        {
+                          id: 'typescript' as const,
+                          label: 'TS API + SQLite',
+                          ext: '.ts',
+                          desc: 'Typed TypeScript HTTP API handler with SQLite.',
+                        },
+                      ].map((opt) => {
+                        const on = (brief.containerBackend ?? 'none') === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => set('containerBackend', opt.id)}
+                            aria-pressed={on}
+                            style={{
+                              ...s.radioCard,
+                              flex: m ? 'none' : '1 1 180px',
+                              ...(on ? s.radioCardActive : {}),
+                            }}
+                            {...hover(
+                              on ? 'var(--studio-accent-soft)' : 'var(--studio-bg-muted)',
+                              on ? 'var(--studio-accent-soft)' : 'var(--studio-surface-hover)',
+                            )}
+                          >
+                            <div style={{ minWidth: 0, paddingRight: 18 }}>
+                              <div style={s.radioLabel}>
+                                {opt.label}
+                                <span style={s.langExt}>{opt.ext}</span>
+                              </div>
+                              <div style={s.radioDesc}>{opt.desc}</div>
+                            </div>
+                            {on && <span style={s.cardCheck}>{renderCheck(18)}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {/* Python only: torch is a Python package, and the app has to
                     ask for it in manifest.json before it can import it. */}
                 {brief.logicLanguage === 'python' && (

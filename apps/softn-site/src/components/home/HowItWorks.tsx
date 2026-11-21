@@ -1,7 +1,7 @@
 import React from 'react';
 import { Reveal } from '../Reveal';
 import { BUILDER_HREF, STUDIO_HREF } from '../../lib/appUrls';
-import { FORMAT_GUIDE_HREF, FORMLOGIC_GUIDE_HREF, PUBLISHING_GUIDE_HREF } from '../../lib/guides';
+import { FORMAT_GUIDE_HREF, HOSTING_GUIDE_HREF, PUBLISHING_GUIDE_HREF, WEB_CONTAINERS_GUIDE_HREF } from '../../lib/guides';
 
 interface Step {
   name: string;
@@ -18,10 +18,10 @@ const icon = (paths: React.ReactNode) => (
 
 const STEPS: Step[] = [
   {
-    name: 'Play an app',
+    name: 'Run a full app locally',
     copy: (
       <>
-        Pick one from <a href="/apps">the directory</a>. It opens in your browser: nothing to install, and no account.
+        Open any app from <a href="/apps">the directory</a> or index. Both frontend UI and sandboxed backend + SQLite boot right in your browser via ZIPP WASM — nothing to install.
       </>
     ),
     icon: icon(<path d="M8 5.5v13l10.5-6.5z" />),
@@ -30,23 +30,27 @@ const STEPS: Step[] = [
     name: 'Open it up',
     copy: (
       <>
-        Every app is one <a href={FORMAT_GUIDE_HREF}>.softn file</a> of pages, logic and pictures, as source you can read.
-        Open any app in <a href={BUILDER_HREF}>Builder</a> or <a href={STUDIO_HREF}>Studio</a>.
+        Every app is one <a href={FORMAT_GUIDE_HREF}>.softn file</a> containing editable HTML, CSS, client logic, backend code (PHP, JS/TS, Rust, SQL) and assets. Open it in{' '}
+        <a href={BUILDER_HREF}>Builder</a> or <a href={STUDIO_HREF}>Studio</a>.
       </>
     ),
     icon: icon(<><path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z" /><path d="M14 3.5v5h5" /><path d="m10 13-2 2 2 2M14 13l2 2-2 2" /></>),
   },
   {
-    name: 'Change it',
-    copy: 'Arrange components in Builder, edit the code in JavaScript or Python, or describe the change to Studio’s AI. Try it at phone, tablet and desktop sizes as you go.',
+    name: 'Edit frontend & backend',
+    copy: (
+      <>
+        Edit HTML/TS views alongside <a href={WEB_CONTAINERS_GUIDE_HREF}>sandboxed PHP, JS/TS, Rust or Python backends</a> and SQLite schemas in Builder, or let Studio’s AI build and verify changes in live preview.
+      </>
+    ),
     icon: icon(<><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z" /><path d="m13.5 6.5 4 4" /></>),
   },
   {
-    name: 'Publish it',
+    name: 'Share or host multi-user',
     copy: (
       <>
-        <a href={PUBLISHING_GUIDE_HREF}>Publish it to the directory</a> for anyone to play, or{' '}
-        <a href={FORMLOGIC_GUIDE_HREF}>host it with FormLogic</a> for sign-in, members and a shared database.
+        <a href={PUBLISHING_GUIDE_HREF}>Publish to the directory</a> for private in-browser use, or run the exact same <code>.softn</code> bundle multi-user on{' '}
+        <a href={HOSTING_GUIDE_HREF}>softn-server</a> — still strictly inside ZIPP’s sandbox.
       </>
     ),
     icon: icon(<><path d="M12 15V4" /><path d="m7.5 8.5 4.5-4.5 4.5 4.5" /><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" /></>),
@@ -63,8 +67,8 @@ export function HowItWorks(): React.ReactElement {
       <div className="wrap">
         <div className="band-head">
           <p className="eyebrow">How it works</p>
-          <h2 className="band-title">Play it, open it, change it, publish it.</h2>
-          <p className="band-sub">Every app in the directory is also a starting point. The same four steps take you from playing one to sharing your own, in tools that open in your browser.</p>
+          <h2 className="band-title">Run it locally, open it, edit both sides, host anywhere.</h2>
+          <p className="band-sub">Every .softn bundle is a complete, inspectable web app — frontend and sandboxed backend together. Move seamlessly from browser execution to multi-user hosting.</p>
         </div>
         <ol className="how-steps">
           {STEPS.map((step, i) => (

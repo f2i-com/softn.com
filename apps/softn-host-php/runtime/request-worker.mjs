@@ -9,6 +9,7 @@ import {applyMigration,setupDeadlineMs} from './migrations.mjs';
 import {SQL_LIMITS} from './sql.mjs';
 import {configureRecordEvents} from './record-events.mjs';
 import {invokeWithHook} from './request-hook.mjs';
+import {isContainerBackendManifest,handleContainerRequest} from './container-backend.mjs';
 // The operator may select an isolated app installation while sharing the trusted
 // runtime and WASM. This value is never taken from guest code or request JSON.
 const root=realpathSync(process.env.SOFTN_BACKEND_ROOT || dirname(fileURLToPath(import.meta.url)));
@@ -41,6 +42,11 @@ function emit(result) {
   const status=valid?result.status:500,body=valid?result.body:{error:'The request could not be completed.',code:'host_error'};
   process.stdout.write('{"status":'+status+',"body":'+(JSON.stringify(body)??'null')+'}');
 }
+function emitContainer(result) {
+  const valid=result&&typeof result==='object'&&Number.isInteger(result.status)&&result.status>=100&&result.status<=599&&Array.isArray(result.headers)&&typeof result.bodyBase64==='string';
+  if(!valid){emit({status:500,body:{error:'The request could not be completed.',code:'host_error'}});return;}
+  process.stdout.write(JSON.stringify({status:result.status,headers:result.headers,bodyBase64:result.bodyBase64}));
+}
 // SQLite's "database is busy/locked": another request holds the write lock
 // past busy_timeout. Transient, so answered as the retryable busy response,
 // not as a configuration fault.
@@ -67,6 +73,21 @@ try {
   };
   startupStage='manifest_read';
   const manifest=JSON.parse(readFileSync(inside('manifest.json'),'utf8'));
+  if(isContainerBackendManifest(manifest)) {
+    startupStage='application_identity';
+    if(typeof manifest.id==='string'&&manifest.id&&config.appId!==manifest.id)throw new Error('Operator configuration belongs to another app');
+    startupStage='data_directory';
+    const data=realpathSync(join(root,'private/data'));
+    if(lstatSync(join(root,'private/data')).isSymbolicLink()||!contained(realpathSync(join(root,'private')),data))throw new Error('Invalid data path');
+    startupStage='request_input';
+    const input=workerData;if(typeof input!=='string'||Buffer.byteLength(input)>6_000_000)throw new Error('Input limit');
+    const request=JSON.parse(input);
+    if(!request||typeof request.path!=='string'||!request.path.startsWith('/')||typeof request.method!=='string')throw new Error('Invalid request');
+    startupStage='container_backend';
+    const containerResult=await handleContainerRequest({root,bundle,data,manifest,config,request,markLimited});
+    if(containerResult.isMeta)emit({status:containerResult.status,body:containerResult.body});
+    else emitContainer(containerResult);
+  } else {
   startupStage='application_identity';
   if(config.appId!==manifest.id)throw new Error('Operator configuration belongs to another app');
   const supported=['sql','crypto','time','trusted-client-ip','transaction-scope','photos'];
@@ -229,6 +250,7 @@ try {
     try {const hook=await import(pathToFileURL(join(root,'operator/after-request.mjs')).href);await hook.afterRequest({db,crypto:host.crypto,config});}catch{ /* Adapter owns durable retries. */ }
   }
   emit(result);
+  }
 } catch(e) {
   // A busy database is a moment's load, not something to look into.
   if(!busy(e))logFailure('startup stage '+startupStage,e);

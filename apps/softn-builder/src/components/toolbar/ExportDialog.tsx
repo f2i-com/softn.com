@@ -217,6 +217,8 @@ interface ExportDialogProps {
    * dialog exports a project that has no file.
    */
   exportProject?: () => Promise<SaveOutcome>;
+  /** Publish directly inside Builder without leaving the editor. */
+  onDirectPublish?: () => void;
 }
 
 const exportWithNoFile = (): Promise<SaveOutcome> => saveProject({ as: 'export', view: 'design', existingHandle: null });
@@ -230,7 +232,7 @@ function readAsDataUrl(file: File): Promise<string> {
   });
 }
 
-export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile }: ExportDialogProps) {
+export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile, onDirectPublish }: ExportDialogProps) {
   const {
     name,
     version,
@@ -846,9 +848,12 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
             <button
               type="button"
               className="bl-btn"
-              onClick={() => void run('publish')}
+              onClick={() => {
+                if (onDirectPublish) onDirectPublish();
+                else void run('publish');
+              }}
               disabled={refused}
-              title={refused ? 'Fix what the check found first' : 'Stage the bundle for the directory’s publish page'}
+              title={refused ? 'Fix what the check found first' : 'Publish directly to the SoftN directory'}
             >
               Publish…
             </button>

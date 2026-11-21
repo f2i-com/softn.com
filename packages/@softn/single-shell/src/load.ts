@@ -58,7 +58,25 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
   const sidecar = config.permissions;
   const { raw, ...app } = await assembleApplication({
     textFiles,
-    readManifest: () => readManifest<BundleManifest>(textFiles),
+    readManifest: () => {
+      let feRoot = '';
+      try {
+        const rawManifest = JSON.parse(textFiles.get('manifest.json') ?? '{}') as Record<string, unknown>;
+        if (typeof rawManifest.frontendRoot === 'string') {
+          feRoot = rawManifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+        }
+      } catch {
+        // Invalid JSON surfaces through readManifest.
+      }
+      return readManifest<BundleManifest>(textFiles, {
+        has: (path) =>
+          textFiles.has(path) ||
+          binaryFiles.has(path) ||
+          (feRoot !== '' &&
+            (textFiles.has(`${feRoot}/${path.replace(/^\/+/, '')}`) ||
+              binaryFiles.has(`${feRoot}/${path.replace(/^\/+/, '')}`))),
+      });
+    },
     sidecar: sidecar ? async () => decode(await fetchBytes(sidecar, signal, 65536, 'no-store', progress)) : undefined,
     appId,
     grantScope: configUrl + hash,

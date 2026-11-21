@@ -211,8 +211,8 @@ export function detectWebContainer(
         'web/index.html',
         'public/index.html',
       ].find((p) => textFiles.has(p));
-    const hasRustBackend = ['server/src/main.rs', 'backend/src/main.rs', 'src/main.rs'].some((p) => textFiles.has(p));
-    const phpEntry = textFiles.has('index.php')
+    const hasRustBackend = ['server/src/main.rs', 'backend/src/main.rs', 'src/main.rs'].some((p) => hasAny(p));
+    const phpEntry = hasAny('index.php')
       ? 'index.php'
       : [...textFiles.keys()].filter((k) => !k.includes('/') && /\.php$/i.test(k)).sort()[0];
 
@@ -263,8 +263,15 @@ export function detectWebContainer(
     return { isWebContainer: true };
   }
 
+  const frontendRoot =
+    typeof raw.frontendRoot === 'string'
+      ? raw.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      : '';
   const main = typeof raw.main === 'string' ? raw.main : '';
-  if (!main || !/\.(?:html?|php|phtml)$/i.test(main) || !textFiles.has(main)) {
+  const hasMain =
+    main !== '' &&
+    (hasAny(main) || (frontendRoot !== '' && hasAny(`${frontendRoot}/${main.replace(/^\/+/, '')}`)));
+  if (!main || !/\.(?:html?|php|phtml)$/i.test(main) || !hasMain) {
     return { isWebContainer: false };
   }
 

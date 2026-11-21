@@ -46,13 +46,15 @@ if (missingBuilds.length > 0) {
 
 // The demo bundles come from the softn-Examples release they are pinned to;
 // bundles already on disk that match their digests are kept without a
-// download. Offline on a machine that has never fetched them, the servers can
-// still start: /demos/ and the directory's examples are then missing, which is
-// said here rather than blocking the rest of the product.
-const demos = spawnSync(process.execPath, [path.join(root, 'scripts/demos/fetch-demos.mjs')], { cwd: root, stdio: 'inherit' });
-if (demos.status !== 0) {
-  console.warn(`\n  ${YELLOW}The demo bundles could not be fetched${RESET} (see above). Starting anyway:`);
-  console.warn(`  /demos/ and the directory's examples are missing until ${YELLOW}npm run fetch:demos${RESET} succeeds.\n`);
+// download. Demos are optional: pass --no-demos (or SOFTN_SKIP_DEMOS=1) to
+// skip fetching them, or run `npm run install:demos` to populate data/.
+const skipDemos = process.argv.includes('--no-demos') || process.env.SOFTN_SKIP_DEMOS === '1';
+if (!skipDemos) {
+  const demos = spawnSync(process.execPath, [path.join(root, 'scripts/demos/fetch-demos.mjs')], { cwd: root, stdio: 'inherit' });
+  if (demos.status !== 0) {
+    console.warn(`\n  ${YELLOW}The demo bundles could not be fetched${RESET} (see above). Starting anyway:`);
+    console.warn(`  /demos/ and the directory's examples are missing until ${YELLOW}npm run fetch:demos${RESET} succeeds.\n`);
+  }
 }
 
 // Vite is run directly rather than through `npm run dev -w …`. Going through npm
@@ -173,6 +175,8 @@ for (const app of resolved) {
         env: {
           ...process.env,
           SOFTN_DATA_DIR: path.join(root, 'apps/softn-api/data'),
+          SOFTN_AUTO_THUMB: process.env.SOFTN_AUTO_THUMB ?? '1',
+          SOFTN_SITE_URL: publicUrl,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -226,9 +230,66 @@ for (const app of resolved) {
   children.push(child);
 }
 
+// Watch apps/softn-api/data/apps/ so dragging a .softn bundle or moving a folder
+// adopts it, extracts its icon, refreshes category.json caches, and schedules
+// auto-thumbnailing without needing a manual reload.
+let dataWatcher = null;
+let watchTimer = null;
+if (havePhp) {
+  const apiUrl = urlFor('api');
+  const appsDir = path.join(root, 'apps/softn-api/data/apps');
+  fs.mkdirSync(appsDir, { recursive: true });
+  let syncing = false;
+  let lastSync = 0;
+  const triggerSync = () => {
+    if (shuttingDown || syncing || Date.now() - lastSync < 1200) return;
+    syncing = true;
+    fetch(`${apiUrl}/health`, { signal: AbortSignal.timeout(5000) })
+      .catch(() => {})
+      .finally(() => {
+        lastSync = Date.now();
+        syncing = false;
+      });
+  };
+  try {
+    dataWatcher = fs.watch(appsDir, { recursive: true }, (_event, filename) => {
+      if (!filename || shuttingDown) return;
+      const norm = String(filename).replace(/\\/g, '/');
+      if (
+        norm.includes('/.json-') ||
+        norm.includes('/.upload-') ||
+        norm.includes('/.thumb-tmp-') ||
+        norm.includes('/.auto-thumb') ||
+        norm.includes('/backend-cache/') ||
+        norm.includes('/backend-data/') ||
+        norm.endsWith('category.json') ||
+        norm.endsWith('app.json') ||
+        norm.endsWith('.tmp') ||
+        norm.endsWith('-wal') ||
+        norm.endsWith('-shm')
+      ) {
+        return;
+      }
+      clearTimeout(watchTimer);
+      watchTimer = setTimeout(triggerSync, 700);
+    });
+    dataWatcher.on('error', () => {});
+  } catch {
+    // Non-fatal on filesystems that do not support recursive watch.
+  }
+}
+
 function shutdown(code) {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearTimeout(watchTimer);
+  if (dataWatcher) {
+    try {
+      dataWatcher.close();
+    } catch {
+      // ignore
+    }
+  }
   for (const child of children) {
     if (child.killed || child.exitCode !== null) continue;
     if (process.platform === 'win32') {

@@ -127,6 +127,8 @@ export interface OpenTab {
   shownPage?: string;
   /** Whether this tab runs inside the v2 `<softn-app>` Web Container (`@softn/container`). */
   webContainer?: boolean;
+  /** Optional hosted ZIPP safe-sandbox backend URL when running a server-hosted container app. */
+  backendUrl?: string;
   /**
    * The name its address is written with, where that is not `name`: the
    * bundle's own, for an app the person renamed in the runtime's editor to a
@@ -176,6 +178,8 @@ export interface OpenBundleRequest {
   initialPage?: string;
   /** The app's slug in the site's directory, when it came from there. */
   directorySlug?: string;
+  /** Optional hosted ZIPP safe-sandbox backend URL when running a server-hosted container app. */
+  backendUrl?: string;
   /**
    * The tab the caller put in the bar while the bytes were on their way; this
    * open adopts that tab and no other. A placeholder used to be found by name
@@ -649,6 +653,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       themeMode: manifest.config?.theme?.mode,
       ...server,
       directorySlug,
+      ...(request.backendUrl ? { backendUrl: request.backendUrl } : {}),
       mine,
       edited,
       webContainer: containerCheck.isWebContainer || undefined,

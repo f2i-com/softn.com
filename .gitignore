@@ -50,6 +50,7 @@ games/
 # catalogue, icons and thumbnails are source.
 apps/softn-web/public/demos/*.softn
 apps/softn-web/public/demos/*.softn.download
+apps/softn-web/public/business-demos/
 
 # The apps folder scripts/softn-apps builds: bundles and screenshots, never committed
 scripts/demos/softn-apps/apps/

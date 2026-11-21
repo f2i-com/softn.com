@@ -11,7 +11,7 @@
 
 import type { Capability } from '@softn/bundle-format/capabilities';
 import { base64ToBytes, bytesToBase64, ContainerArchive, VIRTUAL_ORIGIN } from './archive';
-import { buildBackendRoutingConfig, matchBackendTarget } from './backend-transport';
+import { buildBackendRoutingConfig, matchBackendTarget, RemoteBackendTransport } from './backend-transport';
 import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar';
 import { HostDomPatcher } from './dom-patcher';
 import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
@@ -973,14 +973,22 @@ export async function mountSoftNContainer(
     }
   }
 
+  let localBackendTransport: LocalBackendTransport | null = null;
+  let ownedRemoteTransport: RemoteBackendTransport | null = null;
+  let backendTransport: BackendTransport | undefined = options.backendTransport;
+  if (!backendTransport && options.backendUrl) {
+    ownedRemoteTransport = new RemoteBackendTransport({
+      baseUrl: options.backendUrl,
+      headers: options.backendHeaders,
+    });
+    backendTransport = ownedRemoteTransport;
+  }
+
   const backendRouting =
     buildBackendRoutingConfig(archive.manifest.backend) ??
-    (options.backendTransport
+    (backendTransport
       ? { enabled: true, mode: 'api' as const, routes: ['/api/', '/ws'], interceptOrigins: [] }
       : undefined);
-
-  let localBackendTransport: LocalBackendTransport | null = null;
-  let backendTransport: BackendTransport | undefined = options.backendTransport;
 
   if (!backendTransport && (archive.manifest.backend || effectiveDatabases.length > 0)) {
     const backendVfs = archive.exportBackendVfs();
@@ -2203,6 +2211,8 @@ export async function mountSoftNContainer(
       teardownPage();
       localBackendTransport?.dispose();
       localBackendTransport = null;
+      ownedRemoteTransport?.dispose();
+      ownedRemoteTransport = null;
       navController = null;
       navEl = null;
       archive.dispose();
@@ -2221,7 +2231,7 @@ export function defineSoftNAppElement(): void {
 
   class SoftNAppElement extends HTMLElement {
     static get observedAttributes(): string[] {
-      return ['src', 'runtime-url', 'theme', 'permission-mode', 'virtual-nav', 'initial-path'];
+      return ['src', 'runtime-url', 'backend-url', 'theme', 'permission-mode', 'virtual-nav', 'initial-path'];
     }
 
     private handle: SoftNContainerHandle | null = null;
@@ -2244,6 +2254,7 @@ export function defineSoftNAppElement(): void {
       if (
         name === 'src' ||
         name === 'runtime-url' ||
+        name === 'backend-url' ||
         name === 'theme' ||
         name === 'permission-mode' ||
         name === 'virtual-nav' ||
@@ -2271,6 +2282,7 @@ export function defineSoftNAppElement(): void {
       if (!src) return;
 
       const runtimeUrl = this.getAttribute('runtime-url') ?? '/runtime/';
+      const backendUrl = this.getAttribute('backend-url') ?? undefined;
       const themeAttr = this.getAttribute('theme');
       const theme = themeAttr === 'dark' || themeAttr === 'light' ? themeAttr : 'auto';
       const permAttr = this.getAttribute('permission-mode');
@@ -2283,6 +2295,7 @@ export function defineSoftNAppElement(): void {
         const mounted = await mountSoftNContainer(this, {
           source: src,
           runtimeUrl,
+          backendUrl,
           theme,
           permissionMode,
           virtualNav,

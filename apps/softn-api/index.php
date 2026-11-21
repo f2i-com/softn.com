@@ -24,6 +24,7 @@ require __DIR__ . '/lib/social.php';
 require __DIR__ . '/lib/storage.php';
 require __DIR__ . '/lib/seed.php';
 require __DIR__ . '/lib/pages.php';
+require __DIR__ . '/lib/hosted_backend.php';
 
 error_reporting(E_ALL);
 set_error_handler(static function (int $no, string $str, string $file, int $line): bool {
@@ -69,7 +70,7 @@ function cors_headers(): void
         }
         header('Access-Control-Allow-Origin: ' . $origin);
     }
-    header('Access-Control-Allow-Methods: GET, HEAD, POST, PATCH, DELETE, OPTIONS');
+    header('Access-Control-Allow-Methods: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
     // If-None-Match is not CORS-safelisted: without it here a page on another
     // origin revalidating a bundle is refused at the preflight and downloads the
     // archive every time.
@@ -116,6 +117,7 @@ $routes = [
     ['POST', '#^/apps/([^/]+)/thumbnail$#', 'setThumbnail'],
     ['GET', '#^/apps/([^/]+)/icon$#', 'icon'],
     ['GET', '#^/apps/([^/]+)/source$#', 'source'],
+    ['GET', '#^/apps/([^/]+)/source/file$#', 'sourceFile'],
     ['POST', '#^/apps/([^/]+)/versions$#', 'addVersion'],
     ['POST', '#^/apps/([^/]+)/key$#', 'replaceKey'],
     ['GET', '#^/git/([^/]+?)(?:\.git)?/info/refs$#', 'gitRefs'],
@@ -127,10 +129,11 @@ $routes = [
     ['GET', '#^/apps/([^/]+)/rating$#', 'rating'],
     ['POST', '#^/apps/([^/]+)/rating$#', 'rate'],
     ['POST', '#^/apps/([^/]+)/runs$#', 'run'],
+    ['*', '#^/apps/([^/]+)/backend(?:/(.*))?$#', 'hostedBackend'],
     ['POST', '#^/apps/([^/]+)/storage$#', 'storage'],
     ['GET', '#^/apps/([^/]+)/storage$#', 'storageSummary'],
     ['GET', '#^/apps/([^/]+)/storage/([a-z][a-z0-9_]{0,31})$#', 'storageList'],
-    ['POST', '#^/admin/categories/([^/]+)$#', 'adminCategory'],
+    ['POST', '#^/admin/categories/([^/]+(?:/[^/]+)?)$#', 'adminCategory'],
     ['DELETE', '#^/admin/comments/(\d+)$#', 'adminDeleteComment'],
     ['GET', '#^/admin/stats$#', 'adminStats'],
     ['GET', '#^/page/app/([^/]+)$#', 'page'],
@@ -158,7 +161,7 @@ try {
     }
     if (is_string($pagePath) && preg_match('#^/play/([^/]+)/?$#', rawurldecode($pagePath), $pm)) {
         Seed::ifEmpty();
-        Pages::play($pm[1])->send();
+        Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local')->send();
         exit;
     }
 
@@ -177,10 +180,10 @@ try {
     // theirs before the catalogue themselves, after their own checks.
     // A storage body is decoded here the way its handler needs it (the text
     // is not kept to decode twice): an object stays an object. See Json.
-    if ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->contentType() === 'application/json' && $req->bodyLimit() === Limits::json()) $req->json($handler === 'storage');
+    if ($handler !== 'hostedBackend' && $req->method !== 'GET' && $req->method !== 'HEAD' && $req->contentType() === 'application/json' && $req->bodyLimit() === Limits::json()) $req->json($handler === 'storage');
     // A form body PHP has already read is held to the same limit: sent as a
     // form, a 2 MB comment was taken where the same body as JSON was a 413.
-    elseif ($req->method !== 'GET' && $req->method !== 'HEAD' && $req->bodyLimit() === Limits::json()) $req->admitForm();
+    elseif ($handler !== 'hostedBackend' && $req->method !== 'GET' && $req->method !== 'HEAD' && $req->bodyLimit() === Limits::json()) $req->admitForm();
     $response = handle($handler, $args, $req);
     Catalog::release();
     server_timing();
@@ -292,11 +295,33 @@ function presented_keys(Request $req): array
  *
  * @return array{0: string, 1: array<string, mixed>}|null
  */
+function find_app_dir_unlocked(string $slug): ?string
+{
+    if (!Catalog::validSlug($slug)) return null;
+    $root = Config::dataDir() . '/apps';
+    if (!is_dir($root)) return null;
+    $direct = "$root/$slug";
+    if (!is_link($direct) && is_file("$direct/app.json")) return $direct;
+    foreach (scandir($root) ?: [] as $cat) {
+        if (!Catalog::validSlug($cat)) continue;
+        $catDir = "$root/$cat";
+        if (is_link($catDir) || !is_dir($catDir)) continue;
+        $d2 = "$catDir/$slug";
+        if (!is_link($d2) && is_file("$d2/app.json")) return $d2;
+        foreach (scandir($catDir) ?: [] as $sub) {
+            if (!Catalog::validSlug($sub)) continue;
+            $d3 = "$catDir/$sub/$slug";
+            if (!is_link($d3) && is_file("$d3/app.json")) return $d3;
+        }
+    }
+    return null;
+}
+
 function remix_source(string $given): ?array
 {
     foreach (array_unique([trim($given), Apps::slugOf($given)]) as $slug) {
-        $dir = Config::dataDir() . '/apps/' . $slug;
-        if (!Catalog::validSlug($slug) || is_link($dir) || !is_file("$dir/app.json")) continue;
+        $dir = find_app_dir_unlocked($slug);
+        if ($dir === null) continue;
         $doc = json_decode((string) @file_get_contents("$dir/app.json"), true);
         $latest = null;
         foreach (is_array($doc['versions'] ?? null) ? $doc['versions'] : [] as $v) {
@@ -334,9 +359,10 @@ function handle(string $handler, array $args, Request $req): Response
                 'name' => Config::get('siteName', 'SoftN') . ' directory API',
                 'docs' => '/api/README.md',
                 'routes' => [
-                    'GET /api/apps?q=&category=&tag=&author=&cap=nonet|none|storage|worker&sort=trending|newest|top|remixed|runs|name&page=&perPage=',
+                    'GET /api/apps?q=&category=&subcategory=&tag=&author=&cap=nonet|none|storage|worker|backend&hosting=browser|server|hybrid|backend&sort=trending|newest|top|remixed|runs|name&page=&perPage=',
                     'GET /api/apps/{slug}',
-                    'GET /api/apps/{slug}/bundle.softn?v=&sha256=&download=1',
+                    'GET /api/apps/{slug}/bundle.softn?v=&sha256=&download=1&client=1',
+                    'ANY /api/apps/{slug}/backend/{path}  (multi-user ZIPP safe-sandbox backend when hosting is server or hybrid)',
                     'GET /api/apps/{slug}/thumbnail',
                     'GET /api/apps/{slug}/source?v=',
                     'GET /api/apps/{slug}/comments?page=',
@@ -354,7 +380,7 @@ function handle(string $handler, array $args, Request $req): Response
                     'POST /api/apps/{slug}/rating  {stars}',
                     'POST /api/apps/{slug}/runs',
                     'POST /api/apps/{slug}/storage  {op, ...}',
-                    'POST /api/categories  {name, description, emoji}',
+                    'POST /api/categories  {name, description, emoji, parent?}',
                 ],
             ]);
 
@@ -425,6 +451,8 @@ function handle(string $handler, array $args, Request $req): Response
                 // The API's own request limits, and whether the host's
                 // post_max_size and upload_max_filesize cover them.
                 'limits' => Limits::describe(),
+                'allowServerHosting' => Config::get('allowServerHosting', true) === true,
+                'allowPublicServerHosting' => Config::get('allowPublicServerHosting', false) === true && Config::get('allowServerHosting', true) === true,
                 // How many proxies are trusted and whether the old boolean
                 // is in force — not which addresses: this route is public.
                 'proxy' => ['trustedProxies' => is_array($trusted) ? count(Net::ranges($trusted)) : 0, 'legacyTrustProxy' => Config::get('trustProxy', false) === true, 'forwardedButUntrusted' => $forwardedUntrusted],
@@ -435,12 +463,17 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'categories':
             Seed::ifEmpty();
-            return Response::json(['ok' => true, 'categories' => Categories::all()]);
+            return Response::json([
+                'ok' => true,
+                'categories' => Categories::all(),
+                'allowPublicServerHosting' => Config::get('allowPublicServerHosting', false) === true && Config::get('allowServerHosting', true) === true,
+            ]);
 
         case 'suggestCategory': {
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The suggestion was not accepted.');
             Db::rateLimit('suggest', Config::limitKey($req->ip));
-            $c = Categories::suggest((string) $req->field('name'), (string) ($req->field('description') ?? ''), (string) ($req->field('emoji') ?? ''));
+            $parent = $req->field('parent');
+            $c = Categories::suggest((string) $req->field('name'), (string) ($req->field('description') ?? ''), (string) ($req->field('emoji') ?? ''), is_string($parent) && $parent !== '' ? $parent : null);
             return Response::json(['ok' => true, 'category' => $c], 201);
         }
 
@@ -453,7 +486,8 @@ function handle(string $handler, array $args, Request $req): Response
             // The hourly limit is for visitors. The site owner, who has the
             // admin key from data/config.json, fills a fresh directory in one
             // batch — a whole folder of bundles dropped on the publish page.
-            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
+            $isAdmin = Config::isAdmin($req->credential('x-admin-key', 'adminKey'));
+            if (!$isAdmin) {
                 Db::rateLimit('publish', Config::publishKey($req->ip));
             }
             $file = $req->bundleFile();
@@ -475,9 +509,11 @@ function handle(string $handler, array $args, Request $req): Response
             $parentSlug = is_string($parent) && $parent !== '' ? Apps::resolveParent($parent) : null;
             $result = Apps::create($file, [
                 'name' => $req->field('name'), 'description' => $req->field('description'), 'author' => $req->field('author'),
-                'category' => $req->field('category'), 'tags' => $req->field('tags'), 'notes' => $req->field('notes'),
-                'primary' => $req->field('primary'),
-            ], $parentSlug !== null ? 'remix' : ($req->contentType() === 'multipart/form-data' ? 'upload' : 'api'), $parentSlug, $info);
+                'category' => $req->field('category'), 'subcategory' => $req->field('subcategory'), 'tags' => $req->field('tags'), 'notes' => $req->field('notes'),
+                'primary' => $req->field('primary'), 'hosting' => $req->field('hosting'),
+                'backendUrl' => $req->field('backendUrl') ?? $req->field('backend_url'),
+                'withholdBackend' => $req->field('withholdBackend') ?? $req->field('withhold_backend'),
+            ], $parentSlug !== null ? 'remix' : ($req->contentType() === 'multipart/form-data' ? 'upload' : 'api'), $parentSlug, $info, $isAdmin);
             return Apps::created($result, $image);
         }
 
@@ -497,12 +533,13 @@ function handle(string $handler, array $args, Request $req): Response
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
             $fields = $req->json();
-            foreach (['name', 'description', 'author', 'category', 'tags', 'primary'] as $f) {
+            foreach (['name', 'description', 'author', 'category', 'subcategory', 'tags', 'primary', 'hosting', 'backendUrl', 'backend_url', 'withholdBackend', 'withhold_backend'] as $f) {
                 $v = $req->field($f);
                 if ($v !== null && !array_key_exists($f, $fields)) $fields[$f] = $v;
             }
-            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) unset($fields['hidden']);
-            return Response::json(['ok' => true, 'app' => Apps::patch($slug, $fields)]);
+            $isAdmin = Config::isAdmin($req->credential('x-admin-key', 'adminKey'));
+            if (!$isAdmin) unset($fields['hidden']);
+            return Response::json(['ok' => true, 'app' => Apps::patch($slug, $fields, $isAdmin)]);
         }
 
         case 'deleteApp': {
@@ -520,11 +557,19 @@ function handle(string $handler, array $args, Request $req): Response
             Seed::ifEmpty();
             $slug = Apps::resolveSlug($args[0]);
             $row = Apps::requireBundle($slug);
+            $hosting = Apps::hostingInfo($row);
             $v = requested_version($req);
             $pinned = requested_digest($req);
             $ver = Apps::version($slug, $v);
-            $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
+            $appDir = Catalog::path($slug);
+            $path = "$appDir/" . $ver['file'];
             if (!is_file($path)) throw new ApiError(404, 'The bundle file is missing.');
+            $serveSha = (string) $ver['sha256'];
+            if ($hosting['withholdBackend'] || ($req->query['client'] ?? '') === '1') {
+                $cachePath = "$appDir/backend-cache/client-v" . (int) $ver['version'] . '-' . substr($serveSha, 0, 12) . '.softn';
+                $path = Bundle::clientBundlePath($path, $cachePath);
+                $serveSha = hash_file('sha256', $path) ?: $serveSha;
+            }
             // An address with the digest in it is answered with those bytes
             // or not at all, so it never names two contents and a cache may
             // hold it for a day. A day rather than immutable for a year,
@@ -535,13 +580,13 @@ function handle(string $handler, array $args, Request $req): Response
             // again from v1. Held for a day, a cache answered with the old
             // bytes, and the play page, which pins the digest, refused the
             // app. So it is revalidated, which the ETag makes cheap.
-            if ($pinned !== null && $pinned !== $ver['sha256']) {
+            if ($pinned !== null && $pinned !== $serveSha) {
                 throw new ApiError(404, 'That version of the bundle has been replaced; ask the app for its current address.');
             }
             $type = 'application/octet-stream';
             $headers = [
                 'Cache-Control' => $pinned !== null ? 'public, max-age=86400' : 'no-cache, must-revalidate',
-                'ETag' => '"' . $ver['sha256'] . '"',
+                'ETag' => '"' . $serveSha . '"',
                 // The app's own address: this route also answers for a name that
                 // spells the slug, and the runtime must not keep that as its slug.
                 'Content-Location' => "/api/apps/$slug/bundle.softn",
@@ -584,15 +629,74 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'source': {
             $slug = Apps::resolveSlug($args[0]);
-            Apps::requireBundle($slug);
+            $row = Apps::requireBundle($slug);
+            $hosting = Apps::hostingInfo($row);
             $v = requested_version($req);
             $ver = Apps::version($slug, $v);
-            $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
+            $appDir = Catalog::path($slug);
+            $path = "$appDir/" . $ver['file'];
+            if ($hosting['withholdBackend']) {
+                $cachePath = "$appDir/backend-cache/client-v" . (int) $ver['version'] . '-' . substr((string) $ver['sha256'], 0, 12) . '.softn';
+                $path = Bundle::clientBundlePath($path, $cachePath);
+            }
             // Without `v` the address is the latest version's, which a new
             // version changes: held for five minutes, View source showed the
             // last version's files under the new version's number.
             $cache = $v !== null ? 'public, max-age=300' : 'no-cache, must-revalidate';
             return Response::json(['ok' => true, 'version' => (int) $ver['version']] + Bundle::listSource($path), 200, ['Cache-Control' => $cache]);
+        }
+
+        case 'sourceFile': {
+            $slug = Apps::resolveSlug($args[0]);
+            $row = Apps::requireBundle($slug);
+            $hosting = Apps::hostingInfo($row);
+            $v = requested_version($req);
+            $ver = Apps::version($slug, $v);
+            $entryPath = (string) ($req->query['path'] ?? '');
+            $appDir = Catalog::path($slug);
+            $path = "$appDir/" . $ver['file'];
+            if ($hosting['withholdBackend']) {
+                $cachePath = "$appDir/backend-cache/client-v" . (int) $ver['version'] . '-' . substr((string) $ver['sha256'], 0, 12) . '.softn';
+                $path = Bundle::clientBundlePath($path, $cachePath);
+            }
+            $entry = Bundle::readSourceFile($path, $entryPath);
+            $bytes = $entry['bytes'];
+            $total = $entry['size'];
+            $cache = $v !== null ? 'public, max-age=300' : 'no-cache, must-revalidate';
+            $headers = [
+                'Cache-Control' => $cache,
+                'Accept-Ranges' => 'bytes',
+                'Cross-Origin-Resource-Policy' => 'same-origin',
+            ] + Response::USER_CONTENT;
+            if (($req->query['download'] ?? '') === '1') {
+                $dlName = preg_replace('/[^A-Za-z0-9._-]/', '_', basename($entryPath)) ?: 'file';
+                $headers['Content-Disposition'] = 'attachment; filename="' . $dlName . '"';
+            }
+            // Support single-range byte requests so <audio> and <video> players can scrub smoothly.
+            $range = $req->header('range');
+            if (is_string($range) && $total > 0 && preg_match('/^bytes=(\d*)-(\d*)$/', trim($range), $m)) {
+                $start = $m[1] === '' ? null : (int) $m[1];
+                $end = $m[2] === '' ? null : (int) $m[2];
+                if ($start === null && $end !== null && $end > 0) {
+                    $start = max(0, $total - $end);
+                    $end = $total - 1;
+                } else {
+                    $start ??= 0;
+                    $end = $end === null ? $total - 1 : min($end, $total - 1);
+                }
+                if ($start >= $total || $start > $end) {
+                    return Response::raw(416, [['Content-Range', "bytes */$total"], ['Content-Type', 'text/plain; charset=utf-8']], '');
+                }
+                $slice = substr($bytes, $start, $end - $start + 1);
+                $pairs = [
+                    ['Content-Type', $entry['mime']],
+                    ['Content-Range', "bytes $start-$end/$total"],
+                    ['Content-Length', (string) strlen($slice)],
+                ];
+                foreach ($headers as $k => $val) $pairs[] = [$k, $val];
+                return Response::raw(206, $pairs, $slice);
+            }
+            return Response::bytes($bytes, $entry['mime'], $headers + ['Content-Length' => (string) $total]);
         }
 
         case 'addVersion': {
@@ -674,18 +778,24 @@ function handle(string $handler, array $args, Request $req): Response
             $parent = Apps::requireBundle($parentSlug);
             $copied = false;
             if ($file === null) {
+                if (Apps::hostingInfo($parent)['withholdBackend']) {
+                    throw new ApiError(403, 'This server-hosted app withholds its backend source and cannot be remixed without uploading your own bundle.');
+                }
                 // No bundle: the remix starts as an exact copy, to be edited later.
                 $ver = Apps::version($parentSlug);
                 if ($source !== null && $source[1]['sha256'] === $ver['sha256']) [$file, $info] = $source;
-                else $file = Config::dataDir() . '/apps/' . $parentSlug . '/' . $ver['file'];
+                else $file = Catalog::path($parentSlug) . '/' . $ver['file'];
                 $copied = true;
             }
             Config::requireRoom((int) @filesize($file));
+            $reqCategory = $req->field('category');
+            $reqSubcategory = $req->field('subcategory');
             $result = Apps::create($file, [
                 'name' => $req->field('name') ?: ($parent['name'] . ' remix'),
                 'description' => $req->field('description') ?: $parent['description'],
                 'author' => $req->field('author'),
-                'category' => $req->field('category') ?: $parent['category'],
+                'category' => $reqCategory ?: $parent['category'],
+                'subcategory' => $reqSubcategory ?? ($reqCategory ? '' : ($parent['subcategory'] ?? '')),
                 'tags' => $req->field('tags') ?? json_encode(json_decode((string) $parent['tags'], true) ?: []),
                 'notes' => $req->field('notes') ?: ($copied ? 'Remixed from ' . $parent['name'] : ''),
                 'primary' => $req->field('primary') ?: $parent['primary_color'],
@@ -716,6 +826,10 @@ function handle(string $handler, array $args, Request $req): Response
             Social::recordRun($req, $slug, $req->field('stage') === 'launch' ? 'launch' : 'open');
             return Response::noContent();
         }
+
+        case 'hostedBackend':
+            Seed::ifEmpty();
+            return HostedBackend::dispatch($req, $args[0], $args[1] ?? '');
 
         case 'storage': {
             $slug = storage_app($args[0]);
@@ -777,7 +891,7 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'playPage':
             Seed::ifEmpty();
-            return Pages::play($args[0]);
+            return Pages::play($args[0], ($req->query['mode'] ?? '') === 'local');
     }
     throw new ApiError(404, 'No such route.');
 }

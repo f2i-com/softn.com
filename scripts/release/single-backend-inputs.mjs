@@ -118,10 +118,12 @@ export async function prepareBackendInputs() {
   await download('https://registry.npmjs.org/ws/-/ws-'+wsVersion+'.tgz',join(cache,wsArchive),wsHash);
   const wsDir=unpackPinned(cache,wsArchive,'ws');
   const wasmDir=join(root,'packages/@softn/core/wasm-zipp');
+  const containerEnginesPath=join(root,'packages/@softn/container/dist/runtime/engines');
+  const containerEnginesDir=existsSync(containerEnginesPath)?containerEnginesPath:undefined;
   const notices=join(cache,'notices');
   await prepareZippNotices(wasmDir,notices);
   writeFileSync(join(notices,'NODE-SOURCE.json'),JSON.stringify({version:nodeVersion,url:'https://nodejs.org/dist/v'+nodeVersion+'/'+nodeName+'.tar.xz',sha256:nodeHash},null,2));
   writeFileSync(join(notices,'WS-SOURCE.json'),JSON.stringify({version:wsVersion,url:'https://registry.npmjs.org/ws/-/ws-'+wsVersion+'.tgz',sha256:wsHash,license:'MIT'},null,2));
   const version=JSON.parse(readFileSync(join(root,'package.json'),'utf8')).version;
-  return {nodeDir:join(cache,nodeName),wasmDir,notices,websocketDir:join(wsDir,'package'),version};
+  return {nodeDir:join(cache,nodeName),wasmDir,containerEnginesDir,notices,websocketDir:join(wsDir,'package'),version};
 }

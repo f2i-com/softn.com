@@ -38,7 +38,21 @@ export function breakdownAfterVote(breakdown: Breakdown, previous: number | null
   return next;
 }
 
-function Badges({ capabilities, execution, official, external }: { capabilities: string[]; execution: string; official: boolean; external: { url: string; host: string } | null }): React.ReactElement {
+function Badges({
+  capabilities,
+  execution,
+  official,
+  external,
+  hosting,
+  backendRuntime,
+}: {
+  capabilities: string[];
+  execution: string;
+  official: boolean;
+  external: { url: string; host: string } | null;
+  hosting?: AppDetail['hosting'];
+  backendRuntime?: string | null;
+}): React.ReactElement {
   const { safe } = capabilitySummary(capabilities);
   if (external) {
     // Hosted elsewhere: the sandbox badges would be claims about a page this
@@ -56,12 +70,37 @@ function Badges({ capabilities, execution, official, external }: { capabilities:
       </div>
     );
   }
+  const rtLabel = backendRuntime ? backendRuntime.toUpperCase() : null;
   return (
     <div className="badges" aria-label="What this app asks to reach">
       <span className={`badge ${safe ? 'badge-safe' : ''}`}>
         <span className="badge-dot" aria-hidden="true" />
         Sandboxed
       </span>
+      {hosting?.serverHosted ? (
+        <span
+          className="badge badge-hosting"
+          title={
+            hosting.mode === 'hybrid'
+              ? 'Hosted on SoftN inside ZIPP safe-sandbox, and also runnable locally in your browser sandbox'
+              : 'Hosted on SoftN inside ZIPP safe-sandbox'
+          }
+        >
+          {hosting.mode === 'hybrid' ? 'Hosted on SoftN + Browser' : 'Hosted on SoftN (ZIPP sandbox)'}
+          {rtLabel ? ` · ${rtLabel}` : ''}
+        </span>
+      ) : (
+        <span
+          className="badge badge-hosting"
+          title={
+            rtLabel
+              ? `Downloads the .softn bundle and runs frontend + ${rtLabel} backend + SQLite locally in your browser sandbox`
+              : 'Downloads the .softn bundle and runs completely locally in your browser sandbox'
+          }
+        >
+          Browser sandbox{rtLabel ? ` · ${rtLabel}` : ''}
+        </span>
+      )}
       {capabilities.length === 0 ? (
         <span className="badge">No capabilities</span>
       ) : (
@@ -329,6 +368,7 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
   }
 
   const category = categories.find((c) => c.id === app.category);
+  const subcategory = app.subcategory ? category?.subcategories?.find((s) => s.slug === app.subcategory) : undefined;
   const shareTitle = `${app.name} on SoftN`;
   const shareText = app.description || `${app.name}, a SoftN app`;
   const breakdown = app.ratingBreakdown;
@@ -352,6 +392,14 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
             </a>
           ) : (
             <a href="/apps">All</a>
+          )}
+          {app.subcategory && (
+            <>
+              <span aria-hidden="true">›</span>
+              <a href={`/apps?category=${encodeURIComponent(app.category)}&subcategory=${encodeURIComponent(app.subcategory)}`}>
+                {subcategory ? `${subcategory.emoji} ${subcategory.name}` : app.subcategory}
+              </a>
+            </>
           )}
           <span aria-hidden="true">›</span>
           <span>{app.name}</span>
@@ -381,7 +429,14 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
               <span title={app.createdAt}>published {timeAgo(app.createdAt)}</span>
               {app.version > 1 && <> · updated {timeAgo(app.updatedAt)}</>}
             </p>
-            <Badges capabilities={app.capabilities} execution={app.execution} official={official} external={external} />
+            <Badges
+              capabilities={app.capabilities}
+              execution={app.execution}
+              official={official}
+              external={external}
+              hosting={app.hosting}
+              backendRuntime={app.backendRuntime}
+            />
             <div className="stats">
               <span className="stat">
                 <Stars average={app.rating.average} count={app.rating.count} size={14} showCount={false} />
@@ -426,19 +481,31 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
               ) : (
                 <button type="button" className="cta cta-primary" onClick={play}>
                   <PlayGlyph />
-                  Play
+                  {app.hosting?.serverHosted ? (app.hosting.mode === 'hybrid' ? 'Play hosted' : 'Open hosted app') : 'Play'}
                 </button>
+              )}
+              {!external && app.hosting?.serverHosted && app.hosting.browserSupported && (
+                <a
+                  className="cta"
+                  href={runUrl(app.slug, { local: true })}
+                  onClick={() => void recordRun(app.slug)}
+                  title="Download the .softn bundle and run frontend, backend and SQLite locally inside your browser sandbox"
+                >
+                  Run locally in browser
+                </a>
               )}
               {!external && (
                 <>
-                  <a className="cta" href={remixUrl}>
-                    Remix
-                  </a>
+                  {!app.hosting?.withholdBackend && (
+                    <a className="cta" href={remixUrl}>
+                      Remix
+                    </a>
+                  )}
                   <button type="button" className="cta" onClick={() => setShowSource((s) => !s)} aria-expanded={showSource} aria-controls="source">
                     {showSource ? 'Hide source' : 'View source'}
                   </button>
                   <a className="cta" href={app.urls.download ?? undefined} download={`${app.slug}.softn`}>
-                    Download
+                    {app.hosting?.withholdBackend ? 'Download client' : 'Download'}
                   </a>
                 </>
               )}
@@ -540,6 +607,26 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
                   . The directory lists it and opens it; it does not run it in the zipp sandbox, so it makes no claims about what that page reaches.
                 </p>
               </section>
+            )}
+            {!external && (
+            <section className="side-card">
+              <h2 className="side-title">How it runs</h2>
+              {app.hosting?.serverHosted ? (
+                <p className="muted">
+                  {app.hosting.mode === 'hybrid'
+                    ? `Hosted on SoftN inside ZIPP safe-sandbox${app.backendRuntime ? ` (${app.backendRuntime.toUpperCase()} + shared WAL SQLite)` : ''} — or choose "Run locally in browser" to download the .softn bundle and run everything privately in your browser sandbox.`
+                    : `Hosted on SoftN inside ZIPP safe-sandbox${app.backendRuntime ? ` (${app.backendRuntime.toUpperCase()} + shared WAL SQLite)` : ''}. Backend code never runs on native OS PHP or shell.${app.hosting.withholdBackend ? ' Server source files stay server-side.' : ''}`}
+                </p>
+              ) : (
+                <p className="muted">
+                  Runs completely inside your browser sandbox. Your browser downloads the single <code>.softn</code> file and runs{' '}
+                  {app.backendRuntime
+                    ? `the frontend, ${app.backendRuntime.toUpperCase()} backend, and SQLite database locally in IndexedDB`
+                    : 'the app locally'}{' '}
+                  — nothing executes on the server.
+                </p>
+              )}
+            </section>
             )}
             {!external && (
             <section className="side-card">

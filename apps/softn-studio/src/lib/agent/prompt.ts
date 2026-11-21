@@ -16,7 +16,7 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { projectLogicLanguage, projectPythonPackages, revisionNotes } from '../studioProject';
 import { projectContainerMode } from '../sourceKinds';
 import { describeTree } from './executeTool';
-import { buildGuide, buildV2ContainerGuide, projectHasBackend } from './guide';
+import { buildGuide, buildV2ContainerGuide, projectHasBackend, projectHasContainerBackend } from './guide';
 import { componentIndexText, docIndexText } from './knowledge';
 import { textProtocolGuide } from './tools';
 import type { ToolProtocol } from './types';
@@ -57,7 +57,9 @@ export function buildAgentSystemPrompt(protocol: ToolProtocol): string {
   const python = language === 'python';
   const torch = python && projectPythonPackages(files, ws.brief).includes('torch');
   const manifest = files.get('manifest.json');
-  const backend = projectHasBackend(typeof manifest?.content === 'string' ? manifest.content : undefined);
+  const manifestText = typeof manifest?.content === 'string' ? manifest.content : undefined;
+  const backend = projectHasBackend(manifestText);
+  const containerBackend = projectHasContainerBackend(manifestText);
   const isV2Container = projectContainerMode(files, ws.brief) === 'web';
 
   if (isV2Container) {
@@ -67,7 +69,7 @@ export function buildAgentSystemPrompt(protocol: ToolProtocol): string {
     );
     return [
       v2Workflow,
-      buildV2ContainerGuide({ language, torch, backend, style: ws.brief?.style || 'clean' }),
+      buildV2ContainerGuide({ language, torch, backend, containerBackend, style: ws.brief?.style || 'clean' }),
       `## Guides (read_docs)\n${docIndexText(python)}`,
       protocol === 'text' ? textProtocolGuide() : '',
     ]
@@ -106,7 +108,7 @@ export function buildProjectContext(kind: 'build' | 'edit' = 'edit', previewRepo
 - Style: ${ws.brief.style}
 - Pages: ${ws.brief.pages.join(', ') || 'none specified'}
 - Collections: ${ws.brief.collections.join(', ') || 'none specified'}
-- Auth: ${ws.brief.authNeeded ? 'required' : 'not required'}`
+- Auth: ${ws.brief.authNeeded ? 'required' : 'not required'}${ws.brief.containerBackend && ws.brief.containerBackend !== 'none' ? `\n- Sandboxed backend: ${ws.brief.containerBackend} + SQLite` : ''}`
     : '## No brief yet\nWork from the person\'s messages.';
 
   const blueprint = ws.blueprint

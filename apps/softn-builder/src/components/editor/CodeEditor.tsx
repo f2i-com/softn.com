@@ -40,6 +40,11 @@ export function highlightLanguage(language: string | undefined): NonNullable<Cod
     case 'javascript':
     case 'typescript':
     case 'python':
+    case 'php':
+    case 'rust':
+    case 'shell':
+    case 'sql':
+    case 'markdown':
     case 'json':
     case 'css':
       return language;

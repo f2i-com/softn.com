@@ -85,8 +85,9 @@ export const PERMISSION_INFO: Record<string, { label: string; description: strin
     ),
   },
   files: {
-    label: 'Files',
-    description: 'Open files you choose, and save files the app makes to your device.',
+    label: 'File chooser & saving',
+    description:
+      'Ask you to pick a file using a file chooser, or save files the app creates to your device. It cannot browse or read your folders on its own.',
     icon: svg(<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />),
   },
   qr: {

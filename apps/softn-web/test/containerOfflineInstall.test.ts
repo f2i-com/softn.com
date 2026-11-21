@@ -15,6 +15,8 @@ const ENGINES: Record<ZippEngineTier, string> = {
   typescript: 'zipp-typescript.wasm',
   python: 'zipp-python-base.wasm',
   'python-torch': 'zipp-python-base.wasm',
+  php: 'zipp-php.wasm',
+  rust: 'zipp-rust.wasm',
 };
 
 function container(needs: Partial<ContainerRuntimeNeeds>, absent: string[] = []): ContainerInstallModule & { preloaded: unknown[] } {
@@ -76,6 +78,25 @@ describe('installing a web container for offline use', () => {
     await installContainerOffline(app('two-tiers'), options(container({ tiers: ['lite', 'typescript'] }), { fetch: fetch as unknown as typeof globalThis.fetch }));
     expect(asked(fetch)).toEqual([
       'container-worker.js',
+      'engines/zipp-javascript-lite.glue.js',
+      'engines/zipp-javascript-lite.wasm',
+      'engines/zipp-typescript.glue.js',
+      'engines/zipp-typescript.wasm',
+    ]);
+  });
+
+  it('holds backend-worker and xdb-wasm for full-stack embedded backends (including JS/TS/Python)', async () => {
+    const fetch = serve();
+    const result = await installContainerOffline(
+      app('fullstack-ts'),
+      options(container({ tiers: ['lite', 'typescript'], sqlite: true }), { fetch: fetch as unknown as typeof globalThis.fetch })
+    );
+    expect(result.ready).toBe(true);
+    expect(asked(fetch)).toEqual([
+      'backend-worker.js',
+      'container-worker.js',
+      'engines/xdb-wasm.glue.js',
+      'engines/xdb-wasm.wasm',
       'engines/zipp-javascript-lite.glue.js',
       'engines/zipp-javascript-lite.wasm',
       'engines/zipp-typescript.glue.js',

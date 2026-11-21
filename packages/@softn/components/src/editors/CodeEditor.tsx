@@ -46,6 +46,9 @@ export interface CodeEditorProps {
     | 'html'
     | 'css'
     | 'python'
+    | 'php'
+    | 'rust'
+    | 'shell'
     | 'sql'
     | 'markdown'
     | 'plain';

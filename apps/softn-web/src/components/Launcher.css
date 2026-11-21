@@ -109,10 +109,40 @@
 }
 .softn-launcher-section-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem 1rem;
   margin-bottom: 0.625rem;
+}
+.softn-launcher-section-heading {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.softn-launcher-section-action {
+  padding: 0.28rem 0.65rem;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 140ms var(--ease), border-color 140ms var(--ease), background 140ms var(--ease);
+}
+.softn-launcher-section-action:hover {
+  color: var(--paper);
+  border-color: var(--line-strong);
+  background: var(--ink-2);
+}
+.softn-launcher-section-action--danger:hover {
+  color: var(--coral, #f87171);
+  border-color: color-mix(in srgb, var(--coral, #f87171) 50%, var(--line));
+}
+.softn-launcher-section-action:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
 }
 .softn-launcher-section-title {
   font-family: var(--display);

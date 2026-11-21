@@ -11,7 +11,7 @@ export function deploymentConfig(manifest,clientBytes,permissionMode='prompt') {
   // The deployment namespace has a stricter grammar than bundle IDs (which
   // commonly use reverse-domain notation). Preserve already-valid namespaces.
   const id=/^[a-z0-9][a-z0-9_-]{0,63}$/.test(manifest.id)?manifest.id:'app-'+sha(String(manifest.id)).slice(0,32);
-  return {version:1,id,title:manifest.name,bundle:'./app.softn',theme:'light',sha256:sha(clientBytes),...(permissionMode==='preapproved'?{permissionMode}:{})};
+  return {version:1,id,title:manifest.name,bundle:'./app.softn',theme:'light',sha256:sha(clientBytes),...(manifest.backend?{backendUrl:'.'}:{}),...(permissionMode==='preapproved'?{permissionMode}:{})};
 }
 // `privateDir` selects the privately served variant: the runtime is
 // apps/softn-single-private's webroot, the archive and its settings ship
@@ -27,7 +27,7 @@ export function deploymentConfig(manifest,clientBytes,permissionMode='prompt') {
 // WebSocket bridge.
 export const RUNNER_BINARY='softn-runner-linux-x86_64';
 export const RUNNER_NOTICES='SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt';
-export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,operator,readme,template=false,templateClient=false,permissionMode='prompt',websocketDir,htaccess,privateDir,startHere,serveGuide,explainer,runnerDir}) {
+export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEnginesDir,notices,out,operator,readme,template=false,templateClient=false,permissionMode='prompt',websocketDir,htaccess,privateDir,startHere,serveGuide,explainer,runnerDir}) {
   if(privateDir&&(!template||!templateClient||!htaccess||!startHere||!serveGuide))throw new Error('The private variant is a template with its own htaccess and guides');
   const entries={};
   const add=(name,file)=>{entries[name]=readFileSync(file);};
@@ -74,7 +74,7 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,op
   if(!template) {
     const manifest=JSON.parse(readFileSync(join(bundle,'manifest.json'),'utf8'));
     const clientBytes=readFileSync(client),clientFiles=unzipSync(clientBytes),publicManifest=JSON.parse(Buffer.from(clientFiles['manifest.json']).toString());
-    if(publicManifest.id!==manifest.id||publicManifest.server||Object.keys(clientFiles).some(n=>n.startsWith('server/')))throw new Error('Client identity/private-server isolation mismatch');
+    if(publicManifest.id!==manifest.id||publicManifest.server||publicManifest.backend||Object.keys(clientFiles).some(n=>n.startsWith('server/')||n.startsWith('backend/')))throw new Error('Client identity/private-server isolation mismatch');
     tree(bundle,'backend/app/');entries['webroot/app.softn']=clientBytes;
     entries['webroot/runtime.config.json']=Buffer.from(JSON.stringify(deploymentConfig(manifest,clientBytes,permissionMode),null,2));
     if(operator)tree(operator,'backend/operator/');
@@ -90,6 +90,18 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,op
   }
   if(!changed)throw new Error('WASM memory cap not applied');
   entries['backend/wasm/zipp_wasm_bg.wasm']=Buffer.concat(parts);new WebAssembly.Module(entries['backend/wasm/zipp_wasm_bg.wasm']);
+  if(containerEnginesDir) {
+    for(const engineBase of ['zipp-php','zipp-typescript','zipp-rust']) {
+      for(const ext of ['.wasm','.glue.js']) {
+        const src=join(containerEnginesDir,engineBase+ext);
+        try {
+          entries['backend/wasm/container/'+engineBase+ext]=readFileSync(src);
+        } catch(e) {
+          if(e.code!=='ENOENT')throw e;
+        }
+      }
+    }
+  }
   entries['backend/.htaccess']=Buffer.from('Require all denied\n');
   entries['BUILD-INFO.json']=Buffer.from(JSON.stringify({runtime:privateDir?'SoftN PHP-served single app + on-demand ZIPP WASM':'SoftN PHP + on-demand ZIPP WASM',template,backendOptional:templateClient,privateArchive:!!privateDir,builtAt:new Date(process.env.SOURCE_DATE_EPOCH?Number(process.env.SOURCE_DATE_EPOCH)*1000:Date.now()).toISOString(),wasmOriginalSha256:sha(original),wasmPackagedSha256:sha(entries['backend/wasm/zipp_wasm_bg.wasm']),wasmMemoryMaxBytes:268435456,instructionBudget:5000000,phpDeadlineSeconds:25,processSlotsDefault:4,processSlotsMax:16,
     // softn-runner's own ceilings, which the operator sets (request.php

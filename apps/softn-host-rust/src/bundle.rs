@@ -15,9 +15,60 @@ pub struct ServerManifest {
     /// the path hash and creates a new empty database, appearing as data loss.
     pub id: Option<String>,
     pub main: Option<String>,
+    /// Container engine generation (`2` for SoftN v2 Web App Containers).
+    pub engine: Option<u32>,
+    /// Explicit web container opt-in flag (`"container": true`).
+    pub container: Option<bool>,
+    /// Optional directory prefix for frontend static files (e.g. `"public"` or `"app/dist"`).
+    #[serde(rename = "frontendRoot")]
+    pub frontend_root: Option<String>,
+    /// Whether the initial HTML document is rendered dynamically by the container backend.
+    #[serde(rename = "ssrEntry")]
+    pub ssr_entry: Option<bool>,
+    /// Embedded v2 container backend executed inside the ZIPP `safe-sandbox` VM.
+    pub backend: Option<ContainerBackendConfig>,
+    /// Declarative SQLite databases backing a v2 container app.
+    pub databases: Option<Vec<ContainerDatabaseConfig>>,
     pub files: Option<HashMap<String, Vec<String>>>,
     pub server: Option<ServerBlock>,
     pub config: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContainerBackendConfig {
+    /// Target ZIPP sandbox runtime: `"php"`, `"rust"`, `"javascript"`, `"typescript"`, or `"python"`.
+    pub runtime: String,
+    /// Entry file inside the bundle (e.g. `"backend/public/index.php"`, `"backend/server.js"`).
+    pub entry: String,
+    /// Optional directory prefix containing backend source files (e.g. `"backend"`, `"server"`).
+    pub root: Option<String>,
+    /// `"api"` (static frontend + API routes) or `"ssr"` (backend renders HTML + API).
+    pub mode: Option<String>,
+    /// Path prefixes routed to this backend (defaults to `["/api/", "/ws"]` in api mode, `["/"]` in ssr mode).
+    pub routes: Option<Vec<String>>,
+    /// External origins intercepted in browser mode (informational on server).
+    #[serde(rename = "interceptOrigins")]
+    #[allow(dead_code)]
+    pub intercept_origins: Option<Vec<String>>,
+    /// Environment variables passed to the sandboxed backend VM.
+    pub env: Option<HashMap<String, String>>,
+    /// For PHP backends: `"sapi"` (shared-nothing per request, default) or `"worker"`.
+    #[serde(rename = "phpMode")]
+    #[allow(dead_code)]
+    pub php_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContainerDatabaseConfig {
+    pub name: String,
+    pub engine: Option<String>,
+    pub file: Option<String>,
+    #[serde(rename = "seedSql")]
+    pub seed_sql: Option<String>,
+    #[serde(rename = "seedJson")]
+    pub seed_json: Option<serde_json::Value>,
+    #[allow(dead_code)]
+    pub persist: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -468,10 +519,10 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
         if old_dir.exists() {
             let _ = fs::remove_dir_all(&old_dir);
         }
-        fs::rename(&final_dir, &old_dir)
+        rename_dir_with_retry(&final_dir, &old_dir)
             .map_err(|e| format!("Failed to move old bundle aside: {}", e))?;
     }
-    fs::rename(&temp_dir, &final_dir)
+    rename_dir_with_retry(&temp_dir, &final_dir)
         .map_err(|e| format!("Failed to rename extracted bundle: {}", e))?;
     // Clean up old directory (best-effort — not critical if it fails)
     if old_dir.exists() {
@@ -480,6 +531,23 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
 
     tracing::info!("Extracted .softn bundle to {}", final_dir.display());
     Ok(final_dir)
+}
+
+/// Retry directory renames briefly on transient PermissionDenied (common on Windows when
+/// Defender/indexers scan newly extracted multi-file bundles).
+fn rename_dir_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut last_err = None;
+    for attempt in 0..15 {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 14 => {
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, "rename failed")))
 }
 
 pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
@@ -587,6 +655,51 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
             }
         }
     }
+    if let Some(backend) = &manifest.backend {
+        let rt = backend.runtime.to_ascii_lowercase();
+        if !matches!(rt.as_str(), "php" | "rust" | "javascript" | "typescript" | "python") {
+            return Err(format!(
+                "Unsupported container backend runtime {:?} (expected php, rust, javascript, typescript, or python)",
+                backend.runtime
+            ));
+        }
+        if backend.entry.trim().is_empty()
+            || backend.entry.contains("..")
+            || Path::new(&backend.entry).is_absolute()
+        {
+            return Err(format!("Invalid container backend entry path: {:?}", backend.entry));
+        }
+        if let Some(mode) = &backend.mode {
+            if !matches!(mode.as_str(), "api" | "ssr") {
+                return Err(format!("Invalid container backend mode {:?} (expected api or ssr)", mode));
+            }
+        }
+        if let Some(root) = &backend.root {
+            if root.contains("..") || Path::new(root).is_absolute() {
+                return Err(format!("Invalid container backend root path: {:?}", root));
+            }
+        }
+    }
+    if let Some(frontend_root) = &manifest.frontend_root {
+        if frontend_root.contains("..") || Path::new(frontend_root).is_absolute() {
+            return Err(format!("Invalid frontendRoot path: {:?}", frontend_root));
+        }
+    }
+    if let Some(databases) = &manifest.databases {
+        if databases.len() > 16 {
+            return Err("Manifest declares too many databases (max 16)".into());
+        }
+        for db in databases {
+            if db.name.trim().is_empty() || db.name.contains("..") || db.name.contains(['/', '\\', ':']) {
+                return Err(format!("Invalid database name: {:?}", db.name));
+            }
+            if let Some(engine) = &db.engine {
+                if !engine.eq_ignore_ascii_case("sqlite") {
+                    return Err(format!("Unsupported container database engine {:?}", engine));
+                }
+            }
+        }
+    }
     Ok(manifest)
 }
 
@@ -661,7 +774,7 @@ pub fn load_server_scripts(bundle_path: &Path, server: &ServerBlock) -> Result<S
     Ok(source)
 }
 
-/// Build a client-safe manifest (strip server block and server/ file paths).
+/// Build a client-safe manifest (strip server/backend secrets and private file paths).
 pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
     let mut val = serde_json::json!({
         "name": manifest.name,
@@ -673,17 +786,35 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
     if let Some(main) = &manifest.main {
         val["main"] = serde_json::json!(main);
     }
+    if let Some(engine) = manifest.engine {
+        val["engine"] = serde_json::json!(engine);
+    }
+    if let Some(container) = manifest.container {
+        val["container"] = serde_json::json!(container);
+    }
+    if let Some(frontend_root) = &manifest.frontend_root {
+        val["frontendRoot"] = serde_json::json!(frontend_root);
+    }
     if let Some(files) = &manifest.files {
-        // Filter out any file paths that start with "server/" (case-insensitive
-        // to handle case-insensitive file systems on Windows/macOS)
+        // Filter out private server/backend paths so clients never see backend sources.
         let filtered: HashMap<String, Vec<String>> = files
             .iter()
+            .filter(|(k, _)| !k.eq_ignore_ascii_case("server") && !k.eq_ignore_ascii_case("backend"))
             .map(|(k, v)| {
                 let safe: Vec<String> = v
                     .iter()
                     .filter(|p| {
                         let lower = p.to_lowercase();
-                        !lower.starts_with("server/") && !lower.starts_with("server\\")
+                        !lower.starts_with("server/")
+                            && !lower.starts_with("server\\")
+                            && !lower.starts_with("backend/")
+                            && !lower.starts_with("backend\\")
+                            && !lower.ends_with(".php")
+                            && !lower.ends_with(".phtml")
+                            && !lower.ends_with(".rs")
+                            && !lower.ends_with(".sql")
+                            && !lower.ends_with(".db")
+                            && !lower.ends_with(".sqlite")
                     })
                     .cloned()
                     .collect();

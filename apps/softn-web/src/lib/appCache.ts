@@ -30,8 +30,18 @@ export {
   isSecureAppOrigin,
 } from './appCacheIdentity';
 
-export type { AppDataStore, DataTransferResult } from './appCacheStorage';
-export { appDataStores, copyAppData, forgetSyncNotes, hasStoredData, holdsNothingOfItsOwn, removeAppData, transferStorageKeys } from './appCacheStorage';
+export type { AppDataStore, AppStorageBackup, DataTransferResult } from './appCacheStorage';
+export {
+  appDataStores,
+  captureAppStorageBackup,
+  copyAppData,
+  forgetSyncNotes,
+  hasStoredData,
+  holdsNothingOfItsOwn,
+  removeAppData,
+  restoreAppStorageBackup,
+  transferStorageKeys,
+} from './appCacheStorage';
 
 export type { AppDataSnapshot, SnapshotRead } from './appCacheSnapshot';
 export {
@@ -58,6 +68,7 @@ export {
   recordPermissionGrant,
   removeCachedApp,
   renameCachedApp,
+  restoreCachedApp,
   setOfflineState,
   updateLastOpened,
 } from './appCacheRecords';

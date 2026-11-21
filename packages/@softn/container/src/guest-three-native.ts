@@ -60,6 +60,7 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
   }
 
   function objectKindOf(obj) {
+    if (obj._snGltfSrc) return 'GLTF';
     if (obj.isScene) return 'Scene';
     if (obj.isInstancedMesh) return 'InstancedMesh';
     if (obj.isMesh) return 'Mesh';
@@ -683,10 +684,11 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         this._objState.set(obj, st);
       }
 
-      // Build metadata signature (geo, mat, shadows, light params)
+      // Build metadata signature (geo, mat, shadows, light params, gltf src)
       var matKey = Array.isArray(matId) ? matId.join(',') : String(matId);
       var metaSig = geoId + '|' + matKey + '|' + (obj.castShadow ? 1 : 0) + '|' + (obj.receiveShadow ? 1 : 0) +
-        '|' + (obj.frustumCulled ? 1 : 0) + '|' + (obj.renderOrder | 0) + '|' + (obj.layers ? obj.layers.mask : 1);
+        '|' + (obj.frustumCulled ? 1 : 0) + '|' + (obj.renderOrder | 0) + '|' + (obj.layers ? obj.layers.mask : 1) +
+        (obj._snGltfSrc ? '|G:' + obj._snGltfSrc : '');
       if (obj.isLight) {
         metaSig += '|L:' + (obj.color ? obj.color.r.toFixed(4) + ',' + obj.color.g.toFixed(4) + ',' + obj.color.b.toFixed(4) : '') +
           '|' + obj.intensity + '|' + targetId;
@@ -715,6 +717,7 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         };
         if (geoId) spec.geo = geoId;
         if (matId) spec.mat = matId;
+        if (obj._snGltfSrc) spec.src = obj._snGltfSrc;
         if (obj.isInstancedMesh) {
           spec.cap = obj.instanceMatrix ? Math.max(1, obj.instanceMatrix.count | 0) : Math.max(1, obj.count | 0);
           spec.count = obj.count | 0;
@@ -949,6 +952,17 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       enumerable: true,
       configurable: true,
       value: NativeWebGLRenderer,
+    });
+
+    function loadGLTF(path) {
+      var grp = new THREE.Group();
+      grp._snGltfSrc = String(path || '');
+      return grp;
+    }
+    Object.defineProperty(THREE, 'loadGLTF', {
+      enumerable: true,
+      configurable: true,
+      value: loadGLTF,
     });
 
     // Patch Raycaster.prototype in-place so high-poly terrain/scene picking runs in Native V8 (>200x faster!)

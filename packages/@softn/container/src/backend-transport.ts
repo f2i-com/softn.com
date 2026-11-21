@@ -340,22 +340,43 @@ export function statusTextFor(status: number): string {
   return STATUS_TEXTS[status] ?? 'OK';
 }
 
+const FORBIDDEN_FETCH_REQUEST_HEADERS = new Set([
+  'host',
+  'origin',
+  'referer',
+  'content-length',
+  'connection',
+  'keep-alive',
+  'upgrade',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'cookie',
+  'accept-encoding',
+]);
+
 /**
- * Reference remote `BackendTransport` for FormLogic multi-user deployments:
- * forwards container frontend requests to a separate remote backend sandbox URL
- * with identical request/response/WS contracts.
+ * Reference remote `BackendTransport` for multi-user deployments (`softn-server` / FormLogic):
+ * forwards container frontend requests to a separate remote ZIPP-sandboxed backend URL
+ * with identical request/response/WS contracts and zero app code changes.
  */
 export class RemoteBackendTransport implements BackendTransport {
   readonly kind = 'remote' as const;
   readonly ready: Promise<void> = Promise.resolve();
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
+  private readonly credentials: RequestCredentials;
   private readonly sockets = new Set<WebSocket>();
   private disposed = false;
 
-  constructor(options: { baseUrl: string; headers?: Record<string, string> }) {
+  constructor(options: {
+    baseUrl: string;
+    headers?: Record<string, string>;
+    credentials?: RequestCredentials;
+  }) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.extraHeaders = options.headers ?? {};
+    this.credentials = options.credentials ?? 'same-origin';
   }
 
   async fetch(req: BackendHttpRequest): Promise<BackendHttpResponse> {
@@ -364,7 +385,14 @@ export class RemoteBackendTransport implements BackendTransport {
     }
     const path = req.path.startsWith('/') ? req.path : `/${req.path}`;
     const url = req.query ? `${this.baseUrl}${path}?${req.query}` : `${this.baseUrl}${path}`;
-    const headers: Record<string, string> = { ...this.extraHeaders, ...(req.headers ?? {}) };
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...this.extraHeaders, ...(req.headers ?? {}) })) {
+      const lower = k.toLowerCase();
+      if (FORBIDDEN_FETCH_REQUEST_HEADERS.has(lower) || lower.startsWith('sec-') || lower.startsWith('proxy-')) {
+        continue;
+      }
+      headers[k] = v;
+    }
     const method = (req.method || 'GET').toUpperCase();
     let body: BodyInit | undefined;
     if (method !== 'GET' && method !== 'HEAD' && req.body !== undefined) {
@@ -381,6 +409,7 @@ export class RemoteBackendTransport implements BackendTransport {
       method,
       headers,
       body,
+      credentials: this.credentials,
       redirect: 'manual',
     });
     const outHeaders: Array<[string, string]> = [];

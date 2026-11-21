@@ -357,7 +357,12 @@ async function checkLogic(files: Map<string, VFSFile>): Promise<ValidationError[
     const problems: ValidationError[] = [];
     const { transformEsModule } = await import('@softn/container/esm-linker');
     for (const [path, file] of files) {
-      if (isPrivatePath(path) || /^assets\//i.test(path) || typeof file.content !== 'string') continue;
+      if (
+        isPrivatePath(path) ||
+        /^assets\//i.test(path) ||
+        /(?:^|\/)(?:vendor|node_modules)\//i.test(path) ||
+        typeof file.content !== 'string'
+      ) continue;
       if (/\.(?:m?js|tsx?|mts|jsx)$/i.test(path)) {
         try {
           transformEsModule(file.content, path);

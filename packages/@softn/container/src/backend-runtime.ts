@@ -247,6 +247,44 @@ function __softnBackendDispatch(reqJson) {
 globalThis.__softnBackendDispatch = __softnBackendDispatch;
 `;
 
+const PYTHON_BACKEND_PRELUDE = `
+import json as _softn_json
+
+def __softn_backend_dispatch(req_json):
+    req = _softn_json.loads(req_json)
+    fn = globals().get("handle_request") or globals().get("handleRequest")
+    if fn is None or not callable(fn):
+        return _softn_json.dumps({
+            "status": 500,
+            "headers": [["Content-Type", "text/plain; charset=utf-8"]],
+            "body": "Python backend did not define handle_request(req)"
+        })
+    res = fn(req)
+    if isinstance(res, str):
+        return _softn_json.dumps({"status": 200, "headers": [["Content-Type", "text/html; charset=utf-8"]], "body": res})
+    if isinstance(res, dict):
+        status = int(res.get("status", 200))
+        raw_headers = res.get("headers")
+        headers = []
+        if isinstance(raw_headers, list):
+            headers = raw_headers
+        elif isinstance(raw_headers, dict):
+            for k, v in raw_headers.items():
+                headers.append([str(k), str(v)])
+        body = ""
+        if isinstance(res.get("body"), str):
+            body = res["body"]
+        elif "json" in res and res["json"] is not None:
+            body = _softn_json.dumps(res["json"])
+            has_ct = any(str(h[0]).lower() == "content-type" for h in headers if isinstance(h, (list, tuple)) and len(h) >= 2)
+            if not has_ct:
+                headers.append(["Content-Type", "application/json; charset=utf-8"])
+        elif res.get("body") is not None:
+            body = _softn_json.dumps(res["body"])
+        return _softn_json.dumps({"status": status, "headers": headers, "body": body})
+    return _softn_json.dumps({"status": 200, "headers": [["Content-Type", "text/plain"]], "body": ""})
+`;
+
 function decodeBodyText(bytes: Uint8Array | undefined): string {
   if (!bytes || bytes.byteLength === 0) return '';
   return new TextDecoder().decode(bytes);
@@ -285,6 +323,7 @@ export class BackendWorkerSession {
   private phpApp: ZippPhpAppInstance | null = null;
   private phpWorkerEngine: ZippEngineInstance | null = null;
   private jsEngine: ZippEngineInstance | null = null;
+  private pythonEngine: ZippEngineInstance | null = null;
   private lastPhpOverlaySnapshot = '';
   private lastRustOverlaySnapshot = '';
   private rustOverlayWrites: Record<string, string> = Object.create(null);
@@ -471,6 +510,8 @@ export class BackendWorkerSession {
           this.bootPhpBackend(sqlBridge, msg.initialPhpOverlay);
         } else if (this.backend.runtime === 'javascript' || this.backend.runtime === 'typescript') {
           this.bootJsBackend(sqlBridge, this.backend.runtime);
+        } else if (this.backend.runtime === 'python') {
+          this.bootPythonBackend(sqlBridge);
         }
 
         this.emitStatus({
@@ -721,6 +762,24 @@ export class BackendWorkerSession {
     this.jsEngine = engine;
   }
 
+  private bootPythonBackend(
+    sqlBridge: { call: (kind: string, args: string[]) => unknown }
+  ): void {
+    const bindings = this.zippBindings!;
+    const backend = this.backend!;
+    const source = this.textFiles[backend.entry];
+    if (source === undefined) {
+      throw new Error(`Python backend entry '${backend.entry}' not found in archive`);
+    }
+    const engine = new bindings.Engine();
+    engine.setInstructionBudget(Math.max(this.instructionBudget, 200_000_000));
+    engine.setSyncHostCapabilities([...ZIPP_SQL_CAPABILITIES]);
+    if (engine.addAppBridge) engine.addAppBridge('sql', sqlBridge);
+    else engine.setAppBridge(sqlBridge);
+    engine.initSource(`${PYTHON_BACKEND_PRELUDE}\n${source}`, 'python');
+    this.pythonEngine = engine;
+  }
+
   private createVfsProbe(): HtaccessVfsProbe {
     const textFiles = this.textFiles;
     const binaryFiles = this.binaryFiles;
@@ -820,6 +879,29 @@ export class BackendWorkerSession {
       } else if (this.jsEngine) {
         this.jsEngine.renewInstructionBudget();
         const rawResp = this.jsEngine.callFunction!('__softnBackendDispatch', [
+          JSON.stringify({
+            method: msg.method,
+            path: msg.path,
+            query: msg.query,
+            headers: msg.headers,
+            body: decodeBodyText(msg.bodyBytes),
+          }),
+        ]);
+        const parsed = JSON.parse(String(rawResp)) as {
+          status?: number;
+          headers?: Array<[string, string]>;
+          body?: string;
+        };
+        status = parsed.status ?? 200;
+        headers = Array.isArray(parsed.headers) ? parsed.headers : [];
+        bodyBytes = encodeUtf8(parsed.body ?? '');
+      } else if (this.pythonEngine) {
+        this.pythonEngine.renewInstructionBudget();
+        const pyDispatch = this.pythonEngine.pythonCall ?? this.pythonEngine.callFunction;
+        if (!pyDispatch) {
+          throw new Error('Loaded ZIPP Python engine does not expose pythonCall');
+        }
+        const rawResp = pyDispatch.call(this.pythonEngine, '__softn_backend_dispatch', [
           JSON.stringify({
             method: msg.method,
             path: msg.path,
@@ -1285,11 +1367,13 @@ export class BackendWorkerSession {
     try { this.phpApp?.dispose(); } catch { /* ignore */ }
     try { this.phpWorkerEngine?.dispose(); } catch { /* ignore */ }
     try { this.jsEngine?.dispose(); } catch { /* ignore */ }
+    try { this.pythonEngine?.dispose(); } catch { /* ignore */ }
     try { this.sqlManager?.dispose(); } catch { /* ignore */ }
     this.rustEngine = null;
     this.phpApp = null;
     this.phpWorkerEngine = null;
     this.jsEngine = null;
+    this.pythonEngine = null;
     this.sqlManager = null;
   }
 }

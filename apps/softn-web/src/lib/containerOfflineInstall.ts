@@ -107,7 +107,7 @@ async function performInstall(app: ContainerInstallApp, options: ContainerInstal
   // The folder's files, past the HTTP cache so that each reaches the service worker's route
   // (which answers from its own copy when it has one, and fetches and keeps it when not).
   const fetchFn = options.fetch ?? fetch;
-  const files = hostedContainerFiles(needs.tiers, container, host.runtimeUrl);
+  const files = hostedContainerFiles(needs.tiers, container, host.runtimeUrl, { backend: Boolean(needs.sqlite) });
   const fetched = await Promise.all(
     files.map(async (url) => {
       try {

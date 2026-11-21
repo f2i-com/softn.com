@@ -232,13 +232,13 @@ describe('Full-Stack PHP 8.x Applications in SoftN Containers (zipp-php.wasm + x
     if (!fs.existsSync(sysVerPath) || !fs.existsSync(fnPath)) return;
 
     const sngineFiles: Record<string, Uint8Array> = {
-      '.htaccess': fs.readFileSync(htPath),
-      'includes/sys_ver.php': fs.readFileSync(sysVerPath),
-      'includes/exceptions.php': fs.readFileSync(excPath),
+      '.htaccess': new Uint8Array(fs.readFileSync(htPath)),
+      'includes/sys_ver.php': new Uint8Array(fs.readFileSync(sysVerPath)),
+      'includes/exceptions.php': new Uint8Array(fs.readFileSync(excPath)),
     };
     for (const f of fs.readdirSync(incDir)) {
       if (/^functions.*\.php$/i.test(f)) {
-        sngineFiles[`includes/${f}`] = fs.readFileSync(path.join(incDir, f));
+        sngineFiles[`includes/${f}`] = new Uint8Array(fs.readFileSync(path.join(incDir, f)));
       }
     }
 

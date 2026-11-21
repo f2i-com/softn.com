@@ -164,7 +164,7 @@ describe('PermissionBar', () => {
         />,
       ),
     );
-    expect(host.textContent).toContain('New since v1.0.0: your files.');
+    expect(host.textContent).toContain('New since v1.0.0: a file chooser to open or save files.');
   });
 
   // The same names were "the same" whatever each covered: a v2 that dropped v1's host list

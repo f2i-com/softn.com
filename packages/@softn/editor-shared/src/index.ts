@@ -18,3 +18,5 @@ export * from './remoteOpen';
 export * from './useModalFocus';
 export * from './hostedEditor';
 export * from './useHostedSaveLabel';
+export * from './directPublish';
+export * from './PublishModal';

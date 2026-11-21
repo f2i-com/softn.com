@@ -3,6 +3,12 @@
  * docs/content/softn-docs.json); test/guide-links.test.ts holds every one to a page the docs build has.
  */
 
+/** Full-stack v2 Web Containers and sandboxed backends (PHP, JS/TS, Rust, Python + SQLite). */
+export const WEB_CONTAINERS_GUIDE_HREF = '/docs/web-containers/';
+
+/** Hosting and deploying SoftN apps locally or multi-user on softn-server. */
+export const HOSTING_GUIDE_HREF = '/docs/hosting/';
+
 /** What carries across from an HTML page, what SoftN adds, and what does not run as it would in a browser tab. */
 export const HTML_GUIDE_HREF = '/docs/html-and-softn/';
 

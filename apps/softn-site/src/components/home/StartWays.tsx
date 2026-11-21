@@ -40,15 +40,14 @@ export function StartWays(): React.ReactElement {
             </div>
           </article>
           <article className="start-card">
-            <p className="start-badge">Needs an AI connection</p>
-            <h3 className="start-name">Describe it to AI</h3>
+            <p className="start-badge">Needs an AI connection (or try built-in examples)</p>
+            <h3 className="start-name">Describe a full-stack app to AI</h3>
             <p className="start-copy">
-              Tell Studio what the app should do, in plain words. It plans the app, writes it — choose JavaScript or
-              Python — and shows each change in a live preview you can undo.
+              Tell Studio what the app should do, in plain words. It plans and writes the app — choose JavaScript or
+              Python, plus an optional sandboxed PHP or JS/TS + SQLite backend — and previews every edit live.
             </p>
             <p className="start-needs">
-              <span>You need</span> a model you connect: one running on your computer, or your own key from a provider,
-              whose usage charges apply.
+              <span>You need</span> a local model or your own API key (or open Studio’s built-in PHP + SQLite example with no key).
             </p>
             <div className="start-actions">
               <a className="cta" href={STUDIO_HREF}>
@@ -59,13 +58,14 @@ export function StartWays(): React.ReactElement {
           </article>
           <article className="start-card">
             <p className="start-badge">No account</p>
-            <h3 className="start-name">Bring an existing project</h3>
+            <h3 className="start-name">Build or open any .softn container</h3>
             <p className="start-copy">
-              Open a <code>.softn</code> file — yours, or any app from the directory — to run it, change it, or publish
-              your version as a remix that credits the original.
+              Scaffold a new full-stack container (HTML/TS + PHP or JS/TS + SQLite) or open any <code>.softn</code>{' '}
+              bundle — including Slim 4 and Rust apps — to edit frontend and backend files side-by-side and manage
+              embedded SQLite tables, schemas and records in the built-in Data explorer.
             </p>
             <p className="start-needs">
-              <span>You need</span> a <code>.softn</code> file, or an app from the directory. Pages written in HTML?{' '}
+              <span>You need</span> a browser. Bringing existing HTML or PHP?{' '}
               <a href={HTML_GUIDE_HREF}>See what carries across</a>.
             </p>
             <div className="start-actions">

@@ -173,6 +173,18 @@ export async function removeCachedApp(id: string): Promise<void> {
   }
 }
 
+/** Put a previously removed cached app record back (used by Undo). */
+export async function restoreCachedApp(app: CachedApp): Promise<boolean> {
+  try {
+    const db = await getDB();
+    await db.put('softn-apps', app);
+    return true;
+  } catch {
+    console.warn('[SoftN Web] Failed to restore cached app:', app.id);
+    return false;
+  }
+}
+
 /**
  * A cached app by name: the most recently opened of any that share it.
  *

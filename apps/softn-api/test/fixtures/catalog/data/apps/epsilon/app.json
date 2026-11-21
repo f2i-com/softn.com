@@ -17,6 +17,11 @@
       "storage"
     ],
     "execution": "main",
+    "engine": 1,
+    "backend_runtime": null,
+    "hosting": "browser",
+    "backend_url": null,
+    "withhold_backend": 0,
     "storage_policies": {
       "notes": "owner-write",
       "*": "public"

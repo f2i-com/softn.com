@@ -1,6 +1,6 @@
 import { strToU8, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { WebContainerNotRunHereError, computeBundleAppId, desktopBundleFiles, isSoftnPath } from '../src/bundleFile';
+import { computeBundleAppId, desktopBundleFiles, isSoftnPath } from '../src/bundleFile';
 
 describe('a .softn file on the desktop', () => {
   it('uses deterministic content identity rather than a manifest display name', async () => {
@@ -43,19 +43,38 @@ describe('which bundles the desktop runs', () => {
     expect(wrapped.textFiles.get('ui/main.ui')).toBe('<App><Text>Hi</Text></App>');
   });
 
-  it('not a web container, and says what the file is rather than running its page on SoftN’s engine', () => {
-    // A manifest that says so.
+  it('a v2 web container, including full-stack backend and zero-config HTML bundles', () => {
+    // A manifest declaring engine: 2 with an embedded PHP backend.
     const declared = zipSync({
-      'manifest.json': strToU8(JSON.stringify({ name: 'Kanban  Board', version: '1.0.0', engine: 2, main: 'index.html' })),
-      'index.html': strToU8(page),
+      'manifest.json': strToU8(
+        JSON.stringify({
+          name: 'Kanban Board',
+          version: '1.0.0',
+          engine: 2,
+          main: 'public/index.html',
+          frontendRoot: 'public',
+          backend: { runtime: 'php', entry: 'server/public/index.php', mode: 'api', routes: ['/api/'] },
+        })
+      ),
+      'public/index.html': strToU8(page),
+      'server/public/index.php': strToU8('<?php echo json_encode(["ok" => true]);'),
     });
-    expect(() => desktopBundleFiles(declared)).toThrow(WebContainerNotRunHereError);
-    expect(() => desktopBundleFiles(declared)).toThrow(/^“Kanban Board” is a web app: plain HTML, CSS and scripts.*Open the file in SoftN Web in a browser/);
-    // A page and no manifest, at the root or in a folder: named by the page's title.
-    expect(() => desktopBundleFiles(zipSync({ 'index.html': strToU8(page) }))).toThrow(/^“Plain Site” is a web app/);
-    expect(() => desktopBundleFiles(zipSync({ 'dist/index.html': strToU8(page), 'dist/app.js': strToU8('1') }))).toThrow(/^“Plain Site” is a web app/);
-    // A page with no title still gets a sentence.
-    expect(() => desktopBundleFiles(zipSync({ 'home.html': strToU8('<p>hi</p>') }))).toThrow(/ is a web app/);
+    const opened = desktopBundleFiles(declared);
+    expect(opened.isWebContainer).toBe(true);
+    expect(opened.textFiles.has('public/index.html')).toBe(true);
+    expect(opened.binaryFiles.has('server/public/index.php')).toBe(true);
+    opened.binaryFiles.release();
+
+    // A zero-config page with no manifest, at the root or wrapped in a folder.
+    const rootPage = desktopBundleFiles(zipSync({ 'index.html': strToU8(page) }));
+    expect(rootPage.isWebContainer).toBe(true);
+    expect(rootPage.inferredManifest?.name).toBe('Plain Site');
+    rootPage.binaryFiles.release();
+
+    const wrappedPage = desktopBundleFiles(zipSync({ 'dist/index.html': strToU8(page), 'dist/app.js': strToU8('1') }));
+    expect(wrappedPage.isWebContainer).toBe(true);
+    expect(wrappedPage.inferredManifest?.main).toBe('index.html');
+    wrappedPage.binaryFiles.release();
   });
 
   it('a SoftN bundle whose manifest only looks like a container’s is still SoftN’s', () => {
@@ -64,7 +83,10 @@ describe('which bundles the desktop runs', () => {
         'manifest.json': strToU8(JSON.stringify({ name: 'Page', version: '1.0.0', main: 'index.html', files: { ui: ['index.html'] }, ...fields })),
         'index.html': strToU8(page),
       });
-      expect(desktopBundleFiles(bundle).textFiles.has('index.html'), JSON.stringify(fields)).toBe(true);
+      const result = desktopBundleFiles(bundle);
+      expect(result.isWebContainer, JSON.stringify(fields)).toBe(false);
+      expect(result.textFiles.has('index.html'), JSON.stringify(fields)).toBe(true);
+      result.binaryFiles.release();
     }
   });
 });

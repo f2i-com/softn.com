@@ -79,16 +79,92 @@ const MARKUP_RULES: Rule[] = [
   ...RULES.map((rule) => (rule === LOGIC_TAG ? { cls: 'tok-tag', re: /^<\/?[A-Za-z][\w.:-]*(?=[\s/>]|$)/ } : rule)),
 ];
 
-/** Which rules a source is read with: a page, `.logic` (and other JavaScript), or Python. */
-export type HighlightLanguage = 'softn' | 'markup' | 'python';
+const JSON_RULES: Rule[] = [
+  { cls: 'tok-attr', re: /^"(?:[^"\\]|\\.)*"(?=\s*:)/, quotes: '"' },
+  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"/, quotes: '"' },
+  { cls: 'tok-num', re: /^\b(?:true|false|null)\b|^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ },
+  { cls: 'tok-punc', re: /^[{}[\]:,]/ },
+  { cls: 'tok-expr', re: /^\s+|^[^\s"{}[\]:,]+|^./ },
+];
+
+const PHP_RULES: Rule[] = [
+  { cls: 'tok-com', re: /^\/\/[^\n]*|^\/\*[\s\S]*?(?:\*\/|$)|^#[^\n]*/ },
+  { cls: 'tok-tag', re: /^<\?(?:php)?|^\?>/i },
+  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'/, quotes: '"\'' },
+  { cls: 'tok-attr', re: /^\$[A-Za-z_]\w*/ },
+  {
+    cls: 'tok-mark',
+    re: /^\b(?:declare|strict_types|namespace|use|class|interface|trait|function|fn|return|if|elseif|else|foreach|for|while|switch|case|match|try|catch|finally|throw|new|echo|print|exit|require|require_once|include|public|private|protected|static|readonly|const|array|as)\b/,
+  },
+  { cls: 'tok-num', re: /^\b(?:true|false|null|\d+(?:\.\d+)?)\b/i },
+  { cls: 'tok-punc', re: /^->|^=>|^::|^[=(){}[\],;.]/ },
+  { cls: 'tok-expr', re: /^[^\s/"'#$=(){}[\],;.<>?]+|^\s+|^./ },
+];
+
+const RUST_RULES: Rule[] = [
+  { cls: 'tok-com', re: /^\/\/[^\n]*|^\/\*[\s\S]*?(?:\*\/|$)/ },
+  { cls: 'tok-attr', re: /^#!?\[[^\]]*\]/ },
+  { cls: 'tok-str', re: /^b?"(?:[^"\\]|\\.)*"/, quotes: '"' },
+  {
+    cls: 'tok-mark',
+    re: /^\b(?:as|async|await|break|const|continue|crate|dyn|else|enum|extern|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|type|unsafe|use|where|while)\b/,
+  },
+  {
+    cls: 'tok-tag',
+    re: /^\b(?:bool|char|str|String|Vec|Option|Result|Box|Arc|Rc|HashMap|BTreeMap|i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|Some|None|Ok|Err)\b/,
+  },
+  { cls: 'tok-num', re: /^\b(?:true|false|0x[\da-fA-F_]+|0b[01_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[uif](?:8|16|32|64|128|size))?)\b/ },
+  { cls: 'tok-punc', re: /^->|^=>|^::|^[=(){}[\],;.:]/ },
+  { cls: 'tok-expr', re: /^[^\s/"'#=(){}[\],;.:]+|^\s+|^./ },
+];
+
+const SQL_RULES: Rule[] = [
+  { cls: 'tok-com', re: /^--[^\n]*|^\/\*[\s\S]*?(?:\*\/|$)/ },
+  { cls: 'tok-str', re: /^'(?:[^'\\]|''|\\.)*'|^"(?:[^"\\]|\\.)*"/, quotes: '"\'' },
+  {
+    cls: 'tok-mark',
+    re: /^\b(?:SELECT|FROM|WHERE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|INDEX|VIEW|TRIGGER|IF|NOT|EXISTS|PRIMARY|KEY|FOREIGN|REFERENCES|AUTOINCREMENT|UNIQUE|DEFAULT|CHECK|CONSTRAINT|JOIN|LEFT|RIGHT|INNER|OUTER|ON|GROUP|BY|ORDER|ASC|DESC|LIMIT|OFFSET|HAVING|UNION|ALL|AS|AND|OR|IN|IS|LIKE|GLOB|BETWEEN|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK|PRAGMA|WITH|RETURNING|CONFLICT|DO|NOTHING|REPLACE)\b/i,
+  },
+  { cls: 'tok-tag', re: /^\b(?:INTEGER|INT|TEXT|REAL|BLOB|NUMERIC|BOOLEAN|VARCHAR|CHAR|DATETIME|TIMESTAMP|DATE|JSON)\b/i },
+  { cls: 'tok-num', re: /^\b(?:NULL|TRUE|FALSE|\d+(?:\.\d+)?)\b/i },
+  { cls: 'tok-punc', re: /^[=(),;.*<>!+-]/ },
+  { cls: 'tok-expr', re: /^[^\s/"'-=(),;.*<>!+]+|^\s+|^./ },
+];
+
+const CSS_RULES: Rule[] = [
+  { cls: 'tok-com', re: /^\/\*[\s\S]*?(?:\*\/|$)/ },
+  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'/, quotes: '"\'' },
+  { cls: 'tok-mark', re: /^@[a-zA-Z-]+/ },
+  { cls: 'tok-attr', re: /^[a-zA-Z_-][\w-]*(?=\s*:)/ },
+  { cls: 'tok-num', re: /^#[0-9a-fA-F]{3,8}\b|^-?\d+(?:\.\d+)?(?:px|rem|em|vh|vw|dvh|%|ms|s|deg|fr)?\b/ },
+  { cls: 'tok-punc', re: /^[{}():;,]/ },
+  { cls: 'tok-expr', re: /^[^\s/"'@{}:;,()]+|^\s+|^./ },
+];
+
+const SHELL_RULES: Rule[] = [
+  { cls: 'tok-com', re: /^#[^\n]*/ },
+  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'/, quotes: '"\'' },
+  { cls: 'tok-attr', re: /^\[[^\]]+\]|^[A-Za-z_][\w.-]*(?=\s*[=:])/ },
+  { cls: 'tok-num', re: /^\b(?:true|false|yes|no|on|off|\d+(?:\.\d+)?)\b/i },
+  { cls: 'tok-punc', re: /^[=:,[\]{}]/ },
+  { cls: 'tok-expr', re: /^[^\s#"'=:,[\]{}]+|^\s+|^./ },
+];
+
+/** Which rules a source is read with. */
+export type HighlightLanguage = 'softn' | 'markup' | 'python' | 'json' | 'php' | 'rust' | 'sql' | 'css' | 'shell';
 
 /**
- * A file's highlighting language from its name — the composer's own rule:
- * `.py` is Python; a page (`.ui`, `.html`, `.svg`, `.xml`) is markup; the rest,
- * `.logic` and `.js` among them, is read with the SoftN rules.
+ * A file's highlighting language from its name — covering UI pages, logic,
+ * PHP, Rust, Python, SQL, CSS, JSON, TOML/YAML/shell configs, and JS/TS.
  */
 export function languageOf(path: string): HighlightLanguage {
   if (/\.py$/i.test(path)) return 'python';
+  if (/\.(?:json|xdb)$/i.test(path)) return 'json';
+  if (/\.(?:php|phtml)$/i.test(path)) return 'php';
+  if (/\.rs$/i.test(path)) return 'rust';
+  if (/\.sql$/i.test(path)) return 'sql';
+  if (/\.(?:css|scss|less)$/i.test(path)) return 'css';
+  if (/\.(?:toml|ya?ml|ini|conf|cfg|env|sh|bash|zsh)$/i.test(path) || /(?:^|\/)(?:\.htaccess|Dockerfile|Makefile)$/i.test(path)) return 'shell';
   if (/\.(?:ui|html?|svg|xml)$/i.test(path)) return 'markup';
   return 'softn';
 }
@@ -128,7 +204,24 @@ function unclosedUntil(source: string, open: number, oneLine: boolean): number {
 }
 
 export function highlight(source: string, language: HighlightLanguage = 'softn'): React.ReactElement[] {
-  const rules = language === 'python' ? PYTHON_RULES : language === 'markup' ? MARKUP_RULES : RULES;
+  const rules =
+    language === 'python'
+      ? PYTHON_RULES
+      : language === 'json'
+        ? JSON_RULES
+        : language === 'php'
+          ? PHP_RULES
+          : language === 'rust'
+            ? RUST_RULES
+            : language === 'sql'
+              ? SQL_RULES
+              : language === 'css'
+                ? CSS_RULES
+                : language === 'shell'
+                  ? SHELL_RULES
+                  : language === 'markup'
+                    ? MARKUP_RULES
+                    : RULES;
   const out: React.ReactElement[] = [];
   let rest = source;
   let pos = 0;

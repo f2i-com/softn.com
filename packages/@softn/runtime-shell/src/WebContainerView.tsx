@@ -23,6 +23,8 @@ export interface WebContainerViewProps {
   theme?: 'light' | 'dark' | 'auto';
   /** Whether guest storage persists to host `localStorage` (default `true`). */
   persistStorage?: boolean;
+  /** Optional remote multi-user backend URL (replaces local in-browser backend worker). */
+  backendUrl?: string;
   /** Shown while engine WASM & initial scripts boot. Can be a render function receiving live boot status. */
   loading?: React.ReactNode | ((status: ContainerBootStatus | null) => React.ReactNode);
   /** Rendered if container startup fails fatally. */
@@ -57,6 +59,7 @@ export function WebContainerView({
   grantedCapabilities,
   theme = 'auto',
   persistStorage = true,
+  backendUrl,
   loading,
   error: renderError,
   onStatus,
@@ -103,6 +106,7 @@ export function WebContainerView({
           ...(runtimeUrl ? { runtimeUrl } : {}),
           appId,
           ...(storagePrefix ? { storagePrefix } : {}),
+          ...(backendUrl ? { backendUrl } : {}),
           theme,
           persistStorage,
           // The host's own PermissionBar asks; the container never does. What the person has
@@ -156,7 +160,7 @@ export function WebContainerView({
       handleRef.current?.dispose();
       handleRef.current = null;
     };
-  }, [source, runtimeUrl, appId, storagePrefix, theme, persistStorage, declaredPermissions, initialPage]);
+  }, [source, runtimeUrl, appId, storagePrefix, backendUrl, theme, persistStorage, declaredPermissions, initialPage]);
 
   // Dynamically upgrade/revoke capabilities in-place when user clicks Allow on host PermissionBar
   useEffect(() => {

@@ -458,6 +458,14 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
   const containerFiles = useMemo<Record<string, string | Uint8Array>>(() => {
     if (projectFormat !== 'web') return {};
     const out: Record<string, string | Uint8Array> = {};
+    // Preserve extra bundle entries first (e.g. PHP vendor/, .htaccess, SQLite seeds, etc.)
+    // so live edits to UI/logic/backend files below override them cleanly.
+    for (const [extraPath, bytes] of retainedSource.extraEntries) {
+      const clean = extraPath.replace(/^\/+/, '');
+      if (clean && clean !== 'manifest.json' && clean !== 'permission.json') {
+        out[clean] = bytes;
+      }
+    }
     let mainHtmlPath = 'index.html';
     const declaredMain = retainedSource.manifest && typeof retainedSource.manifest.main === 'string'
       ? retainedSource.manifest.main.replace(/^\/+/, '')
@@ -486,13 +494,23 @@ export function LivePreview({ initialDevice = 'desktop', beside = false }: LiveP
         records: col.fullRecords ?? col.seedData ?? [],
       });
     }
+    // Preserve backend, databases, frontendRoot, ssrEntry, importMap, id from the retained manifest
+    const baseManifest: Record<string, unknown> = retainedSource.manifest
+      ? (JSON.parse(JSON.stringify(retainedSource.manifest)) as Record<string, unknown>)
+      : {};
+    const existingConfig =
+      baseManifest.config && typeof baseManifest.config === 'object' && !Array.isArray(baseManifest.config)
+        ? (baseManifest.config as Record<string, unknown>)
+        : {};
     out['manifest.json'] = JSON.stringify({
-      formatVersion: 2,
+      ...baseManifest,
+      formatVersion: baseManifest.formatVersion ?? 2,
       engine: 2,
       name: projectName || 'Untitled App',
       version: projectVersion || '1.0.0',
       main: mainHtmlPath,
       config: {
+        ...existingConfig,
         execution: 'worker',
         ...(pythonPackages.length > 0 ? { python: { packages: pythonPackages } } : {}),
       },

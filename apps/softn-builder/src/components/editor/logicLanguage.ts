@@ -22,19 +22,36 @@ export function editorLanguageFor(path: string | undefined): 'javascript' | 'pyt
     : 'javascript';
 }
 
-export type CodeEditorLanguage = 'html' | 'css' | 'typescript' | 'javascript' | 'python' | 'json' | 'plain';
+export type CodeEditorLanguage =
+  | 'html'
+  | 'css'
+  | 'typescript'
+  | 'javascript'
+  | 'python'
+  | 'php'
+  | 'sql'
+  | 'rust'
+  | 'shell'
+  | 'markdown'
+  | 'json'
+  | 'plain';
 
 /** Syntax highlight language for any editable text file in the project. */
 export function codeLanguageFor(path: string | undefined): CodeEditorLanguage {
   if (!path) return 'javascript';
   const lower = path.toLowerCase();
   if (lower.endsWith('.py')) return 'python';
-  if (/\.(?:tsx?|mts)$/.test(lower)) return 'typescript';
-  if (lower.endsWith('.css')) return 'css';
+  if (/\.(?:php|phtml)$/.test(lower)) return 'php';
+  if (lower.endsWith('.sql')) return 'sql';
+  if (lower.endsWith('.rs')) return 'rust';
+  if (/\.(?:tsx?|mts|cts)$/.test(lower)) return 'typescript';
+  if (/\.(?:m?js|cjs|jsx|logic)$/.test(lower)) return 'javascript';
+  if (/\.(?:css|scss|less)$/.test(lower)) return 'css';
   if (lower.endsWith('.json') || lower.endsWith('.xdb')) return 'json';
-  if (/\.(?:html?|ui)$/.test(lower)) return 'html';
-  if (/\.(?:md|txt)$/.test(lower)) return 'plain';
-  return 'javascript';
+  if (/\.(?:html?|ui|xml|svg)$/.test(lower)) return 'html';
+  if (/\.(?:md|markdown)$/.test(lower)) return 'markdown';
+  if (/\.(?:toml|ya?ml|ini|conf|cfg|env|sh|bash|zsh)$/.test(lower) || /(?:^|\/)(?:\.htaccess|dockerfile|makefile)$/.test(lower)) return 'shell';
+  return 'plain';
 }
 
 /** Human-readable badge label for a file's syntax mode. */
@@ -42,6 +59,16 @@ export function codeLanguageLabelFor(path: string | undefined): string {
   switch (codeLanguageFor(path)) {
     case 'python':
       return 'Python';
+    case 'php':
+      return 'PHP';
+    case 'sql':
+      return 'SQL';
+    case 'rust':
+      return 'Rust';
+    case 'shell':
+      return 'Config';
+    case 'markdown':
+      return 'Markdown';
     case 'typescript':
       return 'TypeScript';
     case 'css':

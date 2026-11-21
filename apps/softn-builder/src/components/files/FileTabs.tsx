@@ -4,6 +4,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useFilesStore } from '../../stores/filesStore';
+import { useProjectStore } from '../../stores/projectStore';
 import { FileGlyph, type FileGlyphKind } from './fileIcons';
 import { PICTURE_PATTERN } from '../../utils/addAssets';
 
@@ -253,6 +254,10 @@ function Tab({ fileId, isActive, onSelect, onClose, onContextMenu }: TabProps) {
 
 export function FileTabs() {
   const { openTabs, activeFileId, setActiveFile, closeFile } = useFilesStore();
+  const activeExtraPath = useProjectStore((state) => state.activeExtraPath);
+  const openExtraTabs = useProjectStore((state) => state.openExtraTabs);
+  const openExtraFile = useProjectStore((state) => state.openExtraFile);
+  const closeExtraFile = useProjectStore((state) => state.closeExtraFile);
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     fileId: string;
@@ -289,7 +294,7 @@ export function FileTabs() {
 
   useEffect(() => {
     updateScrollState();
-  }, [openTabs, updateScrollState]);
+  }, [openTabs, openExtraTabs, updateScrollState]);
 
   useEffect(() => {
     const onResize = () => updateScrollState();
@@ -320,7 +325,7 @@ export function FileTabs() {
     [closeFile]
   );
 
-  if (openTabs.length === 0) {
+  if (openTabs.length === 0 && openExtraTabs.length === 0) {
     return (
       <div style={styles.container}>
         <div style={styles.emptyState}>No files open — choose one in Files</div>
@@ -360,7 +365,7 @@ export function FileTabs() {
           <Tab
             key={fileId}
             fileId={fileId}
-            isActive={fileId === activeFileId}
+            isActive={activeExtraPath === null && fileId === activeFileId}
             onSelect={() => setActiveFile(fileId)}
             onClose={() => closeFile(fileId)}
             onContextMenu={(e) => {
@@ -375,6 +380,41 @@ export function FileTabs() {
             }}
           />
         ))}
+        {openExtraTabs.map((extraPath) => {
+          const isActive = activeExtraPath === extraPath;
+          const label = extraPath.split('/').pop() || extraPath;
+          return (
+            <div
+              key={`extra:${extraPath}`}
+              role="tab"
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
+              style={{
+                ...styles.tab,
+                ...(isActive ? styles.tabActive : {}),
+              }}
+              onClick={() => openExtraFile(extraPath)}
+              title={extraPath}
+            >
+              <span style={styles.icon}>
+                <FileGlyph kind="logic" />
+              </span>
+              <span style={styles.name}>{label}</span>
+              <button
+                type="button"
+                style={styles.closeBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeExtraFile(extraPath);
+                }}
+                aria-label={`Close ${label}`}
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
       </div>
       {(canScrollLeft || canScrollRight) && (
         <button

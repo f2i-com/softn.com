@@ -415,6 +415,15 @@ export interface SoftNContainerOptions {
    * frontend routing, cookie, and virtual navigation contract.
    */
   backendTransport?: BackendTransport;
+  /**
+   * Optional remote multi-user backend base URL (e.g. `"/api"` or `"https://host.example/app"`).
+   * When provided without an explicit `backendTransport`, SoftN constructs a
+   * `RemoteBackendTransport` forwarding matching backend/API/WebSocket calls to this server
+   * instead of booting an in-browser backend worker.
+   */
+  backendUrl?: string;
+  /** Optional static headers attached to every request sent through `backendUrl`. */
+  backendHeaders?: Record<string, string>;
   /** Optional explicit XDB SQLite WASM module/bytes/URL supplier (overrides `runtimeUrl/engines/xdb-wasm.wasm`). */
   xdbWasm?: ZippEngineSupplier;
   /** Optional explicit XDB glue JS URL/path override. */

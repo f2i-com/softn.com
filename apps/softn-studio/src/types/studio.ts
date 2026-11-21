@@ -33,6 +33,9 @@ export type LogicLanguage = 'javascript' | 'typescript' | 'python';
 /** Whether the project uses the v2 Web App Container runtime (`@softn/container`) or v1 `.ui` templates. */
 export type StudioAppFormat = 'container' | 'ui';
 
+/** Optional sandboxed container backend bundled inside a v2 Web App Container. */
+export type ContainerBackendRuntime = 'none' | 'php' | 'javascript' | 'typescript';
+
 /** Brief wizard data */
 export interface ProjectBrief {
   appName: string;
@@ -44,6 +47,8 @@ export interface ProjectBrief {
   style: VisualStyle;
   /** Container format (`'container'` for v2 HTML/CSS/JS/TS web containers, `'ui'` for v1 SoftN templates). */
   appFormat?: StudioAppFormat;
+  /** Optional embedded sandboxed backend runtime for v2 Web App Containers (runs locally in ZIPP WASM and hosted in ZIPP safe-sandbox). */
+  containerBackend?: ContainerBackendRuntime;
   /**
    * What the scaffold and the model write the logic in. Absent in projects
    * saved before the choice existed, and absent means JavaScript, which is

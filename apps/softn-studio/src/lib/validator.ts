@@ -55,6 +55,7 @@ export function validateProject(
     const isV2Container = projectContainerMode(files) === 'web';
     if (isV2Container) {
       errors.push(...v2ContainerLinkProblems(entries));
+      errors.push(...v2ContainerBackendProblems(entries));
     } else {
       const refusal = compositionRefusal(entries);
       if (refusal) {
@@ -138,18 +139,110 @@ export function validateProject(
 
 const decoder = new TextDecoder();
 
+const CONTAINER_BACKEND_RUNTIMES = new Set(['php', 'rust', 'javascript', 'typescript', 'python']);
+
+function readManifestObject(entries: Map<string, Uint8Array>): Record<string, unknown> | null {
+  const bytes = entries.get('manifest.json');
+  if (!bytes) return null;
+  try {
+    const parsed = JSON.parse(decoder.decode(bytes)) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function v2ContainerBackendProblems(entries: Map<string, Uint8Array>): ValidationError[] {
+  const out: ValidationError[] = [];
+  const manifest = readManifestObject(entries);
+  if (!manifest) return out;
+
+  const backend = manifest.backend;
+  if (backend !== undefined) {
+    if (!backend || typeof backend !== 'object' || Array.isArray(backend)) {
+      out.push({
+        file: 'manifest.json',
+        level: 'error',
+        type: 'invalid-backend',
+        message: 'manifest.json "backend" must be an object with "runtime" and "entry".',
+      });
+    } else {
+      const cfg = backend as Record<string, unknown>;
+      const runtime = typeof cfg.runtime === 'string' ? cfg.runtime.toLowerCase() : '';
+      if (!CONTAINER_BACKEND_RUNTIMES.has(runtime)) {
+        out.push({
+          file: 'manifest.json',
+          level: 'error',
+          type: 'invalid-backend',
+          message: `manifest.json backend.runtime "${String(cfg.runtime ?? '')}" is not supported; use php, rust, javascript, typescript, or python.`,
+        });
+      }
+      const entry = typeof cfg.entry === 'string' ? normalizeProjectPath(cfg.entry.replace(/^\.?\//, '')) : null;
+      if (!entry) {
+        out.push({
+          file: 'manifest.json',
+          level: 'error',
+          type: 'invalid-backend',
+          message: 'manifest.json backend.entry must name a backend source file in the bundle.',
+        });
+      } else if (!entries.has(entry)) {
+        out.push({
+          file: 'manifest.json',
+          level: 'error',
+          type: 'missing-reference',
+          message: `manifest.json backend.entry "${String(cfg.entry)}" is not in the bundle.`,
+          suggestion: 'Create the backend entry file or update backend.entry in manifest.json.',
+        });
+      }
+    }
+  }
+
+  if (Array.isArray(manifest.databases)) {
+    for (const rawDb of manifest.databases) {
+      if (!rawDb || typeof rawDb !== 'object' || Array.isArray(rawDb)) continue;
+      const db = rawDb as Record<string, unknown>;
+      if (typeof db.seedSql === 'string' && /\.sql$/i.test(db.seedSql.trim()) && !/\s/.test(db.seedSql.trim())) {
+        const seedPath = normalizeProjectPath(db.seedSql.trim().replace(/^\.?\//, ''));
+        if (!seedPath || !entries.has(seedPath)) {
+          out.push({
+            file: 'manifest.json',
+            level: 'error',
+            type: 'missing-reference',
+            message: `manifest.json databases seedSql "${db.seedSql}" is not in the bundle.`,
+            suggestion: 'Create the SQL schema/seed file or update databases[].seedSql in manifest.json.',
+          });
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
 function v2ContainerLinkProblems(entries: Map<string, Uint8Array>): ValidationError[] {
   const out: ValidationError[] = [];
+  const manifest = readManifestObject(entries);
+  const rawFrontendRoot = typeof manifest?.frontendRoot === 'string'
+    ? manifest.frontendRoot.trim().replace(/^\/+|\/+$/g, '')
+    : '';
+  const frontendRoot = rawFrontendRoot ? normalizeProjectPath(rawFrontendRoot) ?? '' : '';
+
   for (const [pagePath, bytes] of entries) {
     if (!/\.html?$/i.test(pagePath) || /^assets\//i.test(pagePath)) continue;
+    if (/(?:^|\/)(?:vendor|node_modules|backend)\//i.test(pagePath)) continue;
     const html = decoder.decode(bytes);
     const checkRef = (rawRef: string, kind: 'script' | 'stylesheet') => {
       const clean = rawRef.trim().split(/[?#]/)[0];
       if (!clean || /^(?:softn:|https?:|data:|blob:)/i.test(clean)) return;
-      const resolved = clean.startsWith('/')
-        ? normalizeProjectPath(clean.slice(1))
-        : resolveProjectRelativePath(pagePath, clean);
-      if (!resolved || !entries.has(resolved)) {
+      const candidates: Array<string | null> = clean.startsWith('/')
+        ? [
+            normalizeProjectPath(clean.slice(1)),
+            frontendRoot ? normalizeProjectPath(`${frontendRoot}/${clean.slice(1)}`) : null,
+          ]
+        : [resolveProjectRelativePath(pagePath, clean)];
+      if (!candidates.some((p) => p !== null && entries.has(p))) {
         out.push({
           file: pagePath,
           level: 'error',

@@ -139,6 +139,28 @@ function IconRedo() {
   );
 }
 
+function IconClear() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 4.5h11" />
+      <path d="M6 2.5h4" />
+      <path d="M4.5 4.5l.7 8.5a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9l.7-8.5" />
+      <line x1="6.75" y1="7.25" x2="6.75" y2="11.25" />
+      <line x1="9.25" y1="7.25" x2="9.25" y2="11.25" />
+    </svg>
+  );
+}
+
+function IconPublish() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 10.5V2.5" />
+      <polyline points="4.5 6 8 2.5 11.5 6" />
+      <path d="M2.5 10.5v2a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5v-2" />
+    </svg>
+  );
+}
+
 function IconKeyboard() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -155,8 +177,10 @@ interface ToolbarProps {
   isSaving?: boolean;
   onNew: () => void;
   onOpen: () => void;
+  onClear?: () => void;
   onShortcuts: () => void;
   onExport: () => void;
+  onPublish?: () => void;
   activeFileType?: 'ui' | 'logic' | 'asset' | null;
 }
 
@@ -168,11 +192,13 @@ export function Toolbar({
   isSaving = false,
   onNew,
   onOpen,
+  onClear,
   onShortcuts,
   onExport,
+  onPublish,
   activeFileType,
 }: ToolbarProps) {
-  const { name, isDirty } = useProjectStore();
+  const { name, isDirty, projectFormat } = useProjectStore();
   const { canUndo, canRedo } = useHistoryStore();
   const { canInstall, promptInstall } = useInstallPrompt();
   // Hosted, the host's own name for saving back to it, so its button and this one agree.
@@ -180,7 +206,7 @@ export function Toolbar({
 
   const pageHeld = useCanvasStore((state) => state.pageId !== null);
 
-  const views = viewsFor(activeFileType);
+  const views = viewsFor(activeFileType, projectFormat);
   // The history is the canvas's, so the two buttons are offered where the
   // canvas's page is worked on: in Design, with the page open or a logic
   // file in the middle while the panels hold the page. In Data they were
@@ -246,6 +272,12 @@ export function Toolbar({
         <IconOpen /> <span className="bl-tool-label">Open</span>
       </button>
 
+      {onClear && (
+        <button className="bl-tool" data-compact="2" data-tool="clear" aria-label="Clear" onClick={onClear} title="Clear builder workspace and remove saved session">
+          <IconClear /> <span className="bl-tool-label">Clear</span>
+        </button>
+      )}
+
       {/* Save and Export keep their words longest: they give them up only
           where the row is a phone's (data-compact="3"). */}
       <button className="bl-tool" data-compact="3" data-tool="save" aria-label={isSaving ? 'Saving…' : saveLabel} onClick={onSave} disabled={isSaving} aria-busy={isSaving} title={`Save (${withMod('S')})`}>
@@ -258,6 +290,12 @@ export function Toolbar({
       <button className="bl-tool" data-compact="3" data-tool="export" aria-label="Export" onClick={onExport} title={`Export, run or publish (${withMod('Shift+E')})`}>
         <IconExport /> <span className="bl-tool-label">Export</span>
       </button>
+
+      {onPublish && (
+        <button className="bl-tool" data-compact="3" data-tool="publish" aria-label="Publish" onClick={onPublish} title="Publish directly to the SoftN directory">
+          <IconPublish /> <span className="bl-tool-label">Publish</span>
+        </button>
+      )}
 
       {canInstall && (
         <button className="bl-tool" data-compact="3" aria-label="Install" onClick={promptInstall} title="Install SoftN Builder as an app">

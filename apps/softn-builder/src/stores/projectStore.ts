@@ -23,6 +23,7 @@
  */
 
 import { create } from 'zustand';
+import { isUnsafeEntryName } from '@softn/core';
 import type { CollectionDef, AssetFile } from '../types/builder';
 import { emptyDeclaration, type PermissionDeclaration } from '../utils/permissions';
 import { logicStarter, type LogicLanguage } from '../utils/logicFiles';
@@ -128,6 +129,11 @@ interface ProjectStore {
   /** What the opened bundle carried that the Builder does not model. */
   source: RetainedSource;
 
+  /** Currently active backend / project extra file path open in the editor, if any. */
+  activeExtraPath: string | null;
+  /** Open extra/backend file tabs. */
+  openExtraTabs: string[];
+
   /**
    * Whether the project is again what was last kept (utils/savedPoint.ts),
    * asked at each edit. Null when nothing is known to be kept, and then only
@@ -181,6 +187,16 @@ interface ProjectStore {
   settle: () => void;
   /** Keep what an opened bundle carried, without treating it as an edit. */
   setSource: (source: RetainedSource) => void;
+  /** Open an extra/backend project file (from `source.extraEntries`) in the editor. */
+  openExtraFile: (path: string) => void;
+  /** Close one extra/backend file tab, or clear the active extra file if omitted. */
+  closeExtraFile: (path?: string) => void;
+  /** Create or update any file in `source.extraEntries` (PHP, Rust, Python, SQL, config, etc.) and mark dirty. */
+  setExtraEntry: (path: string, bytes: Uint8Array) => string;
+  /** Remove a file from `source.extraEntries` and mark dirty. */
+  deleteExtraEntry: (path: string) => void;
+  /** Rename a file in `source.extraEntries` and mark dirty. */
+  renameExtraEntry: (oldPath: string, newPath: string) => string;
   /** Hold each edit from now on against `isAsKept`, or against nothing. */
   holdAgainst: (isAsKept: (() => boolean) | null) => void;
   /** A new workspace: new id, revision 0, generation advanced. Not an edit. */
@@ -240,6 +256,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
   revision: 0,
   workspaceGeneration: 0,
   source: emptyRetainedSource(),
+  activeExtraPath: null,
+  openExtraTabs: [],
   isAsKept: null,
 
   setName: (name) => {
@@ -359,7 +377,141 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
   },
 
   setSource: (source) => {
-    set({ source });
+    set({ source, activeExtraPath: null, openExtraTabs: [] });
+  },
+
+  openExtraFile: (path) => {
+    const clean = path.replace(/^\/+/, '').replace(/\/+/g, '/');
+    set((state) => {
+      if (!state.source.extraEntries.has(clean)) return state;
+      const openExtraTabs = state.openExtraTabs.includes(clean)
+        ? state.openExtraTabs
+        : [...state.openExtraTabs, clean];
+      return { activeExtraPath: clean, openExtraTabs };
+    });
+  },
+
+  closeExtraFile: (path) => {
+    if (path === undefined) {
+      set({ activeExtraPath: null });
+      return;
+    }
+    set((state) => {
+      const nextTabs = state.openExtraTabs.filter((p) => p !== path);
+      const nextActive = state.activeExtraPath === path ? (nextTabs[nextTabs.length - 1] ?? null) : state.activeExtraPath;
+      return { openExtraTabs: nextTabs, activeExtraPath: nextActive };
+    });
+  },
+
+  setExtraEntry: (rawPath, bytes) => {
+    const clean = rawPath.trim().replace(/^\/+/, '').replace(/\/+/g, '/');
+    if (!clean || clean.includes('\\') || isUnsafeEntryName(clean)) {
+      throw new Error(`Invalid file path: "${rawPath}"`);
+    }
+    edit((state) => {
+      const nextExtra = new Map(state.source.extraEntries);
+      nextExtra.set(clean, bytes);
+      let nextManifest = state.source.manifest;
+      // If the retained manifest explicitly lists files.server and this is under server/, keep it registered.
+      if (
+        /^server\//i.test(clean) &&
+        nextManifest &&
+        typeof nextManifest.files === 'object' &&
+        nextManifest.files !== null &&
+        !Array.isArray(nextManifest.files) &&
+        Array.isArray((nextManifest.files as Record<string, unknown>).server)
+      ) {
+        const filesObj = { ...(nextManifest.files as Record<string, unknown>) };
+        const serverList = [...((filesObj.server as unknown[]) ?? [])].filter((p): p is string => typeof p === 'string');
+        if (!serverList.includes(clean)) {
+          filesObj.server = [...serverList, clean];
+          nextManifest = { ...nextManifest, files: filesObj };
+        }
+      }
+      return {
+        source: {
+          ...state.source,
+          manifest: nextManifest,
+          extraEntries: nextExtra,
+        },
+      };
+    });
+    return clean;
+  },
+
+  deleteExtraEntry: (rawPath) => {
+    const clean = rawPath.replace(/^\/+/, '').replace(/\/+/g, '/');
+    if (!get().source.extraEntries.has(clean)) return;
+    edit((state) => {
+      const nextExtra = new Map(state.source.extraEntries);
+      nextExtra.delete(clean);
+      let nextManifest = state.source.manifest;
+      if (
+        nextManifest &&
+        typeof nextManifest.files === 'object' &&
+        nextManifest.files !== null &&
+        !Array.isArray(nextManifest.files) &&
+        Array.isArray((nextManifest.files as Record<string, unknown>).server)
+      ) {
+        const filesObj = { ...(nextManifest.files as Record<string, unknown>) };
+        filesObj.server = ((filesObj.server as unknown[]) ?? []).filter((p) => p !== clean);
+        nextManifest = { ...nextManifest, files: filesObj };
+      }
+      const nextTabs = state.openExtraTabs.filter((p) => p !== clean);
+      const nextActive = state.activeExtraPath === clean ? (nextTabs[nextTabs.length - 1] ?? null) : state.activeExtraPath;
+      return {
+        source: {
+          ...state.source,
+          manifest: nextManifest,
+          extraEntries: nextExtra,
+        },
+        openExtraTabs: nextTabs,
+        activeExtraPath: nextActive,
+      };
+    });
+  },
+
+  renameExtraEntry: (rawOld, rawNew) => {
+    const oldPath = rawOld.replace(/^\/+/, '').replace(/\/+/g, '/');
+    const newPath = rawNew.trim().replace(/^\/+/, '').replace(/\/+/g, '/');
+    if (!newPath || newPath.includes('\\') || isUnsafeEntryName(newPath)) {
+      throw new Error(`Invalid file path: "${rawNew}"`);
+    }
+    const existing = get().source.extraEntries.get(oldPath);
+    if (!existing) throw new Error(`File not found: "${oldPath}"`);
+    if (oldPath === newPath) return newPath;
+    if (get().source.extraEntries.has(newPath)) {
+      throw new Error(`A file already exists at "${newPath}"`);
+    }
+    edit((state) => {
+      const nextExtra = new Map(state.source.extraEntries);
+      nextExtra.delete(oldPath);
+      nextExtra.set(newPath, existing);
+      let nextManifest = state.source.manifest;
+      if (
+        nextManifest &&
+        typeof nextManifest.files === 'object' &&
+        nextManifest.files !== null &&
+        !Array.isArray(nextManifest.files) &&
+        Array.isArray((nextManifest.files as Record<string, unknown>).server)
+      ) {
+        const filesObj = { ...(nextManifest.files as Record<string, unknown>) };
+        filesObj.server = ((filesObj.server as unknown[]) ?? []).map((p) => (p === oldPath ? newPath : p));
+        nextManifest = { ...nextManifest, files: filesObj };
+      }
+      const nextTabs = state.openExtraTabs.map((p) => (p === oldPath ? newPath : p));
+      const nextActive = state.activeExtraPath === oldPath ? newPath : state.activeExtraPath;
+      return {
+        source: {
+          ...state.source,
+          manifest: nextManifest,
+          extraEntries: nextExtra,
+        },
+        openExtraTabs: nextTabs,
+        activeExtraPath: nextActive,
+      };
+    });
+    return newPath;
   },
 
   holdAgainst: (isAsKept) => {
@@ -373,6 +525,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
       workspaceGeneration: state.workspaceGeneration + 1,
       isDirty: false,
       filePath: null,
+      activeExtraPath: null,
+      openExtraTabs: [],
       isAsKept: null,
     }));
   },
@@ -396,6 +550,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => {
       revision: 0,
       workspaceGeneration: state.workspaceGeneration + 1,
       source: emptyRetainedSource(),
+      activeExtraPath: null,
+      openExtraTabs: [],
       isAsKept: null,
     }));
   },

@@ -22,7 +22,8 @@ export interface ProjectImportEntry {
  * carries as an image, and source formats core's registry has no entry for,
  * which it would carry as opaque bytes. Text is lossless for both on export.
  */
-const SOURCE_TEXT = /\.(svg|ts|tsx|jsx|yaml|yml|toml)$/i;
+const SOURCE_TEXT = /\.(svg|ts|tsx|jsx|yaml|yml|toml|php|phtml|sql|rs|ini|htaccess)$/i;
+const SOURCE_TEXT_BASENAME = /(?:^|\/)\.htaccess$/i;
 
 /**
  * A type neither list names (a .csv, a README, a .txt) is text when its
@@ -41,7 +42,7 @@ export function isTextEntry(path: string, content: Uint8Array): boolean {
  * if it came in with a bundle.
  */
 export function namedAsText(path: string): boolean {
-  return SOURCE_TEXT.test(path) || !classifyAsset(path).binary;
+  return SOURCE_TEXT.test(path) || SOURCE_TEXT_BASENAME.test(path) || !classifyAsset(path).binary;
 }
 
 /**

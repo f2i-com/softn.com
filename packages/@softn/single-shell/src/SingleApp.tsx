@@ -53,6 +53,8 @@ export interface RunnableApplication {
     permissionMode?: 'prompt' | 'preapproved';
     /** Set when a directory served the shell: where the run is counted and the app's storage lives. */
     directory?: DirectoryConfig;
+    /** Optional same-origin URL of a remote ZIPP-sandboxed multi-user backend (`softn-server`). */
+    backendUrl?: string;
   };
   /** The bundle's icon as a data URL, when it has one the shell accepted. */
   icon?: string;
@@ -432,6 +434,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               <WebContainerView
                 source={containerSource}
                 appId={app.appId}
+                backendUrl={app.config.backendUrl}
                 declaredPermissions={app.declared}
                 grantedCapabilities={containerGrants}
                 theme={

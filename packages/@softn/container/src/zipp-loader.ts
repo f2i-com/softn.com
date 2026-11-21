@@ -155,6 +155,7 @@ export interface ZippEngineInstance {
   takePhpOutputBase64?(): string;
   evalInContext(expr: string): unknown;
   callFunction?(name: string, args: unknown[]): unknown;
+  pythonCall?(name: string, args: unknown[]): unknown;
   drainPendingHostCalls(): Array<{ id: number; kind: string; args: string[] }>;
   resolveHostCallback(id: number, result: unknown): unknown;
   /** The lines printed so far, each with the stream it was written to (the engine's own form). */

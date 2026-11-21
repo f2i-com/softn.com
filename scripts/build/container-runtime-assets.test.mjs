@@ -283,15 +283,17 @@ test('every app that mounts a container asks the host options for its folder and
     'apps/softn-studio/src/components/canvas/VisualCanvas.tsx',
     'apps/softn-studio/src/lib/agent/appCheck.ts',
     'apps/softn-builder/src/components/preview/ContainerPreviewRuntime.tsx',
+    'apps/formlogic-host/src/containerMount.ts',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.ok(source.includes('hostedContainerOptions()'), `${file} mounts with hostedContainerOptions()`);
     assert.ok(!/assets\/container-runtime/.test(source), `${file} names the folder itself`);
   }
-  for (const app of ['web', 'studio', 'builder', 'single', 'single-private']) {
+  for (const app of ['web', 'studio', 'builder', 'single', 'single-private', 'loader']) {
     const source = fs.readFileSync(path.join(root, `apps/softn-${app}/vite.config.ts`), 'utf8');
     assert.ok(source.includes('containerRuntimeAssetPlugin()'), app);
   }
+  assert.ok(fs.readFileSync(path.join(root, 'apps/formlogic-host/vite.config.ts'), 'utf8').includes('containerRuntimeAssetPlugin()'), 'formlogic-host');
   // The editors install everything they ship: in the site build that includes the shared folder.
   for (const app of ['studio', 'builder']) {
     const source = fs.readFileSync(path.join(root, `apps/softn-${app}/vite.config.ts`), 'utf8');

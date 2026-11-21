@@ -215,7 +215,12 @@ export function keptContent(path: string, bytes: Uint8Array): KeptContent {
  * something the app shows or serves, and goes with the assets.
  */
 export function belongsAtTheTop(path: string): boolean {
-  return isPagePath(path) || isLogicPath(path) || /\.(css|json|xdb|sql|ts|tsx|jsx)$/i.test(path);
+  return (
+    isPagePath(path) ||
+    isLogicPath(path) ||
+    /\.(css|json|xdb|sql|ts|tsx|jsx|php|phtml|rs|toml|ya?ml|ini)$/i.test(path) ||
+    /(?:^|\/)\.htaccess$/i.test(path)
+  );
 }
 
 /** What a new text file starts as: valid JSON for a file that has to be JSON, and nothing otherwise. */

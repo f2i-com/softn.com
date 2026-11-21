@@ -18,6 +18,7 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if (!is_string($path) || !str_starts_with($path, '/api/') || strlen($path)>256) reply(404, ['error'=>'Not found.','code'=>'not_found']);
 $manifest=json_decode(@file_get_contents($backend.'/app/manifest.json')?:'null',true);
 if(!is_array($manifest))reply(503,['error'=>'Application bundle is unavailable.']);
+$isContainer=softn_is_container_manifest($manifest);
 // Operator settings, read before any request data is believed: trustedProxies
 // decides both who the client is and whether X-Forwarded-Proto names its scheme.
 $operator=json_decode((string)@file_get_contents($backend.'/private/config.json'),true);
@@ -37,9 +38,10 @@ if($origin!==null&&$originAllowed)header('Access-Control-Allow-Origin: '.$origin
 // fails in the browser. An OPTIONS with no Origin is not a CORS request at
 // all (a probe or a tool), and learns only the methods.
 if ($method==='OPTIONS') {
-    header('Allow: GET, POST, PUT, DELETE, OPTIONS');
+    $allowMethods=$isContainer?'GET, POST, PUT, PATCH, DELETE, OPTIONS':'GET, POST, PUT, DELETE, OPTIONS';
+    header('Allow: '.$allowMethods);
     header('Access-Control-Allow-Headers: '.softn_preflight_headers($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']??null));
-    header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+    header('Access-Control-Allow-Methods: '.$allowMethods);
     header('Access-Control-Max-Age: 600');
     http_response_code(204); exit;
 }
@@ -48,21 +50,30 @@ header('Access-Control-Expose-Headers: ETag, X-SoftN-Poll-Interval');
 // HEAD on a GET route is that GET with the body left off the answer, as on
 // the Rust host: the runner is asked for the GET. It was refused here, 405.
 $head=$method==='HEAD';if($head)$method='GET';
-$routes=$manifest['server']['routes']??[];
-// A path nobody declared is not found, whatever the method; a declared path
-// asked with a method it does not declare is 405, as the Rust host answers
-// it. That used to be 404 here, as though the path were not there, and a
-// method this host does not serve was 405 even where there was no such path.
-$route=null;$declared=$path==='/api/meta'?['GET']:[];
-foreach(is_array($routes)?$routes:[] as $r) {
-    if(!is_array($r)||($r['path']??null)!==$path||!is_string($r['method']??null))continue;
-    $declared[]=$r['method'];
-    if($route===null&&$r['method']===$method)$route=$r;
-}
-if($declared===[])reply(404,['error'=>'Endpoint not found.','code'=>'not_found']);
-if(!in_array($method,['GET','POST','PUT','DELETE'],true)||($route===null&&!($path==='/api/meta'&&$method==='GET'))) {
-    $allow=softn_allowed_methods($declared);if($allow!=='')header('Allow: '.$allow);
-    reply(405,['error'=>'Method not allowed.','code'=>'method_not_allowed']);
+$route=null;
+if($isContainer) {
+    if(!softn_container_route_matches($manifest,$path))reply(404,['error'=>'Endpoint not found.','code'=>'not_found']);
+    if(!in_array($method,['GET','POST','PUT','PATCH','DELETE'],true)) {
+        header('Allow: GET, HEAD, POST, PUT, PATCH, DELETE');
+        reply(405,['error'=>'Method not allowed.','code'=>'method_not_allowed']);
+    }
+} else {
+    $routes=$manifest['server']['routes']??[];
+    // A path nobody declared is not found, whatever the method; a declared path
+    // asked with a method it does not declare is 405, as the Rust host answers
+    // it. That used to be 404 here, as though the path were not there, and a
+    // method this host does not serve was 405 even where there was no such path.
+    $declared=$path==='/api/meta'?['GET']:[];
+    foreach(is_array($routes)?$routes:[] as $r) {
+        if(!is_array($r)||($r['path']??null)!==$path||!is_string($r['method']??null))continue;
+        $declared[]=$r['method'];
+        if($route===null&&$r['method']===$method)$route=$r;
+    }
+    if($declared===[])reply(404,['error'=>'Endpoint not found.','code'=>'not_found']);
+    if(!in_array($method,['GET','POST','PUT','DELETE'],true)||($route===null&&!($path==='/api/meta'&&$method==='GET'))) {
+        $allow=softn_allowed_methods($declared);if($allow!=='')header('Allow: '.$allow);
+        reply(405,['error'=>'Method not allowed.','code'=>'method_not_allowed']);
+    }
 }
 // Only HTTP metadata from Apache is trusted. Never accept a caller's client_ip,
 // upload flags, executable path or script source. X-Forwarded-For is read only
@@ -75,19 +86,24 @@ $rateKey=softn_rate_key($clientIp);
 // leaves the note and stays the one that counts (request-worker.mjs
 // markLimited); the Rust host checks its limit at this point too.
 if(is_file(softn_rate_marker($backend,$rateKey,time()))){header('Retry-After: '.softn_retry_after(time()));reply(429,['error'=>'Too many requests.','code'=>'rate_limited']);}
-$upload=($route['upload']??null)==='photo' && $method==='POST';
-$limit=softn_body_limit($route['maxBodySize']??null,$manifest['config']['server']['maxBodySize']??null,$upload);
+$upload=!$isContainer&&($route['upload']??null)==='photo' && $method==='POST';
+$limit=$isContainer
+    ?softn_body_limit(null,$manifest['config']['server']['maxBodySize']??2*1024*1024,false)
+    :softn_body_limit($route['maxBodySize']??null,$manifest['config']['server']['maxBodySize']??null,$upload);
 if($limit===null)reply(503,['error'=>'Invalid body limit configuration.']);
 if ((int)($_SERVER['CONTENT_LENGTH']??0)>$limit) reply(413,['error'=>'Request too large.','code'=>'payload_too_large']);
 $raw=file_get_contents('php://input',false,null,0,$limit+1);
 if ($raw===false || strlen($raw)>$limit) reply(413,['error'=>'Request too large.','code'=>'payload_too_large']);
-// A body of any other type is refused, as on the Rust host. PHP reads a
-// multipart POST into $_POST and $_FILES before this script runs and leaves
-// php://input empty, so such a body reached the handler as {} with a 200.
-$sent=$raw!==''||(int)($_SERVER['CONTENT_LENGTH']??0)>0||$_POST!==[]||$_FILES!==[];
-if ($sent && strtolower(trim(explode(';',$_SERVER['CONTENT_TYPE']??'')[0]))!=='application/json') reply(415,['error'=>'Use application/json','code'=>'unsupported_media_type']);
-$body=softn_request_body($raw);
-if ($body===null) reply(400,['error'=>'Request body must be a JSON object','code'=>'invalid_request']);
+$body=null;
+if(!$isContainer) {
+    // A body of any other type is refused, as on the Rust host. PHP reads a
+    // multipart POST into $_POST and $_FILES before this script runs and leaves
+    // php://input empty, so such a body reached the handler as {} with a 200.
+    $sent=$raw!==''||(int)($_SERVER['CONTENT_LENGTH']??0)>0||$_POST!==[]||$_FILES!==[];
+    if ($sent && strtolower(trim(explode(';',$_SERVER['CONTENT_TYPE']??'')[0]))!=='application/json') reply(415,['error'=>'Use application/json','code'=>'unsupported_media_type']);
+    $body=softn_request_body($raw);
+    if ($body===null) reply(400,['error'=>'Request body must be a JSON object','code'=>'invalid_request']);
+}
 // proc_close as well: with it alone disabled the request ran, and then died
 // in the clean-up below with its answer unsent.
 foreach(['proc_open','proc_get_status','proc_terminate','proc_close'] as $needed)
@@ -138,10 +154,23 @@ if(!$slot)reply(503,['error'=>'The server is busy. Please retry.','code'=>'datab
 if($slotWait>=1&&is_file(softn_rate_marker($backend,$rateKey,time()))){flock($slot,LOCK_UN);fclose($slot);header('Retry-After: '.softn_retry_after(time()));reply(429,['error'=>'Too many requests.','code'=>'rate_limited']);}
 // `body` marks where the body's own text goes (softn_runner_input); the
 // decoded copy is only for the photo adapter below.
-$request=['path'=>$path,'method'=>$method,'query'=>(object)softn_query((string)($_SERVER['QUERY_STRING']??'')),
-    'headers'=>(object)softn_request_headers($_SERVER),'body'=>null,
-    'client_ip'=>$clientIp,'rate_key'=>$rateKey,'photos'=>extension_loaded('gd')];
-$bodyJson=$raw===''?'{}':$raw;
+if($isContainer) {
+    $https=(isset($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!==''&&strtolower((string)$_SERVER['HTTPS'])!=='off')
+        ||strtolower((string)($_SERVER['REQUEST_SCHEME']??''))==='https'
+        ||(softn_peer_is_trusted_proxy($remoteAddr,$trustedProxies)&&strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO']??''))==='https');
+    $request=['path'=>$path,'method'=>$method,'queryString'=>(string)($_SERVER['QUERY_STRING']??''),
+        'query'=>(object)softn_query((string)($_SERVER['QUERY_STRING']??'')),
+        'headers'=>(object)softn_request_headers($_SERVER,true),'body'=>null,
+        'bodyBase64'=>$raw===''?'':base64_encode($raw),
+        'host'=>(string)($_SERVER['HTTP_HOST']??'localhost'),'https'=>$https,
+        'client_ip'=>$clientIp,'rate_key'=>$rateKey];
+    $bodyJson='{}';
+} else {
+    $request=['path'=>$path,'method'=>$method,'query'=>(object)softn_query((string)($_SERVER['QUERY_STRING']??'')),
+        'headers'=>(object)softn_request_headers($_SERVER),'body'=>null,
+        'client_ip'=>$clientIp,'rate_key'=>$rateKey,'photos'=>extension_loaded('gd')];
+    $bodyJson=$raw===''?'{}':$raw;
+}
 if($upload) {
     // A stock Debian or Ubuntu PHP has no GD: say which package, and give the answer a code like every other.
     if(!extension_loaded('gd'))reply(503,['error'=>'Enable the PHP GD extension for photo uploads (Debian/Ubuntu: the php-gd package).','code'=>'backend_unavailable','diagnostic'=>'php_gd']);
@@ -212,6 +241,22 @@ try {
 if($errors!==''&&function_exists('error_log'))foreach(softn_log_lines($errors) as $line)error_log('softn-host '.$method.' '.$path.': '.$line);
 // The host's own refusal says when to come back, as the Rust host does.
 if($result['status']===429&&is_file(softn_rate_marker($backend,$rateKey,time())))header('Retry-After: '.softn_retry_after(time()));
+if(isset($result['bodyRaw'])) {
+    if(isset($result['headers'])&&is_array($result['headers'])) {
+        $replacedCt=false;
+        foreach($result['headers'] as $pair) {
+            if(!is_array($pair)||count($pair)<2)continue;
+            $k=trim((string)$pair[0]);$v=str_replace(["\r","\n"],'',(string)$pair[1]);
+            $lk=strtolower($k);
+            if($k===''||in_array($lk,['transfer-encoding','connection','content-length'],true))continue;
+            if(!preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/',$k))continue;
+            if($lk==='content-type'&&!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}
+            else header($k.': '.$v,false);
+        }
+    }
+    http_response_code($result['status']);if(!$head)echo $result['bodyRaw'];
+    exit;
+}
 $responseBody=$result['body'];
 // Always run the authenticated handler first, including on conditional polls.
 // No server-side user-response cache and no bypass of revocation checks.

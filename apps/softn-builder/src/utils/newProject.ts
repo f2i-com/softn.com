@@ -17,7 +17,12 @@ import { useSchemaStore } from '../stores/schemaStore';
 import type { LogicFileState, UIFileState } from '../types/builder';
 import { flushCanvasToActiveFile } from './buildProjectBundle';
 import { expressionText } from './starterProps';
-import type { NewProjectConfig, NewProjectLanguage, StarterTemplate } from '../components/toolbar/NewProjectDialog';
+import type {
+  NewProjectBackend,
+  NewProjectConfig,
+  NewProjectLanguage,
+  StarterTemplate,
+} from '../components/toolbar/NewProjectDialog';
 
 /** Put a starter template's elements under the canvas root. */
 export function applyStarterTemplate(template: StarterTemplate): void {
@@ -299,6 +304,243 @@ if (root) {
   return { html, css, scriptPath, scriptContent };
 }
 
+function buildWebBackendStarter(
+  name: string,
+  description: string,
+  language: NewProjectLanguage,
+  backend: Exclude<NewProjectBackend, 'none'>
+): {
+  html: string;
+  css: string;
+  scriptPath: string;
+  scriptContent: string;
+  backendEntry: string;
+  backendContent: string;
+  schemaSql: string;
+} {
+  const safeName = escapeHtml(name || 'Untitled App');
+  const safeDesc = escapeHtml(
+    description || 'Full-stack web app with a sandboxed ZIPP backend and SQLite database.'
+  );
+  const scriptPath = language === 'python' ? 'main.py' : language === 'typescript' ? 'app.ts' : 'app.js';
+  const scriptTag =
+    language === 'python'
+      ? `<script type="text/python" src="./${scriptPath}"></script>`
+      : `<script type="module" src="./${scriptPath}"></script>`;
+
+  const runtimeLabel = backend === 'php' ? 'PHP + SQLite' : backend === 'typescript' ? 'TS API + SQLite' : 'JS API + SQLite';
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${safeName}</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <h1>${safeName}</h1>
+        <p class="muted">${safeDesc}</p>
+      </div>
+      <span class="badge">${runtimeLabel}</span>
+    </header>
+    <form id="item-form" class="card form-row">
+      <input id="item-input" class="input" type="text" placeholder="Add a record stored in SQLite…" required />
+      <button type="submit" class="btn">Save</button>
+    </form>
+    <section class="card">
+      <h2>Records</h2>
+      <ul id="item-list" class="list"></ul>
+    </section>
+  </main>
+  ${scriptTag}
+</body>
+</html>
+`;
+
+  const css = `:root {
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  color: var(--softn-fg, #f8fafc);
+  background: var(--softn-bg, #0f172a);
+}
+body { margin: 0; padding: 24px; }
+.shell { max-width: 760px; margin: 0 auto; display: grid; gap: 16px; }
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.muted { opacity: 0.72; margin: 4px 0 0; }
+.badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: rgba(99, 102, 241, 0.18); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.35); }
+.card { padding: 16px; border-radius: 12px; border: 1px solid rgba(148, 163, 184, 0.22); background: rgba(148, 163, 184, 0.06); }
+.form-row { display: flex; gap: 10px; }
+.input { flex: 1; padding: 9px 12px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: transparent; color: inherit; font: inherit; }
+.btn { padding: 9px 16px; border-radius: 8px; border: none; background: #6366f1; color: #fff; font-weight: 600; cursor: pointer; }
+.list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+.list li { padding: 10px 12px; border-radius: 8px; background: rgba(148, 163, 184, 0.08); display: flex; justify-content: space-between; align-items: center; }
+`;
+
+  const scriptContent =
+    language === 'python'
+      ? `# ${scriptPath} — frontend running in ZIPP Python Worker
+from js import document
+el = document.getElementById("item-list")
+if el:
+    el.textContent = "Connected to sandboxed backend (/api/items)."
+`
+      : `// ${scriptPath} — frontend calls the sandboxed backend via standard fetch('/api/items')
+${language === 'typescript' ? 'interface Item { id: number; title: string; created_at: string }\n' : ''}
+async function loadItems() {
+  const res = await fetch('/api/items');
+  const data = await res.json();
+  const list = document.getElementById('item-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const items${language === 'typescript' ? ': Item[]' : ''} = data.items || [];
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.textContent = \`#\${item.id} · \${item.title}\`;
+    list.appendChild(li);
+  }
+}
+
+document.getElementById('item-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('item-input')${language === 'typescript' ? ' as HTMLInputElement | null' : ''};
+  const title = input?.value.trim() ?? '';
+  if (!title) return;
+  await fetch('/api/items', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (input) input.value = '';
+  await loadItems();
+});
+
+void loadItems();
+`;
+
+  const schemaSql = `CREATE TABLE IF NOT EXISTS items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO items (id, title) VALUES (1, 'Sandboxed backend + SQLite ready');
+`;
+
+  if (backend === 'php') {
+    return {
+      html,
+      css,
+      scriptPath,
+      scriptContent,
+      backendEntry: 'backend/index.php',
+      schemaSql,
+      backendContent: `<?php
+// Sandboxed PHP 8 backend running on ZIPP WASM (browser) or softn-server (multi-user)
+$pdo = new PDO('sqlite:app.db');
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+header('Content-Type: application/json; charset=utf-8');
+
+if ($path === '/api/items' && $method === 'GET') {
+    $rows = $pdo->query('SELECT id, title, created_at FROM items ORDER BY id DESC')->fetchAll(PDO::FETCH_ASSOC);
+    echo json_encode(['items' => $rows]);
+    exit;
+}
+
+if ($path === '/api/items' && $method === 'POST') {
+    $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+    $title = trim((string)($payload['title'] ?? ''));
+    if ($title === '') {
+        http_response_code(422);
+        echo json_encode(['error' => 'Title is required']);
+        exit;
+    }
+    $stmt = $pdo->prepare('INSERT INTO items (title) VALUES (?)');
+    $stmt->execute([$title]);
+    http_response_code(201);
+    echo json_encode(['id' => (int)$pdo->lastInsertId(), 'title' => $title]);
+    exit;
+}
+
+http_response_code(404);
+echo json_encode(['error' => 'Not found']);
+`,
+    };
+  }
+
+  if (backend === 'typescript') {
+    return {
+      html,
+      css,
+      scriptPath,
+      scriptContent,
+      backendEntry: 'backend/server.ts',
+      schemaSql,
+      backendContent: `// Sandboxed TypeScript backend running on ZIPP (browser WASM or softn-server)
+interface BackendRequest {
+  method: string;
+  path: string;
+  query: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+declare const sqlite: {
+  open(url: string): {
+    query(sql: string, params?: unknown[]): { columns: string[]; rows: Array<Record<string, unknown>> };
+    execute(sql: string, params?: unknown[]): { rows_affected: number; last_insert_rowid: number };
+  };
+};
+
+function handleRequest(req: BackendRequest) {
+  const db = sqlite.open('app.db');
+  const method = (req.method || 'GET').toUpperCase();
+  if (req.path === '/api/items' && method === 'GET') {
+    const res = db.query('SELECT id, title, created_at FROM items ORDER BY id DESC');
+    return { status: 200, json: { items: res.rows } };
+  }
+  if (req.path === '/api/items' && method === 'POST') {
+    const payload = JSON.parse(req.body || '{}') as { title?: string };
+    const title = String(payload.title || '').trim();
+    if (!title) return { status: 422, json: { error: 'Title is required' } };
+    const created = db.execute('INSERT INTO items (title) VALUES (?)', [title]);
+    return { status: 201, json: { id: created.last_insert_rowid, title } };
+  }
+  return { status: 404, json: { error: 'Not found' } };
+}
+`,
+    };
+  }
+
+  return {
+    html,
+    css,
+    scriptPath,
+    scriptContent,
+    backendEntry: 'backend/server.js',
+    schemaSql,
+    backendContent: `// Sandboxed JavaScript backend running on ZIPP (browser WASM or softn-server)
+function handleRequest(req) {
+  const db = sqlite.open('app.db');
+  const method = (req.method || 'GET').toUpperCase();
+  if (req.path === '/api/items' && method === 'GET') {
+    const res = db.query('SELECT id, title, created_at FROM items ORDER BY id DESC');
+    return { status: 200, json: { items: res.rows } };
+  }
+  if (req.path === '/api/items' && method === 'POST') {
+    const payload = JSON.parse(req.body || '{}');
+    const title = String(payload.title || '').trim();
+    if (!title) return { status: 422, json: { error: 'Title is required' } };
+    const created = db.execute('INSERT INTO items (title) VALUES (?)', [title]);
+    return { status: 201, json: { id: created.last_insert_rowid, title } };
+  }
+  return { status: 404, json: { error: 'Not found' } };
+}
+`,
+  };
+}
+
 /** Replace the workspace with a new app made from the dialog's choices. */
 export function startNewProject(config: NewProjectConfig): void {
   const isWeb = config.format === 'web' || config.language === 'typescript';
@@ -318,7 +560,11 @@ export function startNewProject(config: NewProjectConfig): void {
     project.setVersion('1.0.0');
     project.setPythonPackages(config.pythonPackages);
 
-    const starter = buildWebContainerStarter(config.name, config.description, config.template, config.language);
+    const hasBackend = config.backend && config.backend !== 'none';
+    const backendStarter = hasBackend
+      ? buildWebBackendStarter(config.name, config.description, config.language, config.backend as Exclude<NewProjectBackend, 'none'>)
+      : null;
+    const starter = backendStarter ?? buildWebContainerStarter(config.name, config.description, config.template, config.language);
     const htmlId = 'web_index_html';
     const rootId = `root_${htmlId}`;
     const uiFiles = new Map<string, UIFileState>([
@@ -349,11 +595,54 @@ export function startNewProject(config: NewProjectConfig): void {
       ['web_style_css', { id: 'web_style_css', path: 'style.css', content: starter.css }],
       ['web_entry_script', { id: 'web_entry_script', path: starter.scriptPath, content: starter.scriptContent }],
     ]);
+    if (backendStarter) {
+      logicFiles.set('web_backend_entry', {
+        id: 'web_backend_entry',
+        path: backendStarter.backendEntry,
+        content: backendStarter.backendContent,
+      });
+      logicFiles.set('web_backend_schema', {
+        id: 'web_backend_schema',
+        path: 'backend/schema.sql',
+        content: backendStarter.schemaSql,
+      });
+    }
 
     useFilesStore.getState().loadFromBundle(uiFiles, logicFiles, new Map(), htmlId);
     useProjectStore.getState().setSource({
       ...useProjectStore.getState().source,
       mainFileId: htmlId,
+      ...(backendStarter
+        ? {
+            manifest: {
+              formatVersion: 2,
+              engine: 2,
+              name: config.name,
+              version: '1.0.0',
+              description: config.description,
+              main: 'index.html',
+              backend: {
+                runtime: config.backend,
+                entry: backendStarter.backendEntry,
+                mode: 'api',
+                routes: ['/api/'],
+              },
+              databases: [
+                {
+                  name: 'app',
+                  engine: 'sqlite',
+                  file: 'app.db',
+                  seedSql: 'backend/schema.sql',
+                },
+              ],
+              config: {
+                execution: 'worker',
+                theme: { mode: config.theme },
+                ...(config.pythonPackages.length > 0 ? { python: { packages: config.pythonPackages } } : {}),
+              },
+            },
+          }
+        : {}),
     });
     useProjectStore.getState().markDirty();
     return;

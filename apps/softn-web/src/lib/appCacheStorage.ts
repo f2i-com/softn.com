@@ -404,6 +404,217 @@ function clearContainerIndexedDb(prefix: string): void {
   }
 }
 
+/** Snapshot of one build's localStorage and container IndexedDB state for Undo after removal. */
+export interface AppStorageBackup {
+  origin: string;
+  localEntries: Array<[string, string]>;
+  containerSession?: unknown;
+  containerSqliteBlobs: Array<[IDBValidKey, unknown]>;
+}
+
+const SYNC_KEY_PREFIXES = [
+  'xdb-sync-active-room:',
+  'xdb-sync-shared:',
+  'xdb-sync-collections:',
+  'xdb-sync-peer:',
+  'xdb-sync-room-key:',
+];
+
+function syncKeysForOrigin(origin: string): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    for (const prefix of SYNC_KEY_PREFIXES) {
+      if (key === `${prefix}${origin}` || key.startsWith(`${prefix}${origin}:`)) {
+        keys.push(key);
+        break;
+      }
+    }
+  }
+  return keys;
+}
+
+function readContainerIndexedDb(prefix: string): Promise<{ session?: unknown; blobs: Array<[IDBValidKey, unknown]> }> {
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') {
+    return Promise.resolve({ blobs: [] });
+  }
+  const readSession = new Promise<unknown>((resolve) => {
+    try {
+      const req = indexedDB.open('softn-container-session', 1);
+      req.onerror = () => resolve(undefined);
+      req.onsuccess = () => {
+        const db = req.result;
+        try {
+          if (!db.objectStoreNames.contains('sessions')) {
+            db.close();
+            resolve(undefined);
+            return;
+          }
+          const tx = db.transaction('sessions', 'readonly');
+          const getReq = tx.objectStore('sessions').get(prefix);
+          getReq.onsuccess = () => {
+            try { db.close(); } catch { /* ignore */ }
+            resolve(getReq.result);
+          };
+          getReq.onerror = () => {
+            try { db.close(); } catch { /* ignore */ }
+            resolve(undefined);
+          };
+        } catch {
+          try { db.close(); } catch { /* ignore */ }
+          resolve(undefined);
+        }
+      };
+    } catch {
+      resolve(undefined);
+    }
+  });
+  const readBlobs = new Promise<Array<[IDBValidKey, unknown]>>((resolve) => {
+    try {
+      const req = indexedDB.open('softn-container-sqlite', 1);
+      req.onerror = () => resolve([]);
+      req.onsuccess = () => {
+        const db = req.result;
+        const found: Array<[IDBValidKey, unknown]> = [];
+        try {
+          if (!db.objectStoreNames.contains('blobs')) {
+            db.close();
+            resolve([]);
+            return;
+          }
+          const tx = db.transaction('blobs', 'readonly');
+          const curReq = tx.objectStore('blobs').openCursor();
+          curReq.onerror = () => {
+            try { db.close(); } catch { /* ignore */ }
+            resolve(found);
+          };
+          curReq.onsuccess = () => {
+            const cur = curReq.result;
+            if (!cur) {
+              try { db.close(); } catch { /* ignore */ }
+              resolve(found);
+              return;
+            }
+            if (String(cur.key).startsWith(prefix)) found.push([cur.key, cur.value]);
+            cur.continue();
+          };
+        } catch {
+          try { db.close(); } catch { /* ignore */ }
+          resolve(found);
+        }
+      };
+    } catch {
+      resolve([]);
+    }
+  });
+  return Promise.all([readSession, readBlobs]).then(([session, blobs]) => ({ session, blobs }));
+}
+
+async function writeContainerIndexedDb(prefix: string, session: unknown, blobs: Array<[IDBValidKey, unknown]>): Promise<void> {
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') return;
+  if (session !== undefined) {
+    await new Promise<void>((resolve) => {
+      try {
+        const req = indexedDB.open('softn-container-session', 1);
+        req.onupgradeneeded = () => {
+          if (!req.result.objectStoreNames.contains('sessions')) req.result.createObjectStore('sessions');
+        };
+        req.onerror = () => resolve();
+        req.onsuccess = () => {
+          const db = req.result;
+          try {
+            const tx = db.transaction('sessions', 'readwrite');
+            tx.objectStore('sessions').put(session, prefix);
+            tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+            tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          } catch {
+            try { db.close(); } catch { /* ignore */ }
+            resolve();
+          }
+        };
+      } catch {
+        resolve();
+      }
+    });
+  }
+  if (blobs.length > 0) {
+    await new Promise<void>((resolve) => {
+      try {
+        const req = indexedDB.open('softn-container-sqlite', 1);
+        req.onupgradeneeded = () => {
+          if (!req.result.objectStoreNames.contains('blobs')) req.result.createObjectStore('blobs');
+        };
+        req.onerror = () => resolve();
+        req.onsuccess = () => {
+          const db = req.result;
+          try {
+            const tx = db.transaction('blobs', 'readwrite');
+            const store = tx.objectStore('blobs');
+            for (const [k, v] of blobs) store.put(v, k);
+            tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+            tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          } catch {
+            try { db.close(); } catch { /* ignore */ }
+            resolve();
+          }
+        };
+      } catch {
+        resolve();
+      }
+    });
+  }
+}
+
+/** Capture an app's localStorage and container IndexedDB state before removal so Undo can restore it. */
+export async function captureAppStorageBackup(origin: string | undefined): Promise<AppStorageBackup | null> {
+  if (!origin) return null;
+  const localEntries: Array<[string, string]> = [];
+  const seen = new Set<string>();
+  try {
+    for (const store of appDataStores(origin)) {
+      for (const key of storeKeys(store)) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const value = localStorage.getItem(key);
+        if (value !== null) localEntries.push([key, value]);
+      }
+    }
+    for (const key of syncKeysForOrigin(origin)) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const value = localStorage.getItem(key);
+      if (value !== null) localEntries.push([key, value]);
+    }
+  } catch {
+    // Storage unavailable; return what we have.
+  }
+  const idb = await readContainerIndexedDb(containerStoragePrefix(origin));
+  return {
+    origin,
+    localEntries,
+    containerSession: idb.session,
+    containerSqliteBlobs: idb.blobs,
+  };
+}
+
+/** Restore a previously captured storage backup (used by Undo). */
+export async function restoreAppStorageBackup(backup: AppStorageBackup | null): Promise<void> {
+  if (!backup) return;
+  try {
+    for (const [key, value] of backup.localEntries) {
+      localStorage.setItem(key, value);
+    }
+  } catch {
+    // Storage quota or unavailable.
+  }
+  await writeContainerIndexedDb(
+    containerStoragePrefix(backup.origin),
+    backup.containerSession,
+    backup.containerSqliteBlobs
+  );
+}
+
 export function removeAppData(origin: string | undefined): number {
   if (!origin) return 0;
   let removed = 0;

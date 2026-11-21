@@ -94,6 +94,12 @@ final class Limits
         return self::base64Of(self::thumbnail()) + self::json();
     }
 
+    /** The body limit of a hosted container backend route. */
+    public static function backend(): int
+    {
+        return max(64 * 1024, (int) Config::get('maxBackendBodyBytes', 10 * 1024 * 1024));
+    }
+
     /**
      * The body limit of a route, from the method and path alone. The routes
      * are matched the way index.php matches them; a route not named here is
@@ -101,6 +107,7 @@ final class Limits
      */
     public static function bodyLimit(string $method, string $path): int
     {
+        if (preg_match('#^/apps/[^/]+/backend(?:/.*)?$#', $path)) return self::backend();
         if ($method === 'POST' && preg_match('#^/apps(?:/[^/]+/(?:versions|remix))?$#', $path)) return self::bundleEnvelope();
         if ($method === 'POST' && preg_match('#^/git/[^/]+/git-receive-pack$#', $path)) return self::bundleEnvelope();
         if ($method === 'POST' && preg_match('#^/apps/[^/]+/thumbnail$#', $path)) return self::imageEnvelope();
@@ -186,9 +193,10 @@ final class Cors
     public static function restricted(string $method, string $path): bool
     {
         if (str_starts_with($path, '/admin/')) return true;
-        if ($method === 'PATCH' || $method === 'DELETE') return true;
+        if ($method === 'PATCH' || $method === 'DELETE' || $method === 'PUT') return true;
         if ($method === 'POST' && ($path === '/apps' || $path === '/categories')) return true;
         if ($method === 'POST' && str_starts_with($path, '/git/')) return true;
+        if ($method === 'POST' && preg_match('#^/apps/[^/]+/backend(?:/.*)?$#', $path)) return true;
         return $method === 'POST' && (bool) preg_match('#^/apps/[^/]+/(versions|thumbnail|key|remix|comments|rating|runs)$#', $path);
     }
 
@@ -958,6 +966,8 @@ final class Response
     public ?string $file = null;
     /** The file, open since the response was built. @var resource|null */
     private $handle = null;
+    /** Repeated header pairs (such as multiple Set-Cookie headers) sent verbatim with replace=false. @var list<array{0: string, 1: string}> */
+    private array $rawHeaders = [];
 
     /** @param array<string, string> $headers */
     private function __construct(int $status, array $headers, string $body)
@@ -965,6 +975,24 @@ final class Response
         $this->status = $status;
         $this->headers = $headers;
         $this->body = $body;
+    }
+
+    /**
+     * A raw HTTP response with explicit header pairs (supporting repeated headers like Set-Cookie).
+     *
+     * @param list<array{0: string, 1: string}> $headerPairs
+     */
+    public static function raw(int $status, array $headerPairs, string $body): self
+    {
+        $r = new self($status, [], $body);
+        foreach ($headerPairs as $pair) {
+            if (!is_array($pair) || count($pair) < 2) continue;
+            $name = trim((string) $pair[0]);
+            $value = str_replace(["\r", "\n"], '', (string) $pair[1]);
+            if ($name === '' || preg_match('/[\r\n:]/', $name)) continue;
+            $r->rawHeaders[] = [$name, $value];
+        }
+        return $r;
     }
 
     /** @param array<string, string> $headers */
@@ -1032,6 +1060,7 @@ final class Response
     {
         http_response_code($this->status);
         foreach ($this->headers as $k => $v) header("$k: $v");
+        foreach ($this->rawHeaders as [$k, $v]) header("$k: $v", false);
         if ($this->status === 304) return;
         // HEAD is GET without the content: the same status and headers,
         // Content-Length included, since the length is what HEAD is usually
@@ -1047,7 +1076,13 @@ final class Response
             return;
         }
         if ($head) {
-            if (!in_array('content-length', array_map('strtolower', array_keys($this->headers)), true)) {
+            $hasLen = in_array('content-length', array_map('strtolower', array_keys($this->headers)), true);
+            if (!$hasLen) {
+                foreach ($this->rawHeaders as [$k, $_]) {
+                    if (strtolower($k) === 'content-length') { $hasLen = true; break; }
+                }
+            }
+            if (!$hasLen) {
                 header('Content-Length: ' . strlen($this->body));
             }
             return;

@@ -120,6 +120,73 @@
 }
 .softn-shell-notice-action:focus-visible,
 .softn-shell-notice-dismiss:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+/* Floating toast for instant removals and Undo feedback (no layout shift). */
+@keyframes softn-toast-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.softn-toast {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 200;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: min(28rem, calc(100vw - 2.5rem));
+  padding: 0.65rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+  color: var(--paper);
+  font-size: 0.84rem;
+  line-height: 1.4;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+  animation: softn-toast-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.softn-toast-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.softn-toast-undo {
+  flex: 0 0 auto;
+  min-height: 1.9rem;
+  padding: 0 0.75rem;
+  border-radius: 7px;
+  border: 1px solid var(--mint-edge, #2e7d5b);
+  background: var(--mint-glow-soft, rgba(46, 125, 91, 0.16));
+  color: var(--mint, #4ade80);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.softn-toast-undo:hover {
+  border-color: var(--mint, #4ade80);
+  background: rgba(46, 125, 91, 0.28);
+}
+.softn-toast-dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.15rem 0.25rem;
+}
+.softn-toast-dismiss:hover { color: var(--paper); }
+.softn-toast-undo:focus-visible,
+.softn-toast-dismiss:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .softn-toast {
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: 0.75rem;
+    max-width: none;
+  }
+}
 /* Out of sight until focused: the first Tab on Home offers them. */
 .softn-skip-links {
   position: absolute;

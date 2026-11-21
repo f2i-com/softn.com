@@ -80,11 +80,12 @@ final class Pages
      * @param array<string, mixed> $row @param array<string, mixed> $ver
      * @return array<string, mixed>
      */
-    public static function playConfig(array $row, array $ver): array
+    public static function playConfig(array $row, array $ver, bool $forceLocal = false): array
     {
         $slug = (string) $row['slug'];
         $name = (string) $row['name'];
         $caps = json_decode((string) $row['capabilities'], true) ?: [];
+        $hosting = Apps::hostingInfo($row);
         // The shell holds a title to 120 characters and a loading line to 160;
         // the catalogue holds a name to 80, so neither can run over, but the
         // cut is here so that a longer limit there never breaks the page.
@@ -93,7 +94,20 @@ final class Pages
         // Only an app that declared storage has a database to reach; the
         // route refuses the rest, and the shell need not learn that by asking.
         if (in_array('storage', $caps, true)) $directory['storage'] = "/api/apps/$slug/storage";
-        return [
+        $useLocal = $forceLocal && $hosting['browserSupported'];
+        $useServerBackend = !$useLocal && $hosting['serverHosted'] && is_string($hosting['backendUrl']);
+        $bundleUrl = "/api/apps/$slug/bundle.softn?v=" . (int) $ver['version'] . '&sha256=' . $ver['sha256'];
+        $bundleSha = (string) $ver['sha256'];
+        if ($hosting['withholdBackend']) {
+            $appDir = Catalog::path($slug);
+            $srcPath = $appDir . '/' . (string) $ver['file'];
+            $cachePath = $appDir . '/backend-cache/client-v' . (int) $ver['version'] . '-' . substr($bundleSha, 0, 12) . '.softn';
+            $clientPath = Bundle::clientBundlePath($srcPath, $cachePath);
+            $clientSha = hash_file('sha256', $clientPath) ?: $bundleSha;
+            $bundleUrl = "/api/apps/$slug/bundle.softn?v=" . (int) $ver['version'] . '&client=1&sha256=' . $clientSha;
+            $bundleSha = $clientSha;
+        }
+        $config = [
             'version' => 1,
             'id' => $slug,
             'title' => $title,
@@ -103,8 +117,8 @@ final class Pages
             // number alone was not enough, because the bytes behind it can
             // change (see the bundle route in index.php), and a cached old
             // copy failed the pin for as long as it was kept.
-            'bundle' => "/api/apps/$slug/bundle.softn?v=" . (int) $ver['version'] . '&sha256=' . $ver['sha256'],
-            'sha256' => (string) $ver['sha256'],
+            'bundle' => $bundleUrl,
+            'sha256' => $bundleSha,
             'loadingText' => mb_substr('Loading ' . $name . '…', 0, 160),
             'theme' => 'dark',
             // The shell's own setting for a trusted app, which requires the
@@ -112,9 +126,17 @@ final class Pages
             'permissionMode' => Apps::isTrusted($row) ? 'preapproved' : 'prompt',
             'directory' => $directory,
         ];
+        if ($useServerBackend) {
+            $bUrl = (string) $hosting['backendUrl'];
+            $siteOrigin = self::origin();
+            if (str_starts_with($bUrl, '/') || ($siteOrigin !== null && str_starts_with(strtolower($bUrl), strtolower($siteOrigin) . '/'))) {
+                $config['backendUrl'] = $bUrl;
+            }
+        }
+        return $config;
     }
 
-    public static function play(string $slugGiven): Response
+    public static function play(string $slugGiven, bool $forceLocal = false): Response
     {
         $shell = dirname(__DIR__, 2) . '/play/index.html';
         if (!is_file($shell)) {
@@ -134,7 +156,7 @@ final class Pages
             return self::problem($err->getMessage(), $err->status);
         }
         $html = (string) file_get_contents($shell);
-        $config = json_encode(self::playConfig($row, $ver), JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        $config = json_encode(self::playConfig($row, $ver, $forceLocal), JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($config === false) return Response::html('<!doctype html><title>SoftN</title><p>The app could not be described.</p>', 500);
         $name = (string) $row['name'];
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($name) . '</title>', $html);
@@ -194,7 +216,7 @@ final class Pages
             $zip = new ZipArchive();
             // The path the bundle route serves; Apps::dir() would make a
             // folder for an app that has none, on a page view.
-            if ($zip->open(Config::dataDir() . '/apps/' . $slug . '/' . (string) $ver['file'], ZipArchive::RDONLY) !== true) return null;
+            if ($zip->open(Catalog::path($slug) . '/' . (string) $ver['file'], ZipArchive::RDONLY) !== true) return null;
             try {
                 // Where the bundle keeps it: at the top, or in the folder the bundle was zipped as.
                 $name = Bundle::manifestName($zip);

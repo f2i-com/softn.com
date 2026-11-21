@@ -28,6 +28,8 @@ export interface SourcePack {
   declared: unknown;
   text: Record<string, string>;
   entries: Record<string, number>;
+  /** Optional same-origin remote backend URL for multi-user v2 container deployments. */
+  backendUrl?: string;
 }
 
 const MAX_PACK_BYTES = 32 * 1024 * 1024;
@@ -64,6 +66,7 @@ export function parsePack(input: unknown): SourcePack {
     'declared',
     'text',
     'entries',
+    'backendUrl',
   ];
   if (Object.keys(p).some((k) => !keys.includes(k)) || p.version !== 1)
     throw Error('Invalid source pack');
@@ -100,6 +103,12 @@ export function parsePack(input: unknown): SourcePack {
   for (const [name, size] of Object.entries(entries))
     if (!entryName(name) || name in text || !Number.isInteger(size) || (size as number) < 0)
       throw Error('Invalid source pack');
+  if (
+    p.backendUrl !== undefined &&
+    p.backendUrl !== null &&
+    (typeof p.backendUrl !== 'string' || !p.backendUrl.trim() || p.backendUrl.length > 512)
+  )
+    throw Error('Invalid backendUrl');
   return {
     version: 1,
     id: p.id,
@@ -112,6 +121,7 @@ export function parsePack(input: unknown): SourcePack {
     declared: p.declared ?? null,
     text: text as Record<string, string>,
     entries: entries as Record<string, number>,
+    ...(typeof p.backendUrl === 'string' ? { backendUrl: p.backendUrl } : {}),
   };
 }
 
@@ -135,6 +145,7 @@ export async function loadServedApplication(
   if (url.search || url.hash) throw Error('Invalid endpoint');
   const bytes = await fetchBytes(url.href + '?source', signal, MAX_PACK_BYTES, 'no-store', progress);
   const pack = parsePack(JSON.parse(new TextDecoder().decode(bytes)));
+  const backendUrl = pack.backendUrl !== undefined ? localUrl(pack.backendUrl, base) : undefined;
   const textFiles = new Map(Object.entries(pack.text));
   const appId = 'served:' + url.pathname + ':' + pack.id;
   // What this app's first screen waited for last time, started before the
@@ -144,7 +155,18 @@ export async function loadServedApplication(
     textFiles,
     // Shape was checked in parsePack; this is the read that decides whether
     // it can run, the same one the archive loader makes.
-    readManifest: () => normalizeManifest<BundleManifest>(pack.manifest, (path) => textFiles.has(path)),
+    readManifest: () => {
+      const feRoot =
+        typeof (pack.manifest as unknown as Record<string, unknown>).frontendRoot === 'string'
+          ? String((pack.manifest as unknown as Record<string, unknown>).frontendRoot)
+              .replace(/\\/g, '/')
+              .replace(/^\/+|\/+$/g, '')
+          : '';
+      return normalizeManifest<BundleManifest>(
+        pack.manifest,
+        (path) => textFiles.has(path) || (feRoot !== '' && textFiles.has(`${feRoot}/${path.replace(/^\/+/, '')}`))
+      );
+    },
     sidecar: pack.declared !== null ? () => Promise.resolve(pack.declared) : undefined,
     appId,
     grantScope: url.href + pack.digest,
@@ -182,6 +204,7 @@ export async function loadServedApplication(
       theme: pack.theme,
       loadingText: pack.loadingText,
       permissionMode: pack.permissionMode,
+      ...(backendUrl ? { backendUrl } : {}),
     },
     ...app,
     ...(containerFiles ? { containerFiles } : {}),

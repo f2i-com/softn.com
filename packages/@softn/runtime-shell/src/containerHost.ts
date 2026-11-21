@@ -97,10 +97,11 @@ export function hostedContainerFiles(
     engineFileFor: (tier: ZippEngineTier) => string;
     glueFileFor: (tier: ZippEngineTier, meta: Record<string, unknown> | null) => string;
   },
-  runtimeUrl: string = containerRuntimeUrl()
+  runtimeUrl: string = containerRuntimeUrl(),
+  options?: { backend?: boolean }
 ): string[] {
   const files = new Set<string>(['container-worker.js']);
-  const needsBackend = tiers.includes('php') || tiers.includes('rust');
+  const needsBackend = Boolean(options?.backend) || tiers.includes('php') || tiers.includes('rust');
   if (needsBackend) {
     files.add('backend-worker.js');
     files.add('engines/xdb-wasm.wasm');

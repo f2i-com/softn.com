@@ -365,9 +365,42 @@ const stagedXdb = copyFirstExisting([xdbWasmSrc], ENGINES_DIR, 'xdb-wasm.wasm');
 ensureBrotliTwin(stagedXdb, xdbBrSrc, 'xdb-wasm.wasm.br');
 copyFirstExisting([xdbGlueSrc], ENGINES_DIR, 'xdb-wasm.glue.js');
 
-// Stage externally hosted vendor libraries (`/runtime/vendor/three.js`)
+// Stage externally hosted vendor libraries (`/runtime/vendor/three.js` + `/runtime/vendor/gltf-loader.js`)
 copyFirstExisting(
   [path.join(REPO_ROOT, 'node_modules', 'three', 'build', 'three.module.min.js')],
   VENDOR_DIR,
   'three.js'
 );
+
+// Bundle GLTFLoader + MeshoptDecoder against external `./three.js` so `ThreeWorkerHost`
+// can load `.glb` / `.gltf` models natively inside `container-worker.js` using the exact
+// same Three.js namespace (with zero extra copies of Three.js).
+{
+  const gltfLoaderSrc = path.join(REPO_ROOT, 'node_modules', 'three', 'examples', 'jsm', 'loaders', 'GLTFLoader.js');
+  const meshoptSrc = path.join(REPO_ROOT, 'node_modules', 'three', 'examples', 'jsm', 'libs', 'meshopt_decoder.module.js');
+  if (fs.existsSync(gltfLoaderSrc) && fs.existsSync(meshoptSrc)) {
+    const esbuild = await import('esbuild');
+    const outFile = path.join(VENDOR_DIR, 'gltf-loader.js');
+    await esbuild.build({
+      stdin: {
+        contents: `export { GLTFLoader } from ${JSON.stringify(gltfLoaderSrc)};\nexport { MeshoptDecoder } from ${JSON.stringify(meshoptSrc)};\n`,
+        resolveDir: path.dirname(gltfLoaderSrc),
+        loader: 'js',
+      },
+      bundle: true,
+      format: 'esm',
+      minify: true,
+      outfile: outFile,
+      plugins: [
+        {
+          name: 'external-three',
+          setup(build) {
+            build.onResolve({ filter: /^three$/ }, () => ({ path: './three.js', external: true }));
+          },
+        },
+      ],
+    });
+    const kb = (fs.statSync(outFile).size / 1024).toFixed(1);
+    console.log(`[container] Bundled gltf-loader.js (${kb} KB)`);
+  }
+}

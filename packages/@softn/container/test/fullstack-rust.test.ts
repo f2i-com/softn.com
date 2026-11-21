@@ -181,6 +181,7 @@ async fn main() {
     // Simulate a FormLogic multi-user remote sandbox BackendTransport
     const calls: string[] = [];
     const formLogicTransport: BackendTransport = {
+      kind: 'remote',
       ready: Promise.resolve(),
       async fetch(req) {
         calls.push(`${req.method} ${req.path}`);

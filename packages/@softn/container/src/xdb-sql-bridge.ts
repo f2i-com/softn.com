@@ -70,7 +70,7 @@ export interface XdbSqlManagerOptions {
   onPersist?: (dbKey: string, bytes: Uint8Array) => void;
 }
 
-let cachedXdbPromise: Map<string, Promise<LoadedXdbBindings>> = new Map();
+const cachedXdbPromise: Map<string, Promise<LoadedXdbBindings>> = new Map();
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && typeof process.versions?.node === 'string';

@@ -66,7 +66,7 @@ export function pageToCheck(files: Map<string, VFSFile>, page?: string): string 
     return path && files.has(path) ? path : null;
   }
   const main = getBundleEntryPath(files);
-  if (main && isPagePath(main)) return main;
+  if (main && (isPagePath(main) || (projectContainerMode(files) === 'web' && files.has(main)))) return main;
   return [...files.keys()].filter(isPagePath).sort()[0] ?? null;
 }
 

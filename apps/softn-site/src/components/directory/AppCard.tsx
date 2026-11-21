@@ -88,6 +88,7 @@ function PlayLink({ app, className, children }: { app: AppCardData; className: s
  */
 export function AppCard({ app, category }: { app: AppCardData; category?: Category }): React.ReactElement {
   const official = app.source === 'seed';
+  const subcategory = app.subcategory ? category?.subcategories?.find((s) => s.slug === app.subcategory) : undefined;
   return (
     <article className="app-card">
       <div className="app-card-media">
@@ -114,6 +115,7 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
           {category && (
             <span className="app-card-stat app-card-cat">
               {category.emoji} {category.name}
+              {subcategory ? ` · ${subcategory.name}` : app.subcategory ? ` · ${app.subcategory}` : ''}
             </span>
           )}
           {app.rating.count > 0 && (
@@ -132,6 +134,26 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
             <span className="app-card-stat app-card-linked" title={`Plays at ${app.external.host}, in a new tab`}>
               <ExternalGlyph size={11} />
               {app.external.host}
+            </span>
+          )}
+          {!app.external && app.hosting?.serverHosted && (
+            <span
+              className="app-card-stat app-card-hosting"
+              title={
+                app.hosting.mode === 'hybrid'
+                  ? 'Hosted multi-user on SoftN (ZIPP safe-sandbox) or run locally in your browser sandbox'
+                  : 'Hosted multi-user on SoftN inside ZIPP safe-sandbox'
+              }
+            >
+              {app.hosting.mode === 'hybrid' ? 'hosted + local' : 'hosted on SoftN'}
+            </span>
+          )}
+          {!app.external && !app.hosting?.serverHosted && app.backendRuntime && (
+            <span
+              className="app-card-stat app-card-hosting"
+              title={`Runs its ${app.backendRuntime.toUpperCase()} backend + SQLite locally inside your browser sandbox`}
+            >
+              browser · {app.backendRuntime.toUpperCase()}
             </span>
           )}
           {!app.external && !app.capabilities.includes('net') && (

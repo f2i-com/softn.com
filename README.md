@@ -14,35 +14,38 @@ A lightweight WebAssembly container runtime, AI studio, and visual builder for s
 
 _Meet **Fieldnotes**: a working app whose form, logic running on ZIPP and XDB records update one dashboard. This is the actual Builder preview. [Read the source](examples/fieldnotes) · [Get the .softn bundle](apps/softn-site/public/examples/Fieldnotes.softn) · [Try the v2 Container Showcase](examples/container-showcase) · [Screenshot details](docs/readme-assets/README.md)._
 
-SoftN packages web applications — interface, code, data seeds, and capability declarations — into portable `.softn` containers. With **SoftN v2 Web App Containers** (`@softn/container`), an app of plain HTML, CSS, JavaScript, TypeScript, or Python (the `dist/` folder of a React or Vue app built by Vite included) runs inside an isolated [ZIPP](https://github.com/f2i-com/zipp.org) Rust/WebAssembly Worker and closed Shadow DOM, while classic **v1 `.ui` + `.logic` bundles** continue to run with 100% backwards compatibility across the runtime, Studio AI, and the visual Builder.
+SoftN packages full-stack web applications — frontend UI, sandboxed backend code, SQLite/XDB data seeds, and capability declarations — into portable `.softn` containers. With **SoftN v2 Web App Containers** (`@softn/container`), standard HTML, CSS, JavaScript, TypeScript, React, Vue, Svelte, or Three.js frontends run alongside optional sandboxed HTTP backends (**PHP/Slim 4**, **JavaScript/TypeScript**, **Rust/Axum**, or **Python**) and embedded **XDB SQLite 3 WASM** (`v0.1.0`) inside isolated [ZIPP](https://github.com/f2i-com/zipp.org) (`v0.0.37`) WebAssembly Workers and a closed Shadow DOM — completely locally in your browser with IndexedDB persistence, or hosted multi-user inside ZIPP `safe-sandbox` with zero app code changes. Classic **v1 `.ui` + `.logic`/`.py` bundles** continue to run with 100% backwards compatibility across the runtime, Studio AI, and Builder.
 
-The project is actively developed. The examples, container microkernel, editors, and runtime are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
+The project is actively developed. The examples, container microkernel, full-stack sandboxed backends, editors, and runtimes are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
 
 ## What you can build
 
 | Capability                     | What it gives you                                                                                                                                                                              |
 | :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Web App Containers (v2)**    | Package 100% standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip an existing compiled `dist/` build — into a `.softn` container with zero custom template syntax required.     |
-| **Pay-as-you-go WASM engines** | Boots on `zipp-javascript-lite.wasm` (~760 KB Brotli) by default. An app that needs `Intl`/`Temporal`, TypeScript or Python runs on the engine that has it; the JavaScript-and-Python one is the engine SoftN's own apps run on, so a deployment carries it once. |
-| **Hosted zero-bundle imports** | Import the container's own small `'preact'` (`h`, `render`, `Fragment`), `'preact/hooks'` (`useState`, `useEffect`, `useRef`, `useMemo`), `'htm'` and `'marked'` (`parse`), Split-Realm WebGL2 `'three'`, `<softn-chart>`, and `<softn-datagrid>` at 0 KB of bundle weight. |
-| **Visual `.ui` compatibility** | Classic `.ui` + `.logic` bundles and all 107 built-in components remain fully supported across SoftN Web, Single-App hosts, Studio AI, and the drag-and-drop visual Builder.                   |
-| **AI-assisted creation**       | Studio turns a brief into a v2 Web App Container or a v1 `.ui` app using your OpenAI, Anthropic, local (Ollama / LM Studio), or custom provider — verified headlessly inside the ZIPP sandbox. |
-| **Local-first XDB & security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage. A v2 web container acts on the network grant today; the others are v1 apps'. |
+| **Full-Stack Web Containers (v2)** | Package standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip a Vite `dist/` build — together with an optional sandboxed HTTP backend (`php` / Slim 4, `javascript`, `typescript`, `rust`, `python`) and XDB SQLite 3 database in one `.softn` file. |
+| **Sandboxed local & multi-user** | Every `fetch("/api/...")` runs locally in a ZIPP WebAssembly Worker with IndexedDB SQLite — or scales multi-user via directory `server`/`hybrid` hosting, `softn-server`, or `softn-host-php`, still strictly inside ZIPP `safe-sandbox` (never native OS PHP/Python/shell). |
+| **Pay-as-you-go WASM engines** | Boots on `zipp-javascript-lite.wasm` (~770 KB Brotli) by default and lazily loads `zipp-javascript`, `zipp-typescript`, `zipp-python-base`, `zipp-php`, `zipp-rust` (`ZIPP v0.0.37`), and `xdb-wasm` (`v0.1.0`) only when an app requires them. |
+| **Hosted zero-bundle imports** | Import `'preact'`, `'preact/hooks'`, `'htm'`, `'marked'`, Native V8 WebGL2 `'three'` + bundled `GLTFLoader`/`MeshoptDecoder` (`THREE.loadGLTF`), `<softn-chart>`, and `<softn-datagrid>` at 0 KB of bundle weight. |
+| **Builder + SQLite Explorer**  | Hybrid IDE for v2 containers and 107-component v1 `.ui` apps, with a built-in **mini-phpMyAdmin XDB SQLite 3 explorer** (tables, columns, indexes, full CRUD, SQL console, `.sql`/`.db` export, live bundle sync), automatic session restore, and toolbar **Clear**. |
+| **AI-assisted creation**       | Studio turns a brief into a full-stack v2 Web App Container (with optional PHP or JS/TS + SQLite backend) or a v1 `.ui` app using OpenAI, Anthropic, local (Ollama / LM Studio), or custom providers — plus built-in runnable examples with no key required. |
+| **Local-first XDB & security** | App-scoped local records (`softn:db` / `xdb/*.xdb`) and IndexedDB SQLite with optional sync, plus strict capability consent (`permission.json`) for network allowlists, camera, microphone, files, GPU, and storage. |
 
 ## SoftN v2 Web App Containers
 
 SoftN v2 (`@softn/container` / `<softn-app>`) treats `.softn` archives like **Docker containers for web apps**:
 
 - **Bring your own code (the standard DOM, no custom DSL):** Write plain HTML + CSS + Vanilla JS/TS, use SoftN's zero-build hosted Preact/HTM modules, or zip the `dist/` folder a bundler wrote into a `.softn` or `.zip` file. **A React or Vue app built by Vite runs as built.** The gate builds one of each (React 18, Vue 3) with Vite's defaults and drives it by mouse and keyboard in a browser: a form the framework controls, a portal or teleport, a part loaded on demand with its own stylesheet, a transition, an error boundary, a router's links. React 19, React Router, emotion, styled-components, zustand, TanStack Query, Vue Router and Pinia were each run the same way by hand, and a smaller page built in Svelte 5, Solid and Preact. The page's script runs in a Worker against the container's own DOM, which covers what such code uses and not all of a browser's. `fetch` (with `response.body` read as it arrives), `XMLHttpRequest`, `WebSocket` and `EventSource` reach only the hosts the app declared and the person allowed; `Blob`, `File`, `FileReader`, `URL.createObjectURL`, `new Image()`, `element.animate`, `canvas.toBlob`, `MessageChannel`, `DOMParser`, `document.createRange`, `customElements` and shadow trees (`attachShadow`, slots) are there, and a Lit app runs. A file is saved only when the person says so in a bar the page draws, and a file they pick is read only by an app they allowed files (10 MB a pick). The app's page is in a shadow root of its own: its stylesheet reaches nothing of the container's or of the page it is embedded in. `IndexedDB` is there too, kept in the page's own IndexedDB under a quota of its own and shared by the same app's tabs in turn (Dexie, idb and localForage run), `crypto.subtle` is the browser's own, an element's `scrollTop` and `window.scrollY` read where the person has scrolled, and `canvas.toDataURL()` and `getImageData()` answer at once (with a picture from another site asked for with CORS among what is read); a classic `<script src>` may be of any size (jQuery and lodash run as plain files), and what one declares at its top, `let` and `const` included (in TypeScript too), the scripts after it can name, and so may a part loaded on demand when its `import()` names it as text. A `<script>` the app adds while it runs runs as in a browser (a webpack build's parts, jQuery's DOMEval, a loader's libraries), `document.currentScript` is the script running, a template or JSON kept in a `<script>` is there to read, and scripts run in a browser's order (`defer` and modules last, `nomodule` not at all). Code an app compiles itself while it runs (`eval`, `new Function`, a part loaded on demand by a computed name) is held to the engine's 64 KB a compilation; an app that stops says so on the page, with a way to start it again. An app's own `new Worker(url)` runs in an engine of its own beside it (classic or a module, from its files or a blob); an element's size is measured by the page and known a moment after it is drawn; an app that formats with `Intl` runs on the full engine, which is chosen for it. An Angular build has not been tried.
-- **Hard Worker + Shadow DOM isolation:** Guest code never touches the host `window` or main thread. It executes inside a dedicated Web Worker on the Rust/WASM ZIPP VM while a lightweight ~23 KB host microkernel applies batched surgical DOM patches inside a closed `ShadowRoot` and enforces `permission.json` network/capability gates.
-- **Split-Realm WebGL2 & Custom Elements:** Guest scripts can write `import * as THREE from 'three'` or render to 2D `<canvas>` while WebGL2 draw calls execute natively on the host GPU without bundling Three.js inside the `.softn` file. Drop `<softn-chart>` or `<softn-datagrid>` into any HTML page to lazy-load rich UI widgets on demand.
+- **Hard Worker + Shadow DOM isolation:** Guest code never touches the host `window` or main thread. It executes inside a dedicated Web Worker on the Rust/WASM ZIPP VM while a lightweight host microkernel applies batched surgical DOM patches inside a closed `ShadowRoot` and enforces `permission.json` network/capability gates.
+- **Sandboxed full-stack backends & XDB SQLite 3:** Declare `backend` (`php`, `javascript`, `typescript`, `rust`, or `python`) and `databases` (`engine: "sqlite"`, with `seedSql`, `seedJson`, or a bundled `.db`) in `manifest.json` alongside optional `frontendRoot` and `.htaccess` rewrite rules. Locally, `LocalBackendTransport` boots a dedicated ZIPP WASM backend Worker with a Virtual Cookie Jar and IndexedDB-persisted XDB SQLite 3 (`v0.1.0`); multi-user deployments switch to `RemoteBackendTransport` (`backendUrl`) against the directory API, `softn-server`, or `softn-host-php`, executing every request inside ZIPP `safe-sandbox` against shared WAL SQLite with zero app code changes.
+- **Native V8 Three.js, GLTF & Custom Elements:** Guest scripts can write `import * as THREE from 'three'` (including `THREE.loadGLTF` powered by bundled `GLTFLoader` and `MeshoptDecoder`) or render to 2D `<canvas>` while WebGL2 draw calls execute natively on the host GPU without bundling Three.js inside the `.softn` file. Drop `<softn-chart>` or `<softn-datagrid>` into any HTML page to lazy-load rich UI widgets on demand.
 
 ```text
-my-web-app.softn  (or zip the dist/ folder of a Vite build directly)
-├── index.html          # Standard HTML5 entry (auto-discovered even without manifest.json)
-├── app.ts              # ES modules (.js, .mjs, .ts) or Python (.py) run in the ZIPP Worker
-├── styles.css          # Scoped automatically inside the container's closed ShadowRoot
-├── manifest.json       # Optional. With one, "engine": 2 is what makes the bundle a web container
+my-web-app.softn  (full-stack v2 container, or zip any Vite dist/ folder directly)
+├── public/index.html   # Standard HTML5 entry (or root index.html; auto-discovered without manifest.json)
+├── public/app.ts       # ES modules (.js, .mjs, .ts) or Python (.py) run in the ZIPP Worker
+├── backend/index.php   # Optional sandboxed HTTP backend (PHP/Slim 4, JS/TS, Rust, or Python)
+├── backend/schema.sql  # Optional SQLite schema/seed (or bundled *.db / seedJson)
+├── manifest.json       # Optional. "engine": 2 plus optional frontendRoot, backend, and databases
 ├── permission.json     # Optional: the hosts the app may reach ("net"), asked of the person first
 └── xdb/*.xdb           # Optional: seeded local collections accessed via `import { db } from 'softn:db'`
 ```
@@ -181,9 +184,11 @@ Open the origin printed by the launcher, normally `http://localhost:1420`:
 
 The launcher proxies the browser apps through one origin and picks alternate ports when needed. It also starts the directory API when PHP is available on `PATH`; install PHP to exercise directory browsing, publishing and server storage locally. Fetched examples appear in both the directory and Runtime when demo seeding is enabled. Demo fetching needs network access. To work on Builder alone, use `npm run dev:builder` after the package build.
 
-Runtime keeps apps running when you return to its workspace, so you can browse the directory and open another app without losing an unfinished form. Use **Home** to switch apps, or **Close** to stop the current one. Apps you open are kept in this browser's library; offline readiness is shown for each saved app.
+Runtime keeps apps running when you return to its workspace, so you can browse the directory and open another app without losing an unfinished form. Use **Home** to switch apps, **Close** to stop the current one, or **Close all** on the launcher to stop every running app at once. Apps you open are kept in this browser's library with offline readiness shown for each saved app; removing an app or pressing **Remove all** happens immediately without blocking confirmation dialogs and shows a floating toast with single-step **Undo**.
 
-For a first project, open the homepage's **Fieldnotes** example in Builder, select its heading and change **Text Content**, then use **Preview** and **Export**. Use **Open** to bring your exported app back into Studio, Builder or Runtime. Or choose **New** in Builder to start from a blank app. The [Fieldnotes source](examples/fieldnotes) is included in this repository; [softn-Examples](https://github.com/f2i-com/softn-Examples) contains the wider demo catalogue.
+In Builder, reopening `/builder/` automatically restores your last workspace without a blocking prompt; use **Clear** in the toolbar to cleanly reset the workspace and clear stored session state. For any `.softn` project with SQLite (`.db`/`.sqlite`, `manifest.databases`, or backend `.sql` migrations), Builder's **Data** tab opens a **mini-phpMyAdmin XDB SQLite 3 explorer** where you can create/alter/drop tables, columns, and indexes, browse/insert/edit/delete/truncate rows, run SQL queries, export `.sql`/`.db`, and sync changes straight back into the `.softn` bundle.
+
+For a first project, open the homepage's **Fieldnotes** example in Builder, select its heading and change **Text Content**, then use **Preview** and **Export** — or scaffold a new **Web Container (v2)** with a **PHP + SQLite** or **JS/TS API + SQLite** backend. Use **Open** to bring your exported app back into Studio, Builder or Runtime. The [Fieldnotes source](examples/fieldnotes) and [v2 container showcase](examples/container-showcase) are included in this repository; [softn-Examples](https://github.com/f2i-com/softn-Examples) contains the wider demo catalogue.
 
 ## Connect to FormLogic
 
@@ -204,34 +209,34 @@ The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explai
 
 | Destination                 | Guide                                                                                                                                   |
 | :-------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------- |
-| **Browser or desktop**      | Open a bundle in [SoftN Web](apps/softn-web) or the [Tauri loader](apps/softn-loader).                                                  |
-| **App directory**           | Publish a bundle with its own page, browser player and server storage. See the [directory guide](apps/softn-api/README.md).             |
-| **Your own website**        | Deploy the app in an unbranded [single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md).                                                        |
-| **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/engineering/SINGLE_APP_PRIVATE.md).                               |
-| **Server logic and SQLite** | Use the [Rust private backend](apps/softn-host-rust/PRIVATE_BACKEND.md) or [PHP backend packaging](apps/softn-host-php/SINGLE_APP_DEPLOYMENT.md). |
-| **FormLogic**               | Use the connected host and named backend actions described above.                                                                       |
+| **Browser or desktop**      | Open a v2 full-stack container or v1 bundle in [SoftN Web](apps/softn-web) or the [Tauri loader](apps/softn-loader).                    |
+| **App directory (flexible)** | Publish a bundle with its own page, browser player, category (including Business Apps), optional server storage, and per-app `hosting` mode (`browser`, `server`, or `hybrid` inside ZIPP `safe-sandbox`). See the [directory guide](apps/softn-api/README.md). |
+| **Your own website**        | Deploy the app in an unbranded [single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md) (with optional `backendUrl`).               |
+| **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/engineering/SINGLE_APP_PRIVATE.md).                     |
+| **Multi-user sandboxed backend** | Host v1 `server/*.logic` or v2 PHP/JS/TS/Rust/Python container backends strictly inside ZIPP `safe-sandbox` on the [Rust server](apps/softn-host-rust/PRIVATE_BACKEND.md) or [PHP on-demand host](apps/softn-host-php/SINGLE_APP_DEPLOYMENT.md). |
+| **FormLogic**               | Use the connected host and named backend actions / `containerHttp` bridge described above.                                              |
 
-A `.softn` archive can be either a **v2 Web App Container** (standard HTML/CSS/JS/TS or a zipped `dist/` build, `manifest.json` optional) or a **v1 Visual `.ui` Bundle**:
+A `.softn` archive can be either a **v2 Web App Container** (standard HTML/CSS/JS/TS or a zipped `dist/` build, with optional sandboxed `backend` and XDB SQLite `databases`) or a **v1 Visual `.ui` Bundle**:
 
 ```text
 # v2 Web App Container (.softn or .zip)        # v1 Visual Component Bundle (.softn)
 my-web-app.softn                               my-ui-app.softn
 ├── index.html          # Standard HTML5       ├── manifest.json       # App identity & entry
 ├── app.ts / assets/*   # ES modules & CSS     ├── permission.json     # Requested capabilities
-├── manifest.json       # Optional metadata    ├── ui/                 # .ui pages & components
-├── permission.json     # Optional permissions ├── logic/              # .logic or .py scripts
-└── xdb/                # Optional seed data   ├── xdb/                # Optional seed data
-                                               └── assets/             # Images & styles
+├── backend/*           # Optional PHP/JS/RS/Py├── ui/                 # .ui pages & components
+├── manifest.json       # Optional metadata    ├── logic/              # .logic or .py scripts
+├── permission.json     # Optional permissions ├── xdb/                # Optional seed data
+└── xdb/ or *.db        # Optional seeds/SQLite└── assets/             # Images & styles
 ```
 
-Capabilities such as network, microphone and synchronization require support and permission from the host. An app's bundle is portable; include only material you intend to distribute in client downloads.
+Capabilities such as network, microphone and synchronization require support and permission from the host. An app's bundle is portable; include only material you intend to distribute in client downloads (or set `"withhold_backend": true` in server-hosted directory mode / `softn-single-private` so backend source stays on the server).
 
 ## Documentation
 
 | Topic                   | Read next                                                                                                                                                      |
 | :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The guides              | [softn.com/docs](https://softn.com/docs/): thirty-four pages from "What is SoftN?" to hosting, generated from [`docs/content/softn-docs.json`](docs/README.md) |
-| v2 Web Containers       | [SoftN v2 Container Architecture RFC](docs/rfcs/softn-v2-container.md) · [Container showcase](examples/container-showcase)                                     |
+| The guides              | [softn.com/docs](https://softn.com/docs/): thirty-five pages from "What is SoftN?" and full-stack Web Containers to flexible hosting, generated from [`docs/content/softn-docs.json`](docs/README.md) |
+| v2 Web Containers       | [Full-Stack Web Containers guide](https://softn.com/docs/web-containers/) · [Architecture RFC](docs/rfcs/softn-v2-container.md) · [Container showcase](examples/container-showcase) |
 | Language and components | Expand the reference below for v1 `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                |
 | Data modeling           | [Builder collections, ER relationships and record references](docs/engineering/BUILDER_DATA.md)                                                                         |
 | Loading and composition | [Bundle loading](docs/engineering/BUNDLE_LOADING.md) · [Component loading](docs/engineering/COMPONENT_LOADING.md) · [Reopening local apps](docs/engineering/LOCAL_APP_REOPEN.md)                   |
@@ -248,17 +253,20 @@ Capabilities such as network, microphone and synchronization require support and
 ### v2 Web App Container Pipeline (`@softn/container`)
 
 ```
-.softn / .zip (HTML + CSS + JS/TS/Py or compiled dist/)
+.softn / .zip (HTML + CSS + JS/TS/Py + optional PHP/JS/TS/Rust/Python backend + SQLite)
       |
       +---> Sanitized HTML + Scoped CSS ---> Closed ShadowRoot (<softn-app>)
       |                                             ^
       |                                             | Batched DOM Mutations &
-      v                                             | Split-Realm WebGL2 / Canvas Ops
-  Web Worker ---> Tiered ZIPP WASM VM --------------+
-                  (lite / js / ts / python)
+      v                                             | Native V8 Three.js / WebGL2 / Canvas Ops
+  Frontend Worker -> Tiered ZIPP WASM VM -----------+
+                     (lite / js / ts / python)
                         |
-                        +---> Hosted `/runtime/vendor/*` (preact, htm, marked, three)
+                        +---> Hosted `/runtime/vendor/*` (preact, htm, marked, three + gltf-loader)
                         +---> Gated `softn:*` bridges (`softn:db`, `softn:net`, `softn:storage`)
+                        +---> BackendTransport (/api/* & SSR):
+                                ├── LocalBackendTransport  -> ZIPP Backend Worker (php/js/ts/rust/py) + XDB SQLite 3 WASM (IndexedDB)
+                                └── RemoteBackendTransport -> softn-api / softn-server / softn-host-php (ZIPP safe-sandbox + WAL SQLite)
 ```
 
 ### v1 Visual `.ui` & `.logic` Pipeline (`@softn/core` + `@softn/components`)
@@ -965,12 +973,12 @@ them shows the engine's debug readout.
 
 | App               | Description                                                                                                                                                                 |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **softn-site**    | The softn.com landing page and app directory: browse, search and filter v2 Web Containers and v1 `.softn` apps, inspect sources, play them, and publish your own            |
-| **softn-web**     | Browser-based `.softn` & `.zip` runtime running both Worker-isolated v2 Web Containers (`<softn-app>`) and v1 `.ui` apps, with multi-tab and `?open=` deep links. PWA       |
-| **softn-studio**  | AI-assisted workspace: brief to blueprint to v2 Web App Container (`HTML + CSS + JS/TS/Py`) or v1 `.ui` app, verified headlessly inside ZIPP. Installable PWA               |
-| **softn-builder** | Hybrid IDE: code & live-preview workspace for v2 Web Containers alongside a 107-component drag-and-drop visual editor for v1 `.ui` apps, schema designer, and `.softn` export|
-| **softn-loader**  | Tauri desktop runtime with `.softn` file association and XDB/SQLite                                                                                                         |
-| **softn-api**     | The directory behind softn.com: PHP and folder-based JSON, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
+| **softn-site**    | The softn.com landing page and app directory: browse, search and filter v2 full-stack Web Containers and v1 `.softn` apps (including Business Apps and hosting-mode filters), inspect sources, play hosted or locally (`?mode=local`), and publish your own |
+| **softn-web**     | Browser-based `.softn` & `.zip` runtime running Worker-isolated v2 full-stack Web Containers (frontend + ZIPP WASM backend + IndexedDB SQLite) and v1 `.ui` apps, with multi-tab, Close all, Remove all, instant Toast+Undo, and `?open=`/`?mode=local` deep links. PWA |
+| **softn-studio**  | AI-assisted workspace: brief to blueprint to full-stack v2 Web App Container (`HTML + CSS + JS/TS/Py` + optional sandboxed PHP/JS/TS + SQLite backend) or v1 `.ui` app, verified headlessly inside ZIPP. Installable PWA |
+| **softn-builder** | Hybrid IDE: full-stack v2 Web Container editor (HTML/CSS/TS/PHP/Rust/SQL) + mini-phpMyAdmin XDB SQLite 3 explorer + 107-component drag-and-drop visual editor for v1 `.ui` apps, auto-restore, Clear, and `.softn` export |
+| **softn-loader**  | Tauri desktop runtime opening both v2 Web App Containers and v1 `.softn` bundles natively with file association and XDB/SQLite                                              |
+| **softn-api**     | The directory behind softn.com: PHP and folder-based JSON, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes, flexible `browser`/`server`/`hybrid` container hosting in ZIPP `safe-sandbox`, and per-app storage |
 
 The three browser apps are installable PWAs: each ships a web app manifest and a
 service worker that precaches the runtime, the component library and the
@@ -1048,9 +1056,14 @@ any app; a remix is a new listing that records its parent.
 
 Apps that declare the `storage` capability get a small database of their own
 on the server, reached from a script as `softn.storage.*`. Snake's shared top
-ten and the Notes board are the worked examples. The routes are described in
-[`apps/softn-api/README.md`](apps/softn-api/README.md), and `GET /api` lists
-them.
+ten and the Notes board are the worked examples. Full-stack v2 Web Containers
+stored in `data/apps/<slug>/` can additionally choose per-app `hosting` in
+`app.json` (`"browser"` default, `"server"` with optional `"withhold_backend": true`,
+or `"hybrid"` supporting both server-hosted ZIPP `safe-sandbox` execution at
+`/api/apps/<slug>/backend/...` and local browser execution via `?mode=local`);
+manage `data/apps/` from the CLI with `node scripts/demos/manage-data.mjs`.
+The routes are described in [`apps/softn-api/README.md`](apps/softn-api/README.md),
+and `GET /api` lists them.
 
 Play goes to `/play/<slug>`: the single-app shell, served by the API with the
 app's configuration written into the page, so the page fetches the bundle and
@@ -1078,10 +1091,14 @@ owner). `npm run build:site -- --with-demos` fetches the pinned softn-Examples
 release, ships the bundles under `/demos/` with a download page at
 `/softn-files/`, and has the directory seed itself from them on the first
 request — the shape softn.com itself deploys. Demo changes are refreshed while `seedDemos` is enabled.
-You can also copy a folder containing `v1.softn` directly into
-`data/apps/<slug>/`: the API discovers it and maintains an `app.json` for its
-metadata and social history, with locked atomic updates. Existing SQLite
-catalogues migrate automatically; see the API README before upgrading.
+You can also drag and drop a `.softn` file (or copy a `<slug>/v1.softn` folder)
+directly into `data/apps/<category>/[<subcategory>/]` (or flat `data/apps/`):
+the API automatically adopts it into versioned `v1.softn` / `v2.softn` history,
+extracts its icon, maintains `app.json` and per-folder `category.json` display
+metadata & caches with locked atomic updates, and (when `autoThumbnail` /
+`SOFTN_AUTO_THUMB=1` is enabled) captures a `thumb.webp` screenshot by booting
+the app automatically. Existing SQLite catalogues migrate automatically; see the
+API README before upgrading.
 
 ### Demos
 
@@ -1195,12 +1212,13 @@ its own 35 fps cap. The host side is `packages/@softn/core/src/runtime/accel-hos
 
 | Layer             | Protection                                                                                                                                                                                                                     |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| VM Sandboxing     | zipp WASM VM -- no `eval()`, no `new Function()`, no host access                                                                                                                                                               |
+| VM Sandboxing     | ZIPP (`v0.0.37`) WASM / Rust `safe-sandbox` VM — no `eval()`, no `new Function()`, no native OS PHP/Python/shell execution, no ambient filesystem or host access                                                              |
+| Backend Sandboxing | Both local browser container backends (`LocalBackendTransport`) and multi-user server backends (`softn-api`, `softn-server`, `softn-host-php`) run strictly inside ZIPP `safe-sandbox` against scoped XDB / WAL SQLite        |
 | Host acceleration | Only with the `accel` capability, only for source that fits a closed arithmetic language, only over views of the script's own pinned typed arrays                                                                              |
-| Execution Limits  | Host-dependent: the worker runtime enforces deadlines and can terminate a runaway worker; `softn-server` uses instrumented step budgets and an abort flag. Main-thread embedding does not have the worker termination boundary |
-| Bridge Isolation  | `window` and `navigator` are controlled bridge objects                                                                                                                                                                         |
-| localStorage      | App-scoped prefix `softn:{appId}:` separates record keys; host origin isolation remains a separate boundary                                                                                                                    |
-| ZIP Extraction    | Rejects `../`, absolute paths, null bytes, Windows drive letters                                                                                                                                                               |
+| Execution Limits  | Host-dependent: worker runtimes enforce deadlines and can terminate runaway workers; `softn-server` and server container runners enforce instruction/memory/wall-time bounds and an abort flag                                  |
+| Bridge Isolation  | `window` and `navigator` are controlled bridge objects; v2 Web Containers mount UI inside a closed `ShadowRoot`                                                                                                                |
+| localStorage / IDB | App-scoped prefix `softn:{appId}:` and per-app IndexedDB databases isolate saved records and SQLite images; host origin isolation remains a separate boundary                                                                  |
+| ZIP Extraction    | Rejects `../`, absolute paths, null bytes, Windows drive letters, duplicate names, and ZIP64 / parser-differential tricks                                                                                                      |
 
 ---
 
@@ -1308,8 +1326,12 @@ Chromium and skips itself until `npm run e2e:install` has put one on the machine
 
 | File                                                 | Purpose                                                                                                                                                                                                                      |
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/@softn/container/`                         | SoftN v2 Web App Container microkernel (`<softn-app>`): Worker-isolated tiered ZIPP engines, closed ShadowRoot DOM patcher, hosted `/runtime/vendor/` modules, Split-Realm Three.js WebGL2, and `<softn-*>` custom elements  |
-| `packages/@softn/runtime-shell/src/WebContainerView.tsx` | Shared React host wrapper and zero-config container detector (`containerBundle.ts`) used by `softn-web` and `softn-single`                                                                                               |
+| `packages/@softn/container/`                         | SoftN v2 Web App Container microkernel (`<softn-app>`): Worker-isolated tiered ZIPP WASM engines (`lite`/`js`/`ts`/`python`/`php`/`rust`), closed ShadowRoot DOM patcher, full-stack `BackendTransport` + XDB SQLite 3 WASM (`v0.1.0`), `.htaccess` rewriting, hosted `/runtime/vendor/` modules (`preact`, `htm`, `marked`, Native V8 `three` + `gltf-loader`), and `<softn-*>` custom elements |
+| `packages/@softn/runtime-shell/src/WebContainerView.tsx` | Shared React host wrapper and zero-config container detector (`containerBundle.ts`) used by `softn-web`, `softn-single`, and `softn-loader`                                                                              |
+| `apps/softn-builder/src/components/schema/SqliteDatabaseAdmin.tsx` | Mini-phpMyAdmin XDB SQLite 3 explorer in Builder's Data view (`DataWorkspace.tsx` + `sqliteDatabase.ts`): schema DDL, indexes, full CRUD, SQL console, `.sql`/`.db` export, and live bundle sync                  |
+| `apps/softn-api/lib/hosted_backend.php`              | Directory flexible hosting (`browser` / `server` / `hybrid`) dispatching `/api/apps/<slug>/backend/...` strictly through `hosted-backend-runner.mjs` (ZIPP WASM `safe-sandbox` + shared WAL SQLite)                        |
+| `apps/softn-host-rust/src/container_backend.rs`      | Multi-user v2 container backend runner in `softn-server` executing PHP, JS/TS, Rust, and Python strictly inside ZIPP `safe-sandbox` against shared WAL SQLite                                                              |
+| `apps/softn-host-php/runtime/container-backend.mjs`  | On-demand v2 container backend runner for Apache/PHP deployments executing PHP, JS/TS, Rust, and Python inside verified ZIPP WASM `safe-sandbox` modules                                                                   |
 | `examples/container-showcase/`                       | Standalone v2 container showcase (`compiled-kanban.softn`, `preact-fieldnotes.softn`, `three-orbit.softn`)                                                                                                                   |
 | `packages/@softn/core/src/parser/`                   | v1 `.ui` lexer and AST parser                                                                                                                                                                                                |
 | `packages/@softn/core/src/renderer/`                 | AST to React renderer and component registry                                                                                                                                                                                 |
@@ -1324,7 +1346,9 @@ Chromium and skips itself until `npm run e2e:install` has put one on the machine
 | `packages/@softn/components/src/threed/Scene3D.tsx`  | The 3D scene: instancing, pointer lock, attached objects                                                                                                                                                                     |
 | `apps/softn-api/index.php`                           | The directory API's routes                                                                                                                                                                                                   |
 | `scripts/build/build-site.mjs`                             | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md`                                                                                                                                               |
-| `scripts/demos/fetch-demos.mjs`                            | Fetches and verifies the demo bundles from the softn-Examples release `public/demos/index.json` pins                                                                                                                         |
+| `scripts/demos/fetch-demos.mjs`                            | Fetches and verifies the demo bundles from `public/demos/index.json` (both pinned `softn-Examples` releases and `source: "local"` bundles synced via `sync-local-demos.mjs`)                                                |
+| `scripts/demos/manage-data.mjs`                            | CLI for managing `apps/softn-api/data/apps/`: organize into category/subcategory folders (`category.json`), list, add, remove, sync, watch, and toggle flexible `hosting` modes (`browser` / `server` / `hybrid`) |
+| `scripts/demos/auto-thumb.mjs`                             | Boots `.softn` apps missing a `thumb.*` image inside the SoftN web runtime and saves a `1280×800` `thumb.webp` beside the bundle                                                                                |
 | `scripts/demos/softn-apps/`                                | Every app from every release in `repos.json`, photographed, as one folder a site loads: `npm run apps:build`, then `build:site -- --demos-dir`, an upload beside `api/` as `demos/`, or `apps:publish` (its README explains) |
 
 ---

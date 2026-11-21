@@ -11,9 +11,29 @@
  * mirrored scene graph, accelerating high-poly terrain picking by >200x vs the guest VM.
  */
 
-import { base64ToBytes } from './archive';
+import { base64ToBytes, bytesToBase64 } from './archive';
 import { canvasSide } from './host-policy';
 import type { WebGLExecResolvers, WebGLFramePayload } from './webgl-worker-host';
+
+export interface ThreeFrameResolvers extends WebGLExecResolvers {
+  /** Read a bundled file (e.g. `.glb`, `.gltf`, or sibling `.bin`/image) strictly from the sandboxed archive. */
+  getArchiveBytes?: (relPath: string) => Uint8Array | null;
+  /** Called when an async GLTF load finishes and produces a fresh rendered frame. */
+  onAsyncDirty?: () => void;
+}
+
+type GltfLoaderModule = {
+  GLTFLoader: new (manager?: import('three').LoadingManager) => {
+    setMeshoptDecoder?: (decoder: unknown) => unknown;
+    parse: (
+      data: ArrayBuffer | string,
+      path: string,
+      onLoad: (gltf: { scene: import('three').Group }) => void,
+      onError?: (err: unknown) => void
+    ) => void;
+  };
+  MeshoptDecoder?: { ready?: Promise<void> };
+};
 
 type ThreeNamespace = typeof import('three');
 
@@ -52,6 +72,8 @@ interface NativeThreeRendererEntry {
   materials: Map<number, import('three').Material>;
   textures: Map<number, import('three').Texture>;
   dirty: boolean;
+  disposed?: boolean;
+  lastRender?: { sceneId: number; cameraId: number };
 }
 
 function decodeTypedArray(typeCode: string, b64: string): Float32Array | Uint16Array | Uint32Array | Int32Array | Int16Array | Int8Array | Uint8Array | Uint8ClampedArray {
@@ -144,6 +166,9 @@ function decodeUniformValue(
 export class ThreeWorkerHost {
   private THREE: ThreeNamespace | null = null;
   private loadPromise: Promise<ThreeNamespace | null> | null = null;
+  private runtimeBase = '/runtime/';
+  private gltfModulePromise: Promise<GltfLoaderModule | null> | null = null;
+  private readonly gltfTemplateCache = new Map<string, Promise<import('three').Object3D | null>>();
   private readonly renderers = new Map<number, NativeThreeRendererEntry>();
   private nextRendererId = 1;
 
@@ -160,6 +185,7 @@ export class ThreeWorkerHost {
     if (typeof OffscreenCanvas !== 'function') return false;
     if (!this.loadPromise) {
       const base = (runtimeUrl || '/runtime/').replace(/\/?$/, '/');
+      this.runtimeBase = base;
       const url = `${base}vendor/three.js`;
       this.loadPromise = (import(/* @vite-ignore */ url) as Promise<ThreeNamespace>)
         .then((mod) => {
@@ -173,6 +199,102 @@ export class ThreeWorkerHost {
     }
     const loaded = await this.loadPromise;
     return loaded !== null;
+  }
+
+  private ensureGltfLoader(): Promise<GltfLoaderModule | null> {
+    if (!this.gltfModulePromise) {
+      const url = `${this.runtimeBase}vendor/gltf-loader.js`;
+      this.gltfModulePromise = (import(/* @vite-ignore */ url) as Promise<GltfLoaderModule>)
+        .then(async (mod) => {
+          if (mod?.MeshoptDecoder?.ready) {
+            await mod.MeshoptDecoder.ready.catch(() => undefined);
+          }
+          return mod;
+        })
+        .catch(() => {
+          this.gltfModulePromise = null;
+          return null;
+        });
+    }
+    return this.gltfModulePromise;
+  }
+
+  private loadGltfIntoHolder(
+    THREE: ThreeNamespace,
+    entry: NativeThreeRendererEntry,
+    holder: import('three').Group,
+    rawSrc: string,
+    resolvers?: ThreeFrameResolvers
+  ): void {
+    const cleanSrc = rawSrc.replace(/^\.\/+/, '').replace(/^\/+/, '');
+    if (!cleanSrc || !resolvers?.getArchiveBytes) return;
+
+    let templatePromise = this.gltfTemplateCache.get(cleanSrc);
+    if (!templatePromise) {
+      const bytes = resolvers.getArchiveBytes(cleanSrc);
+      if (!bytes || bytes.byteLength === 0) return;
+      const copy = bytes.slice();
+      const baseDir = cleanSrc.includes('/') ? cleanSrc.slice(0, cleanSrc.lastIndexOf('/') + 1) : '';
+      const isGlb = copy.byteLength >= 4 && copy[0] === 0x67 && copy[1] === 0x6c && copy[2] === 0x54 && copy[3] === 0x46;
+
+      templatePromise = this.ensureGltfLoader().then(async (mod) => {
+        if (!mod?.GLTFLoader) return null;
+        const manager = new THREE.LoadingManager();
+        manager.setURLModifier((url) => {
+          if (/^data:/i.test(url)) return url;
+          const rel = url.replace(/^\.\/+/, '').replace(/^\/+/, '');
+          const sideBytes = resolvers.getArchiveBytes?.(rel) ?? resolvers.getArchiveBytes?.(`${baseDir}${rel}`);
+          if (sideBytes && sideBytes.byteLength > 0) {
+            const ext = rel.slice(rel.lastIndexOf('.') + 1).toLowerCase();
+            const mime =
+              ext === 'png' ? 'image/png'
+                : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+                : ext === 'webp' ? 'image/webp'
+                : 'application/octet-stream';
+            return `data:${mime};base64,${bytesToBase64(sideBytes)}`;
+          }
+          return 'data:,';
+        });
+        const loader = new mod.GLTFLoader(manager);
+        if (mod.MeshoptDecoder && typeof loader.setMeshoptDecoder === 'function') {
+          loader.setMeshoptDecoder(mod.MeshoptDecoder);
+        }
+        return await new Promise<import('three').Object3D | null>((resolve) => {
+          try {
+            const payload = isGlb
+              ? copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength)
+              : new TextDecoder().decode(copy);
+            loader.parse(
+              payload,
+              baseDir,
+              (gltf) => resolve(gltf?.scene ?? null),
+              () => resolve(null)
+            );
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      this.gltfTemplateCache.set(cleanSrc, templatePromise);
+    }
+
+    void templatePromise.then((template) => {
+      if (!template || entry.disposed) return;
+      try {
+        holder.add(template.clone(true));
+        if (entry.lastRender) {
+          const sc = entry.objects.get(entry.lastRender.sceneId) as import('three').Scene | undefined;
+          const cam = entry.objects.get(entry.lastRender.cameraId) as import('three').Camera | undefined;
+          if (sc && cam) {
+            entry.renderer.render(sc, cam);
+            entry.dirty = true;
+            resolvers.onAsyncDirty?.();
+          }
+        }
+      } catch {
+        // ignore clone/render errors on disposed entries
+      }
+    });
   }
 
   init(
@@ -244,7 +366,7 @@ export class ThreeWorkerHost {
     rendererId: number,
     ops: unknown[],
     f32B64: string,
-    resolvers?: WebGLExecResolvers
+    resolvers?: ThreeFrameResolvers
   ): boolean {
     const THREE = this.THREE;
     const entry = this.renderers.get(rendererId);
@@ -331,7 +453,7 @@ export class ThreeWorkerHost {
             break;
           }
           case 'obj': {
-            this.applyObjectOp(THREE, entry, Number(op[1]), String(op[2]), (op[3] ?? {}) as Record<string, unknown>);
+            this.applyObjectOp(THREE, entry, Number(op[1]), String(op[2]), (op[3] ?? {}) as Record<string, unknown>, resolvers);
             break;
           }
           case 'scene': {
@@ -510,9 +632,12 @@ export class ThreeWorkerHost {
             break;
           }
           case 'render': {
-            const sc = entry.objects.get(Number(op[1])) as import('three').Scene | undefined;
-            const cam = entry.objects.get(Number(op[2])) as import('three').Camera | undefined;
+            const scId = Number(op[1]);
+            const camId = Number(op[2]);
+            const sc = entry.objects.get(scId) as import('three').Scene | undefined;
+            const cam = entry.objects.get(camId) as import('three').Camera | undefined;
             if (sc && cam) {
+              entry.lastRender = { sceneId: scId, cameraId: camId };
               entry.renderer.render(sc, cam);
               entry.dirty = true;
             }
@@ -557,7 +682,7 @@ export class ThreeWorkerHost {
       const fmt = typeof spec.format === 'number' ? (spec.format as import('three').PixelFormat) : THREE.RGBAFormat;
       const typ = typeof spec.type === 'number' ? (spec.type as import('three').TextureDataType) : THREE.UnsignedByteType;
       tex?.dispose();
-      tex = new THREE.DataTexture(data, w, h, fmt, typ);
+      tex = new THREE.DataTexture(data as BufferSource, w, h, fmt, typ);
       entry.textures.set(id, tex);
     } else if (kind === 'img') {
       const bmp = typeof spec.ref === 'string' ? (resolvers?.getImageBitmap?.(spec.ref) ?? null) : null;
@@ -761,7 +886,8 @@ export class ThreeWorkerHost {
     entry: NativeThreeRendererEntry,
     id: number,
     kind: string,
-    spec: Record<string, unknown>
+    spec: Record<string, unknown>,
+    resolvers?: ThreeFrameResolvers
   ): void {
     let obj = entry.objects.get(id);
     if (!obj) {
@@ -769,6 +895,14 @@ export class ThreeWorkerHost {
       switch (kind) {
         case 'Scene': obj = new THREE.Scene(); break;
         case 'Group': obj = new THREE.Group(); break;
+        case 'GLTF': {
+          const holder = new THREE.Group();
+          obj = holder;
+          if (typeof spec.src === 'string' && spec.src) {
+            this.loadGltfIntoHolder(THREE, entry, holder, spec.src, resolvers);
+          }
+          break;
+        }
         case 'Mesh': {
           const geo = entry.geometries.get(Number(spec.geo));
           const mat = this.resolveMaterial(entry, spec.mat);
@@ -1040,9 +1174,11 @@ export class ThreeWorkerHost {
       this.releaseEntry(entry);
     }
     this.renderers.clear();
+    this.gltfTemplateCache.clear();
   }
 
   private releaseEntry(entry: NativeThreeRendererEntry): void {
+    entry.disposed = true;
     for (const g of entry.geometries.values()) {
       try { g.dispose(); } catch { /* ignore */ }
     }

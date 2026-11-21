@@ -1,6 +1,11 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Capability } from '@softn/bundle-format/capabilities';
-import { mountSoftNContainer, type ContainerPermissions, type SoftNContainerHandle } from '@softn/container';
+import {
+  mountSoftNContainer,
+  type ContainerBootStatus,
+  type ContainerPermissions,
+  type SoftNContainerHandle,
+} from '@softn/container';
 import type { PermissionConfig } from '@softn/core';
 import { hostedContainerOptions } from '@softn/runtime-shell/containerHost';
 
@@ -36,6 +41,7 @@ export function ContainerPreviewRuntime({
 }: ContainerPreviewRuntimeProps): React.ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<SoftNContainerHandle | null>(null);
+  const [bootStatus, setBootStatus] = useState<ContainerBootStatus | null>(null);
   const grantedRef = useRef(grantedCapabilities);
   grantedRef.current = grantedCapabilities;
   const onErrorRef = useRef(onError);
@@ -54,6 +60,7 @@ export function ContainerPreviewRuntime({
     const el = hostRef.current;
     if (!el) return;
     let cancelled = false;
+    setBootStatus({ phase: 'opening', message: 'Starting container preview…', percent: 10 });
 
     mountSoftNContainer(el, {
       source: files,
@@ -67,6 +74,9 @@ export function ContainerPreviewRuntime({
       permissionMode: 'deny',
       initialGrantedCapabilities: grantedRef.current as Capability[],
       permissionsOverride: (declaredPermissions ?? undefined) as unknown as ContainerPermissions | undefined,
+      onStatus: (status) => {
+        if (!cancelled) setBootStatus(status);
+      },
       onError: (err: Error) => {
         if (!cancelled) onErrorRef.current?.(err);
       },
@@ -78,9 +88,11 @@ export function ContainerPreviewRuntime({
         }
         handleRef.current = handle;
         handle.setGrantedCapabilities(grantedRef.current as Capability[]);
+        setBootStatus(null);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
+          setBootStatus(null);
           onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
         }
       });
@@ -98,10 +110,35 @@ export function ContainerPreviewRuntime({
   }, [grantedCapabilities]);
 
   return (
-    <div
-      ref={hostRef}
-      data-container-preview="true"
-      style={{ width: '100%', height: '100%', minHeight: 320, position: 'relative', overflow: 'auto' }}
-    />
+    <div style={{ width: '100%', height: '100%', minHeight: 320, position: 'relative' }}>
+      <div
+        ref={hostRef}
+        data-container-preview="true"
+        style={{ width: '100%', height: '100%', minHeight: 320, position: 'relative', overflow: 'auto' }}
+      />
+      {bootStatus && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            background: 'var(--bl-bg, rgba(15, 23, 42, 0.88))',
+            color: 'var(--paper, #f8fafc)',
+            fontSize: 13,
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
+        >
+          <strong>{bootStatus.message}</strong>
+          {bootStatus.detail && <span style={{ opacity: 0.72, fontSize: 12 }}>{bootStatus.detail}</span>}
+        </div>
+      )}
+    </div>
   );
 }

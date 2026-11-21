@@ -3599,6 +3599,7 @@ dependencies = [
  "r2d2",
  "r2d2_sqlite",
  "rand 0.8.7",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4041,9 +4042,15 @@ checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.24"
+version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "unicode-properties"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833"
 
 [[package]]
 name = "universal-hash"
@@ -4729,12 +4736,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "zipp-phpparse"
+version = "0.0.37"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.37#a5c9ef93a71cbb3f3a060ed448bdc39870de4b3e"
+dependencies = [
+ "zipp-numparse",
+]
+
+[[package]]
+name = "zipp-pyparse"
+version = "0.0.37"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.37#a5c9ef93a71cbb3f3a060ed448bdc39870de4b3e"
+dependencies = [
+ "bumpalo",
+ "rustc-hash",
+ "unicode-ident",
+ "unicode-properties",
+ "zipp-numparse",
+]
+
+[[package]]
 name = "zipp-regress"
 version = "0.11.1"
 source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.37#a5c9ef93a71cbb3f3a060ed448bdc39870de4b3e"
 dependencies = [
  "hashbrown 0.17.1",
  "memchr",
+]
+
+[[package]]
+name = "zipp-rsparse"
+version = "0.0.37"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.37#a5c9ef93a71cbb3f3a060ed448bdc39870de4b3e"
+dependencies = [
+ "zipp-numparse",
 ]
 
 [[package]]
@@ -4748,7 +4783,10 @@ dependencies = [
  "rustc-hash",
  "self_cell",
  "zipp-numparse",
+ "zipp-phpparse",
+ "zipp-pyparse",
  "zipp-regress",
+ "zipp-rsparse",
 ]
 
 [[package]]

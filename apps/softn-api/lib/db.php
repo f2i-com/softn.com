@@ -63,6 +63,25 @@ final class Config
                 'maxThumbnailSide' => 8192,
                 'maxThumbnailPixels' => 16 * 1000 * 1000,
                 'maxJsonBytes' => 256 * 1024,
+                'maxBackendBodyBytes' => 10 * 1024 * 1024,
+                // Whether the server executes ZIPP safe-sandbox backends for apps whose
+                // data/apps/.../<slug>/app.json sets hosting to "server" or "hybrid".
+                'allowServerHosting' => true,
+                // Whether public publishers (/publish, AI Studio, Builder, POST/PATCH /api/apps)
+                // may opt into server/hybrid hosting. Off by default for security: published apps
+                // always download to and run locally inside the visitor's browser sandbox unless
+                // the site owner explicitly sets "hosting" in the app's data JSON (app.json) or
+                // enables this setting in data/config.json.
+                'allowPublicServerHosting' => false,
+                // How apps are stored on disk under data/apps/:
+                //   'categorized' -> data/apps/<category>/[<subcategory>/]<slug>/
+                //   'flat'        -> data/apps/<slug>/
+                //   'auto'        -> categorized whenever category folders exist, else flat.
+                'folderLayout' => 'auto',
+                // When true (or SOFTN_AUTO_THUMB=1), apps missing a thumb.* image
+                // schedule a background headless browser capture via scripts/demos/auto-thumb.mjs.
+                'autoThumbnail' => false,
+                'autoThumbnailBaseUrl' => null,
                 // A Server-Timing header on every response with the catalogue's
                 // lock wait and hold, boot, cache rebuild and commit times —
                 // what scripts/bench/catalog-bench.mjs reads. Off unless asked.
@@ -93,8 +112,12 @@ final class Config
                     'suggest' => [5, 3600],
                     'storageRead' => [600, 60],
                     'storageWrite' => [120, 60],
+                    'hostedBackend' => [240, 60],
                 ],
-                'seedDemos' => true,
+                // Empty data/ folder by default: demos are optional and only seeded when
+                // explicitly opted in via `seedDemos: true`, `npm run install:demos`, or a
+                // `--with-demos` site build.
+                'seedDemos' => false,
             ];
             $values = $defaults;
             if (is_file($path)) {

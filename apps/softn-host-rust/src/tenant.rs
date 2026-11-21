@@ -13,6 +13,7 @@
 
 use crate::bridges::{db::NativeDbBridge, env::NativeEnvBridge, fs::NativeFsBridge, http::NativeHttpBridge};
 use crate::bundle::{self, ServerManifest};
+use crate::container_backend::ContainerBackendRuntime;
 use crate::pool::ServerDb;
 use crate::runtime::{BridgeSet, ServerRuntime};
 use crate::sync::SyncManager;
@@ -31,6 +32,8 @@ pub struct TenantContext {
     pub data_dir: PathBuf,
     pub db: ServerDb,
     pub runtime: Option<Arc<ServerRuntime>>,
+    /// Embedded v2 container backend executed inside the ZIPP `safe-sandbox` VM.
+    pub container_backend: Option<Arc<ContainerBackendRuntime>>,
     pub sync_manager: Arc<SyncManager>,
     pub auth_token: Option<String>,
     /// Shared shutdown signal — WebSocket connections subscribe to this
@@ -556,6 +559,9 @@ fn load_tenant(
         None
     };
 
+    let container_workers = workers_per_tenant.or(Some(fair_workers.min(4)));
+    let container_backend = ContainerBackendRuntime::load(&manifest, &bundle_path, &data_dir, container_workers)?;
+
     let api_limiter = bundle::requests_per_minute(&manifest).map(|n| Arc::new(crate::limiter::AddressLimiter::per_minute(n)));
     let sync_manager = SyncManager::with_stream(
         db.clone(), runtime.clone(), sync_auth,
@@ -570,6 +576,7 @@ fn load_tenant(
         data_dir,
         db,
         runtime,
+        container_backend,
         sync_manager,
         auth_token,
         shutdown: shutdown.clone(),

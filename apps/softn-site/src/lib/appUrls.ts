@@ -49,7 +49,10 @@ export const PLAY_URL = resolve(import.meta.env.VITE_PLAY_URL, '', '/play');
  * to the app's own page on the site. There is one way to run an app on this
  * site, and this is it.
  */
-export function runtimeAppUrl(slug: string): string {
-  if (PLAY_URL) return `${PLAY_URL}/${encodeURIComponent(slug)}`;
-  return `${WEB_URL}/app/${encodeURIComponent(slug)}?back=${encodeURIComponent(`/app/${slug}`)}`;
+export function runtimeAppUrl(slug: string, options?: { local?: boolean }): string {
+  const local = options?.local === true;
+  if (PLAY_URL) return `${PLAY_URL}/${encodeURIComponent(slug)}${local ? '?mode=local' : ''}`;
+  const params = new URLSearchParams({ back: `/app/${slug}` });
+  if (local) params.set('mode', 'local');
+  return `${WEB_URL}/app/${encodeURIComponent(slug)}?${params.toString()}`;
 }

@@ -7,20 +7,30 @@ import { spawnSync } from 'node:child_process';
 import { apiDir, copyDir, makeBundle, skip } from './helpers/harness.mjs';
 
 // Exercise the real seeder with source and deployment layouts in one temporary
-// checkout. A deployment inside a repo must not silently borrow its demos.
-for (const [layout, enabled, expected] of [['source', true, ['layout-demo']], ['source', false, []], ['built', true, []]]) {
-  test(`demo discovery: ${layout}, seeding ${enabled ? 'on' : 'off'}`, skip, () => {
+// checkout. A deployment inside a repo must not silently borrow its demos, and
+// a fresh source data/ folder stays empty by default unless opted in.
+for (const [layout, enabled, expected] of [
+  ['source', true, ['layout-demo']],
+  ['source', false, []],
+  ['source', null, []],
+  ['built', true, []],
+  ['built-with-demos', null, ['layout-demo']],
+  ['built-with-demos', false, []],
+]) {
+  test(`demo discovery: ${layout}, seeding ${enabled === null ? 'default' : enabled ? 'on' : 'off'}`, skip, () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-seed-layout-'));
     try {
       const api = path.join(fixture, layout === 'source' ? 'apps/softn-api' : 'dist/api');
       copyDir(apiDir, api);
-      const demos = path.join(fixture, 'apps/softn-web/public/demos');
+      const demos = path.join(fixture, layout === 'built-with-demos' ? 'dist/demos' : 'apps/softn-web/public/demos');
       fs.mkdirSync(demos, { recursive: true });
       fs.writeFileSync(path.join(demos, 'Layout.softn'), makeBundle('Layout demo'));
       fs.writeFileSync(path.join(demos, 'index.json'), JSON.stringify([{ id: 'layout-demo', name: 'Layout demo', file: 'Layout.softn' }]));
       const data = path.join(fixture, 'data');
       fs.mkdirSync(data);
-      fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ seedDemos: enabled }));
+      if (enabled !== null) {
+        fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ seedDemos: enabled }));
+      }
       const script = path.join(api, 'seed-check.php');
       fs.writeFileSync(script, `<?php
 foreach (['http', 'db', 'catalog', 'bundle', 'apps', 'social', 'storage', 'seed', 'pages'] as $file) require __DIR__ . '/lib/' . $file . '.php';

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mjs';
+import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -13,9 +14,12 @@ const env = (globalThis as { process?: { env?: Record<string, string | undefined
 // copies them without core's nested core-runtime/ mirror (12.9 MB of
 // duplicates) and without the host-JavaScript engine, which no Worker can
 // reach and no app runtime may carry (scripts/checks/host-js-isolation.test.mjs).
+// containerRuntimeAssetPlugin() ships @softn/container's Worker, backend-worker,
+// xdb-wasm SQLite, and ZIPP WASM engines so desktop opens full-stack v2 Web
+// Containers with embedded sandboxed backends identically to SoftN Web.
 
 export default defineConfig({
-  plugins: [react(), coreWorkerAssetPlugin()],
+  plugins: [react(), coreWorkerAssetPlugin(), containerRuntimeAssetPlugin()],
   clearScreen: false,
   server: {
     port: 1431,

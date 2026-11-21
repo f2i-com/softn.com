@@ -8,6 +8,7 @@ import { useBuilderReturnNotice } from '../../lib/builderFlip';
 import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
 import { useProjectActions } from '../common/ProjectActions';
+import { StudioPublishDialog } from '../common/StudioPublishDialog';
 
 /**
  * The project's actions on a phone.
@@ -34,6 +35,7 @@ export function MobileProjectMenu(): React.ReactElement {
   // What coming back from the Builder brought in, said under the bar as Run's link is.
   const { notice: returned, dismiss: dismissReturned } = useBuilderReturnNotice();
   const [open, setOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -122,7 +124,7 @@ export function MobileProjectMenu(): React.ReactElement {
             ? item(saveLabel, 'upload', actions.canPublish, actions.describe('publish', 'Return your changes to FormLogic'), actions.publish)
             : <>
               {item('Run', 'play', actions.canRun, actions.describe('runtime', 'Stage the bundle for the SoftN runtime'), actions.run)}
-              {item('Publish', 'upload', actions.canPublish, actions.describe('publish', 'Stage the bundle for the directory’s publish page'), actions.publish)}
+              {item('Publish', 'upload', actions.canPublish, actions.describe('publish', 'Publish directly to the SoftN directory'), () => setPublishOpen(true))}
             </>}
           {item('Export bundle', 'export', actions.canExport, actions.canExport ? 'Download the project as a .softn file' : 'No files to export', actions.exportBundle)}
           {/* The way across to the visual editor, where there is one beside this Studio (lib/builderFlip.ts). */}
@@ -145,6 +147,13 @@ export function MobileProjectMenu(): React.ReactElement {
         <div style={styles.readyDock}>
           <BuilderReturnNotice text={returned.text} failed={returned.failed} onDismiss={dismissReturned} />
         </div>
+      )}
+      {!hosted && (
+        <StudioPublishDialog
+          isOpen={publishOpen}
+          onClose={() => setPublishOpen(false)}
+          onFallbackHandoff={actions.publish}
+        />
       )}
     </div>
   );

@@ -9,9 +9,12 @@ import type { SelectionItem } from '../../lib/selection';
  */
 export function BundleDrop({ item, onFiles }: { item: SelectionItem | null; onFiles: (files: File[]) => void }): React.ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const file = item?.file ?? null;
   const info = item?.info ?? null;
+  const folderInputAttrs = { webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>;
+
   return (
     <div
       className={`dropzone ${dragging ? 'over' : ''} ${file ? 'has-file' : ''}`}
@@ -31,14 +34,9 @@ export function BundleDrop({ item, onFiles }: { item: SelectionItem | null; onFi
           if (files.length > 0) onFiles(files);
         });
       }}
-      onClick={() => inputRef.current?.click()}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          inputRef.current?.click();
-        }
+      onClick={(e) => {
+        if ((e.target as HTMLElement | null)?.closest('button')) return;
+        inputRef.current?.click();
       }}
     >
       <input
@@ -51,12 +49,32 @@ export function BundleDrop({ item, onFiles }: { item: SelectionItem | null; onFi
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           if (files.length > 0) onFiles(files);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={folderRef}
+        type="file"
+        multiple
+        hidden
+        aria-label="Folder of bundle files"
+        {...folderInputAttrs}
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          if (files.length > 0) onFiles(files);
+          e.target.value = '';
         }}
       />
       {file && item ? (
         <div className="dropzone-file">
-          {info?.iconDataUrl && <img className="dropzone-icon" src={info.iconDataUrl} alt="" />}
-          <div>
+          {info?.iconDataUrl ? (
+            <img className="dropzone-icon" src={info.iconDataUrl} alt="" />
+          ) : (
+            <span className="dropzone-icon dropzone-icon-letter" aria-hidden="true">
+              {((info?.name || file.name).trim().charAt(0) || '?').toUpperCase()}
+            </span>
+          )}
+          <div className="dropzone-meta">
             <strong>{file.name}</strong> · {formatBytes(file.size)}
             {item.status === 'inspecting' && (
               <div className="muted" role="status">
@@ -66,6 +84,7 @@ export function BundleDrop({ item, onFiles }: { item: SelectionItem | null; onFi
             {item.status === 'ready' && info && (
               <div className="muted">
                 {info.name} v{info.version} · {info.files} files · entry {info.main}
+                {info.backendRuntime && ` · ${info.backendRuntime.toUpperCase()} backend`}
                 {info.execution === 'worker' && ' · off-main-thread'}
               </div>
             )}
@@ -75,16 +94,48 @@ export function BundleDrop({ item, onFiles }: { item: SelectionItem | null; onFi
               </div>
             )}
           </div>
+          <button
+            type="button"
+            className="cta cta-small dropzone-replace"
+            onClick={(e) => {
+              e.stopPropagation();
+              inputRef.current?.click();
+            }}
+          >
+            Replace
+          </button>
         </div>
       ) : (
-        <>
-          <svg className="dropzone-glyph" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <div className="dropzone-empty">
+          <svg className="dropzone-glyph" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 16V4m0 0-4 4m4-4 4 4" />
             <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
           </svg>
-          {/* "or click to choose" on a phone, where nothing is dropped and nothing is clicked. */}
-          <strong>Drop .softn files here</strong> or choose them: one, several, or a whole folder dropped at once
-        </>
+          <strong>Drop .softn files here</strong>
+          <span className="muted dropzone-hint">One bundle, several at once, or a whole folder — name, icon, and details fill in automatically</span>
+          <div className="dropzone-actions">
+            <button
+              type="button"
+              className="cta cta-small cta-primary"
+              onClick={(e) => {
+                e.stopPropagation();
+                inputRef.current?.click();
+              }}
+            >
+              Choose .softn files
+            </button>
+            <button
+              type="button"
+              className="cta cta-small"
+              onClick={(e) => {
+                e.stopPropagation();
+                folderRef.current?.click();
+              }}
+            >
+              Choose folder
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

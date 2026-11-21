@@ -211,8 +211,26 @@ final class Backup
      */
     private static function checkpointDatabases(string $dataDir): void
     {
-        foreach (glob("$dataDir/apps/*/storage.sqlite") ?: [] as $db) {
-            if (is_link($db)) continue;
+        $dbs = [];
+        $appsRoot = "$dataDir/apps";
+        if (is_dir($appsRoot)) {
+            $iter = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($appsRoot, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::SELF_FIRST
+            );
+            foreach ($iter as $info) {
+                if ($info->isLink() || !$info->isFile()) continue;
+                $name = $info->getFilename();
+                $full = $info->getPathname();
+                if ($name === 'storage.sqlite'
+                    || (str_contains(str_replace('\\', '/', $full), '/backend-data/databases/')
+                        && (str_ends_with($name, '.db') || str_contains($name, '.sqlite')))) {
+                    $dbs[] = $full;
+                }
+            }
+        }
+        foreach ($dbs as $db) {
+            if (is_link($db) || str_ends_with($db, '-wal') || str_ends_with($db, '-shm') || str_ends_with($db, '-journal')) continue;
             try {
                 $pdo = new PDO('sqlite:' . $db, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
                 $pdo->exec('PRAGMA busy_timeout=5000');
@@ -232,9 +250,12 @@ final class Backup
         // is data, and the counters are rewritten outside the catalogue lock
         // (Db::rateLimit has its own), so a request arriving during an export
         // could change one between its being listed and its being copied.
-        if (in_array($rel, ['ratelimits.json', 'ratelimits.lock', 'seed.lock', 'seeded'], true)) return true;
+        if (in_array($rel, ['ratelimits.json', 'ratelimits.lock', 'seed.lock', 'seeded', '.auto-thumb.lock'], true)) return true;
+        if ($name === '.auto-thumb.json') return true;
         if ($rel === 'ratelimits' && $isDir) return true;
         if ($rel === 'cache' && $isDir) return true;
+        if ($isDir && $name === 'backend-cache') return true;
+        if ($name === 'container-rate.sqlite' || str_starts_with($name, 'container-rate.sqlite-')) return true;
         if (preg_match('/^\.(json|upload|retired)-/', $name)) return true;
         // On Windows tempnam() keeps three characters of its prefix: `.jsA1B2.tmp`, `.upC3D4.tmp`.
         if (preg_match('/^\.(js|up|re)[0-9a-f]+\.tmp$/i', $name)) return true;
@@ -293,14 +314,18 @@ final class Backup
         }
         $apps = [];
         foreach ($files as $rel => $size) {
-            if (!preg_match('#^apps/([^/]+)/([^/]+)$#', $rel, $m)) continue;
-            [, $slug, $name] = $m;
-            $apps[$slug] ??= ['slug' => $slug, 'versions' => []];
+            if (!preg_match('#^(apps/(?:[^/]+/)*([^/]+))/([^/]+)$#', $rel, $m)) continue;
+            [, $relDir, $slug, $name] = $m;
+            if ($name === 'category.json') continue;
             if ($name === 'app.json') {
+                $apps[$slug] ??= ['slug' => $slug, 'relDir' => $relDir, 'versions' => []];
+                $apps[$slug]['relDir'] = $relDir;
                 $doc = json_decode((string) file_get_contents("$dataDir/$rel"), true);
                 foreach (is_array($doc['versions'] ?? null) ? $doc['versions'] : [] as $v) {
                     if (is_array($v) && isset($v['version'], $v['file'], $v['sha256'])) $apps[$slug]['versions'][] = ['version' => (int) $v['version'], 'file' => (string) $v['file'], 'sha256' => (string) $v['sha256']];
                 }
+            } elseif (preg_match('#^apps/([^/]+)/([^/]+)$#', $rel) && !is_file("$dataDir/$relDir/category.json")) {
+                $apps[$slug] ??= ['slug' => $slug, 'relDir' => $relDir, 'versions' => []];
             }
         }
         ksort($apps, SORT_STRING);
@@ -514,7 +539,8 @@ final class Backup
                 $number = (int) $v['version'];
                 if (!isset($have[$number])) { $problems[] = "$slug version $number is missing"; continue; }
                 if ($have[$number]['file'] !== $v['file'] || $have[$number]['sha256'] !== $v['sha256']) $problems[] = "$slug version $number differs from the archive's metadata";
-                $archived = $hashes["apps/$slug/{$v['file']}"] ?? null;
+                $relDir = is_string($app['relDir'] ?? null) && $app['relDir'] !== '' ? $app['relDir'] : "apps/$slug";
+                $archived = $hashes["$relDir/{$v['file']}"] ?? null;
                 if ($archived !== $have[$number]['sha256']) $problems[] = "$slug/{$v['file']} on disk is not the archived bundle";
             }
         }

@@ -6,7 +6,7 @@ export const DOC_PAGES: DocPage[] = [
  {
   "slug": "overview",
   "title": "SoftN documentation",
-  "summary": "Build an app, keep its source, and choose where it runs. Start with an example or follow a guide from first edit to deployment.",
+  "summary": "Run full web apps — frontend and sandboxed backend + SQLite — right in your browser, keep their editable source, and host them multi-user inside ZIPP safe-sandbox.",
   "sections": [
    {
     "id": "welcome",
@@ -26,19 +26,19 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "using-these-docs",
     "title": "How to use these guides",
-    "text": "The guides explain the workflow and the concepts, with small examples. They are not an exhaustive reference for every component property: follow the source links at the end of each page for the underlying files, and check the host you deploy to before relying on an optional capability.\n\nThis edition was checked against the SoftN repository source on 25 September 2026 (SoftN 0.0.15, ZIPP v0.0.21). Pages changed since then show their own date, and the engine they describe is ZIPP v0.0.35, the engine SoftN ships."
+    "text": "The guides explain the workflow and the concepts, with small examples. They are not an exhaustive reference for every component property: follow the source links at the end of each page for the underlying files, and check the host you deploy to before relying on an optional capability.\n\nThis edition was checked against the SoftN repository source on 25 September 2026 (SoftN 0.0.15, ZIPP v0.0.21). Pages changed since then show their own date, and the engine they describe is ZIPP v0.0.37, the engine SoftN ships."
    }
   ]
  },
  {
   "slug": "what-is-softn",
   "title": "What is SoftN?",
-  "summary": "An introduction to the editable app format, the tools around it, and the choices you keep after building an app.",
+  "summary": "An open-source platform for portable, editable full-stack web apps: run frontend UI, sandboxed backend code and SQLite locally in your browser or hosted multi-user inside ZIPP.",
   "sections": [
    {
     "id": "the-idea",
     "title": "One app you can open, edit and run",
-    "text": "SoftN is an open-source UI language, visual builder and runtime for editable apps on the web and desktop. Its portable `.softn` format packages the interface, client logic, data seeds and assets, so an app can be reopened and changed rather than treated as a finished black box.\n\nThat gives you several ways to start: explore an existing app, change a project in Builder, describe an idea in Studio with an AI provider you configure, or write the source yourself. These are different routes into the same editable app, not separate product formats."
+    "text": "SoftN is an open-source runtime, visual builder and AI studio for portable, editable web apps. A single `.softn` bundle can package a complete web application — standard HTML/CSS/JS/TS frontend, sandboxed backend code (PHP, JS/TS, Rust or Python) and SQLite database — so anyone can run full-stack apps locally in their browser with zero server setup, inspect or edit the source, and deploy the exact same bundle to a multi-user ZIPP-sandboxed host when needed.\n\nThat gives you several ways to start: explore an existing app, change a project in Builder, describe an idea in Studio with an AI provider you configure, or write the source yourself. These are different routes into the same editable app, not separate product formats."
    },
    {
     "id": "the-tools",
@@ -75,7 +75,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "local-setup",
     "title": "Run the project locally",
-    "text": "You need Node.js 24.19 or newer (the `engines` field in `package.json`) and npm. Rust is only needed for the native hosts or to rebuild the engine.\n\n```sh\ngit clone https://github.com/f2i-com/softn.com.git\ncd softn.com\nnpm ci\nnpm run build:packages\nnpm run dev\n```\n(Clone, install, build the shared packages and start every app behind one origin.)\n\nThe browser engine, ZIPP v0.0.35, is not committed. The first `npm run build:packages` installs it from the ZIPP release and verifies its checksums, so a fresh clone needs network access once. `npm run fetch:zipp` installs it by hand; `npm run fetch:zipp -- --check` re-verifies an install offline.\n\nOpen the origin the launcher prints, normally http://localhost:1420. If a port is taken, the launcher moves to the next free one and says so."
+    "text": "You need Node.js 24.19 or newer (the `engines` field in `package.json`) and npm. Rust is only needed for the native hosts or to rebuild the engine.\n\n```sh\ngit clone https://github.com/f2i-com/softn.com.git\ncd softn.com\nnpm ci\nnpm run build:packages\nnpm run dev\n```\n(Clone, install, build the shared packages and start every app behind one origin.)\n\nThe browser engine, ZIPP v0.0.37, is not committed. The first `npm run build:packages` installs it from the ZIPP release and verifies its checksums, so a fresh clone needs network access once. `npm run fetch:zipp` installs it by hand; `npm run fetch:zipp -- --check` re-verifies an install offline.\n\nOpen the origin the launcher prints, normally http://localhost:1420. If a port is taken, the launcher moves to the next free one and says so."
    },
    {
     "id": "pick-a-workspace",
@@ -139,7 +139,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "in-the-repository",
     "title": "Examples in the repository and in Studio",
-    "text": "Example | What it shows\nexamples/fieldnotes | A task planner: form, JavaScript logic, an XDB collection and a dashboard\nexamples/torch-trainer | Python logic with torch: a one-neuron network trained in the browser\nexamples/formlogic-workspace | A connected workspace that calls named backend actions on its host\nexamples/aokie-workspace | A connected communications workspace whose services stay with the host\nStudio: Reading list | A small app to open without an AI key, in JavaScript\nStudio: Reading list in Python | The same app with its logic in Python"
+    "text": "Example | What it shows\nexamples/fieldnotes | A task planner: form, JavaScript logic, an XDB collection and a dashboard\nexamples/container-showcase | v2 Web App Containers: a compiled Kanban `dist/` bundle, a zero-build Preact + TypeScript + `softn:db` app and a Split-Realm Three.js 3D demo (`npm run demo:container`)\nexamples/torch-trainer | Python logic with torch: a one-neuron network trained in the browser\nexamples/formlogic-workspace | A connected workspace that calls named backend actions on its host\nexamples/aokie-workspace | A connected communications workspace whose services stay with the host\nStudio: Reading list | A small app to open without an AI key, in JavaScript\nStudio: Reading list in Python | The same app with its logic in Python\nStudio: Full-Stack Notes — PHP + SQLite | A runnable v2 Web Container with a sandboxed PHP + PDO SQLite backend and HTML/JS frontend, openable with no AI key"
    },
    {
     "id": "catalogue",
@@ -161,12 +161,12 @@ export const DOC_PAGES: DocPage[] = [
  {
   "slug": "builder",
   "title": "SoftN Builder",
-  "summary": "Design the interface, write logic in JavaScript or Python, model data and preview a portable app in one editable workspace.",
+  "summary": "Design interfaces, build full-stack v2 Web Containers or v1 JavaScript/Python apps, manage XDB SQLite databases and collections, and preview live in one editable workspace.",
   "sections": [
    {
     "id": "where-builder-fits",
     "title": "The editing workspace",
-    "text": "Builder is where you shape an app you can inspect and keep editing. It has four views: Design, a visual canvas with a properties panel; Data, for collections and their seed records; Preview, the running app; and Code, the source of the open file.\n\nStart a project with New, reopen a bundle with Open (Ctrl+O), or open Fieldnotes from the homepage. A visual change is a change to editable source, not a step away from it.\n\nBuilder shows as many panels beside the canvas as the window has room for: all of them from 1660 pixels wide, Properties and one other from 1234, and one at a time below that. Under 900 pixels, on a phone or a small tablet, the canvas keeps the screen and Components, Properties, Hierarchy, Files and Logic open as sheets from a bar at the bottom: tap a component to add it, and move the selected element with Move up and Move down."
+    "text": "Builder is where you shape an app you can inspect and keep editing. It has four views: Design, a visual canvas with a properties panel (for v1 `.ui` apps); Data, for both XDB SQLite 3 databases and `.xdb` document collections; Preview, the running app; and Code, the source editor for HTML, CSS, JS/TS, PHP, Rust, SQL, `.ui` and `.logic`/`.py` files.\n\nStart a project with New, reopen a bundle with Open (Ctrl+O), or open Fieldnotes from the homepage. Builder automatically restores your last workspace when you return, without interrupting you with a restore prompt; press Clear in the toolbar to reset the workspace cleanly and remove the saved session so it does not come back.\n\nBuilder shows as many panels beside the canvas as the window has room for: all of them from 1660 pixels wide, Properties and one other from 1234, and one at a time below that. Under 900 pixels, on a phone or a small tablet, the canvas keeps the screen and Components, Properties, Hierarchy, Files and Logic open as sheets from a bar at the bottom: tap a component to add it, and move the selected element with Move up and Move down."
    },
    {
     "id": "new-project",
@@ -212,6 +212,16 @@ export const DOC_PAGES: DocPage[] = [
     "id": "export",
     "title": "Export, permissions and packages",
     "text": "Export (Ctrl+Shift+E) opens Export Bundle. What the app may use writes `permission.json`: the capabilities, the allowed hosts for network access and storage policies per collection. For a Python app, a Python section writes `config.python.packages` to `manifest.json`. Then choose Export .softn, Open in runtime… or Publish….\n\nFor a first project, stop when one core flow is reliable: create a record, show it, change it and reopen the export. Add polish after that path works."
+   },
+   {
+    "id": "container-backends-in-builder",
+    "title": "Web Containers and sandboxed backends in Builder",
+    "text": "When creating a Web Container (v2) project in Builder’s New App dialog, you can pick an optional Sandboxed backend (`PHP + SQLite`, `JS API + SQLite`, or `TS API + SQLite`). Builder scaffolds `index.html`, `app.ts`/`app.js`, `backend/index.*`, `backend/schema.sql`, and `manifest.backend`/`manifest.databases`, and previews the full stack live inside the browser ZIPP WASM sandbox.\n\nOpening an existing full-stack `.softn` bundle (including PHP Slim 4 apps with `vendor/` and `.htaccess` or Rust backend containers) makes `.php`, `.sql`, `.rs`, and `.htaccess` files editable in the source editor while preserving `vendor/` dependencies and all v2 manifest fields byte-for-byte on export."
+   },
+   {
+    "id": "sqlite-explorer",
+    "title": "Manage XDB SQLite databases in Data view",
+    "text": "When a `.softn` project bundles or declares a SQLite database (`.db`, `.sqlite`, `.sqlite3`, `manifest.databases`, or backend `.sql` migrations), Builder’s Data view opens a mini-phpMyAdmin SQLite 3 explorer powered directly by XDB SQLite 3 WebAssembly (`v0.1.0`). You can switch between SQLite databases and `.xdb` Collections at any time from the view switcher.\n\n- Create and inspect databases: open an existing bundled `.db` or migration-seeded database, or create a brand-new SQLite database and register it in `manifest.databases` automatically.\n- Schema editing: create new tables with typed columns, primary keys, defaults and constraints; add, modify or drop columns; create and drop indexes; rename or drop tables; and inspect the generated `CREATE TABLE` DDL.\n- Full CRUD on records: browse paginated rows with search and column sorting, insert new records, edit any row inline, delete individual rows, or truncate a table.\n- SQL console and export: run ad-hoc or multi-statement SQL queries with tabular results, copy or export a complete `.sql` dump, or download the raw `.db` binary.\n- Live bundle persistence: every schema change, record edit and SQL write is serialized directly back into the project’s `.db` asset and synced into `manifest.databases`, so Preview and Export immediately reflect your changes."
    }
   ]
  },
@@ -264,6 +274,11 @@ export const DOC_PAGES: DocPage[] = [
     "id": "continue-editing",
     "title": "Keep editing after generation",
     "text": "Refine the result in Studio or open the export in Builder. The useful outcome is an app whose behaviour you understand and whose source you can change, not a prompt you can never reproduce.\n\nOpen in Builder, on the project bar (the project menu on a phone), saves the project and opens it in the visual Builder in the same tab, under “From Studio” and the project’s name. Back to Studio brings the files you changed into the same project as one History step; a file changed on both sides is asked about. It is offered where Studio and Builder are served from one site, and not inside FormLogic.\n\nFor a connected app, describe the client and backend responsibilities separately. A generated interface is not, by itself, a deployed authentication system or private API."
+   },
+   {
+    "id": "container-backends-in-studio",
+    "title": "Full-stack Web Containers in Studio",
+    "text": "Studio’s Brief wizard supports selecting a Sandboxed backend (`PHP + SQLite`, `JS API + SQLite`, or `TS API + SQLite`) for Web Container (v2) projects, and Studio ships with a runnable Full-Stack Notes — PHP + SQLite example you can open immediately without configuring an AI key.\n\nStudio imports, validates and edits `.php`, `.sql`, `.rs` and `.htaccess` files alongside HTML/CSS/TS, resolves static asset links against `manifest.frontendRoot`, validates `manifest.backend` and `databases[].seedSql`, displays live backend boot progress in the preview, and preserves `vendor/` and backend manifest fields on export."
    }
   ]
  },
@@ -285,7 +300,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "workspace-lifecycle",
     "title": "Home is not the same as Close",
-    "text": "The web workspace keeps apps running when you return to its home view, so you can browse or open another app without losing an unfinished form. Use Home to switch between apps and Close to stop the current one.\n\nTest this in your own app. Navigating within a running workspace, closing an app and reopening a saved bundle can involve different state and persistence."
+    "text": "The web workspace keeps apps running when you return to its home view, so you can browse or open another app without losing an unfinished form. Use Home to switch between apps, Close to stop the current one, or Close all on the launcher to stop every running app at once.\n\nTest this in your own app. Navigating within a running workspace, closing an app and reopening a saved bundle can involve different state and persistence."
    },
    {
     "id": "edit-while-it-runs",
@@ -295,7 +310,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "saved-library",
     "title": "Understand the browser library",
-    "text": "Apps you open are kept in this browser’s library, with offline readiness shown for saved apps. That is not an account-wide backup: another device, another browser profile or cleared site storage can have different contents.\n\nNote — Check offline readiness before relying on it: A saved app may still use network services or remote resources. Test the real workflow without a connection, and keep a separate copy of important exports."
+    "text": "Apps you open are kept in this browser’s library, with offline readiness shown for saved apps. Removing an app — or clicking Remove all to clear the library — takes effect immediately with no blocking confirmation dialog, and shows a floating toast with an Undo button so you can recover the last removal in one click. The browser library is local to this browser profile rather than an account-wide backup.\n\nNote — Check offline readiness before relying on it: A saved app may still use network services or remote resources. Test the real workflow without a connection, and keep a separate copy of important exports."
    },
    {
     "id": "permissions-and-hosts",
@@ -306,6 +321,43 @@ export const DOC_PAGES: DocPage[] = [
     "id": "check-an-app",
     "title": "A useful acceptance check",
     "text": "- Open the exported bundle, not only the editor preview.\n- Exercise the main flow, and return Home without losing unfinished input.\n- Close and reopen, then check which state is meant to persist.\n- Review permission requests, and test denial as well as approval.\n- Confirm the host and browser you actually plan to support.\n\nWhen something differs between preview and Runtime, first work out whether the difference is UI state, data seeds, persistent records, host capability support or deployment configuration."
+   },
+   {
+    "id": "container-backends-in-browser",
+    "title": "Running full-stack Web Containers locally",
+    "text": "When you open a SoftN v2 Web Container (`\"engine\": 2`) that declares a `backend` and `databases`, the Runtime automatically boots an isolated ZIPP WebAssembly backend Worker alongside the frontend Worker and persists its XDB SQLite 3 database in your browser’s IndexedDB. Apps built with PHP (including Slim 4 and `.htaccess`), JS/TS, Rust or Python run completely locally with full database and cookie persistence across page refreshes — no external server required.\n\nFor directory apps configured with `hybrid` hosting, visiting `/play/<slug>?mode=local` or `/web/app/<slug>?mode=local` downloads the `.softn` bundle and runs both frontend and backend strictly inside your browser sandbox instead of calling the server backend. 3D v2 containers also receive native V8 Three.js plus bundled `GLTFLoader` and `MeshoptDecoder` (`THREE.loadGLTF`) for zero-bundle 3D apps and games."
+   }
+  ]
+ },
+ {
+  "slug": "web-containers",
+  "title": "Full-stack Web Containers & sandboxed backends",
+  "summary": "Run complete web apps — standard HTML/CSS/JS/TS frontends plus sandboxed PHP, JS/TS, Rust or Python backends and SQLite — locally inside your browser or multi-user on softn-server.",
+  "sections": [
+   {
+    "id": "full-stack-sandbox",
+    "title": "Full web apps, frontend and backend sandboxed locally",
+    "text": "A SoftN v2 Web App Container (`\"engine\": 2` in `manifest.json`) runs standard web technologies — HTML5, CSS, ES modules, TypeScript, Preact, React, Vue, Three.js (including native V8 `GLTFLoader` and `MeshoptDecoder` via `THREE.loadGLTF`) and Canvas — inside an isolated browser Worker and closed Shadow DOM. Beyond client-only pages, a container can also bundle a real HTTP backend and XDB SQLite 3 database directly inside the same `.softn` file.\n\nWhen a visitor opens the app in their browser, SoftN starts a dedicated ZIPP WebAssembly backend Worker (`LocalBackendTransport`) and mounts the app’s XDB SQLite database backed by IndexedDB. Every `fetch(\"/api/...\")` call from the frontend is intercepted inside the sandbox and served by your bundled backend code — PHP (including Slim 4 and PDO SQLite), JavaScript, TypeScript, Rust or Python — with no local server install, no Docker and no cloud account required.\n\nNote — Private by default on the user’s machine: In local browser mode, backend code runs inside ZIPP’s WebAssembly interpreter with no native filesystem or ambient network access, and the SQLite database lives in the user’s browser IndexedDB storage. Refreshing the page preserves both database state and session progress."
+   },
+   {
+    "id": "manifest-schema",
+    "title": "Container manifest.json fields",
+    "text": "Declare `\"engine\": 2` along with optional `frontendRoot`, `backend` and `databases` blocks in `manifest.json`. Existing frameworks such as PHP Slim 4 can keep their public frontend under `public/` and their backend code under `backend/`.\n\n```json\n{\n  \"engine\": 2,\n  \"id\": \"com.example.desk\",\n  \"name\": \"Order Desk\",\n  \"version\": \"1.0.0\",\n  \"main\": \"public/index.html\",\n  \"frontendRoot\": \"public\",\n  \"backend\": {\n    \"runtime\": \"php\",\n    \"entry\": \"backend/public/index.php\",\n    \"mode\": \"api\",\n    \"routes\": [\"/api/\"]\n  },\n  \"databases\": [\n    {\n      \"name\": \"app\",\n      \"engine\": \"sqlite\",\n      \"file\": \"app.db\",\n      \"seedSql\": \"backend/migrations/001_init.sql\",\n      \"persist\": true\n    }\n  ]\n}\n```\n(A full-stack v2 container manifest pairing a public frontend with a sandboxed PHP + SQLite API backend.)\n\nField | Purpose\n`engine: 2` | Selects the SoftN v2 Web App Container runtime (`@softn/container`).\n`main` | Entry HTML document (e.g. `index.html` or `public/index.html`) or SSR script (`index.php`).\n`frontendRoot` | Optional static asset root (e.g. `public` or `app/dist`). Keeps `backend/` files outside public web routes.\n`backend.runtime` | Sandboxed backend language: `php`, `javascript`, `typescript`, `rust`, or `python`.\n`backend.entry` | Path inside the `.softn` archive to the backend entry script (e.g. `backend/index.php`).\n`backend.mode` | `api` (frontend calls `/api/...`), `ssr` (backend renders HTML), or `hybrid`.\n`backend.routes` | Path prefixes routed to the backend (defaults to `[\"/api/\"]` in `api` mode).\n`backend.htaccess` | Optional `.htaccess` rewrite/security rules evaluated for PHP apps.\n`databases[]` | Named SQLite databases seeded from `seedSql`, `seedJson`, or a bundled `.db` file and persisted automatically."
+   },
+   {
+    "id": "backend-runtimes",
+    "title": "Sandboxed backend runtimes & SQLite",
+    "text": "Runtime | Entry contract | Database API\n`php` | Standard SAPI (`$_SERVER`, `php://input`, `header()`, `http_response_code()`, Slim 4 + `.htaccess`). | `new PDO(\"sqlite:app.db\")` backed by XDB SQLite (browser) or WAL SQLite (server).\n`javascript` / `typescript` | Define `function handleRequest(req)` returning `{ status, headers, body }`. | `const db = sqlite.open(\"app.db\")` with `query`, `first` and `execute`.\n`rust` | Axum-style router (`worker_boot` + request dispatch) executed via ZIPP Rust VM. | SQLite host bridge bound to the declared database files.\n`python` | Define `def handle_request(req):` returning `{ \"status\": 200, \"body\": ... }`. | Built-in `sqlite` module bridged to the host SQLite store on `softn-server`.\n\n```php\n<?php\ndeclare(strict_types=1);\nheader('Content-Type: application/json; charset=utf-8');\n\n$pdo = new PDO('sqlite:app.db');\n$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';\n$path = parse_url($_SERVER['REQUEST_URI'] ?? '/api/items', PHP_URL_PATH);\n\nif ($method === 'GET' && $path === '/api/items') {\n    $rows = $pdo->query('SELECT id, title, done FROM items ORDER BY id DESC')->fetchAll(PDO::FETCH_ASSOC);\n    echo json_encode(['items' => $rows]);\n    exit;\n}\n```\n(A minimal PHP + PDO SQLite endpoint that runs identically inside the browser ZIPP WASM Worker and on multi-user softn-server.)"
+   },
+   {
+    "id": "local-vs-hosted",
+    "title": "Same .softn bundle, local or multi-user — always ZIPP-sandboxed",
+    "text": "Frontend code always calls normal relative URLs such as `fetch(\"/api/items\")`. SoftN isolates the transport behind `BackendTransport`: locally it uses `LocalBackendTransport` (ZIPP WASM Worker + IndexedDB) across SoftN Web, Desktop (`apps/softn-loader`), standalone single-app (`apps/softn-single`), and PHP-served private hosting (`apps/softn-single-private`), while multi-user deployments switch to `RemoteBackendTransport` via `backendUrl` (or serve the frontend straight from `softn-server`, or bridge over FormLogic’s MessagePort in `apps/formlogic-host`). No app code changes are needed to move from single-user browser execution to multi-user hosting.\n\nOn the server side, both `softn-server` (`apps/softn-host-rust`, single-app `run` and multi-tenant `serve-multi`) and the Apache/PHP + Node host (`apps/softn-host-php`, packaged with single-app backend archives) host full-stack v2 containers. Crucially, neither host executes app code through native OS PHP, Python, or shell binaries — every incoming backend request executes inside ZIPP’s `safe-sandbox` engine (`default-features = false` on Rust, verified `safe-sandbox` ZIPP WASM modules on Node/PHP, strict memory/step/wall-time bounds, no native filesystem or ambient network) talking to a shared WAL-mode SQLite database on disk.\n\n```sh\n# Host any full-stack .softn container multi-user inside ZIPP safe-sandbox\ncargo run --manifest-path apps/softn-host-rust/Cargo.toml -- \\\n  run ./MyApp.softn --port 8080 --data-dir ./data\n```\n(Serving a full-stack PHP, JS/TS, Rust or Python .softn container for multiple users with softn-server.)\n\nWhen serving static assets from `frontendRoot`, `softn-server` automatically blocks HTTP requests to backend source files and database files (`.php`, `.phtml`, `.rs`, `.sql`, `.db`, `.sqlite`, `.htaccess`, `.env`, `backend/`, `server/`, `manifest.json`) with HTTP 403. If you host the static frontend separately (for example via `apps/softn-single` or `<softn-app>`), set `\"backendUrl\": \"/api\"` in `runtime.config.json` or `<softn-app backend-url=\"/api\">` to route API traffic to your sandboxed server.\n\nIn the softn.com directory (`apps/softn-api`), each app folder under `data/apps/<slug>/app.json` can choose its own hosting mode: `browser` (default — visitors download the `.softn` bundle and run frontend, backend and SQLite strictly in their browser sandbox), `server` (SoftN hosts `/api/apps/<slug>/backend/...` strictly inside ZIPP WASM `safe-sandbox` with shared WAL SQLite and optional `withhold_backend: true` so server source stays off client downloads), or `hybrid` (hosted on SoftN’s ZIPP `safe-sandbox` by default, while visitors can also open `/play/<slug>?mode=local` to run everything locally in their browser)."
+   },
+   {
+    "id": "authoring-tools",
+    "title": "Create and edit full-stack containers in Studio and Builder",
+    "text": "- In SoftN Builder (`/builder/`), choose New App -> Web Container (v2) and select a Sandboxed backend (`PHP + SQLite`, `JS API + SQLite`, or `TS API + SQLite`) to scaffold frontend HTML/CSS/TS alongside `backend/index.*` and `backend/schema.sql`, with live preview inside the ZIPP WASM sandbox.\n- Use Builder’s Data view to inspect and edit embedded XDB SQLite 3 databases in a mini-phpMyAdmin explorer (create/alter/drop tables and indexes, browse/insert/edit/delete rows, run SQL, export `.sql`/`.db`) with changes written straight back into the `.softn` bundle.\n- In SoftN Studio (`/studio/`), open the built-in Full-Stack Notes — PHP + SQLite example with zero setup, or pick a sandboxed backend in the Brief wizard so the AI agent builds and validates both frontend and backend files together.\n- Both editors open existing multi-file bundles (including PHP Slim 4 apps with `vendor/` and `.htaccess`), preserve `manifest.backend`, `manifest.databases`, `frontendRoot` and `vendor/` on round-trip export, and validate backend entries and database seed paths."
    }
   ]
  },
@@ -348,6 +400,11 @@ export const DOC_PAGES: DocPage[] = [
     "id": "identity-and-compatibility",
     "title": "Identity and compatibility belong to the host too",
     "text": "The general bundle loader isolates bundles by digest. Single-app and FormLogic hosts provide their own deployment identity. An app name alone does not grant access to another app’s records or permission grants.\n\nTest a bundle on the host you intend to use. A successful export confirms packaging, not browser microphone consent, backend authorisation or support for every optional capability."
+   },
+   {
+    "id": "container-backends",
+    "title": "v2 Web Containers, sandboxed backends and SQLite databases",
+    "text": "Bundles with `\"engine\": 2` run inside `@softn/container`. In addition to standard web assets, a v2 manifest may declare `frontendRoot` (such as `\"public\"`), a `backend` object (`runtime`, `entry`, `mode`, `routes`, optional `htaccess`), and a `databases` array specifying SQLite files and optional `seedSql` or `seedJson` initializers.\n\nWhen opened in a browser, those backend files run inside a ZIPP WebAssembly Worker against browser-persisted XDB SQLite. When hosted for multiple users on `softn-server`, the same bundle’s backend executes inside ZIPP’s `safe-sandbox` VM against server WAL SQLite, and `softn-server` automatically redacts backend paths from the client manifest and blocks direct HTTP downloads of `.php`, `.rs`, `.sql`, `.db`, `.sqlite` and `.htaccess` files."
    }
   ]
  },
@@ -473,7 +530,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "version",
     "title": "The engine SoftN ships",
-    "text": "SoftN ships ZIPP v0.0.35’s javascript-python-base engine: JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB compressed), without torch. ZIPP’s verified torch package is installed beside it and loaded only for apps that declare torch. Neither is committed to the repository. `npm run fetch:zipp`, and the build and test scripts when it is missing, install the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, check it against that release’s SHA256SUMS and record its provenance in SOURCE.json.\n\nRebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling; ordinary SoftN development never needs it."
+    "text": "SoftN ships ZIPP v0.0.37’s javascript-python-base engine: JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB compressed), without torch. ZIPP’s verified torch package is installed beside it and loaded only for apps that declare torch. Neither is committed to the repository. `npm run fetch:zipp`, and the build and test scripts when it is missing, install the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, check it against that release’s SHA256SUMS and record its provenance in SOURCE.json.\n\nRebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling; ordinary SoftN development never needs it."
    },
    {
     "id": "server",
@@ -701,6 +758,11 @@ export const DOC_PAGES: DocPage[] = [
     "id": "next",
     "title": "Read the layer you are changing",
     "text": "See: ui-language, logic-zipp, xdb-data, hosting"
+   },
+   {
+    "id": "container-sandbox-architecture",
+    "title": "The v2 full-stack container boundary",
+    "text": "In v2 Web Containers (`@softn/container`), both halves of a web app are sandboxed: the frontend runs in an isolated Web Worker rendering into a closed Shadow DOM, while the optional backend (PHP, JS/TS, Rust or Python) runs through a pluggable `BackendTransport` — either `LocalBackendTransport` (a second ZIPP WebAssembly Worker + IndexedDB-persisted XDB SQLite inside the browser) or `RemoteBackendTransport` talking to `softn-server`, where the exact same backend executes inside ZIPP’s Rust `safe-sandbox` VM against shared WAL SQLite."
    }
   ]
  },
@@ -942,12 +1004,12 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "local-first",
     "title": "Local-first describes a data approach, not every dependency",
-    "text": "SoftN keeps app-scoped XDB records locally and a browser library of the apps you opened, with offline readiness shown for saved apps. That helps a local workflow, but it does not make a remote API or an externally hosted asset available without a connection.\n\nTest the actual app flow offline, not only whether its first screen opens. A form might be local while its submit action or background image still depends on a server."
+    "text": "SoftN keeps app-scoped XDB records and (for v2 Web Containers) IndexedDB-persisted XDB SQLite 3 databases locally, alongside a browser library of the apps you opened with offline readiness shown for saved apps. That supports private local-first workflows, but it does not make a remote API or an externally hosted asset available without a connection.\n\nTest the actual app flow offline, not only whether its first screen opens. A form might be local while its submit action or background image still depends on a server."
    },
    {
     "id": "four-things",
     "title": "Keep four kinds of state separate",
-    "text": "Thing | What it represents\nEditable bundle | The client source, configuration, seeds and distributable assets\nRunning state | What is currently happening in a live app, such as unfinished input\nLocal records | Data kept by the app’s storage integration and identity\nPrivate backend data | Server-side records governed by that deployment’s access rules\n\nBuilder preview data adds another testing context. Use Data view to inspect the seeds you plan to distribute, and check a fresh Runtime instance to see the recipient’s starting experience."
+    "text": "Thing | What it represents\nEditable bundle | The client source, configuration, seeds and distributable assets\nRunning state | What is currently happening in a live app, such as unfinished input\nLocal records | Data kept by the app’s storage integration and identity\nPrivate backend data | Server-side records governed by that deployment’s access rules\n\nBuilder preview data adds another testing context. Use Builder’s Data view to inspect and edit bundled `.xdb` collection seeds or XDB SQLite 3 tables, rows and SQL schemas, and check a fresh Runtime instance to see a new visitor’s starting experience."
    },
    {
     "id": "browser",
@@ -1026,7 +1088,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "routes",
     "title": "The main deployment routes",
-    "text": "Route | A good fit | Remember\nBrowser or desktop Runtime | Opening and using editable bundles | Capabilities and storage depend on the host\nApp directory | A discoverable app with its own page and player | Review the client download, metadata and requirements\nSingle-app runtime | One app on its own website | Configure identity, paths and the public files\nPHP-served archive | Keeping the bundle off a public URL | Code delivered to a browser is still not secret\nServer logic and SQLite | Private operations and server-owned data | Server logic is JavaScript; keep credentials server-side\nFormLogic | A connected hosted workspace | The host owns authentication and named backend actions\n\nSee: single-app-runtime, private-backend, formlogic"
+    "text": "Route | A good fit | Remember\nBrowser or desktop Runtime | Opening and using editable bundles | Capabilities and storage depend on the host\nApp directory | A discoverable app with its own page, player and flexible `browser` / `server` / `hybrid` hosting | Review hosting mode, `withhold_backend`, metadata and capability declarations\nSingle-app runtime | One app on its own website | Configure identity, paths and the public files\nPHP-served archive | Keeping the bundle off a public URL | Code delivered to a browser is still not secret\nServer logic and SQLite | Private operations and shared multi-user SQLite data | v1 `server/*.logic` is JavaScript; v2 containers support PHP, JS/TS, Rust and Python inside ZIPP `safe-sandbox`\nFormLogic | A connected hosted workspace | The host owns authentication and named backend actions\n\nSee: single-app-runtime, private-backend, formlogic"
    },
    {
     "id": "client-server",
@@ -1042,6 +1104,16 @@ export const DOC_PAGES: DocPage[] = [
     "id": "build-commands",
     "title": "Build commands",
     "text": "Command | Produces\n`npm run build:single`, then `npm run package:single` | `softn-app-static-v<version>.zip` in `release/`: one app on any HTTPS host\n`npm run package:single -- --with-backend` | The same, plus the variant with a private backend behind Apache and PHP\n`npm run build:single-private`, then `npm run package:single-private` | `softn-app-private-v<version>.zip`: the app served from PHP\n`npm run build:site`, then `npm run package:site` | The whole softn.com site, guides included\n\nEach release archive starts with a README.md that says what it is and how to deploy it. The single-app and PHP guides in the repository cover flags, layouts and operator settings."
+   },
+   {
+    "id": "multi-user-container-hosting",
+    "title": "Multi-user hosting for full-stack containers (ZIPP safe-sandbox)",
+    "text": "If your `.softn` v2 Web Container includes an embedded backend (`php`, `javascript`, `typescript`, `rust`, or `python`) and SQLite database, you can move it from single-user browser execution to multi-user hosting without rewriting the app. Both single-tenant (`softn-server run MyApp.softn`) and multi-tenant (`softn-server serve-multi`) modes in `apps/softn-host-rust` boot the bundle’s backend inside ZIPP’s `safe-sandbox` VM backed by shared WAL SQLite on disk.\n\nBecause every request executes inside ZIPP’s interpreter-only `safe-sandbox` (no JIT, no native OS PHP/Python binary, no host filesystem or outbound network access, plus per-request step, memory and wall-clock limits), multi-user apps inherit the same sandbox boundary on the server that they have in the browser.\n\n```sh\n# Single-tenant multi-user server for any v2 container .softn bundle\ncargo run --manifest-path apps/softn-host-rust/Cargo.toml -- \\\n  run ./BrewDesk-1.0.0.softn --port 8080 --data-dir ./var/brewdesk\n\n# Multi-tenant host serving multiple .softn apps behind one server\ncargo run --manifest-path apps/softn-host-rust/Cargo.toml -- \\\n  serve-multi --tenants-dir ./tenants --port 8080\n```\n(Running v2 full-stack containers multi-user through ZIPP safe-sandbox with softn-server.)"
+   },
+   {
+    "id": "directory-flexible-hosting",
+    "title": "Flexible directory hosting, categories & drag-and-drop folders",
+    "text": "The folder-based directory (`apps/softn-api`) organizes apps cleanly by main category and optional subcategory under `data/apps/<category>/[<subcategory>/]<slug>/` (while staying backwards-compatible with flat `data/apps/<slug>/` folders). Each category and subcategory folder carries an auto-generated `category.json` that stores its full display name (independent of the folder slug), emoji, description, sort order, and cached app counts. Selecting a main category (`?category=games`) shows every app in that category and all of its subcategories; selecting a subcategory (`?category=games&subcategory=3d` or `?category=games/3d`) narrows to that subcategory.\n\nYou can drag and drop any `.softn` file straight into `data/apps/`, `data/apps/<category>/`, or `data/apps/<category>/<subcategory>/`. SoftN automatically organizes it into `<slug>/v1.softn` (or bumps to `v2.softn`, `v3.softn`, … when updating an existing app, keeping full version and `git push` history), extracts its icon, generates `app.json` and `category.json` if missing, and — when `autoThumbnail` / `SOFTN_AUTO_THUMB=1` is enabled — boots the app in headless Chromium/Edge via `scripts/demos/auto-thumb.mjs` to save a `1280×800` `thumb.webp` automatically.\n\nMode | Where the backend runs | Best for\n`browser` (default) | Visitor’s browser sandbox (ZIPP WASM Worker + IndexedDB SQLite); nothing executes on the server. | Zero-cost distribution, offline-capable tools and private single-user workspaces.\n`server` | SoftN directory backend at `/api/apps/<slug>/backend/...` strictly inside ZIPP WASM `safe-sandbox` against shared WAL SQLite. Set `withhold_backend: true` to strip backend source from client downloads. | Multi-user team apps and shared server-side databases.\n`hybrid` | SoftN’s ZIPP `safe-sandbox` by default, while visitors can also launch `/play/<slug>?mode=local` or `/web/app/<slug>?mode=local` to download and run the entire app inside their browser sandbox. | Full-stack demos and business apps where visitors can choose shared hosted mode or private local mode.\n\n```sh\nnode scripts/demos/manage-data.mjs organize\nnode scripts/demos/manage-data.mjs list --category games --subcategory 3d\nnode scripts/demos/manage-data.mjs set my-app --category business --subcategory hospitality --hosting hybrid\nnode scripts/demos/manage-data.mjs sync --thumbs\nnode scripts/demos/manage-data.mjs watch\n```\n(Organizing categories/subcategories, switching hosting modes, and auto-generating thumbnails in `apps/softn-api/data/apps/`.)"
    }
   ]
  },
@@ -1094,6 +1166,11 @@ export const DOC_PAGES: DocPage[] = [
     "id": "acceptance",
     "title": "Before moving the domain to the new build",
     "text": "- Open the deployed app in a fresh browser context, at the exact path visitors will use.\n- Verify assets, engine files and the first-run seed experience.\n- Test a returning user with existing records.\n- Check denied capabilities and unavailable backend responses.\n- Keep a known-working release and a recovery path.\n- Preserve LICENSE, NOTICE, the third-party inventory and the speech notices in the deployed directory."
+   },
+   {
+    "id": "remote-backend-url",
+    "title": "Pointing a single-app frontend at a hosted sandboxed backend",
+    "text": "For a v2 Web Container whose backend is hosted multi-user on `softn-server` (or behind a reverse proxy on the same origin), set `\"backendUrl\"` in `runtime.config.json` (for example `\"/api\"` or `\"/\"`). The container switches automatically from `LocalBackendTransport` (in-browser ZIPP WASM) to `RemoteBackendTransport` so `fetch(\"/api/...\")` calls hit your multi-user ZIPP-sandboxed server with zero changes to the `.softn` bundle."
    }
   ]
  },
@@ -1131,6 +1208,11 @@ export const DOC_PAGES: DocPage[] = [
     "id": "references",
     "title": "Use the host-specific guides",
     "text": "- Rust private backend guide: Setting up the Rust host’s server logic and SQLite.\n- PHP host: The PHP host and its single-app deployment notes.\n- PHP-served single app guide: What is served from where, and the operator settings."
+   },
+   {
+    "id": "container-backend-sandbox",
+    "title": "v2 Container backends on Rust and PHP hosts (all code inside ZIPP safe-sandbox)",
+    "text": "Alongside legacy v1 `server/*.logic` backends (JavaScript-only), both `apps/softn-host-rust` (`softn-server`) and `apps/softn-host-php` (the Apache/PHP + Node host shipped in single-app backend archives) host v2 Web Container backends declared via `manifest.backend` (`php`, `javascript`, `typescript`, `rust`, and `python`) and `manifest.databases`.\n\nEvery language runtime runs inside ZIPP `safe-sandbox` (`zipp-vm` built with `default-features = false` and `features = [\"safe-sandbox\", \"php\", \"python\", \"rust\", \"typescript\"]` on Rust, or verified `safe-sandbox` ZIPP WASM engines under Node on `apps/softn-host-php`). There is no native PHP interpreter execution of app code, no Python subprocess, no shell execution and no JIT on either host: requests run with strict instruction/wall-time bounds and talk only to the app’s scoped WAL SQLite database.\n\nWhen pairing a separate frontend shell (`apps/softn-single` `runtime.config.json` or `apps/softn-single-private` `serve.config.php`) with a multi-user backend host, set `backendUrl` to the same-origin backend path: `softn-single-private` automatically redacts `backend`/`databases` from the client manifest and withholds `server/`, `backend/`, `.php`, `.rs`, `.sql`, `.db` and `.htaccess` files from browser downloads."
    }
   ]
  },
@@ -1179,7 +1261,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "ways-to-share",
     "title": "Choose what you are sharing",
-    "text": "Sharing can mean sending an editable `.softn` bundle, publishing it in the app directory or deploying a single-app website. A directory app gets its own page, a player at `/play/<slug>` and, when it asks for it, server storage.\n\nAn exported bundle is an artifact someone can open and inspect. A published directory entry is a discovery and hosting workflow. A private backend is yet another deployment resource. Keep these outcomes distinct when explaining an app to a user."
+    "text": "Sharing can mean sending an editable `.softn` bundle, publishing it in the app directory or deploying a single-app website. A directory app gets its own page, a player at `/play/<slug>`, category placement (such as Games, Productivity or Business Apps) and — depending on its `hosting` mode — either browser-only execution, server-hosted ZIPP `safe-sandbox` backend execution, hybrid hosted+local execution, or v1 per-app server storage.\n\nAn exported bundle is an artifact someone can open and inspect. A published directory entry is a discovery and hosting workflow. A private backend is yet another deployment resource. Keep these outcomes distinct when explaining an app to a user."
    },
    {
     "id": "vocabulary",
@@ -1258,7 +1340,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "engine",
     "title": "The browser engine comes from a ZIPP release",
-    "text": "The engine is not committed. `packages/@softn/core/wasm-zipp` is installed from the ZIPP release that the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names, today v0.0.35, and verified against that release’s SHA256SUMS, so a browser build needs no Rust toolchain. The build, test, typecheck and licence scripts install it when it is missing, and `SOURCE.json` records its provenance and checksums. Offline, point `ZIPP_RELEASE_DIR` at a folder holding the release files.\n\n`packages/@softn/core/src/runtime/vm-adapter.ts` is where the engine is selected. The separate `build:zipp-wasm` workspace script builds an unreleased engine for local experiments only; no release accepts it, and it needs the matching Rust, wasm-bindgen and optimisation tooling.\n\n```sh\nnpm run test -w @softn/core -- test/zipp-languages.test.ts test/zipp-lifecycle.test.ts\n```\n(The checks that run JavaScript and Python against the real engine.)"
+    "text": "The engine is not committed. `packages/@softn/core/wasm-zipp` is installed from the ZIPP release that the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names, today v0.0.37, and verified against that release’s SHA256SUMS, so a browser build needs no Rust toolchain. The build, test, typecheck and licence scripts install it when it is missing, and `SOURCE.json` records its provenance and checksums. Offline, point `ZIPP_RELEASE_DIR` at a folder holding the release files.\n\n`packages/@softn/core/src/runtime/vm-adapter.ts` is where the engine is selected. The separate `build:zipp-wasm` workspace script builds an unreleased engine for local experiments only; no release accepts it, and it needs the matching Rust, wasm-bindgen and optimisation tooling.\n\n```sh\nnpm run test -w @softn/core -- test/zipp-languages.test.ts test/zipp-lifecycle.test.ts\n```\n(The checks that run JavaScript and Python against the real engine.)"
    },
    {
     "id": "tests",
@@ -1327,17 +1409,22 @@ export const DOC_PAGES: DocPage[] = [
  {
   "slug": "faq",
   "title": "SoftN frequently asked questions",
-  "summary": "Straight answers about the app format, accounts, AI, local data, hosting, JavaScript and Python.",
+  "summary": "Straight answers about v2 Web Containers, sandboxed backends, SQLite, accounts, AI, local data, flexible hosting, JavaScript and Python.",
   "sections": [
    {
     "id": "what-is",
     "title": "What is SoftN?",
-    "text": "An open-source UI language, visual builder and runtime for editable web and desktop apps. A `.softn` bundle brings the interface, logic, data seeds and assets together so the app can be reopened and customised."
+    "text": "An open-source WebAssembly container runtime, visual builder and AI studio for portable, editable web and desktop apps. A `.softn` bundle packages standard HTML/CSS/JS/TS frontends, optional sandboxed backends (PHP, JS/TS, Rust or Python) with SQLite, or classic `.ui` + `.logic`/`.py` source, so the app can run locally in a browser or hosted multi-user inside ZIPP."
    },
    {
     "id": "file",
     "title": "What is a .softn file?",
-    "text": "A ZIP-based portable app bundle. It usually holds `manifest.json`, `permission.json`, UI source, logic in JavaScript or Python, optional XDB seeds and assets. The manifest needs only a name and a main entry; Builder and Studio write the rest for you."
+    "text": "A ZIP-based portable app bundle. A v2 Web App Container (`\"engine\": 2` or a zipped static `dist/`) holds standard HTML, CSS, JS/TS/Python frontend files plus optional `backend` scripts and XDB SQLite databases; a classic v1 bundle holds `manifest.json`, `permission.json`, `.ui` pages, `.logic`/`.py` scripts, XDB seeds and assets."
+   },
+   {
+    "id": "sandboxed-backends",
+    "title": "Can SoftN run backend code locally and multi-user?",
+    "text": "Yes. A v2 Web Container can bundle a real HTTP backend — PHP (including Slim 4 and PDO SQLite), JavaScript, TypeScript, Rust or Python — and an XDB SQLite 3 database inside one `.softn` file. In a browser it runs inside a ZIPP WebAssembly Worker with IndexedDB persistence; hosted multi-user through the directory (`server` or `hybrid` hosting), `softn-server` or `softn-host-php`, every request still executes inside ZIPP’s interpreter-only `safe-sandbox` against shared WAL SQLite on disk — never native OS PHP, Python or shell binaries."
    },
    {
     "id": "ai",
@@ -1352,7 +1439,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "data",
     "title": "Where does app data live?",
-    "text": "XDB keeps app-scoped local records through the host, which decides persistence, native storage and sync. A connected backend can keep separate server-owned records. Bundle seeds and someone’s live records are not the same thing."
+    "text": "By default, app data stays on your device: XDB collections and v2 container SQLite databases are persisted in your browser’s IndexedDB (or native SQLite in the desktop loader). When an app uses directory `server`/`hybrid` hosting, `softn-server`, `softn-host-php`, server storage or FormLogic, shared records live on that server. Bundle seeds and live user records are always kept distinct."
    },
    {
     "id": "offline",
@@ -1362,12 +1449,12 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "javascript",
     "title": "Is .logic ordinary browser JavaScript?",
-    "text": "It is JavaScript, but it runs inside the ZIPP engine with the APIs the host exposes. There is no unrestricted DOM access, no Node.js API and no automatic support for npm packages."
+    "text": "It is real JavaScript executed inside the ZIPP WebAssembly engine with the APIs the host exposes. In v1 `.logic` files there is no direct DOM access or Node.js API; in v2 Web Containers (`\"engine\": 2`), standard browser-like DOM, Canvas, WebGL2/Three.js, `fetch` and `IndexedDB` run inside an isolated Worker against a closed Shadow DOM with `permission.json` gating external network access."
    },
    {
     "id": "python",
     "title": "Can I write logic in Python?",
-    "text": "Yes. Link a `.py` file with `<logic src>`, or choose Python in Builder’s new-project dialog or Studio’s brief. Top-level names are state, functions assign them with `global`, and `import softn` reaches host capabilities. An app uses one language, and server logic stays JavaScript."
+    "text": "Yes. In v1 apps, link a `.py` file with `<logic src>` or choose Python in Builder or Studio (`import softn` reaches host capabilities; v1 `server/*.logic` stays JavaScript). In v2 Web Containers, Python is also supported for sandboxed container backends inside ZIPP `safe-sandbox`."
    },
    {
     "id": "torch",
@@ -1377,7 +1464,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "hosting",
     "title": "Can I put an app on its own domain?",
-    "text": "Yes, with the single-app runtime. Configure its `runtime.config.json`, keep the deployment identity stable, and keep any private backend resources apart from the public client."
+    "text": "Yes. You can publish to the directory with flexible `browser`, `server` or `hybrid` hosting, deploy one app on its own domain with the single-app runtime (`apps/softn-single` or `apps/softn-single-private`), or run multi-user full-stack containers on `softn-server` (`apps/softn-host-rust`) or `apps/softn-host-php` — always keeping private server credentials and databases apart from client downloads."
    },
    {
     "id": "formlogic",

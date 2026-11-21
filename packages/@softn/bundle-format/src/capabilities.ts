@@ -51,7 +51,11 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
   net: { label: 'Network', summary: 'may call the internet; the runtime asks you first', sensitive: true },
   camera: { label: 'Camera', summary: 'may take pictures, with your permission', sensitive: true },
   mic: { label: 'Microphone', summary: 'may record audio, with your permission', sensitive: true },
-  files: { label: 'Files', summary: 'may read files you choose, and save files it makes', sensitive: true },
+  files: {
+    label: 'File chooser & saving',
+    summary: 'may open files you pick via a file chooser or save files it creates (cannot browse your folders)',
+    sensitive: true,
+  },
   qr: { label: 'QR codes', summary: 'scans QR codes with your camera', sensitive: false },
   ai: { label: 'AI models', summary: 'downloads and runs a model in your browser', sensitive: false },
   gpu: { label: 'GPU', summary: 'uses your graphics card for compute', sensitive: false },

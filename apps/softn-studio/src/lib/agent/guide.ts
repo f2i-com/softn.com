@@ -591,7 +591,7 @@ ${PRIVATE_BACKEND_SECTION}
 ${python ? PYTHON_APP_EXAMPLE : JAVASCRIPT_APP_EXAMPLE}`;
 }
 
-/** Whether manifest.json declares a private backend (a `server` block with an entry). */
+/** Whether manifest.json declares a legacy v1 private backend (`server` block with an entry). */
 export function projectHasBackend(manifestSource: string | undefined): boolean {
   if (!manifestSource) return false;
   try {
@@ -602,6 +602,59 @@ export function projectHasBackend(manifestSource: string | undefined): boolean {
   }
 }
 
+/** Whether manifest.json declares a v2 sandboxed container backend (`backend` block with runtime & entry). */
+export function projectHasContainerBackend(manifestSource: string | undefined): boolean {
+  if (!manifestSource) return false;
+  try {
+    const manifest = JSON.parse(manifestSource) as { backend?: { runtime?: unknown; entry?: unknown } };
+    return (
+      typeof manifest?.backend?.runtime === 'string' &&
+      manifest.backend.runtime.length > 0 &&
+      typeof manifest?.backend?.entry === 'string' &&
+      manifest.backend.entry.length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+export const CONTAINER_BACKEND_SECTION = `## Sandboxed Container Backend (PHP, JS/TS, Rust, Python + SQLite)
+A SoftN v2 Web App Container can bundle a real HTTP backend and SQLite database directly inside the \`.softn\` archive.
+- **Local browser mode**: The backend executes inside a dedicated ZIPP WebAssembly Worker (\`LocalBackendTransport\`) with XDB SQLite persisted in IndexedDB — zero server required.
+- **Multi-user hosted mode**: The exact same \`.softn\` bundle runs on \`softn-server\` (\`apps/softn-host-rust\`) where every backend request executes inside ZIPP's \`safe-sandbox\` VM against a shared WAL SQLite database, and frontends talk to it via \`fetch('/api/...')\` with zero app code changes.
+
+### \`manifest.json\` backend & database fields
+Keep these fields whenever you edit \`manifest.json\`:
+\`\`\`json
+{
+  "engine": 2,
+  "main": "index.html",
+  "frontendRoot": "public",
+  "backend": {
+    "runtime": "php",
+    "entry": "backend/index.php",
+    "mode": "api",
+    "routes": ["/api/"]
+  },
+  "databases": [
+    {
+      "name": "app",
+      "engine": "sqlite",
+      "file": "app.db",
+      "seedSql": "backend/schema.sql",
+      "persist": true
+    }
+  ]
+}
+\`\`\`
+- \`backend.runtime\`: \`"php"\` (supports Slim 4 / PDO SQLite / \`.htaccess\`), \`"javascript"\`, \`"typescript"\`, \`"rust"\`, or \`"python"\`.
+- \`backend.mode\`: \`"api"\` (frontend HTML calls \`fetch('/api/...')\`), \`"ssr"\` (backend renders HTML), or \`"hybrid"\`.
+- \`backend.routes\`: path prefixes routed to the sandboxed backend (e.g. \`["/api/"]\`).
+- \`frontendRoot\`: optional folder (e.g. \`"public"\`) for static web assets so backend source files stay outside the public web root.
+- **PHP backend**: Standard \`$_SERVER['REQUEST_METHOD']\`, \`$_SERVER['REQUEST_URI']\`, \`file_get_contents('php://input')\`, \`http_response_code()\`, \`header()\`, and \`new PDO('sqlite:app.db')\` (which binds directly to the declared SQLite database).
+- **JS/TS backend**: Export or define \`function handleRequest(req)\` returning \`{ status, headers, body }\` and open SQLite with \`const db = sqlite.open('app.db');\` (\`db.query(sql, params)\`, \`db.first(sql, params)\`, \`db.execute(sql, params)\`).
+- **Frontend calls**: Use standard \`fetch('/api/...')\` — do NOT add same-origin \`/api/\` calls to \`permission.json\`.`;
+
 /**
  * System guide for SoftN v2 Web App Containers (`@softn/container`).
  * Teaches pure 100% standard HTML5, CSS, and JS/TS/Python DOM with hosted vendor modules.
@@ -610,11 +663,13 @@ export function buildV2ContainerGuide({
   language,
   torch,
   backend = false,
+  containerBackend = false,
   style,
 }: {
   language: 'javascript' | 'typescript' | 'python';
   torch: boolean;
   backend?: boolean;
+  containerBackend?: boolean;
   style: string;
 }): string {
   const python = language === 'python';
@@ -677,5 +732,5 @@ Drop these directly in HTML or \`htm\` templates (lazy-loaded automatically when
 
 ## Design Quality
 Match the brief's **${style}** aesthetic. Build complete, interactive, responsive UIs with realistic seeded data, clear typography, keyboard-friendly forms, and zero placeholder stubs.
-${backend ? `\n${PRIVATE_BACKEND_SECTION}\n` : ''}`;
+${containerBackend ? `\n${CONTAINER_BACKEND_SECTION}\n` : `\n## Optional Sandboxed Container Backend\nIf the user asks for an API backend (PHP, JS/TS, Rust, or Python) and SQLite inside this container, declare \`"backend": { "runtime": "php" | "javascript" | "typescript" | "rust" | "python", "entry": "backend/index.php", "mode": "api", "routes": ["/api/"] }\` and \`"databases": [{ "name": "app", "engine": "sqlite", "file": "app.db", "seedSql": "backend/schema.sql", "persist": true }]\` in \`manifest.json\`, then call \`fetch('/api/...')\` from frontend scripts. It runs locally in a ZIPP WASM Worker and deploys unchanged to multi-user \`softn-server\` ZIPP \`safe-sandbox\`.\n`}${backend ? `\n${PRIVATE_BACKEND_SECTION}\n` : ''}`;
 }

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ApiError, addVersion, getApp, replaceKey, setThumbnail, unpublish, updateListing, type AppDetail, type Category } from '../../lib/api';
+import { ApiError, addVersion, getApp, isPublicServerHostingAllowed, replaceKey, setThumbnail, unpublish, updateListing, type AppDetail, type Category, type HostingMode } from '../../lib/api';
 import { forgetKey, isEditKey, rememberKey, savedKey } from '../../lib/keyStore';
 import { formatBytes, formatDate, runsLabel } from '../../lib/format';
 import { navigate } from '../../lib/router';
@@ -30,7 +30,11 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
   const [description, setDescription] = useState('');
   const [author, setAuthor] = useState('');
   const [category, setCategory] = useState('');
+  const [subcategory, setSubcategory] = useState('');
   const [tags, setTags] = useState('');
+  const [hosting, setHosting] = useState<HostingMode>('browser');
+  const [backendUrl, setBackendUrl] = useState('');
+  const [withholdBackend, setWithholdBackend] = useState(false);
   const [selection, selector] = useSelection();
   const single = singleItem(selection);
   const [notes, setNotes] = useState('');
@@ -52,7 +56,11 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
         setDescription(a.description);
         setAuthor(a.author);
         setCategory(a.category);
+        setSubcategory(a.subcategory ?? '');
         setTags(a.tags.join(', '));
+        setHosting(a.hosting?.mode ?? 'browser');
+        setBackendUrl(a.hosting?.customBackendUrl ?? '');
+        setWithholdBackend(Boolean(a.hosting?.withholdBackend));
         document.title = `Update ${a.name} — SoftN`;
       })
       .catch((e) => {
@@ -271,7 +279,13 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
             </label>
             <label className="field">
               <span className="field-label">Category</span>
-              <select value={category} onChange={(e) => setCategory(e.target.value)}>
+              <select
+                value={category}
+                onChange={(e) => {
+                  setCategory(e.target.value);
+                  setSubcategory('');
+                }}
+              >
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.emoji} {c.name}
@@ -280,17 +294,82 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
               </select>
             </label>
           </div>
+          {(categories.find((c) => c.id === category)?.subcategories?.length ?? 0) > 0 && (
+            <label className="field">
+              <span className="field-label">Subcategory (optional)</span>
+              <select value={subcategory} onChange={(e) => setSubcategory(e.target.value)}>
+                <option value="">None (top-level in {categories.find((c) => c.id === category)?.name})</option>
+                {(categories.find((c) => c.id === category)?.subcategories ?? []).map((sub) => (
+                  <option key={sub.slug} value={sub.slug}>
+                    {sub.emoji} {sub.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="field">
             <span className="field-label">Tags</span>
             <input type="text" value={tags} onChange={(e) => setTags(e.target.value)} />
           </label>
+          {isPublicServerHostingAllowed() ? (
+            <>
+              <label className="field">
+                <span className="field-label">Hosting mode</span>
+                <select value={hosting} onChange={(e) => setHosting(e.target.value as HostingMode)}>
+                  <option value="browser">Browser sandbox only — downloads .softn to visitor&rsquo;s browser</option>
+                  <option value="hybrid">Hosted on SoftN (ZIPP safe-sandbox) + local browser option</option>
+                  <option value="server">Hosted on SoftN server only (ZIPP safe-sandbox)</option>
+                </select>
+              </label>
+              {hosting !== 'browser' && (
+                <div className="field-row">
+                  <label className="field">
+                    <span className="field-label">Custom backend URL (optional)</span>
+                    <input
+                      type="text"
+                      value={backendUrl}
+                      onChange={(e) => setBackendUrl(e.target.value)}
+                      maxLength={300}
+                      placeholder="Leave blank to use SoftN's ZIPP sandbox"
+                    />
+                  </label>
+                  {hosting === 'server' && (
+                    <label className="check" style={{ alignSelf: 'end', paddingBottom: '0.5rem' }}>
+                      <input type="checkbox" checked={withholdBackend} onChange={(e) => setWithholdBackend(e.target.checked)} /> Withhold backend files from client download
+                    </label>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="muted">
+              {app.hosting?.serverHosted
+                ? `Hosting mode (${app.hosting.mode}) is configured on the server in this app's data JSON.`
+                : "Runs locally inside each visitor's sandboxed browser (downloaded directly to the client)."}
+            </p>
+          )}
           <button
             type="button"
             className="cta cta-primary"
             disabled={!keyOk || busy !== null}
             onClick={() =>
               withKey('listing', async (k) => {
-                const a = await updateListing(slug, k, { name: name.trim(), description: description.trim(), author: author.trim(), category, tags });
+                const allowPublicHosting = isPublicServerHostingAllowed();
+                const a = await updateListing(slug, k, {
+                  name: name.trim(),
+                  description: description.trim(),
+                  author: author.trim(),
+                  category,
+                  subcategory: subcategory || null,
+                  tags,
+                  ...(allowPublicHosting
+                    ? {
+                        hosting,
+                        backendUrl: hosting === 'browser' ? null : (backendUrl.trim() || null),
+                        withholdBackend: hosting === 'server' ? withholdBackend : false,
+                      }
+                    : {}),
+                });
                 setApp(a);
                 setDone('The listing is updated.');
               })

@@ -382,8 +382,11 @@ async function offerVisitSession(raw: string, deps: VisitDeps): Promise<Arrival>
     return NONE;
   }
   if (useProjectStore.getState().workspaceGeneration !== generation) return SUPERSEDED;
-  const yes = await (deps.ask ?? askConfirm)(restoreOffer(raw, restore.assets), { title: 'Restore your work?', confirmLabel: 'Restore', cancelLabel: 'Not now' });
-  if (!yes) return { kind: 'declined' };
+  // Auto-restore visit work directly unless a caller explicitly injected a confirmation prompt.
+  if (deps.ask) {
+    const yes = await deps.ask(restoreOffer(raw, restore.assets), { title: 'Restore your work?', confirmLabel: 'Restore', cancelLabel: 'Not now' });
+    if (!yes) return { kind: 'declined' };
+  }
   if (useProjectStore.getState().workspaceGeneration !== generation) return SUPERSEDED;
   return restoreVisit(visit, raw, restore, deps);
 }

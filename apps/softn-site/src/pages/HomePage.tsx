@@ -11,6 +11,7 @@ import { WhyDifferent } from '../components/home/WhyDifferent';
 import { ForDevelopers } from '../components/home/ForDevelopers';
 import { HomeFaq } from '../components/home/HomeFaq';
 import { BUILDER_HREF, STUDIO_HREF } from '../lib/appUrls';
+import { HOSTING_GUIDE_HREF } from '../lib/guides';
 
 const LISTS: Array<{ id: string; name: string }> = [
   { id: 'trending', name: 'Trending' },
@@ -97,13 +98,12 @@ export function HomePage({
         <div className="wrap hero-inner">
           <div className="hero-apps-head">
             <div className="hero-copy">
-              <p className="eyebrow rise">Made with SoftN</p>
+              <p className="eyebrow rise">Sandboxed Full-Stack Web Containers</p>
               <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
-                Apps you can play, open and make your own.
+                Full web apps — frontend and backend — sandboxed in your browser.
               </h1>
               <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-                Every app here runs in your browser, with nothing to install. Play one, look inside it and remix it, or
-                make your own with a visual builder, code or AI.
+                Run complete web apps locally with zero install: standard HTML/TS frontends paired with sandboxed PHP (Slim 4), JS/TS, Rust, or Python backends and SQLite persisted in IndexedDB — or host the exact same <code>.softn</code> bundle multi-user inside ZIPP safe-sandbox.
               </p>
             </div>
             <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
@@ -120,6 +120,55 @@ export function HomePage({
               </a>
             </div>
           </div>
+
+          <div className="hero-sandbox-grid rise" style={{ animationDelay: '160ms' }} aria-label="How SoftN sandboxes full web apps">
+            <article className="hero-sandbox-card">
+              <div className="hero-sandbox-head">
+                <span className="hero-sandbox-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="4" width="18" height="15" rx="2" />
+                    <path d="M3 9h18M8 6.5h.01M11 6.5h.01" />
+                  </svg>
+                </span>
+                <span className="hero-sandbox-badge">Frontend Sandbox</span>
+              </div>
+              <h2>Worker + Shadow DOM</h2>
+              <p>
+                Run standard HTML5, CSS, TypeScript, Preact, React, Vue, or Three.js inside an isolated WebAssembly Worker — zero ambient access to the host page or browser secrets.
+              </p>
+            </article>
+            <article className="hero-sandbox-card">
+              <div className="hero-sandbox-head">
+                <span className="hero-sandbox-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                    <ellipse cx="12" cy="5.5" rx="7.5" ry="3" />
+                    <path d="M4.5 5.5v13c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-13M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3" />
+                  </svg>
+                </span>
+                <span className="hero-sandbox-badge">Backend + SQLite Sandbox</span>
+              </div>
+              <h2>ZIPP WASM + IndexedDB</h2>
+              <p>
+                Bundle real PHP (Slim 4 + PDO), JS/TS, Rust, or Python HTTP backends and SQLite inside the same <code>.softn</code> file. Every <code>{'fetch("/api/...")'}</code> runs locally in your browser.
+              </p>
+            </article>
+            <article className="hero-sandbox-card">
+              <div className="hero-sandbox-head">
+                <span className="hero-sandbox-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 3 4.5 6.5V12c0 5 3.3 8.4 7.5 9.5 4.2-1.1 7.5-4.5 7.5-9.5V6.5z" />
+                    <path d="m9 12 2 2 4-4" />
+                  </svg>
+                </span>
+                <span className="hero-sandbox-badge">Flexible Hosting</span>
+              </div>
+              <h2>Browser-only or SoftN-hosted</h2>
+              <p>
+                Let visitors download and run the whole app in their browser sandbox, or host its backend on SoftN or <a href={HOSTING_GUIDE_HREF}>softn-server</a> with shared WAL SQLite — always inside ZIPP safe-sandbox.
+              </p>
+            </article>
+          </div>
+
           {(featured === null || featured.length >= 3) && (
             <div className="hero-shelf rise" style={{ animationDelay: '180ms' }}>
               {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
@@ -132,9 +181,9 @@ export function HomePage({
             </div>
           )}
           <ul className="hero-facts" aria-label="Before you start">
-            <li>No account needed to play</li>
-            <li>Runs in your browser</li>
-            <li>Every app’s source is yours to open</li>
+            <li>PHP (Slim 4), JS/TS, Rust &amp; Python + SQLite in ZIPP</li>
+            <li>Runs locally in IndexedDB — no server or account needed</li>
+            <li>Same .softn bundle scales multi-user in ZIPP safe-sandbox</li>
           </ul>
         </div>
       </header>

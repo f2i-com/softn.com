@@ -1,6 +1,14 @@
 import React from 'react';
 import { Reveal } from '../Reveal';
-import { AI_PUBLISHING_GUIDE_HREF, DATA_GUIDE_HREF, FORMLOGIC_GUIDE_HREF, HTML_GUIDE_HREF, PUBLISHING_GUIDE_HREF } from '../../lib/guides';
+import {
+  AI_PUBLISHING_GUIDE_HREF,
+  DATA_GUIDE_HREF,
+  FORMLOGIC_GUIDE_HREF,
+  HOSTING_GUIDE_HREF,
+  HTML_GUIDE_HREF,
+  PUBLISHING_GUIDE_HREF,
+  WEB_CONTAINERS_GUIDE_HREF,
+} from '../../lib/guides';
 
 interface Answer {
   q: string;
@@ -12,6 +20,31 @@ interface Answer {
  * claim nothing the runtime, the directory or FormLogic does not do.
  */
 const FAQ: Answer[] = [
+  {
+    q: 'Can SoftN run real backend code locally in my browser?',
+    a: (
+      <>
+        Yes. A SoftN v2 Web Container bundles standard frontend files alongside a real HTTP backend — PHP (including Slim
+        4 and PDO SQLite), JavaScript, TypeScript, Rust, or Python — and an XDB SQLite database inside one{' '}
+        <code>.softn</code> file. When opened in your browser, the backend executes inside a ZIPP WebAssembly Worker with
+        IndexedDB persistence, so full-stack apps run completely locally with no server or Docker install.{' '}
+        <a href={WEB_CONTAINERS_GUIDE_HREF}>Full-Stack Web Containers</a>
+      </>
+    ),
+  },
+  {
+    q: 'Can I host the same app multi-user, and is backend code still sandboxed?',
+    a: (
+      <>
+        Yes. Run the exact same <code>.softn</code> bundle through the directory’s flexible hosting (<code>browser</code>,{' '}
+        <code>server</code>, or <code>hybrid</code> with <code>?mode=local</code>), on <code>softn-server</code>{' '}
+        (single-app or multi-tenant), or on <code>softn-host-php</code> with zero app code changes. Every incoming
+        backend request still executes inside ZIPP’s interpreter-only <code>safe-sandbox</code> VM (no native OS PHP,
+        Python, or shell execution, strict memory and time bounds) against shared WAL SQLite on disk.{' '}
+        <a href={HOSTING_GUIDE_HREF}>Hosting and multi-user sandboxing</a>
+      </>
+    ),
+  },
   {
     q: 'Is this HTML?',
     a: (

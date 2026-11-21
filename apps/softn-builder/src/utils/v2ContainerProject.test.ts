@@ -96,4 +96,91 @@ describe('SoftN Builder v2 Web App Containers', () => {
     expect(reopenedHtml).toContain('<!DOCTYPE html>');
     expect(reopenedJs).toContain('Kanban v2');
   });
+
+  it('scaffolds, edits, and round-trips a full-stack PHP + SQLite Web Container bundle with vendor/ preserved', async () => {
+    startNewProject({
+      name: 'Desk Ledger',
+      description: 'Sandboxed PHP + SQLite ledger',
+      theme: 'dark',
+      template: 'blank',
+      format: 'web',
+      backend: 'php',
+      language: 'typescript',
+      pythonPackages: [],
+    });
+
+    const files = useFilesStore.getState();
+    const logicPaths = [...files.logicFiles.values()].map((f) => f.path).sort();
+    expect(logicPaths).toEqual(['app.ts', 'backend/index.php', 'backend/schema.sql', 'style.css']);
+
+    const retainedManifest = useProjectStore.getState().source.manifest as Record<string, unknown>;
+    expect(retainedManifest.backend).toEqual({
+      runtime: 'php',
+      entry: 'backend/index.php',
+      mode: 'api',
+      routes: ['/api/'],
+    });
+    expect(Array.isArray(retainedManifest.databases)).toBe(true);
+
+    const exported = await buildProjectBundle();
+    const reopened = await loadBundle(exported);
+    expect(reopened.projectFormat).toBe('web');
+    expect(reopened.rawManifest.backend).toEqual({
+      runtime: 'php',
+      entry: 'backend/index.php',
+      mode: 'api',
+      routes: ['/api/'],
+    });
+    expect([...reopened.logicFiles.values()].map((f) => f.path)).toContain('backend/index.php');
+    expect([...reopened.logicFiles.values()].map((f) => f.path)).toContain('backend/schema.sql');
+  });
+
+  it('opens a Slim 4 style full-stack PHP bundle, keeps vendor/ in extraEntries, and lets .php/.sql/.htaccess be edited', async () => {
+    const rawZip = zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          id: 'com.demo.brewdesk',
+          name: 'BrewDesk',
+          version: '1.0.0',
+          engine: 2,
+          main: 'public/index.html',
+          frontendRoot: 'public',
+          backend: {
+            runtime: 'php',
+            entry: 'backend/public/index.php',
+            mode: 'api',
+            routes: ['/api/'],
+          },
+          databases: [{ name: 'brewdesk', engine: 'sqlite', file: 'brewdesk.db', seedSql: 'backend/migrations/001_init.sql' }],
+        })
+      ),
+      'public/index.html': strToU8('<!DOCTYPE html><html><body><div id="app"></div><script type="module" src="./app.js"></script></body></html>'),
+      'public/app.js': strToU8('fetch("/api/health");'),
+      'backend/public/index.php': strToU8('<?php echo json_encode(["ok" => true]);'),
+      'backend/public/.htaccess': strToU8('RewriteEngine On\nRewriteRule ^ index.php [QSA,L]\n'),
+      'backend/migrations/001_init.sql': strToU8('CREATE TABLE items (id INTEGER PRIMARY KEY);'),
+      'backend/vendor/autoload.php': strToU8('<?php // vendor autoload'),
+    });
+
+    const loaded = await loadBundle(rawZip);
+    expect(loaded.projectFormat).toBe('web');
+    const editablePaths = [...loaded.logicFiles.values()].map((f) => f.path);
+    expect(editablePaths).toContain('backend/public/index.php');
+    expect(editablePaths).toContain('backend/public/.htaccess');
+    expect(editablePaths).toContain('backend/migrations/001_init.sql');
+    expect(editablePaths).not.toContain('backend/vendor/autoload.php');
+    expect(loaded.extraEntries.has('backend/vendor/autoload.php')).toBe(true);
+
+    // Edit PHP entry and re-export: vendor/ and backend manifest must survive intact
+    commitProjectSnapshot(prepareProjectSnapshot(loaded));
+    const phpEntry = [...useFilesStore.getState().logicFiles.values()].find((f) => f.path === 'backend/public/index.php')!;
+    useFilesStore.getState().updateLogicFile(phpEntry.id, '<?php echo json_encode(["ok" => true, "v" => 2]);');
+
+    const exported = await buildProjectBundle();
+    const reopened = await loadBundle(exported);
+    expect(reopened.extraEntries.has('backend/vendor/autoload.php')).toBe(true);
+    const updatedPhp = [...reopened.logicFiles.values()].find((f) => f.path === 'backend/public/index.php')?.content;
+    expect(updatedPhp).toContain('"v" => 2');
+    expect(reopened.rawManifest.frontendRoot).toBe('public');
+  });
 });

@@ -606,6 +606,147 @@ function buildXdb(collection: BlueprintCollection): string {
  * The logic is `main.js` or, when the brief chose Python, `main.py`; the
  * file's name is what tells the runtime which it is.
  */
+function buildContainerBackendStarter(
+  runtime: 'php' | 'javascript' | 'typescript',
+  appName: string
+): { entry: string; source: string; schemaSql: string } {
+  const safeTitle = appName.replace(/'/g, "''");
+  const schemaSql = [
+    'CREATE TABLE IF NOT EXISTS items (',
+    '  id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    '  title TEXT NOT NULL,',
+    '  done INTEGER NOT NULL DEFAULT 0,',
+    "  created_at TEXT NOT NULL DEFAULT (datetime('now'))",
+    ');',
+    '',
+    `INSERT INTO items (title, done) VALUES ('Welcome to ${safeTitle}', 0);`,
+    "INSERT INTO items (title, done) VALUES ('Edit backend code and reload preview', 0);",
+    '',
+  ].join('\n');
+
+  if (runtime === 'php') {
+    return {
+      entry: 'backend/index.php',
+      schemaSql,
+      source: `<?php
+declare(strict_types=1);
+
+header('Content-Type: application/json; charset=utf-8');
+
+$pdo = new PDO('sqlite:app.db');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/api/items', PHP_URL_PATH) ?: '/api/items';
+
+if ($method === 'GET' && $path === '/api/health') {
+    echo json_encode(['ok' => true, 'runtime' => 'php']);
+    exit;
+}
+
+if ($method === 'GET' && $path === '/api/items') {
+    $rows = $pdo->query('SELECT id, title, done, created_at FROM items ORDER BY id DESC')->fetchAll();
+    echo json_encode(['items' => $rows]);
+    exit;
+}
+
+if ($method === 'POST' && $path === '/api/items') {
+    $raw = file_get_contents('php://input') ?: '{}';
+    $data = json_decode($raw, true);
+    $title = trim((string)($data['title'] ?? ''));
+    if ($title === '') {
+        http_response_code(422);
+        echo json_encode(['error' => 'Title is required']);
+        exit;
+    }
+    $stmt = $pdo->prepare('INSERT INTO items (title, done) VALUES (?, 0)');
+    $stmt->execute([$title]);
+    $id = (int)$pdo->lastInsertId();
+    $item = $pdo->query('SELECT id, title, done, created_at FROM items WHERE id = ' . $id)->fetch();
+    http_response_code(201);
+    echo json_encode(['item' => $item]);
+    exit;
+}
+
+if ($method === 'PATCH' && preg_match('#^/api/items/(\\d+)$#', $path, $m)) {
+    $id = (int)$m[1];
+    $stmt = $pdo->prepare('UPDATE items SET done = CASE WHEN done = 0 THEN 1 ELSE 0 END WHERE id = ?');
+    $stmt->execute([$id]);
+    $item = $pdo->query('SELECT id, title, done, created_at FROM items WHERE id = ' . $id)->fetch();
+    echo json_encode(['item' => $item]);
+    exit;
+}
+
+if ($method === 'DELETE' && preg_match('#^/api/items/(\\d+)$#', $path, $m)) {
+    $id = (int)$m[1];
+    $stmt = $pdo->prepare('DELETE FROM items WHERE id = ?');
+    $stmt->execute([$id]);
+    echo json_encode(['deleted' => $id]);
+    exit;
+}
+
+http_response_code(404);
+echo json_encode(['error' => 'Route not found', 'path' => $path]);
+`,
+    };
+  }
+
+  const isTs = runtime === 'typescript';
+  return {
+    entry: isTs ? 'backend/index.ts' : 'backend/index.js',
+    schemaSql,
+    source: `${isTs ? 'interface BackendReq { method: string; path: string; body?: string; }\n\n' : ''}function json(data${isTs ? ': unknown' : ''}, status${isTs ? ': number' : ''} = 200) {
+  return {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(data),
+  };
+}
+
+function handleRequest(req${isTs ? ': BackendReq' : ''}) {
+  const db = sqlite.open('app.db');
+  const method = (req.method || 'GET').toUpperCase();
+  const path = req.path || '/api/items';
+
+  if (method === 'GET' && path === '/api/health') {
+    return json({ ok: true, runtime: ${JSON.stringify(runtime)} });
+  }
+
+  if (method === 'GET' && path === '/api/items') {
+    const items = db.query('SELECT id, title, done, created_at FROM items ORDER BY id DESC', []);
+    return json({ items });
+  }
+
+  if (method === 'POST' && path === '/api/items') {
+    const payload = JSON.parse(req.body || '{}');
+    const title = String(payload.title || '').trim();
+    if (!title) return json({ error: 'Title is required' }, 422);
+    const res = db.execute('INSERT INTO items (title, done) VALUES (?, 0)', [title]);
+    const item = db.first('SELECT id, title, done, created_at FROM items WHERE id = ?', [res.lastInsertRowid]);
+    return json({ item }, 201);
+  }
+
+  const match = path.match(/^\\/api\\/items\\/(\\d+)$/);
+  if (match && method === 'PATCH') {
+    const id = Number(match[1]);
+    db.execute('UPDATE items SET done = CASE WHEN done = 0 THEN 1 ELSE 0 END WHERE id = ?', [id]);
+    const item = db.first('SELECT id, title, done, created_at FROM items WHERE id = ?', [id]);
+    return json({ item });
+  }
+
+  if (match && method === 'DELETE') {
+    const id = Number(match[1]);
+    db.execute('DELETE FROM items WHERE id = ?', [id]);
+    return json({ deleted: id });
+  }
+
+  return json({ error: 'Route not found', path }, 404);
+}
+`,
+  };
+}
+
 function scaffoldV2ContainerFiles(
   brief: ProjectBrief,
   blueprint: Blueprint,
@@ -618,6 +759,9 @@ function scaffoldV2ContainerFiles(
   const python = lang === 'python';
   const ts = lang === 'typescript';
   const logicPath = python ? 'main.py' : ts ? 'app.ts' : 'main.js';
+  const backendRuntime =
+    brief.containerBackend && brief.containerBackend !== 'none' ? brief.containerBackend : null;
+  const backendStarter = backendRuntime ? buildContainerBackendStarter(backendRuntime, brief.appName) : null;
   const accent = accentFor(brief.style);
   const theme = themeFor(brief.style);
   const pagesMeta = blueprint.pages.map((page, i) => ({ id: slugs[i], label: page.name }));
@@ -658,59 +802,141 @@ function scaffoldV2ContainerFiles(
 }
 `;
 
-  const jsOrTsSource = [
-    "import { h, render } from 'preact';",
-    "import { useState } from 'preact/hooks';",
-    "import htm from 'htm';",
-    ...(colNames.length > 0 ? ["import { db } from 'softn:db';"] : []),
-    '',
-    'const html = htm.bind(h);',
-    `const appName${ts ? ': string' : ''} = ${JSON.stringify(brief.appName)};`,
-    `const appDescription${ts ? ': string' : ''} = ${JSON.stringify(brief.description)};`,
-    `const pages${ts ? ': Array<{ id: string; label: string }>' : ''} = ${JSON.stringify(pagesMeta)};`,
-    `const collections${ts ? ': Array<{ key: string; title: string }>' : ''} = ${JSON.stringify(colNames)};`,
-    '',
-    'function App() {',
-    `  const [page, setPage] = useState(${JSON.stringify(slugs[0] ?? 'home')});`,
-    '  return html`',
-    '    <div class="stack gap-md app-header">',
-    '      <div class="row between wrap gap-sm">',
-    '        <h1 class="app-title">${appName}</h1>',
-    '        ${pages.length > 1 ? html`',
-    '          <nav class="row gap-xs">',
-    '            ${pages.map((item) => html`',
-    '              <button key=${item.id} class=${page === item.id ? "btn primary" : "btn"} onClick=${() => setPage(item.id)}>${item.label}</button>',
-    '            `)}',
-    '          </nav>',
-    '        ` : null}',
-    '      </div>',
-    '      <p class="muted">${appDescription}</p>',
-    ...(colNames.length > 0
-      ? [
-          '      ${collections.map((col) => {',
-          '        const rows = db.query(col.key);',
-          '        return html`',
-          '          <section key=${col.key} class="card stack gap-xs">',
-          '            <h2>${col.title}</h2>',
-          '            <div class="muted">${rows.length} seeded record(s)</div>',
-          '          </section>',
-          '        `;',
-          '      })}',
-        ]
-      : [
-          '      <section class="card stack gap-xs">',
-          '        <h2>${pages.find((p) => p.id === page)?.label ?? "Home"}</h2>',
-          '        <p class="muted">Starter container ready. Describe what belongs here to build it out.</p>',
-          '      </section>',
-        ]),
-    '    </div>',
-    '  `;',
-    '}',
-    '',
-    "const root = document.getElementById('app');",
-    'if (root) render(html`<${App} />`, root);',
-    '',
-  ].join('\n');
+  const jsOrTsSource = backendStarter
+    ? [
+        "import { h, render } from 'preact';",
+        "import { useEffect, useState } from 'preact/hooks';",
+        "import htm from 'htm';",
+        '',
+        'const html = htm.bind(h);',
+        `const appName${ts ? ': string' : ''} = ${JSON.stringify(brief.appName)};`,
+        `const appDescription${ts ? ': string' : ''} = ${JSON.stringify(brief.description)};`,
+        ...(ts ? ['interface ItemRow { id: number; title: string; done: number; created_at: string; }'] : []),
+        '',
+        'function App() {',
+        `  const [items, setItems] = useState${ts ? '<ItemRow[]>' : ''}([]);`,
+        "  const [draft, setDraft] = useState('');",
+        "  const [status, setStatus] = useState('Loading sandboxed backend...');",
+        '',
+        '  async function refresh() {',
+        "    const res = await fetch('/api/items');",
+        '    const data = await res.json();',
+        '    setItems(Array.isArray(data.items) ? data.items : []);',
+        `    setStatus(${JSON.stringify(`${backendRuntime?.toUpperCase()} + SQLite backend ready`)});`,
+        '  }',
+        '',
+        '  useEffect(() => {',
+        '    void refresh();',
+        '  }, []);',
+        '',
+        `  async function addItem(e${ts ? ': Event' : ''}) {`,
+        '    e.preventDefault();',
+        '    const title = draft.trim();',
+        '    if (!title) return;',
+        "    await fetch('/api/items', {",
+        "      method: 'POST',",
+        "      headers: { 'content-type': 'application/json' },",
+        '      body: JSON.stringify({ title }),',
+        '    });',
+        "    setDraft('');",
+        '    await refresh();',
+        '  }',
+        '',
+        `  async function toggleItem(id${ts ? ': number' : ''}) {`,
+        "    await fetch('/api/items/' + id, { method: 'PATCH' });",
+        '    await refresh();',
+        '  }',
+        '',
+        `  async function removeItem(id${ts ? ': number' : ''}) {`,
+        "    await fetch('/api/items/' + id, { method: 'DELETE' });",
+        '    await refresh();',
+        '  }',
+        '',
+        '  return html`',
+        '    <div class="stack gap-md app-header">',
+        '      <div class="row between wrap gap-sm">',
+        '        <h1 class="app-title">${appName}</h1>',
+        '        <span class="badge">${status}</span>',
+        '      </div>',
+        '      <p class="muted">${appDescription}</p>',
+        '      <form class="row gap-xs" onSubmit=${addItem}>',
+        '        <input',
+        '          value=${draft}',
+        `          onInput=\${(e${ts ? ': Event' : ''}) => setDraft((e.target${ts ? ' as HTMLInputElement' : ''}).value)}`,
+        '          placeholder="Add item to SQLite..."',
+        '        />',
+        '        <button type="submit" class="btn primary">Add</button>',
+        '      </form>',
+        '      <div class="stack gap-xs">',
+        '        ${items.map((item) => html`',
+        '          <div key=${item.id} class="card row between gap-sm">',
+        '            <button type="button" class="btn" onClick=${() => toggleItem(item.id)}>${item.done ? "Done" : "Open"}</button>',
+        '            <span style=${{ flex: 1, textDecoration: item.done ? "line-through" : "none" }}>${item.title}</span>',
+        '            <button type="button" class="btn danger" onClick=${() => removeItem(item.id)}>Delete</button>',
+        '          </div>',
+        '        `)}',
+        '      </div>',
+        '    </div>',
+        '  `;',
+        '}',
+        '',
+        "const root = document.getElementById('app');",
+        'if (root) render(html`<${App} />`, root);',
+        '',
+      ].join('\n')
+    : [
+        "import { h, render } from 'preact';",
+        "import { useState } from 'preact/hooks';",
+        "import htm from 'htm';",
+        ...(colNames.length > 0 ? ["import { db } from 'softn:db';"] : []),
+        '',
+        'const html = htm.bind(h);',
+        `const appName${ts ? ': string' : ''} = ${JSON.stringify(brief.appName)};`,
+        `const appDescription${ts ? ': string' : ''} = ${JSON.stringify(brief.description)};`,
+        `const pages${ts ? ': Array<{ id: string; label: string }>' : ''} = ${JSON.stringify(pagesMeta)};`,
+        `const collections${ts ? ': Array<{ key: string; title: string }>' : ''} = ${JSON.stringify(colNames)};`,
+        '',
+        'function App() {',
+        `  const [page, setPage] = useState(${JSON.stringify(slugs[0] ?? 'home')});`,
+        '  return html`',
+        '    <div class="stack gap-md app-header">',
+        '      <div class="row between wrap gap-sm">',
+        '        <h1 class="app-title">${appName}</h1>',
+        '        ${pages.length > 1 ? html`',
+        '          <nav class="row gap-xs">',
+        '            ${pages.map((item) => html`',
+        '              <button key=${item.id} class=${page === item.id ? "btn primary" : "btn"} onClick=${() => setPage(item.id)}>${item.label}</button>',
+        '            `)}',
+        '          </nav>',
+        '        ` : null}',
+        '      </div>',
+        '      <p class="muted">${appDescription}</p>',
+        ...(colNames.length > 0
+          ? [
+              '      ${collections.map((col) => {',
+              '        const rows = db.query(col.key);',
+              '        return html`',
+              '          <section key=${col.key} class="card stack gap-xs">',
+              '            <h2>${col.title}</h2>',
+              '            <div class="muted">${rows.length} seeded record(s)</div>',
+              '          </section>',
+              '        `;',
+              '      })}',
+            ]
+          : [
+              '      <section class="card stack gap-xs">',
+              '        <h2>${pages.find((p) => p.id === page)?.label ?? "Home"}</h2>',
+              '        <p class="muted">Starter container ready. Describe what belongs here to build it out.</p>',
+              '      </section>',
+            ]),
+        '    </div>',
+        '  `;',
+        '}',
+        '',
+        "const root = document.getElementById('app');",
+        'if (root) render(html`<${App} />`, root);',
+        '',
+      ].join('\n');
 
   const pySource = [
     'import js',
@@ -734,6 +960,10 @@ function scaffoldV2ContainerFiles(
     '',
   ].join('\n');
 
+  const backendAssetFiles = backendStarter
+    ? [backendStarter.entry, 'backend/schema.sql']
+    : [];
+
   const files: Array<{ path: string; content: string }> = [
     {
       path: 'manifest.json',
@@ -746,11 +976,37 @@ function scaffoldV2ContainerFiles(
           main: MAIN_PAGE_PATH,
           icon: APP_ICON_PATH,
           target: brief.target,
+          ...(backendStarter && backendRuntime
+            ? {
+                backend: {
+                  runtime: backendRuntime,
+                  entry: backendStarter.entry,
+                  mode: 'api',
+                  routes: ['/api/'],
+                },
+                databases: [
+                  {
+                    name: 'app',
+                    engine: 'sqlite',
+                    file: 'app.db',
+                    seedSql: 'backend/schema.sql',
+                    persist: true,
+                  },
+                ],
+              }
+            : {}),
           files: {
             ui: [MAIN_PAGE_PATH],
-            logic: [logicPath],
+            logic: [
+              logicPath,
+              ...(backendStarter && backendRuntime !== 'php' ? [backendStarter.entry] : []),
+            ],
             xdb: xdbPaths,
-            assets: [APP_ICON_PATH, 'styles.css'],
+            assets: [
+              APP_ICON_PATH,
+              'styles.css',
+              ...backendAssetFiles.filter((p) => !(backendRuntime !== 'php' && p === backendStarter?.entry)),
+            ],
           },
           config: {
             execution: 'worker',
@@ -788,6 +1044,12 @@ function scaffoldV2ContainerFiles(
       path: logicPath,
       content: python ? pySource : jsOrTsSource,
     },
+    ...(backendStarter
+      ? [
+          { path: backendStarter.entry, content: backendStarter.source },
+          { path: 'backend/schema.sql', content: backendStarter.schemaSql },
+        ]
+      : []),
     {
       path: 'builder/blueprint.json',
       content: JSON.stringify(blueprint, null, 2),

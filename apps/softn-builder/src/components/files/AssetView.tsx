@@ -14,12 +14,18 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { strToU8 } from 'fflate';
 import { assetObjectUrl, classifyAsset } from '@softn/core';
 import { toast } from '../../stores/notificationStore';
 import { useFilesStore } from '../../stores/filesStore';
 import type { AssetFile } from '../../types/builder';
 import { PICTURE_PATTERN, assetKindWords, endingOf, replaceAsset, replacedWords, replacementAccept, sizeWords } from '../../utils/addAssets';
 import { assetCall } from '../../utils/assetSource';
+import { CodeEditor } from '../editor/CodeEditor';
+import { codeLanguageFor } from '../editor/logicLanguage';
+
+const AUDIO_PATTERN = /\.(?:mp3|wav|ogg|oga|flac|m4a|aac|opus)$/i;
+const VIDEO_PATTERN = /\.(?:mp4|m4v|webm|ogv|mov)$/i;
 
 /** As much of a text file as is shown: a megabyte of JSON in one element stalls the panel. */
 const TEXT_SHOWN_BYTES = 100 * 1024;
@@ -29,7 +35,11 @@ type Drawn = { url: string; width: number; height: number; failed: boolean };
 
 function OpenAsset({ id, asset, path }: { id: string; asset: AssetFile; path: string }) {
   const picture = PICTURE_PATTERN.test(path);
+  const audio = AUDIO_PATTERN.test(path);
+  const video = VIDEO_PATTERN.test(path);
   const [pictureUrl, setPictureUrl] = useState<string | null>(null);
+  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState(false);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
 
   useEffect(() => {
@@ -44,11 +54,23 @@ function OpenAsset({ id, asset, path }: { id: string; asset: AssetFile; path: st
     return () => URL.revokeObjectURL(url);
   }, [asset, path, picture]);
 
+  useEffect(() => {
+    if (!audio && !video) {
+      setMediaUrl(null);
+      return;
+    }
+    const { mime } = classifyAsset(path);
+    const url = URL.createObjectURL(new Blob([Uint8Array.from(asset.data)], { type: mime }));
+    setMediaUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [asset, path, audio, video]);
+
   // A text file's text, as far as it is shown.
   const text = useMemo(
-    () => (picture || classifyAsset(path).binary ? null : new TextDecoder().decode(Uint8Array.from(asset.data.slice(0, TEXT_SHOWN_BYTES)))),
-    [asset, path, picture]
+    () => (picture || audio || video || classifyAsset(path).binary ? null : new TextDecoder().decode(Uint8Array.from(asset.data.slice(0, TEXT_SHOWN_BYTES)))),
+    [asset, path, picture, audio, video]
   );
+  const canEditText = text !== null && asset.data.byteLength <= TEXT_SHOWN_BYTES;
 
   // Another file in its place, under the same path. What is refused is said
   // here, where it was asked; what was done is said as a save is.
@@ -104,13 +126,23 @@ function OpenAsset({ id, asset, path }: { id: string; asset: AssetFile; path: st
   const facts = [assetKindWords(path), sizeWords(asset.data.byteLength), pixels].filter((fact) => fact !== null);
 
   return (
-    <div className="bl-asset" data-asset-view={picture ? 'picture' : text !== null ? 'text' : 'file'}>
+    <div className="bl-asset" data-asset-view={picture ? 'picture' : audio ? 'audio' : video ? 'video' : text !== null ? 'text' : 'file'}>
       <div className="bl-asset-head">
         <h2 className="bl-asset-name">{path}</h2>
         <span className="bl-asset-facts" data-asset-facts="">
           {facts.join(' · ')}
         </span>
         <div className="bl-asset-actions">
+          {canEditText && (
+            <button
+              type="button"
+              className="bl-btn bl-btn-sm"
+              data-action="edit-text-asset"
+              onClick={() => setEditingText((v) => !v)}
+            >
+              {editingText ? 'View text' : 'Edit text'}
+            </button>
+          )}
           <button
             type="button"
             className="bl-btn bl-btn-sm"
@@ -182,7 +214,31 @@ function OpenAsset({ id, asset, path }: { id: string; asset: AssetFile; path: st
           This picture could not be drawn. The file may be damaged, or not the kind its name says. Replace it with one that opens on your computer.
         </div>
       )}
-      {text !== null && (
+      {audio && mediaUrl && (
+        <div className="bl-asset-stage" style={{ padding: 24 }}>
+          <audio controls preload="metadata" src={mediaUrl} style={{ width: 'min(100%, 420px)' }}>
+            Your browser cannot play this audio format inline.
+          </audio>
+        </div>
+      )}
+      {video && mediaUrl && (
+        <div className="bl-asset-stage" style={{ padding: 24 }}>
+          <video controls preload="metadata" src={mediaUrl} style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: 8, background: '#000' }}>
+            Your browser cannot play this video format inline.
+          </video>
+        </div>
+      )}
+      {text !== null && editingText && (
+        <div style={{ flex: 1, minHeight: 280, border: '1px solid var(--line-soft)', borderRadius: 8, overflow: 'hidden' }}>
+          <CodeEditor
+            value={text}
+            onChange={(next) => useFilesStore.getState().replaceAssetFile(id, strToU8(next))}
+            language={codeLanguageFor(path)}
+            height="100%"
+          />
+        </div>
+      )}
+      {text !== null && !editingText && (
         <>
           <pre className="bl-asset-text" tabIndex={0} aria-label={`The text of ${path}`}>
             {text}
@@ -192,7 +248,7 @@ function OpenAsset({ id, asset, path }: { id: string; asset: AssetFile; path: st
           )}
         </>
       )}
-      {!picture && text === null && (
+      {!picture && !audio && !video && text === null && (
         <div className="bl-asset-note" data-asset-note="">
           Files of this kind are not shown here. Pictures (PNG, JPEG, GIF, WebP, SVG and BMP) and text files are. The app carries it as it is.
         </div>

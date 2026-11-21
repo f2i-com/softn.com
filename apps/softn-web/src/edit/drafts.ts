@@ -291,6 +291,15 @@ export async function dropDraft(origin: string): Promise<void> {
   }
 }
 
+/** Put a previously dropped draft back into IndexedDB (used by Undo after app removal). */
+export async function restoreDraft(draft: EditDraft): Promise<void> {
+  try {
+    await (await drafts()).put('drafts', draft);
+  } catch {
+    // Ignore if draft store is unavailable.
+  }
+}
+
 /** `files` with a draft's working version laid over them. */
 export function withDraft(files: ReadonlyMap<string, string>, draft: Pick<EditDraft, 'files' | 'removed'>): Map<string, string> {
   const laid = new Map(files);

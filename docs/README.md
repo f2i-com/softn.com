@@ -4,7 +4,7 @@ Two kinds of writing live here, and they are kept apart on purpose.
 
 | Path | What it is | Who it is for |
 | --- | --- | --- |
-| `content/softn-docs.json` | **The guides softn.com publishes at `/docs/`**: thirty-one pages, from "What is SoftN?" to hosting, authored in one structured JSON file. The generator below turns it into static HTML. | People using SoftN |
+| `content/softn-docs.json` | **The guides softn.com publishes at `/docs/`**: thirty-five pages, from "What is SoftN?" and full-stack Web Containers to hosting, authored in one structured JSON file. The generator below turns it into static HTML. | People using SoftN |
 | `engineering/` | Design notes, hosting recipes and audit responses for people working on this repository. Plain Markdown, linked from the root README. | Contributors |
 | `rfcs/` | Proposals not yet implemented. | Contributors |
 | `readme-assets/` | The screenshots the root README shows. | — |

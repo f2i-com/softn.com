@@ -38,6 +38,13 @@ export interface SingleConfig {
    */
   host?: string;
   /**
+   * Optional same-origin URL of a remote multi-user backend host (e.g. `softn-server`
+   * running the container's backend inside ZIPP `safe-sandbox`). When set on a v2 Web
+   * Container deployment, `/api/*` and WebSocket traffic routes to this server instead
+   * of booting an in-browser backend worker.
+   */
+  backendUrl?: string;
+  /**
    * `app` (the default) pins the application to the viewport and lets it
    * scroll inside -- right for an app that lays out its own screen. `page`
    * lets it grow with its content and the document scroll instead -- right
@@ -89,6 +96,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     'permissionMode',
     'directory',
     'host',
+    'backendUrl',
     'layout',
   ];
   if (
@@ -127,6 +135,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     permissionMode: (c.permissionMode as SingleConfig['permissionMode']) ?? 'prompt',
     directory: parseDirectory(c.directory, base),
     host: c.host === undefined ? undefined : localUrl(c.host, base),
+    backendUrl: c.backendUrl === undefined ? undefined : localUrl(c.backendUrl, base),
     layout: (c.layout as SingleConfig['layout']) ?? 'app',
   };
 }

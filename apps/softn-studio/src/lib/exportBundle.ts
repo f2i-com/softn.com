@@ -208,7 +208,10 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
     (p) =>
       !p.startsWith('server/') &&
       (isV2Container
-        ? !listedAssets.has(p) && !/^assets\//i.test(p) && /\.(?:logic|m?js|tsx?|mts|jsx|py)$/i.test(p)
+        ? !listedAssets.has(p) &&
+          !/^assets\//i.test(p) &&
+          !/(?:^|\/)(?:vendor|node_modules)\//i.test(p) &&
+          /\.(?:logic|m?js|tsx?|mts|jsx|py)$/i.test(p)
         : linked.has(p) ||
           (!listedAssets.has(p) && (/\.(logic|py)$/i.test(p) || (/\.js$/i.test(p) && listedLogic.has(p)))))
   );

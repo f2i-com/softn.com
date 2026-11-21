@@ -34,8 +34,15 @@ export function declaresContainer(manifest: unknown): boolean {
  */
 export function manifestRunsInContainer(manifest: unknown): boolean {
   if (!declaresContainer(manifest)) return false;
-  const main = (manifest as { main?: unknown }).main;
-  return typeof main !== 'string' || main === '' || /\.html?$/i.test(main);
+  const record = manifest as { main?: unknown; backend?: unknown };
+  const main = record.main;
+  if (typeof main !== 'string' || main === '' || /\.html?$/i.test(main)) return true;
+  // Full-stack SSR containers (e.g. PHP apps with `"main": "index.php"` and `"backend": { ... }`)
+  // also run in the web container; only `.ui` entries stay on the legacy SoftN template engine.
+  if (record.backend && typeof record.backend === 'object' && !Array.isArray(record.backend)) {
+    return !/\.ui$/i.test(main);
+  }
+  return false;
 }
 
 /**

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CapabilityFilter, Category } from '../../lib/api';
+import type { CapabilityFilter, Category, HostingFilter } from '../../lib/api';
 import { navigate } from '../../lib/router';
 
 export const SORTS: Array<{ id: string; name: string }> = [
@@ -16,6 +16,13 @@ export const CAP_FILTERS: Array<{ id: CapabilityFilter; name: string; hint: stri
   { id: 'none', name: 'No capabilities', hint: 'Asks for nothing beyond the sandbox' },
   { id: 'storage', name: 'Server storage', hint: 'Keeps records on this site — scoreboards, shared notes' },
   { id: 'worker', name: 'Off-main-thread', hint: 'Runs its script in a worker' },
+];
+
+export const HOSTING_FILTERS: Array<{ id: HostingFilter; name: string; hint: string }> = [
+  { id: 'browser', name: 'Runs in browser', hint: 'Downloads the .softn file and runs completely inside your browser sandbox' },
+  { id: 'server', name: 'Hosted on SoftN', hint: 'Multi-user backend hosted on SoftN inside ZIPP safe-sandbox' },
+  { id: 'hybrid', name: 'Hosted + Local', hint: 'Runs hosted on SoftN or locally in your browser sandbox' },
+  { id: 'backend', name: 'Includes backend', hint: 'Full-stack bundle with an embedded PHP, JS/TS, Rust, or Python backend' },
 ];
 
 /**
@@ -124,6 +131,58 @@ export function CategoryChips({
   );
 }
 
+/** Subcategory pills rendered underneath the active main category when it has subcategories. */
+export function SubcategoryChips({
+  parent,
+  selected,
+  hrefFor,
+  onSelect,
+}: {
+  parent: Category;
+  selected: string;
+  hrefFor: (subSlug: string) => string;
+  onSelect?: (subSlug: string) => void;
+}): React.ReactElement | null {
+  const allSubs = parent.subcategories ?? [];
+  const shown = allSubs.filter((s) => s.apps > 0 || s.slug === selected);
+  if (shown.length === 0) return null;
+
+  const pill = (subSlug: string, label: string, extra?: string) => {
+    const active = selected === subSlug;
+    return (
+      <a
+        key={subSlug || '__all'}
+        className={`pill pill-sub ${active ? 'on' : ''} ${extra ?? ''}`}
+        href={hrefFor(subSlug)}
+        aria-current={active ? 'page' : undefined}
+        onClick={
+          onSelect
+            ? (e) => {
+                if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                onSelect(subSlug);
+              }
+            : undefined
+        }
+      >
+        {label}
+      </a>
+    );
+  };
+
+  return (
+    <div className="pills pills-sub" role="group" aria-label={`Subcategories in ${parent.name}`}>
+      <span className="pills-sub-label" aria-hidden="true">
+        {parent.emoji} {parent.name}:
+      </span>
+      {pill('', `All ${parent.name}${parent.apps ? ` · ${parent.apps}` : ''}`)}
+      {shown.map((s) =>
+        pill(s.slug, `${s.emoji ? `${s.emoji} ` : ''}${s.name}${s.apps ? ` · ${s.apps}` : ''}`, s.suggested ? 'pill-suggested' : undefined),
+      )}
+    </div>
+  );
+}
+
 /** What an app may reach, as a second row of pills. One at a time; the same pill again clears it. */
 export function CapabilityChips({ selected, onSelect }: { selected: CapabilityFilter | ''; onSelect: (id: CapabilityFilter | '') => void }): React.ReactElement {
   return (
@@ -133,6 +192,26 @@ export function CapabilityChips({ selected, onSelect }: { selected: CapabilityFi
           key={f.id}
           type="button"
           className={`pill pill-cap ${selected === f.id ? 'on' : ''}`}
+          title={f.hint}
+          aria-pressed={selected === f.id}
+          onClick={() => onSelect(selected === f.id ? '' : f.id)}
+        >
+          {f.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** How the app is hosted — browser sandbox vs SoftN ZIPP safe-sandbox server. */
+export function HostingChips({ selected, onSelect }: { selected: HostingFilter | ''; onSelect: (id: HostingFilter | '') => void }): React.ReactElement {
+  return (
+    <div className="pills pills-caps pills-hosting" role="group" aria-label="Filter by hosting mode">
+      {HOSTING_FILTERS.map((f) => (
+        <button
+          key={f.id}
+          type="button"
+          className={`pill pill-hosting ${selected === f.id ? 'on' : ''}`}
           title={f.hint}
           aria-pressed={selected === f.id}
           onClick={() => onSelect(selected === f.id ? '' : f.id)}

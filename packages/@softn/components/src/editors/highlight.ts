@@ -48,6 +48,9 @@ export type CodeLanguage =
   | 'javascript'
   | 'typescript'
   | 'python'
+  | 'php'
+  | 'rust'
+  | 'shell'
   | 'json'
   | 'html'
   | 'css'
@@ -62,6 +65,9 @@ export function languageForPath(path: string): CodeLanguage {
   if (/\.(logic|js|mjs|cjs|jsx)$/.test(lower)) return 'javascript';
   if (/\.(ts|tsx|mts|cts)$/.test(lower)) return 'typescript';
   if (/\.py$/.test(lower)) return 'python';
+  if (/\.(php|phtml)$/.test(lower)) return 'php';
+  if (/\.rs$/.test(lower)) return 'rust';
+  if (/\.(toml|ya?ml|ini|conf|cfg|env|sh|bash|zsh)$/.test(lower) || /(?:^|\/)(?:\.htaccess|dockerfile|makefile)$/.test(lower)) return 'shell';
   if (/\.(json|xdb)$/.test(lower)) return 'json';
   // A page may be called index.html: a page is HTML with expressions, blocks
   // and handlers in it, so an .html file is read as a page is.
@@ -78,6 +84,9 @@ export const LANGUAGE_LABEL: Record<CodeLanguage, string> = {
   javascript: 'JavaScript',
   typescript: 'TypeScript',
   python: 'Python',
+  php: 'PHP',
+  rust: 'Rust',
+  shell: 'Config / Shell',
   json: 'JSON',
   html: 'HTML',
   css: 'CSS',
@@ -811,6 +820,137 @@ function scanMarkdownInline(s: Scanner, end: number): void {
   }
 }
 
+// --- PHP, Rust & Config/Shell -----------------------------------------------------
+
+const PHP_KEYWORDS = new Set([
+  'abstract', 'and', 'array', 'as', 'break', 'callable', 'case', 'catch', 'class', 'clone',
+  'const', 'continue', 'declare', 'default', 'do', 'echo', 'else', 'elseif', 'empty', 'enum',
+  'extends', 'final', 'finally', 'fn', 'for', 'foreach', 'function', 'global', 'goto', 'if',
+  'implements', 'include', 'include_once', 'instanceof', 'interface', 'isset', 'list', 'match',
+  'namespace', 'new', 'or', 'print', 'private', 'protected', 'public', 'readonly', 'require',
+  'require_once', 'return', 'static', 'switch', 'throw', 'trait', 'try', 'unset', 'use',
+  'var', 'while', 'xor', 'yield',
+]);
+const PHP_LITERALS = new Set(['true', 'false', 'null', 'TRUE', 'FALSE', 'NULL']);
+
+function scanPhp(s: Scanner): void {
+  while (!s.done) {
+    const ch = s.peek();
+    if (s.startsWith('<?php') || s.startsWith('<?PHP')) { s.take('tag', 5); continue; }
+    if (s.startsWith('<?=')) { s.take('tag', 3); continue; }
+    if (s.startsWith('<?') || s.startsWith('?>')) { s.take('tag', 2); continue; }
+    if (s.startsWith('//')) { s.take('comment', lineEnd(s.src, s.pos) - s.pos); continue; }
+    if (ch === '#' && s.peek(1) !== '[') { s.take('comment', lineEnd(s.src, s.pos) - s.pos); continue; }
+    if (s.startsWith('/*')) {
+      const close = s.src.indexOf('*/', s.pos + 2);
+      s.take('comment', close < 0 ? s.src.length - s.pos : close + 2 - s.pos);
+      continue;
+    }
+    if (ch === '"' || ch === "'") { scanQuoted(s, ch); continue; }
+    if (ch === '$' && /[A-Za-z_]/.test(s.peek(1))) {
+      const id = readIdentifier(s, s.pos + 1);
+      s.take('attr', 1 + id.length);
+      continue;
+    }
+    if (/\d/.test(ch)) { s.take('number', readNumber(s)); continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      const word = readIdentifier(s);
+      const next = nextNonSpace(s.src, s.pos + word.length);
+      const kind: TokenKind = PHP_KEYWORDS.has(word)
+        ? 'keyword'
+        : PHP_LITERALS.has(word)
+          ? 'literal'
+          : next === '('
+            ? 'function'
+            : 'plain';
+      s.take(kind, word.length);
+      continue;
+    }
+    if (s.startsWith('->') || s.startsWith('=>') || s.startsWith('::')) { s.take('punct', 2); continue; }
+    if (/[{}()[\];,.]/.test(ch)) { s.take('punct', 1); continue; }
+    s.take('plain', 1);
+  }
+}
+
+const RUST_KEYWORDS = new Set([
+  'as', 'async', 'await', 'break', 'const', 'continue', 'crate', 'dyn', 'else', 'enum',
+  'extern', 'fn', 'for', 'if', 'impl', 'in', 'let', 'loop', 'match', 'mod', 'move', 'mut',
+  'pub', 'ref', 'return', 'self', 'Self', 'static', 'struct', 'super', 'trait', 'type',
+  'unsafe', 'use', 'where', 'while',
+]);
+const RUST_TYPES = new Set([
+  'bool', 'char', 'str', 'String', 'Vec', 'Option', 'Result', 'Box', 'Arc', 'Rc',
+  'HashMap', 'BTreeMap', 'HashSet', 'i8', 'i16', 'i32', 'i64', 'i128', 'isize',
+  'u8', 'u16', 'u32', 'u64', 'u128', 'usize', 'f32', 'f64', 'Some', 'None', 'Ok', 'Err',
+]);
+
+function scanRust(s: Scanner): void {
+  while (!s.done) {
+    const ch = s.peek();
+    if (s.startsWith('//')) { s.take('comment', lineEnd(s.src, s.pos) - s.pos); continue; }
+    if (s.startsWith('/*')) {
+      const close = s.src.indexOf('*/', s.pos + 2);
+      s.take('comment', close < 0 ? s.src.length - s.pos : close + 2 - s.pos);
+      continue;
+    }
+    if (ch === '#' && (s.peek(1) === '[' || (s.peek(1) === '!' && s.peek(2) === '['))) {
+      const close = s.src.indexOf(']', s.pos + 2);
+      s.take('decorator', close < 0 ? lineEnd(s.src, s.pos) - s.pos : close + 1 - s.pos);
+      continue;
+    }
+    if (ch === '"') { scanQuoted(s, '"'); continue; }
+    if (ch === 'b' && s.peek(1) === '"') { s.take('string', 1); scanQuoted(s, '"'); continue; }
+    if (/\d/.test(ch)) { s.take('number', readNumber(s)); continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      const word = readIdentifier(s);
+      const after = s.src[s.pos + word.length];
+      const next = nextNonSpace(s.src, s.pos + word.length);
+      const kind: TokenKind = RUST_KEYWORDS.has(word)
+        ? 'keyword'
+        : word === 'true' || word === 'false'
+          ? 'literal'
+          : RUST_TYPES.has(word)
+            ? 'type'
+            : after === '!' || next === '('
+              ? 'function'
+              : 'plain';
+      s.take(kind, word.length + (after === '!' ? 1 : 0));
+      continue;
+    }
+    if (s.startsWith('->') || s.startsWith('=>') || s.startsWith('::')) { s.take('punct', 2); continue; }
+    if (/[{}()[\];,.]/.test(ch)) { s.take('punct', 1); continue; }
+    s.take('plain', 1);
+  }
+}
+
+function scanShell(s: Scanner): void {
+  while (!s.done) {
+    const ch = s.peek();
+    if (ch === '#') { s.take('comment', lineEnd(s.src, s.pos) - s.pos); continue; }
+    if (ch === '"' || ch === "'") { scanQuoted(s, ch); continue; }
+    if (ch === '[' && s.atLineStart()) {
+      const close = s.src.indexOf(']', s.pos + 1);
+      if (close > s.pos && close < lineEnd(s.src, s.pos)) {
+        s.take('keyword', close + 1 - s.pos);
+        continue;
+      }
+    }
+    if (/\d/.test(ch)) { s.take('number', readNumber(s)); continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      const word = readIdentifier(s);
+      const next = nextNonSpace(s.src, s.pos + word.length);
+      const kind: TokenKind = next === '=' || next === ':'
+        ? 'attr'
+        : word === 'true' || word === 'false' || word === 'yes' || word === 'no'
+          ? 'literal'
+          : 'plain';
+      s.take(kind, word.length);
+      continue;
+    }
+    s.take('plain', 1);
+  }
+}
+
 // --- Entry points -----------------------------------------------------------------
 
 function scanInto(s: Scanner, language: CodeLanguage): void {
@@ -818,6 +958,9 @@ function scanInto(s: Scanner, language: CodeLanguage): void {
     case 'javascript': scanJs(s); break;
     case 'typescript': s.typescript = true; scanJs(s); break;
     case 'python': scanPython(s); break;
+    case 'php': scanPhp(s); break;
+    case 'rust': scanRust(s); break;
+    case 'shell': scanShell(s); break;
     case 'json': scanJson(s); break;
     case 'css': scanCss(s); break;
     case 'sql': scanSql(s); break;

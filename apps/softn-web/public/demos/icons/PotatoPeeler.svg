@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#991b1b"/>
+      <stop offset="100%" stop-color="#450a0a"/>
+    </linearGradient>
+    <linearGradient id="tuber" x1="0.2" y1="0.1" x2="0.8" y2="0.9">
+      <stop offset="0%" stop-color="#fde047"/>
+      <stop offset="55%" stop-color="#eab308"/>
+      <stop offset="100%" stop-color="#a16207"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#92400e"/>
+      <stop offset="100%" stop-color="#582808"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
+  <rect x="6" y="6" width="116" height="116" rx="21" fill="none" stroke="#facc15" stroke-width="3" stroke-opacity="0.72"/>
+  <!-- Constructivist sunbeams -->
+  <g fill="#facc15" opacity="0.14">
+    <polygon points="64,64 14,6 42,6"/>
+    <polygon points="64,64 86,6 114,6"/>
+    <polygon points="64,64 122,42 122,72"/>
+    <polygon points="64,64 6,42 6,72"/>
+  </g>
+  <!-- Red/Gold Soviet Star at top -->
+  <polygon points="64,13 68.5,24 80.5,24.5 71,31.8 74.2,43 64,36.5 53.8,43 57,31.8 47.5,24.5 59.5,24" fill="#facc15" stroke="#fef08a" stroke-width="1.2"/>
+  <!-- Half-peeled Potato -->
+  <ellipse cx="60" cy="76" rx="35" ry="25" transform="rotate(-14 60 76)" fill="url(#tuber)" stroke="#422006" stroke-width="3"/>
+  <path d="M27,82 C23,67 36,52 55,51 C52,66 54,83 62,99 C42,102 30,95 27,82 Z" fill="url(#skin)"/>
+  <!-- Potato eyes -->
+  <circle cx="40" cy="72" r="2.3" fill="#3b1806"/>
+  <circle cx="46" cy="85" r="2.0" fill="#3b1806"/>
+  <!-- Curled peel ribbon -->
+  <path d="M58,52 C68,42 84,45 82,56 C80,64 69,62 72,54" fill="none" stroke="#b45309" stroke-width="5" stroke-linecap="round"/>
+  <!-- Stamped Steel Y-Peeler -->
+  <g transform="translate(88,68) rotate(32)">
+    <rect x="-5" y="4" width="10" height="32" rx="4" fill="#dc2626" stroke="#fef08a" stroke-width="2"/>
+    <path d="M-15,-14 L-5,6 M15,-14 L5,6" stroke="#e2e8f0" stroke-width="4" stroke-linecap="round"/>
+    <rect x="-16" y="-17" width="32" height="5" rx="2" fill="#f8fafc" stroke="#475569" stroke-width="1.5"/>
+  </g>
+</svg>

@@ -29,7 +29,7 @@ const privateStaging=join(root,'.cache/private-single-php/private');
 fs.rmSync(privateStaging,{recursive:true,force:true});
 fs.mkdirSync(privateStaging,{recursive:true});
 for(const [name,bytes] of Object.entries(releasePrivateFiles(fs.readFileSync(join(dist,'private/shell.html')))))fs.writeFileSync(join(privateStaging,name),bytes);
-const {nodeDir,wasmDir,notices,websocketDir,version}=await prepareBackendInputs();
-packagePhp({runtime:staging,runnerDir:runnerDirOption(),nodeDir,wasmDir,notices,template:true,templateClient:true,websocketDir,explainer:explainerFile('private-backend',version),
+const {nodeDir,wasmDir,containerEnginesDir,notices,websocketDir,version}=await prepareBackendInputs();
+packagePhp({runtime:staging,runnerDir:runnerDirOption(),nodeDir,wasmDir,containerEnginesDir,notices,template:true,templateClient:true,websocketDir,explainer:explainerFile('private-backend',version),
   htaccess:join(app,'htaccess-backend'),privateDir:privateStaging,startHere:join(app,'PRIVATE_DEPLOYMENT.md'),serveGuide:join(root,'docs/engineering/SINGLE_APP_PRIVATE.md'),
   out:join(root,'release','softn-app-private-with-backend-linux-x64-v'+version+'.zip')});

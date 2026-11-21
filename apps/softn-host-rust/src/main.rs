@@ -2,6 +2,7 @@ mod alloc;
 mod app;
 mod bridges;
 mod bundle;
+mod container_backend;
 mod host;
 mod http;
 mod limiter;
@@ -182,6 +183,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let manifest = bundle::load_manifest(&path)?;
             println!("Name: {}", manifest.name);
             println!("Version: {}", manifest.version);
+            if let Some(backend) = &manifest.backend {
+                println!("Container backend (ZIPP safe-sandbox): {} ({})", backend.runtime, backend.entry);
+                if let Some(mode) = &backend.mode {
+                    println!("  Mode: {}", mode);
+                }
+                if let Some(routes) = &backend.routes {
+                    println!("  Routes: {}", routes.join(", "));
+                }
+            }
+            if let Some(dbs) = &manifest.databases {
+                println!("Databases: {}", dbs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", "));
+            }
             if let Some(server) = &manifest.server {
                 println!("Server entry: {}", server.entry.as_deref().unwrap_or("server/main.logic"));
                 if let Some(routes) = &server.routes {

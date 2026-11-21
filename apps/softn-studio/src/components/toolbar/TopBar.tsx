@@ -1,6 +1,6 @@
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { useHostedSaveLabel } from '@softn/editor-shared/useHostedSaveLabel';
-import React from 'react';
+import React, { useState } from 'react';
 import { Mark } from '@softn/brand';
 import { Icon } from '../common/Icon';
 import { HandoffReady } from '../common/HandoffReady';
@@ -9,6 +9,7 @@ import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
 import { ProjectNameControl } from '../common/ProjectName';
 import { useProjectActions } from '../common/ProjectActions';
+import { StudioPublishDialog } from '../common/StudioPublishDialog';
 import { AIStatusPill } from '../ai/AIStatusPill';
 import { useBuilderReturnNotice } from '../../lib/builderFlip';
 
@@ -24,6 +25,7 @@ interface TopBarProps {
 export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
   const actions = useProjectActions();
   const { projectName, hasFiles, preparing, ready } = actions;
+  const [publishOpen, setPublishOpen] = useState(false);
 
   const hosted = isHostedEditor();
   // The host's own name for saving back to it, so the two buttons agree.
@@ -87,11 +89,11 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
         </button>
         <button
           type="button"
-          onClick={actions.publish}
+          onClick={hosted ? actions.publish : () => setPublishOpen(true)}
           disabled={!actions.canPublish}
           aria-busy={preparing === 'publish'}
           className={hosted ? 'st-btn st-btn-sm st-btn-primary' : 'st-btn st-btn-sm'}
-          title={actions.describe('publish', hosted ? 'Return your changes to FormLogic' : 'Publish: stage the bundle for the directory’s publish page')}
+          title={actions.describe('publish', hosted ? 'Return your changes to FormLogic' : 'Publish directly to the SoftN directory')}
         >
           <Icon name="upload" size={15} />
           <span>{preparing === 'publish' ? 'Preparing…' : hosted ? saveLabel : 'Publish'}</span>
@@ -125,6 +127,13 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
       <div className="st-topbar-notice">
         <BuilderReturnNotice text={returned.text} failed={returned.failed} onDismiss={dismissReturned} />
       </div>
+    )}
+    {!hosted && (
+      <StudioPublishDialog
+        isOpen={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        onFallbackHandoff={actions.publish}
+      />
     )}
     </>
   );

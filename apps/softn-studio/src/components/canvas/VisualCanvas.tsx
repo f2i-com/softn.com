@@ -76,6 +76,7 @@ const StudioWebContainerPreview: React.FC<{
   const hostRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<import('@softn/container').SoftNContainerHandle | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [bootStatus, setBootStatus] = useState<string | null>(null);
 
   const vfsSource = useMemo(() => {
     const out: Record<string, string | Uint8Array> = {};
@@ -99,6 +100,7 @@ const StudioWebContainerPreview: React.FC<{
     if (!el) return;
     let cancelled = false;
     setBootError(null);
+    setBootStatus('Starting container…');
 
     void (async () => {
       try {
@@ -115,6 +117,9 @@ const StudioWebContainerPreview: React.FC<{
           permissionMode: 'deny',
           initialGrantedCapabilities: grantedRef.current as import('@softn/bundle-format/capabilities').Capability[],
           permissionsOverride: (declaredPermissions ?? undefined) as import('@softn/container').ContainerPermissions | undefined,
+          onStatus: (status) => {
+            if (!cancelled) setBootStatus(status.phase === 'ready' ? null : status.message || null);
+          },
           onConsole: (level, text) => onConsoleRef.current(level, text),
           onError: (err) => onErrorRef.current(err),
         });
@@ -123,6 +128,7 @@ const StudioWebContainerPreview: React.FC<{
           return;
         }
         handleRef.current = mounted;
+        setBootStatus(null);
         mounted.setGrantedCapabilities(grantedRef.current as import('@softn/bundle-format/capabilities').Capability[]);
         const initialPage = activePageRef.current;
         if (initialPage && initialPage !== mounted.manifest.main && /\.html?$/i.test(initialPage)) {
@@ -131,6 +137,7 @@ const StudioWebContainerPreview: React.FC<{
       } catch (err) {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
+        setBootStatus(null);
         setBootError(msg);
         onErrorRef.current(err instanceof Error ? err : new Error(msg));
       }
@@ -163,7 +170,31 @@ const StudioWebContainerPreview: React.FC<{
     );
   }
 
-  return <div ref={hostRef} style={{ width: '100%', height: '100%', flex: '1 1 auto', minHeight: 0 }} />;
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', flex: '1 1 auto', minHeight: 0 }}>
+      <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
+      {bootStatus && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'var(--studio-bg, #0f172a)',
+            opacity: 0.92,
+            color: 'var(--studio-text-dim, #94a3b8)',
+            fontSize: 13,
+            pointerEvents: 'none',
+          }}
+        >
+          {bootStatus}
+        </div>
+      )}
+    </div>
+  );
 };
 
 const APP_LOG_LINES = 12;
