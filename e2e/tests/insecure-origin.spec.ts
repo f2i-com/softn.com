@@ -17,7 +17,7 @@ import { DEMO } from '../helpers/demo';
 import { BUILDER_EXPORT_DIALOG, BUILDER_EXPORT_TITLE, openBuilderWithDemo } from '../helpers/editors';
 
 /** The example's slug in the seeded directory. */
-const SLUG = 'twenty48';
+const SLUG = 'urbanward';
 
 let browser: Browser | undefined;
 

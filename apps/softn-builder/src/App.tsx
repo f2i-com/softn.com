@@ -280,6 +280,7 @@ function App() {
   const [foldHierarchy, setFoldHierarchy] = useState(false);
   const [foldData, setFoldData] = useState(true);
   const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportInitialAction, setExportInitialAction] = useState<'publish' | null>(null);
   const [showPublishDialog, setShowPublishDialog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
@@ -977,14 +978,28 @@ function App() {
 
       <ExportDialog
         isOpen={showExportDialog}
-        onClose={() => setShowExportDialog(false)}
+        onClose={() => {
+          setShowExportDialog(false);
+          setExportInitialAction(null);
+        }}
         exportProject={exportCurrentProject}
+        initialAction={exportInitialAction}
+        onInitialActionHandled={() => setExportInitialAction(null)}
         onDirectPublish={!isHostedEditor() ? () => {
           setShowExportDialog(false);
+          setExportInitialAction(null);
           setShowPublishDialog(true);
         } : undefined}
       />
-      <BuilderPublishDialog isOpen={showPublishDialog} onClose={() => setShowPublishDialog(false)} />
+      <BuilderPublishDialog
+        isOpen={showPublishDialog}
+        onClose={() => setShowPublishDialog(false)}
+        onFallbackHandoff={() => {
+          setShowPublishDialog(false);
+          setExportInitialAction('publish');
+          setShowExportDialog(true);
+        }}
+      />
       <ShortcutsDialog isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
       <NewProjectDialog
         isOpen={showNewProjectDialog}

@@ -212,6 +212,20 @@ async function launchBrowser(browserPath, width, height) {
       const p = await connectCdp(target.webSocketDebuggerUrl);
       await p.send('Page.enable');
       await p.send('Runtime.enable');
+      // Capture closed shadow roots (used by Engine 2 Web Containers) so turnkey
+      // first-run setup wizards can be auto-completed with demo data before snapping.
+      await p.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `(() => {
+          const orig = Element.prototype.attachShadow;
+          const roots = [];
+          window.__softnThumbShadows = roots;
+          Element.prototype.attachShadow = function (init) {
+            const r = orig.call(this, init);
+            roots.push(r);
+            return r;
+          };
+        })();`,
+      });
       await p.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       return {
         wait: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -273,6 +287,7 @@ async function launchBrowser(browserPath, width, height) {
 async function waitForBundlePaint(page, timeoutMs) {
   const started = Date.now();
   let clickedAllow = false;
+  let submittedSetup = false;
   let lastBytes = null;
   let stableCount = 0;
 
@@ -290,6 +305,21 @@ async function waitForBundlePaint(page, timeoutMs) {
         return r.width > 0 && r.height > 0 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
       })() : null;
 
+      // Detect turnkey business-app first-run setup wizard inside host or closed shadow DOM.
+      let hasSetupForm = false;
+      let setupReady = false;
+      const roots = [document, ...(window.__softnThumbShadows || [])];
+      for (const r of roots) {
+        if (!r || !r.querySelector) continue;
+        const form = r.querySelector('form[data-form="setup"]');
+        if (form) {
+          hasSetupForm = true;
+          const btn = form.querySelector('button[type="submit"]');
+          if (btn && !btn.disabled) setupReady = true;
+          break;
+        }
+      }
+
       const playing = Boolean(document.querySelector('.softn-shell--playing'));
       const runnerEl = document.querySelector('.softn-runner-app');
       const runnerBox = runnerEl ? runnerEl.getBoundingClientRect() : null;
@@ -303,6 +333,8 @@ async function waitForBundlePaint(page, timeoutMs) {
       const hostError = /(could not open|failed to load|failed to fetch|no app is published|bundle is missing|failed to start)/i.test(lower);
       return {
         allowRect,
+        hasSetupForm,
+        setupReady,
         playing,
         hasRunner,
         hasCanvas,
@@ -318,6 +350,45 @@ async function waitForBundlePaint(page, timeoutMs) {
       await page.wait(700);
       continue;
     }
+    if (state?.hasSetupForm) {
+      if (state.setupReady && !submittedSetup) {
+        submittedSetup = true;
+        await page.eval(`(() => {
+          const roots = [document, ...(window.__softnThumbShadows || [])];
+          for (const r of roots) {
+            if (!r || !r.querySelector) continue;
+            const form = r.querySelector('form[data-form="setup"]');
+            if (!form) continue;
+            const owner = form.querySelector('input[name="owner_name"]');
+            if (owner && !owner.value.trim()) {
+              owner.value = 'Alex Taylor';
+              owner.dispatchEvent(new Event('input', { bubbles: true }));
+              owner.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            for (const inp of form.querySelectorAll('input[required]')) {
+              if (!inp.value.trim() && (inp.type === 'text' || inp.type === '' || inp.type === 'email')) {
+                inp.value = inp.type === 'email' ? 'alex@example.com' : 'Demo';
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }
+            const sample = form.querySelector('input[name="load_sample"]');
+            if (sample && !sample.checked) {
+              sample.checked = true;
+              sample.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            const btn = form.querySelector('button[type="submit"]');
+            if (btn && !btn.disabled) btn.click();
+            return true;
+          }
+          return false;
+        })()`);
+        lastBytes = null;
+        stableCount = 0;
+      }
+      await page.wait(500);
+      continue;
+    }
     if (state?.error && Date.now() - started > 3000) {
       return { ok: false, reason: 'App reported a load error' };
     }
@@ -327,9 +398,22 @@ async function waitForBundlePaint(page, timeoutMs) {
       !state.loading &&
       !state.error &&
       !state.allowRect &&
+      !state.hasSetupForm &&
       (state.hasCanvas || state.bodyTextLen > 80 || (state.playing && state.hasRunner));
 
     if (readyDom) {
+      // Hide transient post-setup welcome toasts so thumbnails show the live dashboard cleanly.
+      if (submittedSetup) {
+        await page.eval(`(() => {
+          for (const r of [document, ...(window.__softnThumbShadows || [])]) {
+            if (!r || !r.querySelectorAll) continue;
+            for (const t of r.querySelectorAll('.k-toast, .k-toasts, .k-toast-wrap, [role="status"]')) {
+              if (t && t.style) t.style.display = 'none';
+            }
+          }
+          return true;
+        })()`);
+      }
       // Probe rendered pixels via CDP so closed-shadow v2 containers are verified as visually painted
       // (a solid blank 1280x800 frame compresses to ~1-2.5 KB in WebP, while painted apps are > 4 KB).
       const bytes = await page.captureWebpBytes();

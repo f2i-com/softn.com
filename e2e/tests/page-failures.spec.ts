@@ -14,7 +14,7 @@ import { watchConsole } from '../helpers/console';
 import { DEMO } from '../helpers/demo';
 
 /** The seeded example, which declares nothing and draws at once. */
-const SLUG = 'twenty48';
+const SLUG = 'urbanward';
 
 /** What this file has published, to take back: the specs share one directory, and run in its listing. */
 const published: Array<{ slug: string; editKey: string }> = [];

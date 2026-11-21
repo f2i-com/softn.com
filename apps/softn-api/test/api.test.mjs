@@ -116,8 +116,8 @@ before(async () => {
     if (!fs.existsSync(target)) fs.writeFileSync(target, makeBundle(entry.name));
   }
   fs.mkdirSync(path.join(root, 'demos/thumbs'), {recursive:true});
-  const notesThumb=path.join(root,'demos/thumbs/notes.png');
-  if(!fs.existsSync(notesThumb) && !fs.existsSync(path.join(root,'demos/thumbs/notes.webp')))fs.writeFileSync(notesThumb,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8XcAAAAASUVORK5CYII=','base64'));
+  const showcaseThumb=path.join(root,'demos/thumbs/Showcase.png');
+  if(!fs.existsSync(showcaseThumb) && !fs.existsSync(path.join(root,'demos/thumbs/Showcase.webp')))fs.writeFileSync(showcaseThumb,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8XcAAAAASUVORK5CYII=','base64'));
   // A storage quota small enough to reach in a test. The server fills in the
   // rest of the configuration around it on first use.
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
@@ -187,25 +187,25 @@ test('the demos are seeded on first use, into their categories', skip, async () 
   const { json } = await api('GET', '/api/apps?perPage=48');
   assert.equal(json.ok, true);
   assert.ok(json.total >= 10, `seeded ${json.total} apps`);
-  const maze = json.apps.find((a) => a.slug === 'maze-escape-3d');
-  assert.ok(maze, 'maze-escape-3d is listed');
-  assert.equal(maze.category, 'games');
-  assert.equal(maze.author, 'SoftN');
-  assert.equal(maze.source, 'seed');
-  assert.equal(maze.urls.run, '/play/maze-escape-3d', 'an app plays on its play page');
-  assert.equal(maze.urls.play, '/play/maze-escape-3d');
-  assert.equal(maze.urls.runtime, '/web/app/maze-escape-3d', 'the full runtime is still addressable');
-  assert.equal(maze.trusted, false, 'nothing is trusted until the operator says so');
+  const potato = json.apps.find((a) => a.slug === 'potato-peeler');
+  assert.ok(potato, 'potato-peeler is listed');
+  assert.equal(potato.category, 'games');
+  assert.equal(potato.author, 'SoftN');
+  assert.equal(potato.source, 'seed');
+  assert.equal(potato.urls.run, '/play/potato-peeler', 'an app plays on its play page');
+  assert.equal(potato.urls.play, '/play/potato-peeler');
+  assert.equal(potato.urls.runtime, '/web/app/potato-peeler', 'the full runtime is still addressable');
+  assert.equal(potato.trusted, false, 'nothing is trusted until the operator says so');
   const cats = (await api('GET', '/api/categories')).json.categories;
   assert.ok(cats.find((c) => c.id === 'games' && c.apps >= 1));
   assert.ok(cats.length >= 9);
 });
 
 test('search finds by name and description, category filters, pages paginate', skip, async () => {
-  const maze = (await api('GET', '/api/apps?q=maze')).json;
-  assert.ok(maze.apps.some((a) => a.slug === 'maze-escape-3d'));
-  const cart = (await api('GET', '/api/apps?q=handheld')).json;
-  assert.ok(cart.apps.some((a) => a.slug === 'pocket'), 'description words match');
+  const potato = (await api('GET', '/api/apps?q=potato')).json;
+  assert.ok(potato.apps.some((a) => a.slug === 'potato-peeler'));
+  const cafe = (await api('GET', '/api/apps?q=espresso')).json;
+  assert.ok(cafe.apps.some((a) => a.slug === 'brewdesk-cafe-ops'), 'description words match');
   const games = (await api('GET', '/api/apps?category=games')).json;
   assert.ok(games.apps.every((a) => a.category === 'games'));
   const p1 = (await api('GET', '/api/apps?perPage=2&page=1&sort=name')).json;
@@ -218,30 +218,30 @@ test('search finds by name and description, category filters, pages paginate', s
 });
 
 test('an app has a detail, a bundle, a thumbnail and readable source', skip, async () => {
-  const { json } = await api('GET', '/api/apps/maze-escape-3d');
-  assert.equal(json.app.name, 'Maze Escape 3D');
+  const { json } = await api('GET', '/api/apps/potato-peeler');
+  assert.equal(json.app.name, 'Potato Peeler');
   assert.equal(json.app.versions.length, 1);
   assert.deepEqual(json.app.ratingBreakdown, { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 });
-  const bundle = await fetch(`${base}/api/apps/maze-escape-3d/bundle.softn`);
+  const bundle = await fetch(`${base}/api/apps/potato-peeler/bundle.softn`);
   assert.equal(bundle.status, 200);
   assert.equal(bundle.headers.get('content-type'), 'application/octet-stream');
   const bytes = new Uint8Array(await bundle.arrayBuffer());
-  const onDisk = fs.readFileSync(path.join(root, 'demos', JSON.parse(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8')).find((e) => e.id === 'maze-escape-3d').file));
+  const onDisk = fs.readFileSync(path.join(root, 'demos', JSON.parse(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8')).find((e) => e.id === 'potato-peeler').file));
   assert.equal(bytes.length, onDisk.length);
   assert.ok(Buffer.from(bytes).equals(onDisk), 'the bundle is byte for byte the file');
-  const dl = await fetch(`${base}/api/apps/maze-escape-3d/bundle.softn?download=1`);
-  assert.match(dl.headers.get('content-disposition') || '', /maze-escape-3d\.softn/);
+  const dl = await fetch(`${base}/api/apps/potato-peeler/bundle.softn?download=1`);
+  assert.match(dl.headers.get('content-disposition') || '', /potato-peeler\.softn/);
   assert.ok(Buffer.from(await dl.arrayBuffer()).equals(onDisk));
-  const thumb = await fetch(`${base}/api/apps/maze-escape-3d/thumbnail`);
+  const thumb = await fetch(`${base}/api/apps/potato-peeler/thumbnail`);
   assert.equal(thumb.status, 200);
   assert.match(thumb.headers.get('content-type') || '', /^image\//);
   assert.ok((await thumb.arrayBuffer()).byteLength > 0);
-  const src = (await api('GET', '/api/apps/maze-escape-3d/source')).json;
+  const src = (await api('GET', '/api/apps/potato-peeler/source')).json;
   assert.ok(src.files.some((f) => (f.path === 'index.html' || f.path === 'ui/main.ui') && typeof f.text === 'string' && f.text.length > 10));
   assert.ok(src.files.some((f) => f.path === 'manifest.json'));
   // The manifest name works in a URL as well as the slug.
-  const byName = (await api('GET', '/api/apps/Maze%20Escape%203D')).json;
-  assert.equal(byName.app.slug, 'maze-escape-3d');
+  const byName = (await api('GET', '/api/apps/Potato%20Peeler')).json;
+  assert.equal(byName.app.slug, 'potato-peeler');
 });
 
 let editKey = '';
@@ -694,8 +694,8 @@ test('hiding an app takes it out of the directory; the admin can purge it', skip
   assert.equal(purge.status, 204);
   assert.ok(!fs.existsSync(path.join(root, 'data/apps', child)), 'the files are gone');
   // A seeded app has no edit key; the admin key manages it.
-  assert.equal((await api('PATCH', '/api/apps/maze-escape-3d', { body: { description: 'x' }, headers: { 'X-Edit-Key': editKey } })).status, 403);
-  assert.equal((await api('PATCH', '/api/apps/maze-escape-3d', { body: { tags: ['3d', 'maze', 'seeded'] }, headers: { 'X-Admin-Key': adminKey } })).status, 200);
+  assert.equal((await api('PATCH', '/api/apps/potato-peeler', { body: { description: 'x' }, headers: { 'X-Edit-Key': editKey } })).status, 403);
+  assert.equal((await api('PATCH', '/api/apps/potato-peeler', { body: { tags: ['3d', 'arcade', 'seeded'] }, headers: { 'X-Admin-Key': adminKey } })).status, 200);
 });
 
 test('remix counts and lineage count and name only apps a visitor can open', skip, async () => {
@@ -752,13 +752,13 @@ test('remix counts and lineage count and name only apps a visitor can open', ski
 });
 
 test('the share page carries the app into its meta tags', skip, async () => {
-  const res = await fetch(`${base}/app/maze-escape-3d`, { headers: { Accept: 'text/html' } });
+  const res = await fetch(`${base}/app/potato-peeler`, { headers: { Accept: 'text/html' } });
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /<title>Maze Escape 3D — SoftN<\/title>/);
-  assert.match(html, /property="og:image" content="http:\/\/127\.0\.0\.1:\d+\/api\/apps\/maze-escape-3d\/thumbnail\?v=\d+"/);
-  assert.match(html, /property="og:url" content="http:\/\/127\.0\.0\.1:\d+\/app\/maze-escape-3d"/);
-  assert.match(html, /name="softn:app" content="maze-escape-3d"/);
+  assert.match(html, /<title>Potato Peeler — SoftN<\/title>/);
+  assert.match(html, /property="og:image" content="http:\/\/127\.0\.0\.1:\d+\/api\/apps\/potato-peeler\/thumbnail\?v=\d+"/);
+  assert.match(html, /property="og:url" content="http:\/\/127\.0\.0\.1:\d+\/app\/potato-peeler"/);
+  assert.match(html, /name="softn:app" content="potato-peeler"/);
   assert.doesNotMatch(html, /og:image:width/);
   const missing = await fetch(`${base}/app/no-such-app`);
   assert.equal(missing.status, 200);
@@ -766,30 +766,30 @@ test('the share page carries the app into its meta tags', skip, async () => {
 });
 
 test('the play page is the shell with the app written in; app.json is what makes it trusted', skip, async () => {
-  const detail = (await api('GET', '/api/apps/maze-escape-3d')).json.app;
+  const detail = (await api('GET', '/api/apps/potato-peeler')).json.app;
   const latest = detail.versions[0];
-  const res = await fetch(`${base}/play/maze-escape-3d`, { headers: { Accept: 'text/html' } });
+  const res = await fetch(`${base}/play/potato-peeler`, { headers: { Accept: 'text/html' } });
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-type'), /^text\/html/);
   assert.equal(res.headers.get('cross-origin-opener-policy'), 'same-origin', 'the play page is cross-origin isolated, for worker-mode apps');
   assert.equal(res.headers.get('cache-control'), 'no-cache', 'the page names the latest version, which a publish moves');
   const html = await res.text();
-  assert.match(html, /<title>Maze Escape 3D<\/title>/);
-  assert.match(html, /name="softn:app" content="maze-escape-3d"/);
+  assert.match(html, /<title>Potato Peeler<\/title>/);
+  assert.match(html, /name="softn:app" content="potato-peeler"/);
   assert.match(html, /<script type="module" src="\/play\/assets\/index-abc123\.js"><\/script>/, 'the shell is served as built');
   const config = JSON.parse(html.match(/<script type="application\/json" id="softn-runtime-config">(.*?)<\/script>/s)[1]);
   assert.deepEqual(config, {
     version: 1,
-    id: 'maze-escape-3d',
-    title: 'Maze Escape 3D',
-    bundle: `/api/apps/maze-escape-3d/bundle.softn?v=${latest.version}&sha256=${latest.sha256}`,
+    id: 'potato-peeler',
+    title: 'Potato Peeler',
+    bundle: `/api/apps/potato-peeler/bundle.softn?v=${latest.version}&sha256=${latest.sha256}`,
     sha256: latest.sha256,
-    loadingText: 'Loading Maze Escape 3D…',
+    loadingText: 'Loading Potato Peeler…',
     theme: 'dark',
     permissionMode: 'prompt',
     directory: detail.capabilities.includes('storage')
-      ? { runs: '/api/apps/maze-escape-3d/runs', storage: '/api/apps/maze-escape-3d/storage' }
-      : { runs: '/api/apps/maze-escape-3d/runs' },
+      ? { runs: '/api/apps/potato-peeler/runs', storage: '/api/apps/potato-peeler/storage' }
+      : { runs: '/api/apps/potato-peeler/runs' },
   });
   // The bundle the page names is the one the API serves, byte for byte.
   const bundle = await fetch(base + config.bundle);
@@ -797,7 +797,7 @@ test('the play page is the shell with the app written in; app.json is what makes
   assert.equal(bundle.headers.get('etag'), `"${config.sha256}"`);
   assert.equal(bundle.headers.get('cache-control'), 'public, max-age=86400');
   assert.ok(Buffer.from(await bundle.arrayBuffer()).equals(
-    fs.readFileSync(path.join(root, 'demos', JSON.parse(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8')).find((e) => e.id === 'maze-escape-3d').file))
+    fs.readFileSync(path.join(root, 'demos', JSON.parse(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8')).find((e) => e.id === 'potato-peeler').file))
   ), 'the play page bundle matches the installed app');
 
   // An app declaring storage gets a storage endpoint; one without gets none.
@@ -812,16 +812,16 @@ test('the play page is the shell with the app written in; app.json is what makes
   assert.equal(storedCfg.directory.storage, `/api/apps/${storedSlug}/storage`);
   await api('DELETE', `/api/apps/${storedSlug}?purge=1`, { headers: { 'X-Admin-Key': adminKey } });
 
-  const notesRes = await fetch(`${base}/play/notes`, { headers: { Accept: 'text/html' } });
-  const notesHtml = await notesRes.text();
-  const notes = (await api('GET', '/api/apps/notes')).json.app;
-  const notesConfig = JSON.parse(notesHtml.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
-  assert.equal(notes.capabilities.includes('storage'), 'storage' in notesConfig.directory);
+  const showcaseRes = await fetch(`${base}/play/showcase`, { headers: { Accept: 'text/html' } });
+  const showcaseHtml = await showcaseRes.text();
+  const showcase = (await api('GET', '/api/apps/showcase')).json.app;
+  const showcaseConfig = JSON.parse(showcaseHtml.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  assert.equal(showcase.capabilities.includes('storage'), 'storage' in showcaseConfig.directory);
 
   // The operator's word: "trusted" in the app object of the app's own
   // app.json, and only the JSON true counts. Written the way an operator
   // would, with the API stopped between edits — here, between requests.
-  const appJson = path.join(root, 'data/apps/maze-escape-3d/app.json');
+  const appJson = path.join(root, 'data/apps/potato-peeler/app.json');
   const setTrusted = (value) => {
     const doc = JSON.parse(fs.readFileSync(appJson, 'utf8'));
     if (value === undefined) delete doc.app.trusted;
@@ -837,20 +837,20 @@ test('the play page is the shell with the app written in; app.json is what makes
     [true, true],
   ]) {
     setTrusted(value);
-    const page = await (await fetch(`${base}/play/maze-escape-3d`, { headers: { Accept: 'text/html' } })).text();
+    const page = await (await fetch(`${base}/play/potato-peeler`, { headers: { Accept: 'text/html' } })).text();
     const cfg = JSON.parse(page.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
     assert.equal(cfg.permissionMode, expected ? 'preapproved' : 'prompt', `trusted ${JSON.stringify(value)} → ${cfg.permissionMode}`);
     assert.equal(cfg.sha256, latest.sha256, 'the pin a preapproved page needs is always there');
-    const card = (await api('GET', '/api/apps/maze-escape-3d')).json.app;
+    const card = (await api('GET', '/api/apps/potato-peeler')).json.app;
     assert.equal(card.trusted, expected, `the listing says the same for ${JSON.stringify(value)}`);
   }
   // The catalogue rewrites app.json on its own (a run count, a comment) and
   // must carry the setting along rather than drop it.
-  assert.equal((await api('POST', '/api/apps/maze-escape-3d/runs')).status, 204);
+  assert.equal((await api('POST', '/api/apps/potato-peeler/runs')).status, 204);
   assert.equal(JSON.parse(fs.readFileSync(appJson, 'utf8')).app.trusted, true, 'a rewrite by the API keeps the operator\'s setting');
-  assert.equal((await api('GET', '/api/apps/maze-escape-3d')).json.app.trusted, true);
+  assert.equal((await api('GET', '/api/apps/potato-peeler')).json.app.trusted, true);
   setTrusted(undefined);
-  assert.equal((await api('GET', '/api/apps/maze-escape-3d')).json.app.trusted, false, 'removing the key removes the trust');
+  assert.equal((await api('GET', '/api/apps/potato-peeler')).json.app.trusted, false, 'removing the key removes the trust');
 
   // A linked app has no page to play here: its play link goes where it plays.
   fs.mkdirSync(path.join(root, 'data/apps/linked-elsewhere'), { recursive: true });
@@ -870,7 +870,7 @@ test('the play page is the shell with the app written in; app.json is what makes
   // A name is not an address: names are not unique and are the publisher's
   // to choose, so only a slug finds an app (a remix `parent` may name one;
   // see hardening.test.mjs). A name nobody published is the same real 404.
-  const byName = await fetch(`${base}/play/WarbleWire`, { headers: { Accept: 'text/html' } });
+  const byName = await fetch(`${base}/play/BrewDesk`, { headers: { Accept: 'text/html' } });
   assert.equal(byName.status, 404);
   const missing = await fetch(`${base}/play/no-such-app`, { headers: { Accept: 'text/html' } });
   assert.equal(missing.status, 404);
@@ -883,7 +883,7 @@ test('the play page is the shell with the app written in; app.json is what makes
   assert.equal(bare.status, 302);
   assert.equal(bare.headers.get('location'), '/apps');
   // The same page as JSON-free API route, for a client that wants it by path.
-  const viaApi = await fetch(`${base}/api/page/play/maze-escape-3d`);
+  const viaApi = await fetch(`${base}/api/page/play/potato-peeler`);
   assert.equal(viaApi.status, 200);
   assert.match(await viaApi.text(), /id="softn-runtime-config"/);
 });
@@ -1304,10 +1304,10 @@ test('the offline seed writes a complete data/ from a folder of apps', skip, () 
   const cfg = JSON.parse(fs.readFileSync(path.join(out, 'config.json'), 'utf8'));
   assert.match(cfg.adminKey, /^[0-9a-f]{40}$/);
   assert.ok(!fs.existsSync(path.join(out, 'directory.sqlite')), 'no directory database');
-  assert.ok(fs.existsSync(path.join(out,'apps','notes','app.json')), 'per-app metadata');
+  assert.ok(fs.existsSync(path.join(out,'apps','showcase','app.json')), 'per-app metadata');
   assert.ok(fs.existsSync(path.join(out, '.htaccess')), 'the rules that keep data/ unserved');
-  assert.ok(fs.existsSync(path.join(out, 'apps', 'notes', 'v1.softn')), 'the bundle laid down as v1');
-  assert.ok(fs.readdirSync(path.join(out, 'apps', 'notes')).some((f) => f.startsWith('thumb.')), 'the picture attached');
+  assert.ok(fs.existsSync(path.join(out, 'apps', 'showcase', 'v1.softn')), 'the bundle laid down as v1');
+  assert.ok(fs.readdirSync(path.join(out, 'apps', 'showcase')).some((f) => f.startsWith('thumb.')), 'the picture attached');
   assert.equal(fs.readdirSync(path.join(out,'apps')).filter(slug=>fs.existsSync(path.join(out,'apps',slug,'app.json'))).length,expected);
   // A second run over the same output changes nothing: the folder is the truth.
   const again = spawnSync('php', [seedFolder, '--from', folder, '--out', out], { encoding: 'utf8' });
@@ -1465,10 +1465,10 @@ test('a data directory PHP cannot use is a 503 with JSON and CORS headers, not a
 });
 
 test('a seeded folder the catalogue skips is left alone by the seeder', skip, async () => {
-  // Notes is one of the seeded demos. With its app.json broken the catalogue
+  // Showcase is one of the seeded demos. With its app.json broken the catalogue
   // skips the folder; the seeder used to see the demo as missing, publish it
-  // again as notes-2, then retire that copy as one the index does not name.
-  const file = path.join(root, 'data/apps/notes/app.json');
+  // again as showcase-2, then retire that copy as one the index does not name.
+  const file = path.join(root, 'data/apps/showcase/app.json');
   const apps = path.join(root, 'data/apps');
   const original = fs.readFileSync(file);
   fs.writeFileSync(file, '{broken');
@@ -1477,22 +1477,22 @@ test('a seeded folder the catalogue skips is left alone by the seeder', skip, as
     const before = fs.statSync(apps).mtimeMs;
     for (let i = 0; i < 2; i++) {
       const list = (await api('GET', '/api/apps?perPage=48')).json;
-      assert.ok(!list.apps.some((a) => a.slug === 'notes'), 'the broken folder is not listed');
-      assert.ok(!list.apps.some((a) => a.slug === 'notes-2'), 'and not seeded again beside itself');
+      assert.ok(!list.apps.some((a) => a.slug === 'showcase'), 'the broken folder is not listed');
+      assert.ok(!list.apps.some((a) => a.slug === 'showcase-2'), 'and not seeded again beside itself');
     }
     assert.equal(fs.statSync(apps).mtimeMs, before, 'nothing was created or retired under data/apps');
-    assert.ok(!fs.existsSync(path.join(apps, 'notes-2')));
+    assert.ok(!fs.existsSync(path.join(apps, 'showcase-2')));
   } finally {
     fs.writeFileSync(file, original);
   }
-  assert.equal((await api('GET', '/api/apps/notes')).status, 200, 'the repaired folder is listed again');
+  assert.equal((await api('GET', '/api/apps/showcase')).status, 200, 'the repaired folder is listed again');
 });
 
 test('a seeded folder left with no bundle the catalogue can read is left alone by the seeder', skip, async () => {
   // Its app.json is fine and its bundle is not: the catalogue passes the
   // folder over without counting it skipped, and the seeder published the
-  // demo again as notes-2 and retired that copy, on every request.
-  const file = path.join(root, 'data/apps/notes/v1.softn');
+  // demo again as showcase-2 and retired that copy, on every request.
+  const file = path.join(root, 'data/apps/showcase/v1.softn');
   const apps = path.join(root, 'data/apps');
   const original = fs.readFileSync(file);
   fs.writeFileSync(file, 'PK\u0003\u0004 a bundle cut off mid-copy');
@@ -1500,13 +1500,13 @@ test('a seeded folder left with no bundle the catalogue can read is left alone b
     const before = fs.statSync(apps).mtimeMs;
     for (let i = 0; i < 2; i++) {
       const list = (await api('GET', '/api/apps?perPage=48')).json;
-      assert.ok(!list.apps.some((a) => a.slug === 'notes'), 'the folder with no readable bundle is not listed');
-      assert.ok(!list.apps.some((a) => a.slug === 'notes-2'), 'and not seeded again beside itself');
+      assert.ok(!list.apps.some((a) => a.slug === 'showcase'), 'the folder with no readable bundle is not listed');
+      assert.ok(!list.apps.some((a) => a.slug === 'showcase-2'), 'and not seeded again beside itself');
     }
     assert.equal(fs.statSync(apps).mtimeMs, before, 'nothing was created or retired under data/apps');
-    assert.ok(!fs.existsSync(path.join(apps, 'notes-2')));
+    assert.ok(!fs.existsSync(path.join(apps, 'showcase-2')));
   } finally {
     fs.writeFileSync(file, original);
   }
-  assert.equal((await api('GET', '/api/apps/notes')).status, 200, 'the repaired folder is listed again');
+  assert.equal((await api('GET', '/api/apps/showcase')).status, 200, 'the repaired folder is listed again');
 });

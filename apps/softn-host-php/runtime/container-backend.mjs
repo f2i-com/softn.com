@@ -844,8 +844,33 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
   const backend = manifest.backend;
   const runtime = String(backend.runtime).toLowerCase();
 
-  // /api/meta answers host diagnostics directly for setup.php and health checks
+  // When hosted inside FormLogic (`containerPrimaryDatabase: 'application.sqlite'`),
+  // store the container's primary SQLite database at `private/data/application.sqlite`
+  // so FormLogic's Data manager and backup/restore work natively on the app's tables.
+  const primaryDbFile =
+    config.containerPrimaryDatabase === 'application.sqlite'
+      ? join(data, 'application.sqlite')
+      : null;
+
+  // /api/meta answers host diagnostics directly for setup.php and health checks,
+  // validating the container backend entry and seeding declared SQLite databases.
   if (request.path === '/api/meta' && request.method === 'GET') {
+    const vfs = loadBundleVfs(bundle);
+    const entryKey = normalizeVfsKey(backend.entry);
+    if (!vfs.has(entryKey)) {
+      throw new Error(`Container backend entry not found: ${backend.entry}`);
+    }
+    const sqlManager = new NodeSqlManager({
+      dbDir: join(data, 'databases'),
+      databases: manifest.databases || [],
+      vfs,
+      primaryDbFile,
+    });
+    try {
+      sqlManager.preseedAll();
+    } finally {
+      sqlManager.dispose();
+    }
     return {
       isMeta: true,
       status: 200,
@@ -873,14 +898,6 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     throw new Error(`Container backend entry not found: ${backend.entry}`);
   }
 
-  // When hosted inside FormLogic (`containerPrimaryDatabase: 'application.sqlite'`),
-  // store the container's primary SQLite database at `private/data/application.sqlite`
-  // so FormLogic's Data manager and backup/restore work natively on the app's tables.
-  const primaryDbFile =
-    config.containerPrimaryDatabase === 'application.sqlite'
-      ? join(data, 'application.sqlite')
-      : null;
-
   const sqlManager = new NodeSqlManager({
     dbDir: join(data, 'databases'),
     databases: manifest.databases || [],
@@ -898,23 +915,34 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     const queryString =
       typeof request.queryString === 'string'
         ? request.queryString
-        : request.query && typeof request.query === 'object'
-          ? new URLSearchParams(Object.entries(request.query).map(([k, v]) => [k, String(v ?? '')])).toString()
-          : '';
-    const rawHeaders = request.headers && typeof request.headers === 'object' ? request.headers : {};
+        : typeof request.query === 'string'
+          ? request.query.replace(/^\?/, '')
+          : request.query && typeof request.query === 'object'
+            ? new URLSearchParams(Object.entries(request.query).map(([k, v]) => [k, String(v ?? '')])).toString()
+            : '';
+    const rawHeaders = request.headers;
     const headers = {};
-    for (const [k, v] of Object.entries(rawHeaders)) {
-      const lower = k.toLowerCase();
+    const headerEntries = Array.isArray(rawHeaders)
+      ? rawHeaders.filter(pair => Array.isArray(pair) && pair.length >= 2)
+      : rawHeaders && typeof rawHeaders === 'object'
+        ? Object.entries(rawHeaders)
+        : [];
+    for (const [k, v] of headerEntries) {
+      const lower = String(k).toLowerCase();
       // Never allow untrusted client headers to spoof host identity headers.
       if (lower.startsWith('x-formlogic-')) continue;
       if (typeof v === 'string') headers[lower] = v;
     }
     const verifiedContext = hostContext && typeof hostContext === 'object' && !Array.isArray(hostContext) ? hostContext : null;
     const hostEnv = {};
+    if (Array.isArray(manifest.databases) && manifest.databases.length > 0 && manifest.databases[0]?.file) {
+      hostEnv.SOFTN_DB_PATH = String(manifest.databases[0].file);
+    }
     if (verifiedContext) {
       const serialized = JSON.stringify(verifiedContext);
       headers['x-formlogic-context'] = serialized;
       hostEnv.FORMLOGIC_CONTEXT = serialized;
+      hostEnv.SOFTN_HOST_CONTEXT = serialized;
       if (verifiedContext.userId !== undefined && verifiedContext.userId !== null) {
         headers['x-formlogic-user-id'] = String(verifiedContext.userId);
         hostEnv.FORMLOGIC_USER_ID = String(verifiedContext.userId);
@@ -922,6 +950,10 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
       if (verifiedContext.roleId !== undefined && verifiedContext.roleId !== null) {
         headers['x-formlogic-role-id'] = String(verifiedContext.roleId);
         hostEnv.FORMLOGIC_ROLE_ID = String(verifiedContext.roleId);
+      }
+      if (verifiedContext.userRole !== undefined && verifiedContext.userRole !== null) {
+        headers['x-formlogic-user-role'] = String(verifiedContext.userRole);
+        hostEnv.FORMLOGIC_USER_ROLE = String(verifiedContext.userRole);
       }
       if (typeof verifiedContext.authenticated === 'boolean') {
         headers['x-formlogic-authenticated'] = verifiedContext.authenticated ? '1' : '0';

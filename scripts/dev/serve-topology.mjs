@@ -106,7 +106,18 @@ if (args.includes('--no-publish-limit')) {
 const env = { ...process.env, SOFTN_DATA_DIR: dataDir };
 if (process.platform !== 'win32' && !env.PHP_CLI_SERVER_WORKERS) env.PHP_CLI_SERVER_WORKERS = '8';
 
-const server = spawn('php', ['-S', `${host}:${port}`, '-t', root, path.join(root, 'api/router.php')], {
+// Mirror api/.user.ini: PHP's built-in server ignores .user.ini, and its
+// default 2M upload_max_filesize would reject larger valid .softn bundles
+// before the API's own 32 MB check ever sees them.
+const phpIniArgs = [
+  '-d', 'upload_max_filesize=64M',
+  '-d', 'post_max_size=64M',
+  '-d', 'memory_limit=256M',
+  '-d', 'display_errors=0',
+  '-d', 'log_errors=1',
+];
+
+const server = spawn('php', [...phpIniArgs, '-S', `${host}:${port}`, '-t', root, path.join(root, 'api/router.php')], {
   env,
   stdio: ['ignore', 'pipe', 'pipe'],
 });

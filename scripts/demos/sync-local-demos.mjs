@@ -196,18 +196,21 @@ function main() {
     }
 
     const id = String(item.id || baseName.toLowerCase());
-    entries.push({
+    const entry = {
       id,
       file: fileName,
       name: String(item.name || baseName),
       description: String(item.description || ''),
-      category: CATEGORY_MAP[id] || 'demos',
-      tags: TAGS_MAP[id] || '',
-      primary: typeof item.primary === 'string' ? item.primary : '#6366f1',
-      size: bytes.length,
-      source: 'local',
-      sha256: sha256(bytes),
-    });
+      category: typeof item.category === 'string' && item.category ? item.category : (CATEGORY_MAP[id] || 'demos'),
+    };
+    if (typeof item.subcategory === 'string' && item.subcategory) entry.subcategory = item.subcategory;
+    const tags = typeof item.tags === 'string' && item.tags ? item.tags : (TAGS_MAP[id] || '');
+    if (tags) entry.tags = tags;
+    entry.primary = typeof item.primary === 'string' ? item.primary : '#6366f1';
+    entry.size = bytes.length;
+    entry.source = 'local';
+    entry.sha256 = sha256(bytes);
+    entries.push(entry);
   }
 
   const indexJson = `${JSON.stringify(entries, null, 2)}\n`;

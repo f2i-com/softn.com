@@ -64,10 +64,17 @@ describe('inspectBundle', () => {
   });
 
   it('warns about what makes a listing worse without refusing', () => {
-    const r = inspectBundle(bundle({ ...good, 'manifest.json': manifest({ description: '', icon: undefined }) }));
+    const { 'assets/icon.svg': _omit, ...withoutIcon } = good;
+    const r = inspectBundle(bundle({ ...withoutIcon, 'manifest.json': manifest({ description: '', icon: undefined }) }));
     expect(r.problem).toBeNull();
     expect(warns(r)).toContainEqual(expect.stringMatching(/No description/));
     expect(warns(r)).toContainEqual(expect.stringMatching(/No icon/));
+
+    // Standard icon paths (e.g. assets/icon.svg) are auto-discovered when manifest.icon is omitted.
+    const autoIcon = inspectBundle(bundle({ ...good, 'manifest.json': manifest({ icon: undefined }) }));
+    expect(autoIcon.problem).toBeNull();
+    expect(autoIcon.iconDataUrl).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(warns(autoIcon)).not.toContainEqual(expect.stringMatching(/No icon/));
   });
 
   it('inspects files it is handed without zipping them first', () => {

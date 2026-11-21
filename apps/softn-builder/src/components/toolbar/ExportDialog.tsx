@@ -220,6 +220,10 @@ interface ExportDialogProps {
   exportProject?: () => Promise<SaveOutcome>;
   /** Publish directly inside Builder without leaving the editor. */
   onDirectPublish?: () => void;
+  /** Optional immediate action when opened (e.g. handoff to `/publish` from the direct-publish dialog). */
+  initialAction?: 'publish' | null;
+  /** Called once `initialAction` has been triggered. */
+  onInitialActionHandled?: () => void;
 }
 
 const exportWithNoFile = (): Promise<SaveOutcome> => saveProject({ as: 'export', view: 'design', existingHandle: null, hosted: isHostedEditor() });
@@ -233,7 +237,7 @@ function readAsDataUrl(file: File): Promise<string> {
   });
 }
 
-export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile, onDirectPublish }: ExportDialogProps) {
+export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile, onDirectPublish, initialAction = null, onInitialActionHandled }: ExportDialogProps) {
   const hosted = isHostedEditor();
   const {
     name,
@@ -484,6 +488,12 @@ export function ExportDialog({ isOpen, onClose, exportProject = exportWithNoFile
     },
     [name, onClose, exportProject, hosted]
   );
+
+  useEffect(() => {
+    if (!isOpen || initialAction !== 'publish') return;
+    onInitialActionHandled?.();
+    void run('publish');
+  }, [isOpen, initialAction, onInitialActionHandled, run]);
 
   if (!isOpen) return null;
 

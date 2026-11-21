@@ -49,3 +49,46 @@ echo json_encode(array_keys(Catalog::all()));
     }
   });
 }
+
+// Config::load() runs on the first request (e.g. /api/health) before any
+// seeded route, persisting defaults into config.json. On a --with-demos build,
+// that first write must preserve the auto-seed default even when an operator
+// or harness placed a partial config.json (without seedDemos) ahead of time.
+for (const [label, layout, initialConfig, expected] of [
+  ['built-with-demos, no config.json', 'built-with-demos', null, ['layout-demo']],
+  ['built-with-demos, partial config.json (limits only)', 'built-with-demos', { limits: { publish: [100000, 3600] } }, ['layout-demo']],
+  ['built-with-demos, explicit seedDemos: false', 'built-with-demos', { seedDemos: false }, []],
+  ['source, no config.json', 'source', null, []],
+]) {
+  test(`demo discovery after Config::load(): ${label}`, skip, () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-seed-layout-'));
+    try {
+      const api = path.join(fixture, layout === 'source' ? 'apps/softn-api' : 'dist/api');
+      copyDir(apiDir, api);
+      const demos = path.join(fixture, layout === 'built-with-demos' ? 'dist/demos' : 'apps/softn-web/public/demos');
+      fs.mkdirSync(demos, { recursive: true });
+      fs.writeFileSync(path.join(demos, 'Layout.softn'), makeBundle('Layout demo'));
+      fs.writeFileSync(path.join(demos, 'index.json'), JSON.stringify([{ id: 'layout-demo', name: 'Layout demo', file: 'Layout.softn' }]));
+      const data = path.join(fixture, 'data');
+      fs.mkdirSync(data);
+      if (initialConfig !== null) {
+        fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify(initialConfig));
+      }
+      const script = path.join(api, 'seed-after-config.php');
+      fs.writeFileSync(script, `<?php
+foreach (['http', 'db', 'catalog', 'bundle', 'apps', 'social', 'storage', 'seed', 'pages'] as $file) require __DIR__ . '/lib/' . $file . '.php';
+Config::get('siteName');
+Seed::ifEmpty();
+echo json_encode(array_keys(Catalog::all()));
+`);
+      const result = spawnSync('php', [script], { encoding: 'utf8', env: { ...process.env, SOFTN_DATA_DIR: data } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), expected);
+    } finally {
+      const resolved = path.resolve(fixture);
+      assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
+      assert.ok(path.basename(resolved).startsWith('softn-seed-layout-'));
+      fs.rmSync(resolved, { recursive: true, force: true });
+    }
+  });
+}

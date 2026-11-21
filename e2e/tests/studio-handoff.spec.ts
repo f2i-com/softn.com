@@ -260,6 +260,9 @@ test.describe('Studio hands a bundle to the runtime and to the publish page', ()
     const navigations = countMainFrameNavigations(page);
 
     await page.getByRole('button', { name: 'Publish', exact: true }).click();
+    const openFullPublish = page.getByRole('button', { name: /Open full \/publish page/ });
+    await expect(openFullPublish).toBeVisible({ timeout: 30_000 });
+    await openFullPublish.click();
 
     const status = page.getByRole('status').filter({ hasText: 'is ready for the publish page' });
     await expect(status).toBeVisible({ timeout: 30_000 });

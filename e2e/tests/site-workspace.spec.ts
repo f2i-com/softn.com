@@ -44,7 +44,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
     const log = watchConsole(page, testInfo);
     try {
       await page.goto('/');
-      await expect(page.getByRole('heading', { level: 1 })).toHaveText('Apps you can play, open and make your own.');
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('Full web apps — frontend and backend — sandboxed in your browser.');
       const hero = page.locator('#top');
       await expect(hero.getByRole('link', { name: /^Explore all apps/ })).toHaveAttribute('href', '/apps');
       await expect(hero.getByRole('link', { name: /^Create an app/ })).toHaveAttribute('href', '#create');
@@ -63,7 +63,7 @@ test.describe('landing workspace and the Fieldnotes teaching app', () => {
       await expect(how).toBeInViewport();
       const steps = how.locator('.how-step');
       await expect(steps).toHaveCount(4);
-      await expect(steps.locator('.how-name')).toHaveText(['Play an app', 'Open it up', 'Change it', 'Publish it']);
+      await expect(steps.locator('.how-name')).toHaveText(['Run a full app locally', 'Open it up', 'Edit frontend & backend', 'Share or host multi-user']);
       await expect(steps.first().getByRole('link', { name: 'the directory', exact: true })).toHaveAttribute('href', '/apps');
       await expect(how.locator('img')).toHaveCount(0);
 

@@ -49,6 +49,10 @@ test.describe('Builder hands a bundle to the publish page and to the runtime', (
     const { publish } = await openExportDialog(page);
 
     await publish.click();
+    const openFullPublish = page.getByRole('button', { name: /Open full \/publish page/ });
+    await expect(openFullPublish).toBeVisible({ timeout: 30_000 });
+    await openFullPublish.click();
+
     const status = page.getByRole('status').filter({ hasText: 'is ready for the publish page' });
     await expect(status).toBeVisible({ timeout: 30_000 });
     await expect(status).toContainText('Builder stays open');

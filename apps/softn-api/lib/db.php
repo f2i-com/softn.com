@@ -116,8 +116,8 @@ final class Config
                 ],
                 // Empty data/ folder by default: demos are optional and only seeded when
                 // explicitly opted in via `seedDemos: true`, `npm run install:demos`, or a
-                // `--with-demos` site build.
-                'seedDemos' => false,
+                // `--with-demos` site build that places demos/index.json beside api/.
+                'seedDemos' => is_file(dirname(__DIR__, 2) . '/demos/index.json'),
             ];
             $values = $defaults;
             if (is_file($path)) {

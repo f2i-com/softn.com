@@ -258,7 +258,7 @@ renderer.render(scene, camera);
 document.getElementById('state').textContent = 'Scene drawn';
 `;
 
-test('a 3D scene is drawn by the runtime’s own Three.js: the folder ships no second copy', async ({ page }, testInfo) => {
+test('a 3D scene is drawn using the runtime’s shared Three.js assets (host chunk and worker offloader)', async ({ page }, testInfo) => {
   const log = watchConsole(page, testInfo);
   await keepShadowRoots(page);
   const scripts: Fetched[] = [];
@@ -269,9 +269,19 @@ test('a 3D scene is drawn by the runtime’s own Three.js: the folder ships no s
   try {
     await openBundle(page, 'Orbit.softn', containerBundle({ 'index.html': ORBIT_HTML, 'scene.js': ORBIT_JS }));
     await expect.poll(() => shown(page), { timeout: 60_000 }).toContain('Scene drawn');
-    // Three.js came from the runtime's own chunk, and nothing asked the folder for one.
+    // Three.js is served from the site's shared assets (main-thread vendor-three chunk and/or
+    // container-runtime vendor/three.js for the OffscreenCanvas native ThreeWorkerHost).
     await expect
-      .poll(() => scripts.some((entry) => /^\/shared\/assets\/vendor-three-[\w-]+\.js$/.test(entry.path) && entry.status === 200), { timeout: 30_000 })
+      .poll(
+        () =>
+          scripts.some(
+            (entry) =>
+              entry.status === 200 &&
+              (/^\/shared\/assets\/vendor-three-[\w-]+\.js$/.test(entry.path) ||
+                /^\/shared\/container-runtime\/[0-9a-f]+\/vendor\/three\.js$/.test(entry.path))
+          ),
+        { timeout: 30_000 }
+      )
       .toBe(true);
     // The page's side of the scene, where this browser can draw one at all (a machine with
     // no graphics may not): the canvas is a WebGL one once the renderer has it, at the size
@@ -295,7 +305,7 @@ test('a 3D scene is drawn by the runtime’s own Three.js: the folder ships no s
         )
         .toEqual({ webgl: true, width: true, height: true });
     }
-    expect(scripts.filter((entry) => /\/vendor\/three\.js$/.test(entry.path)), JSON.stringify(scripts)).toEqual([]);
+    expect(scripts.filter((entry) => entry.status !== 200), JSON.stringify(scripts)).toEqual([]);
     expect(log.uncaught).toEqual([]);
   } finally {
     await log.attach('orbit');
