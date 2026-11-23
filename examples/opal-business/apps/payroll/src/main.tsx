@@ -119,7 +119,7 @@ function App() {
   const [showRunModal, setShowRunModal] = useState(false);
   const [runFreq, setRunFreq] = useState('Fortnightly');
   const [runStart, setRunStart] = useState('2026-11-16');
-  const [runEnd, setRunEnd] = useState('2026-11-29');
+  const [runEnd] = useState('2026-11-29');
   const [runPayDate, setRunPayDate] = useState('2026-11-30');
   const [overtimeMap, setOvertimeMap] = useState<Record<number, number>>({});
 
@@ -551,7 +551,7 @@ function App() {
               <div className="panel-head">
                 <div>
                   <h2 className="panel-title">NES Leave Requests</h2>
-                  <div className="panel-subtitle">Approving automatically deducts hours from the employee's leave balance.</div>
+                  <div className="panel-subtitle">Approving automatically deducts hours from the employee&apos;s leave balance.</div>
                 </div>
               </div>
               <div className="table-wrap">

@@ -6,6 +6,13 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.51
+
+- Upgrades the browser engines, FormLogic runtime package, vendored model stack, and Rust/WASI backend runners to **ZIPP v0.0.38** (`8cb8399f`).
+- Hardens sandbox isolation across **SoftN Container v2**, `@softn/core`, `@softn/components`, `@softn/bundle-format`, `@softn/runtime-shell`, and the Rust, PHP, Single-Private, Directory API, and FormLogic hosts (stricter CSS exfiltration filtering, SVG paint validation, prototype-pollution & `__proto__` bundle-path blocking at any depth, worker/ESM linker/WebGL/Three.js boundary hardening, `.htaccess` & container backend transport checks, and tightened embedded editor CSP when `VITE_FORMLOGIC_EDITOR=1`).
+- Adds clean URL subpage routing, sandboxed file uploads, enhanced container error diagnostics with source line numbers, and SEO/crawlable subpage support across SoftN Web Container apps and `formlogic-host`.
+- Improves hosted **AI Studio** reliability with OAIY and local models: supports nameless JSON `<tool_call>` blocks, fails cleanly instead of finishing with `"The agent stopped without a summary."` on empty zero-edit replies, and stops persisting `formlogic:*` text-protocol overrides in `localStorage` so Studio always respects the host's active AI provider and tool capabilities.
+
 ## v0.0.50
 
 - Fixes `Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.` when opening Web Container apps (such as the PHP/SQLite business apps) in a browser that previously cleared or backed up an app in `/web/`.

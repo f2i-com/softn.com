@@ -2169,6 +2169,7 @@ export async function mountSoftNContainer(
             // Always emit structured debug diagnostics to browser console with file/line/snippet.
             try {
               const title = `[SoftN Container · ${archive.manifest.name}] ${msg.phase} error${loc ? ` at ${loc}` : ''}`;
+              /* eslint-disable no-console */
               if (typeof console.groupCollapsed === 'function' && (msg.snippet || msg.stack)) {
                 console.groupCollapsed(`%c${title}`, 'color:#dc2626;font-weight:bold', msg.message);
                 if (loc) console.log('Location:', loc);
@@ -2178,6 +2179,7 @@ export async function mountSoftNContainer(
               } else {
                 console.error(formattedMessage);
               }
+              /* eslint-enable no-console */
             } catch {
               // Console unavailable
             }

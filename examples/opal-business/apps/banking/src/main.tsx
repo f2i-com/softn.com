@@ -517,7 +517,7 @@ function App() {
                   {rules.map((r) => (
                     <tr key={r.id}>
                       <td className="fw-700">{r.rule_name}</td>
-                      <td><span className="badge badge-brand">"{r.match_text}"</span></td>
+                      <td><span className="badge badge-brand">&ldquo;{r.match_text}&rdquo;</span></td>
                       <td><span className={`badge ${r.direction === 'receive' ? 'badge-success' : 'badge-neutral'}`}>{r.direction}</span></td>
                       <td className="fw-700">{r.category}</td>
                       <td><span className="badge badge-opal">{r.tax_code}</span></td>

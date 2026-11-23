@@ -239,6 +239,7 @@ window.addEventListener('message', async event => {
         try {
           if (level === 'error') console.error('[SoftN App]', safeText);
           else if (level === 'warn') console.warn('[SoftN App]', safeText);
+          // eslint-disable-next-line no-console
           else console.debug('[SoftN App]', safeText);
         } catch { /* ignore */ }
         if (!closed) {

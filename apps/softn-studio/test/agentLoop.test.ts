@@ -1451,7 +1451,7 @@ describe('the text protocol parser', () => {
   it('fails an edit run clearly instead of finishing with "The agent stopped without a summary." when the model returns empty replies', async () => {
     resetAgent(LOCAL);
     seedApp();
-    fakeProvider('text', [
+    fakeProvider('openai', [
       { text: '' },
       { text: '' },
     ]);

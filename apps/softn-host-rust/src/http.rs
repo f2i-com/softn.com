@@ -1428,6 +1428,7 @@ impl RequestPolicy {
     /// this request was addressed to (its `Host`, and a trusted proxy's
     /// `X-Forwarded-Host`): an origin naming one of them is the host's own
     /// page. The guard has already held `Host` to [`Self::host_allowed`].
+    #[cfg(test)]
     fn origin_allowed(&self, origin: &str, hosts: &[&str]) -> bool {
         self.origin_allowed_for_scheme(origin, hosts, None)
     }
