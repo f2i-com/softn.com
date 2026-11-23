@@ -701,10 +701,9 @@ fn expand_apache_vars(
     headers: &HashMap<String, String>,
 ) -> String {
     let mut out = String::with_capacity(expr.len());
-    let bytes = expr.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if i + 2 < bytes.len() && bytes[i] == b'%' && bytes[i + 1] == b'{' {
+    while i < expr.len() {
+        if expr[i..].starts_with("%{") {
             if let Some(end) = expr[i + 2..].find('}') {
                 let var = &expr[i + 2..i + 2 + end];
                 let up = var.to_ascii_uppercase();
@@ -727,8 +726,9 @@ fn expand_apache_vars(
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let ch = expr[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -924,8 +924,10 @@ fn evaluate_htaccess_chain(
             let rule_groups: Vec<String> = (1..caps.len())
                 .map(|idx| caps.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default())
                 .collect();
-            let expanded = expand_apache_vars(
-                &apply_backrefs(&rule.substitution, &rule_groups, &last_cond_groups),
+            // Expand Apache server variables BEFORE substituting attacker-controlled regex
+            // backreferences so a captured URL segment containing `%{HTTP:Cookie}` is never evaluated.
+            let expanded_vars = expand_apache_vars(
+                &rule.substitution,
                 &rel_probe,
                 &cur_path,
                 &cur_query,
@@ -934,6 +936,7 @@ fn evaluate_htaccess_chain(
                 https,
                 headers,
             );
+            let expanded = apply_backrefs(&expanded_vars, &rule_groups, &last_cond_groups);
             let (sub_path, sub_query) = match expanded.split_once('?') {
                 Some((p, q)) => (p, Some(q)),
                 None => (expanded.as_str(), None),
@@ -1114,21 +1117,21 @@ impl SqlStorageConfig {
         let pragmas = if path.is_some() {
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY; PRAGMA max_page_count=131072;"
         } else {
-            "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY;"
+            "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY; PRAGMA max_page_count=131072;"
         };
         conn.execute_batch(pragmas)
             .map_err(|e| format!("Cannot configure SQLite pragmas: {e}"))?;
-        conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_SQL_RESULT_BYTES as i32);
-        conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 512 * 1024);
-        conn.set_limit(Limit::SQLITE_LIMIT_COLUMN, 256);
-        conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
-        conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 999);
-        conn.set_limit(Limit::SQLITE_LIMIT_EXPR_DEPTH, 128);
-        conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 250_000);
-        conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0);
-        conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_SQL_RESULT_BYTES as i32);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 512 * 1024);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_COLUMN, 256);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 999);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_EXPR_DEPTH, 128);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 250_000);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0);
+        let _ = conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT);
         // Install SQLite semantic authorizer blocking host-filesystem ATTACH/DETACH,
-        // extension loading, virtual tables, host-reserved `_*` tables, and unsafe PRAGMAs.
+        // extension loading, virtual tables, host-reserved `_*` objects, and unsafe PRAGMAs.
         conn.authorizer(Some(|ctx: AuthContext<'_>| {
             if let Some(db_name) = ctx.database_name {
                 if db_name != "main" && db_name != "temp" {
@@ -1159,6 +1162,30 @@ impl SqlStorageConfig {
                 {
                     Authorization::Deny
                 }
+                AuthAction::CreateTrigger { trigger_name, table_name }
+                | AuthAction::DropTrigger { trigger_name, table_name }
+                | AuthAction::CreateTempTrigger { trigger_name, table_name }
+                | AuthAction::DropTempTrigger { trigger_name, table_name }
+                    if trigger_name.starts_with('_') || table_name.starts_with('_') =>
+                {
+                    Authorization::Deny
+                }
+                AuthAction::CreateView { view_name }
+                | AuthAction::DropView { view_name }
+                | AuthAction::CreateTempView { view_name }
+                | AuthAction::DropTempView { view_name }
+                    if view_name.starts_with('_') =>
+                {
+                    Authorization::Deny
+                }
+                AuthAction::CreateIndex { index_name, table_name }
+                | AuthAction::DropIndex { index_name, table_name }
+                | AuthAction::CreateTempIndex { index_name, table_name }
+                | AuthAction::DropTempIndex { index_name, table_name }
+                    if index_name.starts_with('_') || table_name.starts_with('_') =>
+                {
+                    Authorization::Deny
+                }
                 AuthAction::Pragma { pragma_name, pragma_value } => {
                     let lower = pragma_name.to_ascii_lowercase();
                     let allowed_read = matches!(
@@ -1186,7 +1213,7 @@ impl SqlStorageConfig {
                     if pragma_value.is_some()
                         && !matches!(
                             lower.as_str(),
-                            "foreign_keys" | "busy_timeout" | "user_version" | "application_id"
+                            "foreign_keys" | "user_version" | "application_id"
                         )
                     {
                         return Authorization::Deny;
@@ -1501,7 +1528,7 @@ impl RequestSqlBridge {
                         match SqlStorageConfig::open_configured_connection(path.as_deref()) {
                             Ok(mut conn) => {
                                 let abort = self.abort.clone();
-                                conn.progress_handler(
+                                let _ = conn.progress_handler(
                                     1000,
                                     Some(move || abort.load(Ordering::Relaxed)),
                                 );
@@ -1654,7 +1681,53 @@ impl RequestSqlBridge {
         }
     }
 
+    fn targets_reserved_rename(sql: &str) -> bool {
+        // Strip SQL comments so `ALTER TABLE x RENAME /*c*/ TO "_host"` cannot evade detection.
+        let mut stripped = String::with_capacity(sql.len());
+        let bytes = sql.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                stripped.push(' ');
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+                stripped.push(' ');
+            } else {
+                let ch = sql[i..].chars().next().unwrap();
+                stripped.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+        let lower = stripped.to_ascii_lowercase();
+        let mut pos = 0;
+        while let Some(rel) = lower[pos..].find("rename") {
+            let after_rename = &lower[pos + rel + 6..];
+            let trimmed = after_rename.trim_start();
+            if let Some(after_to) = trimmed.strip_prefix("to") {
+                if after_to.starts_with(|c: char| c.is_ascii_whitespace() || matches!(c, '"' | '\'' | '`' | '[')) {
+                    let target = after_to.trim_start().trim_start_matches(['"', '\'', '`', '[']);
+                    if target.starts_with('_') {
+                        return true;
+                    }
+                }
+            }
+            pos += rel + 6;
+        }
+        false
+    }
+
     fn run_execute(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
+        if Self::targets_reserved_rename(sql) {
+            return Err("Renaming a table to a host-reserved underscore-prefixed name is not allowed".into());
+        }
         let no_params = params_raw.is_empty() || params_raw == "[]" || params_raw == "{}" || params_raw == "null";
         if no_params {
             // Check if multi-statement batch (e.g. PHP PDO::exec running DDL migrations)
@@ -1676,6 +1749,9 @@ impl RequestSqlBridge {
     }
 
     fn run_query(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
+        if Self::targets_reserved_rename(sql) {
+            return Err("Renaming a table to a host-reserved underscore-prefixed name is not allowed".into());
+        }
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let columns: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         Self::bind_params(&mut stmt, params_raw)?;
@@ -1763,7 +1839,31 @@ fn load_bundle_vfs(bundle_path: &Path) -> Result<HashMap<String, Vec<u8>>, Strin
     Ok(vfs)
 }
 
-fn load_php_overlay(path: &Path) -> PhpVfsOverlay {
+fn is_protected_php_overlay_path(key: &str, backend_entry: &str) -> bool {
+    let norm = normalize_vfs_key(key);
+    if norm.is_empty() || norm.contains('\0') {
+        return true;
+    }
+    let lower = norm.to_ascii_lowercase();
+    let base = lower.rsplit('/').next().unwrap_or("");
+    if lower.ends_with(".php")
+        || lower.ends_with(".phtml")
+        || lower.ends_with(".inc")
+        || lower.ends_with(".phar")
+        || base == ".htaccess"
+        || base == ".htpasswd"
+        || base == ".env"
+        || base.starts_with(".env.")
+        || base == "manifest.json"
+        || base == "permission.json"
+    {
+        return true;
+    }
+    let entry_lower = normalize_vfs_key(backend_entry).to_ascii_lowercase();
+    !entry_lower.is_empty() && lower == entry_lower
+}
+
+fn load_php_overlay(path: &Path, backend_entry: &str) -> PhpVfsOverlay {
     if reject_symlink(path).is_err() {
         return PhpVfsOverlay::default();
     }
@@ -1776,11 +1876,15 @@ fn load_php_overlay(path: &Path) -> PhpVfsOverlay {
     let mut ov = PhpVfsOverlay::default();
     if let Some(writes) = val.get("writes").and_then(|v| v.as_object()) {
         for (k, v) in writes {
+            let norm = normalize_vfs_key(k);
+            if is_protected_php_overlay_path(&norm, backend_entry) {
+                continue;
+            }
             if let Some(b64) = v.as_str() {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
                     if ov.total_bytes.saturating_add(bytes.len()) <= MAX_OVERLAY_BYTES {
                         ov.total_bytes += bytes.len();
-                        ov.writes.insert(normalize_vfs_key(k), bytes);
+                        ov.writes.insert(norm, bytes);
                     }
                 }
             }
@@ -1789,7 +1893,10 @@ fn load_php_overlay(path: &Path) -> PhpVfsOverlay {
     if let Some(deleted) = val.get("deleted").and_then(|v| v.as_array()) {
         for item in deleted {
             if let Some(s) = item.as_str() {
-                ov.deleted.insert(normalize_vfs_key(s));
+                let norm = normalize_vfs_key(s);
+                if !is_protected_php_overlay_path(&norm, backend_entry) {
+                    ov.deleted.insert(norm);
+                }
             }
         }
     }
@@ -1803,7 +1910,9 @@ fn load_php_overlay(path: &Path) -> PhpVfsOverlay {
     ov
 }
 
-fn save_php_overlay(path: &Path, overlay: &PhpVfsOverlay) {
+fn save_php_overlay(path: &Path, overlay: &mut PhpVfsOverlay, backend_entry: &str) {
+    overlay.writes.retain(|k, _| !is_protected_php_overlay_path(k, backend_entry));
+    overlay.deleted.retain(|k| !is_protected_php_overlay_path(k, backend_entry));
     if overlay.writes.is_empty() && overlay.deleted.is_empty() && overlay.dirs.is_empty() {
         return;
     }
@@ -1975,7 +2084,11 @@ fn execute_php_request(
     let rel_lower = rel.to_ascii_lowercase();
     let is_private_dir = rel_lower.starts_with("server/")
         || rel_lower.starts_with("backend/")
-        || rel_lower.starts_with("private/");
+        || rel_lower.starts_with("private/")
+        || rel_lower.starts_with("db/")
+        || rel_lower.starts_with("database/")
+        || rel_lower.starts_with("migrations/")
+        || rel_lower.split('/').any(|seg| seg.starts_with('.'));
     let entry_key = normalize_vfs_key(&backend.entry);
     let script_key: Option<String> = if !rel.is_empty()
         && !is_private_dir
@@ -2149,7 +2262,7 @@ fn execute_php_request(
         .get("status")
         .and_then(|v| v.as_u64())
         .and_then(|n| u16::try_from(n).ok())
-        .filter(|c| (100..600).contains(c))
+        .filter(|c| (200..600).contains(c))
         .unwrap_or(200);
     let mut headers = meta
         .get("headers")
@@ -2342,7 +2455,7 @@ fn execute_script_backend_request(
         .get("status")
         .and_then(|v| v.as_u64())
         .and_then(|n| u16::try_from(n).ok())
-        .filter(|c| (100..600).contains(c))
+        .filter(|c| (200..600).contains(c))
         .unwrap_or(200);
     let headers = parsed
         .get("headers")
@@ -2529,7 +2642,7 @@ impl WarmRustWorker {
             .get("status")
             .and_then(|v| v.as_u64())
             .and_then(|n| u16::try_from(n).ok())
-            .filter(|c| (100..600).contains(c))
+            .filter(|c| (200..600).contains(c))
             .unwrap_or(200);
         let headers = parsed
             .get("headers")
@@ -2606,7 +2719,7 @@ impl ContainerBackendRuntime {
         let htaccess_arc = Arc::new(htaccess_map);
 
         let overlay_path = data_dir.join("php-overlay.json");
-        let php_overlay = Arc::new(Mutex::new(load_php_overlay(&overlay_path)));
+        let php_overlay = Arc::new(Mutex::new(load_php_overlay(&overlay_path, &entry_key)));
 
         let mode = backend
             .mode
@@ -2684,47 +2797,61 @@ impl ContainerBackendRuntime {
                         abort.store(false, Ordering::SeqCst);
                         deadline_ms.store(mono_ms() + WALL_TIME_MS, Ordering::SeqCst);
 
-                        let resp = match runtime_kind {
-                            BackendRuntimeKind::Php => {
-                                let before_sig = php_overlay
-                                    .lock()
-                                    .map(|ov| (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes))
-                                    .unwrap_or((0, 0, 0, 0));
-                                let out = execute_php_request(
+                        let dispatch_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            match runtime_kind {
+                                BackendRuntimeKind::Php => {
+                                    let before_sig = php_overlay
+                                        .lock()
+                                        .map(|ov| (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes))
+                                        .unwrap_or((0, 0, 0, 0));
+                                    let out = execute_php_request(
+                                        &job.req,
+                                        &backend_cfg,
+                                        &vfs,
+                                        &php_overlay,
+                                        &htaccess_arc,
+                                        &sql_cfg,
+                                        Arc::clone(&abort),
+                                    );
+                                    if let Ok(mut ov) = php_overlay.lock() {
+                                        let after_sig = (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes);
+                                        if after_sig != before_sig || (!job.req.method.eq_ignore_ascii_case("GET") && !job.req.method.eq_ignore_ascii_case("HEAD")) {
+                                            save_php_overlay(&overlay_path, &mut ov, &backend_cfg.entry);
+                                        }
+                                    }
+                                    out
+                                }
+                                BackendRuntimeKind::JavaScript
+                                | BackendRuntimeKind::TypeScript
+                                | BackendRuntimeKind::Python => execute_script_backend_request(
+                                    runtime_kind,
                                     &job.req,
-                                    &backend_cfg,
-                                    &vfs,
-                                    &php_overlay,
-                                    &htaccess_arc,
+                                    &entry_source,
                                     &sql_cfg,
                                     Arc::clone(&abort),
-                                );
-                                if let Ok(ov) = php_overlay.lock() {
-                                    let after_sig = (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes);
-                                    if after_sig != before_sig || (!job.req.method.eq_ignore_ascii_case("GET") && !job.req.method.eq_ignore_ascii_case("HEAD")) {
-                                        save_php_overlay(&overlay_path, &ov);
+                                ),
+                                BackendRuntimeKind::Rust => {
+                                    if let Some(w) = rust_worker.as_mut() {
+                                        w.dispatch(&job.req, Arc::clone(&abort))
+                                    } else {
+                                        ContainerHttpResponse {
+                                            status: 500,
+                                            headers: vec![("Content-Type".into(), "text/plain".into())],
+                                            body: b"Rust worker unavailable".to_vec(),
+                                        }
                                     }
                                 }
-                                out
                             }
-                            BackendRuntimeKind::JavaScript
-                            | BackendRuntimeKind::TypeScript
-                            | BackendRuntimeKind::Python => execute_script_backend_request(
-                                runtime_kind,
-                                &job.req,
-                                &entry_source,
-                                &sql_cfg,
-                                Arc::clone(&abort),
-                            ),
-                            BackendRuntimeKind::Rust => {
-                                if let Some(w) = rust_worker.as_mut() {
-                                    w.dispatch(&job.req, Arc::clone(&abort))
-                                } else {
-                                    ContainerHttpResponse {
-                                        status: 500,
-                                        headers: vec![("Content-Type".into(), "text/plain".into())],
-                                        body: b"Rust worker unavailable".to_vec(),
-                                    }
+                        }));
+
+                        let resp = match dispatch_res {
+                            Ok(r) => r,
+                            Err(_) => {
+                                tracing::error!("Container backend worker recovered from a panic during request dispatch");
+                                ContainerHttpResponse {
+                                    status: 500,
+                                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                                    body: b"Internal backend error".to_vec(),
                                 }
                             }
                         };
@@ -3232,5 +3359,53 @@ def handle_request(req):
         assert_eq!(py_json["last"], "pong-from-python");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn round2_security_htaccess_vars_sqlite_rename_and_php_overlay() {
+        // 1. Apache variable double-expansion: captured user input containing `%{HTTP:Cookie}`
+        // must NOT be expanded into the request's Cookie header.
+        let mut htmap = HashMap::new();
+        htmap.insert(
+            String::new(),
+            parse_htaccess("RewriteEngine On\nRewriteRule ^p/(.*)$ /out/$1 [L]\n", ""),
+        );
+        let mut headers = HashMap::new();
+        headers.insert("cookie".into(), "secret=topsecret".into());
+        let empty_vfs = HashMap::new();
+        match evaluate_htaccess_chain(
+            &htmap,
+            "/p/%{HTTP:Cookie}",
+            "",
+            "GET",
+            "example.com",
+            true,
+            &headers,
+            &empty_vfs,
+        ) {
+            HtaccessEval::Rewrite { pathname, .. } => {
+                assert_eq!(pathname, "/out/%{HTTP:Cookie}", "must not expand user-supplied %{{HTTP:Cookie}}");
+                assert!(!pathname.contains("topsecret"));
+            }
+            _ => panic!("expected Rewrite result"),
+        }
+
+        // 2. SQLite authorizer & guard must block ALTER TABLE ... RENAME TO _host_table.
+        assert!(RequestSqlBridge::targets_reserved_rename("ALTER TABLE items RENAME TO _host_secret"));
+        assert!(RequestSqlBridge::targets_reserved_rename("ALTER TABLE items RENAME TO \"_host_secret\""));
+        assert!(!RequestSqlBridge::targets_reserved_rename("ALTER TABLE items RENAME TO items_v2"));
+        let conn = SqlStorageConfig::open_configured_connection(None).unwrap();
+        conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)", []).unwrap();
+        // Writable busy_timeout must be denied (read-only allowed)
+        assert!(conn.execute("PRAGMA busy_timeout = 999999", []).is_err());
+        assert!(conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, i64>(0)).is_ok());
+
+        // 3. Protected PHP overlay paths must be stripped.
+        assert!(is_protected_php_overlay_path("index.php", "index.php"));
+        assert!(is_protected_php_overlay_path("sub/backdoor.phtml", "index.php"));
+        assert!(is_protected_php_overlay_path(".htaccess", "index.php"));
+        assert!(is_protected_php_overlay_path(".env.local", "index.php"));
+        assert!(is_protected_php_overlay_path("manifest.json", "index.php"));
+        assert!(!is_protected_php_overlay_path("uploads/note.txt", "index.php"));
     }
 }

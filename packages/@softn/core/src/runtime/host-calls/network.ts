@@ -240,7 +240,11 @@ export class AppNetwork {
     }
     const url = this.assetResolver ? this.assetResolver(clean) : '';
     if (!url || !isOwnFileUrl(url)) return null;
-    const resp = await fetch(url, { redirect: 'error' });
+    const isLocalBlob = /^(?:blob|data):/i.test(url);
+    const resp = await fetch(
+      url,
+      isLocalBlob ? { redirect: 'error' } : { redirect: 'error', referrerPolicy: 'no-referrer', credentials: 'omit' }
+    );
     return resp.ok ? resp.blob() : null;
   }
 

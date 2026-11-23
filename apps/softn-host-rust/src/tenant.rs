@@ -143,6 +143,7 @@ impl TenantManager {
 
         // Two bundles that claim one id: decided before either is loaded.
         let losers = contested_losers(&candidates, data_dir);
+        let candidate_names: HashSet<String> = candidates.iter().map(|(n, _)| n.clone()).collect();
         let fair_workers = fair_workers(candidates.len());
         if std::env::var("SOFTN_SYNC_TOKEN").is_ok_and(|s| !s.is_empty()) {
             tracing::warn!("SOFTN_SYNC_TOKEN is not read when serving many apps: every browser of each app holds its sync token, so one token would open every tenant's /sync. Set SOFTN_SYNC_TOKEN_<TENANT_ID>, or config.server.token in each manifest.");
@@ -180,6 +181,20 @@ impl TenantManager {
                 // such tenants would share a database.
                 if tenants.keys().any(|k: &String| tenant_key(k) == tenant_key(id)) {
                     return Some(format!("Duplicate tenant ID '{}'", id));
+                }
+                // Defense-in-depth: even if `peek_tenant_id` could not inspect the archive before
+                // extraction, never allow a rival bundle to open a tenant data directory whose
+                // recorded OWNER_FILE points to another bundle still present in `candidates`.
+                let existing_owner = std::fs::read_to_string(
+                    tenant_data_dir(data_dir, &path, id).join(OWNER_FILE)
+                ).ok();
+                if let Some(owner) = existing_owner.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                    if owner != name.as_str() && candidate_names.contains(owner) {
+                        return Some(format!(
+                            "Tenant ID '{}' belongs to bundle '{}', which is still present",
+                            id, owner
+                        ));
+                    }
                 }
                 None
             };
@@ -283,23 +298,49 @@ fn tenant_key(id: &str) -> String {
 /// `manifest.id`, else `manifest.name`, as `load_tenant` takes it.
 fn peek_tenant_id(path: &Path) -> Option<String> {
     let bytes = if path.is_dir() {
-        std::fs::read(path.join("manifest.json")).ok()?
+        let manifest_path = path.join("manifest.json");
+        let meta = std::fs::symlink_metadata(&manifest_path).ok()?;
+        if meta.file_type().is_symlink() || meta.len() > bundle::MAX_MANIFEST_BYTES {
+            return None;
+        }
+        std::fs::read(&manifest_path).ok()?
     } else {
         use std::io::Read;
         let mut archive = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
         // The entry unpacking writes as `manifest.json` (bundle.rs
         // `extract_softn_zip`, by its enclosed name, which `./manifest.json`
-        // is too), found as Windows and macOS find that file. Looked up by
-        // its exact name, `./manifest.json` was missed here and still
-        // unpacked, so a bundle could claim another tenant's id unseen.
-        let index = (0..archive.len()).find(|&i| {
-            archive.by_index_raw(i).ok().is_some_and(|entry| {
-                !entry.is_dir() && entry.enclosed_name().is_some_and(|name| bundle::entry_file_key(&name) == "manifest.json")
-            })
-        })?;
+        // is too), found as Windows and macOS find that file. Skip symlinks
+        // (matching `extract_softn_zip`) and fail closed on duplicate manifests
+        // or manifests exceeding MAX_MANIFEST_BYTES.
+        let mut matching_indices = Vec::new();
+        for i in 0..archive.len() {
+            let is_manifest = archive.by_index_raw(i).ok().is_some_and(|entry| {
+                !entry.is_dir()
+                    && !entry.is_symlink()
+                    && entry
+                        .enclosed_name()
+                        .is_some_and(|name| bundle::entry_file_key(&name) == "manifest.json")
+            });
+            if is_manifest {
+                matching_indices.push(i);
+                if matching_indices.len() > 1 {
+                    return None;
+                }
+            }
+        }
+        let &index = matching_indices.first()?;
         let entry = archive.by_index(index).ok()?;
+        if entry.is_symlink() || entry.size() > bundle::MAX_MANIFEST_BYTES {
+            return None;
+        }
         let mut bytes = Vec::new();
-        entry.take(1024 * 1024).read_to_end(&mut bytes).ok()?;
+        entry
+            .take(bundle::MAX_MANIFEST_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() as u64 > bundle::MAX_MANIFEST_BYTES {
+            return None;
+        }
         bytes
     };
     let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -800,5 +841,17 @@ mod tests {
             let manager = TenantManager::load(&root.join("bundles"), Some(&data), Some(1), false).unwrap();
             assert_eq!(manager.get("shop").unwrap().manifest.version, "a");
         }
+    }
+
+    #[test]
+    fn oversized_manifest_is_rejected_in_peek_and_load() {
+        let root = crate::test_dirs::temp_path("softn-tenants-big-manifest", "");
+        let bundle = root.join("bundles").join("huge");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let big = format!(r#"{{"id":"huge","name":"huge","version":"1","pad":"{}"}}"#, "a".repeat(1_200_000));
+        std::fs::write(bundle.join("manifest.json"), big.as_bytes()).unwrap();
+        assert!(peek_tenant_id(&bundle).is_none(), "peek_tenant_id must reject >1 MiB manifest");
+        assert!(crate::bundle::load_manifest(&bundle).is_err(), "load_manifest must reject >1 MiB manifest");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

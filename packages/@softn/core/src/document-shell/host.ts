@@ -449,7 +449,7 @@ export class DocumentShell implements DocumentShellView {
   }
 
   private elementById(id: number): Element | null {
-    if (!this.container) return null;
+    if (!this.container || typeof id !== 'number' || !Number.isSafeInteger(id) || (id <= 0 && id !== SHELL_HTML_ID)) return null;
     return this.container.querySelector(`[${SHELL_NODE_ATTRIBUTE}="${this.key}:${id}"]`);
   }
 
@@ -458,6 +458,9 @@ export class DocumentShell implements DocumentShellView {
   /** What the page's code changed, from the shell. */
   apply(ops: readonly ShellOp[] | null | undefined): void {
     if (!ops || ops.length === 0) return;
+    const isValidNodeId = (v: unknown): v is number =>
+      typeof v === 'number' && Number.isSafeInteger(v) && (v > 0 || v === SHELL_HTML_ID);
+    const MAX_PENDING_PROPS_TOTAL = 4096;
     const touched = new Set<number>();
     const navigations: string[] = [];
     const dropped: number[] = [];
@@ -465,7 +468,7 @@ export class DocumentShell implements DocumentShellView {
       switch (op[0]) {
         case 'e': {
           const [, id, rawTag, rawAttrs] = op;
-          if (!isSafeShellTag(rawTag)) break;
+          if (!isValidNodeId(id) || !isSafeShellTag(rawTag)) break;
           const tag = rawTag.toLowerCase();
           const cleanAttrs = sanitizeShellAttrs(rawAttrs);
           const existing = this.nodes.get(id);
@@ -498,6 +501,7 @@ export class DocumentShell implements DocumentShellView {
         }
         case 'x': {
           const [, id, text] = op;
+          if (!isValidNodeId(id)) break;
           const existing = this.nodes.get(id);
           if (existing && existing.kind === 'text') {
             if (existing.text !== text) {
@@ -510,12 +514,13 @@ export class DocumentShell implements DocumentShellView {
           break;
         }
         case 'm':
-          if (!this.nodes.has(op[1]) && this.nodes.size < MAX_SHELL_NODES) {
+          if (isValidNodeId(op[1]) && !this.nodes.has(op[1]) && this.nodes.size < MAX_SHELL_NODES) {
             this.nodes.set(op[1], { kind: 'comment', id: op[1], parent: 0 });
           }
           break;
         case 'a': {
           const [, id, name, value] = op;
+          if (!isValidNodeId(id)) break;
           const node = this.nodes.get(id);
           if (!node || node.kind !== 'element') break;
           if (typeof name !== 'string' || name === '__proto__' || name === 'constructor' || name === 'prototype') break;
@@ -529,6 +534,7 @@ export class DocumentShell implements DocumentShellView {
         }
         case 'c': {
           const [, id, rawChildren] = op;
+          if (!isValidNodeId(id)) break;
           const node = this.nodes.get(id);
           if (!node || node.kind !== 'element' || !Array.isArray(rawChildren)) break;
           // Compute ancestor set + depth of `id` to prevent cycles & excessive nesting.
@@ -546,7 +552,7 @@ export class DocumentShell implements DocumentShellView {
           const nextChildren: number[] = [];
           const now = new Set<number>();
           for (const child of rawChildren) {
-            if (typeof child !== 'number' || ancestors.has(child) || now.has(child)) continue;
+            if (!isValidNodeId(child) || ancestors.has(child) || now.has(child)) continue;
             if (!this.nodes.has(child)) continue;
             now.add(child);
             nextChildren.push(child);
@@ -563,6 +569,10 @@ export class DocumentShell implements DocumentShellView {
         }
         case 'p': {
           const [, id, name, value] = op;
+          if (!isValidNodeId(id) || !this.nodes.has(id)) break;
+          let totalPending = 0;
+          for (const queued of this.pendingProps.values()) totalPending += queued.length;
+          if (totalPending >= MAX_PENDING_PROPS_TOTAL) break;
           let list = this.pendingProps.get(id);
           if (!list) this.pendingProps.set(id, (list = []));
           list.push([name, value]);

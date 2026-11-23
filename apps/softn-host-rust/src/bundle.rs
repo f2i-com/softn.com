@@ -176,6 +176,8 @@ pub fn requests_per_minute(manifest: &ServerManifest) -> Option<u32> {
 /// Default request-body limit for a route that declares none (the PHP host's
 /// default is 256 KB; this host has always allowed 2 MiB).
 pub const DEFAULT_BODY_LIMIT: usize = 2 * 1024 * 1024;
+/// Maximum allowed size of a bundle's `manifest.json` (1 MiB).
+pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// The body a photo upload route may carry by default: a 4 MB image as base64
 /// plus its JSON wrapper, as on the PHP host.
 pub const PHOTO_UPLOAD_BODY_LIMIT: usize = 5_600_100;
@@ -482,10 +484,16 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
             continue;
         }
 
-        if entry.size() > MAX_FILE_BYTES {
+        let file_key = entry_file_key(&safe_name);
+        let entry_limit = if file_key == "manifest.json" {
+            MAX_MANIFEST_BYTES
+        } else {
+            MAX_FILE_BYTES
+        };
+        if entry.size() > entry_limit {
             return Err(format!("File too large in bundle: {} ({}B)", safe_name.display(), entry.size()));
         }
-        if !written.insert(entry_file_key(&safe_name)) {
+        if !written.insert(file_key) {
             return Err(format!("Bundle has two files at {}", safe_name.display()));
         }
 
@@ -498,7 +506,7 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
         // The size checked above is what the archive says about itself. What
         // is counted is what the entry inflates to, read under the same limit.
         let declared = entry.size();
-        let buf = read_bounded(&mut entry, declared, MAX_FILE_BYTES)
+        let buf = read_bounded(&mut entry, declared, entry_limit)
             .map_err(|e| format!("Failed to read {}: {}", safe_name.display(), e))?;
         total_bytes += buf.len() as u64;
         if total_bytes > MAX_TOTAL_BYTES {
@@ -557,6 +565,11 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
         return Err("Expected a directory. Use extract_softn_zip() first for .softn files.".into());
     };
 
+    let manifest_meta = fs::metadata(&manifest_path)
+        .map_err(|e| format!("Failed to inspect manifest: {}", e))?;
+    if manifest_meta.len() > MAX_MANIFEST_BYTES {
+        return Err(format!("Manifest exceeds maximum size ({} bytes)", MAX_MANIFEST_BYTES));
+    }
     let content = fs::read_to_string(&manifest_path)
         .map_err(|e| format!("Failed to read manifest: {}", e))?;
     let mut manifest: ServerManifest = serde_json::from_str(&content)

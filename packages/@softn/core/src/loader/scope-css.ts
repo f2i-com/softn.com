@@ -410,8 +410,9 @@ const NAMED = /([{;]\s*)(font-family|font|animation-name|animation)(\s*:)([^;{}]
  * the permission bar from one click, with CSS alone. Inline styles are held
  * to the same (prop-safety.ts `dropTopLayerStyle`).
  */
-const TOP_LAYER_APPEARANCE = /^\s*base\b/i;
-const TOP_LAYER_APPEARANCE_DECLARATION = /([{;]\s*)(?:-(?:webkit|moz)-)?appearance\s*:\s*base\b[^;{}]*/gi;
+const TOP_LAYER_APPEARANCE = /^\s*base\b|(?:var|attr|env|if)\s*\(/i;
+const TOP_LAYER_APPEARANCE_DECLARATION =
+  /([{;]\s*)(?:-(?:webkit|moz|ms)-)?appearance\s*:\s*(?:base\b|[^;{}]*(?:var|attr|env|if)\s*\()[^;{}]*/gi;
 
 const STYLE_KEYS: Record<string, string> = {
   fontFamily: 'font-family',
@@ -516,9 +517,13 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
       }
       if (keep && kind === 'CSSKeyframesRule') keep = (rule as CSSKeyframesRule).name.endsWith(`-${app}`);
       const style = (rule as Partial<CSSStyleRule>).style;
-      if (keep && style && TOP_LAYER_APPEARANCE.test(style.getPropertyValue('appearance'))) {
-        style.removeProperty('appearance');
-        removed = true;
+      if (keep && style) {
+        for (const prop of ['appearance', '-webkit-appearance', '-moz-appearance']) {
+          if (TOP_LAYER_APPEARANCE.test(style.getPropertyValue(prop))) {
+            style.removeProperty(prop);
+            removed = true;
+          }
+        }
       }
       if (keep && 'cssRules' in rule && kind !== 'CSSKeyframesRule') {
         walk(rule as unknown as { cssRules: CSSRuleList; deleteRule(index: number): void }, nested || kind === 'CSSStyleRule');

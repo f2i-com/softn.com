@@ -424,11 +424,38 @@ export function linkIn(path: readonly EventTarget[], drawing: Drawing = {}, draw
 
 const HTML = 'http://www.w3.org/1999/xhtml';
 /**
- * The controls a click is the click of, wherever a link holds them: the browser ticks the box in a
- * `<label>`, opens the `<details>` of a `<summary>`, and follows no link round them (where it does
- * round a `<button>`, which is not one of these).
+ * Whether an HTML element genuinely consumes a click instead of allowing an enclosing link to
+ * activate: a `<label>` only when associated with a non-disabled control, a `<summary>` only when
+ * it is the first `<summary>` child of a `<details>`, and enabled non-hidden form controls.
  */
-const CONTROLS = new Set(['label', 'input', 'select', 'textarea', 'summary']);
+function isInteractiveControl(element: Partial<Element>): boolean {
+  if (element.namespaceURI !== HTML) return false;
+  const tag = element.localName ?? '';
+  if (tag === 'label') {
+    const ctrl = (element as Partial<HTMLLabelElement>).control;
+    return ctrl != null && !(ctrl as Partial<HTMLInputElement>).disabled;
+  }
+  if (tag === 'summary') {
+    const parent = (element as Element).parentElement;
+    if (!parent || parent.namespaceURI !== HTML || parent.localName !== 'details') return false;
+    for (let child = parent.firstElementChild; child; child = child.nextElementSibling) {
+      if (child.namespaceURI === HTML && child.localName === 'summary') {
+        return child === element;
+      }
+    }
+    return false;
+  }
+  if (tag === 'input') {
+    const inp = element as Partial<HTMLInputElement>;
+    if (inp.disabled) return false;
+    const t = typeof inp.getAttribute === 'function' ? (inp.getAttribute('type') ?? '').toLowerCase() : '';
+    return t !== 'hidden';
+  }
+  if (tag === 'select' || tag === 'textarea') {
+    return !(element as Partial<HTMLSelectElement>).disabled;
+  }
+  return false;
+}
 
 /**
  * Whether the browser may follow a link from a click whose path is `path`, read as the click begins:
@@ -442,7 +469,7 @@ function mayFollow(path: readonly EventTarget[], drawing: Drawing, drawnBefore: 
   for (const target of path) {
     const element = target as Partial<Element>;
     if (typeof element.getAttribute !== 'function') continue;
-    if (element.namespaceURI === HTML && CONTROLS.has(element.localName ?? '')) return false;
+    if (isInteractiveControl(element)) return false;
     if (element.localName === 'a' || element.localName === 'area') return true;
     if (element.namespaceURI === MATHML && addressOf(element) !== null) return true;
     if (element.localName === 'use' && element.namespaceURI === SVG) {

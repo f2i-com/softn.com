@@ -63,3 +63,21 @@ test('both editors keep the policy in the build FormLogic frames', () => {
     assert.doesNotMatch(line, /VITE_FORMLOGIC_EDITOR/, `${app} leaves it out of FormLogic's build`);
   }
 });
+
+test('FormLogic-embedded editor builds tighten default-src, connect-src, img-src, font-src, media-src, and form-action', () => {
+  const prev = process.env.VITE_FORMLOGIC_EDITOR;
+  process.env.VITE_FORMLOGIC_EDITOR = '1';
+  try {
+    const out = scriptPolicyPlugin().transformIndexHtml.handler(PAGE);
+    const allowed = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(out)[1];
+    assert.ok(allowed.includes("default-src 'self'"));
+    assert.ok(allowed.includes("connect-src 'self' blob: data:"));
+    assert.ok(allowed.includes("img-src 'self' data: blob:"));
+    assert.ok(allowed.includes("font-src 'self' data:"));
+    assert.ok(allowed.includes("media-src 'self' data: blob:"));
+    assert.ok(allowed.includes("form-action 'none'"));
+  } finally {
+    if (prev === undefined) delete process.env.VITE_FORMLOGIC_EDITOR;
+    else process.env.VITE_FORMLOGIC_EDITOR = prev;
+  }
+});

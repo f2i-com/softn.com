@@ -28,15 +28,54 @@ export interface StoredCookie {
   expiresAt?: number; // epoch ms
 }
 
+const MAX_JAR_COOKIES = 256;
+const MAX_JAR_COOKIE_BYTES = 4096;
+const MAX_JAR_TOTAL_BYTES = 64 * 1024;
+
+function cookieByteLength(c: Pick<StoredCookie, 'name' | 'value' | 'path'>): number {
+  return (c.name.length + c.value.length + c.path.length) * 2;
+}
+
 /**
  * Strictly container-scoped RFC-6265 cookie jar.
  * Never touches `document.cookie` of the embedding host page!
  */
 export class VirtualCookieJar {
   private readonly cookies = new Map<string, StoredCookie>();
+  private totalBytes = 0;
 
   private key(name: string, path: string): string {
     return `${path}\0${name}`;
+  }
+
+  private removeKey(k: string): void {
+    const existing = this.cookies.get(k);
+    if (!existing) return;
+    this.totalBytes = Math.max(0, this.totalBytes - cookieByteLength(existing));
+    this.cookies.delete(k);
+  }
+
+  private putCookie(cookie: StoredCookie): boolean {
+    const size = cookieByteLength(cookie);
+    if (size > MAX_JAR_COOKIE_BYTES) return false;
+    const k = this.key(cookie.name, cookie.path);
+    const existing = this.cookies.get(k);
+    const prevSize = existing ? cookieByteLength(existing) : 0;
+    // Prune expired entries before checking caps.
+    const now = Date.now();
+    if (!existing && (this.cookies.size >= MAX_JAR_COOKIES || this.totalBytes + size > MAX_JAR_TOTAL_BYTES)) {
+      for (const [ek, ec] of this.cookies) {
+        if (ec.expiresAt !== undefined && ec.expiresAt <= now) {
+          this.removeKey(ek);
+        }
+      }
+    }
+    if (!existing && this.cookies.size >= MAX_JAR_COOKIES) return false;
+    if (this.totalBytes - prevSize + size > MAX_JAR_TOTAL_BYTES) return false;
+    if (existing) this.cookies.delete(k);
+    this.cookies.set(k, cookie);
+    this.totalBytes = this.totalBytes - prevSize + size;
+    return true;
   }
 
   /** Ingest all `Set-Cookie` headers from a backend response. Returns `true` when any cookie header was present. */
@@ -53,6 +92,7 @@ export class VirtualCookieJar {
 
   /** Parse and store a single `Set-Cookie` header value. */
   setCookieHeader(headerValue: string): void {
+    if (headerValue.length > MAX_JAR_COOKIE_BYTES * 2) return;
     const parts = headerValue.split(';').map((p) => p.trim()).filter(Boolean);
     if (parts.length === 0) return;
     const eq = parts[0].indexOf('=');
@@ -95,10 +135,10 @@ export class VirtualCookieJar {
 
     const k = this.key(name, path);
     if (expiresAt !== undefined && expiresAt <= Date.now()) {
-      this.cookies.delete(k);
+      this.removeKey(k);
       return;
     }
-    this.cookies.set(k, { name, value, path, httpOnly, secure, sameSite, expiresAt });
+    this.putCookie({ name, value, path, httpOnly, secure, sameSite, expiresAt });
   }
 
   /** Build the `Cookie` request header for `pathname` (includes `HttpOnly` cookies for backend requests). */
@@ -109,7 +149,7 @@ export class VirtualCookieJar {
 
     for (const [k, c] of this.cookies) {
       if (c.expiresAt !== undefined && c.expiresAt <= now) {
-        this.cookies.delete(k);
+        this.removeKey(k);
         continue;
       }
       if (!includeHttpOnly && c.httpOnly) continue;
@@ -139,7 +179,7 @@ export class VirtualCookieJar {
     const list: StoredCookie[] = [];
     for (const [k, c] of this.cookies) {
       if (c.expiresAt !== undefined && c.expiresAt <= now) {
-        this.cookies.delete(k);
+        this.removeKey(k);
         continue;
       }
       list.push(c);
@@ -149,6 +189,7 @@ export class VirtualCookieJar {
 
   /** Restore previously serialized cookies (skipping expired entries). */
   hydrate(json: string): void {
+    if (json.length > MAX_JAR_TOTAL_BYTES * 2) return;
     try {
       const parsed = JSON.parse(json) as unknown;
       if (!Array.isArray(parsed)) return;
@@ -159,7 +200,7 @@ export class VirtualCookieJar {
         if (typeof c.name !== 'string' || typeof c.value !== 'string') continue;
         if (typeof c.expiresAt === 'number' && c.expiresAt <= now) continue;
         const path = typeof c.path === 'string' && c.path.startsWith('/') ? c.path : '/';
-        this.cookies.set(this.key(c.name, path), {
+        this.putCookie({
           name: c.name,
           value: c.value,
           path,
@@ -176,6 +217,7 @@ export class VirtualCookieJar {
 
   clear(): void {
     this.cookies.clear();
+    this.totalBytes = 0;
   }
 }
 

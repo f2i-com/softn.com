@@ -29,12 +29,24 @@ import { createHash } from 'node:crypto';
  * CR made LF, which a checkout with Windows line endings would otherwise
  * leave in, and the browser would then refuse the script it was built with.
  */
-export function scriptPolicy(inline) {
+export function scriptPolicy(inline, options = {}) {
   const hashes = inline.map(
     (source) => `'sha256-${createHash('sha256').update(source.replace(/\r\n?/g, '\n'), 'utf8').digest('base64')}'`
   );
+  const embeddedEditor = options?.embeddedEditor === true;
   return [
+    ...(embeddedEditor ? ["default-src 'self'"] : []),
     `script-src 'self' 'wasm-unsafe-eval'${hashes.length > 0 ? ` ${hashes.join(' ')}` : ''}`,
+    ...(embeddedEditor
+      ? [
+          "style-src 'self' 'unsafe-inline'",
+          "connect-src 'self' blob: data:",
+          "img-src 'self' data: blob:",
+          "font-src 'self' data:",
+          "media-src 'self' data: blob:",
+          "form-action 'none'",
+        ]
+      : []),
     "object-src 'none'",
     "base-uri 'self'",
     "worker-src 'self' blob:",
@@ -100,7 +112,8 @@ export function scriptPolicyPlugin() {
         // Here, so that the policy below is written with it: an inline script
         // runs by its hash. Ahead of the page's other scripts, to hear of them.
         const watched = html.replace(/<head(\s[^>]*)?>/i, (head) => `${head}\n    <script>${ENTRY_WATCH}</script>`);
-        const meta = `<meta http-equiv="Content-Security-Policy" content="${scriptPolicy(inlineScripts(watched))}" />`;
+        const embeddedEditor = process.env.VITE_FORMLOGIC_EDITOR === '1';
+        const meta = `<meta http-equiv="Content-Security-Policy" content="${scriptPolicy(inlineScripts(watched), { embeddedEditor })}" />`;
         // First in the head, before any script it governs.
         return watched.replace(/<head(\s[^>]*)?>/i, (head) => `${head}\n    ${meta}`);
       },

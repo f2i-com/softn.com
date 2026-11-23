@@ -338,6 +338,9 @@ function fromSqlValue(v) {
     return Number.isSafeInteger(n) ? n : v.toString();
   }
   if (v instanceof Uint8Array) {
+    if (v.byteLength > Math.floor(MAX_SQL_RESULT_BYTES / 2)) {
+      throw new Error(`SQL blob value exceeded result byte limit (${MAX_SQL_RESULT_BYTES})`);
+    }
     return {hex: Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString('hex')};
   }
   return v;
@@ -421,6 +424,7 @@ function isMultiStatementOrControl(sql) {
 
 const MAX_SQL_RESULT_ROWS = 10_000;
 const MAX_SQL_RESULT_BYTES = 8 * 1024 * 1024;
+const CONTAINER_SQL_LIMITS = Object.freeze({...SQL_LIMITS, length: MAX_SQL_RESULT_BYTES});
 const MAX_OVERLAY_BYTES = 16 * 1024 * 1024;
 const MAX_CONTAINER_DATABASES = 8;
 const MAX_OPEN_DB_HANDLES = 32;
@@ -431,7 +435,7 @@ const SAFE_PRAGMA_NAMES = new Set([
   'busy_timeout', 'encoding', 'integrity_check', 'quick_check',
   'page_count', 'page_size', 'freelist_count',
 ]);
-const WRITABLE_SAFE_PRAGMAS = new Set(['foreign_keys', 'busy_timeout', 'user_version', 'application_id']);
+const WRITABLE_SAFE_PRAGMAS = new Set(['foreign_keys', 'user_version', 'application_id']);
 
 function isHostReservedTable(name) {
   return typeof name === 'string' && name.startsWith('_');
@@ -504,6 +508,51 @@ function isProtectedRustSourcePath(key, relEntry) {
   );
 }
 
+function isProtectedPhpOverlayPath(key, backendEntry) {
+  const norm = normalizeVfsKey(key).toLowerCase();
+  if (!norm) return true;
+  if (backendEntry && norm === normalizeVfsKey(backendEntry).toLowerCase()) return true;
+  const base = norm.includes('/') ? norm.slice(norm.lastIndexOf('/') + 1) : norm;
+  if (
+    base === '.htaccess' ||
+    base === '.htpasswd' ||
+    base === '.env' ||
+    base.startsWith('.env.') ||
+    base === 'manifest.json' ||
+    base === 'permission.json'
+  ) {
+    return true;
+  }
+  return /\.(?:php|phtml|php5|php8|inc|phar)$/i.test(base);
+}
+
+function sanitizePhpOverlayJson(rawJson, backendEntry) {
+  if (!rawJson || typeof rawJson !== 'string') return '';
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+    const writes = Object.create(null);
+    if (parsed.writes && typeof parsed.writes === 'object' && !Array.isArray(parsed.writes)) {
+      for (const [k, v] of Object.entries(parsed.writes)) {
+        if (!isProtectedPhpOverlayPath(k, backendEntry)) writes[k] = v;
+      }
+    }
+    const deleted = Array.isArray(parsed.deleted)
+      ? parsed.deleted.filter(d => typeof d === 'string' && !isProtectedPhpOverlayPath(d, backendEntry))
+      : [];
+    const dirs = Array.isArray(parsed.dirs)
+      ? parsed.dirs.filter(d => typeof d === 'string' && !isProtectedPhpOverlayPath(d, backendEntry))
+      : [];
+    return JSON.stringify({writes, deleted, dirs});
+  } catch {
+    return '';
+  }
+}
+
+function clampContainerStatus(raw) {
+  return Number.isInteger(raw) && raw >= 200 && raw <= 599 ? raw : 500;
+}
+
 function assertSafeSqlStatement(sql) {
   const stripped = String(sql ?? '')
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -513,6 +562,9 @@ function assertSafeSqlStatement(sql) {
   }
   if (/\bload_extension\s*\(/i.test(stripped) || /\bfts3_tokenizer\s*\(/i.test(stripped)) {
     throw new Error('SQLite extension loading is not permitted in sandboxed container');
+  }
+  if (/\bRENAME\s+TO\s+["'`[]?_/i.test(stripped)) {
+    throw new Error('SQLite RENAME TO host-reserved namespace is not permitted in sandboxed container');
   }
   const pragmaRe = /\bPRAGMA\s+(?:[A-Za-z0-9_]+\s*\.\s*)?([A-Za-z0-9_]+)/gi;
   let m;
@@ -589,7 +641,7 @@ class NodeSqlManager {
   }
 
   openConfigured(filePath) {
-    const db = new DatabaseSync(filePath, {allowExtension: false, limits: SQL_LIMITS});
+    const db = new DatabaseSync(filePath, {allowExtension: false, limits: CONTAINER_SQL_LIMITS});
     if (filePath !== ':memory:') {
       try { chmodSync(filePath, 0o600); } catch {}
     }
@@ -602,14 +654,36 @@ class NodeSqlManager {
     return db;
   }
 
+  countDbFiles() {
+    let count = 0;
+    try {
+      for (const entry of readdirSync(this.dbDir, {withFileTypes: true})) {
+        if (!entry.isFile()) continue;
+        if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(entry.name)) continue;
+        count++;
+      }
+    } catch {}
+    return count;
+  }
+
   isProtectedDbKey(key, filePath) {
-    if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(key)) return true;
+    const safeName = (() => { try { return safeDbFilename(key); } catch { return ''; } })();
+    if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(key) || /(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(safeName)) {
+      return true;
+    }
     const lower = key.toLowerCase();
+    const resolvedTarget = filePath ? resolve(filePath) : null;
     if (this.primaryKey && lower === this.primaryKey.toLowerCase()) return true;
-    if (this.primaryDbFile && filePath && resolve(filePath) === resolve(this.primaryDbFile)) return true;
+    if (this.primaryDbFile && resolvedTarget && resolvedTarget === resolve(this.primaryDbFile)) return true;
     for (const cfg of this.databases) {
-      const cfgKey = normalizeDbKey(cfg.file || `${cfg.name}.db`).key.toLowerCase();
-      if (cfgKey && cfgKey !== ':memory:' && lower === cfgKey) return true;
+      const cfgKey = normalizeDbKey(cfg.file || `${cfg.name}.db`).key;
+      if (!cfgKey || cfgKey === ':memory:') continue;
+      if (lower === cfgKey.toLowerCase()) return true;
+      if (resolvedTarget) {
+        try {
+          if (resolvedTarget === resolve(this.dbPathFor(cfgKey))) return true;
+        } catch {}
+      }
     }
     return false;
   }
@@ -673,15 +747,16 @@ class NodeSqlManager {
         this.handles.set(id, {key: ':memory:', db, ephemeral: true});
         return {id};
       }
-      if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(canonical)) {
+      const safeName = safeDbFilename(canonical);
+      if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(canonical) || /(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(safeName)) {
         return {error: 'cannot open SQLite sidecar file directly', code: 1, unique: false};
       }
       let shared = this.byKey.get(canonical);
       if (!shared) {
-        if (this.byKey.size >= MAX_CONTAINER_DATABASES) {
+        const filePath = this.dbPathFor(canonical);
+        if (this.byKey.size >= MAX_CONTAINER_DATABASES || (!existsSync(filePath) && this.countDbFiles() >= MAX_CONTAINER_DATABASES)) {
           return {error: `database file limit exceeded (max ${MAX_CONTAINER_DATABASES})`, code: 18, unique: false};
         }
-        const filePath = this.dbPathFor(canonical);
         shared = {key: canonical, db: this.openConfigured(filePath), ephemeral: false};
         this.byKey.set(canonical, shared);
       }
@@ -787,7 +862,10 @@ class NodeSqlManager {
       if (this.isProtectedDbKey(toNorm.key, dstPath)) {
         return {error: 'cannot overwrite primary or configured database', code: 1, unique: false};
       }
-      if (!this.byKey.has(toNorm.key) && this.byKey.size >= MAX_CONTAINER_DATABASES) {
+      if (
+        (!this.byKey.has(toNorm.key) && this.byKey.size >= MAX_CONTAINER_DATABASES) ||
+        (!existsSync(dstPath) && this.countDbFiles() >= MAX_CONTAINER_DATABASES)
+      ) {
         return {error: `database file limit exceeded (max ${MAX_CONTAINER_DATABASES})`, code: 18, unique: false};
       }
       if (srcPath === dstPath) return {bytes: existsSync(srcPath) ? lstatSync(srcPath).size : 0};
@@ -807,10 +885,18 @@ class NodeSqlManager {
   remove(rawUrl) {
     const {key, inMemory} = normalizeDbKey(rawUrl);
     if (inMemory) return {ok: true, removed: false};
-    if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(key)) return {ok: true, removed: true};
-    // Never delete the container's configured primary or declared database files.
-    if (this.primaryKey && key.toLowerCase() === this.primaryKey.toLowerCase()) {
-      return {error: 'cannot remove primary database', code: 1, unique: false};
+    let file;
+    try {
+      file = this.dbPathFor(key);
+    } catch (err) {
+      return classifySqlError(err);
+    }
+    if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(key) || /(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(safeDbFilename(key))) {
+      return {ok: true, removed: true};
+    }
+    // Never delete the container's configured primary or declared database files (by key or canonical path).
+    if (this.isProtectedDbKey(key, file)) {
+      return {error: 'cannot remove primary or configured database', code: 1, unique: false};
     }
     const existing = this.byKey.get(key);
     if (existing) {
@@ -818,10 +904,6 @@ class NodeSqlManager {
       this.byKey.delete(key);
     }
     try {
-      const file = this.dbPathFor(key);
-      if (this.primaryDbFile && resolve(file) === resolve(this.primaryDbFile)) {
-        return {error: 'cannot remove primary database', code: 1, unique: false};
-      }
       if (existsSync(file)) {
         rmSync(file, {force: true});
         return {ok: true, removed: true};
@@ -1080,15 +1162,23 @@ function checkContainerRateLimit({data, manifest, request, markLimited}) {
   }
 }
 
+function isPrivatePhpDir(rel) {
+  const lower = rel.toLowerCase();
+  return (
+    /^(?:server|backend|db|database|migrations)\//.test(lower) ||
+    /(?:^|\/)\./.test(lower)
+  );
+}
+
 function resolvePhpScript(vfs, backend, targetPath) {
   const rel = normalizeVfsKey(targetPath);
   const entry = normalizeVfsKey(backend.entry);
   if (rel && vfs.has(rel)) {
-    if (/\.(?:php|phtml)$/i.test(rel) && !rel.startsWith('server/') && !rel.startsWith('backend/')) {
+    if (/\.(?:php|phtml)$/i.test(rel) && !isPrivatePhpDir(rel)) {
       return rel;
     }
   }
-  if (rel && vfs.has(`${rel}.php`) && !rel.startsWith('server/') && !rel.startsWith('backend/')) {
+  if (rel && vfs.has(`${rel}.php`) && !isPrivatePhpDir(`${rel}.php`)) {
     return `${rel}.php`;
   }
   if (vfs.has(entry)) return entry;
@@ -1240,7 +1330,8 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
       }
       const vfsObj = vfsToZippObject(vfs);
       const overlayPath = join(data, 'php-overlay.json');
-      const initialOverlay = existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink() ? readFileSync(overlayPath, 'utf8') : '';
+      const rawInitialOverlay = existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink() ? readFileSync(overlayPath, 'utf8') : '';
+      const initialOverlay = sanitizePhpOverlayJson(rawInitialOverlay, entryKey);
 
       const contentType = headers['content-type'] || '';
       const host = String(request.host || headers['host'] || 'localhost');
@@ -1292,9 +1383,13 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         const raw = app.handleRequest(scriptToRun, sapiReqJson);
         const meta = JSON.parse(raw.metaJson || '{}');
         const outHeaders = Array.isArray(meta.headers) ? meta.headers : [['Content-Type', 'text/html; charset=UTF-8']];
-        const bodyBase64 = raw.bodyBase64 || Buffer.from(String(meta.body ?? ''), 'utf8').toString('base64');
+        const status = clampContainerStatus(meta.status);
+        const bodyBase64 =
+          method === 'HEAD' || status === 204 || status === 304
+            ? ''
+            : raw.bodyBase64 || Buffer.from(String(meta.body ?? ''), 'utf8').toString('base64');
         try {
-          const snap = app.exportOverlayJson();
+          const snap = sanitizePhpOverlayJson(app.exportOverlayJson(), entryKey);
           if (
             snap &&
             snap !== initialOverlay &&
@@ -1305,7 +1400,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
           }
         } catch {}
         return {
-          status: Number.isInteger(meta.status) ? meta.status : 200,
+          status,
           headers: outHeaders,
           bodyBase64,
         };
@@ -1328,10 +1423,11 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
           JSON.stringify({method, path, query: queryString, headers, body: bodyText, ...(verifiedContext ? {context: verifiedContext} : {})}),
         ]);
         const parsed = JSON.parse(String(rawResp || '{}'));
+        const status = clampContainerStatus(parsed.status);
         return {
-          status: Number.isInteger(parsed.status) ? parsed.status : 200,
+          status,
           headers: Array.isArray(parsed.headers) ? parsed.headers : [['Content-Type', 'application/json; charset=utf-8']],
-          bodyBase64: Buffer.from(String(parsed.body ?? ''), 'utf8').toString('base64'),
+          bodyBase64: method === 'HEAD' || status === 204 || status === 304 ? '' : Buffer.from(String(parsed.body ?? ''), 'utf8').toString('base64'),
         };
       } finally {
         try { engine.free?.(); } catch {}
@@ -1382,10 +1478,11 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
           }
           break;
         }
+        const status = clampContainerStatus(parsed.status);
         return {
-          status: Number.isInteger(parsed.status) ? parsed.status : 200,
+          status,
           headers: Array.isArray(parsed.headers) ? parsed.headers : [['Content-Type', 'application/json; charset=utf-8']],
-          bodyBase64: Buffer.from(String(parsed.body ?? ''), 'utf8').toString('base64'),
+          bodyBase64: method === 'HEAD' || status === 204 || status === 304 ? '' : Buffer.from(String(parsed.body ?? ''), 'utf8').toString('base64'),
         };
       } finally {
         try { engine.free?.(); } catch {}
@@ -1441,10 +1538,11 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
             }
           }
         } catch {}
+        const status = clampContainerStatus(parsed.status);
         return {
-          status: Number.isInteger(parsed.status) ? parsed.status : 200,
+          status,
           headers: Array.isArray(parsed.headers) ? parsed.headers : [['Content-Type', 'application/json; charset=utf-8']],
-          bodyBase64: Buffer.from(String(parsed.body ?? ''), 'utf8').toString('base64'),
+          bodyBase64: method === 'HEAD' || status === 204 || status === 304 ? '' : Buffer.from(String(parsed.body ?? ''), 'utf8').toString('base64'),
         };
       } finally {
         try { engine.free?.(); } catch {}

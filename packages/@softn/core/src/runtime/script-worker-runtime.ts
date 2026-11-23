@@ -338,7 +338,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       options?.bundleFileProvider,
       options?.externalFunctions
     );
-    this.safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const rawSafeId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    this.safeAppId = rawSafeId.toLowerCase() === 'grant' ? 'app-grant' : rawSafeId;
     // Use a static URL reference so bundlers can emit and rewrite the worker asset path.
     // The worker lives in the copy of core's dist that the web app ships as
     // assets/core-runtime/ (see coreWorkerAssetPlugin), next to the chunk it

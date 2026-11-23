@@ -7,6 +7,7 @@
 
 import React from 'react';
 import { domAttributes } from '../utils/domAttributes';
+import { safeSvgPaint } from '../utils/svgPaint';
 import { markupUrlJudge, sanitizeSvg, useEgressConfig } from '@softn/core';
 import { iconMarkup } from '../utils/icons';
 
@@ -86,6 +87,7 @@ export function Icon({
 
   // Determine if the icon uses fill or stroke
   const usesFill = iconSvg.includes('fill=') || name === 'send' || name === 'star' || name === 'heart';
+  const safeColor = safeSvgPaint(color, 'currentColor');
 
   return (
     <span {...domAttributes(rest)} className={className} style={wrapperStyle} {...a11y}>
@@ -95,8 +97,8 @@ export function Icon({
         width={pxSize}
         height={pxSize}
         viewBox="0 0 24 24"
-        fill={usesFill ? color : 'none'}
-        stroke={usesFill ? 'none' : color}
+        fill={usesFill ? safeColor : 'none'}
+        stroke={usesFill ? 'none' : safeColor}
         strokeWidth={usesFill ? undefined : 2}
         strokeLinecap="round"
         strokeLinejoin="round"

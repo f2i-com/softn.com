@@ -8,6 +8,7 @@
 
 import React from 'react';
 import { choice } from '../utils/choice';
+import { safeSvgPaint } from '../utils/svgPaint';
 
 export interface EmptyStateProps {
   /** Icon to display */
@@ -201,7 +202,7 @@ export function EmptyState({
   // Render default icon if none provided
   const renderIcon = () => {
     if (icon) return icon;
-    return DefaultIcons.inbox(finalIconSize, iconColor);
+    return DefaultIcons.inbox(finalIconSize, safeSvgPaint(iconColor, 'currentColor'));
   };
 
   return (

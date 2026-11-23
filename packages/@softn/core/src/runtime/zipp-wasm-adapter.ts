@@ -423,7 +423,8 @@ export class ZippWasmAdapter {
   registerLocalStorageBridge(appId?: string): void {
     for (const op of LOCAL_STORAGE_SYNC_OPS) this.pendingSyncCapabilities.add(op);
 
-    const safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const rawSafeId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeAppId = rawSafeId.toLowerCase() === 'grant' ? 'app-grant' : rawSafeId;
     const prefix = `softn:${safeAppId}:`;
     // The app's share of the store, which the host and every other app use too.
     // In a sandboxed frame with no origin, as FormLogic runs an app that is not

@@ -486,3 +486,23 @@ test('the frame\'s own click on a link it makes to save a file is let through to
   p.drain();
   assert.deepEqual([p.acted, p.followed], [[], []]);
 });
+
+test('decoy non-interactive <label>, orphan <summary>, and disabled <input> inside <a> cannot bypass link interception', () => {
+  const p = page([
+    '<a href="https://evil.example/label"><label id="orphan-lab">Click</label></a>',
+    '<a href="https://evil.example/sum"><summary id="orphan-sum">Click</summary></a>',
+    '<a href="https://evil.example/dis"><input id="dis-inp" type="checkbox" disabled></a>',
+  ].join(''));
+  assert.equal(p.press('orphan-lab'), true);
+  assert.equal(p.press('orphan-sum'), true);
+  assert.equal(p.press('dis-inp'), true);
+  p.drain();
+  assert.deepEqual(
+    p.acted.map(x => [x.kind, x.href]),
+    [
+      ['hand-on', 'https://evil.example/label'],
+      ['hand-on', 'https://evil.example/sum'],
+      ['hand-on', 'https://evil.example/dis'],
+    ]
+  );
+});

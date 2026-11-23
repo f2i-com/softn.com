@@ -241,25 +241,32 @@ describe('a library asked for by its name', () => {
 
   it('is a file of the runtime’s own folder, asked for without the person’s cookies, and a name that climbs out of it is refused', async () => {
     // A name becomes a path under the runtime's folder, on the embedding site: one with `..`
-    // in it asked that site for any address, with the person's cookies.
-    const asked: Array<{ url: string; credentials: string | undefined }> = [];
+    // in it asked that site for any address, with the person's cookies, and unallowlisted
+    // arbitrary bare specifiers must never issue zero-egress fetches either.
+    const asked: Array<{ url: string; credentials: string | undefined; referrerPolicy: string | undefined }> = [];
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-      asked.push({ url: String(input), credentials: init?.credentials });
+      asked.push({ url: String(input), credentials: init?.credentials, referrerPolicy: init?.referrerPolicy });
       return new Response('export const named = "lib";', { status: 200, headers: { 'content-type': 'text/javascript' } });
     });
     const { handle, text } = await open({
       'index.html': `<!doctype html><html><body><p id="out">waiting</p><script type="module">
         var climb = 'x/../../../api/me#';
-        var plain = 'some-lib';
+        var unlisted = 'arbitrary-exfil-probe';
+        var catalog = 'three/addons/controls/OrbitControls';
         Promise.all([
           import(climb).then(function () { return 'loaded'; }, function () { return 'refused'; }),
-          import(plain).then(function (m) { return m.named; }, function (e) { return 'failed ' + e.message; }),
-        ]).then(function (both) { document.getElementById('out').textContent = both.join('|'); });
+          import(unlisted).then(function () { return 'loaded'; }, function () { return 'refused'; }),
+          import(catalog).then(function (m) { return m.named; }, function (e) { return 'failed ' + e.message; }),
+        ]).then(function (all) { document.getElementById('out').textContent = all.join('|'); });
       </script></body></html>`,
     });
-    await expect.poll(() => text('#out'), { timeout: 10_000 }).toBe('refused|lib');
+    await expect.poll(() => text('#out'), { timeout: 10_000 }).toBe('refused|refused|lib');
     expect(asked.some((one) => one.url.includes('api/me'))).toBe(false);
-    expect(asked.filter((one) => one.url.endsWith('vendor/some-lib.js')).map((one) => one.credentials)).toEqual(['omit']);
+    expect(asked.some((one) => one.url.includes('arbitrary-exfil-probe'))).toBe(false);
+    expect(asked.filter((one) => one.url.endsWith('vendor/three/addons/controls/OrbitControls.js')).map((one) => ({
+      credentials: one.credentials,
+      referrerPolicy: one.referrerPolicy,
+    }))).toEqual([{ credentials: 'omit', referrerPolicy: 'no-referrer' }]);
     handle.dispose();
   });
 });

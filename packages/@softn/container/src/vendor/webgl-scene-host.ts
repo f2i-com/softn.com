@@ -20,6 +20,9 @@ interface HostedSceneState {
 const MAX_SEGMENTS = 256;
 
 const MAX_DRAWING_SIDE = 8192;
+const MAX_SCENES = 8;
+const MAX_SCENE_OBJECTS = 4096;
+const MAX_PENDING_OPS_PER_CANVAS = 4096;
 
 /** A drawing surface's side in pixels: at least one, and no more than a page can hold. */
 const clampDrawingSize = (value: unknown): number =>
@@ -71,10 +74,14 @@ export class SplitRealmSceneHost {
     if (this.disposed || this.unavailable) return;
     let q = this.pendingQueues.get(canvasId);
     if (!q) {
+      if (!this.scenes.has(canvasId) && this.scenes.size + this.pendingQueues.size >= MAX_SCENES) return;
       q = { canvas, ops: [] };
       this.pendingQueues.set(canvasId, q);
     }
-    q.ops.push(...ops);
+    const room = MAX_PENDING_OPS_PER_CANVAS - q.ops.length;
+    if (room > 0) {
+      q.ops.push(...(ops.length > room ? ops.slice(0, room) : ops));
+    }
     void this.flush();
   }
 
@@ -123,11 +130,17 @@ export class SplitRealmSceneHost {
     ops: ThreeSceneOp[]
   ): void {
     let state = this.scenes.get(canvasId);
+    const putObj = (s: HostedSceneState, id: number, obj: import('three').Object3D): boolean => {
+      if (!s.objects.has(id) && s.objects.size >= MAX_SCENE_OBJECTS) return false;
+      s.objects.set(id, obj);
+      return true;
+    };
 
     for (const op of ops) {
       switch (op[0]) {
         case 'init': {
           if (!state) {
+            if (this.scenes.size >= MAX_SCENES) return;
             if (typeof WebGLRenderingContext === 'undefined' && typeof WebGL2RenderingContext === 'undefined') {
               return;
             }
@@ -170,7 +183,7 @@ export class SplitRealmSceneHost {
         case 'group': {
           if (!state) break;
           const obj = op[1] === 1 ? new THREE.Scene() : new THREE.Group();
-          state.objects.set(op[1], obj);
+          putObj(state, op[1], obj);
           break;
         }
         case 'camera': {
@@ -180,11 +193,12 @@ export class SplitRealmSceneHost {
             kind === 'orthographic'
               ? new THREE.OrthographicCamera(p[0], p[1], p[2], p[3], p[4] ?? 0.1, p[5] ?? 1000)
               : new THREE.PerspectiveCamera(p[0] ?? 60, p[1] ?? 1, p[2] ?? 0.1, p[3] ?? 1000);
-          state.objects.set(id, cam);
+          putObj(state, id, cam);
           break;
         }
         case 'mesh': {
           if (!state) break;
+          if (!state.objects.has(op[1]) && state.objects.size >= MAX_SCENE_OBJECTS) break;
           const [, id, spec] = op;
           const [gKind, ...rawGp] = spec.geo;
           // The shape's numbers are the app's. A size is any finite number; a count of
@@ -224,11 +238,12 @@ export class SplitRealmSceneHost {
                   metalness: typeof mOpts.metalness === 'number' ? mOpts.metalness : 0.1,
                   wireframe: Boolean(mOpts.wireframe),
                 });
-          state.objects.set(id, new THREE.Mesh(geometry, material));
+          putObj(state, id, new THREE.Mesh(geometry, material));
           break;
         }
         case 'light': {
           if (!state) break;
+          if (!state.objects.has(op[1]) && state.objects.size >= MAX_SCENE_OBJECTS) break;
           const [, id, lKind, cfg] = op;
           const color = cfg.color !== undefined ? new THREE.Color(cfg.color as number) : new THREE.Color(0xffffff);
           const intensity = cfg.intensity ?? 1;
@@ -237,14 +252,14 @@ export class SplitRealmSceneHost {
           else if (lKind === 'point') light = new THREE.PointLight(color, intensity);
           else light = new THREE.DirectionalLight(color, intensity);
           if (cfg.pos) light.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
-          state.objects.set(id, light);
+          putObj(state, id, light);
           break;
         }
         case 'gltf': {
           if (!state) break;
           const [, id, path] = op;
           const holder = new THREE.Group();
-          state.objects.set(id, holder);
+          if (!putObj(state, id, holder)) break;
           const blobUrl = typeof path === 'string' ? this.archive.getBlobUrl(path) : null;
           if (blobUrl) {
             void import('three/examples/jsm/loaders/GLTFLoader.js')
@@ -308,6 +323,16 @@ export class SplitRealmSceneHost {
           if (state && scene && cam) {
             state.renderer.render(scene, cam as import('three').Camera);
           }
+          break;
+        }
+        case 'dispose': {
+          if (state) {
+            try { state.renderer.dispose(); } catch { /* ignore */ }
+            state.objects.clear();
+            this.scenes.delete(canvasId);
+            state = undefined;
+          }
+          this.pendingQueues.delete(canvasId);
           break;
         }
       }

@@ -25,6 +25,7 @@ import {
   type FontScopeContext,
 } from './host-policy';
 import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sameSite, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { isAllowedUiExtension } from './ui-extensions/registry';
 import type {
   Canvas2DCmd,
   ContainerPermissions,
@@ -1460,6 +1461,7 @@ export class HostDomPatcher {
 
   /** Hand `val` to a `<softn-*>` element's own property, now or when its class has arrived. */
   private setElementProperty(el: HTMLElement, prop: string, val: unknown): void {
+    if (!isAllowedUiExtension(el.localName)) return;
     const defined = typeof customElements !== 'undefined' && customElements.get(el.localName);
     if (defined) {
       if (isDeclaredElementProperty(el, prop)) (el as unknown as Record<string, unknown>)[prop] = val;

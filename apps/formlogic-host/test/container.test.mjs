@@ -220,4 +220,56 @@ test('web.ts handles formlogic:update, guards typed message IDs from settling ba
   assert.match(webSrc, /if \(data\?\.type !== undefined\) return;/);
   assert.match(webSrc, /pendingNavigate/);
   assert.match(webSrc, /pendingPlace/);
+  assert.match(webSrc, /outsideAddress/);
+});
+
+test('PortBackendTransport strips spoofed Cookie/X-Forwarded headers, rejects bad methods/CRLF, and withholds manifest backend files', async () => {
+  const seen = [];
+  const transport = createPortBackendTransport(async (_action, input) => {
+    seen.push(input);
+    return { status: 200, headers: [], bodyBase64: '' };
+  });
+
+  // Unsupported HTTP method rejected
+  assert.equal((await transport.fetch({ method: 'CONNECT', path: '/api/ping' })).status, 405);
+  // CRLF in query rejected
+  assert.equal((await transport.fetch({ method: 'GET', path: '/api/ping', query: 'a=1\r\nX-Injected: yes' })).status, 400);
+  assert.equal(seen.length, 0);
+
+  // Guest-supplied Cookie and X-Forwarded-* headers stripped
+  await transport.fetch({
+    method: 'GET',
+    path: '/api/ping',
+    headers: {
+      cookie: 'spoof=1',
+      'x-forwarded-for': '127.0.0.1',
+      'x-forwarded-host': 'evil.example',
+      'x-original-url': '/admin',
+      'x-bad-crlf': 'ok\r\nevil: 1',
+      'x-good': 'kept',
+    },
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].headers.cookie, undefined);
+  assert.equal(seen[0].headers['x-forwarded-for'], undefined);
+  assert.equal(seen[0].headers['x-forwarded-host'], undefined);
+  assert.equal(seen[0].headers['x-original-url'], undefined);
+  assert.equal(seen[0].headers['x-bad-crlf'], undefined);
+  assert.equal(seen[0].headers['x-good'], 'kept');
+
+  // Manifest-aware isSafeClientPath blocks custom backend roots, seedJson/seedSql, Cargo.toml, .py/.rs
+  const manifest = {
+    backend: { root: 'custom_srv', entry: 'api_dir/main.ts' },
+    ssrEntry: 'ssr/render.js',
+    databases: [{ name: 'app', file: 'data/app.bin', seedJson: 'init/seed.json', seedSql: 'init/schema.txt' }],
+  };
+  assert.equal(isSafeClientPath('custom_srv/secret.js', manifest), false);
+  assert.equal(isSafeClientPath('api_dir/helper.js', manifest), false);
+  assert.equal(isSafeClientPath('ssr/render.js', manifest), false);
+  assert.equal(isSafeClientPath('data/app.bin', manifest), false);
+  assert.equal(isSafeClientPath('init/seed.json', manifest), false);
+  assert.equal(isSafeClientPath('init/schema.txt', manifest), false);
+  assert.equal(isSafeClientPath('Cargo.toml', manifest), false);
+  assert.equal(isSafeClientPath('script.py', manifest), false);
+  assert.equal(isSafeClientPath('public/app.js', manifest), true);
 });

@@ -833,6 +833,11 @@ impl SyncManager {
         Ok(client_id)
     }
 
+    /// Enforce the per-IP auth rate limit on direct `/sync` upgrade attempts (token/ticket brute-force defense).
+    pub fn check_auth_rate(&self, client_ip: std::net::IpAddr) -> Result<(), std::time::Duration> {
+        self.ticket_limiter.check(client_ip)
+    }
+
     /// Issue a short-lived, single-use ticket for WebSocket authentication.
     /// The client calls POST /sync/ticket with their auth token in the
     /// Authorization header; the returned ticket replaces the raw token in the

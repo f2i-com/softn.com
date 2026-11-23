@@ -12,6 +12,7 @@ import {
   type ContainerBackendTransport,
 } from './containerBridge';
 import { bytesOf } from './media';
+import { outsideAddress } from './links';
 import { readPlace, writePlace } from './place';
 import { grantedPermissions } from './permissions';
 import { installAppStorage, STORAGE_LIMITS, STORAGE_PROTOCOL, storageLimits } from './storage';
@@ -101,7 +102,9 @@ window.addEventListener('message', async event => {
       : isContainerBundle(null, clientEntries);
     if (!runsInContainer) throw new Error('This project requires the classic SoftN renderer.');
     const allowLocalBackend = data.containerBackend !== 'host';
-    const allowPath = allowLocalBackend ? isSafeLocalContainerPath : isSafeClientPath;
+    const allowPath = allowLocalBackend
+      ? isSafeLocalContainerPath
+      : (path: string) => isSafeClientPath(path, parsedManifest);
     const source: Record<string, string | Uint8Array> = Object.create(null);
     for (const [path, content] of clientEntries.entries()) {
       if (allowPath(path)) source[path] = content;
@@ -114,6 +117,8 @@ window.addEventListener('message', async event => {
     store = installAppStorage(data.storage ?? {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle),
       { acknowledged: data.storageProtocol === STORAGE_PROTOCOL, limits: storageLimits(data.storageLimits) });
     const runtimeUrl = containerRuntimeUrl();
+    let ownHost = '';
+    try { ownHost = new URL(runtimeUrl).hostname; } catch { ownHost = ''; }
     let full: Promise<WebAssembly.Module> | undefined;
     const fullEngine = () => full ??= calls.call('containerEngine', { sha256: zippSource.sha256 }).then(async answer => {
       const reply = answer as { result?: ArrayBuffer; error?: string };
@@ -171,22 +176,59 @@ window.addEventListener('message', async event => {
       onPageChange: (page, manifest) => {
         emitPlace(writePlace({ file: page === manifest.main ? null : page, section: null }));
       },
-      onExternalLink: href => { if (!closed) post({ type: 'link', href }); },
+      onExternalLink: href => {
+        if (closed || !shown) return;
+        const clean = outsideAddress(href);
+        if (!clean) return;
+        try {
+          if (ownHost && new URL(clean).hostname === ownHost) return;
+        } catch {
+          return;
+        }
+        post({ type: 'link', href: clean });
+      },
       engineWasm: { javascript: fullEngine, python: pythonEngine, 'python-torch': pythonEngine },
       hostThree: () => import('three'), permissionMode: 'deny', permissionsOverride: permissions,
       initialGrantedCapabilities: grantedCaps, downloads: allowFiles ? 'ask' : 'deny',
       theme: data.dark === true ? 'dark' : 'light',
       backendCall: (action, input) => {
         if (action === 'formlogicUpload') {
+          if (!input || typeof input !== 'object' || Array.isArray(input)) {
+            return Promise.resolve({ error: 'Invalid upload request.' });
+          }
+          const op = input.op === undefined ? 'upload' : input.op;
+          if (op !== 'upload' && op !== 'list' && op !== 'delete') {
+            return Promise.resolve({ error: 'Unsupported upload operation.' });
+          }
+          if (op === 'delete') {
+            if (typeof input.id !== 'string' || !/^[a-zA-Z0-9_-]{4,64}$/.test(input.id.trim())) {
+              return Promise.resolve({ error: 'Invalid upload id.' });
+            }
+          } else if (op === 'upload') {
+            if (
+              typeof input.contentBase64 !== 'string' ||
+              input.contentBase64.length === 0 ||
+              input.contentBase64.length > 34 * 1024 * 1024 ||
+              (input.filename !== undefined && typeof input.filename !== 'string') ||
+              (input.mimeType !== undefined && typeof input.mimeType !== 'string') ||
+              (input.folder !== undefined && typeof input.folder !== 'string')
+            ) {
+              return Promise.resolve({ error: 'Invalid upload payload.' });
+            }
+          } else if (input.folder !== undefined && typeof input.folder !== 'string') {
+            return Promise.resolve({ error: 'Invalid upload folder.' });
+          }
           return calls.call('formlogicUpload', input);
         }
         const pathOnly = typeof input.url === 'string' ? input.url.split('?')[0] : '';
         if (
           action !== 'nativeRequest' ||
           typeof input.url !== 'string' ||
+          input.url.length > 2048 ||
+          /[\r\n\0]/.test(input.url) ||
           !/^\/api\/[A-Za-z0-9_.%~/-]+(?:\?[^#]*)?$/.test(input.url) ||
           /(?:^|\/)\.\.(?:\/|$)/.test(pathOnly) ||
-          /%2e%2e/i.test(pathOnly)
+          /%(?:2e|2f|5c|00|25)/i.test(pathOnly)
         ) {
           return Promise.resolve({ error: 'Use an app-relative API route under /api/.' });
         }

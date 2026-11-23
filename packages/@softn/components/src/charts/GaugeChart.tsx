@@ -7,6 +7,7 @@
 import * as React from 'react';
 import { chartColor } from '../theme/chart-palette';
 import { usePrefersReducedMotion } from '../utils/motion';
+import { safeSvgPaint } from '../utils/svgPaint';
 import { formatterOr, chartSize } from './series';
 
 export interface GaugeThreshold {
@@ -205,7 +206,7 @@ export function GaugeChart({
     }
   }, [animate, circumference, fraction]);
 
-  const fillColor = getColorForValue(clampedValue, thresholds);
+  const fillColor = safeSvgPaint(getColorForValue(clampedValue, thresholds), chartColor(0));
 
   // Build the arc path for stroke-dasharray technique.
   // For the 'full' variant we use a circle element; for others, a path.

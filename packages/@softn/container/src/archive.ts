@@ -922,7 +922,7 @@ const BACKEND_PRIVATE_EXTENSIONS = new Set([
   'htaccess', 'htpasswd', 'env', 'ini', 'bak', 'log', 'sh',
 ]);
 
-function isBackendPrivatePath(path: string, hasBackend: boolean, backendRootWithSlash: string): boolean {
+export function isBackendPrivatePath(path: string, hasBackend: boolean, backendRootWithSlash: string): boolean {
   const lower = path.toLowerCase();
   const base = lower.slice(lower.lastIndexOf('/') + 1);
   if (

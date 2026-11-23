@@ -950,7 +950,10 @@ async fn serve_container_request(
             Ok(Some((mime, bytes))) => {
                 let mut builder = axum::http::Response::builder()
                     .status(StatusCode::OK)
-                    .header(axum::http::header::CONTENT_TYPE, mime);
+                    .header(axum::http::header::CONTENT_TYPE, mime)
+                    .header("x-content-type-options", "nosniff")
+                    .header("x-frame-options", "SAMEORIGIN")
+                    .header("referrer-policy", "no-referrer");
                 if method == axum::http::Method::HEAD {
                     builder = builder.header(axum::http::header::CONTENT_LENGTH, bytes.len());
                     builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
@@ -1029,7 +1032,11 @@ async fn serve_container_request(
         })
         .await;
 
-    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = if (200..600).contains(&resp.status) {
+        StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
     let mut builder = axum::http::Response::builder().status(status);
     let mut has_cache_control = false;
     for (k, mut v) in resp.headers {
@@ -1040,8 +1047,12 @@ async fn serve_container_request(
                 | "connection"
                 | "content-length"
                 | "x-sendfile"
+                | "x-sendfile2"
+                | "x-lighttpd-send-file"
                 | "service-worker-allowed"
                 | "x-content-type-options"
+                | "x-frame-options"
+                | "referrer-policy"
                 | "strict-transport-security"
                 | "clear-site-data"
                 | "content-security-policy"
@@ -1060,11 +1071,26 @@ async fn serve_container_request(
             if multi_tenant {
                 continue;
             }
-            let lower_val = v.to_ascii_lowercase();
-            if lower_val.contains("; domain=") || lower_val.contains(";domain=") {
+            let mut has_domain = false;
+            let mut has_samesite = false;
+            for part in v.split(';').skip(1) {
+                let attr_name = part
+                    .split_once('=')
+                    .map(|(n, _)| n)
+                    .unwrap_or(part)
+                    .trim_matches(|c: char| c.is_ascii_whitespace());
+                if attr_name.eq_ignore_ascii_case("domain") {
+                    has_domain = true;
+                    break;
+                }
+                if attr_name.eq_ignore_ascii_case("samesite") {
+                    has_samesite = true;
+                }
+            }
+            if has_domain {
                 continue;
             }
-            if !lower_val.contains("samesite=") {
+            if !has_samesite {
                 v.push_str("; SameSite=Lax");
             }
         }
@@ -1083,7 +1109,7 @@ async fn serve_container_request(
     }
     builder = builder.header("x-frame-options", "SAMEORIGIN");
     builder = builder.header("referrer-policy", "no-referrer");
-    let out_body = if method == axum::http::Method::HEAD {
+    let out_body = if method == axum::http::Method::HEAD || status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED {
         axum::body::Body::empty()
     } else {
         axum::body::Body::from(resp.body)
@@ -1403,6 +1429,10 @@ impl RequestPolicy {
     /// `X-Forwarded-Host`): an origin naming one of them is the host's own
     /// page. The guard has already held `Host` to [`Self::host_allowed`].
     fn origin_allowed(&self, origin: &str, hosts: &[&str]) -> bool {
+        self.origin_allowed_for_scheme(origin, hosts, None)
+    }
+
+    fn origin_allowed_for_scheme(&self, origin: &str, hosts: &[&str], expected_scheme: Option<&str>) -> bool {
         if self.origin_listed(origin) {
             return true;
         }
@@ -1410,6 +1440,11 @@ impl RequestPolicy {
         let Some((scheme, authority)) = origin.split_once("://") else { return false };
         if (scheme != "http" && scheme != "https") || authority.is_empty() || authority.contains('/') {
             return false;
+        }
+        if let Some(exp) = expected_scheme {
+            if scheme != exp {
+                return false;
+            }
         }
         let own = without_default_port(authority, scheme);
         hosts.iter().any(|h| without_default_port(&h.trim().to_ascii_lowercase(), scheme) == own)
@@ -1527,12 +1562,31 @@ async fn guard_host(
     }
 }
 
+fn request_scheme(headers: &axum::http::HeaderMap, behind_trusted_proxy: bool) -> &'static str {
+    if behind_trusted_proxy {
+        if let Some(proto) = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) {
+            let last = proto.rsplit(',').next().map(str::trim).unwrap_or("");
+            if last.eq_ignore_ascii_case("http") {
+                return "http";
+            }
+            return "https";
+        }
+        // Behind a trusted proxy forwarding a public hostname via X-Forwarded-Host without
+        // X-Forwarded-Proto, require HTTPS so a plain HTTP origin cannot downgrade TLS.
+        if headers.contains_key("x-forwarded-host") {
+            return "https";
+        }
+    }
+    "http"
+}
+
 /// Refuse a request from a page the policy does not allow, before any
 /// handler runs. `None` lets it through.
 fn check_origin(policy: &RequestPolicy, headers: &axum::http::HeaderMap, behind_trusted_proxy: bool) -> Option<axum::response::Response> {
     let origin = headers.get(axum::http::header::ORIGIN)?;
+    let expected_scheme = request_scheme(headers, behind_trusted_proxy);
     let allowed = origin.to_str().is_ok_and(|origin| {
-        policy.origin_allowed(origin, &request_hosts(headers, None, behind_trusted_proxy))
+        policy.origin_allowed_for_scheme(origin, &request_hosts(headers, None, behind_trusted_proxy), Some(expected_scheme))
     });
     (!allowed).then(|| json_error(StatusCode::FORBIDDEN, "Origin not allowed.", "origin_not_allowed"))
 }
@@ -1557,7 +1611,8 @@ fn authorize_sync_upgrade(
         Some(v) => Some(v.to_str().map_err(|_| (StatusCode::FORBIDDEN, "Origin not allowed"))?),
     };
     if let Some(origin) = origin {
-        if !policy.origin_allowed(origin, &request_hosts(headers, None, behind_trusted_proxy)) {
+        let expected_scheme = request_scheme(headers, behind_trusted_proxy);
+        if !policy.origin_allowed_for_scheme(origin, &request_hosts(headers, None, behind_trusted_proxy), Some(expected_scheme)) {
             return Err((StatusCode::FORBIDDEN, "Origin not allowed"));
         }
     }
@@ -1659,13 +1714,24 @@ fn upgrade_response(
     proxy: &TrustedProxy,
     policy: &RequestPolicy,
 ) -> axum::response::Response {
+    // Counted against the visitor the rate limits name: the socket peer, or
+    // the client a trusted proxy forwards for, an IPv6 /64 counting as one.
+    let client_ip = extract_client_ip(headers, peer.ip(), proxy);
+    if sync.has_auth() || params.contains_key("token") || params.contains_key("ticket") {
+        if let Err(wait) = sync.check_auth_rate(client_ip) {
+            let mut response = json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many sync authentication attempts; retry later.",
+                "rate_limited",
+            );
+            response.headers_mut().insert(axum::http::header::RETRY_AFTER, wait.as_secs().max(1).into());
+            return response;
+        }
+    }
     let cid = match authorize_sync_upgrade(&sync, params, headers, policy, proxy.is_proxy(peer.ip())) {
         Ok(cid) => cid,
         Err((status, message)) => return json_error(status, message, if status == StatusCode::FORBIDDEN { "origin_not_allowed" } else { "unauthorized" }),
     };
-    // Counted against the visitor the rate limits name: the socket peer, or
-    // the client a trusted proxy forwards for, an IPv6 /64 counting as one.
-    let client_ip = extract_client_ip(headers, peer.ip(), proxy);
     // A place among those sync sockets may hold, every app's together, kept
     // with the connection's own for as long as the socket is open.
     let socket_place = match place.as_ref().map(|p| p.sockets.clone().try_acquire_owned()) {
@@ -2760,6 +2826,28 @@ mod sync_upgrade_tests {
         assert!(!policy.origin_allowed("http://site.example:8081", &["site.example:8080"]));
         assert!(!policy.origin_allowed("https://site.example", &["other.example"]));
         assert!(!policy.origin_allowed("file://", &[""]));
+        // Exact scheme matching prevents http:// downgrade attacks when HTTPS is expected.
+        assert!(policy.origin_allowed_for_scheme("https://site.example", &["site.example"], Some("https")));
+        assert!(!policy.origin_allowed_for_scheme("http://site.example", &["site.example"], Some("https")));
+        assert!(!policy.origin_allowed_for_scheme("https://site.example", &["site.example"], Some("http")));
+    }
+
+    #[test]
+    fn set_cookie_whitespace_domain_attribute_is_dropped() {
+        let mut has_domain = false;
+        let v = "sid=1; \tDomain = .evil.example; Path=/";
+        for part in v.split(';').skip(1) {
+            let attr_name = part
+                .split_once('=')
+                .map(|(n, _)| n)
+                .unwrap_or(part)
+                .trim_matches(|c: char| c.is_ascii_whitespace());
+            if attr_name.eq_ignore_ascii_case("domain") {
+                has_domain = true;
+                break;
+            }
+        }
+        assert!(has_domain);
     }
 
     #[test]

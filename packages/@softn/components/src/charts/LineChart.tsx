@@ -9,6 +9,7 @@ import * as React from 'react';
 import type { ChartPadding } from './series';
 import { chartPadding, describeChart, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
+import { safeSvgPaint } from '../utils/svgPaint';
 
 export interface DataPoint {
   x: number | string;
@@ -353,7 +354,8 @@ export function LineChart({
         )}
 
         {series.map((s, seriesIndex) => {
-          const color = s.color || defaultColors[seriesIndex % defaultColors.length];
+          const fallbackColor = defaultColors[seriesIndex % defaultColors.length];
+          const color = safeSvgPaint(s.color, fallbackColor);
           const isDimmed = interactive && hoveredSeries !== null && hoveredSeries !== seriesIndex;
           return (
             <g

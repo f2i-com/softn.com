@@ -411,6 +411,9 @@ export class XdbSqlManager {
   }
 
   private createConnection(dbKey: string, ephemeral: boolean): ManagedDb {
+    if (!ephemeral && !this.byKey.has(dbKey) && this.byKey.size >= MAX_OPEN_DBS) {
+      throw new Error(`Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`);
+    }
     const cfg = ephemeral ? undefined : this.findConfigForKey(dbKey);
     const persisted = ephemeral
       ? undefined
@@ -599,7 +602,13 @@ export class XdbSqlManager {
     } else {
       const { key, inMemory } = normalizeDbKey(handleOrKey);
       const canonical = inMemory ? ':memory:' : this.resolveCanonicalKey(key);
-      managed = inMemory ? undefined : this.byKey.get(canonical) ?? this.createConnection(canonical, false);
+      if (!inMemory) {
+        try {
+          managed = this.byKey.get(canonical) ?? this.createConnection(canonical, false);
+        } catch (err) {
+          return classifySqlError(err);
+        }
+      }
     }
     if (!managed) return { error: `database '${handleOrKey}' not found`, code: 21, unique: false };
     const payload = typeof seedJson === 'string' ? seedJson : JSON.stringify(seedJson);

@@ -58,8 +58,8 @@ export function withheldPermissions(declared: PermissionConfig, options: { askin
 
 // ── Remembering an Allow ───────────────────────────────────────────────────
 
-/** The prefix a host's grants are kept under unless it names its own. */
-export const DEFAULT_GRANT_PREFIX = 'softn:grant:';
+/** The prefix a host's grants are kept under unless it names its own (disjoint from guest `softn:<appId>:` storage). */
+export const DEFAULT_GRANT_PREFIX = 'softn-host:grant:';
 
 /**
  * The storage key an Allow for this app and this declaration is kept under.

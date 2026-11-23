@@ -105,6 +105,8 @@ interface WebGLCtxEntry {
   /** Cache `programHid:uniformName` -> server handle id so per-frame getUniformLocation calls never leak handles. */
   uniformLocations: Map<string, number>;
   extensions: Map<string, Record<string, unknown>>;
+  allowedMethods: Set<string>;
+  extensionMethods: Map<string, Set<string>>;
   nextServerHandleId: number;
   dirty: boolean;
   hasDrawn: boolean;
@@ -254,6 +256,7 @@ export class WebGLWorkerHost {
     if (!gl) return null;
 
     const ctxId = this.nextCtxId++;
+    const allowedMethods = new Set<string>();
     const entry: WebGLCtxEntry = {
       ctxId,
       canvasId: Number.isInteger(canvasId) && canvasId > 0 ? canvasId : 0,
@@ -263,6 +266,8 @@ export class WebGLWorkerHost {
       handles: new Map(),
       uniformLocations: new Map(),
       extensions: new Map(),
+      allowedMethods,
+      extensionMethods: new Map(),
       nextServerHandleId: SERVER_HANDLE_BASE,
       dirty: false,
       hasDrawn: false,
@@ -271,7 +276,7 @@ export class WebGLWorkerHost {
 
     // Collect all GL constants & callable method names from the real context prototype chain
     const constants: Record<string, number> = Object.create(null);
-    const methodsSet = new Set<string>();
+    const methodsSet = allowedMethods;
     const glRec = gl as unknown as Record<string, unknown>;
     for (let proto: object | null = gl; proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
       for (const key of Object.getOwnPropertyNames(proto)) {
@@ -351,18 +356,23 @@ export class WebGLWorkerHost {
     }
     const constants: Record<string, number> = Object.create(null);
     const methods: string[] = [];
+    const extMethodSet = new Set<string>();
     for (let proto: object | null = ext; proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
       for (const key of Object.getOwnPropertyNames(proto)) {
         if (key === 'constructor' || key.startsWith('_')) continue;
         const desc = Object.getOwnPropertyDescriptor(proto, key);
         if (desc && typeof desc.value === 'function') {
-          if (!methods.includes(key)) methods.push(key);
+          if (!extMethodSet.has(key)) {
+            extMethodSet.add(key);
+            methods.push(key);
+          }
         } else {
           const val = ext[key];
           if (typeof val === 'number') constants[key] = val;
         }
       }
     }
+    entry.extensionMethods.set(name, extMethodSet);
     return { constants, methods };
   }
 
@@ -445,7 +455,7 @@ export class WebGLWorkerHost {
       try {
         if (op === 'v') {
           const method = String(cmd[1]);
-          if (method === '__proto__' || method === 'constructor' || method === 'prototype') continue;
+          if (!entry.allowedMethods.has(method)) continue;
           const fn = glRec[method];
           if (typeof fn !== 'function') continue;
           const decoded: unknown[] = [];
@@ -466,6 +476,7 @@ export class WebGLWorkerHost {
           }
         } else if (op === 'c') {
           const method = String(cmd[1]);
+          if (!entry.allowedMethods.has(method)) continue;
           const hid = Number(cmd[2]);
           const fn = glRec[method];
           if (typeof fn !== 'function' || entry.handles.size >= MAX_WEBGL_HANDLES) continue;
@@ -475,6 +486,7 @@ export class WebGLWorkerHost {
           if (created !== null && created !== undefined) entry.handles.set(hid, created);
         } else if (op === 'd') {
           const method = String(cmd[1]);
+          if (!entry.allowedMethods.has(method)) continue;
           const hid = Number(cmd[2]);
           const obj = entry.handles.get(hid);
           entry.handles.delete(hid);
@@ -500,9 +512,8 @@ export class WebGLWorkerHost {
         } else if (op === 'x') {
           const extName = String(cmd[1]);
           const method = String(cmd[2]);
-          if (method === '__proto__' || method === 'constructor' || method === 'prototype') continue;
           const ext = entry.extensions.get(extName);
-          if (!ext) continue;
+          if (!ext || !entry.extensionMethods.get(extName)?.has(method)) continue;
           const fn = ext[method];
           if (typeof fn !== 'function') continue;
           const decoded: unknown[] = [];
@@ -522,10 +533,11 @@ export class WebGLWorkerHost {
 
     try {
       if (syncCmd[0] === 'ext') {
-        const ext = entry.extensions.get(String(syncCmd[1]));
+        const extName = String(syncCmd[1]);
+        const ext = entry.extensions.get(extName);
         const method = String(syncCmd[2]);
-        if (method === '__proto__' || method === 'constructor' || method === 'prototype') return null;
-        const fn = ext?.[method];
+        if (!ext || !entry.extensionMethods.get(extName)?.has(method)) return null;
+        const fn = ext[method];
         if (typeof fn !== 'function') return null;
         const decoded: unknown[] = [];
         for (let j = 3; j < syncCmd.length; j++) decoded.push(this.decodeArg(syncCmd[j], entry, resolvers));
@@ -556,6 +568,7 @@ export class WebGLWorkerHost {
         return { __glB64: bytesToBase64(new Uint8Array(buf)) };
       }
 
+      if (!entry.allowedMethods.has(method)) return null;
       const fn = glRec[method];
       if (typeof fn !== 'function') return null;
       const decoded: unknown[] = [];

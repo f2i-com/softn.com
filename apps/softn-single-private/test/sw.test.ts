@@ -132,7 +132,14 @@ describe('the private host\'s service worker', () => {
   // the models apps had downloaded, at every bump of VERSION.
   it('keeps the downloaded models when a new version of it activates', async () => {
     const { version } = install({}, async () => new Response(''));
-    const { activate } = install({ 'softn-serve-sw-1': {}, [version]: {}, 'softn-models-v1': {} }, async () => new Response(''));
+    const { activate } = install({ 'softn-serve-sw-1': {}, [version]: {}, 'softn-models-v1': {}, 'softn-serve-sw-4:/other-app/': {}, 'unrelated-app-cache': {} }, async () => new Response(''));
     expect(await activate()).toEqual(['softn-serve-sw-1']);
+  });
+
+  it('does not intercept or cache unrelated sibling navigation routes under the scope', async () => {
+    const sibling = new Request(`${SCOPE}admin/billing`);
+    Object.defineProperty(sibling, 'mode', { value: 'navigate' });
+    const { fetchFor } = install({}, async () => new Response('secret admin html'));
+    expect(await fetchFor(sibling)).toBeUndefined();
   });
 });

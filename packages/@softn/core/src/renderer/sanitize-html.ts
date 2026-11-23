@@ -187,11 +187,15 @@ function cssStringsIn(text: string): string[] {
   return out;
 }
 
-/** The target of one `url(...)`: the string inside its quotes, or the bare token. */
+/** The target of one `url(...)`: the leading quoted string (ignoring CSS Values 5 modifiers), or the bare token. */
 function urlTarget(inner: string): string {
   const trimmed = inner.trim();
-  const quoted = /^(["'])([\s\S]*)\1$/.exec(trimmed);
-  return decodeCssEscapes(quoted ? quoted[2] : trimmed);
+  if (trimmed[0] === '"' || trimmed[0] === "'") {
+    const end = endOfCssString(trimmed, 0);
+    const hasClose = end > 1 && trimmed[end - 1] === trimmed[0];
+    return decodeCssEscapes(trimmed.slice(1, hasClose ? end - 1 : end));
+  }
+  return decodeCssEscapes(trimmed);
 }
 
 /** What a run of CSS would make the browser fetch. */

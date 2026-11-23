@@ -78,19 +78,69 @@ function isSafeNormalizedPath(name: string): boolean {
   return true;
 }
 
+function normalizeManifestRel(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter((s) => s && s !== '.' && s !== '..')
+    .join('/')
+    .toLowerCase();
+}
+
 /** Whether a path is safe to mount into the guest VFS (never traversal, never server/private/secret files). */
-export function isSafeClientPath(name: string): boolean {
+export function isSafeClientPath(name: string, manifest?: Record<string, unknown> | null): boolean {
   if (!isSafeNormalizedPath(name)) return false;
   const lower = name.toLowerCase();
   const base = lower.slice(lower.lastIndexOf('/') + 1);
   if (
-    /^(?:__softn_generated__\/)?(?:server|backend|private)\//.test(lower) ||
+    /^(?:__softn_generated__\/)?(?:server|backend|private|db|database|migrations)\//.test(lower) ||
     /(?:^|\/)\.git(?:\/|$)/.test(lower) ||
-    /\.(?:sql|php|phtml|db|sqlite|sqlite3|db-wal|db-shm|db-journal|htpasswd|htaccess)$/i.test(lower) ||
+    /\.(?:sql|php|phtml|php5|php8|phar|inc|tpl|rs|py|logic|db|sqlite|sqlite3|db-wal|db-shm|db-journal|htpasswd|htaccess|ini|bak|sh)$/i.test(lower) ||
     base === '.env' ||
-    base.startsWith('.env.')
+    base.startsWith('.env.') ||
+    base === 'seed.json' ||
+    base === 'cargo.toml' ||
+    base === 'cargo.lock' ||
+    base === 'composer.json' ||
+    base === 'composer.lock'
   ) {
     return false;
+  }
+  if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)) {
+    const backend = isRecord(manifest.backend) ? manifest.backend : null;
+    if (backend) {
+      const root = normalizeManifestRel(backend.root);
+      if (root && (lower === root || lower.startsWith(`${root}/`))) return false;
+      const entry = normalizeManifestRel(backend.entry);
+      if (entry) {
+        if (lower === entry) return false;
+        const slash = entry.indexOf('/');
+        if (slash > 0 && lower.startsWith(entry.slice(0, slash + 1))) return false;
+      }
+    }
+    const ssrEntry = normalizeManifestRel(manifest.ssrEntry);
+    if (ssrEntry && lower === ssrEntry) return false;
+    if (Array.isArray(manifest.databases)) {
+      for (const dbCfg of manifest.databases) {
+        if (!isRecord(dbCfg)) continue;
+        const dbFile = normalizeManifestRel(dbCfg.file);
+        if (
+          dbFile &&
+          (lower === dbFile ||
+            lower === `${dbFile}-wal` ||
+            lower === `${dbFile}-shm` ||
+            lower === `${dbFile}-journal`)
+        ) {
+          return false;
+        }
+        const seedSql = normalizeManifestRel(dbCfg.seedSql);
+        if (seedSql && lower === seedSql) return false;
+        const seedJson = normalizeManifestRel(dbCfg.seedJson);
+        if (seedJson && lower === seedJson) return false;
+      }
+    }
   }
   return true;
 }
@@ -158,9 +208,15 @@ export function grantedContainerCapabilities(permissions: { permissions?: Record
 }
 
 const MAX_PORT_HTTP_BODY_BYTES = 16 * 1024 * 1024;
+const MAX_PORT_HEADERS = 64;
+const MAX_PORT_HEADER_VALUE_BYTES = 8192;
+const MAX_PORT_QUERY_BYTES = 8192;
+const ALLOWED_PORT_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 const FORBIDDEN_PORT_HEADERS = new Set([
-  'host', 'origin', 'referer', 'content-length', 'connection', 'keep-alive',
+  'host', 'origin', 'referer', 'cookie', 'content-length', 'connection', 'keep-alive',
   'upgrade', 'te', 'trailer', 'transfer-encoding', 'accept-encoding',
+  'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'forwarded',
+  'x-original-url', 'x-rewrite-url', 'x-http-method-override', 'x-method-override',
 ]);
 
 function isSafePortHttpPath(rawPath: string): boolean {
@@ -303,8 +359,28 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           body: new TextEncoder().encode(JSON.stringify({ error: 'Request body too large' })),
         };
       }
+      const method = String(req.method || 'GET').toUpperCase();
+      if (!ALLOWED_PORT_METHODS.has(method)) {
+        return {
+          status: 405,
+          statusText: 'Method Not Allowed',
+          headers: [['content-type', 'application/json']],
+          body: new TextEncoder().encode(JSON.stringify({ error: 'Unsupported HTTP method' })),
+        };
+      }
+      const query = typeof req.query === 'string' ? req.query : '';
+      if (query.length > MAX_PORT_QUERY_BYTES || /[\r\n\0]/.test(query)) {
+        return {
+          status: 400,
+          statusText: 'Bad Request',
+          headers: [['content-type', 'application/json']],
+          body: new TextEncoder().encode(JSON.stringify({ error: 'Invalid backend query string' })),
+        };
+      }
       const safeHeaders: Record<string, string> = {};
+      let headerCount = 0;
       for (const [k, v] of Object.entries(req.headers ?? {})) {
+        if (headerCount >= MAX_PORT_HEADERS) break;
         const lower = k.toLowerCase();
         if (
           !/^[a-z0-9-]+$/.test(lower) ||
@@ -315,16 +391,20 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
         ) {
           continue;
         }
+        if (typeof v !== 'string' || v.length > MAX_PORT_HEADER_VALUE_BYTES || /[\r\n\0]/.test(v)) {
+          continue;
+        }
         safeHeaders[lower] = v;
+        headerCount++;
       }
       const jarCookies = cookieJar.headerFor(reqPath);
       if (jarCookies) {
-        safeHeaders.cookie = safeHeaders.cookie ? `${safeHeaders.cookie}; ${jarCookies}` : jarCookies;
+        safeHeaders.cookie = jarCookies;
       }
       const envelope = await call('containerHttp', {
-        method: req.method,
+        method,
         path: reqPath,
-        query: req.query ?? '',
+        query,
         headers: safeHeaders,
         bodyBase64: bodyBytes && bodyBytes.byteLength > 0 ? encodeBase64(bodyBytes) : '',
       });

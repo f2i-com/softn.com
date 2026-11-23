@@ -554,9 +554,9 @@ function softn_origin_allowed(?string $origin, mixed $allowed, ?string $ownOrigi
  * @return array{status:int,body:string}|null
  */
 function softn_runner_result(string $output): ?array {
-    if(preg_match('/\A\{"status":([1-5][0-9]{2}),"headers":/',$output)&&str_ends_with($output,'}')) {
+    if(preg_match('/\A\{"status":([2-5][0-9]{2}),"headers":/',$output)&&str_ends_with($output,'}')) {
         $decoded=json_decode($output,true);
-        if(!is_array($decoded)||!is_int($decoded['status']??null)||!is_array($decoded['headers']??null)||!is_string($decoded['bodyBase64']??null))return null;
+        if(!is_array($decoded)||!is_int($decoded['status']??null)||$decoded['status']<200||$decoded['status']>599||!is_array($decoded['headers']??null)||!is_string($decoded['bodyBase64']??null))return null;
         $raw=base64_decode($decoded['bodyBase64'],true);
         if(!is_string($raw))return null;
         return ['status'=>$decoded['status'],'headers'=>$decoded['headers'],'bodyRaw'=>$raw];

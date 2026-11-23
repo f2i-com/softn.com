@@ -2070,6 +2070,21 @@ function updateParticles(points: THREE.Points, obj: Scene3DObject): void {
 const CAST_KEY = '__softnCast';
 const RECEIVE_KEY = '__softnReceive';
 
+const SAFE_SCENE3D_CURSORS = new Set([
+  'auto', 'default', 'none', 'context-menu', 'help', 'pointer', 'progress', 'wait',
+  'cell', 'crosshair', 'text', 'vertical-text', 'alias', 'copy', 'move', 'no-drop',
+  'not-allowed', 'grab', 'grabbing', 'all-scroll', 'col-resize', 'row-resize',
+  'n-resize', 'e-resize', 's-resize', 'w-resize', 'ne-resize', 'nw-resize',
+  'se-resize', 'sw-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize',
+  'zoom-in', 'zoom-out',
+]);
+
+function safeScene3DCursor(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const clean = raw.trim().toLowerCase();
+  return SAFE_SCENE3D_CURSORS.has(clean) ? clean : undefined;
+}
+
 /**
  * What the picker reads off a node: its id, its parent, its cursor, and
  * whether it is picked at all. Every object of the scene is tagged, at the
@@ -2080,7 +2095,8 @@ function tagNode(node: THREE.Object3D, spec: Scene3DObject, parentId?: string): 
   const data = node.userData;
   data.__softnId = spec.id;
   if (parentId !== undefined) data.__softnParentId = parentId;
-  if (spec.cursor) data.__softnCursor = spec.cursor;
+  const cleanCursor = safeScene3DCursor(spec.cursor);
+  if (cleanCursor) data.__softnCursor = cleanCursor;
   else if ('__softnCursor' in data) delete data.__softnCursor;
   if (spec.interactive) data.__softnInteractive = spec.interactive;
   else if ('__softnInteractive' in data) delete data.__softnInteractive;
@@ -4386,7 +4402,7 @@ export function Scene3D({
           hovered.instanceId === now.instanceId);
       hovered = now;
       if (!same) onHoverChangeRef.current?.(info);
-      canvas.style.cursor = hit.cursor || restingCursor();
+      canvas.style.cursor = safeScene3DCursor(hit.cursor) || restingCursor();
     };
     const flushPointer = () => {
       pointerFrame = 0;

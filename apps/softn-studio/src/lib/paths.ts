@@ -78,13 +78,18 @@ function describePathProblem(value: string): string {
 
 /**
  * Why a canonical project path cannot go in a bundle, or null when it can: the bundle readers'
- * own rule (`isUnsafeEntryName`), which a project path breaks only with '..' inside a name.
+ * own rule (`isUnsafeEntryName`), which refuses '..' inside a name and any `__proto__` segment.
  * The export wrote such a file, and every reader dropped it when it opened the bundle.
  */
 export function bundleNameProblem(path: string): string | null {
-  return isUnsafeEntryName(path)
-    ? 'the name has two dots in a row, and every SoftN reader takes ".." anywhere in a path for a way out of the bundle and leaves the file out'
-    : null;
+  if (!isUnsafeEntryName(path)) return null;
+  if (path.split('/').includes('__proto__')) {
+    return 'a file or folder in a bundle may not be named "__proto__"; every SoftN reader leaves it out to prevent prototype pollution';
+  }
+  if (path.includes('..')) {
+    return 'the name has two dots in a row, and every SoftN reader takes ".." anywhere in a path for a way out of the bundle and leaves the file out';
+  }
+  return 'every SoftN reader refuses this entry name and leaves the file out';
 }
 
 /** The identity two spellings share when they are the same file on a case-folding disk. */

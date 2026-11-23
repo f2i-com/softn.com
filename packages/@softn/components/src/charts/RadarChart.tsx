@@ -7,6 +7,7 @@
 import * as React from 'react';
 import { describeChart, finiteNumber, normaliseArray, normaliseSeries, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
+import { safeSvgPaint } from '../utils/svgPaint';
 
 export interface RadarDataPoint {
   axis: string;
@@ -182,7 +183,8 @@ export function RadarChart({
 
   // Build data polygons for each series
   const dataPolygons = series.map((s, seriesIndex) => {
-    const color = s.color || defaultColors[seriesIndex % defaultColors.length];
+    const fallbackColor = defaultColors[seriesIndex % defaultColors.length];
+    const color = safeSvgPaint(s.color, fallbackColor);
     const isHovered = hoveredSeries === seriesIndex;
     const isDimmed = hoveredSeries != null && !isHovered;
     const opacity = isDimmed ? 0.2 : 1;

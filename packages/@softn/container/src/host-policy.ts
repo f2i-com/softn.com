@@ -415,7 +415,8 @@ export function isDeclaredElementProperty(el: Element, prop: string): boolean {
   const stop = typeof HTMLElement === 'function' ? HTMLElement.prototype : null;
   let proto: object | null = Object.getPrototypeOf(el);
   while (proto && proto !== stop && proto !== Object.prototype) {
-    if (Object.prototype.hasOwnProperty.call(proto, prop)) return true;
+    const desc = Object.getOwnPropertyDescriptor(proto, prop);
+    if (desc) return typeof desc.set === 'function';
     proto = Object.getPrototypeOf(proto);
   }
   return false;

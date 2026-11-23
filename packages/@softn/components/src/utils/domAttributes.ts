@@ -12,7 +12,11 @@
 export function domAttributes(rest: object): Record<string, unknown> {
   const attributes: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(rest)) {
-    if (name === 'id' || name.startsWith('data-') || name.startsWith('aria-')) attributes[name] = value;
+    if (name === 'id') {
+      if (typeof value === 'string' && !value.startsWith('__')) attributes[name] = value;
+      continue;
+    }
+    if (name.startsWith('data-') || name.startsWith('aria-')) attributes[name] = value;
   }
   return attributes;
 }

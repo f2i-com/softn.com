@@ -153,8 +153,9 @@ function unicodePathName(data: Uint8Array, view: DataView, start: number, end: n
     const length = view.getUint16(at + 2, true);
     if (at + 4 + length > end) return null;
     if (id === 0x7075 && length >= 5) {
-      if (data[at + 4] !== 1 || view.getUint32(at + 5, true) !== crc32(headerName)) return null;
-      return decoder.decode(data.subarray(at + 9, at + 4 + length)).replace(/\\/g, '/');
+      if (data[at + 4] === 1 && view.getUint32(at + 5, true) === crc32(headerName)) {
+        return decoder.decode(data.subarray(at + 9, at + 4 + length)).replace(/\\/g, '/');
+      }
     }
     at += 4 + length;
   }
@@ -173,11 +174,31 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   let eocdOffset = -1;
   for (let i = data.byteLength - 22; i >= eocdMinOffset; i--) {
     if (view.getUint32(i, true) !== EOCD_SIGNATURE) continue;
+    const candidateEntriesThisDisk = view.getUint16(i + 8, true);
+    const candidateEntries = view.getUint16(i + 10, true);
+    const candidateSize = view.getUint32(i + 12, true);
+    const candidateOffset = view.getUint32(i + 16, true);
+    const candidateCommentLen = view.getUint16(i + 20, true);
+    if (i + 22 + candidateCommentLen > data.byteLength) continue;
+    const commentMatchesEof = i + 22 + candidateCommentLen === data.byteLength;
+    const hasZip64Locator = i >= 20 && view.getUint32(i - 20, true) === EOCD64_LOCATOR_SIGNATURE;
+
+    // Detect ZIP64 BEFORE skipping on `candidateOffset + candidateSize > i`, because a real
+    // ZIP64 EOCD carries 0xFFFF / 0xFFFFFFFF sentinel fields and/or a preceding ZIP64 locator.
+    if (
+      hasZip64Locator ||
+      (commentMatchesEof &&
+        (candidateEntriesThisDisk === 0xffff ||
+          candidateEntries === 0xffff ||
+          candidateSize === 0xffffffff ||
+          candidateOffset === 0xffffffff))
+    ) {
+      throw new Error('ZIP64 bundles are not supported');
+    }
+
     // Binary payloads — images especially — contain these four bytes often
     // enough that the signature alone is not proof. A real EOCD is preceded by
     // the central directory it describes, so require that to fit.
-    const candidateSize = view.getUint32(i + 12, true);
-    const candidateOffset = view.getUint32(i + 16, true);
     if (candidateOffset + candidateSize > i) continue;
     if (eocdOffset < 0) {
       eocdOffset = i;
@@ -191,7 +212,6 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     // while the browser ran the other. An archive stored inside a bundle does
     // not trip this: its record's offset is counted from its own first byte,
     // and there is no directory at that offset of the bundle.
-    const candidateEntries = view.getUint16(i + 10, true);
     if (candidateEntries > 0 && candidateOffset + 4 <= i && view.getUint32(candidateOffset, true) === CEN_SIGNATURE) {
       throw new Error('Corrupt ZIP: more than one end-of-central-directory record names a directory');
     }

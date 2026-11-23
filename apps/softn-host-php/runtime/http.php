@@ -251,8 +251,9 @@ if(isset($result['bodyRaw'])) {
     if(isset($result['headers'])&&is_array($result['headers'])) {
         $replacedCt=false;
         $blockedResponseHeaders=[
-            'transfer-encoding'=>true,'connection'=>true,'content-length'=>true,
-            'x-sendfile'=>true,'x-accel-redirect'=>true,'x-accel-buffering'=>true,
+            'status'=>true,'transfer-encoding'=>true,'connection'=>true,'content-length'=>true,
+            'x-sendfile'=>true,'x-sendfile2'=>true,'x-lighttpd-send-file'=>true,
+            'x-accel-redirect'=>true,'x-accel-buffering'=>true,
             'x-accel-charset'=>true,'x-accel-expires'=>true,'x-accel-limit-rate'=>true,
             'x-litespeed-location'=>true,'x-litespeed-purge'=>true,'x-litespeed-tag'=>true,
             'service-worker-allowed'=>true,'access-control-allow-origin'=>true,
@@ -260,6 +261,7 @@ if(isset($result['bodyRaw'])) {
             'access-control-allow-methods'=>true,'access-control-expose-headers'=>true,
             'access-control-max-age'=>true,'content-security-policy'=>true,
             'content-security-policy-report-only'=>true,'x-content-type-options'=>true,
+            'x-frame-options'=>true,'referrer-policy'=>true,
             'strict-transport-security'=>true,'clear-site-data'=>true,
             'cross-origin-opener-policy'=>true,'cross-origin-embedder-policy'=>true,
             'cross-origin-resource-policy'=>true,'refresh'=>true,
@@ -268,18 +270,27 @@ if(isset($result['bodyRaw'])) {
             if(!is_array($pair)||count($pair)<2)continue;
             $k=trim((string)$pair[0]);$v=str_replace(["\r","\n","\0"],'',(string)$pair[1]);
             $lk=strtolower($k);
-            if($k===''||isset($blockedResponseHeaders[$lk])||str_starts_with($lk,'x-accel-')||str_starts_with($lk,'x-litespeed-'))continue;
+            if($k===''||isset($blockedResponseHeaders[$lk])||str_starts_with($lk,'x-accel-')||str_starts_with($lk,'x-litespeed-')||str_starts_with($lk,'x-sendfile')||str_starts_with($lk,'x-lighttpd-'))continue;
             if(!preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/',$k))continue;
             if($lk==='set-cookie') {
                 // Prevent cross-subdomain cookie tossing (`Domain=...`) and ensure SameSite default.
-                if(preg_match('/;\s*domain\s*=/i',$v))continue;
-                if(!preg_match('/;\s*samesite\s*=/i',$v))$v.='; SameSite=Lax';
+                $cookieParts=explode(';',$v);
+                $hasDomain=false;$hasSameSite=false;
+                for($ci=1,$cn=count($cookieParts);$ci<$cn;$ci++) {
+                    $attrName=strtolower(trim(explode('=',$cookieParts[$ci],2)[0]));
+                    if($attrName==='domain'){$hasDomain=true;break;}
+                    if($attrName==='samesite')$hasSameSite=true;
+                }
+                if($hasDomain)continue;
+                if(!$hasSameSite)$v.='; SameSite=Lax';
             }
             if($lk==='content-type'&&!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}
             else header($k.': '.$v,false);
         }
     }
-    http_response_code($result['status']);if(!$head)echo $result['bodyRaw'];
+    $containerStatus=(int)$result['status'];
+    if($containerStatus<200||$containerStatus>599)$containerStatus=500;
+    http_response_code($containerStatus);if(!$head&&$containerStatus!==204&&$containerStatus!==304)echo $result['bodyRaw'];
     exit;
 }
 $responseBody=$result['body'];

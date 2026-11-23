@@ -36,7 +36,7 @@ const SQLITE_IDB_STORE = 'blobs';
 const SQLITE_IDB_VERSION = 2;
 const MAX_PERSISTED_SQLITE_DBS = 8;
 const MAX_SINGLE_SQLITE_BYTES = 64 * 1024 * 1024;
-const MAX_TOTAL_PERSISTED_SQLITE_BYTES = 128 * 1024 * 1024;
+const MAX_TOTAL_PERSISTED_SQLITE_BYTES = 64 * 1024 * 1024;
 
 function openSqliteIdb(version = SQLITE_IDB_VERSION, retried = false): Promise<IDBDatabase | null> {
   if (typeof indexedDB === 'undefined') return Promise.resolve(null);
@@ -287,6 +287,8 @@ export interface LocalBackendTransportOptions {
   xdbModule?: ZippEngineSource;
   xdbGlueUrl?: string;
   instructionBudget?: number;
+  /** Maximum total persisted SQLite bytes across all DBs for this app (defaults to 64 MiB). */
+  maxTotalSqliteBytes?: number;
   onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
   onStatus?: (status: ContainerBootStatus) => void;
 }
@@ -298,6 +300,7 @@ export class LocalBackendTransport implements BackendTransport {
 
   private readonly storagePrefix: string;
   private readonly persistStorage: boolean;
+  private readonly maxTotalSqliteBytes: number;
   private readonly storage?: Storage;
   private readonly onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
   private readonly onStatus?: (status: ContainerBootStatus) => void;
@@ -323,6 +326,10 @@ export class LocalBackendTransport implements BackendTransport {
   constructor(options: LocalBackendTransportOptions) {
     this.storagePrefix = options.storagePrefix;
     this.persistStorage = options.persistStorage !== false;
+    this.maxTotalSqliteBytes =
+      typeof options.maxTotalSqliteBytes === 'number' && Number.isFinite(options.maxTotalSqliteBytes) && options.maxTotalSqliteBytes > 0
+        ? Math.min(options.maxTotalSqliteBytes, MAX_TOTAL_PERSISTED_SQLITE_BYTES)
+        : MAX_TOTAL_PERSISTED_SQLITE_BYTES;
     this.storage = options.storage;
     this.onConsole = options.onConsole;
     this.onStatus = options.onStatus;
@@ -440,7 +447,7 @@ export class LocalBackendTransport implements BackendTransport {
         return;
 
       case 'sqlite-persist':
-        if (this.persistStorage && msg.bytes.byteLength <= MAX_SINGLE_SQLITE_BYTES) {
+        if (this.persistStorage && msg.bytes.byteLength <= Math.min(MAX_SINGLE_SQLITE_BYTES, this.maxTotalSqliteBytes)) {
           if (!this.persistedDbSizes.has(msg.dbKey) && this.persistedDbSizes.size >= MAX_PERSISTED_SQLITE_DBS) {
             return;
           }
@@ -448,7 +455,7 @@ export class LocalBackendTransport implements BackendTransport {
           for (const [k, sz] of this.persistedDbSizes) {
             if (k !== msg.dbKey) totalBytes += sz;
           }
-          if (totalBytes > MAX_TOTAL_PERSISTED_SQLITE_BYTES) {
+          if (totalBytes > this.maxTotalSqliteBytes) {
             return;
           }
           this.persistedDbSizes.set(msg.dbKey, msg.bytes.byteLength);
@@ -500,12 +507,16 @@ export class LocalBackendTransport implements BackendTransport {
     if (this.disposed) throw new Error('LocalBackendTransport is disposed');
     const reqId = this.nextReqId++;
     const path = req.path.startsWith('/') ? req.path : `/${req.path}`;
-    const headers: Record<string, string> = { ...(req.headers ?? {}) };
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers ?? {})) {
+      // Never allow untrusted frontend JS to spoof or suppress VirtualCookieJar HttpOnly cookies.
+      if (k.toLowerCase() === 'cookie') continue;
+      headers[k] = v;
+    }
 
-    // Merge container-scoped cookies from VirtualCookieJar
-    const hasCookieHeader = Object.keys(headers).some((k) => k.toLowerCase() === 'cookie');
+    // Attach container-scoped cookies strictly from VirtualCookieJar
     const jarCookie = this.cookieJar.getCookieHeader(path, true);
-    if (jarCookie && !hasCookieHeader) {
+    if (jarCookie) {
       headers['cookie'] = jarCookie;
     }
 

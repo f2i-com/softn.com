@@ -105,8 +105,17 @@ export class AppAudio {
     if (remote) {
       this.gate.checkPermission('net');
       this.gate.checkNetHost(src);
-    } else if (!fromAsset && !/^(?:blob|data):/i.test(src) && src.trim().startsWith('/')) {
-      return { played: false, reason: `no such sound: ${rawSrc}` };
+    } else if (!fromAsset && !/^(?:blob|data):/i.test(src)) {
+      const hasBundleResolver = typeof this.assetFunction() === 'function';
+      const trimmed = src.trim();
+      const escapesBase =
+        trimmed.startsWith('/') ||
+        trimmed.startsWith('\\') ||
+        /(?:^|[\\/])\.\.(?:$|[\\/])/.test(trimmed) ||
+        /%(?:2e|2f|5c)/i.test(trimmed);
+      if (hasBundleResolver || escapesBase) {
+        return { played: false, reason: `no such sound: ${rawSrc}` };
+      }
     }
 
     const el = new Audio();

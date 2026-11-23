@@ -43,9 +43,10 @@ function emit(result) {
   process.stdout.write('{"status":'+status+',"body":'+(JSON.stringify(body)??'null')+'}');
 }
 function emitContainer(result) {
-  const valid=result&&typeof result==='object'&&Number.isInteger(result.status)&&result.status>=100&&result.status<=599&&Array.isArray(result.headers)&&typeof result.bodyBase64==='string';
+  const valid=result&&typeof result==='object'&&Number.isInteger(result.status)&&result.status>=200&&result.status<=599&&Array.isArray(result.headers)&&typeof result.bodyBase64==='string';
   if(!valid){emit({status:500,body:{error:'The request could not be completed.',code:'host_error'}});return;}
-  process.stdout.write(JSON.stringify({status:result.status,headers:result.headers,bodyBase64:result.bodyBase64}));
+  const bodyBase64=(result.status===204||result.status===304)?'':result.bodyBase64;
+  process.stdout.write(JSON.stringify({status:result.status,headers:result.headers,bodyBase64}));
 }
 // SQLite's "database is busy/locked": another request holds the write lock
 // past busy_timeout. Transient, so answered as the retryable busy response,

@@ -415,4 +415,29 @@ describe('honest archives keep opening', () => {
     const zip = craftZip([{ name: 'a.txt', data: enc('hello') }], { prefix: enc('#!/bin/sh\n'), trailing: enc('\n') }).bytes;
     expect(dec(readBundleEntries(zip).get('a.txt'))).toBe('hello');
   });
+
+  it('rejects a ZIP64 sentinel EOCD appended after a decoy regular archive and honors a valid second 0x7075 Unicode Path field', () => {
+    // 1. A decoy valid ZIP followed by a ZIP64 locator + sentinel EOCD (0xFFFFFFFF offsets)
+    // must be rejected as ZIP64 rather than skipped onto the decoy EOCD.
+    const decoy = craftZip([{ name: 'decoy.txt', data: enc('benign') }]).bytes;
+    const locator = new Uint8Array(20);
+    new DataView(locator.buffer).setUint32(0, 0x07064b50, true);
+    const eocd64 = new Uint8Array(22);
+    const ev = new DataView(eocd64.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, 0xffff, true);
+    ev.setUint16(10, 0xffff, true);
+    ev.setUint32(12, 0xffffffff, true);
+    ev.setUint32(16, 0xffffffff, true);
+    expect(() => openBundleArchive(concat(decoy, locator, eocd64))).toThrow(/ZIP64/i);
+
+    // 2. An invalid 0x7075 Unicode Path extra field followed by a valid 0x7075 extra field
+    // must keep scanning and detect the mismatch with the header name (matching libzip).
+    const stale = unicodePathExtra('wrong-base.txt', 'ignored.txt');
+    const validMismatch = unicodePathExtra('notes.txt', 'evil.ui');
+    const polyglot = craftZip([
+      { name: 'notes.txt', data: enc('payload'), centralExtra: concat(stale, validMismatch) },
+    ]).bytes;
+    expect(() => openBundleArchive(polyglot)).toThrow(/named both notes\.txt and evil\.ui/i);
+  });
 });

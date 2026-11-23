@@ -9,6 +9,7 @@ import * as React from 'react';
 import type { ChartPadding } from './series';
 import { chartPadding, describeChart, formatAxisValue, formatterOr, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
+import { safeSvgPaint } from '../utils/svgPaint';
 
 export interface BarDataPoint {
   label: string;
@@ -207,7 +208,8 @@ export function BarChart({
       if (!dataPoint) return;
 
       const value = dataPoint.value;
-      const color = dataPoint.color || s.color || defaultColors[seriesIdx % defaultColors.length];
+      const fallbackColor = defaultColors[seriesIdx % defaultColors.length];
+      const color = safeSvgPaint(dataPoint.color || s.color, fallbackColor);
 
       // A bar runs between the zero baseline and its value, in whichever
       // direction that is. Taking the span between the two ends rather than

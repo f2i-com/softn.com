@@ -283,7 +283,10 @@ export function getXDB(appId?: string): XDBService {
     if (key.startsWith(EPHEMERAL_XDB_PREFIX)) {
       throw new Error('The preview database scope has been disposed.');
     }
-    const migration = resolved ? migrateLegacyKeys(resolved) : 'none';
+    // Content-digest bundle IDs (sha256 / `softn-<hex>`) are minted for newly opened
+    // sandboxed bundles and must never silently harvest unscoped legacy `xdb:*` keys.
+    const isContentDigestId = resolved ? /^(?:softn-)?[0-9a-f]{16,}$/i.test(resolved) : false;
+    const migration = resolved && !isContentDigestId ? migrateLegacyKeys(resolved) : 'none';
     instance = new XDBService(undefined, prefixFor(resolved), resolved);
     if (migration === 'incomplete') {
       instance._noteIssue({ kind: 'migration-incomplete', message: 'Older records could not all be copied into this app\'s storage (out of space). The original records were kept; free storage and reopen the app to finish.' });

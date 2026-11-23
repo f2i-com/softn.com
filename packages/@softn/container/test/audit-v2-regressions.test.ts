@@ -12,10 +12,11 @@ import {
   SoftNContainerError,
   mountSoftNContainer,
 } from '../src/index';
-import { rewriteCss } from '../src/css-policy';
-import { hostAttributeValue, hostElementName } from '../src/host-policy';
+import { extractFontFaces, namespaceContainerFonts, rewriteCss } from '../src/css-policy';
+import { hostAttributeValue, hostElementName, isDeclaredElementProperty } from '../src/host-policy';
 import { evaluateHtaccessChain, parseHtaccess } from '../src/htaccess';
-import { resolveModuleSpecifier, transformEsModule } from '../src/esm-linker';
+import { isAllowedExternalVendorModule, resolveModuleSpecifier, transformEsModule } from '../src/esm-linker';
+import { VirtualCookieJar } from '../src/backend-transport';
 import { transformJsx } from '../src/jsx-transform';
 import { SourceMapRegistry, findInlineScriptStartLines } from '../src/source-map';
 import { containerRuntimeNeeds } from '../src/runtime-needs';
@@ -716,5 +717,117 @@ describe('SoftN v2 Audit — End-to-End Runtime, Navigation, Storage & IDB', () 
     await settle(150);
     expect(handle.shadowRoot.querySelector('#out')?.textContent).toBe('quota');
     handle.dispose();
+  });
+});
+
+describe('SoftN v2 Round-2 Security Audit Regressions', () => {
+  it('blocks @font-face CSS injection via bracket desync, escaped quotes, CSS-escaped at-rule, and non-font descriptors', () => {
+    // 1. Bracket desync: @media [ { @font-face { ... } } ] {}
+    const bracketDesync = '@media [ { @font-face { font-family: "Hijack"; src: url("data:font/woff2;base64,AA=="); } } ] {}';
+    expect(extractFontFaces(bracketDesync, 'softn-f-1-')).toBe('');
+
+    // 2. Escaped quote + brace breakout inside @font-face
+    const quoteBreakout = '@font-face { font-family: \\" { ; } body { background: red } "; src: url("data:font/woff2;base64,AA=="); }';
+    const out2 = extractFontFaces(quoteBreakout, 'softn-f-1-');
+    expect(out2).not.toContain('body');
+    expect(out2).not.toContain('background');
+    expect(out2).toBe('');
+
+    // 3. CSS-escaped @\66 ont-face must still be detected and namespaced
+    const escapedAt = '@\\66 ont-face { font-family: "Inter"; src: local("Arial"); color: red; }';
+    const declared = new Set<string>();
+    const nsCss = namespaceContainerFonts(escapedAt, 'softn-f-9-', declared);
+    expect(declared.has('inter')).toBe(true);
+    expect(nsCss).toContain('softn-f-9-Inter');
+    expect(nsCss).not.toContain('color');
+
+    const extracted = extractFontFaces(escapedAt, 'softn-f-9-');
+    expect(extracted).toContain('softn-f-9-Inter');
+    expect(extracted).not.toContain('color');
+  });
+
+  it('allowlists only known hosted vendor modules for external /runtime/vendor fetches', async () => {
+    expect(isAllowedExternalVendorModule('three')).toBe(true);
+    expect(isAllowedExternalVendorModule('three/addons/controls/OrbitControls')).toBe(true);
+    expect(isAllowedExternalVendorModule('preact/hooks')).toBe(true);
+    expect(isAllowedExternalVendorModule('arbitrary-tracker')).toBe(false);
+    expect(isAllowedExternalVendorModule('../api/me')).toBe(false);
+
+    const fetchSpy = vi.fn(async () => new Response('export default 1;', { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const handle = await mountSoftNContainer(host, {
+        isolation: 'inline',
+        persistStorage: false,
+        permissionMode: 'deny',
+        engineWasm: { lite: LITE_WASM },
+        source: {
+          'index.html': `<!doctype html><html><body><p id="res"></p><script type="module">
+            try {
+              await import('unlisted-egress-probe');
+              document.getElementById('res').textContent = 'loaded';
+            } catch (e) {
+              document.getElementById('res').textContent = 'blocked';
+            }
+          </script></body></html>`,
+        },
+      });
+      await settle(150);
+      expect(handle.shadowRoot.querySelector('#res')?.textContent).toBe('blocked');
+      expect(fetchSpy).not.toHaveBeenCalled();
+      handle.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('blocks ReDoS patterns and prevents Apache variable double-expansion in .htaccess', () => {
+    const ht = parseHtaccess([
+      'RewriteEngine On',
+      'RewriteRule ^(a|a)+$ /bad.php [L]',
+      'RewriteRule ^([a-z]{1,10})+$ /bad2.php [L]',
+      'RewriteRule ^go/(.+)$ /dest?q=$1 [R=302,L]',
+    ].join('\n'));
+    // Unsafe ReDoS rules are rejected during compilation, leaving only the safe redirect rule
+    expect(ht.rules.length).toBe(1);
+
+    const res = evaluateHtaccessChain(
+      new Map([['', ht]]),
+      {
+        pathname: '/go/%{HTTP:Cookie}',
+        query: '',
+        method: 'GET',
+        host: 'app.softn.local',
+        headers: { cookie: 'session=SECRET123' },
+        https: true,
+      },
+      { isFile: () => false, isDir: () => false }
+    );
+    expect(res.action).toBe('redirect');
+    if (res.action === 'redirect') {
+      expect(res.location).not.toContain('SECRET123');
+      expect(res.location).toContain('%{HTTP:Cookie}');
+    }
+  });
+
+  it('caps VirtualCookieJar entry count and byte size and restricts isDeclaredElementProperty to setters', () => {
+    const jar = new VirtualCookieJar();
+    for (let i = 0; i < 400; i++) {
+      jar.setCookieHeader(`c${i}=${'x'.repeat(20)}; Path=/`);
+    }
+    const serialized = JSON.parse(jar.serialize()) as unknown[];
+    expect(serialized.length).toBeLessThanOrEqual(256);
+
+    class FakeEl {
+      private _rows: unknown[] = [];
+      get rows() { return this._rows; }
+      set rows(v: unknown[]) { this._rows = v; }
+      render() { return 'ok'; }
+    }
+    const inst = new FakeEl() as unknown as Element;
+    expect(isDeclaredElementProperty(inst, 'rows')).toBe(true);
+    expect(isDeclaredElementProperty(inst, 'render')).toBe(false);
   });
 });

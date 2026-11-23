@@ -132,6 +132,9 @@ final class Bundle
                 if ($stat === false || (string) $stat['name'] !== $name) {
                     throw new ApiError(400, "ZIP readers disagree about the name of the bundle's entry $name. Zip it again with an ordinary tool.");
                 }
+                if ((int) ($stat['crc'] & 0xffffffff) !== ($entry['crc'] & 0xffffffff) || (int) $stat['size'] !== $entry['size']) {
+                    throw new ApiError(400, "ZIP readers disagree about the contents of the bundle's entry $name. Zip it again with an ordinary tool.");
+                }
                 if ((int) $stat['encryption_method'] !== ZipArchive::EM_NONE) throw new ApiError(400, 'The bundle has an encrypted entry.');
                 $total += $entry['size'];
                 if ($total > self::MAX_UNCOMPRESSED) throw new ApiError(400, 'The bundle expands to more than 128 MB.');
@@ -490,14 +493,30 @@ final class Bundle
         for ($i = strlen($tail) - 22; $i >= 0; $i--) {
             if ($tail[$i] !== 'P' || substr_compare($tail, "PK\x05\x06", $i, 4) !== 0) continue;
             $at = $tailStart + $i;
+            $entriesDisk = self::u16($tail, $i + 8);
+            $entriesTotal = self::u16($tail, $i + 10);
             $dirSize = self::u32($tail, $i + 12);
             $dirOffset = self::u32($tail, $i + 16);
+            $commentLen = self::u16($tail, $i + 20);
+            if (($at + 22 + $commentLen) > $fileSize) continue;
+            $commentMatchesEof = ($at + 22 + $commentLen) === $fileSize;
+            $hasZip64Locator = $at >= 20 && self::bytesAt($handle, $at - 20, 4) === "PK\x06\x07";
+            if (
+                $hasZip64Locator ||
+                ($commentMatchesEof &&
+                    ($entriesDisk === 0xffff ||
+                        $entriesTotal === 0xffff ||
+                        $dirSize === 0xffffffff ||
+                        $dirOffset === 0xffffffff))
+            ) {
+                throw new ApiError(400, 'The bundle carries a ZIP64 end record, which the runtime does not read, and readers that do take their directory from it. Zip it without ZIP64.');
+            }
             if ($dirOffset + $dirSize > $at) continue;
             if ($end < 0) {
                 $end = $at;
                 continue;
             }
-            if (self::u16($tail, $i + 10) > 0 && $dirOffset + 4 <= $at && self::bytesAt($handle, $dirOffset, 4) === "PK\x01\x02") {
+            if ($entriesTotal > 0 && $dirOffset + 4 <= $at && self::bytesAt($handle, $dirOffset, 4) === "PK\x01\x02") {
                 throw new ApiError(400, 'The bundle has more than one end record naming a central directory, so ZIP readers differ on which files it holds.');
             }
         }

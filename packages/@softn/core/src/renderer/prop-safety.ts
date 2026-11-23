@@ -302,9 +302,14 @@ export function dropTopLayerStyle(props: SoftNProps): void {
     if (typeof style !== 'object' || style === null || Array.isArray(style)) continue;
     let copy: Record<string, unknown> | null = null;
     for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
-      if (!/^(?:webkit|moz|ms)?appearance$/i.test(name)) continue;
+      if (/^csstext$/i.test(name)) {
+        copy ??= { ...(style as Record<string, unknown>) };
+        delete copy[name];
+        continue;
+      }
+      if (!/^-?(?:webkit|moz|ms)?-?appearance$/i.test(name)) continue;
       const normalized = decodeCssEscapes(stripCssComments(String(value), ''));
-      if (!/^\s*base\b/i.test(normalized) && !/(?:var|attr|env)\s*\(/i.test(normalized)) continue;
+      if (!/^\s*base\b/i.test(normalized) && !/(?:var|attr|env|if)\s*\(/i.test(normalized)) continue;
       copy ??= { ...(style as Record<string, unknown>) };
       delete copy[name];
     }
@@ -350,6 +355,11 @@ function withholdFromStyle(props: SoftNProps, prop: string, policy: NonNullable<
 
   let copy: Record<string, unknown> | null = null;
   for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
+    if (/^csstext$/i.test(name)) {
+      if (!copy) copy = { ...(style as Record<string, unknown>) };
+      delete copy[name];
+      continue;
+    }
     if (typeof value !== 'string') {
       // A number is a length or a weight, and nothing at all is nothing set.
       // A list or an object is neither, and React writes it out as text:

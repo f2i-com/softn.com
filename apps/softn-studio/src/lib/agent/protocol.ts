@@ -523,7 +523,7 @@ export function decodeOpenAI(data: Record<string, unknown>): AgentReply {
 /** A native reply with no calls whose text is full of text-protocol calls: the model does not use `tools`. */
 function markTextCalls(reply: AgentReply): AgentReply {
   if (reply.calls.length > 0) return reply;
-  if (/<tool_call\s+name=/i.test(reply.text) || FILE_BLOCK_START.test(reply.text)) return { ...reply, wroteCallsAsText: true };
+  if (/<tool_call(?:\s+name=|\s*>)/i.test(reply.text) || FILE_BLOCK_START.test(reply.text)) return { ...reply, wroteCallsAsText: true };
   return reply;
 }
 
@@ -537,8 +537,12 @@ function markTextCalls(reply: AgentReply): AgentReply {
 const FILE_BLOCK_START = /(?:^|\n)[ \t]*<softn-file\s+path=/i;
 const FILE_BLOCK = /(?:^|\n)[ \t]*<softn-file\s+path="([^"]+)">([\s\S]*?)<\/softn-file>/g;
 
-/** A `<tool_call>` opening tag (name, attributes, `/` when self-closing) or a closing one. */
-const CALL_TAG = /<tool_call\s+name\s*=\s*["']([A-Za-z_][\w-]*)["']((?:\s+[A-Za-z_][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>|<\/tool_call\s*>/g;
+/**
+ * A `<tool_call>` opening tag (either `<tool_call name="..." ...>` or nameless
+ * `<tool_call>` carrying a JSON `{"name": "...", "arguments": {...}}` body)
+ * or a closing `</tool_call>` tag.
+ */
+const CALL_TAG = /<tool_call(?:\s+name\s*=\s*["']([A-Za-z_][\w-]*)["']((?:\s+[A-Za-z_][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)|\s*)>|<\/tool_call\s*>/g;
 
 interface CallBlock {
   start: number;
@@ -578,11 +582,11 @@ function callBlocks(raw: string): CallBlock[] {
       if (tag[3] !== '/') depth++;
       continue;
     }
-    if (tag[3] === '/') {
-      blocks.push({ start: index, end: index + tag[0].length, name: tag[1], attributes: tag[2], body: '' });
+    if (tag[3] === '/' && tag[1]) {
+      blocks.push({ start: index, end: index + tag[0].length, name: tag[1], attributes: tag[2] ?? '', body: '' });
       continue;
     }
-    open = { start: index, bodyStart: index + tag[0].length, name: tag[1], attributes: tag[2] };
+    open = { start: index, bodyStart: index + tag[0].length, name: tag[1] ?? '', attributes: tag[2] ?? '' };
     depth = 1;
   }
   if (open && lastClose) {
@@ -646,6 +650,30 @@ export function parseTextToolCalls(raw: string): { text: string; calls: AgentToo
     const name = block.name;
     const body = block.body;
     const id = `call_t${++textCallCounter}`;
+    if (!name) {
+      // Nameless `<tool_call>{"name":"edit_file","arguments":{...}}</tool_call>` format.
+      const json = body.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      try {
+        const parsed: unknown = json ? JSON.parse(json) : null;
+        if (isRecord(parsed) && typeof parsed.name === 'string' && /^[A-Za-z_][\w-]*$/.test(parsed.name.trim())) {
+          const callName = parsed.name.trim();
+          const rawArgs = parsed.arguments ?? parsed.input ?? parsed.parameters;
+          let input: Record<string, unknown> = {};
+          if (isRecord(rawArgs)) {
+            input = rawArgs;
+          } else if (typeof rawArgs === 'string' && rawArgs.trim()) {
+            const inner: unknown = JSON.parse(rawArgs);
+            if (isRecord(inner)) input = inner;
+          }
+          calls.push({ id, name: callName, input });
+          continue;
+        }
+      } catch {
+        // Fall through to report unreadable JSON call.
+      }
+      calls.push({ id, name: 'unknown', input: {}, parseError: 'The <tool_call> block was missing a tool name. Write <tool_call name="tool_name"> with <arg> elements or a JSON object.' });
+      continue;
+    }
     const attributes = parseAttributes(name, block.attributes);
     if (/<arg\s+name\s*=/.test(body)) {
       calls.push({ id, name, input: { ...attributes, ...parseArgs(name, body) } });

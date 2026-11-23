@@ -6,8 +6,9 @@
  * cookie-gated answers from the server and a redeployed application is seen on
  * the next visit. Paths are taken from the registration scope, so a deployment
  * under a sub-directory works unchanged. Bump VERSION when this file changes. */
-var VERSION = 'softn-serve-sw-3';
+var VERSION = 'softn-serve-sw-4';
 var base = new URL(self.registration.scope).pathname;
+var CACHE_NAME = base === '/' ? VERSION : VERSION + ':' + base;
 var precache = [
   base + 'pwa-icons/icon-192.png',
   base + 'pwa-icons/icon-512.png',
@@ -15,6 +16,12 @@ var precache = [
   base + 'apple-touch-icon.png',
   base + 'share.png',
 ];
+
+function isOwnStaleCache(key) {
+  if (key === CACHE_NAME || key.indexOf('softn-serve-sw-') !== 0) return false;
+  if (base === '/') return key.indexOf(':') === -1;
+  return key.slice(-base.length - 1) === ':' + base;
+}
 
 function offlinePage() {
   var html =
@@ -26,7 +33,7 @@ function offlinePage() {
 
 self.addEventListener('install', function (event) {
   event.waitUntil(
-    caches.open(VERSION).then(function (cache) {
+    caches.open(CACHE_NAME).then(function (cache) {
       // Placeholders an operator removed must not block installation.
       return Promise.allSettled(precache.map(function (url) { return cache.add(url); }));
     }).then(function () { return self.skipWaiting(); })
@@ -36,10 +43,9 @@ self.addEventListener('install', function (event) {
 self.addEventListener('activate', function (event) {
   event.waitUntil(
     caches.keys().then(function (keys) {
-      // This worker's older caches, not the app's downloaded models (core's
-      // model-host.ts keeps them in softn-models-v1), which every bump of
-      // VERSION threw away.
-      return Promise.all(keys.filter(function (key) { return key !== VERSION && key !== 'softn-models-v1'; }).map(function (key) { return caches.delete(key); }));
+      // Only remove this scope's older SW caches; never touch downloaded models
+      // (`softn-models-v1`) or sibling apps sharing the same origin.
+      return Promise.all(keys.filter(isOwnStaleCache).map(function (key) { return caches.delete(key); }));
     }).then(function () { return self.clients.claim(); })
   );
 });
@@ -53,17 +59,19 @@ self.addEventListener('fetch', function (event) {
   if (url.search !== '') return;
   if (url.pathname.indexOf(base + 'api') === 0) return;
   if (request.mode === 'navigate') {
+    var isAppEntry = url.pathname === base || url.pathname === base + 'index.php';
+    if (!isAppEntry) return;
     event.respondWith(
       fetch(request).then(function (response) {
         if (response.ok) {
           var copy = response.clone();
-          caches.open(VERSION).then(function (cache) { return cache.put(base, copy); }).catch(function () {});
+          caches.open(CACHE_NAME).then(function (cache) { return cache.put(base, copy); }).catch(function () {});
         }
         return response;
       }).catch(function () {
         // This worker's own cache, as below: an app's model downloads share
         // the origin's Cache Storage under addresses its script names.
-        return caches.open(VERSION).then(function (cache) { return cache.match(base); }).then(function (cached) { return cached || offlinePage(); });
+        return caches.open(CACHE_NAME).then(function (cache) { return cache.match(base); }).then(function (cached) { return cached || offlinePage(); });
       })
     );
     return;
@@ -80,11 +88,11 @@ self.addEventListener('fetch', function (event) {
       fetch(request).then(function (response) {
         if (response.ok) {
           var copy = response.clone();
-          caches.open(VERSION).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
+          caches.open(CACHE_NAME).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
         }
         return response;
       }).catch(function (error) {
-        return caches.open(VERSION).then(function (cache) { return cache.match(request); }).then(function (cached) {
+        return caches.open(CACHE_NAME).then(function (cache) { return cache.match(request); }).then(function (cached) {
           if (cached) return cached;
           throw error;
         });
@@ -96,12 +104,12 @@ self.addEventListener('fetch', function (event) {
     event.respondWith(
       // This worker's own cache: an app's model downloads share the origin's
       // Cache Storage, under addresses its script names (core's model-host.ts).
-      caches.open(VERSION).then(function (cache) { return cache.match(request); }).then(function (cached) {
+      caches.open(CACHE_NAME).then(function (cache) { return cache.match(request); }).then(function (cached) {
         if (cached) return cached;
         return fetch(request).then(function (response) {
           if (response.ok) {
             var copy = response.clone();
-            caches.open(VERSION).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
+            caches.open(CACHE_NAME).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
           }
           return response;
         });

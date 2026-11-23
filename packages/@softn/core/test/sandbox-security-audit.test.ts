@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { filter, find, get, groupBy, map, pluck } from '../src/runtime/helpers';
 import { createFormState, validateForm } from '../src/runtime/form-binding';
 import { isBlockedFunction, markupValue } from '../src/renderer/host-values';
-import { dropRawMarkupProp, dropTopLayerStyle, sanitizeSvgReferences } from '../src/renderer/prop-safety';
+import { dropRawMarkupProp, dropTopLayerStyle, sanitizeSvgReferences, withholdRemoteStyleUrls } from '../src/renderer/prop-safety';
 import { cssResourceReferences, rewriteCssResources, sanitizeSvg } from '../src/renderer/sanitize-html';
+import { scopeAppCss } from '../src/loader/scope-css';
 import { DocumentShell } from '../src/document-shell/host';
 import { checkSourceModules, GENERATED_SOURCE_HEADER } from '@softn/bundle-format/source-modules';
 import type { EgressConfig } from '../src/runtime/egress-policy';
@@ -143,5 +144,44 @@ describe('sandbox security audit regressions (@softn/core + @softn/bundle-format
     expect(serialized).not.toContain('"tag":"iframe"');
     expect(serialized).toContain('"tag":"div"');
     expect(shell.elementFor(4).children).toEqual([]);
+  });
+
+  it('Round-2: strips cssText, hyphenated -webkit-appearance, var()/if() appearance, CSS Values 5 url modifiers, and non-integer DocumentShell IDs', () => {
+    // 1. Inline style cssText & hyphenated vendor appearance
+    const props: Record<string, unknown> = {
+      style: {
+        cssText: 'appearance: base-select; background: url(https://evil.test/x)',
+        '-webkit-appearance': 'base-select',
+        '-moz-appearance': 'if(style(--x): base-select)',
+        color: 'green',
+      },
+    };
+    withholdRemoteStyleUrls(props, DENY_ALL_EGRESS);
+    dropTopLayerStyle(props);
+    const style = props.style as Record<string, unknown>;
+    expect(style.cssText).toBeUndefined();
+    expect(style['-webkit-appearance']).toBeUndefined();
+    expect(style['-moz-appearance']).toBeUndefined();
+    expect(style.color).toBe('green');
+
+    // 2. Stylesheet scopeAppCss strips var()/attr()/env()/if() appearance
+    const scoped = scopeAppCss('select { appearance: var(--p); -webkit-appearance: base-select; color: red; }', 'app1');
+    expect(scoped.css).not.toContain('var(--p)');
+    expect(scoped.css).not.toContain('base-select');
+    expect(scoped.css).toContain('color: red');
+
+    // 3. CSS Values 5 url("https://evil.test/a" crossorigin(anonymous)) still detected & rewritten
+    const modCss = 'background: url("https://evil.test/beacon.png" crossorigin(anonymous));';
+    const scan = cssResourceReferences(modCss);
+    expect(scan.urls).toContain('https://evil.test/beacon.png');
+    expect(rewriteCssResources(modCss, (t) => t.includes('evil.test'))).not.toContain('evil.test');
+
+    // 4. DocumentShell rejects string/non-integer node IDs (preventing CSS selector injection)
+    const shell = new DocumentShell([], () => false);
+    shell.apply([
+      ['e', '1"] *, [x="' as unknown as number, 'div', {}],
+      ['p', 999999, 'value', 'orphan'],
+    ] as unknown as Parameters<DocumentShell['apply']>[0]);
+    expect(shell.bodyFor([]).length).toBe(0);
   });
 });

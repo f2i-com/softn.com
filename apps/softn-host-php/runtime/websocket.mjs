@@ -33,7 +33,7 @@ export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxCli
   });
   sockets.on('connection',(ws,req)=>{
     let subscription=null,timer=null,controller=null,closed=false;
-    const admission=setTimeout(()=>ws.close(1008,'Subscribe required'),10000);
+    const admission=setTimeout(()=>ws.close(1008,'Subscribe required'),2000);
     function send(value){if(ws.readyState!==1)return;if(ws.bufferedAmount>65536){ws.close(1013,'Client too slow');return;}ws.send(JSON.stringify(value));}
     async function poll(){
       if(closed||!subscription)return;

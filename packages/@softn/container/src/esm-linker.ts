@@ -48,6 +48,39 @@ export function safeVendorName(name: string): boolean {
   return name.split('/').every((segment) => /^[A-Za-z0-9@][A-Za-z0-9._@-]*$/.test(segment));
 }
 
+const HOSTED_EXTERNAL_VENDOR_NAMES = new Set([
+  'three',
+  'three/addons/controls/OrbitControls',
+  'three/addons/loaders/GLTFLoader',
+  'three/addons/loaders/DRACOLoader',
+  'three/addons/loaders/RGBELoader',
+  'three/addons/environments/RoomEnvironment',
+  'three/addons/postprocessing/EffectComposer',
+  'three/addons/postprocessing/RenderPass',
+  'three/addons/postprocessing/UnrealBloomPass',
+  'gltf-loader',
+  'marked',
+  'htm',
+  'preact',
+  'preact/hooks',
+  'preact/jsx-runtime',
+  'preact/jsx-dev-runtime',
+  'react',
+  'react-dom',
+  'react-dom/client',
+  'react/jsx-runtime',
+  'react/jsx-dev-runtime',
+]);
+
+/**
+ * Whether a bare specifier may trigger a same-origin `/runtime/vendor/<name>.js` fetch.
+ * Arbitrary unallowlisted bare specifiers must never issue network fetches from a zero-egress container.
+ */
+export function isAllowedExternalVendorModule(name: string): boolean {
+  if (!safeVendorName(name)) return false;
+  return HOSTED_EXTERNAL_VENDOR_NAMES.has(name);
+}
+
 /** Resolve an ES module specifier from `importerPath` using importMap, VFS, `softn:*`, and `/runtime/vendor/`. */
 export function resolveModuleSpecifier(
   specifier: string,

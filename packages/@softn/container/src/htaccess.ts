@@ -119,10 +119,90 @@ function tokenizeDirective(line: string): string[] {
   return tokens;
 }
 
+const MAX_HTACCESS_REGEX_INPUT_LEN = 2048;
+
+function isQuantifierChar(ch: string | undefined): boolean {
+  return ch === '*' || ch === '+' || ch === '{';
+}
+
+/**
+ * Rejects ReDoS-prone regexes: overly long patterns, nested quantifiers across arbitrary group
+ * nesting (including `{m,n}`), quantified alternations (`(a|a)+`), and backreferences (`\1`–`\9`).
+ */
+function hasUnsafeRegexStructure(pattern: string): boolean {
+  if (pattern.length > 512) return true;
+  interface GroupFrame {
+    hasQuantifier: boolean;
+    hasAlternation: boolean;
+  }
+  const stack: GroupFrame[] = [];
+  let inCharClass = false;
+  let escaped = false;
+
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (escaped) {
+      // Backreferences inside regexes can trigger exponential backtracking in JS engines.
+      if (!inCharClass && ch >= '1' && ch <= '9') return true;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (inCharClass) {
+      if (ch === ']') inCharClass = false;
+      continue;
+    }
+    if (ch === '[') {
+      inCharClass = true;
+      continue;
+    }
+    if (ch === '(') {
+      stack.push({ hasQuantifier: false, hasAlternation: false });
+      continue;
+    }
+    if (ch === ')') {
+      const frame = stack.pop();
+      if (!frame) continue;
+      const next = pattern[i + 1];
+      const quantified = isQuantifierChar(next);
+      if (quantified) {
+        if (frame.hasQuantifier || frame.hasAlternation) return true;
+        if (stack.length > 0) stack[stack.length - 1].hasQuantifier = true;
+      } else if (stack.length > 0) {
+        if (frame.hasQuantifier) stack[stack.length - 1].hasQuantifier = true;
+        if (frame.hasAlternation) stack[stack.length - 1].hasAlternation = true;
+      }
+      continue;
+    }
+    if (ch === '|' && stack.length > 0) {
+      stack[stack.length - 1].hasAlternation = true;
+      continue;
+    }
+    if ((ch === '+' || ch === '*') && stack.length > 0) {
+      stack[stack.length - 1].hasQuantifier = true;
+      continue;
+    }
+    if (ch === '{') {
+      // Check for repetition quantifier `{m}` / `{m,}` / `{m,n}`
+      const close = pattern.indexOf('}', i + 1);
+      if (close > i + 1) {
+        const spec = pattern.slice(i + 1, close);
+        if (/^\d+(?:,\d*)?$/.test(spec)) {
+          if (stack.length > 0) stack[stack.length - 1].hasQuantifier = true;
+          i = close;
+          continue;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function safeCompileRegex(pattern: string, flags = ''): RegExp | null {
-  // Reject overly long patterns and obvious catastrophic nested-quantifier ReDoS patterns.
-  if (pattern.length > 512) return null;
-  if (/\([^()]*[+*][^()]*\)[+*{]/.test(pattern)) return null;
+  if (hasUnsafeRegexStructure(pattern)) return null;
   try {
     return new RegExp(pattern, flags);
   } catch {
@@ -437,7 +517,7 @@ function evaluateCond(
   } else {
     const rx = cond.regex !== undefined ? cond.regex : safeCompileRegex(cond.pattern, cond.nocase ? 'i' : '');
     if (rx) {
-      const m = rx.exec(testVal);
+      const m = rx.exec(testVal.slice(0, MAX_HTACCESS_REGEX_INPUT_LEN));
       if (m) {
         rawMatched = true;
         groups = m.slice(1).map((g) => g ?? '');
@@ -495,8 +575,9 @@ export function evaluateHtaccess(
       if (vfs.isFile(prefix)) basenamesToCheck.add(segs[i]);
     }
     for (const candidate of basenamesToCheck) {
+      const cappedCandidate = candidate.slice(0, MAX_HTACCESS_REGEX_INPUT_LEN);
       for (const rx of htaccess.denyFilesPatterns) {
-        if (rx.test(candidate)) {
+        if (rx.test(cappedCandidate)) {
           return { action: 'deny', status: 403 };
         }
       }
@@ -504,8 +585,9 @@ export function evaluateHtaccess(
   }
 
   // 2. RedirectMatch directives (e.g. `RedirectMatch 404 ^/content/themes/[^/]+/src/`)
+  const cappedCleanPathname = cleanPathname.slice(0, MAX_HTACCESS_REGEX_INPUT_LEN);
   for (const rm of htaccess.redirectMatches) {
-    const m = rm.regex.exec(cleanPathname);
+    const m = rm.regex.exec(cappedCleanPathname);
     if (m) {
       if (rm.status === 403 || rm.status === 404 || rm.status === 410) {
         return { action: 'deny', status: rm.status };
@@ -546,7 +628,7 @@ export function evaluateHtaccess(
     let stopAll = false;
 
     for (const rule of htaccess.rules) {
-      const m = rule.regex.exec(localPath);
+      const m = rule.regex.exec(localPath.slice(0, MAX_HTACCESS_REGEX_INPUT_LEN));
       if (!m) continue;
 
       const relForProbe = htaccess.dirPrefix
@@ -606,9 +688,13 @@ export function evaluateHtaccess(
       }
 
       const ruleGroups = m.slice(1).map((g) => g ?? '');
-      const expanded = expandVariables(
-        applyBackrefs(rule.substitution, ruleGroups, lastCondGroups, rule.escapeBackrefs),
-        state
+      // Expand server variables BEFORE applying attacker-controlled regex backreferences
+      // so a captured URL segment like `%{HTTP:Cookie}` is never evaluated as an Apache variable.
+      const expanded = applyBackrefs(
+        expandVariables(rule.substitution, state),
+        ruleGroups,
+        lastCondGroups,
+        rule.escapeBackrefs
       );
 
       // Split substitution into path + optional query

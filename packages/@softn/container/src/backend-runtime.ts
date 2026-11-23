@@ -13,7 +13,7 @@
  * - Streams dirty SQLite `.db` snapshots and PHP overlay snapshots back to host for IndexedDB persistence
  */
 
-import { base64ToBytes, bytesToBase64, mimeTypeFor } from './archive';
+import { base64ToBytes, bytesToBase64, isBackendPrivatePath, mimeTypeFor } from './archive';
 import { parseCookieHeader, statusTextFor } from './backend-transport';
 import { evaluateHtaccessChain, parseHtaccess, type HtaccessVfsProbe, type ParsedHtaccess } from './htaccess';
 import {
@@ -158,7 +158,57 @@ function bytesToHexStr(bytes: Uint8Array): string {
 }
 void bytesToHexStr;
 
-const PRIVATE_STATIC_BLOCK = /(?:^|\/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock)$|\.(?:php|phtml|inc|tpl|rs|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh)$/i;
+const PRIVATE_STATIC_BLOCK = /(?:^|\/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|manifest\.json|permission\.json|seed\.json)$|\.(?:php|phtml|inc|phar|tpl|rs|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh)$/i;
+
+const PROTECTED_PHP_OVERLAY_EXT_RE = /\.(?:php|phtml|inc|phar)$/i;
+const PROTECTED_PHP_OVERLAY_BASE_RE = /^(?:\.htaccess|\.htpasswd|\.env(?:\..*)?|manifest\.json|permission\.json)$/i;
+
+function isProtectedPhpOverlayPath(rawPath: string, backendEntry?: string): boolean {
+  const norm = String(rawPath ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!norm || norm.includes('\0')) return true;
+  const segs = norm.split('/');
+  if (segs.some((s) => s === '..' || s === '.')) return true;
+  const lower = norm.toLowerCase();
+  const base = segs[segs.length - 1].toLowerCase();
+  if (PROTECTED_PHP_OVERLAY_EXT_RE.test(lower) || PROTECTED_PHP_OVERLAY_BASE_RE.test(base)) {
+    return true;
+  }
+  if (backendEntry) {
+    const cleanEntry = backendEntry.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+    if (cleanEntry && lower === cleanEntry) return true;
+  }
+  return false;
+}
+
+function sanitizePhpOverlayJson(rawJson: string, backendEntry?: string): string {
+  try {
+    const parsed = JSON.parse(rawJson) as {
+      writes?: Record<string, unknown>;
+      deleted?: unknown[];
+      dirs?: unknown[];
+    };
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return '{"writes":{},"deleted":[],"dirs":[]}';
+    }
+    const cleanWrites: Record<string, unknown> = Object.create(null);
+    if (parsed.writes && typeof parsed.writes === 'object' && !Array.isArray(parsed.writes)) {
+      for (const [k, v] of Object.entries(parsed.writes)) {
+        if (!isProtectedPhpOverlayPath(k, backendEntry)) {
+          cleanWrites[k] = v;
+        }
+      }
+    }
+    const cleanDeleted = Array.isArray(parsed.deleted)
+      ? parsed.deleted.filter((p): p is string => typeof p === 'string' && !isProtectedPhpOverlayPath(p, backendEntry))
+      : [];
+    const cleanDirs = Array.isArray(parsed.dirs)
+      ? parsed.dirs.filter((p): p is string => typeof p === 'string' && !p.includes('..') && !p.includes('\0'))
+      : [];
+    return JSON.stringify({ writes: cleanWrites, deleted: cleanDeleted, dirs: cleanDirs });
+  } catch {
+    return '{"writes":{},"deleted":[],"dirs":[]}';
+  }
+}
 
 const JS_BACKEND_PRELUDE = `
 (function () {
@@ -848,8 +898,9 @@ export class BackendWorkerSession {
     app.mountFiles(vfsObj);
     if (initialOverlay) {
       try {
-        app.importOverlayJson(initialOverlay);
-        this.lastPhpOverlaySnapshot = initialOverlay;
+        const cleanOverlay = sanitizePhpOverlayJson(initialOverlay, backend.entry);
+        app.importOverlayJson(cleanOverlay);
+        this.lastPhpOverlaySnapshot = cleanOverlay;
       } catch {
         // Ignore corrupt persisted overlay snapshot
       }
@@ -1072,7 +1123,7 @@ export class BackendWorkerSession {
       }
       if (this.phpApp) {
         try {
-          const snap = this.phpApp.exportOverlayJson();
+          const snap = sanitizePhpOverlayJson(this.phpApp.exportOverlayJson(), this.backend?.entry);
           if (snap !== this.lastPhpOverlaySnapshot && snap !== '{"writes":{},"deleted":[],"dirs":[]}') {
             this.lastPhpOverlaySnapshot = snap;
             this.postToHost({ type: 'php-overlay-persist', overlayJson: snap });
@@ -1184,13 +1235,30 @@ export class BackendWorkerSession {
       }
     }
 
-    // 3. Static asset serving (blocking private dotfiles / source / DB files)
+    // 3. Static asset serving (GET/HEAD only, blocking private/backend/manifest/DB files)
     if (staticFile) {
-      if (PRIVATE_STATIC_BLOCK.test(staticFile)) {
+      const backendRootWithSlash = this.backend?.root
+        ? this.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
+        : '';
+      const isPrivateStatic =
+        PRIVATE_STATIC_BLOCK.test(staticFile) ||
+        isBackendPrivatePath(staticFile, true, backendRootWithSlash);
+      if (isPrivateStatic) {
         return {
           status: 403,
           headers: [['Content-Type', 'text/plain; charset=utf-8']],
           bodyBytes: encodeUtf8('Forbidden'),
+        };
+      }
+      const methodUpper = msg.method.toUpperCase();
+      if (methodUpper !== 'GET' && methodUpper !== 'HEAD') {
+        return {
+          status: 405,
+          headers: [
+            ['Content-Type', 'text/plain; charset=utf-8'],
+            ['Allow', 'GET, HEAD'],
+          ],
+          bodyBytes: encodeUtf8('Method Not Allowed'),
         };
       }
       const bytes = this.readArchiveBytes(staticFile);
@@ -1198,7 +1266,7 @@ export class BackendWorkerSession {
         return {
           status: 200,
           headers: [['Content-Type', mimeTypeFor(staticFile)]],
-          bodyBytes: bytes,
+          bodyBytes: methodUpper === 'HEAD' ? new Uint8Array(0) : bytes,
         };
       }
     }

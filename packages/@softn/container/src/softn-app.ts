@@ -1066,6 +1066,7 @@ export async function mountSoftNContainer(
         xdbModule: xdbSource,
         xdbGlueUrl: options.xdbGlueUrl,
         instructionBudget: limits.instructionsPerTurn,
+        maxTotalSqliteBytes: limits.idbQuotaBytes,
         onConsole: options.onConsole,
         onStatus: emitStatus,
       });
@@ -1125,6 +1126,7 @@ export async function mountSoftNContainer(
       xdbModule: xdbSource,
       xdbGlueUrl: options.xdbGlueUrl,
       instructionBudget: limits.instructionsPerTurn,
+      maxTotalSqliteBytes: limits.idbQuotaBytes,
       onConsole: options.onConsole,
       onStatus: emitStatus,
     });
@@ -1271,7 +1273,16 @@ export async function mountSoftNContainer(
       if ([301, 302, 303, 307, 308].includes(resp.status)) {
         const locPair = resp.headers.find(([k]) => k.toLowerCase() === 'location');
         if (locPair && locPair[1]) {
-          curUrl = new URL(locPair[1], curUrl);
+          let nextUrl: URL;
+          try {
+            nextUrl = new URL(locPair[1], curUrl);
+          } catch {
+            throw new Error('Invalid redirect location from backend');
+          }
+          if (nextUrl.origin !== VIRTUAL_ORIGIN) {
+            throw new Error('Blocked cross-origin redirect from backend');
+          }
+          curUrl = nextUrl;
           if (resp.status === 301 || resp.status === 302 || resp.status === 303) {
             curMethod = 'GET';
             curBody = undefined;
@@ -1283,12 +1294,11 @@ export async function mountSoftNContainer(
       const ctPair = resp.headers.find(([k]) => k.toLowerCase() === 'content-type');
       const ct = (ctPair?.[1] ?? 'text/html').toLowerCase();
       const decoded = new TextDecoder().decode(resp.body);
+      const escapeHtmlText = (s: string) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       const html = ct.includes('html')
         ? decoded
-        : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${path}</title></head><body><pre>${decoded
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')}</pre></body></html>`;
+        : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtmlText(path)}</title></head><body><pre>${escapeHtmlText(decoded)}</pre></body></html>`;
       return {
         finalUrlPath: `${curUrl.pathname}${curUrl.search}`,
         html,
@@ -1954,9 +1964,18 @@ export async function mountSoftNContainer(
               storageKept(kept);
               if (kept || !storage) {
                 if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
+                  if (msg.key === '__proto__' || msg.key === 'constructor' || msg.key === 'prototype') break;
+                  if (!storage) {
+                    let liveBytes = (msg.key.length + msg.value.length) * 2;
+                    for (const [k, v] of Object.entries(liveSession.localStorage)) {
+                      if (k !== msg.key) liveBytes += (k.length + v.length) * 2;
+                    }
+                    if (liveBytes > limits.storageQuotaBytes) break;
+                  }
                   liveSession.localStorage[msg.key] = msg.value;
                   persistSessionSoon();
                 } else if (msg.op === 'remove' && typeof msg.key === 'string') {
+                  if (msg.key === '__proto__' || msg.key === 'constructor' || msg.key === 'prototype') break;
                   delete liveSession.localStorage[msg.key];
                   persistSessionSoon();
                 } else if (msg.op === 'clear') {

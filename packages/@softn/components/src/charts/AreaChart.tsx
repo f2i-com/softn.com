@@ -10,6 +10,7 @@ import type { DataPoint } from './LineChart';
 import type { ChartPadding } from './series';
 import { chartPadding, describeChart, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
+import { safeSvgPaint } from '../utils/svgPaint';
 
 export interface AreaChartSeries {
   name: string;
@@ -310,7 +311,7 @@ export function AreaChart({
   // Build gradient defs
   const gradientDefs = gradient
     ? series.map((s, seriesIndex) => {
-        const color = s.color || defaultColors[seriesIndex % defaultColors.length];
+        const color = safeSvgPaint(s.color, defaultColors[seriesIndex % defaultColors.length]);
         return (
           <linearGradient
             key={`gradient-${seriesIndex}`}
@@ -334,7 +335,8 @@ export function AreaChart({
 
   // Render series
   const renderedSeries = series.map((s, seriesIndex) => {
-    const color = s.color || defaultColors[seriesIndex % defaultColors.length];
+    const fallbackColor = defaultColors[seriesIndex % defaultColors.length];
+    const color = safeSvgPaint(s.color, fallbackColor);
     const smooth = s.smooth ?? true;
     const fillOpacity = s.fillOpacity ?? 0.3;
     const isHovered = hoveredIndex === null || hoveredIndex === seriesIndex;

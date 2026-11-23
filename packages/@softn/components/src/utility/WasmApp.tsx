@@ -48,12 +48,13 @@ import {
   describeMarkupEgress,
   startWasmProgram,
   useAppActive,
+  useAppAssets,
   useAppId,
   useEgressConfig,
   type WasmInputEvent,
   type WasmProgram,
 } from '@softn/core';
-import { useBundleSrc } from '../utils/bundle-src';
+import { namesBundleFile, useBundleSrc } from '../utils/bundle-src';
 
 export interface WasmAppProps {
   /** The program: a .wasm file of the app's (`assets/game.wasm`), or an address the app's `net` permission reaches. */
@@ -127,15 +128,6 @@ function onMac(): boolean {
   if (typeof navigator === 'undefined') return false;
   const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform ?? '';
   return /mac|iphone|ipad/i.test(platform);
-}
-
-/** Whether an address is another origin's: fetched then as softn.net.fetch fetches, with no redirect, referrer or cookies. */
-function otherOrigin(url: string): boolean {
-  try {
-    return new URL(url, document.baseURI).origin !== location.origin;
-  } catch {
-    return true;
-  }
 }
 
 /** The rate the program's sound is made at; the page plays it at its own. */
@@ -281,6 +273,7 @@ export function WasmApp({
   const focusedRef = useRef(false);
   const appId = useAppId();
   const appShown = useAppActive();
+  const assets = useAppAssets();
   const egress = useEgressConfig();
   const url = useBundleSrc(src);
 
@@ -391,6 +384,13 @@ export function WasmApp({
         fail(src ? `This app may not load "${src}"` : 'WasmApp needs a src: the .wasm file to run');
         return;
       }
+      // When a bundle asset resolver is active, never allow an unresolved relative/root-relative
+      // path to fall through and probe host same-origin routes.
+      const isBlobOrData = /^(?:blob|data):/i.test(url);
+      if (assets && namesBundleFile(src) && !isBlobOrData && url === src) {
+        fail(`This app may not load "${src}"`);
+        return;
+      }
       // Judged as the renderer judges an address (a protocol-relative one, or one spelled with
       // backslashes or spaces, is as remote as https://); one that is not remote is allowed.
       if (!describeMarkupEgress(url, egress).allowed) {
@@ -399,14 +399,16 @@ export function WasmApp({
       }
       let bytes: Uint8Array;
       try {
-        // Another origin's address is fetched as softn.net.fetch fetches: no redirect past what
-        // the app may reach, no referrer, no cookies. The app's own files (blob: addresses, or
-        // the host's own, which may need its cookie) are fetched as they are.
+        // Every non-blob/data fetch is uncredentialed, non-redirecting, and referrer-free so
+        // untrusted bundles can never probe host-authenticated same-origin endpoints or follow
+        // open redirects to unpermitted hosts.
         const response = await fetch(
           url,
-          otherOrigin(url) ? { redirect: 'error', referrerPolicy: 'no-referrer', credentials: 'omit', signal: stopping.signal } : { signal: stopping.signal }
+          isBlobOrData
+            ? { signal: stopping.signal }
+            : { redirect: 'error', referrerPolicy: 'no-referrer', credentials: 'omit', signal: stopping.signal }
         );
-        if (!response.ok) throw new Error(`${src} could not be read (${response.status})`);
+        if (!response.ok) throw new Error(`${src} could not be read`);
         bytes = await readProgram(response, src);
       } catch (error) {
         fail(error instanceof Error ? error.message : String(error));

@@ -53,6 +53,8 @@ const ALLOWED_SHADER_EXTENSIONS = new Set([
 ]);
 const MAX_RESOURCES = 16_384;
 const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+const MAX_GEO_GROUPS = 256;
+const MAX_GLTF_TEMPLATES = 32;
 
 /**
  * Guard against extreme `far / near` ratios (> 10,000:1) on perspective cameras,
@@ -287,6 +289,10 @@ export class ThreeWorkerHost {
           }
         });
       });
+      if (this.gltfTemplateCache.size >= MAX_GLTF_TEMPLATES) {
+        const oldestKey = this.gltfTemplateCache.keys().next().value;
+        if (oldestKey !== undefined) this.gltfTemplateCache.delete(oldestKey);
+      }
       this.gltfTemplateCache.set(cleanSrc, templatePromise);
     }
 
@@ -385,10 +391,12 @@ export class ThreeWorkerHost {
     if (!THREE || !entry) return false;
 
     let f32: Float32Array | null = null;
-    if (f32B64 && f32B64.length > 0) {
+    if (f32B64 && f32B64.length > 0 && Math.ceil((f32B64.length * 3) / 4) <= MAX_UPLOAD_BYTES) {
       try {
         const bytes = base64ToBytes(f32B64);
-        f32 = new Float32Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 4));
+        if (bytes.byteLength <= MAX_UPLOAD_BYTES) {
+          f32 = new Float32Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 4));
+        }
       } catch {
         f32 = null;
       }
@@ -591,7 +599,6 @@ export class ThreeWorkerHost {
           case 'im': {
             const inst = entry.objects.get(Number(op[1])) as import('three').InstancedMesh | undefined;
             if (!inst || !inst.isInstancedMesh) break;
-            if (typeof op[2] === 'number') inst.count = op[2];
             if (typeof op[3] === 'string' && op[3].length > 0) {
               const arr = decodeTypedArray('f32', op[3]) as Float32Array;
               if (inst.instanceMatrix.array.length !== arr.length) {
@@ -600,6 +607,10 @@ export class ThreeWorkerHost {
                 (inst.instanceMatrix.array as Float32Array).set(arr);
                 inst.instanceMatrix.needsUpdate = true;
               }
+            }
+            if (typeof op[2] === 'number' && Number.isFinite(op[2])) {
+              const maxAllowed = Math.min(MAX_INSTANCED_MESH_CAP, inst.instanceMatrix.count);
+              inst.count = Math.max(0, Math.min(maxAllowed, Math.floor(op[2])));
             }
             if (typeof op[4] === 'string' && op[4].length > 0) {
               const colArr = decodeTypedArray('f32', op[4]) as Float32Array;
@@ -740,6 +751,7 @@ export class ThreeWorkerHost {
     const attrs = spec.attrs as Record<string, Record<string, unknown>> | undefined;
     if (attrs && typeof attrs === 'object') {
       for (const [name, aSpec] of Object.entries(attrs)) {
+        if (BLOCKED_THREE_KEYS.has(name)) continue;
         if (!aSpec || typeof aSpec.b64 !== 'string') continue;
         const arr = decodeTypedArray(String(aSpec.tc || 'f32'), aSpec.b64);
         const itemSize = Number(aSpec.s) || 3;
@@ -765,12 +777,20 @@ export class ThreeWorkerHost {
     }
     if (Array.isArray(spec.groups)) {
       geo.clearGroups();
-      for (const g of spec.groups as Array<[number, number, number?]>) {
-        geo.addGroup(g[0], g[1], g[2]);
+      const cappedGroups = (spec.groups as Array<[number, number, number?]>).slice(0, MAX_GEO_GROUPS);
+      for (const g of cappedGroups) {
+        if (Array.isArray(g)) geo.addGroup(Number(g[0]) || 0, Number(g[1]) || 0, g[2] !== undefined ? Number(g[2]) : undefined);
       }
     }
-    if (typeof spec.instanceCount === 'number' && (geo as import('three').InstancedBufferGeometry).isInstancedBufferGeometry) {
-      (geo as import('three').InstancedBufferGeometry).instanceCount = spec.instanceCount;
+    if (
+      typeof spec.instanceCount === 'number' &&
+      Number.isFinite(spec.instanceCount) &&
+      (geo as import('three').InstancedBufferGeometry).isInstancedBufferGeometry
+    ) {
+      (geo as import('three').InstancedBufferGeometry).instanceCount = Math.max(
+        0,
+        Math.min(MAX_INSTANCED_MESH_CAP, Math.floor(spec.instanceCount))
+      );
     }
     if (
       Array.isArray(spec.bs) &&

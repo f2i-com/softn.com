@@ -839,38 +839,184 @@ function splitTopLevelCss(input: string, sep: string): string[] {
   return out;
 }
 
+const ALLOWED_FONT_FACE_DESCRIPTORS = new Set([
+  'font-family',
+  'src',
+  'font-style',
+  'font-weight',
+  'font-stretch',
+  'font-display',
+  'unicode-range',
+  'ascent-override',
+  'descent-override',
+  'line-gap-override',
+  'size-adjust',
+  'font-feature-settings',
+  'font-variation-settings',
+]);
+
+/**
+ * Token-aware validator ensuring a `@font-face` body or descriptor value contains no
+ * nested blocks (`{`/`}`), bracket blocks (`[`/`]`), unquoted `@`-rules, or unclosed
+ * strings, comments, or parentheses. Prevents breaking out of `@font-face { ... }` into
+ * host `document.head` rules via escaped quotes or unbalanced tokens.
+ */
+function hasSafeFontFaceTokens(text: string): boolean {
+  let i = 0;
+  let parenDepth = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2);
+      if (close < 0) return false;
+      i = close + 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const quote = c;
+      let j = i + 1;
+      let closed = false;
+      while (j < text.length) {
+        const sc = text[j];
+        if (sc === quote) {
+          j++;
+          closed = true;
+          break;
+        }
+        if (sc === '\n' || sc === '\r' || sc === '\f') return false;
+        if (sc === '\\') {
+          if (j + 1 >= text.length) return false;
+          const next = text[j + 1];
+          if (next === '\r' && text[j + 2] === '\n') j += 3;
+          else if (next === '\n' || next === '\r' || next === '\f') j += 2;
+          else j = readEscape(text, j).end;
+        } else {
+          j++;
+        }
+      }
+      if (!closed) return false;
+      i = j;
+      continue;
+    }
+    if (c === '\\') {
+      const esc = readEscape(text, i);
+      // Reject escaped structural/quote tokens outside strings inside @font-face descriptors
+      // so host-page CSS parsers and serializers cannot diverge on string parity or braces.
+      if (esc.char === '{' || esc.char === '}' || esc.char === '"' || esc.char === "'" || esc.char === ';' || esc.char === '@') {
+        return false;
+      }
+      i = esc.end;
+      continue;
+    }
+    if (c === '{' || c === '}' || c === '[' || c === ']' || c === '@') return false;
+    if (c === '(') {
+      parenDepth++;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      if (parenDepth === 0) return false;
+      parenDepth--;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return parenDepth === 0;
+}
+
+function findTopLevelColon(decl: string): number {
+  let i = 0;
+  let depth = 0;
+  while (i < decl.length) {
+    const c = decl[i];
+    if (c === '"' || c === "'") i = readString(decl, i).end;
+    else if (c === '\\') i = readEscape(decl, i).end;
+    else if (c === '/' && decl[i + 1] === '*') {
+      const close = decl.indexOf('*/', i + 2);
+      i = close < 0 ? decl.length : close + 2;
+    } else if (c === '(') {
+      depth++;
+      i++;
+    } else if (c === ')') {
+      depth = Math.max(0, depth - 1);
+      i++;
+    } else if (depth === 0 && c === ':') {
+      return i;
+    } else {
+      i++;
+    }
+  }
+  return -1;
+}
+
+function stripCssCommentsAndSpace(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2);
+      i = close < 0 ? text.length : close + 2;
+      continue;
+    }
+    out += text[i++];
+  }
+  return out.trim();
+}
+
 function rewriteFontFaceDescriptors(
   body: string,
-  scopePrefix: string,
+  scopePrefix: string | undefined,
   collected?: Set<string>
-): string {
+): { css: string; hasFamily: boolean } {
+  if (!hasSafeFontFaceTokens(body)) {
+    return { css: '', hasFamily: false };
+  }
   const decls = splitTopLevelCss(body, ';');
   const out: string[] = [];
+  let hasFamily = false;
   for (const rawDecl of decls) {
     const trimmed = rawDecl.trim();
     if (!trimmed) continue;
-    const colon = trimmed.indexOf(':');
+    const colon = findTopLevelColon(trimmed);
     if (colon < 0) {
-      out.push(rawDecl);
+      // Never pass malformed non-declaration fragments through into @font-face / document.head.
       continue;
     }
-    const propName = readName(trimmed, 0).name.toLowerCase();
+    const rawProp = stripCssCommentsAndSpace(trimmed.slice(0, colon));
+    if (!rawProp || !startsName(rawProp, 0)) continue;
+    const parsedProp = readName(rawProp, 0);
+    if (parsedProp.end !== rawProp.length) continue;
+    const propName = parsedProp.name.toLowerCase();
+    if (!ALLOWED_FONT_FACE_DESCRIPTORS.has(propName)) {
+      continue;
+    }
+    const rawVal = trimmed.slice(colon + 1).trim();
+    if (!rawVal || !hasSafeFontFaceTokens(rawVal)) {
+      continue;
+    }
     if (propName !== 'font-family') {
-      out.push(rawDecl);
+      out.push(`${propName}: ${rawVal}`);
       continue;
     }
-    const rawVal = trimmed.slice(colon + 1).replace(/\s*!important\s*$/i, '').trim();
-    const parsed = parseSingleFontFamily(rawVal);
+    const cleanVal = rawVal.replace(/\s*!important\s*$/i, '').trim();
+    const parsed = parseSingleFontFamily(cleanVal);
     if (!parsed) {
       // Never emit an unparseable/un-namespaced font-family descriptor into document.head.
       continue;
     }
-    const name = parsed.name.startsWith(scopePrefix) ? parsed.name : `${scopePrefix}${parsed.name}`;
-    const original = parsed.name.startsWith(scopePrefix) ? parsed.name.slice(scopePrefix.length) : parsed.name;
-    if (original) collected?.add(original.toLowerCase());
-    out.push(`font-family: ${cssString(name)}`);
+    hasFamily = true;
+    if (scopePrefix) {
+      const name = parsed.name.startsWith(scopePrefix) ? parsed.name : `${scopePrefix}${parsed.name}`;
+      const original = parsed.name.startsWith(scopePrefix) ? parsed.name.slice(scopePrefix.length) : parsed.name;
+      if (original) collected?.add(original.toLowerCase());
+      out.push(`font-family: ${cssString(name)}`);
+    } else {
+      collected?.add(parsed.name.toLowerCase());
+      out.push(`font-family: ${cssString(parsed.name)}`);
+    }
   }
-  return out.join('; ');
+  return { css: out.join('; '), hasFamily };
 }
 
 function rewriteFontFamilyList(
@@ -948,7 +1094,7 @@ function rewriteFontOrVarValue(
  * Collect lowercase font-family names declared by `@font-face` rules in `sanitizedCss`.
  */
 export function collectFontFaceFamilies(sanitizedCss: string): string[] {
-  if (!/@font-face\b/i.test(sanitizedCss)) return [];
+  if (!/@(?:font-face|\\)/i.test(sanitizedCss)) return [];
   const names = new Set<string>();
   const extracted = extractFontFaces(sanitizedCss);
   let i = 0;
@@ -959,7 +1105,7 @@ export function collectFontFaceFamilies(sanitizedCss: string): string[] {
     const body = extracted.slice(brace + 1, close);
     for (const rawDecl of splitTopLevelCss(body, ';')) {
       const trimmed = rawDecl.trim();
-      const colon = trimmed.indexOf(':');
+      const colon = findTopLevelColon(trimmed);
       if (colon < 0) continue;
       if (readName(trimmed, 0).name.toLowerCase() !== 'font-family') continue;
       const rawVal = trimmed.slice(colon + 1).replace(/\s*!important\s*$/i, '').trim();
@@ -986,7 +1132,7 @@ export function namespaceContainerFonts(
   for (const fam of collectFontFaceFamilies(sanitizedCss)) {
     declaredFamilies.add(fam);
   }
-  if (declaredFamilies.size === 0 && !/@font-face\b/i.test(sanitizedCss)) {
+  if (declaredFamilies.size === 0 && !/@(?:font-face|\\)/i.test(sanitizedCss)) {
     return sanitizedCss;
   }
 
@@ -1014,7 +1160,10 @@ export function namespaceContainerFonts(
           else if (sanitizedCss[j] === '\\') j = Math.min(end, readEscape(sanitizedCss, j).end);
           else if (sanitizedCss[j] === '(') j = Math.min(end, skipBalanced(sanitizedCss, j));
           else if (sanitizedCss[j] === '[') j = skipBrackets(sanitizedCss, j, end);
-          else j++;
+          else if (sanitizedCss[j] === '/' && sanitizedCss[j + 1] === '*') {
+            const close = sanitizedCss.indexOf('*/', j + 2);
+            j = close < 0 || close + 2 > end ? end : close + 2;
+          } else j++;
         }
         if (j >= end) {
           out += sanitizedCss.slice(i, end);
@@ -1029,7 +1178,10 @@ export function namespaceContainerFonts(
         const prelude = sanitizedCss.slice(i, j);
         if (lowerName === 'font-face') {
           const body = sanitizedCss.slice(j + 1, closeBrace);
-          out += `${prelude}{${rewriteFontFaceDescriptors(body, scopePrefix, declaredFamilies)}${closeBrace < end ? '}' : ''}`;
+          const rewritten = rewriteFontFaceDescriptors(body, scopePrefix, declaredFamilies);
+          if (rewritten.hasFamily && rewritten.css) {
+            out += `@font-face{${rewritten.css}}`;
+          }
         } else {
           const childMode =
             mode === 'declarations'
@@ -1051,7 +1203,10 @@ export function namespaceContainerFonts(
           else if (sanitizedCss[j] === '\\') j = Math.min(end, readEscape(sanitizedCss, j).end);
           else if (sanitizedCss[j] === '(') j = Math.min(end, skipBalanced(sanitizedCss, j));
           else if (sanitizedCss[j] === '[') j = skipBrackets(sanitizedCss, j, end);
-          else j++;
+          else if (sanitizedCss[j] === '/' && sanitizedCss[j + 1] === '*') {
+            const close = sanitizedCss.indexOf('*/', j + 2);
+            j = close < 0 || close + 2 > end ? end : close + 2;
+          } else j++;
         }
         if (j >= end) {
           out += sanitizedCss.slice(i, end);
@@ -1074,7 +1229,10 @@ export function namespaceContainerFonts(
         else if (sanitizedCss[j] === '\\') j = Math.min(end, readEscape(sanitizedCss, j).end);
         else if (sanitizedCss[j] === '(') j = Math.min(end, skipBalanced(sanitizedCss, j));
         else if (sanitizedCss[j] === '[') j = skipBrackets(sanitizedCss, j, end);
-        else {
+        else if (sanitizedCss[j] === '/' && sanitizedCss[j + 1] === '*') {
+          const close = sanitizedCss.indexOf('*/', j + 2);
+          j = close < 0 || close + 2 > end ? end : close + 2;
+        } else {
           if (sanitizedCss[j] === ':' && firstColon < 0) firstColon = j;
           j++;
         }
@@ -1120,11 +1278,11 @@ export function namespaceContainerFonts(
 /**
  * Extract already-sanitized `@font-face { ... }` rules from a stylesheet so the container host
  * can mirror them into `document.head` (Chromium does not register `@font-face` rules declared
- * solely inside a ShadowRoot). Only flat `@font-face` descriptor blocks are returned.
+ * solely inside a ShadowRoot). Only flat allowlisted `@font-face` descriptor blocks are returned.
  * When `scopePrefix` is given, every `font-family` descriptor is unconditionally namespaced.
  */
 export function extractFontFaces(sanitizedCss: string, scopePrefix?: string): string {
-  if (!/@font-face\b/i.test(sanitizedCss)) return '';
+  if (!/@(?:font-face|\\)/i.test(sanitizedCss)) return '';
   const blocks: string[] = [];
 
   const scan = (start: number, end: number) => {
@@ -1144,6 +1302,14 @@ export function extractFontFaces(sanitizedCss: string, scopePrefix?: string): st
         i = close < 0 || close + 2 > end ? end : close + 2;
         continue;
       }
+      if (c === '(') {
+        i = Math.min(end, skipBalanced(sanitizedCss, i));
+        continue;
+      }
+      if (c === '[') {
+        i = skipBrackets(sanitizedCss, i, end);
+        continue;
+      }
       if (c === '@' && startsName(sanitizedCss, i + 1)) {
         const ruleName = readName(sanitizedCss, i + 1);
         const lower = ruleName.name.toLowerCase();
@@ -1152,7 +1318,11 @@ export function extractFontFaces(sanitizedCss: string, scopePrefix?: string): st
           if (sanitizedCss[j] === '"' || sanitizedCss[j] === "'") j = Math.min(end, readString(sanitizedCss, j).end);
           else if (sanitizedCss[j] === '\\') j = Math.min(end, readEscape(sanitizedCss, j).end);
           else if (sanitizedCss[j] === '(') j = Math.min(end, skipBalanced(sanitizedCss, j));
-          else j++;
+          else if (sanitizedCss[j] === '[') j = skipBrackets(sanitizedCss, j, end);
+          else if (sanitizedCss[j] === '/' && sanitizedCss[j + 1] === '*') {
+            const close = sanitizedCss.indexOf('*/', j + 2);
+            j = close < 0 || close + 2 > end ? end : close + 2;
+          } else j++;
         }
         if (j >= end) break;
         if (sanitizedCss[j] === ';') {
@@ -1161,11 +1331,14 @@ export function extractFontFaces(sanitizedCss: string, scopePrefix?: string): st
         }
         const closeBrace = findMatchingBrace(sanitizedCss, j, end);
         if (lower === 'font-face' && closeBrace < end) {
-          const body = sanitizedCss.slice(j + 1, closeBrace);
-          // Defense in depth: only allow flat descriptor blocks with no nested braces.
-          if (!/[{}]/.test(body.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ''))) {
-            const finalBody = scopePrefix ? rewriteFontFaceDescriptors(body, scopePrefix) : body;
-            blocks.push(`@font-face{${finalBody}}`);
+          // Ensure the prelude has no stray tokens (CSS `@font-face` takes no prelude).
+          const preludeRemainder = stripCssCommentsAndSpace(sanitizedCss.slice(ruleName.end, j));
+          if (!preludeRemainder) {
+            const body = sanitizedCss.slice(j + 1, closeBrace);
+            const sanitized = rewriteFontFaceDescriptors(body, scopePrefix);
+            if (sanitized.css && (!scopePrefix || sanitized.hasFamily)) {
+              blocks.push(`@font-face{${sanitized.css}}`);
+            }
           }
         } else if (GROUPING_AT_RULES.has(lower)) {
           scan(j + 1, closeBrace);

@@ -1427,4 +1427,40 @@ describe('the text protocol parser', () => {
     // A block on its own lines is still the format.
     expect(decodeOpenAI({ choices: [{ finish_reason: 'stop', message: { content: 'Here:\n<softn-file path="ui/a.ui">\n<App/>\n</softn-file>' } }] }).wroteCallsAsText).toBe(true);
   });
+
+  it('parses nameless JSON-envelope <tool_call> blocks used by local models', () => {
+    const parsed = parseTextToolCalls([
+      'Updating the file.',
+      '<tool_call>',
+      '{"name": "edit_file", "arguments": {"path": "ui/main.ui", "old_string": "Tasks", "new_string": "Done"}}',
+      '</tool_call>',
+      '<tool_call>{"name": "read_file", "parameters": "{\\"path\\": \\"logic/main.logic\\"}"}</tool_call>',
+    ].join('\n'));
+    expect(parsed.text).toBe('Updating the file.');
+    expect(parsed.calls).toHaveLength(2);
+    expect(parsed.calls[0]).toMatchObject({
+      name: 'edit_file',
+      input: { path: 'ui/main.ui', old_string: 'Tasks', new_string: 'Done' },
+    });
+    expect(parsed.calls[1]).toMatchObject({
+      name: 'read_file',
+      input: { path: 'logic/main.logic' },
+    });
+  });
+
+  it('fails an edit run clearly instead of finishing with "The agent stopped without a summary." when the model returns empty replies', async () => {
+    resetAgent(LOCAL);
+    seedApp();
+    fakeProvider('text', [
+      { text: '' },
+      { text: '' },
+    ]);
+    say('Change the heading to Notes');
+    await startAgentRun({ kind: 'edit' });
+    const { run } = lastRun();
+    expect(run.status).toBe('failed');
+    expect(run.reason).toMatch(/empty reply/i);
+    expect(useAIStore.getState().lastFailure?.message).toMatch(/empty reply/i);
+    expect(run.summary).not.toBe('The agent stopped without a summary.');
+  });
 });

@@ -1534,6 +1534,14 @@ function renderElement(
     coerceDeclaredProps(props, registry.getPropKinds(registry.resolveName(node.tag) ?? node.tag));
   }
   dropRawMarkupProp(props);
+  // Prevent DOM clobbering of internal `window.__*` host globals via either raw elements
+  // or registered components forwarding `id` / `name` to the DOM.
+  for (const attr of Object.keys(props)) {
+    const lower = attr.toLowerCase();
+    if ((lower === 'id' || lower === 'name') && typeof props[attr] === 'string' && props[attr].startsWith('__')) {
+      delete props[attr];
+    }
+  }
   // CSS text becomes an object first, so it is checked the way an object is
   // (see inline-style.ts for why a string reached React at all).
   if (typeof props.style === 'string') props.style = inlineStyleObject(props.style);

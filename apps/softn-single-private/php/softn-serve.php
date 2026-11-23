@@ -273,16 +273,24 @@ function softn_withheld_for_bundle(string $name, array $withhold, array $manifes
         if ($ssrEntry !== '' && $lower === $ssrEntry) return true;
         if (is_array($manifest['databases'] ?? null)) {
             foreach ($manifest['databases'] as $dbCfg) {
-                if (!is_array($dbCfg) || !is_string($dbCfg['file'] ?? null)) continue;
-                $dbFile = softn_norm_rel_path($dbCfg['file']);
-                if ($dbFile === '') continue;
-                if (
-                    $lower === $dbFile ||
-                    $lower === $dbFile . '-wal' ||
-                    $lower === $dbFile . '-shm' ||
-                    $lower === $dbFile . '-journal'
-                ) {
-                    return true;
+                if (!is_array($dbCfg)) continue;
+                if (is_string($dbCfg['file'] ?? null)) {
+                    $dbFile = softn_norm_rel_path($dbCfg['file']);
+                    if ($dbFile !== '' && (
+                        $lower === $dbFile ||
+                        $lower === $dbFile . '-wal' ||
+                        $lower === $dbFile . '-shm' ||
+                        $lower === $dbFile . '-journal'
+                    )) {
+                        return true;
+                    }
+                }
+                foreach (['seedSql', 'seedJson'] as $seedKey) {
+                    if (!is_string($dbCfg[$seedKey] ?? null)) continue;
+                    $seedPath = softn_norm_rel_path($dbCfg[$seedKey]);
+                    if ($seedPath !== '' && $lower === $seedPath) {
+                        return true;
+                    }
                 }
             }
         }
@@ -294,8 +302,10 @@ function softn_withheld_for_bundle(string $name, array $withhold, array $manifes
             str_starts_with($base, '.env.') ||
             $base === 'cargo.toml' ||
             $base === 'cargo.lock' ||
+            $base === 'composer.json' ||
+            $base === 'composer.lock' ||
             $base === 'seed.json' ||
-            preg_match('/\.(?:php|phtml|php5|php8|phar|inc|tpl|rs|sql|db|sqlite|sqlite3|ini|bak|sh)$/', $base) === 1 ||
+            preg_match('/\.(?:php|phtml|php5|php8|phar|inc|tpl|rs|py|logic|sql|db|sqlite|sqlite3|ini|bak|sh)$/', $base) === 1 ||
             preg_match('/\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$/', $base) === 1
         ) {
             return true;
@@ -791,7 +801,10 @@ function softn_manifest(ZipArchive $zip): array
     if ($manifestStat !== false && (int)$manifestStat['size'] > SOFTN_MAX_MANIFEST) {
         softn_fail(503, 'Application manifest exceeds the size limit.');
     }
-    $raw = $manifestStat !== false ? $zip->getFromName('manifest.json') : false;
+    $raw = $manifestStat !== false ? $zip->getFromName('manifest.json', SOFTN_MAX_MANIFEST + 1) : false;
+    if (is_string($raw) && strlen($raw) > SOFTN_MAX_MANIFEST) {
+        softn_fail(503, 'Application manifest exceeds the size limit.');
+    }
     if (!is_string($raw)) {
         // No manifest: a zipped folder of a web app, opened at its page. The page
         // every other reader of a bundle opens (@softn/bundle-format's
@@ -1034,7 +1047,7 @@ function softn_source(array $config): never
         }
         $total += $entry['size'];
         if ($total > SOFTN_MAX_PACK) softn_fail(503, 'The application source exceeds the size limit.');
-        $content = $entry['size'] === 0 ? '' : $zip->getFromName($name);
+        $content = $entry['size'] === 0 ? '' : $zip->getFromName($name, $entry['size'] + 1);
         if (!is_string($content) || strlen($content) !== $entry['size']) softn_fail(503, 'Corrupt bundle entry: ' . $name);
         $text[$name] = $content;
     }
@@ -1132,7 +1145,7 @@ function softn_entry(array $config, string $name, bool $icon): never
             softn_fail(416, 'Range not satisfiable.');
         }
         if ($size <= SOFTN_WHOLE_READ) {
-            $data = $zip->getFromName($name);
+            $data = $zip->getFromName($name, $size + 1);
             if (!is_string($data) || strlen($data) !== $size) softn_fail(503, 'Corrupt bundle entry.');
             http_response_code(206);
             header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
@@ -1157,7 +1170,7 @@ function softn_entry(array $config, string $name, bool $icon): never
     if ($head || $size === 0) exit;
     if ($size <= SOFTN_WHOLE_READ) {
         // A whole read is a verified read: libzip checks the CRC at the end.
-        $data = $zip->getFromName($name);
+        $data = $zip->getFromName($name, $size + 1);
         if (!is_string($data) || strlen($data) !== $size) softn_fail(503, 'Corrupt bundle entry.');
         echo $data;
         exit;

@@ -119,7 +119,7 @@ describe('the export and paths it cannot write', () => {
     expect(planBundle(fine).problems.filter((p) => p.type === 'path-collision')).toEqual([]);
   });
 
-  it('refuses a file at the root named __proto__, by name, and archives one anywhere else', () => {
+  it('refuses a file named __proto__ at any depth, by name, while allowing normal names', () => {
     const files = [
       { path: 'manifest.json', content: manifestWith({}) },
       { path: 'ui/main.ui', content: '<App></App>' },
@@ -127,8 +127,11 @@ describe('the export and paths it cannot write', () => {
     expect(() => buildBundle(toVfs([...files, { path: '__proto__', content: new Uint8Array([7, 8, 9]) }]), 0)).toThrow(
       /may not be named "__proto__"/,
     );
-    const archive = unzipSync(buildBundle(toVfs([...files, { path: 'assets/__proto__', content: new Uint8Array([7, 8, 9]) }]), 0));
-    expect(archive['assets/__proto__']).toEqual(new Uint8Array([7, 8, 9]));
+    expect(() => buildBundle(toVfs([...files, { path: 'assets/__proto__', content: new Uint8Array([7, 8, 9]) }]), 0)).toThrow(
+      /may not be named "__proto__"/,
+    );
+    const archive = unzipSync(buildBundle(toVfs([...files, { path: 'assets/proto.bin', content: new Uint8Array([7, 8, 9]) }]), 0));
+    expect(archive['assets/proto.bin']).toEqual(new Uint8Array([7, 8, 9]));
   });
 });
 

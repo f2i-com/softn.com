@@ -8,6 +8,7 @@
 import * as React from 'react';
 import { describeChart, finiteNumber, formatterOr, normaliseArray, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
+import { safeSvgPaint } from '../utils/svgPaint';
 
 export interface PieDataPoint {
   label: string;
@@ -180,7 +181,7 @@ export function PieChart({
       data: d,
       startAngle: currentAngle,
       endAngle: currentAngle + angle,
-      color: d.color || defaultColors[idx % defaultColors.length],
+      color: safeSvgPaint(d.color, defaultColors[idx % defaultColors.length]),
       percent,
     });
     currentAngle += angle;
