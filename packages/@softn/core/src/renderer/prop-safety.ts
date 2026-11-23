@@ -9,8 +9,10 @@ import React from 'react';
 import type { SoftNProps, SoftNRenderContext } from '../types';
 import {
   cssResourceReferences,
+  decodeCssEscapes,
   isRemoteUrl,
   isSafeUrl,
+  stripCssComments,
   DOCUMENT_NAMED_TAGS,
   OPENING_TAGS,
   TOP_LAYER_ATTRIBUTES,
@@ -164,11 +166,21 @@ export function sanitizeSvgReferences(props: SoftNProps, tag: string, policy: Eg
     if (lower === 'href' || lower === 'xlinkhref' || lower === 'xlink:href') {
       const text = urlText(value);
       refused =
-        text !== undefined &&
-        !text.trim().startsWith('#') &&
-        (!isSafeUrl(text) || isWithheldUrl('src', text, policy));
+        value !== undefined &&
+        value !== null &&
+        value !== false &&
+        (text === undefined ||
+          (!text.trim().startsWith('#') &&
+            (!isSafeUrl(text) || isWithheldUrl('src', text, policy))));
     } else {
-      refused = name !== 'style' && loadsFromOutside(value);
+      const primitiveOrHandler =
+        value === undefined ||
+        value === null ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        typeof value === 'function';
+      refused = name !== 'style' && (!primitiveOrHandler || loadsFromOutside(value));
     }
     if (refused) {
       if (isDevelopment) {
@@ -233,6 +245,12 @@ function describeUrlValue(value: unknown): string {
  */
 export function dropRawMarkupProp(props: SoftNProps): void {
   if ('dangerouslySetInnerHTML' in props) delete props.dangerouslySetInnerHTML;
+  // Drop untrusted callback/object React `ref` props so template expressions
+  // cannot receive raw DOM elements or internal component instances via
+  // `ref={(el) => ...}` or `ref={obj}` (`.current`).
+  if ('ref' in props && (typeof props.ref === 'function' || (typeof props.ref === 'object' && props.ref !== null))) {
+    delete props.ref;
+  }
 }
 
 /**
@@ -284,7 +302,9 @@ export function dropTopLayerStyle(props: SoftNProps): void {
     if (typeof style !== 'object' || style === null || Array.isArray(style)) continue;
     let copy: Record<string, unknown> | null = null;
     for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
-      if (!/^(?:webkit|moz|ms)?appearance$/i.test(name) || !/^\s*base\b/i.test(String(value))) continue;
+      if (!/^(?:webkit|moz|ms)?appearance$/i.test(name)) continue;
+      const normalized = decodeCssEscapes(stripCssComments(String(value), ''));
+      if (!/^\s*base\b/i.test(normalized) && !/(?:var|attr|env)\s*\(/i.test(normalized)) continue;
       copy ??= { ...(style as Record<string, unknown>) };
       delete copy[name];
     }

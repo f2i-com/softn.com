@@ -242,6 +242,7 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   }
 
   const declared: DeclaredEntry[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
   const seenLocalHeaders = new Set<number>();
   const seenNames = new Set<string>();
   // `ignoreBOM` keeps a leading U+FEFF in the name. The default drops it, and
@@ -322,8 +323,13 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     if (view.getUint32(localHeaderOffset, true) !== LFH_SIGNATURE) {
       throw new Error('Corrupt ZIP: invalid local file header');
     }
-    if (view.getUint16(localHeaderOffset + 6, true) & 1) {
+    const localFlags = view.getUint16(localHeaderOffset + 6, true);
+    if (localFlags & 1) {
       throw new Error('Encrypted bundles are not supported');
+    }
+    const localMethod = view.getUint16(localHeaderOffset + 8, true);
+    if (localMethod !== method) {
+      throw new Error('Corrupt ZIP: local and central compression methods disagree');
     }
 
     // The name and extra field of the *local* header may differ in length from
@@ -336,6 +342,15 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     }
 
     const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
+    if (localNameLength !== fileNameLength) {
+      throw new Error('Corrupt ZIP: local and central entry names disagree');
+    }
+    const localNameStart = localHeaderOffset + 30;
+    for (let k = 0; k < fileNameLength; k++) {
+      if (data[localNameStart + k] !== nameBytes[k]) {
+        throw new Error('Corrupt ZIP: local and central entry names disagree');
+      }
+    }
     const written = decoder.decode(nameBytes);
     const notUtf8 = !isUtf8(nameBytes);
     const name = written.replace(/\\/g, '/');
@@ -362,6 +377,7 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     }
     seenNames.add(name);
 
+    spans.push({ start: localHeaderOffset, end: dataOffset + compressedSize });
     declared.push({
       name,
       crc32: declaredCrc,
@@ -377,6 +393,14 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   }
   if (offset !== centralDirEnd) {
     throw new Error(countAndSizeDisagree);
+  }
+  if (spans.length > 1) {
+    spans.sort((a, b) => a.start - b.start);
+    for (let s = 1; s < spans.length; s++) {
+      if (spans[s].start < spans[s - 1].end) {
+        throw new Error('Corrupt ZIP: overlapping entry data');
+      }
+    }
   }
 
   return declared;
@@ -490,8 +514,9 @@ export function isUnsafeEntryName(path: string): boolean {
     return true;
   }
   // `.` and empty segments survive the substring checks above but still make a
-  // path that names the same file two ways.
-  return path.split('/').some((segment) => segment === '.' || segment === '');
+  // path that names the same file two ways. Reject `__proto__` segments as well
+  // so no archive entry can collide with prototype slots in plain JS maps.
+  return path.split('/').some((segment) => segment === '.' || segment === '' || segment === '__proto__');
 }
 
 function yieldToEventLoop(): Promise<void> {

@@ -14,6 +14,7 @@ const MAX_BUFFERS = 64;
 const MAX_SHADERS = 32;
 const MAX_PIPELINES = 32;
 const DEFAULT_MAX_BUFFER_MEMORY_MB = 256;
+const HARD_MAX_BUFFER_MEMORY_MB = 512;
 
 // ── Data types ──
 
@@ -127,7 +128,11 @@ export class GpuComputeManager {
   }
 
   private get maxBufferMemoryBytes(): number {
-    const mb = this.permissionConfig?.maxBufferMemoryMB ?? DEFAULT_MAX_BUFFER_MEMORY_MB;
+    const rawMb = this.permissionConfig?.maxBufferMemoryMB;
+    const mb =
+      typeof rawMb === 'number' && Number.isFinite(rawMb) && rawMb > 0
+        ? Math.min(HARD_MAX_BUFFER_MEMORY_MB, rawMb)
+        : DEFAULT_MAX_BUFFER_MEMORY_MB;
     return mb * 1024 * 1024;
   }
 
@@ -234,22 +239,30 @@ export class GpuComputeManager {
     let size: number;
     let initialData: InstanceType<TypedArrayCtor> | null = null;
 
-    if (source.data) {
+    if (source.data !== undefined) {
+      if (!Array.isArray(source.data)) {
+        throw new Error('Buffer source "data" must be an array of numbers');
+      }
+      const rawBytes = source.data.length * Ctor.BYTES_PER_ELEMENT;
+      size = Math.ceil(rawBytes / 4) * 4;
+      if (!Number.isFinite(size) || size < 0 || this.totalBufferBytes + size > this.maxBufferMemoryBytes) {
+        throw new Error(
+          `Buffer memory limit exceeded: ${((this.totalBufferBytes + size) / (1024 * 1024)).toFixed(1)}MB > ${(this.maxBufferMemoryBytes / (1024 * 1024)).toFixed(0)}MB allowed`
+        );
+      }
       initialData = new Ctor(source.data);
-      size = initialData.byteLength;
     } else if (source.size != null) {
-      size = source.size;
+      if (typeof source.size !== 'number' || !Number.isFinite(source.size) || source.size < 0) {
+        throw new Error('Buffer size must be a non-negative finite number');
+      }
+      size = Math.ceil(source.size / 4) * 4;
+      if (this.totalBufferBytes + size > this.maxBufferMemoryBytes) {
+        throw new Error(
+          `Buffer memory limit exceeded: ${((this.totalBufferBytes + size) / (1024 * 1024)).toFixed(1)}MB > ${(this.maxBufferMemoryBytes / (1024 * 1024)).toFixed(0)}MB allowed`
+        );
+      }
     } else {
       throw new Error('Buffer source must have "data" or "size"');
-    }
-
-    // Align to 4 bytes (WebGPU requirement)
-    size = Math.ceil(size / 4) * 4;
-
-    if (this.totalBufferBytes + size > this.maxBufferMemoryBytes) {
-      throw new Error(
-        `Buffer memory limit exceeded: ${((this.totalBufferBytes + size) / (1024 * 1024)).toFixed(1)}MB > ${(this.maxBufferMemoryBytes / (1024 * 1024)).toFixed(0)}MB allowed`
-      );
     }
 
     const buffer = device.createBuffer({
@@ -286,7 +299,14 @@ export class GpuComputeManager {
     const entry = this.buffers.get(bufferId);
     if (!entry) throw new Error(`Buffer not found: ${bufferId}`);
 
+    if (!Array.isArray(data)) {
+      throw new Error('Buffer data must be an array of numbers');
+    }
     const Ctor = getTypedArrayCtor(type || entry.dtype);
+    const neededBytes = data.length * Ctor.BYTES_PER_ELEMENT;
+    if (!Number.isFinite(neededBytes) || neededBytes > entry.size) {
+      throw new Error(`Write exceeds buffer size (${neededBytes} > ${entry.size} bytes)`);
+    }
     const src = new Ctor(data);
     device.queue.writeBuffer(entry.buffer, 0, src);
     return { ok: true };

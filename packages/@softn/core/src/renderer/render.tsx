@@ -1333,9 +1333,11 @@ function renderElement(
   if (SELECT_TO_TAGS.has(node.tag) && typeof props.selectTo === 'string' && props.selectTo !== '') {
     const path = props.selectTo;
     delete props.selectTo;
+    const pathParts = parseStatePath(path);
+    const safePath = pathParts.length > 0 && !pathParts.some((p) => BLOCKED_MEMBER_KEYS.has(p));
     const given = props.onSelect;
     props.onSelect = (row: unknown, ...rest: unknown[]) => {
-      writeState(path, row);
+      if (safePath) writeState(path, row);
       return typeof given === 'function' ? (given as (...a: unknown[]) => unknown)(row, ...rest) : undefined;
     };
   }

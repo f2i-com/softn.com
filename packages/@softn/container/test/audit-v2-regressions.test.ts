@@ -564,4 +564,157 @@ describe('SoftN v2 Audit — End-to-End Runtime, Navigation, Storage & IDB', () 
     expect(handle.shadowRoot.querySelector('#out')?.textContent).toBe('BLOCKED');
     handle.dispose();
   });
+
+  it('drops Popover/Invoker attributes and unsafe <softn-chart color> while preserving download', async () => {
+    const archive = await ContainerArchive.open({ 'index.html': '<!doctype html><html><body></body></html>' });
+    const ctx = {
+      entryPath: 'index.html',
+      archive,
+      permissions: { permissions: {} },
+      netGranted: false,
+    };
+    expect(hostAttributeValue('button', 'command', 'show-modal', ctx)).toBeNull();
+    expect(hostAttributeValue('button', 'commandfor', 'host-dialog', ctx)).toBeNull();
+    expect(hostAttributeValue('button', 'interestfor', 'host-tip', ctx)).toBeNull();
+    expect(hostAttributeValue('button', 'interesttarget', 'host-tip', ctx)).toBeNull();
+    expect(hostAttributeValue('a', 'download', 'report.txt', ctx)).toBe('report.txt');
+
+    expect(hostAttributeValue('softn-chart', 'color', 'url(https://evil.test/#c)', ctx)).toBeNull();
+    expect(hostAttributeValue('softn-chart', 'color', 'red; background:url(https://evil.test)', ctx)).toBeNull();
+    expect(hostAttributeValue('softn-chart', 'color', '#3b82f6', ctx)).toBe('#3b82f6');
+    expect(hostAttributeValue('softn-chart', 'color', 'rgb(10, 20, 30)', ctx)).toBe('rgb(10, 20, 30)');
+    archive.dispose();
+  });
+
+  it('enforces frontend VFS isolation on getBlobUrl and blocks navigating to non-HTML or backend files', async () => {
+    const archive = await ContainerArchive.open({
+      'manifest.json': JSON.stringify({
+        name: 'Isolated',
+        version: '1.0.0',
+        engine: 2,
+        main: 'public/index.html',
+        frontendRoot: 'public',
+        backend: { runtime: 'php', entry: 'server/index.php', routes: ['/api/'], env: { SECRET_KEY: 'top-secret' } },
+      }),
+      'public/index.html': '<!doctype html><html><body><p>Hello</p></body></html>',
+      'public/logo.png': new Uint8Array([137, 80, 78, 71]),
+      '.env': 'API_KEY=secret-123',
+      'server/index.php': '<?php echo "secret";',
+    });
+
+    expect(archive.getBlobUrl('.env')).toBeNull();
+    expect(archive.getBlobUrl('server/index.php')).toBeNull();
+    expect(archive.resolveFrontendExistingPath('.env')).toBeNull();
+    expect(archive.resolveFrontendExistingPath('server/index.php')).toBeNull();
+    expect(archive.resolveFrontendExistingPath('logo.png', 'public/index.html')).toBe('public/logo.png');
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      persistStorage: false,
+      engineWasm: { lite: LITE_WASM },
+      backendTransport: {
+        kind: 'remote',
+        ready: Promise.resolve(),
+        fetch: async () => ({ status: 200, statusText: 'OK', headers: [], body: new Uint8Array() }),
+        dispose: () => undefined,
+      },
+      source: {
+        'manifest.json': JSON.stringify({ name: 'NavIso', engine: 2, main: 'index.html' }),
+        'index.html': '<!doctype html><html><body><p>Home</p></body></html>',
+        'app.js': 'console.log(1);',
+      },
+    });
+    await expect(handle.navigate('/manifest.json')).rejects.toThrow();
+    await expect(handle.navigate('/app.js')).rejects.toThrow();
+    handle.dispose();
+    archive.dispose();
+  });
+
+  it('namespaces @font-face families per mount so guest fonts cannot hijack host page fonts', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const fakeWoff2 = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0x00, 0x00]);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      persistStorage: false,
+      engineWasm: { lite: LITE_WASM },
+      permissionMode: 'deny',
+      source: {
+        'font.woff2': fakeWoff2,
+        'index.html': `<!doctype html><html><head><style>
+          @font-face { font-family: "Inter"; src: url("./font.woff2") format("woff2"); }
+          body { font-family: "Inter", sans-serif; }
+        </style></head><body><p>Hi</p></body></html>`,
+      },
+    });
+    await settle(100);
+
+    const headStyle = document.head.querySelector(`style[data-softn-fonts="${handle.appId}"]`);
+    expect(headStyle?.textContent).toBeTruthy();
+    // Must be namespaced with softn-f-<n>-Inter, never bare font-family: "Inter"
+    expect(headStyle?.textContent).toMatch(/font-family:\s*"softn-f-\d+-Inter"/);
+    expect(headStyle?.textContent).not.toMatch(/font-family:\s*"Inter"/);
+
+    const shadowCss = [...handle.shadowRoot.querySelectorAll('style')].map((s) => s.textContent ?? '').join('\n');
+    expect(shadowCss).toMatch(/font-family:\s*"softn-f-\d+-Inter",\s*sans-serif/);
+
+    handle.dispose();
+  });
+
+  it('sanitizes SVG <a xlink:href> and forces rel="noopener noreferrer"', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      persistStorage: false,
+      engineWasm: { lite: LITE_WASM },
+      permissionMode: 'deny',
+      source: {
+        'index.html': `<!doctype html><html><body>
+          <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+            <a id="good" xlink:href="https://example.test/docs"><text>Docs</text></a>
+            <a id="evil" xlink:href="javascript:alert(1)"><text>Bad</text></a>
+          </svg>
+        </body></html>`,
+      },
+    });
+    await settle(100);
+
+    const good = handle.shadowRoot.querySelector('#good');
+    const evil = handle.shadowRoot.querySelector('#evil');
+    expect(good?.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(good?.getAttribute('target')).toBe('_blank');
+    expect(evil?.getAttribute('href')).toBeNull();
+    expect(evil?.getAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBeNull();
+    handle.dispose();
+  });
+
+  it('enforces storage quota on guest sessionStorage writes', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      isolation: 'inline',
+      persistStorage: true,
+      engineWasm: { lite: LITE_WASM },
+      permissionMode: 'deny',
+      limits: { storageQuotaBytes: 1024 },
+      source: {
+        'index.html': `<!doctype html><html><body><p id="out"></p><script>
+          var status = 'ok';
+          try {
+            sessionStorage.setItem('big', 'x'.repeat(2000));
+            status = 'leaked';
+          } catch (e) {
+            status = 'quota';
+          }
+          document.getElementById('out').textContent = status;
+        </script></body></html>`,
+      },
+    });
+    await settle(150);
+    expect(handle.shadowRoot.querySelector('#out')?.textContent).toBe('quota');
+    handle.dispose();
+  });
 });

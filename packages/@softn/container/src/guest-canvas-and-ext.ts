@@ -986,10 +986,15 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     if (typeof origSsSet === 'function') {
       g.sessionStorage.setItem = function (k, v) {
         var sk = String(k), sv = String(v);
-        origSsSet.call(this, sk, sv);
         if (typeof host !== 'undefined' && typeof host.callSync === 'function') {
-          try { host.callSync('session', 'ss', 'set', sk, sv); } catch (_) {}
+          var accepted = host.callSync('session', 'ss', 'set', sk, sv);
+          if (accepted === false) {
+            var qErr = new Error('QuotaExceededError: sessionStorage quota exceeded');
+            qErr.name = 'QuotaExceededError';
+            throw qErr;
+          }
         }
+        origSsSet.call(this, sk, sv);
       };
     }
     if (typeof origSsRemove === 'function') {

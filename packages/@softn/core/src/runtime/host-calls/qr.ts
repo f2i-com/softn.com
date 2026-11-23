@@ -26,13 +26,22 @@ export class QrReader {
   async decode(call: PendingHostCall): Promise<unknown> {
     this.gate.checkPermission('qr');
     const [imageDataUrl] = call.args;
+    if (typeof imageDataUrl !== 'string' || !imageDataUrl.trim()) {
+      return { data: null, error: 'Invalid QR image source' };
+    }
+    const trimmed = imageDataUrl.trim();
     // The argument goes straight to `img.src`, so a remote URL here is a GET
     // to that host on the bundle's behalf — the same egress `softn.net.fetch`
     // and `softn.audio.play` are held to. `qr` alone says nothing about the
     // network; a data: or blob: image, the ordinary case, carries its bytes.
-    if (typeof imageDataUrl === 'string' && isRemoteUrl(imageDataUrl)) {
+    // Reject non-data/non-blob relative paths (e.g. `/api/...`) that would
+    // otherwise issue credentialed same-origin host GETs.
+    const remote = isRemoteUrl(trimmed);
+    if (remote) {
       this.gate.checkPermission('net');
-      this.gate.checkNetHost(imageDataUrl);
+      this.gate.checkNetHost(trimmed);
+    } else if (!/^(?:data|blob):/i.test(trimmed)) {
+      return { data: null, error: 'Unsupported QR image source' };
     }
     // Use BarcodeDetector API if available
     if ('BarcodeDetector' in globalThis) {
@@ -45,6 +54,10 @@ export class QrReader {
           }
         ).BarcodeDetector({ formats: ['qr_code'] });
         const img = new Image();
+        if (remote) {
+          img.crossOrigin = 'anonymous';
+          img.referrerPolicy = 'no-referrer';
+        }
         await new Promise<void>((resolve, reject) => {
           let settled = false;
           let timeout: ReturnType<typeof setTimeout> | null = null;

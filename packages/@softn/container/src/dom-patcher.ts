@@ -22,8 +22,9 @@ import {
   isDeclaredElementProperty,
   isExternalHref,
   isLinkElement,
+  type FontScopeContext,
 } from './host-policy';
-import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sameSite, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
 import type {
   Canvas2DCmd,
   ContainerPermissions,
@@ -190,6 +191,7 @@ export class HostDomPatcher {
   private permissions: ContainerPermissions;
   private netGranted: boolean;
   private filesGranted: boolean;
+  private readonly fontScope?: FontScopeContext;
   /** When the person last clicked or pressed a key in the app: a file is saved only just after. */
   private lastActivation = Number.NEGATIVE_INFINITY;
   /**
@@ -303,6 +305,8 @@ export class HostDomPatcher {
     filesGranted?: boolean;
     /** How many more nodes there must be before those no longer on the page are looked for (a test asks sooner). */
     sweepNodesEvery?: number;
+    /** Per-mount font-family scoping context to prevent host-page @font-face hijacking. */
+    fontScope?: FontScopeContext;
     callbacks: DomPatcherCallbacks;
   }) {
     this.viewportEl = params.viewportEl;
@@ -312,6 +316,7 @@ export class HostDomPatcher {
     this.permissions = params.permissions;
     this.netGranted = params.netGranted;
     this.filesGranted = params.filesGranted === true;
+    this.fontScope = params.fontScope;
     this.sweepNodesEvery = Math.max(1, params.sweepNodesEvery ?? SWEEP_NODES_EVERY);
     this.callbacks = params.callbacks;
     if (params.headEl) this.nodes.set(GUEST_HEAD_ID, params.headEl);
@@ -575,13 +580,13 @@ export class HostDomPatcher {
               else root.setAttribute(lowerName, value);
             } else if (id === 1 && lowerName === 'style') {
               if (value === null) root.removeAttribute('style');
-              else root.setAttribute('style', sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline'));
+              else root.setAttribute('style', sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope));
             } else if ((id === 0 || id === GUEST_HTML_ID) && lowerName === 'style') {
               // Allow CSS custom properties (`--*`) on `document.documentElement` so theme
               // variables work without letting guest CSS override container box layout.
               const nextProps = new Map<string, string>();
               if (value) {
-                const sanitized = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline');
+                const sanitized = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
                 for (const decl of sanitized.split(';')) {
                   const colon = decl.indexOf(':');
                   if (colon <= 0) continue;
@@ -783,6 +788,9 @@ export class HostDomPatcher {
     }
 
     if (val === null) {
+      if (lowerName === 'xlink:href' && el.namespaceURI === SVG_NS) {
+        el.removeAttributeNS('http://www.w3.org/1999/xlink', 'href');
+      }
       el.removeAttribute(name);
       if (isLinkElement(lowerTag)) this.holdLink(el);
       // An image no longer asked for with CORS (or with no address): loaded as any other.
@@ -800,6 +808,7 @@ export class HostDomPatcher {
       permissions: this.permissions,
       netGranted: this.netGranted,
       ns: el.namespaceURI === MATH_NS ? 'math' : el.namespaceURI === SVG_NS ? 'svg' : undefined,
+      fontScope: this.fontScope,
     });
     // An image on the page asked for with CORS: fetched by the page and shown from a blob of
     // what came (loadReadable), so that a canvas it is drawn into is read back, toBlob too.
@@ -862,11 +871,14 @@ export class HostDomPatcher {
     this.letGoOfReadable(img);
   }
 
-  /** A link out opens in a tab of its own with no handle on this page, whatever target the app gave it and in whatever order it set them. */
+  /** A link gets `noopener noreferrer`; an external link opens in a tab of its own with no handle on this page. */
   private holdLink(el: Element): void {
-    if (!isExternalHref(el.getAttribute('href') ?? '')) return;
+    const href = linkHrefOf(el);
+    if (!href) return;
     el.setAttribute('rel', 'noopener noreferrer');
-    el.setAttribute('target', '_blank');
+    if (isExternalHref(href)) {
+      el.setAttribute('target', '_blank');
+    }
   }
 
   /** The `<style>` whose text node `id` is, if it is one's. */
@@ -885,9 +897,9 @@ export class HostDomPatcher {
       if (node && node.nodeType === Node.TEXT_NODE) css += node.nodeValue ?? '';
     }
     const scope = this.cssScope(sheet);
-    const sanitized = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted, scope);
+    const sanitized = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted, scope, this.fontScope);
     sheet.textContent = sanitized;
-    this.callbacks.onStyleFonts?.(sheet, extractSanitizedFontFaces(sanitized));
+    this.callbacks.onStyleFonts?.(sheet, extractSanitizedFontFaces(sanitized, this.fontScope?.prefix));
     this.writtenSheets.add(sheet);
     if (scope === 'shadow') this.shadowSheets.add(sheet);
     else this.shadowSheets.delete(sheet);
@@ -1079,7 +1091,8 @@ export class HostDomPatcher {
     const readable = (url: string): boolean => {
       try {
         const parsed = new URL(url);
-        if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.origin === location.origin) return false;
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+        if (typeof location !== 'undefined' && (parsed.origin === location.origin || sameSite(parsed.hostname, location.hostname))) return false;
       } catch {
         return false;
       }
@@ -1094,7 +1107,7 @@ export class HostDomPatcher {
     }
     // Never from the browser's copy: one the embedding page loaded with the person's cookies
     // (a site of its own it shares cookies with) would come back as if fetched without them.
-    void fetch(address, { mode: 'cors', credentials: 'omit', cache: 'no-store' })
+    void fetch(address, { mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' })
       .then(async (response) => {
         if (!response.ok || (response.redirected && !readable(response.url))) throw new Error('not readable');
         // Read a part at a time and held to its size as it comes, and with the others being
@@ -1211,10 +1224,10 @@ export class HostDomPatcher {
   private writeLinkedSheet(el: Element, link: { rel: string; href: string }): void {
     let css = '';
     if (/(?:^|\s)stylesheet(?:\s|$)/i.test(link.rel) && link.href.trim()) {
-      const path = this.archive.resolveExistingPath(link.href, this.entryPath);
+      const path = this.archive.resolveFrontendExistingPath(link.href, this.entryPath);
       const text = path ? this.archive.readText(path) : null;
       const scope = this.cssScope(el);
-      if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted, scope);
+      if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted, scope, this.fontScope);
       this.writtenSheets.add(el);
       if (scope === 'shadow') this.shadowSheets.add(el);
       else this.shadowSheets.delete(el);
@@ -1224,7 +1237,7 @@ export class HostDomPatcher {
       this.linkNews.delete(el);
     }
     el.textContent = css;
-    this.callbacks.onStyleFonts?.(el, extractSanitizedFontFaces(css));
+    this.callbacks.onStyleFonts?.(el, extractSanitizedFontFaces(css, this.fontScope?.prefix));
   }
 
   /** Reconcile `parent`'s DOM children to match `childIds` with minimal DOM moves. */
@@ -1832,7 +1845,7 @@ export class HostDomPatcher {
       const anchor = linkOnPath(e);
       if (!anchor || !this.owns(anchor)) return;
       e.preventDefault();
-      const href = (anchor.getAttribute('href') ?? '').trim();
+      const href = linkHrefOf(anchor);
       if (!href) return;
       if (href.startsWith('#')) {
         // A place in the tree the link is in: the app's page, or the shadow tree it is in.
@@ -1856,6 +1869,20 @@ export class HostDomPatcher {
       // thread away, so the page waits for its answer (the listener below hands the click
       // over and follows the link if it was not cancelled). It was followed at once: the
       // "Home" link of a single-page app loaded the app again from the start.
+      this.afterGuestEvent(e, () => this.followClickedLink(href));
+    };
+    const onAuxClickCapture = (e: Event) => {
+      if ((e as MouseEvent).button !== 1) return;
+      const anchor = linkOnPath(e);
+      if (!anchor || !this.owns(anchor)) return;
+      e.preventDefault();
+      const href = linkHrefOf(anchor);
+      if (!href || href.startsWith('#')) return;
+      if (isExternalHref(href)) {
+        if (this.callbacks.onExternalLink) this.callbacks.onExternalLink(href);
+        else if (typeof window !== 'undefined' && typeof window.open === 'function') window.open(href, '_blank', 'noopener,noreferrer');
+        return;
+      }
       this.afterGuestEvent(e, () => this.followClickedLink(href));
     };
     const onInputOrChange = (e: Event) => {
@@ -1883,6 +1910,7 @@ export class HostDomPatcher {
     // leave (a click) passes more than one of these, and is handled at the first.
     this.listen('submit', oncePerEvent(onSubmitCapture), true);
     this.listen('click', oncePerEvent(onClickCapture), false);
+    this.listen('auxclick', oncePerEvent(onAuxClickCapture), false);
     this.listen('keydown', oncePerEvent(e => this.submitOnEnter(e)), false);
     this.listen('input', oncePerEvent(onInputOrChange), true);
     this.listen('change', oncePerEvent(onInputOrChange), true);
@@ -2273,12 +2301,26 @@ function isSubmitButton(node: EventTarget): node is (HTMLButtonElement | HTMLInp
     (node instanceof HTMLInputElement && (node.type === 'submit' || node.type === 'image'));
 }
 
+const XLINK_NS = 'http://www.w3.org/1999/xlink';
+
+function linkHrefOf(el: Element): string {
+  return (el.getAttribute('href') ?? el.getAttributeNS(XLINK_NS, 'href') ?? '').trim();
+}
+
+function isLinkWithHref(el: Element): boolean {
+  return isLinkElement(el.localName.toLowerCase()) && (el.hasAttribute('href') || el.hasAttributeNS(XLINK_NS, 'href'));
+}
+
 /** The nearest link on an event's way out, through any shadow tree. */
 function linkOnPath(e: Event): Element | null {
   const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-  for (const node of path) if (node instanceof Element && node.matches('a[href], area[href]')) return node;
-  const target = e.target instanceof Element ? e.target : null;
-  return target?.closest('a[href], area[href]') ?? null;
+  for (const node of path) if (node instanceof Element && isLinkWithHref(node)) return node;
+  let cur: Element | null = e.target instanceof Element ? e.target : null;
+  while (cur) {
+    if (isLinkWithHref(cur)) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 /** `fn`, run once for an event however many of the app's roots it passes. */

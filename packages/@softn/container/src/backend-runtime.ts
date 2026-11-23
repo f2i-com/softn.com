@@ -645,6 +645,26 @@ export class BackendWorkerSession {
     return out;
   }
 
+  private isProtectedRustOverlayPath(rawPath: string): boolean {
+    if (!rawPath || typeof rawPath !== 'string' || rawPath.includes('\0') || rawPath.includes('\\')) return true;
+    const clean = rawPath.replace(/^\/+/, '');
+    if (!clean || clean.split('/').some((seg) => seg === '' || seg === '.' || seg === '..' || seg === '__proto__')) {
+      return true;
+    }
+    const lower = clean.toLowerCase();
+    const base = lower.slice(lower.lastIndexOf('/') + 1);
+    if (lower.endsWith('.rs') || base === 'cargo.toml' || base === 'cargo.lock') return true;
+    if (this.backend) {
+      const rootPrefix = this.backend.root ? this.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
+      const relEntry =
+        rootPrefix && this.backend.entry.startsWith(`${rootPrefix}/`)
+          ? this.backend.entry.slice(rootPrefix.length + 1)
+          : this.backend.entry;
+      if (lower === relEntry.toLowerCase() || lower === this.backend.entry.toLowerCase()) return true;
+    }
+    return false;
+  }
+
   private persistRustOverlayIfChanged(): void {
     if (!this.rustEngine || typeof this.rustEngine.exportRustOverlayJson !== 'function') return;
     try {
@@ -658,7 +678,7 @@ export class BackendWorkerSession {
       let dirty = false;
       if (delta.writes && typeof delta.writes === 'object') {
         for (const [k, b64] of Object.entries(delta.writes)) {
-          if (typeof b64 !== 'string') continue;
+          if (typeof b64 !== 'string' || this.isProtectedRustOverlayPath(k)) continue;
           if (this.rustOverlayWrites[k] !== b64 || this.rustOverlayDeleted.has(k)) {
             this.rustOverlayWrites[k] = b64;
             this.rustOverlayDeleted.delete(k);
@@ -668,7 +688,7 @@ export class BackendWorkerSession {
       }
       if (Array.isArray(delta.deleted)) {
         for (const d of delta.deleted) {
-          if (typeof d !== 'string') continue;
+          if (typeof d !== 'string' || this.isProtectedRustOverlayPath(d)) continue;
           if (d in this.rustOverlayWrites) {
             delete this.rustOverlayWrites[d];
             dirty = true;
@@ -735,7 +755,7 @@ export class BackendWorkerSession {
         };
         if (Array.isArray(parsed.deleted)) {
           for (const d of parsed.deleted) {
-            if (typeof d === 'string') {
+            if (typeof d === 'string' && !this.isProtectedRustOverlayPath(d)) {
               this.rustOverlayDeleted.add(d);
               delete vfsObj[d];
             }
@@ -743,7 +763,7 @@ export class BackendWorkerSession {
         }
         if (parsed.writes && typeof parsed.writes === 'object') {
           for (const [k, b64] of Object.entries(parsed.writes)) {
-            if (typeof b64 === 'string') {
+            if (typeof b64 === 'string' && !this.isProtectedRustOverlayPath(k)) {
               this.rustOverlayWrites[k] = b64;
               vfsObj[k] = { base64: b64 };
             }
@@ -1012,13 +1032,18 @@ export class BackendWorkerSession {
           __softn_sql_need?: [string, string, string, string];
         } = {};
         const MAX_SQL_STEPS = 512;
+        const MAX_PYTHON_SQL_CACHE_BYTES = 8 * 1024 * 1024;
         // Renew budget ONCE per HTTP request (not inside the SQL replay loop, which would
         // amplify the per-request budget by up to 512x).
         this.pythonEngine.renewInstructionBudget();
         for (let step = 0; step <= MAX_SQL_STEPS; step++) {
+          const cacheJson = JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v));
+          if (cacheJson.length > MAX_PYTHON_SQL_CACHE_BYTES) {
+            throw new Error('Python backend exceeded maximum SQL cache size per request');
+          }
           const rawResp = pyDispatch.call(this.pythonEngine, '__softn_backend_dispatch', [
             reqPayload,
-            JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)),
+            cacheJson,
           ]);
           parsed = JSON.parse(String(rawResp)) as typeof parsed;
           if (Array.isArray(parsed.__softn_sql_need) && this.sqlBridge) {

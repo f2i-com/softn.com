@@ -9,7 +9,7 @@ import { SoftNRenderer, useSoftN, useStructurallyStableValue, type SoftNRenderer
 import { LoadingIndicator } from './LoadingIndicator';
 import type { PermissionConfig } from '../runtime/script-runtime';
 import { createSyncControls, type SyncControls } from '../runtime/db-sync-controls';
-import { describeHostAllowlist } from '../runtime/egress-policy';
+import { describeHostAllowlist, isLocalHostname } from '../runtime/egress-policy';
 import { getXDB } from '../runtime/xdb';
 import { readSavedSyncRoom } from '../runtime/xdb-sync-key';
 import type { SoftNDocument } from '../parser/ast';
@@ -371,6 +371,18 @@ export function createXDBHelpers(
      * Trigger a sync (placeholder for future P2P sync)
      */
     sync: () => {
+      if (permissionConfig?.consentPending === true) {
+        throw new Error(
+          'Sync not permitted yet: this app has asked to use your other devices and you ' +
+            'have not allowed it. Choose Allow in the permission bar at the top of the app.'
+        );
+      }
+      if (permissionConfig?.permissions?.sync?.enabled !== true) {
+        throw new Error(
+          'Sync not permitted: declare { "permissions": { "sync": { "enabled": true } } } ' +
+            "in the bundle's permission.json so the user can approve it."
+        );
+      }
       return xdb.sync();
     },
 
@@ -402,7 +414,8 @@ export function createXDBHelpers(
     ),
 
     getDbPath: () => {
-      return xdb.getDbPath();
+      // Never disclose host filesystem paths to untrusted bundle templates.
+      return Promise.resolve(null);
     },
   };
 }
@@ -553,12 +566,34 @@ export function SoftNWithXDB({
       );
       return;
     }
+    // Validate server URL scheme strictly (only ws:// or wss://) before allowlist check.
+    const trimmedServerUrl = serverUrl.trim();
+    let parsedServerUrl: URL;
+    try {
+      parsedServerUrl = new URL(trimmedServerUrl);
+    } catch {
+      console.error(`[SoftN] Server sync refused: Invalid server URL`);
+      return;
+    }
+    if (parsedServerUrl.protocol !== 'wss:' && parsedServerUrl.protocol !== 'ws:') {
+      console.error(`[SoftN] Server sync refused: Scheme not allowed (${parsedServerUrl.protocol})`);
+      return;
+    }
     // The bundle chose this host. If it also scoped itself to a host list, the
     // same list `softn.net.fetch` is held to applies here: a manifest must not
-    // be a way past permission.json.
-    const destination = describeHostAllowlist(serverUrl, stablePermissionConfig?.permissions?.net);
+    // be a way past permission.json. Also block private/local hosts unless listed.
+    const netPerm = stablePermissionConfig?.permissions?.net;
+    const destination = describeHostAllowlist(trimmedServerUrl, netPerm);
     if (!destination.allowed) {
       console.error(`[SoftN] Server sync refused: ${destination.reason}`);
+      return;
+    }
+    const listedHost =
+      Array.isArray(netPerm?.allowed_hosts) && netPerm.allowed_hosts.includes(parsedServerUrl.hostname);
+    if (!listedHost && isLocalHostname(parsedServerUrl.hostname)) {
+      console.error(
+        `[SoftN] Server sync refused: ${parsedServerUrl.hostname} is on this computer or local network. Name it in net.allowed_hosts to reach it.`
+      );
       return;
     }
     let sync: import('../runtime/xdb-server-sync').XDBServerSync | null = null;

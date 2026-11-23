@@ -73,10 +73,13 @@ function extractBackendConfig(manifest: Record<string, unknown> | null | undefin
   return { backend, databases };
 }
 
+const BLOCKED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function normalizeHeaders(raw: unknown): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   if (!raw || typeof raw !== 'object') return out;
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (BLOCKED_OBJECT_KEYS.has(k.toLowerCase())) continue;
     if (v !== undefined && v !== null) {
       out[k] = String(v);
     }
@@ -109,18 +112,32 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
   // Quick pre-check before starting the backend worker so unrelated external HTTPS calls
   // (like `https://api.github.com/...`) don't boot the PHP/JS/SQLite worker unnecessarily.
   const routes = Array.isArray(backend.routes) && backend.routes.length > 0
-    ? backend.routes
+    ? backend.routes.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
     : (backend.mode ?? (backend.runtime === 'php' ? 'ssr' : 'api')) === 'ssr'
       ? ['/']
       : ['/api/', '/ws'];
-  const interceptOrigins = (backend.interceptOrigins ?? []).map((o) => o.replace(/\/+$/, '').toLowerCase());
+  const interceptOrigins = new Set(
+    (Array.isArray(backend.interceptOrigins) ? backend.interceptOrigins : [])
+      .filter((o): o is string => typeof o === 'string')
+      .map((o) => {
+        try {
+          return new URL(o.trim()).origin.toLowerCase();
+        } catch {
+          return '';
+        }
+      })
+      .filter(Boolean)
+  );
 
   function looksLikeBackendUrl(rawUrl: string): boolean {
     const trimmed = String(rawUrl || '').trim();
     if (!trimmed) return false;
     if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
-      const lower = trimmed.toLowerCase();
-      return interceptOrigins.some((origin) => lower.startsWith(origin));
+      try {
+        return interceptOrigins.has(new URL(trimmed).origin.toLowerCase());
+      } catch {
+        return false;
+      }
     }
     const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
     return routes.some((prefix) => {
@@ -138,20 +155,28 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
       const routing = container.buildBackendRoutingConfig(backend);
       const hosted = hostedContainerOptions();
       const runtimeUrl = options.runtimeUrl ?? hosted.runtimeUrl;
-      const cleanId = options.appId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'ui_app';
-      const textFiles: Record<string, string> = {};
-      const binaryFiles: Record<string, Uint8Array> = {};
+      const cleanId = encodeURIComponent(options.appId || 'ui_app');
+      const textFiles: Record<string, string> = Object.create(null);
+      const binaryFiles: Record<string, Uint8Array> = Object.create(null);
       if (options.bundleBytes && options.bundleBytes.byteLength > 0) {
         const archive = await container.ContainerArchive.open(options.bundleBytes);
         const exported = archive.exportBackendVfs();
-        Object.assign(textFiles, exported.textFiles);
-        Object.assign(binaryFiles, exported.binaryFiles);
+        for (const [k, v] of Object.entries(exported.textFiles)) {
+          if (!BLOCKED_OBJECT_KEYS.has(k)) textFiles[k] = v;
+        }
+        for (const [k, v] of Object.entries(exported.binaryFiles)) {
+          if (!BLOCKED_OBJECT_KEYS.has(k)) binaryFiles[k] = v;
+        }
       }
       if (options.textFiles) {
-        for (const [k, v] of Object.entries(options.textFiles)) textFiles[k] = v;
+        for (const [k, v] of Object.entries(options.textFiles)) {
+          if (!BLOCKED_OBJECT_KEYS.has(k)) textFiles[k] = v;
+        }
       }
       if (options.binaryFiles) {
-        for (const [k, v] of Object.entries(options.binaryFiles)) binaryFiles[k] = v;
+        for (const [k, v] of Object.entries(options.binaryFiles)) {
+          if (!BLOCKED_OBJECT_KEYS.has(k)) binaryFiles[k] = v;
+        }
       }
       const backendTier =
         backend.runtime === 'rust'
@@ -238,9 +263,10 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
       url,
     });
 
-    const respHeaders: Record<string, string> = {};
+    const respHeaders: Record<string, string> = Object.create(null);
     for (const [k, v] of resp.headers) {
       const lower = k.toLowerCase();
+      if (BLOCKED_OBJECT_KEYS.has(lower)) continue;
       respHeaders[lower] = respHeaders[lower] ? `${respHeaders[lower]}, ${v}` : v;
     }
 

@@ -375,12 +375,24 @@ export class WebGLWorkerHost {
         return entry.handles.get(Number(arg[1])) ?? null;
       case '$b':
         return decodeTypedArray(String(arg[1]), String(arg[2]));
-      case '$f32':
+      case '$f32': {
+        if (!Array.isArray(arg[1]) || arg[1].length * 4 > MAX_WEBGL_UPLOAD_BYTES) {
+          throw new RangeError('WebGL Float32Array upload exceeds size limit');
+        }
         return new Float32Array(arg[1] as number[]);
-      case '$i32':
+      }
+      case '$i32': {
+        if (!Array.isArray(arg[1]) || arg[1].length * 4 > MAX_WEBGL_UPLOAD_BYTES) {
+          throw new RangeError('WebGL Int32Array upload exceeds size limit');
+        }
         return new Int32Array(arg[1] as number[]);
-      case '$u32':
+      }
+      case '$u32': {
+        if (!Array.isArray(arg[1]) || arg[1].length * 4 > MAX_WEBGL_UPLOAD_BYTES) {
+          throw new RangeError('WebGL Uint32Array upload exceeds size limit');
+        }
         return new Uint32Array(arg[1] as number[]);
+      }
       case '$c2d': {
         const cid = Number(arg[1]);
         const w = Number(arg[2]);
@@ -395,10 +407,18 @@ export class WebGLWorkerHost {
       case '$img':
         return resolvers?.getImageBitmap?.(String(arg[1])) ?? null;
       case '$imagedata': {
-        const w = Math.max(1, Number(arg[1]) || 1);
-        const h = Math.max(1, Number(arg[2]) || 1);
-        const raw = base64ToBytes(String(arg[3] ?? ''));
-        return typeof ImageData === 'function' && raw.byteLength === w * h * 4
+        const w = Math.max(1, Math.min(4096, Math.floor(Number(arg[1]) || 1)));
+        const h = Math.max(1, Math.min(4096, Math.floor(Number(arg[2]) || 1)));
+        const expectedBytes = w * h * 4;
+        const b64 = String(arg[3] ?? '');
+        if (
+          expectedBytes > MAX_WEBGL_UPLOAD_BYTES ||
+          b64.length > Math.ceil((MAX_WEBGL_UPLOAD_BYTES * 4) / 3) + 16
+        ) {
+          throw new RangeError('WebGL ImageData upload exceeds size limit');
+        }
+        const raw = base64ToBytes(b64);
+        return typeof ImageData === 'function' && raw.byteLength === expectedBytes
           ? new ImageData(new Uint8ClampedArray(raw), w, h)
           : null;
       }
@@ -425,6 +445,7 @@ export class WebGLWorkerHost {
       try {
         if (op === 'v') {
           const method = String(cmd[1]);
+          if (method === '__proto__' || method === 'constructor' || method === 'prototype') continue;
           const fn = glRec[method];
           if (typeof fn !== 'function') continue;
           const decoded: unknown[] = [];
@@ -479,6 +500,7 @@ export class WebGLWorkerHost {
         } else if (op === 'x') {
           const extName = String(cmd[1]);
           const method = String(cmd[2]);
+          if (method === '__proto__' || method === 'constructor' || method === 'prototype') continue;
           const ext = entry.extensions.get(extName);
           if (!ext) continue;
           const fn = ext[method];
@@ -502,6 +524,7 @@ export class WebGLWorkerHost {
       if (syncCmd[0] === 'ext') {
         const ext = entry.extensions.get(String(syncCmd[1]));
         const method = String(syncCmd[2]);
+        if (method === '__proto__' || method === 'constructor' || method === 'prototype') return null;
         const fn = ext?.[method];
         if (typeof fn !== 'function') return null;
         const decoded: unknown[] = [];

@@ -55,6 +55,7 @@ interface Resolved {
 
 const MB = 1024 * 1024;
 const DEFAULT_MAX_MB = 1024;
+const HARD_MAX_MODEL_MB = 8 * 1024;
 const MAX_LOADED = 2;
 const CACHE_NAME = 'softn-models-v1';
 const HUB = 'https://huggingface.co';
@@ -410,7 +411,7 @@ export class ModelHost {
 
   private maxBytes(): number {
     const mb = num(this.config.ai?.maxModelSizeMB) ?? DEFAULT_MAX_MB;
-    return Math.max(1, mb) * MB;
+    return Math.min(HARD_MAX_MODEL_MB, Math.max(1, mb)) * MB;
   }
 
   private allow(kind: Resolved['kind']): void {

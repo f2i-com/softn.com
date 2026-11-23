@@ -34,6 +34,9 @@ const SQLITE_IDB_NAME = 'softn-container-sqlite';
 const SQLITE_IDB_STORE = 'blobs';
 // v2 upgrades any pre-existing empty v1 DB that an older reader opened without onupgradeneeded.
 const SQLITE_IDB_VERSION = 2;
+const MAX_PERSISTED_SQLITE_DBS = 8;
+const MAX_SINGLE_SQLITE_BYTES = 64 * 1024 * 1024;
+const MAX_TOTAL_PERSISTED_SQLITE_BYTES = 128 * 1024 * 1024;
 
 function openSqliteIdb(version = SQLITE_IDB_VERSION, retried = false): Promise<IDBDatabase | null> {
   if (typeof indexedDB === 'undefined') return Promise.resolve(null);
@@ -311,6 +314,7 @@ export class LocalBackendTransport implements BackendTransport {
     { resolve: (val: unknown) => void; reject: (err: Error) => void }
   >();
   private readonly wsHandlers = new Map<string, (event: BackendWsEvent) => void>();
+  private readonly persistedDbSizes = new Map<string, number>();
   private resolveReady!: () => void;
   private rejectReady!: (err: Error) => void;
   private isReady = false;
@@ -354,6 +358,10 @@ export class LocalBackendTransport implements BackendTransport {
           };
 
       if (this.disposed) return;
+      this.persistedDbSizes.clear();
+      for (const [dbKey, bytes] of Object.entries(persisted.dbs)) {
+        if (bytes instanceof Uint8Array) this.persistedDbSizes.set(dbKey, bytes.byteLength);
+      }
       if (persisted.cookies) {
         this.cookieJar.hydrate(persisted.cookies);
       }
@@ -432,7 +440,18 @@ export class LocalBackendTransport implements BackendTransport {
         return;
 
       case 'sqlite-persist':
-        if (this.persistStorage && msg.bytes.byteLength <= 64 * 1024 * 1024) {
+        if (this.persistStorage && msg.bytes.byteLength <= MAX_SINGLE_SQLITE_BYTES) {
+          if (!this.persistedDbSizes.has(msg.dbKey) && this.persistedDbSizes.size >= MAX_PERSISTED_SQLITE_DBS) {
+            return;
+          }
+          let totalBytes = msg.bytes.byteLength;
+          for (const [k, sz] of this.persistedDbSizes) {
+            if (k !== msg.dbKey) totalBytes += sz;
+          }
+          if (totalBytes > MAX_TOTAL_PERSISTED_SQLITE_BYTES) {
+            return;
+          }
+          this.persistedDbSizes.set(msg.dbKey, msg.bytes.byteLength);
           void savePersistedBlob(`${this.storagePrefix}sqlite:${msg.dbKey}`, msg.bytes, this.storage);
         }
         return;

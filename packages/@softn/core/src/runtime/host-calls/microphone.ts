@@ -68,11 +68,14 @@ export class AppMicrophone {
     // dialog showed them, so it wins over whatever the script asks for.
     const declaredCap = this.gate.permissionConfig()?.permissions.mic?.maxSeconds;
     const requested =
-      typeof options.seconds === 'number' && options.seconds > 0 ? options.seconds : 5;
-    const seconds = Math.min(
-      requested,
-      typeof declaredCap === 'number' && declaredCap > 0 ? declaredCap : 300
-    );
+      typeof options.seconds === 'number' && Number.isFinite(options.seconds) && options.seconds > 0
+        ? options.seconds
+        : 5;
+    const effectiveCap =
+      typeof declaredCap === 'number' && Number.isFinite(declaredCap) && declaredCap > 0
+        ? Math.min(300, declaredCap)
+        : 300;
+    const seconds = Math.min(requested, effectiveCap);
 
     const acquisition = { cancelled: false };
     this.acquisition = acquisition;

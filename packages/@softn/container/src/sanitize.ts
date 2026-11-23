@@ -12,9 +12,9 @@
  *   and enforces `net.allowed_hosts` egress policy on external URLs
  */
 
-import { ContainerArchive, readRunnableModule, resolveVfsPath, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
-import { extractFontFaces, rewriteCss, transformContainerCss } from './css-policy';
-import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement } from './host-policy';
+import { ContainerArchive, readRunnableModule, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
+import { collectFontFaceFamilies, extractFontFaces, namespaceContainerFonts, rewriteCss, transformContainerCss } from './css-policy';
+import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement, type FontScopeContext } from './host-policy';
 import { findInlineScriptStartLines } from './source-map';
 import { SOFTN_UI_CSS } from './ui-css';
 import type {
@@ -137,9 +137,9 @@ export function sanitizeHostAssetUrl(
     return null;
   }
 
-  // A link out (`<a href="https://...">`, an image map's `<area>`) fetches nothing until the
-  // person follows it, and then the patcher opens it in a tab of its own.
-  const isLink = (tagName === 'a' || tagName === 'area') && attrName === 'href';
+  // A link out (`<a href="https://...">`, SVG `<a xlink:href="https://...">`, an image map's `<area>`)
+  // fetches nothing until the person follows it, and then the patcher opens it in a tab of its own.
+  const isLink = (tagName === 'a' || tagName === 'area') && (attrName === 'href' || attrName === 'xlink:href');
   const isFormAction =
     (tagName === 'form' && attrName === 'action') ||
     ((tagName === 'button' || tagName === 'input') && attrName === 'formaction');
@@ -163,8 +163,8 @@ export function sanitizeHostAssetUrl(
     }
   }
 
-  // Virtual-origin or relative path -> resolve from `.softn` archive VFS
-  const vfsPath = archive.resolveExistingPath(originalTrimmed, basePath);
+  // Virtual-origin or relative path -> resolve strictly from frontend VFS (never backend/private files)
+  const vfsPath = archive.resolveFrontendExistingPath(originalTrimmed, basePath);
   if (vfsPath) {
     // A link to a file of the app's keeps the file's path: the patcher follows it inside the
     // container (a page) or does nothing (anything else). It is never given a `blob:`
@@ -210,7 +210,8 @@ export function sanitizeContainerCss(
   permissions: ContainerPermissions,
   netGranted: boolean,
   /** Where the sheet is: the app's page, a shadow tree the app attached, or an inline `style` value. */
-  scope: 'page' | 'shadow' | 'inline' = 'page'
+  scope: 'page' | 'shadow' | 'inline' = 'page',
+  fontScope?: FontScopeContext
 ): string {
   const out = rewriteCss(css, (target) => {
     // An empty address is the page's own: the embedding page, fetched again as an image.
@@ -224,17 +225,20 @@ export function sanitizeContainerCss(
     if (SVG_DATA.test(target)) return target;
     const runtimeBlob = RUNTIME_BLOB_URL.exec(target);
     if (runtimeBlob) return archive.getRuntimeBlobUrl(runtimeBlob[1]);
-    const vfs = archive.resolveExistingPath(target, basePath);
+    const vfs = archive.resolveFrontendExistingPath(target, basePath);
     if (vfs) return archive.getBlobUrl(vfs);
     if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
     return null;
   }, { keepHost: scope === 'shadow' });
 
-  return transformContainerCss(out, {
+  const transformed = transformContainerCss(out, {
     scopeSelectors: scope === 'page',
     rewriteViewportUnits: true,
     inline: scope === 'inline',
   });
+  return fontScope
+    ? namespaceContainerFonts(transformed, fontScope.prefix, fontScope.families, scope === 'inline')
+    : transformed;
 }
 
 export { extractFontFaces as extractSanitizedFontFaces };
@@ -348,7 +352,8 @@ export function prepareHtmlDocument(
   entryPath: string,
   archive: ContainerArchive,
   permissions: ContainerPermissions,
-  netGranted: boolean
+  netGranted: boolean,
+  fontScope?: FontScopeContext
 ): PreparedDocument {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(htmlSource, 'text/html');
@@ -379,9 +384,9 @@ export function prepareHtmlDocument(
           usesSoftnUiCss = true;
           styles.push(SOFTN_UI_CSS);
         } else {
-          const cssText = archive.readText(href, entryPath);
-          if (cssText !== null) {
-            const cssPath = archive.resolveExistingPath(href, entryPath) ?? resolveVfsPath(href, entryPath) ?? entryPath;
+          const cssPath = archive.resolveFrontendExistingPath(href, entryPath);
+          const cssText = cssPath ? archive.readText(cssPath) : null;
+          if (cssText !== null && cssPath) {
             styles.push(sanitizeContainerCss(cssText, cssPath, archive, permissions, netGranted));
           }
         }
@@ -413,7 +418,7 @@ export function prepareHtmlDocument(
       const deferred = classified !== null && !el.hasAttribute('async') && (classified.kind === 'module' || (!!srcAttr && el.hasAttribute('defer')));
       if (classified && runs) {
         if (srcAttr) {
-          const resolvedSrc = archive.resolveExistingPath(srcAttr, entryPath);
+          const resolvedSrc = archive.resolveFrontendExistingPath(srcAttr, entryPath);
           const code = resolvedSrc ? readRunnableModule(resolvedSrc, (path) => archive.readText(path)) : null;
           if (code !== null && resolvedSrc) {
             const vfsFile = archive.toFrontendVfsPath(resolvedSrc);
@@ -492,6 +497,18 @@ export function prepareHtmlDocument(
     }
   }
 
+  // Namespace all static @font-face families across stylesheets so guest fonts cannot hijack host page fonts.
+  if (fontScope && styles.length > 0) {
+    for (const s of styles) {
+      for (const fam of collectFontFaceFamilies(s)) {
+        fontScope.families.add(fam);
+      }
+    }
+    for (let idx = 0; idx < styles.length; idx++) {
+      styles[idx] = namespaceContainerFonts(styles[idx], fontScope.prefix, fontScope.families, false);
+    }
+  }
+
   // Extract `<html>` and `<body>` safe attributes
   const extractSafeRootAttrs = (el: Element | null): Record<string, string> => {
     const out: Record<string, string> = {};
@@ -500,7 +517,7 @@ export function prepareHtmlDocument(
       const name = attr.name.toLowerCase();
       if (name.startsWith('on')) continue;
       if (name === 'style') {
-        out.style = sanitizeContainerCss(attr.value, entryPath, archive, permissions, netGranted, 'inline');
+        out.style = sanitizeContainerCss(attr.value, entryPath, archive, permissions, netGranted, 'inline', fontScope);
       } else {
         out[attr.name] = attr.value;
       }
@@ -565,7 +582,7 @@ export function prepareHtmlDocument(
     const seedAttrs: Record<string, string> = {};
     const hostAttrs: Record<string, string> = {};
     const inlineHandlers: Record<string, string> = {};
-    const context = { entryPath, archive, permissions, netGranted, ns };
+    const context = { entryPath, archive, permissions, netGranted, ns, fontScope };
 
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name;
@@ -588,11 +605,15 @@ export function prepareHtmlDocument(
       delete hostAttrs.src;
     }
 
-    // A link out opens in a tab of its own, with no handle on this page, whatever the app
-    // wrote for its target (the patcher's click rule says the same for a link made later).
-    if (isLinkElement(lowerTag) && hostAttrs.href && isExternalHref(hostAttrs.href)) {
-      hostAttrs.rel = 'noopener noreferrer';
-      hostAttrs.target = '_blank';
+    // Every link gets `noopener noreferrer`; an external link opens in a new tab of its own.
+    if (isLinkElement(lowerTag)) {
+      const linkHref = hostAttrs.href ?? hostAttrs['xlink:href'] ?? '';
+      if (linkHref) {
+        hostAttrs.rel = 'noopener noreferrer';
+        if (isExternalHref(linkHref)) {
+          hostAttrs.target = '_blank';
+        }
+      }
     }
 
     // `<template>` holds inert template content for guest `.content.cloneNode(true)`

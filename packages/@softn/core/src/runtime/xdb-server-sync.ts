@@ -473,10 +473,11 @@ interface SyncMetaStore {
  * a multi-tenant host's `wss://h/app/sync` is `https://h/app/sync/ticket`.
  */
 export function syncTicketUrl(wsUrl: string): string {
-  const base = typeof location === 'undefined' ? undefined : location.href;
-  const url = new URL(wsUrl, base);
+  const trimmed = typeof wsUrl === 'string' ? wsUrl.trim() : '';
+  const url = new URL(trimmed);
   if (url.protocol === 'wss:') url.protocol = 'https:';
   else if (url.protocol === 'ws:') url.protocol = 'http:';
+  else throw new Error(`Sync server URL must use wss:// or ws://, got ${url.protocol}`);
   url.pathname = url.pathname.replace(/\/+$/, '') + '/ticket';
   url.search = '';
   url.hash = '';
@@ -949,9 +950,20 @@ export class XDBServerSync {
     // explicitly opted in (local development against localhost).
     // URL schemes are case-insensitive: `WS://` dials the same plaintext
     // socket `ws://` does, and used to walk past this check.
-    const url = this.config.wsUrl;
-    if (/^ws:\/\//i.test(url) && !this.config.allowInsecureWs) {
-      const host = new URL(url.replace(/^ws:\/\//i, 'http://')).hostname;
+    const rawUrl = typeof this.config.wsUrl === 'string' ? this.config.wsUrl.trim() : '';
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      this.listeners.error.forEach((fn) => fn('Invalid sync server URL.'));
+      return;
+    }
+    if (parsed.protocol !== 'wss:' && parsed.protocol !== 'ws:') {
+      this.listeners.error.forEach((fn) => fn('Sync server URL must use wss:// or ws://.'));
+      return;
+    }
+    if (parsed.protocol === 'ws:' && !this.config.allowInsecureWs) {
+      const host = parsed.hostname.toLowerCase();
       if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1' && host !== '[::1]') {
         this.listeners.error.forEach((fn) =>
           fn(
@@ -961,6 +973,7 @@ export class XDBServerSync {
         return;
       }
     }
+    const url = parsed.href;
 
     // A host with a token authenticates the handshake itself, before any
     // message: the socket used to open bare and send the token in a first
@@ -984,6 +997,7 @@ export class XDBServerSync {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         credentials: 'omit',
+        referrerPolicy: 'no-referrer',
         cache: 'no-store',
       });
       if (stale()) return;

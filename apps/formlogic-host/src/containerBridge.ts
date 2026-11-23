@@ -178,6 +178,10 @@ function isSafePortHttpPath(rawPath: string): boolean {
   return true;
 }
 
+const MAX_PORT_COOKIES = 50;
+const MAX_PORT_COOKIE_BYTES = 4096;
+const COOKIE_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
 class PortCookieJar {
   private readonly cookies = new Map<string, { value: string; path: string; expiresAt: number | null }>();
 
@@ -185,12 +189,13 @@ class PortCookieJar {
     const now = Date.now();
     for (const [k, raw] of headers) {
       if (k.toLowerCase() !== 'set-cookie') continue;
+      if (raw.length > MAX_PORT_COOKIE_BYTES || /[\r\n\0]/.test(raw)) continue;
       const parts = raw.split(';');
       const eq = parts[0].indexOf('=');
       if (eq <= 0) continue;
       const name = parts[0].slice(0, eq).trim();
       const value = parts[0].slice(eq + 1).trim();
-      if (!name) continue;
+      if (!name || !COOKIE_NAME_RE.test(name) || /[;\r\n\0]/.test(value)) continue;
       let path = '/';
       let expiresAt: number | null = null;
       let expired = false;
@@ -199,7 +204,7 @@ class PortCookieJar {
         const aEq = attr.indexOf('=');
         const aKey = (aEq >= 0 ? attr.slice(0, aEq) : attr).trim().toLowerCase();
         const aVal = aEq >= 0 ? attr.slice(aEq + 1).trim() : '';
-        if (aKey === 'path' && aVal.startsWith('/')) {
+        if (aKey === 'path' && aVal.startsWith('/') && !/[\r\n\0]/.test(aVal)) {
           path = aVal;
         } else if (aKey === 'max-age') {
           const secs = Number(aVal);
@@ -219,6 +224,10 @@ class PortCookieJar {
       if (expired) {
         this.cookies.delete(key);
       } else {
+        if (!this.cookies.has(key) && this.cookies.size >= MAX_PORT_COOKIES) {
+          const oldest = this.cookies.keys().next().value;
+          if (oldest !== undefined) this.cookies.delete(oldest);
+        }
         this.cookies.set(key, { value, path, expiresAt });
       }
     }

@@ -92,11 +92,29 @@ export function isRoomMarkedShared(appId: string | undefined, room: string): boo
   return false;
 }
 
+const MAX_PERSISTED_SYNC_ROOMS_PER_APP = 64;
+const MAX_SYNC_ROOM_NAME_LEN = 256;
+
+function countPrefixKeys(store: Storage, prefix: string): number {
+  let count = 0;
+  for (let i = 0; i < store.length; i++) {
+    const key = store.key(i);
+    if (key && key.startsWith(prefix)) count++;
+  }
+  return count;
+}
+
 /** Remember that `room` was started shared, so a start without options keeps its key. */
 export function markRoomShared(appId: string | undefined, room: string): void {
-  if (!appId) return;
+  if (!appId || room.length > MAX_SYNC_ROOM_NAME_LEN) return;
   try {
-    storage()?.setItem(sharedRoomFlagKey(appId, room), 'true');
+    const store = storage();
+    if (!store) return;
+    const key = sharedRoomFlagKey(appId, room);
+    if (store.getItem(key) === null && countPrefixKeys(store, `${SHARED_FLAG_PREFIX}:${appId}:`) >= MAX_PERSISTED_SYNC_ROOMS_PER_APP) {
+      return;
+    }
+    store.setItem(key, 'true');
   } catch {
     // Quota or a restricted context: the room is still shared for this session.
   }
@@ -168,9 +186,15 @@ export function rememberedRoomCollections(appId: string | undefined, room: strin
 }
 
 function rememberRoomCollections(appId: string | undefined, room: string, list: string[]): void {
-  if (!appId) return;
+  if (!appId || room.length > MAX_SYNC_ROOM_NAME_LEN) return;
   try {
-    storage()?.setItem(roomCollectionsKey(appId, room), JSON.stringify(list));
+    const store = storage();
+    if (!store) return;
+    const key = roomCollectionsKey(appId, room);
+    if (store.getItem(key) === null && countPrefixKeys(store, `${COLLECTIONS_PREFIX}:${appId}:`) >= MAX_PERSISTED_SYNC_ROOMS_PER_APP) {
+      return;
+    }
+    store.setItem(key, JSON.stringify(list));
   } catch {
     // Quota or a restricted context: the list holds for this start.
   }
@@ -219,11 +243,10 @@ export function applyRoomSecurity(opts: Record<string, unknown>, context: RoomSe
   // The wire name is decided here (privateRoomSecret), never by the script:
   // one that named it could join any app's room.
   delete opts.wireRoom;
-  // The room label is what peers agree on; the app is who is agreeing. On the
-  // wire the two are joined, so two apps that both chose "lobby" are in two
-  // rooms — by the stable identity the bundle declares, so that compatible
-  // builds still meet, else by the host's identity for it.
-  opts.roomScope = permissionConfig?.app?.id || appId || undefined;
+  // Prefer the host-verified appId over the untrusted bundle-declared app.id so
+  // a malicious bundle cannot spoof another app's `permission.json` id and join
+  // its private P2P rooms using the host's per-user syncEncryptionKeyHex.
+  opts.roomScope = appId || permissionConfig?.app?.id || undefined;
   const shared = !!opts.sharedRoom || !!opts.noEncrypt || isRoomMarkedShared(appId, room);
   if (shared) {
     // Derive the key from the room name — all peers use the same key.

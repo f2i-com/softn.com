@@ -108,6 +108,43 @@ type MirrorNode =
   | { kind: 'island'; id: number; ast: TemplateNode; parent: number }
   | { kind: 'comment'; id: number; parent: number };
 
+const MAX_SHELL_NODES = 20_000;
+const MAX_SHELL_DEPTH = 256;
+const SAFE_SHELL_TAG_RE = /^[a-z][a-z0-9-]{0,63}$/;
+const BLOCKED_SHELL_TAGS = new Set([
+  'script',
+  'iframe',
+  'frame',
+  'frameset',
+  'object',
+  'embed',
+  'applet',
+  'base',
+  'meta',
+  'link',
+  'style',
+  'foreignobject',
+  'noscript',
+]);
+
+function isSafeShellTag(tag: unknown): tag is string {
+  if (typeof tag !== 'string') return false;
+  const lower = tag.toLowerCase();
+  return SAFE_SHELL_TAG_RE.test(lower) && !BLOCKED_SHELL_TAGS.has(lower);
+}
+
+function sanitizeShellAttrs(attrs: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!attrs || typeof attrs !== 'object' || Array.isArray(attrs)) return out;
+  for (const [k, v] of Object.entries(attrs as Record<string, unknown>)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      out.set(k, String(v));
+    }
+  }
+  return out;
+}
+
 /** What a ShellElement needs from the shell. */
 export interface DocumentShellView {
   /** The id of the page's body. */
@@ -427,25 +464,29 @@ export class DocumentShell implements DocumentShellView {
     for (const op of ops) {
       switch (op[0]) {
         case 'e': {
-          const [, id, tag, attrs] = op;
+          const [, id, rawTag, rawAttrs] = op;
+          if (!isSafeShellTag(rawTag)) break;
+          const tag = rawTag.toLowerCase();
+          const cleanAttrs = sanitizeShellAttrs(rawAttrs);
           const existing = this.nodes.get(id);
           if (existing && existing.kind === 'element') {
             // Joined again, as it is now: what differs is what the code did.
-            const names = new Set([...existing.attrs.keys(), ...Object.keys(attrs)]);
+            const names = new Set([...existing.attrs.keys(), ...cleanAttrs.keys()]);
             for (const name of names) {
-              const value = Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : undefined;
+              const value = cleanAttrs.get(name);
               if (existing.attrs.get(name) === value) continue;
               if (value === undefined) existing.attrs.delete(name);
               else existing.attrs.set(name, value);
               existing.touched.add(name);
             }
           } else {
+            if (this.nodes.size >= MAX_SHELL_NODES) break;
             this.nodes.set(id, {
               kind: 'element',
               id,
               tag,
-              attrs: new Map(Object.entries(attrs)),
-              touched: new Set(Object.keys(attrs)),
+              attrs: cleanAttrs,
+              touched: new Set(cleanAttrs.keys()),
               childrenTouched: true,
               children: [],
               parent: 0,
@@ -463,34 +504,57 @@ export class DocumentShell implements DocumentShellView {
               existing.text = text;
               this.childrenChangedIn(existing.parent, touched);
             }
-          } else {
-            this.nodes.set(id, { kind: 'text', id, text, parent: 0 });
+          } else if (this.nodes.size < MAX_SHELL_NODES) {
+            this.nodes.set(id, { kind: 'text', id, text: String(text ?? ''), parent: 0 });
           }
           break;
         }
         case 'm':
-          if (!this.nodes.has(op[1])) this.nodes.set(op[1], { kind: 'comment', id: op[1], parent: 0 });
+          if (!this.nodes.has(op[1]) && this.nodes.size < MAX_SHELL_NODES) {
+            this.nodes.set(op[1], { kind: 'comment', id: op[1], parent: 0 });
+          }
           break;
         case 'a': {
           const [, id, name, value] = op;
           const node = this.nodes.get(id);
           if (!node || node.kind !== 'element') break;
+          if (typeof name !== 'string' || name === '__proto__' || name === 'constructor' || name === 'prototype') break;
           if (value === null) node.attrs.delete(name);
-          else node.attrs.set(name, value);
+          else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+            node.attrs.set(name, String(value));
+          } else break;
           node.touched.add(name);
           touched.add(id);
           break;
         }
         case 'c': {
-          const [, id, children] = op;
+          const [, id, rawChildren] = op;
           const node = this.nodes.get(id);
-          if (!node || node.kind !== 'element') break;
-          // A set, as a list of thousands of rows is told whole.
-          const now = new Set(children);
+          if (!node || node.kind !== 'element' || !Array.isArray(rawChildren)) break;
+          // Compute ancestor set + depth of `id` to prevent cycles & excessive nesting.
+          const ancestors = new Set<number>([id]);
+          let walkParent = node.parent;
+          let depth = 0;
+          while (walkParent && depth <= MAX_SHELL_DEPTH) {
+            if (ancestors.has(walkParent)) break;
+            ancestors.add(walkParent);
+            const pNode = this.nodes.get(walkParent);
+            walkParent = pNode ? pNode.parent : 0;
+            depth++;
+          }
+          if (depth >= MAX_SHELL_DEPTH) break;
+          const nextChildren: number[] = [];
+          const now = new Set<number>();
+          for (const child of rawChildren) {
+            if (typeof child !== 'number' || ancestors.has(child) || now.has(child)) continue;
+            if (!this.nodes.has(child)) continue;
+            now.add(child);
+            nextChildren.push(child);
+          }
           for (const old of node.children) if (!now.has(old)) dropped.push(old);
-          node.children = children.slice();
+          node.children = nextChildren;
           node.childrenTouched = true;
-          for (const child of children) {
+          for (const child of nextChildren) {
             const c = this.nodes.get(child);
             if (c) c.parent = id;
           }
@@ -536,12 +600,14 @@ export class DocumentShell implements DocumentShellView {
    * own nodes are kept, since putting one back must find the markup it
    * stands for, and there are only as many of them as the page has.
    */
-  private letGo(id: number): void {
+  private letGo(id: number, seen = new Set<number>()): void {
+    if (seen.has(id)) return;
+    seen.add(id);
     const node = this.nodes.get(id);
     if (!node) return;
     if ((node.kind === 'element' || node.kind === 'text') && node.ast) return;
     if (node.kind === 'island') return;
-    if (node.kind === 'element') for (const child of node.children) this.letGo(child);
+    if (node.kind === 'element') for (const child of node.children) this.letGo(child, seen);
     this.nodes.delete(id);
     this.drawnBy.delete(id);
     this.versions.delete(id);

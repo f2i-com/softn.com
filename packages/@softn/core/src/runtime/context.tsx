@@ -54,12 +54,27 @@ export function SoftNProvider({
   const setState = useCallback((path: string, value: unknown) => {
     setStateValue((prevState) => {
       const parts = parseStatePath(path);
+      if (
+        parts.length === 0 ||
+        parts.some(
+          (p) =>
+            p === '__proto__' ||
+            p === 'constructor' ||
+            p === 'prototype' ||
+            p === '__defineGetter__' ||
+            p === '__defineSetter__' ||
+            p === '__lookupGetter__' ||
+            p === '__lookupSetter__'
+        )
+      ) {
+        return prevState;
+      }
       const newState = { ...prevState };
 
       let current: Record<string, unknown> = newState;
       for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];
-        if (!(part in current) || typeof current[part] !== 'object') {
+        if (!Object.prototype.hasOwnProperty.call(current, part) || typeof current[part] !== 'object' || current[part] === null) {
           current[part] = {};
         }
         // Copy an array as an array. Spreading one into `{}` turned `todos`

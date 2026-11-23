@@ -69,15 +69,17 @@ export class AppAudio {
    * bundle, which only the host knows how to resolve. That is the same job
    * `asset()` does for templates, so it is the same function doing it.
    */
-  private resolveSrc(src: string): string {
-    if (!src) return '';
-    if (/^(blob:|data:|https?:)/i.test(src)) return src;
+  private resolveSrc(src: string): { url: string; fromAsset: boolean } {
+    if (!src) return { url: '', fromAsset: false };
+    if (/^(blob:|data:|https?:)/i.test(src)) return { url: src, fromAsset: false };
     const asset = this.assetFunction();
     if (typeof asset === 'function') {
       const resolved = asset(src);
-      if (typeof resolved === 'string' && resolved) return resolved;
+      if (typeof resolved === 'string' && resolved && resolved !== src) {
+        return { url: resolved, fromAsset: true };
+      }
     }
-    return src;
+    return { url: src, fromAsset: false };
   }
 
   async play(call: PendingHostCall): Promise<unknown> {
@@ -92,19 +94,26 @@ export class AppAudio {
         })
       : {};
 
-    const src = this.resolveSrc(rawSrc);
+    const { url: src, fromAsset } = this.resolveSrc(rawSrc);
     if (!src) return { played: false, reason: `no such sound: ${rawSrc}` };
 
     // Checked on the resolved URL, not the argument: `asset()` answers with a
     // blob: or data: URL for a bundle path, and a path it does not recognise
-    // comes back unchanged — including a protocol-relative `//host/x`, which
-    // the browser resolves against the page's own http(s) scheme.
-    if (isRemoteUrl(src)) {
+    // comes back unchanged — including a protocol-relative `//host/x` or a
+    // root-relative `/api/...` path on the host origin.
+    const remote = isRemoteUrl(src);
+    if (remote) {
       this.gate.checkPermission('net');
       this.gate.checkNetHost(src);
+    } else if (!fromAsset && !/^(?:blob|data):/i.test(src) && src.trim().startsWith('/')) {
+      return { played: false, reason: `no such sound: ${rawSrc}` };
     }
 
-    const el = new Audio(src);
+    const el = new Audio();
+    if (remote) {
+      el.crossOrigin = 'anonymous';
+    }
+    el.src = src;
     const own = typeof options.volume === 'number' ? Math.max(0, Math.min(1, options.volume)) : 1;
     el.volume = own * this.masterVolume;
     el.loop = options.loop === true;

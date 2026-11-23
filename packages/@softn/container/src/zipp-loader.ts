@@ -318,12 +318,14 @@ export async function loadZippEngine(options: {
       if (!fsMod.existsSync(targetSource)) {
         const pathMod = await import('node:path');
         if (tier === 'php' || tier === 'rust') {
-          const devRepo = process.env.ZIPP_DEV_REPO || 'E:\\repos\\zipp.org';
-          const embeddedDir = pathMod.join(devRepo, 'crates', 'zipp-wasm', 'dist', 'embedded');
-          if (fsMod.existsSync(embeddedDir)) {
-            const suffix = `-javascript-${tier}.wasm`;
-            const match = fsMod.readdirSync(embeddedDir).find((f) => f.endsWith(suffix));
-            if (match) targetSource = pathMod.join(embeddedDir, match);
+          const devRepo = process.env.ZIPP_DEV_REPO;
+          if (devRepo) {
+            const embeddedDir = pathMod.join(devRepo, 'crates', 'zipp-wasm', 'dist', 'embedded');
+            if (fsMod.existsSync(embeddedDir)) {
+              const suffix = `-javascript-${tier}.wasm`;
+              const match = fsMod.readdirSync(embeddedDir).find((f) => f.endsWith(suffix));
+              if (match) targetSource = pathMod.join(embeddedDir, match);
+            }
           }
         } else {
           const pkgRoot = await resolveNodeContainerPkgRoot();

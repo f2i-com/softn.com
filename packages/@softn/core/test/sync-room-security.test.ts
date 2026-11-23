@@ -127,8 +127,9 @@ describe('applyRoomSecurity', () => {
     expect(localStorage.getItem('xdb-sync-shared:app-under-test')).toBe('true');
   });
 
-  it('scopes the wire room by the declared app id, else the host id', () => {
-    expect(decide('lobby', undefined, { permissionConfig: { app: { id: 'com.example.app' }, permissions: { sync: { enabled: true } } } }).opts.roomScope).toBe('com.example.app');
+  it('scopes the wire room by the host app id first, falling back to declared app id', () => {
+    expect(decide('lobby', undefined, { permissionConfig: { app: { id: 'com.example.app' }, permissions: { sync: { enabled: true } } } }).opts.roomScope).toBe(APP);
+    expect(decide('lobby', undefined, { appId: undefined, permissionConfig: { app: { id: 'com.example.app' }, permissions: { sync: { enabled: true } } } }).opts.roomScope).toBe('com.example.app');
     expect(decide('lobby').opts.roomScope).toBe(APP);
     expect(decide('lobby', undefined, { appId: undefined }).opts.roomScope).toBeUndefined();
   });

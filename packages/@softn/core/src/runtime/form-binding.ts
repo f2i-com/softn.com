@@ -6,6 +6,17 @@
  */
 
 import type { XDBRecord } from '../types';
+import { isBlockedFunction } from '../renderer/host-values';
+
+const BLOCKED_FORM_KEYS = new Set([
+  'constructor',
+  '__proto__',
+  'prototype',
+  '__defineGetter__',
+  '__defineSetter__',
+  '__lookupGetter__',
+  '__lookupSetter__',
+]);
 
 // ============================================================================
 // Types
@@ -100,7 +111,11 @@ export function createFormState(
   const touched: Record<string, boolean> = {};
 
   for (const field of fields) {
-    const initial = initialValues?.[field.name];
+    if (!field || typeof field.name !== 'string' || BLOCKED_FORM_KEYS.has(field.name)) continue;
+    const initial =
+      initialValues && Object.prototype.hasOwnProperty.call(initialValues, field.name)
+        ? initialValues[field.name]
+        : undefined;
     values[field.name] =
       initial !== undefined ? initial : (field.defaultValue ?? getDefaultForType(field.type));
     errors[field.name] = null;
@@ -127,7 +142,11 @@ export function validateForm(
   const errors: Record<string, string | null> = {};
 
   for (const field of fields) {
-    const value = state.values[field.name];
+    if (!field || typeof field.name !== 'string' || BLOCKED_FORM_KEYS.has(field.name)) continue;
+    const value =
+      state?.values && Object.prototype.hasOwnProperty.call(state.values, field.name)
+        ? state.values[field.name]
+        : undefined;
     let error: string | null = null;
 
     // Required validation.
@@ -142,9 +161,11 @@ export function validateForm(
       error = `${field.label || field.name} is required`;
     }
 
-    // Custom validation
-    if (!error && field.validate) {
-      error = field.validate(value);
+    // Custom validation — refuse host constructors / meta-evaluators and coerce
+    // output to `string | null` so untrusted templates cannot invoke `Function`.
+    if (!error && typeof field.validate === 'function' && !isBlockedFunction(field.validate)) {
+      const result = field.validate(value);
+      error = typeof result === 'string' ? result : null;
     }
 
     errors[field.name] = error;

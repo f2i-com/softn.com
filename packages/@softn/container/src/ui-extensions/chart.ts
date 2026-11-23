@@ -2,6 +2,15 @@
  * `<softn-chart>`: Zero-React SVG chart Custom Element (bar & line charts) loaded on demand.
  */
 
+const MAX_CHART_VALUES = 5000;
+const SAFE_CHART_COLOR_RE =
+  /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,%\s/]+\)|[a-z]{3,24})$/i;
+
+function sanitizeChartColor(raw: string | null): string {
+  const trimmed = (raw ?? '').trim();
+  return SAFE_CHART_COLOR_RE.test(trimmed) ? trimmed : '#3b82f6';
+}
+
 export function defineSoftnChart(): void {
   if (typeof customElements === 'undefined' || customElements.get('softn-chart')) return;
 
@@ -19,7 +28,9 @@ export function defineSoftnChart(): void {
     }
 
     set data(val: number[]) {
-      this._values = Array.isArray(val) ? val.map(Number) : [];
+      this._values = Array.isArray(val)
+        ? val.slice(0, MAX_CHART_VALUES).map(Number).filter(Number.isFinite)
+        : [];
       this.render();
     }
 
@@ -38,15 +49,21 @@ export function defineSoftnChart(): void {
       if (!raw) return;
       try {
         const parsed = JSON.parse(raw) as unknown;
-        if (Array.isArray(parsed)) this._values = parsed.map(Number);
+        if (Array.isArray(parsed)) {
+          this._values = parsed.slice(0, MAX_CHART_VALUES).map(Number).filter(Number.isFinite);
+        }
       } catch {
-        this._values = raw.split(',').map((n) => Number(n.trim())).filter(Number.isFinite);
+        this._values = raw
+          .split(',')
+          .slice(0, MAX_CHART_VALUES)
+          .map((n) => Number(n.trim()))
+          .filter(Number.isFinite);
       }
     }
 
     private render(): void {
       const kind = (this.getAttribute('type') ?? 'bar').toLowerCase();
-      const color = this.getAttribute('color') ?? '#3b82f6';
+      const color = sanitizeChartColor(this.getAttribute('color'));
       const vals = this._values;
       const w = 400;
       const h = 160;
@@ -57,8 +74,12 @@ export function defineSoftnChart(): void {
         return;
       }
 
-      const max = Math.max(...vals, 1);
-      const min = Math.min(...vals, 0);
+      let max = 1;
+      let min = 0;
+      for (let i = 0; i < vals.length; i++) {
+        if (vals[i] > max) max = vals[i];
+        if (vals[i] < min) min = vals[i];
+      }
       const span = max - min || 1;
 
       let shapes = '';

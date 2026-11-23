@@ -57,6 +57,8 @@ const SOFTN_MAX_ENTRY = 50 * 1024 * 1024;
 /** Mirrors the client's bound on the decoded pack. */
 const SOFTN_MAX_PACK = 32 * 1024 * 1024;
 const SOFTN_MAX_ICON = 256 * 1024;
+const SOFTN_MAX_FILES = 10000;
+const SOFTN_MAX_MANIFEST = 1024 * 1024;
 /** Entries at or under this are read whole, which makes libzip verify their CRC. */
 const SOFTN_WHOLE_READ = 8 * 1024 * 1024;
 const SOFTN_ICON_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'svg'];
@@ -221,23 +223,83 @@ function softn_withheld(string $name, array $withhold): bool
  *   allow the bundle's backend files (e.g. `backend/` or `server/` for Slim 4 apps) to reach the
  *   browser's local ZIPP WASM sandbox unless explicitly listed in the operator's `withhold`.
  */
+function softn_is_container_manifest(array $manifest): bool
+{
+    $engine = $manifest['engine'] ?? null;
+    if ((is_int($engine) || is_float($engine)) && (float)$engine === 2.0) return true;
+    return ($manifest['container'] ?? null) === true;
+}
+
+function softn_norm_rel_path(string $path): string
+{
+    $norm = str_replace('\\', '/', $path);
+    $norm = (string)preg_replace('#^(?:\./)+#', '', ltrim($norm, '/'));
+    return strtolower(trim($norm, '/'));
+}
+
 function softn_withheld_for_bundle(string $name, array $withhold, array $manifest, ?string $backendUrl): bool
 {
     $lower = strtolower($name);
-    $isContainer = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
+    if (
+        str_starts_with($lower, 'private/') ||
+        str_starts_with($lower, '__softn_generated__/private/') ||
+        preg_match('#(?:^|/)\.git(?:/|$)#', $lower) === 1
+    ) {
+        return true;
+    }
+    $isContainer = softn_is_container_manifest($manifest);
     $hasDeclaredBackend = $isContainer && is_array($manifest['backend'] ?? null);
     if ($backendUrl !== null && $isContainer) {
-        if (str_starts_with($lower, 'server/') || str_starts_with($lower, 'backend/')) return true;
+        if (preg_match('#^(?:__softn_generated__/)?(?:server|backend|db|database|migrations)/#', $lower) === 1) {
+            return true;
+        }
+        $backendRoot = is_string($manifest['backend']['root'] ?? null)
+            ? softn_norm_rel_path($manifest['backend']['root'])
+            : '';
+        if ($backendRoot !== '' && ($lower === $backendRoot || str_starts_with($lower, $backendRoot . '/'))) {
+            return true;
+        }
         $entry = is_string($manifest['backend']['entry'] ?? null)
-            ? strtolower(ltrim(str_replace('\\', '/', $manifest['backend']['entry']), '/'))
+            ? softn_norm_rel_path($manifest['backend']['entry'])
             : '';
         if ($entry !== '') {
             if ($lower === $entry) return true;
             $slash = strpos($entry, '/');
             if ($slash !== false && str_starts_with($lower, substr($entry, 0, $slash + 1))) return true;
         }
+        $ssrEntry = is_string($manifest['ssrEntry'] ?? null)
+            ? softn_norm_rel_path($manifest['ssrEntry'])
+            : '';
+        if ($ssrEntry !== '' && $lower === $ssrEntry) return true;
+        if (is_array($manifest['databases'] ?? null)) {
+            foreach ($manifest['databases'] as $dbCfg) {
+                if (!is_array($dbCfg) || !is_string($dbCfg['file'] ?? null)) continue;
+                $dbFile = softn_norm_rel_path($dbCfg['file']);
+                if ($dbFile === '') continue;
+                if (
+                    $lower === $dbFile ||
+                    $lower === $dbFile . '-wal' ||
+                    $lower === $dbFile . '-shm' ||
+                    $lower === $dbFile . '-journal'
+                ) {
+                    return true;
+                }
+            }
+        }
         $base = basename($lower);
-        if ($base === '.htaccess' || preg_match('/\.(?:php|phtml|rs|sql|db|sqlite|sqlite3)$/', $base) === 1) return true;
+        if (
+            $base === '.htaccess' ||
+            $base === '.htpasswd' ||
+            $base === '.env' ||
+            str_starts_with($base, '.env.') ||
+            $base === 'cargo.toml' ||
+            $base === 'cargo.lock' ||
+            $base === 'seed.json' ||
+            preg_match('/\.(?:php|phtml|php5|php8|phar|inc|tpl|rs|sql|db|sqlite|sqlite3|ini|bak|sh)$/', $base) === 1 ||
+            preg_match('/\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$/', $base) === 1
+        ) {
+            return true;
+        }
     } elseif (!$hasDeclaredBackend) {
         if (str_starts_with($lower, 'server/')) return true;
     }
@@ -450,6 +512,14 @@ function softn_pwa_url(string $value, string $base): string
     return preg_match('#^https?://#i', $value) ? $value : $base . $value;
 }
 
+function softn_is_https_request(): bool
+{
+    if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') return true;
+    if ((string)($_SERVER['SERVER_PORT'] ?? '') === '443') return true;
+    $xfp = strtolower(trim(explode(',', (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))[0]));
+    return $xfp === 'https';
+}
+
 /**
  * The absolute URL of the page directory for link previews: the configured siteUrl, else
  * the request's own scheme and host when the host header is a plain host name.
@@ -457,9 +527,13 @@ function softn_pwa_url(string $value, string $base): string
 function softn_pwa_origin(array $pwa, string $base): ?string
 {
     if ($pwa['siteUrl'] !== null) return $pwa['siteUrl'] . '/';
-    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
-    if (!preg_match('/^[A-Za-z0-9.-]+(?::\d{1,5})?$/', $host)) return null;
-    $secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+    $host = trim((string)($_SERVER['HTTP_HOST'] ?? ''));
+    if ($host === '' || strlen($host) > 255 || str_contains($host, '..')) return null;
+    if (!preg_match('/^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)(?::([0-9]{1,5}))?$/', $host, $m)) {
+        return null;
+    }
+    if (isset($m[1]) && $m[1] !== '' && ((int)$m[1] < 1 || (int)$m[1] > 65535)) return null;
+    $secure = !empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off';
     return ($secure ? 'https' : 'http') . '://' . $host . $base;
 }
 
@@ -548,8 +622,22 @@ function softn_open(array $config): ZipArchive
     // The one extension this host cannot do without, and one a stock Debian
     // or Ubuntu PHP does not have: say which package, not only which extension.
     if (!class_exists('ZipArchive')) softn_fail(503, 'Enable the PHP zip extension for the web server\'s PHP (Debian/Ubuntu: install the php-zip package, then restart the web server or PHP-FPM).');
+    if (is_string($config['sha256'] ?? null) && $config['sha256'] !== '') {
+        static $verified = [];
+        $cacheKey = $config['bundle'] . "\0" . $config['sha256'];
+        if (!isset($verified[$cacheKey])) {
+            $actual = @hash_file('sha256', $config['bundle']);
+            if ($actual === false) softn_fail(503, 'Application bundle is unavailable.');
+            if (!hash_equals($config['sha256'], $actual)) softn_fail(503, 'Application integrity check failed.');
+            $verified[$cacheKey] = true;
+        }
+    }
     $zip = new ZipArchive();
     if ($zip->open($config['bundle'], ZipArchive::RDONLY) !== true) softn_fail(503, 'Application bundle is unavailable.');
+    if ($zip->numFiles > SOFTN_MAX_FILES) {
+        $zip->close();
+        softn_fail(503, 'Application bundle has too many entries.');
+    }
     return $zip;
 }
 
@@ -560,6 +648,7 @@ function softn_open(array $config): ZipArchive
  */
 function softn_index(ZipArchive $zip): array
 {
+    if ($zip->numFiles > SOFTN_MAX_FILES) softn_fail(503, 'Application bundle has too many entries.');
     $index = [];
     for ($i = 0; $i < $zip->numFiles; $i++) {
         $stat = $zip->statIndex($i);
@@ -606,9 +695,10 @@ function softn_secret_read(string $file): ?string
 function softn_secret_claim(string $file, string $candidate): ?string
 {
     $draft = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
-    if (@file_put_contents($draft, $candidate . "\n") === false) return null;
-    @chmod($draft, 0600);
+    $oldUmask = function_exists('umask') ? umask(0077) : null;
     try {
+        if (@file_put_contents($draft, $candidate . "\n") === false) return null;
+        @chmod($draft, 0600);
         if (@link($draft, $file)) return $candidate;
         $theirs = softn_secret_read($file);
         if ($theirs !== null) return $theirs;
@@ -630,6 +720,7 @@ function softn_secret_claim(string $file, string $candidate): ?string
         return @rename($draft, $file) ? $candidate : softn_secret_read($file);
     } finally {
         @unlink($draft);
+        if ($oldUmask !== null) umask($oldUmask);
     }
 }
 
@@ -696,7 +787,11 @@ function softn_guard(array $config, string $private): void
 /** The manifest with only the fields the runtime reads; never the raw file. */
 function softn_manifest(ZipArchive $zip): array
 {
-    $raw = $zip->getFromName('manifest.json');
+    $manifestStat = $zip->statName('manifest.json');
+    if ($manifestStat !== false && (int)$manifestStat['size'] > SOFTN_MAX_MANIFEST) {
+        softn_fail(503, 'Application manifest exceeds the size limit.');
+    }
+    $raw = $manifestStat !== false ? $zip->getFromName('manifest.json') : false;
     if (!is_string($raw)) {
         // No manifest: a zipped folder of a web app, opened at its page. The page
         // every other reader of a bundle opens (@softn/bundle-format's
@@ -889,14 +984,14 @@ function softn_shell(array $config, string $private): never
         setcookie(SOFTN_COOKIE, softn_token_issue(softn_secret($config, $private), $config['tokenLifetime']), [
             'expires' => time() + $config['tokenLifetime'],
             'path' => softn_cookie_path(),
-            'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+            'secure' => softn_is_https_request(),
             'httponly' => true,
             'samesite' => 'Strict',
         ]);
     }
     header('Content-Type: text/html; charset=utf-8');
     header('Cache-Control: no-store');
-    header("Content-Security-Policy: frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
+    header("Content-Security-Policy: base-uri 'self'; object-src 'none'; frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
     if (!$config['frameAncestors']) header('X-Frame-Options: SAMEORIGIN');
     header('Content-Length: ' . strlen($page));
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') echo $page;
@@ -918,7 +1013,7 @@ function softn_source(array $config): never
         $declared = json_decode((string)@file_get_contents($config['permissions']), true);
         if (!is_array($declared)) softn_fail(503, 'The permission sidecar is not valid JSON.');
     }
-    $isContainer = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
+    $isContainer = softn_is_container_manifest($manifest);
     $backendUrl = $config['backendUrl'] ?? null;
     $clientManifest = $manifest;
     if ($isContainer && $backendUrl !== null) {
@@ -982,17 +1077,18 @@ function softn_entry(array $config, string $name, bool $icon): never
     }
     $stat = $zip->statName($name);
     if ($stat === false) softn_fail(404, 'No such entry.');
-    $isContainer = (($manifest['engine'] ?? null) === 2 || ($manifest['container'] ?? null) === true);
+    $isContainer = softn_is_container_manifest($manifest);
     [$mime, $kind] = softn_classify($name);
     // Text travels in the source pack; an entry URL for it is a probe, not a render.
     if ($kind === 'text' || softn_is_container_text($name, $isContainer)) softn_fail(404, 'No such entry.');
     $size = (int)$stat['size'];
     if ($size > SOFTN_MAX_ENTRY) softn_fail(503, 'Entry exceeds the size limit.');
+    $compMethod = (int)($stat['comp_method'] ?? 0);
     $etag = '"' . dechex((int)$stat['crc']) . '-' . $size . '"';
     header('Content-Type: ' . $mime);
     header('ETag: ' . $etag);
     header('Cache-Control: ' . ($config['cacheSeconds'] > 0 ? 'private, max-age=' . $config['cacheSeconds'] : 'no-store'));
-    header('Accept-Ranges: bytes');
+    header('Accept-Ranges: ' . ($size > SOFTN_WHOLE_READ && $compMethod !== ZipArchive::CM_STORE ? 'none' : 'bytes'));
     header('Content-Disposition: inline');
     // A document-only policy: harmless to an <img>, a <video> or a fetch, and
     // what an SVG or a PDF opened directly would run under if a browser ever
@@ -1011,6 +1107,11 @@ function softn_entry(array $config, string $name, bool $icon): never
     }
     $head = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD';
     $range = $_SERVER['HTTP_RANGE'] ?? null;
+    // Refuse range-seek decompression amplification on large deflated entries:
+    // seeking to the tail of a 50 MB compressed stream would inflate 50 MB per request.
+    if ($size > SOFTN_WHOLE_READ && $compMethod !== ZipArchive::CM_STORE) {
+        $range = null;
+    }
     // A range is only meaningful against the entry the client has part of.
     // If-Range names that entry; when it is not this one — the bundle was
     // republished under the same address — the whole entry goes back as 200,

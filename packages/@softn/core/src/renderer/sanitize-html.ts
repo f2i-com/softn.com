@@ -147,8 +147,9 @@ function closeOfCssFunction(text: string, open: number): number {
   for (let i = open; i < text.length; i++) {
     const ch = text[i];
     if (quote) {
-      if (ch === '\\') i++;
-      else if (ch === quote) quote = null;
+      if (ch === '\\') {
+        i += text[i + 1] === '\r' && text[i + 2] === '\n' ? 2 : 1;
+      } else if (ch === quote) quote = null;
       continue;
     }
     if (ch === '"' || ch === "'") quote = ch;
@@ -163,8 +164,10 @@ function closeOfCssFunction(text: string, open: number): number {
  * function name or a scheme, so anything judging either has to as well.
  */
 export function decodeCssEscapes(text: string): string {
-  return text.replace(
-    /\\(?:([0-9a-fA-F]{1,6})[ \t\n\f\r]?|([\s\S]))/g,
+  return text
+    .replace(/\\(?:\r\n|[\r\n\f])/g, '')
+    .replace(
+      /\\(?:([0-9a-fA-F]{1,6})[ \t\n\f\r]?|([\s\S]))/g,
     (_match, hex: string | undefined, ch: string | undefined) => {
       if (hex !== undefined) {
         const cp = parseInt(hex, 16);
@@ -188,7 +191,7 @@ function cssStringsIn(text: string): string[] {
 function urlTarget(inner: string): string {
   const trimmed = inner.trim();
   const quoted = /^(["'])([\s\S]*)\1$/.exec(trimmed);
-  return quoted ? quoted[2] : trimmed;
+  return decodeCssEscapes(quoted ? quoted[2] : trimmed);
 }
 
 /** What a run of CSS would make the browser fetch. */
@@ -215,7 +218,11 @@ function endOfCssString(css: string, at: number): number {
     const ch = css[i];
     if (ch === quote) return i + 1;
     if (ch === '\n' || ch === '\r' || ch === '\f') return i;
-    i += ch === '\\' ? 2 : 1;
+    if (ch === '\\') {
+      i += css[i + 1] === '\r' && css[i + 2] === '\n' ? 3 : 2;
+      continue;
+    }
+    i += 1;
   }
   return css.length;
 }
@@ -703,6 +710,27 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       if (name === 'style') {
         const scan = cssResourceReferences(attr.value);
         if (scan.opaque || scan.urls.length > 0) node.removeAttribute(attr.name);
+        continue;
+      }
+      // SVG presentation attributes (`filter`, `fill`, `stroke`, `mask`,
+      // `clip-path`, `marker-*`, `cursor`) accept `url(...)` references; allow
+      // only in-document `#id` references and strip external loads.
+      if (
+        (name === 'filter' ||
+          name === 'fill' ||
+          name === 'stroke' ||
+          name === 'mask' ||
+          name === 'clip-path' ||
+          name === 'marker-start' ||
+          name === 'marker-mid' ||
+          name === 'marker-end' ||
+          name === 'cursor') &&
+        attr.value.includes('(')
+      ) {
+        const scan = cssResourceReferences(attr.value);
+        if (scan.opaque || scan.urls.some((u) => !u.trim().startsWith('#'))) {
+          node.removeAttribute(attr.name);
+        }
       }
     }
 

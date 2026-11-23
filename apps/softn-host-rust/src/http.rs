@@ -937,6 +937,7 @@ async fn serve_container_request(
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
     request: axum::extract::Request,
+    multi_tenant: bool,
 ) -> axum::response::Response {
     let peer_is_proxy = proxy.is_proxy(info.0.ip());
     let method_str = method.as_str().to_owned();
@@ -970,6 +971,21 @@ async fn serve_container_request(
     if let Some(rejection) = check_origin(&policy, &headers, peer_is_proxy) {
         return rejection;
     }
+    if headers.get(axum::http::header::ORIGIN).is_none()
+        && matches!(
+            method,
+            axum::http::Method::POST
+                | axum::http::Method::PUT
+                | axum::http::Method::PATCH
+                | axum::http::Method::DELETE
+        )
+        && headers
+            .get("sec-fetch-site")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("cross-site"))
+    {
+        return json_error(StatusCode::FORBIDDEN, "Cross-site request refused.", "origin_not_allowed");
+    }
     let client_ip = extract_client_ip(&headers, info.0.ip(), &proxy);
     if let Some(rejection) = check_rate(api_limiter, client_ip) {
         return rejection;
@@ -992,6 +1008,11 @@ async fn serve_container_request(
             .is_some_and(|v| v.eq_ignore_ascii_case("https"));
     let req_headers: Vec<(String, String)> = headers
         .iter()
+        .filter(|(k, _)| {
+            let name = k.as_str();
+            !name.eq_ignore_ascii_case("proxy-authorization")
+                && !(multi_tenant && name.eq_ignore_ascii_case("cookie"))
+        })
         .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.as_str().to_owned(), vs.to_owned())))
         .collect();
 
@@ -1010,7 +1031,8 @@ async fn serve_container_request(
 
     let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut builder = axum::http::Response::builder().status(status);
-    for (k, v) in resp.headers {
+    let mut has_cache_control = false;
+    for (k, mut v) in resp.headers {
         let lower = k.to_ascii_lowercase();
         if matches!(
             lower.as_str(),
@@ -1027,11 +1049,27 @@ async fn serve_container_request(
                 | "cross-origin-opener-policy"
                 | "cross-origin-embedder-policy"
                 | "cross-origin-resource-policy"
+                | "refresh"
         ) || lower.starts_with("x-accel-")
             || lower.starts_with("x-litespeed-")
             || lower.starts_with("access-control-")
         {
             continue;
+        }
+        if lower == "set-cookie" {
+            if multi_tenant {
+                continue;
+            }
+            let lower_val = v.to_ascii_lowercase();
+            if lower_val.contains("; domain=") || lower_val.contains(";domain=") {
+                continue;
+            }
+            if !lower_val.contains("samesite=") {
+                v.push_str("; SameSite=Lax");
+            }
+        }
+        if lower == "cache-control" {
+            has_cache_control = true;
         }
         if let (Ok(name), Ok(val)) = (
             axum::http::header::HeaderName::from_bytes(k.as_bytes()),
@@ -1040,6 +1078,11 @@ async fn serve_container_request(
             builder = builder.header(name, val);
         }
     }
+    if !has_cache_control {
+        builder = builder.header(axum::http::header::CACHE_CONTROL, "no-store");
+    }
+    builder = builder.header("x-frame-options", "SAMEORIGIN");
+    builder = builder.header("referrer-policy", "no-referrer");
     let out_body = if method == axum::http::Method::HEAD {
         axum::body::Body::empty()
     } else {
@@ -1077,6 +1120,7 @@ async fn container_fallback_single(
         uri,
         headers,
         request,
+        false,
     )
     .await
 }
@@ -1104,6 +1148,7 @@ async fn container_fallback_tenant(
         uri,
         headers,
         request,
+        true,
     )
     .await
 }
@@ -1135,6 +1180,7 @@ async fn container_root_tenant(
         root_uri,
         headers,
         request,
+        true,
     )
     .await
 }
@@ -1424,7 +1470,8 @@ fn request_hosts<'a>(headers: &'a axum::http::HeaderMap, uri: Option<&'a axum::h
         .collect();
     if behind_trusted_proxy {
         if let Some(forwarded) = headers.get("x-forwarded-host").and_then(|v| v.to_str().ok()) {
-            hosts.extend(forwarded.split(',').next().map(str::trim));
+            // Take the rightmost entry appended by the trusted proxy, never the client-spoofable leftmost one.
+            hosts.extend(forwarded.rsplit(',').next().map(str::trim).filter(|s| !s.is_empty()));
         }
     }
     hosts
@@ -1454,7 +1501,8 @@ async fn guard_host(
         .and_then(|v| v.to_str().ok())
         .or_else(|| request.uri().authority().map(|a| a.as_str()));
     match host {
-        Some(host) if !guard.policy.host_allowed(host) => {
+        Some(host) if guard.policy.host_allowed(host) => next.run(request).await,
+        Some(host) => {
             tracing::debug!(host = %host_name(host), "Refused a request addressed to a name this host does not answer to");
             json_error(
                 StatusCode::FORBIDDEN,
@@ -1462,7 +1510,20 @@ async fn guard_host(
                 "host_not_allowed",
             )
         }
-        _ => next.run(request).await,
+        None => {
+            // Fail closed when Host is missing or non-ASCII (e.g. non-UTF-8 Host header).
+            if request.headers().contains_key(axum::http::header::HOST)
+                || request.version() >= axum::http::Version::HTTP_11
+            {
+                json_error(
+                    StatusCode::BAD_REQUEST,
+                    "A valid Host header is required.",
+                    "invalid_host",
+                )
+            } else {
+                next.run(request).await
+            }
+        }
     }
 }
 

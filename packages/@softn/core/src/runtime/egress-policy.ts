@@ -106,21 +106,40 @@ export function isLocalHostname(hostname: string): boolean {
   if (v4) {
     const a = Number(v4[1]);
     const b = Number(v4[2]);
+    const c = Number(v4[3]);
     return (
       a === 0 || a === 10 || a === 127 || a >= 224 ||
       (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) ||
+      (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      (a === 198 && b === 51 && c === 100) ||
+      (a === 203 && b === 0 && c === 113)
     );
   }
   if (!name.startsWith('[')) return false;
   const v6 = name.slice(1, -1);
   // Loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
-  // the old site-local (fec0::/10), and the local-use NAT64 prefix (64:ff9b:1::/48).
-  if (v6 === '::1' || v6 === '::' || /^f[cd]/.test(v6) || /^fe[89a-f]/.test(v6) || /^64:ff9b:1:/.test(v6)) return true;
-  // An IPv4 address written as IPv6, which the parser gives in hex: mapped
-  // (::ffff:a.b.c.d), the old compatible form (::a.b.c.d), and the NAT64
-  // well-known prefix (64:ff9b::a.b.c.d). Local when the IPv4 address is.
-  const embedded = /^(?:::ffff:|::|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(v6);
+  // old site-local (fec0::/10), multicast (ff00::/8), discard (100::/64),
+  // Teredo (2001:0::/32), benchmarking (2001:2::/48), 6to4 (2002::/16),
+  // and local-use NAT64 prefix (64:ff9b:1::/48).
+  if (
+    v6 === '::1' ||
+    v6 === '::' ||
+    /^f[cd]/i.test(v6) ||
+    /^fe[89a-f]/i.test(v6) ||
+    /^ff/i.test(v6) ||
+    /^100::/i.test(v6) ||
+    /^2001:(?:0?0?0?0:|0?0?0?2:)/i.test(v6) ||
+    /^2002:/i.test(v6) ||
+    /^64:ff9b:1:/i.test(v6)
+  ) return true;
+  // An IPv4 address written as IPv6, in hex (::ffff:7f00:1) or dotted-quad (::ffff:127.0.0.1).
+  const embeddedQuad = /^(?:::ffff:|::|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/i.exec(v6);
+  if (embeddedQuad) {
+    return isLocalHostname(embeddedQuad[1]);
+  }
+  const embedded = /^(?:::ffff:|::|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(v6);
   if (embedded) {
     const high = parseInt(embedded[1], 16);
     const low = parseInt(embedded[2], 16);

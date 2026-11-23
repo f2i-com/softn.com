@@ -15,7 +15,7 @@ import { buildBackendRoutingConfig, matchBackendTarget, RemoteBackendTransport }
 import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar';
 import { HostDomPatcher } from './dom-patcher';
 import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
-import { hostFileName, hostLabel, slotsAreContained } from './host-policy';
+import { hostFileName, hostLabel, slotsAreContained, type FontScopeContext } from './host-policy';
 import { LocalBackendTransport } from './local-backend-transport';
 import { loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
 import { extractSanitizedFontFaces, prepareHtmlDocument } from './sanitize';
@@ -102,6 +102,19 @@ interface WorkerTransport {
 }
 
 const shadowRootRegistry = new WeakMap<HTMLElement, ShadowRoot>();
+let fontScopeSeq = 0;
+const MAX_BACKEND_SOCKETS = 8;
+const MAX_SESSION_URL_LENGTH = 4096;
+const MAX_BACKEND_FETCH_BODY_B64 = 64 * 1024 * 1024;
+const BLOCKED_SESSION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function sessionStorageBytes(map: Record<string, string>): number {
+  let total = 0;
+  for (const [k, v] of Object.entries(map)) {
+    total += (k.length + v.length) * 2;
+  }
+  return total;
+}
 
 /**
  * Which mount an element's shadow root belongs to: the latest. An element is mounted into
@@ -532,7 +545,12 @@ export async function mountSoftNContainer(
       : `sha256:${archive.digest}`);
   // The keys the app's kept data goes under: the host's own place for it, when it has one
   // (a host that lists, moves and removes each app's data keeps the container's with it).
-  const storageBase = options.storagePrefix ?? `softn-v2:${appId}:`;
+  // Always terminate with a delimiter so prefix "app1" can never collide with "app10".
+  const rawStorageBase =
+    typeof options.storagePrefix === 'string' && options.storagePrefix.length > 0
+      ? options.storagePrefix
+      : `softn-v2:${appId}:`;
+  const storageBase = rawStorageBase.endsWith(':') || rawStorageBase.endsWith('/') ? rawStorageBase : `${rawStorageBase}:`;
   // Said once: the page's storage refused (it is full, or a private window keeps none).
   let storageRefused = false;
   const storageKept = (kept: boolean): void => {
@@ -1340,9 +1358,9 @@ export async function mountSoftNContainer(
       return;
     }
 
-    // 2. Static HTML page inside the archive (respecting `frontendRoot`)
+    // 2. Static HTML page inside the archive (strictly frontend HTML, never backend/config/JS)
     const resolved = archive.resolveFrontendPath(pathname, archive.manifest.main);
-    if (!resolved || !archive.has(resolved)) {
+    if (!resolved || !/\.html?$/i.test(resolved) || !archive.isFrontendPath(resolved) || !archive.has(resolved)) {
       throw new Error(`Cannot navigate to missing container page: ${rawTarget}`);
     }
     if (disposed || !owns() || seq !== navSeq) return;
@@ -1391,6 +1409,9 @@ export async function mountSoftNContainer(
     saveEl = null;
     if (frameEl.parentNode !== shadowRoot) shadowRoot.replaceChildren(frameStyle, frameEl);
 
+    if (overrideHtml === undefined && !archive.isFrontendPath(pagePath)) {
+      throw new Error(`Page "${pagePath}" is outside the frontend sandbox`);
+    }
     const html = overrideHtml !== undefined ? overrideHtml : archive.readText(pagePath);
     if (html === null) {
       throw new Error(`Page "${pagePath}" not found in .softn container`);
@@ -1424,12 +1445,17 @@ export async function mountSoftNContainer(
       frameEl.insertBefore(holder, boxEl);
     };
 
+    const fontScope: FontScopeContext = {
+      prefix: `softn-f-${++fontScopeSeq}-`,
+      families: new Set<string>(),
+    };
     const prepared = prepareHtmlDocument(
       html,
       pagePath,
       archive,
       permissions,
-      grantedCaps.has('net')
+      grantedCaps.has('net'),
+      fontScope
     );
     if (virtualUrlPath !== undefined) {
       const cleanVirtual = virtualUrlPath.startsWith('/') ? virtualUrlPath : `/${virtualUrlPath}`;
@@ -1518,7 +1544,7 @@ export async function mountSoftNContainer(
       if (boxEl.clientHeight > 0) prepared.seed.v[1] = boxEl.clientHeight;
     }
 
-    const staticFontFaces = prepared.styles.map(extractSanitizedFontFaces).filter(Boolean).join('\n');
+    const staticFontFaces = prepared.styles.map((s) => extractSanitizedFontFaces(s, fontScope.prefix)).filter(Boolean).join('\n');
     const syncHostFonts = () => {
       if (disposed || typeof document === 'undefined' || !document.head) return;
       const parts: string[] = [];
@@ -1579,6 +1605,7 @@ export async function mountSoftNContainer(
       permissions,
       netGranted: grantedCaps.has('net'),
       filesGranted: grantedCaps.has('files'),
+      fontScope,
       callbacks: {
         onStyleFonts: (sheet, fontFacesCss) => {
           if (fontFacesCss) dynamicFontSheets.set(sheet, fontFacesCss);
@@ -1875,7 +1902,7 @@ export async function mountSoftNContainer(
             break;
 
           case 'session-route':
-            if (typeof msg.urlPath === 'string' && msg.urlPath.startsWith('/')) {
+            if (typeof msg.urlPath === 'string' && msg.urlPath.startsWith('/') && msg.urlPath.length <= MAX_SESSION_URL_LENGTH) {
               currentUrlPath = msg.urlPath;
               updateNavUi();
               liveSession.urlPath = msg.urlPath;
@@ -1885,10 +1912,17 @@ export async function mountSoftNContainer(
 
           case 'session-storage-write':
             if (!persistStorage) break;
-            if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
-              liveSession.sessionStorage[msg.key] = msg.value;
-              persistSessionSoon();
-            } else if (msg.op === 'remove' && typeof msg.key === 'string') {
+            if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string' && !BLOCKED_SESSION_KEYS.has(msg.key)) {
+              const oldVal = Object.prototype.hasOwnProperty.call(liveSession.sessionStorage, msg.key)
+                ? liveSession.sessionStorage[msg.key]
+                : null;
+              const replaced = oldVal !== null ? (msg.key.length + oldVal.length) * 2 : 0;
+              const nextTotal = sessionStorageBytes(liveSession.sessionStorage) - replaced + (msg.key.length + msg.value.length) * 2;
+              if (nextTotal <= limits.storageQuotaBytes) {
+                liveSession.sessionStorage[msg.key] = msg.value;
+                persistSessionSoon();
+              }
+            } else if (msg.op === 'remove' && typeof msg.key === 'string' && !BLOCKED_SESSION_KEYS.has(msg.key)) {
               delete liveSession.sessionStorage[msg.key];
               persistSessionSoon();
             } else if (msg.op === 'clear') {
@@ -1977,6 +2011,10 @@ export async function mountSoftNContainer(
                 break;
               }
               const payload = msg.payload ?? {};
+              if (typeof payload.bodyBase64 === 'string' && payload.bodyBase64.length > MAX_BACKEND_FETCH_BODY_B64) {
+                reply(false, undefined, 'Backend request body exceeds maximum size limit');
+                break;
+              }
               const bodyBytes =
                 typeof payload.bodyBase64 === 'string' && payload.bodyBase64.length > 0
                   ? base64ToBytes(payload.bodyBase64)
@@ -2023,6 +2061,14 @@ export async function mountSoftNContainer(
               const protocols = Array.isArray(msg.payload?.protocols)
                 ? (msg.payload.protocols as unknown[]).map((p) => String(p))
                 : [];
+              if (!id || (!backendSockets.has(id) && backendSockets.size >= MAX_BACKEND_SOCKETS)) {
+                if (!disposed && sender && currentTransport === sender) {
+                  sender.post({ type: 'ws-event', id, event: { type: 'error', message: 'Too many open backend WebSockets' } });
+                  sender.post({ type: 'ws-event', id, event: { type: 'close', code: 1008, reason: 'WebSocket limit exceeded', wasClean: false } });
+                }
+                reply(false, undefined, 'Too many open backend WebSockets');
+                break;
+              }
               if (backendTransport?.openWebSocket) {
                 const handle = backendTransport.openWebSocket(wsPath, protocols, (event) => {
                   if (event.type === 'close') {

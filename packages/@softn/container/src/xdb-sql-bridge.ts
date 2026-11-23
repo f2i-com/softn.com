@@ -185,7 +185,6 @@ export async function loadXdbWasm(options: {
         const candidates = [
           process.env.XDB_WASM_DIR ? pathMod.join(process.env.XDB_WASM_DIR, 'xdb_wasm_bg.wasm') : null,
           process.env.XDB_REPO ? pathMod.join(process.env.XDB_REPO, 'crates', 'xdb-wasm', 'pkg', 'xdb_wasm_bg.wasm') : null,
-          'E:\\repos\\xdb\\xdb-rs\\crates\\xdb-wasm\\pkg\\xdb_wasm_bg.wasm',
         ].filter((p): p is string => Boolean(p));
         for (const cand of candidates) {
           if (fsMod.existsSync(cand)) {
@@ -200,8 +199,6 @@ export async function loadXdbWasm(options: {
           : null;
         if (alt && fsMod.existsSync(alt)) {
           gluePathOrUrl = alt;
-        } else if (fsMod.existsSync('E:\\repos\\xdb\\xdb-rs\\crates\\xdb-wasm\\pkg\\xdb_wasm.js')) {
-          gluePathOrUrl = 'E:\\repos\\xdb\\xdb-rs\\crates\\xdb-wasm\\pkg\\xdb_wasm.js';
         }
       }
 
@@ -335,6 +332,9 @@ interface ManagedDb {
   dirty: boolean;
   ephemeral: boolean;
 }
+
+const MAX_OPEN_DBS = 8;
+const MAX_OPEN_HANDLES = 32;
 
 export class XdbSqlManager {
   private readonly bindings: LoadedXdbBindings;
@@ -514,8 +514,14 @@ export class XdbSqlManager {
   open(rawUrl: string): { id: number } | { error: string; code: number; unique: boolean } {
     if (this.disposed) return { error: 'SQLite manager is disposed', code: 21, unique: false };
     try {
+      if (this.handles.size >= MAX_OPEN_HANDLES) {
+        return { error: `Too many open SQLite connection handles (max ${MAX_OPEN_HANDLES})`, code: 14, unique: false };
+      }
       const { key, inMemory } = normalizeDbKey(rawUrl);
       const canonical = inMemory ? ':memory:' : this.resolveCanonicalKey(key);
+      if (!inMemory && !this.byKey.has(canonical) && this.byKey.size >= MAX_OPEN_DBS) {
+        return { error: `Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`, code: 14, unique: false };
+      }
       const managed = inMemory
         ? this.createConnection(':memory:', true)
         : this.byKey.get(canonical) ?? this.createConnection(canonical, false);
@@ -677,6 +683,9 @@ export class XdbSqlManager {
 
       if (dstKey === srcKey) {
         return { bytes: bytes.byteLength };
+      }
+      if (!this.byKey.has(dstKey) && this.byKey.size >= MAX_OPEN_DBS) {
+        return { error: `Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`, code: 14, unique: false };
       }
 
       const existing = this.byKey.get(dstKey);

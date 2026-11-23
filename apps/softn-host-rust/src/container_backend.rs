@@ -42,6 +42,8 @@ const MAX_VFS_TOTAL_BYTES: usize = 128 * 1024 * 1024;
 const MAX_OVERLAY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SQL_RESULT_ROWS: usize = 10_000;
 const MAX_SQL_RESULT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CONTAINER_DATABASES: usize = 8;
+const MAX_OPEN_DB_HANDLES: usize = 32;
 
 const JS_BACKEND_PRELUDE: &str = r#"
 (function () {
@@ -1126,48 +1128,73 @@ impl SqlStorageConfig {
         conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0);
         conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT);
         // Install SQLite semantic authorizer blocking host-filesystem ATTACH/DETACH,
-        // extension loading, and unsafe PRAGMAs (e.g. trusted_schema, writable_schema, max_page_count).
-        conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
-            AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
-            AuthAction::Function { function_name }
-                if function_name.eq_ignore_ascii_case("load_extension")
-                    || function_name.eq_ignore_ascii_case("fts3_tokenizer") =>
-            {
-                Authorization::Deny
-            }
-            AuthAction::Pragma { pragma_name, .. } => {
-                let lower = pragma_name.to_ascii_lowercase();
-                if matches!(
-                    lower.as_str(),
-                    "table_info"
-                        | "table_xinfo"
-                        | "index_list"
-                        | "index_info"
-                        | "foreign_key_list"
-                        | "foreign_keys"
-                        | "database_list"
-                        | "user_version"
-                        | "application_id"
-                        | "schema_version"
-                        | "busy_timeout"
-                        | "synchronous"
-                        | "journal_mode"
-                        | "cache_size"
-                        | "encoding"
-                        | "integrity_check"
-                        | "quick_check"
-                        | "compile_options"
-                        | "page_count"
-                        | "page_size"
-                        | "freelist_count"
-                        | "wal_checkpoint"
-                ) {
-                    Authorization::Allow
-                } else {
-                    Authorization::Deny
+        // extension loading, virtual tables, host-reserved `_*` tables, and unsafe PRAGMAs.
+        conn.authorizer(Some(|ctx: AuthContext<'_>| {
+            if let Some(db_name) = ctx.database_name {
+                if db_name != "main" && db_name != "temp" {
+                    return Authorization::Deny;
                 }
             }
-            _ => Authorization::Allow,
+            match ctx.action {
+                AuthAction::Attach { .. }
+                | AuthAction::Detach { .. }
+                | AuthAction::CreateVtable { .. }
+                | AuthAction::DropVtable { .. } => Authorization::Deny,
+                AuthAction::Function { function_name }
+                    if function_name.eq_ignore_ascii_case("load_extension")
+                        || function_name.eq_ignore_ascii_case("fts3_tokenizer") =>
+                {
+                    Authorization::Deny
+                }
+                AuthAction::Read { table_name, .. }
+                | AuthAction::Insert { table_name }
+                | AuthAction::Update { table_name, .. }
+                | AuthAction::Delete { table_name }
+                | AuthAction::CreateTable { table_name }
+                | AuthAction::DropTable { table_name }
+                | AuthAction::CreateTempTable { table_name }
+                | AuthAction::DropTempTable { table_name }
+                | AuthAction::AlterTable { table_name, .. }
+                    if table_name.starts_with('_') =>
+                {
+                    Authorization::Deny
+                }
+                AuthAction::Pragma { pragma_name, pragma_value } => {
+                    let lower = pragma_name.to_ascii_lowercase();
+                    let allowed_read = matches!(
+                        lower.as_str(),
+                        "table_info"
+                            | "table_xinfo"
+                            | "index_list"
+                            | "index_info"
+                            | "foreign_key_list"
+                            | "foreign_keys"
+                            | "user_version"
+                            | "application_id"
+                            | "schema_version"
+                            | "busy_timeout"
+                            | "encoding"
+                            | "integrity_check"
+                            | "quick_check"
+                            | "page_count"
+                            | "page_size"
+                            | "freelist_count"
+                    );
+                    if !allowed_read {
+                        return Authorization::Deny;
+                    }
+                    if pragma_value.is_some()
+                        && !matches!(
+                            lower.as_str(),
+                            "foreign_keys" | "busy_timeout" | "user_version" | "application_id"
+                        )
+                    {
+                        return Authorization::Deny;
+                    }
+                    Authorization::Allow
+                }
+                _ => Authorization::Allow,
+            }
         }))
         .map_err(|e| format!("Cannot install SQLite authorizer: {e}"))?;
         Ok(conn)
@@ -1425,6 +1452,31 @@ impl RequestSqlBridge {
         }
     }
 
+    fn count_db_files(&self) -> usize {
+        let Ok(entries) = fs::read_dir(&self.config.db_dir) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                (name.ends_with(".db") || name.ends_with(".sqlite") || name.ends_with(".sqlite3"))
+                    && !name.ends_with("-wal")
+                    && !name.ends_with("-shm")
+                    && !name.ends_with("-journal")
+            })
+            .count()
+    }
+
+    fn is_sidecar_name(raw: &str) -> bool {
+        let (key, _) = SqlStorageConfig::normalize_db_key(raw);
+        let lower = key.to_ascii_lowercase();
+        lower.ends_with("-wal")
+            || lower.ends_with("-shm")
+            || lower.ends_with("-journal")
+            || lower.ends_with(".softn_seeded")
+    }
+
     fn call(&mut self, kind: &str, args: &[String]) -> String {
         if self.abort.load(Ordering::Relaxed) {
             return json!({ "error": "Request timed out", "code": 9, "unique": false }).to_string();
@@ -1433,21 +1485,34 @@ impl RequestSqlBridge {
         let arg = |idx: usize| args.get(idx).map(String::as_str).unwrap_or("");
         match op {
             "open" => {
+                if self.handles.len() >= MAX_OPEN_DB_HANDLES {
+                    return json!({ "error": format!("open SQLite handle limit exceeded (max {MAX_OPEN_DB_HANDLES})"), "code": 18, "unique": false }).to_string();
+                }
+                if Self::is_sidecar_name(arg(0)) {
+                    return json!({ "error": "cannot open SQLite sidecar file directly", "code": 1, "unique": false }).to_string();
+                }
                 match self.config.resolve_db_path(arg(0)) {
-                    Ok(path) => match SqlStorageConfig::open_configured_connection(path.as_deref()) {
-                        Ok(mut conn) => {
-                            let abort = self.abort.clone();
-                            conn.progress_handler(
-                                1000,
-                                Some(move || abort.load(Ordering::Relaxed)),
-                            );
-                            let id = self.next_id;
-                            self.next_id += 1;
-                            self.handles.insert(id, conn);
-                            json!({ "id": id }).to_string()
+                    Ok(path) => {
+                        if let Some(ref p) = path {
+                            if !p.exists() && self.count_db_files() >= MAX_CONTAINER_DATABASES {
+                                return json!({ "error": format!("database file limit exceeded (max {MAX_CONTAINER_DATABASES})"), "code": 18, "unique": false }).to_string();
+                            }
                         }
-                        Err(e) => classify_sqlite_error(&e).to_string(),
-                    },
+                        match SqlStorageConfig::open_configured_connection(path.as_deref()) {
+                            Ok(mut conn) => {
+                                let abort = self.abort.clone();
+                                conn.progress_handler(
+                                    1000,
+                                    Some(move || abort.load(Ordering::Relaxed)),
+                                );
+                                let id = self.next_id;
+                                self.next_id += 1;
+                                self.handles.insert(id, conn);
+                                json!({ "id": id }).to_string()
+                            }
+                            Err(e) => classify_sqlite_error(&e).to_string(),
+                        }
+                    }
                     Err(e) => classify_sqlite_error(&e).to_string(),
                 }
             }
@@ -1489,8 +1554,17 @@ impl RequestSqlBridge {
             "copy" => {
                 let from = arg(0);
                 let to = arg(1);
+                if Self::is_sidecar_name(to) {
+                    return json!({ "error": "cannot copy to SQLite sidecar file", "code": 1, "unique": false }).to_string();
+                }
                 match (self.config.resolve_db_path(from), self.config.resolve_exact_db_path(to)) {
                     (Ok(Some(src)), Ok(Some(dst))) => {
+                        if self.config.is_configured_db_path(&dst) {
+                            return json!({ "error": "cannot overwrite configured primary database", "code": 1, "unique": false }).to_string();
+                        }
+                        if !dst.exists() && self.count_db_files() >= MAX_CONTAINER_DATABASES {
+                            return json!({ "error": format!("database file limit exceeded (max {MAX_CONTAINER_DATABASES})"), "code": 18, "unique": false }).to_string();
+                        }
                         if src == dst {
                             let bytes = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
                             return json!({ "bytes": bytes }).to_string();
@@ -1690,6 +1764,9 @@ fn load_bundle_vfs(bundle_path: &Path) -> Result<HashMap<String, Vec<u8>>, Strin
 }
 
 fn load_php_overlay(path: &Path) -> PhpVfsOverlay {
+    if reject_symlink(path).is_err() {
+        return PhpVfsOverlay::default();
+    }
     let Ok(text) = fs::read_to_string(path) else {
         return PhpVfsOverlay::default();
     };
@@ -2015,7 +2092,7 @@ fn execute_php_request(
             return ContainerHttpResponse {
                 status: 500,
                 headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: format!("PHP Backend Error: {err}").into_bytes(),
+                body: b"Internal backend error".to_vec(),
             };
         }
     };
@@ -2051,7 +2128,7 @@ fn execute_php_request(
         return ContainerHttpResponse {
             status: 503,
             headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-            body: format!("Sandbox limit exceeded: {err}").into_bytes(),
+            body: b"Sandbox limit exceeded".to_vec(),
         };
     }
     if let Err(err) = init_res {
@@ -2060,7 +2137,7 @@ fn execute_php_request(
             status: 500,
             headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
             body: if raw_bytes.is_empty() {
-                format!("PHP Backend Error: {err}").into_bytes()
+                b"Internal backend error".to_vec()
             } else {
                 raw_bytes
             },
@@ -2135,7 +2212,7 @@ fn execute_script_backend_request(
             return ContainerHttpResponse {
                 status: 500,
                 headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: format!("Backend compile error: {err}").into_bytes(),
+                body: b"Internal backend error".to_vec(),
             };
         }
     };
@@ -2146,19 +2223,25 @@ fn execute_script_backend_request(
 
     if let Err(err) = st.run_init() {
         let limit = st.resource_limit_error().map(|s| s.to_owned());
+        tracing::error!("ZIPP {} backend init error: {}", kind.as_str(), limit.as_deref().unwrap_or(&err));
         return ContainerHttpResponse {
             status: if limit.is_some() { 503 } else { 500 },
             headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-            body: format!("Backend init error: {}", limit.unwrap_or(err)).into_bytes(),
+            body: if limit.is_some() {
+                b"Sandbox limit exceeded".to_vec()
+            } else {
+                b"Internal backend error".to_vec()
+            },
         };
     }
 
     if kind == BackendRuntimeKind::Python {
         if let Err(err) = st.eval_in_context(PYTHON_SQLITE_BRIDGE_JS) {
+            tracing::error!("Python SQLite bridge init error: {err}");
             return ContainerHttpResponse {
                 status: 500,
                 headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: format!("Python SQLite bridge init error: {err}").into_bytes(),
+                body: b"Internal backend error".to_vec(),
             };
         }
     }
@@ -2199,10 +2282,11 @@ fn execute_script_backend_request(
             &mut budget,
         );
         if let Some(limit) = st.resource_limit_error() {
+            tracing::warn!("Python backend sandbox limit triggered: {limit}");
             return ContainerHttpResponse {
                 status: 503,
                 headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: format!("Sandbox limit exceeded: {limit}").into_bytes(),
+                body: b"Sandbox limit exceeded".to_vec(),
             };
         }
         match res {
@@ -2211,24 +2295,26 @@ fn execute_script_backend_request(
                 return ContainerHttpResponse {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: b"Python backend dispatch returned non-string response".to_vec(),
+                    body: b"Internal backend error".to_vec(),
                 };
             }
             Err(err) => {
+                tracing::error!("Python backend error: {err:?}");
                 return ContainerHttpResponse {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: format!("Python backend error: {err:?}").into_bytes(),
+                    body: b"Internal backend error".to_vec(),
                 };
             }
         }
     } else {
         let call_res = st.call_global(dispatch_fn, &[JsValue::String(req_json)]);
         if let Some(limit) = st.resource_limit_error() {
+            tracing::warn!("Script backend sandbox limit triggered: {limit}");
             return ContainerHttpResponse {
                 status: 503,
                 headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: format!("Sandbox limit exceeded: {limit}").into_bytes(),
+                body: b"Sandbox limit exceeded".to_vec(),
             };
         }
         match call_res {
@@ -2237,14 +2323,15 @@ fn execute_script_backend_request(
                 return ContainerHttpResponse {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: b"Backend dispatch returned non-string response".to_vec(),
+                    body: b"Internal backend error".to_vec(),
                 };
             }
             Err(err) => {
+                tracing::error!("Script backend error: {err}");
                 return ContainerHttpResponse {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: format!("Backend error: {err}").into_bytes(),
+                    body: b"Internal backend error".to_vec(),
                 };
             }
         }
@@ -2278,6 +2365,7 @@ fn execute_script_backend_request(
 struct WarmRustWorker {
     state: ScriptState,
     dispatch_slot: u32,
+    sql_bridge: Arc<Mutex<RequestSqlBridge>>,
 }
 
 impl WarmRustWorker {
@@ -2351,9 +2439,18 @@ impl WarmRustWorker {
         };
         let mut st = compile_rust_program(&entry_source, config)?.into_state();
         harden_script_state(&mut st, BOOT_STEP_BUDGET, abort.clone());
-        let mut sql_bridge = RequestSqlBridge::new(sql_cfg.clone(), abort);
-        st.set_host_call(Box::new(move |kind, args| Ok(sql_bridge.call(kind, args))));
+        let sql_bridge = Arc::new(Mutex::new(RequestSqlBridge::new(sql_cfg.clone(), abort)));
+        let bridge_for_vm = Arc::clone(&sql_bridge);
+        st.set_host_call(Box::new(move |kind, args| {
+            let mut guard = bridge_for_vm
+                .lock()
+                .map_err(|_| "SQL bridge lock poisoned".to_owned())?;
+            Ok(guard.call(kind, args))
+        }));
         st.run_init()?;
+        if let Ok(mut guard) = sql_bridge.lock() {
+            guard.handles.clear();
+        }
 
         let dispatch_slot = st
             .symbols()
@@ -2365,10 +2462,15 @@ impl WarmRustWorker {
         Ok(Self {
             state: st,
             dispatch_slot,
+            sql_bridge,
         })
     }
 
     fn dispatch(&mut self, req: &ContainerHttpRequest, abort: Arc<AtomicBool>) -> ContainerHttpResponse {
+        if let Ok(mut guard) = self.sql_bridge.lock() {
+            guard.abort = Arc::clone(&abort);
+            guard.handles.clear();
+        }
         harden_script_state(&mut self.state, REQUEST_STEP_BUDGET, abort);
         let uri = if req.query.is_empty() {
             req.path.clone()
@@ -2393,11 +2495,15 @@ impl WarmRustWorker {
             &[HostValue::String(req_json)],
             &mut budget,
         );
+        if let Ok(mut guard) = self.sql_bridge.lock() {
+            guard.handles.clear();
+        }
         if let Some(limit) = self.state.resource_limit_error() {
+            tracing::warn!("Rust worker sandbox limit triggered: {limit}");
             return ContainerHttpResponse {
                 status: 503,
                 headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: format!("Sandbox limit exceeded: {limit}").into_bytes(),
+                body: b"Sandbox limit exceeded".to_vec(),
             };
         }
         let raw = match res {
@@ -2406,14 +2512,15 @@ impl WarmRustWorker {
                 return ContainerHttpResponse {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: b"Rust worker returned non-string response".to_vec(),
+                    body: b"Internal backend error".to_vec(),
                 };
             }
             Err(err) => {
+                tracing::error!("Rust backend error: {err:?}");
                 return ContainerHttpResponse {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: format!("Rust backend error: {err:?}").into_bytes(),
+                    body: b"Internal backend error".to_vec(),
                 };
             }
         };
@@ -2579,6 +2686,10 @@ impl ContainerBackendRuntime {
 
                         let resp = match runtime_kind {
                             BackendRuntimeKind::Php => {
+                                let before_sig = php_overlay
+                                    .lock()
+                                    .map(|ov| (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes))
+                                    .unwrap_or((0, 0, 0, 0));
                                 let out = execute_php_request(
                                     &job.req,
                                     &backend_cfg,
@@ -2589,7 +2700,10 @@ impl ContainerBackendRuntime {
                                     Arc::clone(&abort),
                                 );
                                 if let Ok(ov) = php_overlay.lock() {
-                                    save_php_overlay(&overlay_path, &ov);
+                                    let after_sig = (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes);
+                                    if after_sig != before_sig || (!job.req.method.eq_ignore_ascii_case("GET") && !job.req.method.eq_ignore_ascii_case("HEAD")) {
+                                        save_php_overlay(&overlay_path, &ov);
+                                    }
                                 }
                                 out
                             }

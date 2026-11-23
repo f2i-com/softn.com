@@ -435,6 +435,8 @@ export function createImportResolver(
         const response = await (options.fetchImpl ?? fetch)(requestedUrl.href, {
           signal: controller.signal,
           redirect: 'error',
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
         });
         if (disposed) {
           controller.abort();

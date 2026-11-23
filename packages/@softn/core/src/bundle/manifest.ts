@@ -115,6 +115,7 @@ export function normalizeManifest<M = SoftNManifest>(
   if (raw.files !== undefined && raw.files !== null) {
     if (!isRecord(raw.files)) throw new ManifestError('bad-files', 'manifest.files must be an object of file groups.');
     for (const [group, list] of Object.entries(raw.files)) {
+      if (group === '__proto__' || group === 'constructor' || group === 'prototype') continue;
       if (list === undefined || list === null) continue;
       if (!Array.isArray(list)) throw new ManifestError('bad-files', `manifest.files.${group} must be a list of paths.`);
       files[group] = list.filter((item): item is string => typeof item === 'string');

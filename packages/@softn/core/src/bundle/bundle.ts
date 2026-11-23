@@ -233,8 +233,9 @@ export async function createBundleFromFiles(
   const manifestJson = JSON.stringify(manifest, null, 2);
   zipEntries.set('manifest.json', new TextEncoder().encode(manifestJson));
 
-  // Add all files
+  // Add all files (never let a caller entry overwrite the serialized manifest)
   for (const [path, content] of files) {
+    if (path === 'manifest.json') continue;
     if (typeof content === 'string') {
       zipEntries.set(path, new TextEncoder().encode(content));
     } else {
@@ -318,13 +319,34 @@ export async function createBundleFromDirectory(
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as SoftNManifest;
 
   // POSIX separators: these become ZIP entry names, which are '/' regardless of
-  // the platform that wrote them.
+  // the platform that wrote them. Reject symlinks whose targets escape sourceDir.
+  const realRoot = fs.realpathSync(sourceDir);
+  const rootPrefix = realRoot.endsWith(nodePath.sep) ? realRoot : realRoot + nodePath.sep;
   const files = new Map<string, string | Uint8Array>();
   const walk = (dir: string, prefix: string): void => {
     for (const entry of fs!.readdirSync(dir, { withFileTypes: true })) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (exclude.includes(rel) || exclude.includes(entry.name)) continue;
       const full = nodePath!.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        let resolved: string;
+        try {
+          resolved = fs!.realpathSync(full);
+        } catch {
+          throw new Error(`Refusing broken symlink in bundle source directory: ${rel}`);
+        }
+        if (resolved !== realRoot && !resolved.startsWith(rootPrefix)) {
+          throw new Error(`Refusing symlink escaping bundle source directory: ${rel}`);
+        }
+        const st = fs!.statSync(resolved);
+        if (st.isDirectory()) {
+          throw new Error(`Refusing directory symlink in bundle source directory: ${rel}`);
+        }
+        if (rel !== 'manifest.json') {
+          files.set(rel, new Uint8Array(fs!.readFileSync(resolved)));
+        }
+        continue;
+      }
       if (entry.isDirectory()) {
         walk(full, rel);
       } else if (rel !== 'manifest.json') {

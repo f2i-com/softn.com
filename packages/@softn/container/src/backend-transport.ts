@@ -353,6 +353,12 @@ const FORBIDDEN_FETCH_REQUEST_HEADERS = new Set([
   'transfer-encoding',
   'cookie',
   'accept-encoding',
+  'forwarded',
+  'x-real-ip',
+  'x-http-method-override',
+  'x-method-override',
+  'x-original-url',
+  'x-rewrite-url',
 ]);
 
 const DEFAULT_REMOTE_TIMEOUT_MS = 30_000;
@@ -425,6 +431,7 @@ export class RemoteBackendTransport implements BackendTransport {
         FORBIDDEN_FETCH_REQUEST_HEADERS.has(lower) ||
         lower.startsWith('sec-') ||
         lower.startsWith('proxy-') ||
+        lower.startsWith('x-forwarded-') ||
         lower.startsWith('x-formlogic')
       ) {
         continue;

@@ -16,8 +16,11 @@ export async function checkSourceModules(files: ReadonlyMap<string, string>): Pr
     const output = compiledSourcePath(path);
     if (!output) continue;
     const code = files.get(output);
-    // Modules from earlier exports carry only the first comment and still run as before.
-    if (code?.startsWith(DIGEST_PREFIX) && !code.startsWith(await sourceModuleHeader(path, source))) {
+    if (!code?.startsWith(GENERATED_SOURCE_HEADER)) continue;
+    // Every generated source module MUST carry a valid SHA-256 digest matching
+    // its source file; accepting digestless headers would let a tampered bundle
+    // strip line 2 to execute arbitrary JS that contradicts the source file.
+    if (!code.startsWith(await sourceModuleHeader(path, source))) {
       throw new Error(`${path} has changed since its JavaScript was generated. Open the project in SoftN Studio or Builder and export it again.`);
     }
   }

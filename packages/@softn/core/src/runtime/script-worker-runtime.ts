@@ -446,8 +446,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private getDBSnapshot(): Record<string, unknown[]> {
     const store = this.watchStore();
     if (!store) return (this.context.data || {}) as Record<string, unknown[]>;
-    const snapshot: Record<string, unknown[]> = {};
+    const snapshot: Record<string, unknown[]> = Object.create(null);
     for (const [collection, records] of Object.entries(store.export().collections)) {
+      if (collection === '__proto__' || collection === 'constructor' || collection === 'prototype') continue;
       snapshot[collection] = records.filter((record) => !record.deleted);
     }
     return snapshot;
@@ -483,15 +484,16 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    * Collect app-prefixed localStorage keys as a snapshot (unprefixed keys).
    */
   private getLocalStorageSnapshot(): Record<string, string> {
-    const snapshot: Record<string, string> = {};
+    const snapshot: Record<string, string> = Object.create(null);
     const prefix = `softn:${this.safeAppId}:`;
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (k?.startsWith(prefix)) {
           const v = localStorage.getItem(k);
-          if (v !== null) {
-            snapshot[k.slice(prefix.length)] = v;
+          const unprefixed = k.slice(prefix.length);
+          if (v !== null && unprefixed !== '__proto__' && unprefixed !== 'constructor' && unprefixed !== 'prototype') {
+            snapshot[unprefixed] = v;
           }
         }
       }

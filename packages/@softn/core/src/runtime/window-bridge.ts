@@ -279,6 +279,7 @@ export class WindowBridge {
     const held = vmWindow as Record<string, unknown>;
     for (const key of Object.keys(held)) {
       if (!key.startsWith('__') || this.writeKeys.has(key)) continue;
+      if (!CHANNEL_NAMES.has(key) && (HOST_WINDOW_NAME.test(key) || this.hostWindowKeys.has(key))) continue;
       // A name the script only reads is on its window because the page's
       // value was put there (toVM), not because the script wrote it: it is
       // not the script's to write back until it holds something else.
@@ -297,7 +298,7 @@ export class WindowBridge {
    * is found on the script's window.
    */
   registerSyncKey(key: string): void {
-    if (key.startsWith('__')) {
+    if (key.startsWith('__') && (CHANNEL_NAMES.has(key) || (!HOST_WINDOW_NAME.test(key) && !this.hostWindowKeys.has(key)))) {
       this.syncKeys.add(key);
       this.readKeys.add(key);
     }
@@ -310,7 +311,7 @@ export class WindowBridge {
    * must reach the scene while the click still counts as the person's.
    */
   shareKey(key: string): void {
-    if (key.startsWith('__')) {
+    if (key.startsWith('__') && (CHANNEL_NAMES.has(key) || (!HOST_WINDOW_NAME.test(key) && !this.hostWindowKeys.has(key)))) {
       this.syncKeys.add(key);
       this.writeKeys.add(key);
       this.writesFromStart = true;
@@ -332,6 +333,7 @@ export class WindowBridge {
     if (!this.windowSyncActive) {
       // Periodically recheck (cheap: just test 2 keys)
       for (const key of this.syncKeys) {
+        if (!CHANNEL_NAMES.has(key) && (HOST_WINDOW_NAME.test(key) || this.hostWindowKeys.has(key))) continue;
         if (realWin[key] !== undefined) {
           this.windowSyncActive = true;
           break;
@@ -347,6 +349,7 @@ export class WindowBridge {
     let changed = false;
 
     for (const key of this.syncKeys) {
+      if (!CHANNEL_NAMES.has(key) && (HOST_WINDOW_NAME.test(key) || this.hostWindowKeys.has(key))) continue;
       if (this.ownedElsewhere(key)) continue;
       const value = realWin[key];
       if (value !== undefined && typeof value !== 'function') {

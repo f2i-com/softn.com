@@ -171,10 +171,55 @@ export class AppNetwork {
     const url = path && this.assetResolver ? this.assetResolver(path) : '';
     if (!url || !isOwnFileUrl(url)) return notFound;
     try {
-      const resp = await fetch(url, { redirect: 'error' });
+      const resp = await fetch(url, {
+        redirect: 'error',
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+      });
       if (!resp.ok) return { ...notFound, status: resp.status, statusText: resp.statusText };
-      const body = await resp.text();
-      if (body.length > MAX_NET_RESPONSE_BYTES) throw new Error('The file is too large');
+      const declaredHeader = resp.headers.get('content-length');
+      const declaredLength = declaredHeader === null ? NaN : Number(declaredHeader);
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_NET_RESPONSE_BYTES) {
+        try {
+          await resp.body?.cancel();
+        } catch {
+          // ignore
+        }
+        throw new Error('The file is too large');
+      }
+      let body: string;
+      if (resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        const chunks: string[] = [];
+        let total = 0;
+        try {
+          let next = await reader.read();
+          while (!next.done) {
+            if (next.value) {
+              total += next.value.byteLength;
+              if (total > MAX_NET_RESPONSE_BYTES) {
+                try {
+                  await reader.cancel();
+                } catch {
+                  // ignore
+                }
+                throw new Error('The file is too large');
+              }
+              chunks.push(decoder.decode(next.value, { stream: true }));
+            }
+            next = await reader.read();
+          }
+          chunks.push(decoder.decode());
+        } finally {
+          reader.releaseLock();
+        }
+        body = chunks.join('');
+      } else {
+        const bytes = await resp.arrayBuffer();
+        if (bytes.byteLength > MAX_NET_RESPONSE_BYTES) throw new Error('The file is too large');
+        body = new TextDecoder().decode(bytes);
+      }
       const type = resp.headers.get('content-type');
       return { ok: true, status: 200, statusText: 'OK', body, headers: type ? { 'content-type': type } : {} };
     } catch (error) {

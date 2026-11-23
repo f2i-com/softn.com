@@ -165,6 +165,13 @@ const STAGED_PART_CHARS = 32;
 const MAX_STAGED_PARTS = 200_000;
 /** The most of a script from another site read (one past what eval compiles is refused all the same). */
 const MAX_REMOTE_SCRIPT_BYTES = 4 * 1024 * 1024;
+/** The largest net.fetch response body buffered into base64 over the bridge (12 MiB -> 16 MiB base64). */
+const MAX_NET_FETCH_BYTES = 12 * 1024 * 1024;
+/** The most concurrent timers an app (or app Worker) may hold at once. */
+const MAX_TIMERS = 4096;
+/** Maximum persisted session route path length. */
+const MAX_SESSION_URL_LENGTH = 4096;
+const BLOCKED_STORAGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** How long one drain goes round for an app that keeps asking what is answered at once, before the rest is left for a task of its own. */
 const MAX_DRAIN_MS = 50;
 /** What the messages posted to a Worker before it has started may hold in all (characters of their copies). */
@@ -445,6 +452,8 @@ export class ContainerWorkerSession {
   private grantedCapabilities = new Set<Capability>();
   private instructionsPerTurn = 100_000_000;
   private storageQuotaBytes = 5 * 1024 * 1024;
+  private sessionStore = new Map<string, string>();
+  private sessionStoreBytes = 0;
   /** Sizes of persisted JSON snapshots, in UTF-16 bytes. Untouched bundled seeds take no quota. */
   private readonly savedCollectionBytes = new Map<string, number>();
   private recordBytesKept = 0;
@@ -684,6 +693,16 @@ export class ContainerWorkerSession {
     this.pageBaseUrl = msg.seed.url || `${VIRTUAL_ORIGIN}/`;
     this.instructionsPerTurn = msg.limits.instructionsPerTurn;
     this.storageQuotaBytes = msg.limits.storageQuotaBytes;
+    this.sessionStore.clear();
+    this.sessionStoreBytes = 0;
+    if (msg.initialSessionStorage && typeof msg.initialSessionStorage === 'object') {
+      for (const [k, v] of Object.entries(msg.initialSessionStorage)) {
+        if (typeof v === 'string' && !BLOCKED_STORAGE_KEYS.has(k)) {
+          this.sessionStore.set(k, v);
+          this.sessionStoreBytes += (k.length + v.length) * 2;
+        }
+      }
+    }
     this.idbApart = msg.idbApart === true;
     this.idbQuotaBytes = msg.limits.idbQuotaBytes;
 
@@ -1683,6 +1702,15 @@ export class ContainerWorkerSession {
 
       case 'timer.set': {
         const timerId = Number(args[0]);
+        if (!Number.isFinite(timerId)) return;
+        const prev = this.timers.get(timerId);
+        if (prev !== undefined) {
+          clearTimeout(prev);
+          this.timers.delete(timerId);
+        } else if (this.timers.size >= MAX_TIMERS) {
+          this.resolveCallbackAndFlush(callId, { ok: false, error: 'Too many active timers' });
+          return;
+        }
         const delayMs = Math.max(0, Math.min(Number(args[1]) || 0, 86_400_000));
         const handle = setTimeout(() => {
           this.timers.delete(timerId);
@@ -1785,9 +1813,9 @@ export class ContainerWorkerSession {
             if (!defined.has(resolved.url)) {
               // No redirects, as for the app's own fetches: a host the app was granted could
               // answer with a redirect to one it was not, whose script would then be run.
-              const resp = await fetch(resolved.url, { credentials: 'omit', redirect: 'error', cache: cacheModeFor(resolved.url, undefined) });
+              const resp = await fetch(resolved.url, { credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', cache: cacheModeFor(resolved.url, undefined) });
               if (!resp.ok) throw new Error(`HTTP ${resp.status} loading ${resolved.url}`);
-              const remoteSrc = await resp.text();
+              const remoteSrc = await (await blobWithin(resp, MAX_REMOTE_SCRIPT_BYTES)).text();
               await this.collectModuleGraph(remoteSrc, 'index.html', resolved.url, blocks, collected, undefined, defined);
             }
             this.resolveCallbackAndFlush(callId, this.moduleReply(resolved.url, blocks, collected, 'remote', defined));
@@ -1890,12 +1918,13 @@ export class ContainerWorkerSession {
             cache: cacheModeFor(url, undefined),
             credentials: 'omit',
             redirect: 'error',
+            referrerPolicy: 'no-referrer',
           });
           const headersObj: Record<string, string> = {};
           resp.headers.forEach((v, k) => {
             headersObj[k] = v;
           });
-          const bytes = new Uint8Array(await resp.arrayBuffer());
+          const bytes = new Uint8Array(await (await blobWithin(resp, MAX_NET_FETCH_BYTES)).arrayBuffer());
           let bin = '';
           for (let i = 0; i < bytes.length; i += 0x8000) {
             bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -2520,6 +2549,7 @@ export class ContainerWorkerSession {
       this.cryptoKeyBytes += weight;
     }
     let made = 0;
+    const startKeyId = this.nextCryptoKey;
     try {
       const given = args.map((arg) => this.subtleArgument(arg, 0));
       const run = (subtle as unknown as Record<string, (...values: unknown[]) => Promise<unknown>>)[op];
@@ -2535,9 +2565,19 @@ export class ContainerWorkerSession {
     } finally {
       if (weight > 0) {
         this.cryptoMaking--;
-        // What a key holds is counted while it is kept (subtle.drop gives it back), and not at all for one not made.
-        if (made === 0) this.cryptoKeyBytes -= weight;
-        else this.cryptoKeyWeights.set(`k${this.nextCryptoKey - 1}`, weight);
+        // What a key (or asymmetric keypair) holds is split across every key id minted by this call
+        // so dropping either half returns its exact share and never leaks or double-frees budget.
+        if (made <= 0) {
+          this.cryptoKeyBytes -= weight;
+        } else {
+          const perKey = Math.floor(weight / made);
+          let assigned = 0;
+          for (let idx = 0; idx < made; idx++) {
+            const share = idx === made - 1 ? weight - assigned : perKey;
+            assigned += share;
+            this.cryptoKeyWeights.set(`k${startKeyId + idx}`, share);
+          }
+        }
       }
     }
   }
@@ -2986,20 +3026,43 @@ export class ContainerWorkerSession {
           const sub = String(args[0] ?? '');
           if (sub === 'route') {
             const urlPath = String(args[1] ?? '');
-            if (urlPath.startsWith('/')) {
+            if (urlPath.startsWith('/') && urlPath.length <= MAX_SESSION_URL_LENGTH) {
               this.postToHost({ type: 'session-route', urlPath });
             }
             return true;
           }
           if (sub === 'ss') {
             const op = String(args[1] ?? '');
-            if (op === 'set' || op === 'remove' || op === 'clear') {
-              this.postToHost({
-                type: 'session-storage-write',
-                op,
-                ...(op !== 'clear' ? { key: String(args[2] ?? '') } : {}),
-                ...(op === 'set' ? { value: String(args[3] ?? '') } : {}),
-              });
+            if (op === 'set') {
+              const k = String(args[2] ?? '');
+              const v = String(args[3] ?? '');
+              if (BLOCKED_STORAGE_KEYS.has(k)) return false;
+              const prev = this.sessionStore.get(k);
+              const delta = (k.length + v.length) * 2 - (prev !== undefined ? (k.length + prev.length) * 2 : 0);
+              if (this.sessionStoreBytes + delta > this.storageQuotaBytes) {
+                return false;
+              }
+              this.sessionStore.set(k, v);
+              this.sessionStoreBytes += delta;
+              this.postToHost({ type: 'session-storage-write', op: 'set', key: k, value: v });
+              return true;
+            }
+            if (op === 'remove') {
+              const k = String(args[2] ?? '');
+              if (BLOCKED_STORAGE_KEYS.has(k)) return true;
+              const prev = this.sessionStore.get(k);
+              if (prev !== undefined) {
+                this.sessionStore.delete(k);
+                this.sessionStoreBytes -= (k.length + prev.length) * 2;
+              }
+              this.postToHost({ type: 'session-storage-write', op: 'remove', key: k });
+              return true;
+            }
+            if (op === 'clear') {
+              this.sessionStore.clear();
+              this.sessionStoreBytes = 0;
+              this.postToHost({ type: 'session-storage-write', op: 'clear' });
+              return true;
             }
             return true;
           }
@@ -3382,6 +3445,15 @@ export class ContainerWorkerSession {
     switch (kind) {
       case 'timer.set': {
         const timerId = Number(args[0]);
+        if (!Number.isFinite(timerId)) return;
+        const prev = worker.timers.get(timerId);
+        if (prev !== undefined) {
+          clearTimeout(prev);
+          worker.timers.delete(timerId);
+        } else if (worker.timers.size >= MAX_TIMERS) {
+          this.answerAppWorker(worker, callId, { ok: false, error: 'Too many active timers' });
+          return;
+        }
         const delayMs = Math.max(0, Math.min(Number(args[1]) || 0, 86_400_000));
         const handle = setTimeout(() => {
           worker.timers.delete(timerId);
@@ -4033,7 +4105,7 @@ export class ContainerWorkerSession {
       return false;
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-    if (typeof location !== 'undefined' && url.origin === location.origin) return false;
+    if (typeof location !== 'undefined' && (url.origin === location.origin || sameSite(url.hostname, location.hostname))) return false;
     return isExternalUrlAllowed(url.href, this.permissions.permissions?.net, this.grantedCapabilities.has('net'));
   }
 
@@ -4130,7 +4202,7 @@ export class ContainerWorkerSession {
         return;
       }
       // Never from the browser's copy of an earlier answer (one fetched with cookies may be there).
-      picture.decoding = this.decodeInTurn(() => fetch(picture.src, { mode: 'cors', credentials: 'omit', cache: 'no-store' })
+      picture.decoding = this.decodeInTurn(() => fetch(picture.src, { mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' })
         .then(async (response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           // Where a redirect took it: read only from a site the app may read from.

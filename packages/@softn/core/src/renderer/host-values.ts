@@ -71,6 +71,34 @@ const ARRAY_MUTATORS: ReadonlySet<unknown> = new Set<unknown>(
   )
 );
 
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const GeneratorFunction = Object.getPrototypeOf(function* () {}).constructor;
+const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).constructor;
+
+/**
+ * Constructors and meta-evaluators that markup must never hold or invoke,
+ * even if reached through a helper or an object property.
+ */
+const BLOCKED_FUNCTIONS: ReadonlySet<unknown> = new Set<unknown>([
+  Function,
+  AsyncFunction,
+  GeneratorFunction,
+  AsyncGeneratorFunction,
+  eval,
+  Object,
+  Reflect.construct,
+  Reflect.apply,
+  Reflect.defineProperty,
+  Reflect.setPrototypeOf,
+  Reflect.deleteProperty,
+  Reflect.set,
+]);
+
+/** Whether `fn` is a host constructor or meta-evaluator markup must never run. */
+export function isBlockedFunction(fn: unknown): boolean {
+  return BLOCKED_FUNCTIONS.has(fn);
+}
+
 /** Whether `fn` is one of the array methods that write onto what they are called on. */
 export function isArrayMutator(fn: unknown): boolean {
   return ARRAY_MUTATORS.has(fn);
@@ -82,7 +110,9 @@ export function isArrayMutator(fn: unknown): boolean {
  */
 export function markupValue(value: unknown): unknown {
   // Before the array test: Array.prototype is an array, and Function.prototype a function.
-  if (INTRINSIC_PROTOTYPES.has(value) || ARRAY_MUTATORS.has(value)) return undefined;
+  if (INTRINSIC_PROTOTYPES.has(value) || ARRAY_MUTATORS.has(value) || BLOCKED_FUNCTIONS.has(value)) {
+    return undefined;
+  }
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value;
   const proto = Object.getPrototypeOf(value);
@@ -91,13 +121,40 @@ export function markupValue(value: unknown): unknown {
   return standIn(value);
 }
 
+function isHostSensitiveObject(value: object): boolean {
+  if (typeof Storage !== 'undefined' && value instanceof Storage) return true;
+  if (typeof Location !== 'undefined' && value instanceof Location) return true;
+  if (typeof Navigator !== 'undefined' && value instanceof Navigator) return true;
+  if (typeof History !== 'undefined' && value instanceof History) return true;
+  if (typeof Screen !== 'undefined' && value instanceof Screen) return true;
+  if (typeof Performance !== 'undefined' && value instanceof Performance) return true;
+  if (typeof IDBFactory !== 'undefined' && value instanceof IDBFactory) return true;
+  if (typeof CSSStyleSheet !== 'undefined' && value instanceof CSSStyleSheet) return true;
+  if (typeof Document !== 'undefined' && value instanceof Document) return true;
+  if (typeof ShadowRoot !== 'undefined' && value instanceof ShadowRoot) return true;
+  const g = globalThis as Record<string, unknown>;
+  if (
+    value === g.localStorage ||
+    value === g.sessionStorage ||
+    value === g.location ||
+    value === g.navigator ||
+    value === g.history ||
+    value === g.document ||
+    value === g.indexedDB ||
+    value === g.caches
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function standIn(value: object): unknown {
   const made = standIns.get(value);
   if (made !== undefined) return made;
   try {
     const event = nativeEventOf(value);
     if (event) return remember(value, eventRecord(value as EventLike, event));
-    if (isWindow(value)) return undefined;
+    if (isWindow(value) || isHostSensitiveObject(value)) return undefined;
     if (isNode(value)) return isElement(value) ? elementRecord(value) : undefined;
   } catch {
     // Something that throws when asked what it is (another origin's window,

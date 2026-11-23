@@ -126,56 +126,41 @@ impl Resolver for SsrfSafeResolver {
 /// This performs static string-level checks. The DNS-level IP validation is
 /// handled by SsrfSafeResolver at connection time (zero TOCTOU gap).
 fn validate_url(url: &str) -> Result<(), String> {
-    // Require http:// or https:// scheme. Blocks file://, ftp://, gopher://, etc.
-    let rest = if let Some(r) = url.strip_prefix("https://") {
-        r
-    } else if let Some(r) = url.strip_prefix("http://") {
-        r
-    } else {
+    let trimmed = url.trim();
+    if trimmed.contains('\\') || trimmed.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err("Invalid characters in URL".into());
+    }
+    let uri: ureq::http::Uri = trimmed
+        .parse()
+        .map_err(|_| "Invalid URL".to_string())?;
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| "Only http:// and https:// URLs are allowed".to_string())?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
         return Err("Only http:// and https:// URLs are allowed".into());
-    };
-
-    // Extract host from authority (strip userinfo@, :port, and /path).
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let host_port = match authority.rfind('@') {
-        Some(at) => &authority[at + 1..],
-        None => authority,
-    };
-
-    // Handle IPv6 brackets: [::1]:8080
-    let host = if host_port.starts_with('[') {
-        host_port
-            .split(']')
-            .next()
-            .unwrap_or(host_port)
-            .trim_start_matches('[')
-    } else {
-        // IPv4 or hostname — strip port
-        host_port.split(':').next().unwrap_or(host_port)
-    };
-
-    if host.is_empty() {
+    }
+    let authority = uri
+        .authority()
+        .ok_or_else(|| "Empty host in URL".to_string())?;
+    let host_raw = authority.host();
+    if host_raw.is_empty() {
         return Err("Empty host in URL".into());
     }
+    let host = host_raw.trim_start_matches('[').trim_end_matches(']');
+    let host_lower = host.to_ascii_lowercase();
+    let host_clean = host_lower.trim_end_matches('.');
 
-    let host_lower = host.to_lowercase();
-
-    // Block localhost variants
-    if host_lower == "localhost" || host_lower == "localhost." {
+    if host_clean == "localhost" {
         return Err("Requests to localhost are blocked (SSRF protection)".into());
     }
-
-    // Block .local / .internal / .localhost TLDs
-    if host_lower.ends_with(".local")
-        || host_lower.ends_with(".internal")
-        || host_lower.ends_with(".localhost")
+    if host_clean.ends_with(".local")
+        || host_clean.ends_with(".internal")
+        || host_clean.ends_with(".localhost")
+        || host_clean.ends_with(".home.arpa")
+        || host_clean.ends_with(".localdomain")
     {
         return Err("Requests to local/internal hostnames are blocked (SSRF protection)".into());
     }
-
-    // If it's a literal IP address, check against blocked ranges.
-    // (Also caught by SsrfSafeResolver, but failing early here gives
-    // a clearer error message than "host not found".)
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_blocked_ip(ip) {
             return Err(format!(
@@ -201,17 +186,26 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
             let segments = v6.segments();
             let bits = u128::from(v6);
             // fc00::/7 unique-local (AWS's IPv6 metadata service is
-            // fd00:ec2::254), fe80::/10 link-local, fec0::/10 site-local.
-            if (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80 || (segments[0] & 0xffc0) == 0xfec0 {
+            // fd00:ec2::254), fe80::/10 link-local, fec0::/10 site-local,
+            // 100::/64 discard-only, 2001:0000::/32 Teredo.
+            if (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0)
+                || (segments[0] == 0x2001 && segments[1] == 0x0000)
+            {
                 return true;
             }
             // Addresses that carry an IPv4 address a gateway or the stack
-            // will reach: ::ffff:a.b.c.d (mapped), ::a.b.c.d (compatible,
-            // deprecated), 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64) with the
-            // IPv4 address in the low 32 bits, 2002::/16 (6to4) with it in
+            // will reach: ::ffff:a.b.c.d (mapped), ::ffff:0:a.b.c.d (IPv4-translated),
+            // ::a.b.c.d (compatible, deprecated), 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64)
+            // with the IPv4 address in the low 32 bits, 2002::/16 (6to4) with it in
             // bits 16-47.
             let low32 = Ipv4Addr::from(bits as u32);
             if segments[0..5] == [0, 0, 0, 0, 0] && (segments[5] == 0xffff || segments[5] == 0) {
+                return is_blocked_ipv4(&low32);
+            }
+            if segments[0..4] == [0, 0, 0, 0] && segments[4] == 0xffff && segments[5] == 0 {
                 return is_blocked_ipv4(&low32);
             }
             let nat64 = segments[0] == 0x64 && segments[1] == 0xff9b;

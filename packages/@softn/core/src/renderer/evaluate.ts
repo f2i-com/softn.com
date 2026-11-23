@@ -29,7 +29,7 @@ import { isIdentifierName } from '../parser/ast';
 import type { SoftNLocalScope, SoftNRenderContext } from '../types';
 import { callFailed } from '../runtime/failed-calls';
 import { parseStatePath } from '../runtime/state-path';
-import { isArrayMutator, markupValue } from './host-values';
+import { isArrayMutator, isBlockedFunction, markupValue } from './host-values';
 import { isDevelopment } from './development';
 
 /**
@@ -39,10 +39,13 @@ import { isDevelopment } from './development';
  */
 export function writeStatePath(state: Record<string, unknown>, path: readonly string[], value: unknown): void {
   if (path.length === 0) return;
+  for (const key of path) {
+    if (BLOCKED_MEMBER_KEYS.has(key)) return;
+  }
   let into: Record<string, unknown> | unknown[] = state;
   for (let i = 0; i < path.length - 1; i++) {
     const key = path[i];
-    const next: unknown = (into as Record<string, unknown>)[key];
+    const next: unknown = Object.hasOwn(into, key) ? (into as Record<string, unknown>)[key] : undefined;
     const copy: Record<string, unknown> | unknown[] = Array.isArray(next)
       ? [...next]
       : next !== null && typeof next === 'object'
@@ -390,7 +393,18 @@ function callValue(
   locals: SoftNLocalScope | undefined
 ): unknown {
   if (typeof fn === 'function') {
-    if (fn === Function) {
+    if (isBlockedFunction(fn)) {
+      return undefined;
+    }
+    if (
+      (fn === Function.prototype.call || fn === Function.prototype.apply || fn === Function.prototype.bind) &&
+      (typeof thisObj !== 'function' ||
+        isBlockedFunction(thisObj) ||
+        isArrayMutator(thisObj) ||
+        thisObj === Function.prototype.call ||
+        thisObj === Function.prototype.apply ||
+        thisObj === Function.prototype.bind)
+    ) {
       return undefined;
     }
     // `list.push(x)` on a list; on anything else it writes onto a shared object (host-values.ts).
@@ -1712,6 +1726,7 @@ export function getExpressionPath(
       const at = scope.names.indexOf(expr.name);
       if (at !== -1) return placeInState(scope, at);
     }
+    if (BLOCKED_MEMBER_KEYS.has(expr.name)) return null;
     return expr.name;
   }
 
@@ -1720,6 +1735,7 @@ export function getExpressionPath(
     if (!objectPath) return null;
 
     if (!expr.computed && expr.property.type === 'Identifier') {
+      if (BLOCKED_MEMBER_KEYS.has(expr.property.name)) return null;
       return `${objectPath}.${expr.property.name}`;
     }
 

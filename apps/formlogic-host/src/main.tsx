@@ -236,6 +236,7 @@ window.addEventListener('message', async event => {
     // its id is the parent's own, and may be a number one of the frame's calls has.
     if (event.data?.type === 'formlogic:update') { updates.receive(event.data); return; }
     if (event.data?.type === 'formlogic:navigate' && typeof event.data.to === 'string') { navigatePlace?.(event.data.to); return; }
+    if (event.data?.type !== undefined) return;
     if (!calls.settle(event.data?.id, event.data?.result)) storageCalls?.settle(event.data?.id, event.data?.result);
   };
   // A result the port could not deserialise names no id: nothing in flight

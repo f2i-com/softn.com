@@ -6,6 +6,35 @@
  */
 
 import type { XDBRecord } from '../types';
+import { isBlockedFunction } from '../renderer/host-values';
+
+const BLOCKED_HELPER_KEYS = new Set([
+  'constructor',
+  '__proto__',
+  'prototype',
+  '__defineGetter__',
+  '__defineSetter__',
+  '__lookupGetter__',
+  '__lookupSetter__',
+]);
+
+function safeOwnProp(obj: unknown, key: string): unknown {
+  if (obj === null || typeof obj !== 'object') return undefined;
+  if (typeof key !== 'string' || BLOCKED_HELPER_KEYS.has(key)) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(obj, key)) return undefined;
+  return (obj as Record<string, unknown>)[key];
+}
+
+function safeRecordProp(item: unknown, key: string): unknown {
+  if (typeof key !== 'string' || BLOCKED_HELPER_KEYS.has(key)) return undefined;
+  if (isXDBRecord(item)) {
+    if (item.data && typeof item.data === 'object' && Object.prototype.hasOwnProperty.call(item.data, key)) {
+      return (item.data as Record<string, unknown>)[key];
+    }
+    return safeOwnProp(item, key);
+  }
+  return safeOwnProp(item, key);
+}
 
 // ============================================================================
 // Collection Helpers
@@ -25,19 +54,15 @@ export function filter<T>(
   if (!Array.isArray(items)) return [];
 
   if (typeof predicateOrMatch === 'function') {
+    if (isBlockedFunction(predicateOrMatch)) return [];
     return items.filter(predicateOrMatch);
   }
+  if (!predicateOrMatch || typeof predicateOrMatch !== 'object') return [];
 
   // Object match
   return items.filter((item) => {
-    // A record's own fields — id, created_at, updated_at, deleted — are as
-    // addressable as the ones inside `data`. Indexing only `data` made every
-    // key-based helper answer `undefined` for them, which sorts nothing,
-    // matches nothing and collapses every record to one. `find` already
-    // merged both; the rest now agree with it.
-    const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
     return Object.entries(predicateOrMatch).every(([key, value]) => {
-      return (data as Record<string, unknown>)[key] === value;
+      return safeRecordProp(item, key) === value;
     });
   });
 }
@@ -60,13 +85,12 @@ export function sort<T>(
   const sorted = [...items];
 
   if (typeof keyOrComparator === 'function') {
+    if (isBlockedFunction(keyOrComparator)) return sorted;
     sorted.sort(keyOrComparator);
   } else {
     sorted.sort((a, b) => {
-      const aData = isXDBRecord(a) ? { ...a, ...a.data } : a;
-      const bData = isXDBRecord(b) ? { ...b, ...b.data } : b;
-      const aVal = (aData as Record<string, unknown>)[keyOrComparator];
-      const bVal = (bData as Record<string, unknown>)[keyOrComparator];
+      const aVal = safeRecordProp(a, keyOrComparator);
+      const bVal = safeRecordProp(b, keyOrComparator);
 
       if (aVal === bVal) return 0;
       if (aVal === undefined || aVal === null) return 1;
@@ -93,13 +117,14 @@ export function find<T>(
   if (!Array.isArray(items)) return undefined;
 
   if (typeof predicateOrMatch === 'function') {
+    if (isBlockedFunction(predicateOrMatch)) return undefined;
     return items.find(predicateOrMatch);
   }
+  if (!predicateOrMatch || typeof predicateOrMatch !== 'object') return undefined;
 
   return items.find((item) => {
-    const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
     return Object.entries(predicateOrMatch).every(([key, value]) => {
-      return (data as Record<string, unknown>)[key] === value;
+      return safeRecordProp(item, key) === value;
     });
   });
 }
@@ -149,6 +174,7 @@ export function count<T>(items: T[], predicate?: (item: T, index: number) => boo
   if (!Array.isArray(items)) return 0;
 
   if (predicate) {
+    if (typeof predicate !== 'function' || isBlockedFunction(predicate)) return 0;
     return items.filter(predicate).length;
   }
 
@@ -162,7 +188,7 @@ export function count<T>(items: T[], predicate?: (item: T, index: number) => boo
  *   {some(todos, t => t.data.completed)}
  */
 export function some<T>(items: T[], predicate: (item: T, index: number) => boolean): boolean {
-  if (!Array.isArray(items)) return false;
+  if (!Array.isArray(items) || typeof predicate !== 'function' || isBlockedFunction(predicate)) return false;
   return items.some(predicate);
 }
 
@@ -174,6 +200,7 @@ export function some<T>(items: T[], predicate: (item: T, index: number) => boole
  */
 export function every<T>(items: T[], predicate: (item: T, index: number) => boolean): boolean {
   if (!Array.isArray(items)) return true;
+  if (typeof predicate !== 'function' || isBlockedFunction(predicate)) return false;
   return items.every(predicate);
 }
 
@@ -184,7 +211,7 @@ export function every<T>(items: T[], predicate: (item: T, index: number) => bool
  *   {map(todos, t => t.data.title)}
  */
 export function map<T, U>(items: T[], mapper: (item: T, index: number) => U): U[] {
-  if (!Array.isArray(items)) return [];
+  if (!Array.isArray(items) || typeof mapper !== 'function' || isBlockedFunction(mapper)) return [];
   return items.map(mapper);
 }
 
@@ -200,19 +227,17 @@ export function groupBy<T>(
   keyOrGetter: string | ((item: T) => string)
 ): Record<string, T[]> {
   if (!Array.isArray(items)) return {};
+  if (typeof keyOrGetter === 'function' && isBlockedFunction(keyOrGetter)) return {};
 
   return items.reduce(
     (groups, item) => {
       const key =
         typeof keyOrGetter === 'function'
-          ? keyOrGetter(item)
-          : String(
-              (isXDBRecord(item)
-                ? { ...item, ...item.data }
-                : (item as Record<string, unknown>))[keyOrGetter] ?? 'undefined'
-            );
+          ? String(keyOrGetter(item))
+          : String(safeRecordProp(item, keyOrGetter) ?? 'undefined');
 
-      if (!groups[key]) {
+      if (BLOCKED_HELPER_KEYS.has(key)) return groups;
+      if (!Object.prototype.hasOwnProperty.call(groups, key)) {
         groups[key] = [];
       }
       groups[key].push(item);
@@ -235,8 +260,7 @@ export function unique<T>(items: T[], key?: string): T[] {
   if (key) {
     const seen = new Set<unknown>();
     return items.filter((item) => {
-      const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
-      const val = (data as Record<string, unknown>)[key];
+      const val = safeRecordProp(item, key);
       if (seen.has(val)) return false;
       seen.add(val);
       return true;
@@ -255,10 +279,7 @@ export function unique<T>(items: T[], key?: string): T[] {
 export function pluck<T>(items: T[], key: string): unknown[] {
   if (!Array.isArray(items)) return [];
 
-  return items.map((item) => {
-    const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
-    return (data as Record<string, unknown>)[key];
-  });
+  return items.map((item) => safeRecordProp(item, key));
 }
 
 // ============================================================================
@@ -480,7 +501,7 @@ export function timeAgo(date: string | Date | number): string {
  *   {get(item, 'data.user.name', 'Unknown')}
  */
 export function get<T = unknown>(obj: unknown, path: string, defaultValue?: T): T | undefined {
-  if (!obj || typeof obj !== 'object') return defaultValue;
+  if (!obj || typeof obj !== 'object' || typeof path !== 'string') return defaultValue;
 
   const parts = path.split('.');
   let current: unknown = obj;
@@ -489,7 +510,18 @@ export function get<T = unknown>(obj: unknown, path: string, defaultValue?: T): 
     if (current === null || current === undefined) {
       return defaultValue;
     }
-    current = (current as Record<string, unknown>)[part];
+    if (BLOCKED_HELPER_KEYS.has(part)) {
+      return defaultValue;
+    }
+    if (typeof current === 'string') {
+      current = part === 'length' ? current.length : undefined;
+    } else if (typeof current === 'object') {
+      current = Object.prototype.hasOwnProperty.call(current, part)
+        ? (current as Record<string, unknown>)[part]
+        : undefined;
+    } else {
+      return defaultValue;
+    }
   }
 
   return (current as T) ?? defaultValue;
@@ -545,10 +577,11 @@ export function data(record: XDBRecord | unknown): Record<string, unknown> {
  *   Instead of: {record.data.title}
  */
 export function field(record: XDBRecord | unknown, fieldName: string): unknown {
+  if (typeof fieldName !== 'string' || BLOCKED_HELPER_KEYS.has(fieldName)) return undefined;
   if (isXDBRecord(record)) {
-    return record.data[fieldName];
+    return safeOwnProp(record.data, fieldName);
   }
-  return (record as Record<string, unknown>)?.[fieldName];
+  return safeOwnProp(record, fieldName);
 }
 
 // ============================================================================

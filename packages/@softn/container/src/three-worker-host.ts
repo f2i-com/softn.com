@@ -39,6 +39,18 @@ type ThreeNamespace = typeof import('three');
 
 const MAX_RENDERERS = 8;
 const MAX_OBJECTS = 65_536;
+const BLOCKED_THREE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const MAX_THREE_TEXTURE_SIDE = 4096;
+const MAX_THREE_TEXTURE_BYTES = 32 * 1024 * 1024;
+const MAX_INSTANCED_MESH_CAP = 1_000_000;
+const ALLOWED_SHADER_EXTENSIONS = new Set([
+  'clipCullDistance',
+  'multiDraw',
+  'derivatives',
+  'fragDepth',
+  'drawBuffers',
+  'shaderTextureLOD',
+]);
 const MAX_RESOURCES = 16_384;
 const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
 
@@ -441,9 +453,10 @@ export class ThreeWorkerHost {
           case 'mu': {
             const mat = entry.materials.get(Number(op[1])) as import('three').ShaderMaterial | undefined;
             const uMap = op[2] as Record<string, unknown> | undefined;
-            if (mat && mat.uniforms && uMap) {
+            if (mat && mat.uniforms && uMap && typeof uMap === 'object') {
               for (const [uk, uv] of Object.entries(uMap)) {
-                if (!mat.uniforms[uk]) {
+                if (BLOCKED_THREE_KEYS.has(uk)) continue;
+                if (!Object.prototype.hasOwnProperty.call(mat.uniforms, uk) || !mat.uniforms[uk]) {
                   mat.uniforms[uk] = { value: decodeUniformValue(THREE, entry, uv) };
                 } else {
                   mat.uniforms[uk].value = decodeUniformValue(THREE, entry, uv, mat.uniforms[uk].value);
@@ -676,9 +689,12 @@ export class ThreeWorkerHost {
         }
       }
     } else if (kind === 'data') {
-      const w = Math.max(1, Number(spec.w) || 1);
-      const h = Math.max(1, Number(spec.h) || 1);
+      const w = Math.max(1, Math.min(MAX_THREE_TEXTURE_SIDE, Math.floor(Number(spec.w) || 1)));
+      const h = Math.max(1, Math.min(MAX_THREE_TEXTURE_SIDE, Math.floor(Number(spec.h) || 1)));
+      if (w * h * 4 > MAX_THREE_TEXTURE_BYTES) return;
+      if (typeof spec.b64 === 'string' && Math.ceil((spec.b64.length * 3) / 4) > MAX_THREE_TEXTURE_BYTES) return;
       const data = typeof spec.b64 === 'string' ? decodeTypedArray(String(spec.tc || 'u8'), spec.b64) : new Uint8Array(w * h * 4);
+      if (data.byteLength > MAX_THREE_TEXTURE_BYTES) return;
       const fmt = typeof spec.format === 'number' ? (spec.format as import('three').PixelFormat) : THREE.RGBAFormat;
       const typ = typeof spec.type === 'number' ? (spec.type as import('three').TextureDataType) : THREE.UnsignedByteType;
       tex?.dispose();
@@ -854,20 +870,30 @@ export class ThreeWorkerHost {
         sm.fragmentShader = spec.fragmentShader;
         recompile = true;
       }
-      if (spec.defines && typeof spec.defines === 'object') {
-        sm.defines = { ...(spec.defines as Record<string, unknown>) };
+      if (spec.defines && typeof spec.defines === 'object' && !Array.isArray(spec.defines)) {
+        const cleanDefines: Record<string, unknown> = Object.create(null);
+        for (const [dk, dv] of Object.entries(spec.defines as Record<string, unknown>)) {
+          if (BLOCKED_THREE_KEYS.has(dk)) continue;
+          cleanDefines[dk] = dv;
+        }
+        sm.defines = cleanDefines;
         recompile = true;
       }
-      if (spec.extensions && typeof spec.extensions === 'object') {
-        Object.assign(sm.extensions, spec.extensions);
+      if (spec.extensions && typeof spec.extensions === 'object' && !Array.isArray(spec.extensions)) {
+        const extTarget = sm.extensions as unknown as Record<string, unknown>;
+        for (const [ek, ev] of Object.entries(spec.extensions as Record<string, unknown>)) {
+          if (BLOCKED_THREE_KEYS.has(ek) || !ALLOWED_SHADER_EXTENSIONS.has(ek)) continue;
+          if (typeof ev === 'boolean') extTarget[ek] = ev;
+        }
       }
       if (typeof spec.glslVersion === 'string') {
         sm.glslVersion = spec.glslVersion as import('three').GLSLVersion;
       }
-      if (spec.uniforms && typeof spec.uniforms === 'object') {
-        const nextUniforms: Record<string, import('three').IUniform> = sm.uniforms ?? {};
+      if (spec.uniforms && typeof spec.uniforms === 'object' && !Array.isArray(spec.uniforms)) {
+        const nextUniforms: Record<string, import('three').IUniform> = sm.uniforms ?? Object.create(null);
         for (const [uk, uv] of Object.entries(spec.uniforms as Record<string, unknown>)) {
-          if (!nextUniforms[uk]) {
+          if (BLOCKED_THREE_KEYS.has(uk)) continue;
+          if (!Object.prototype.hasOwnProperty.call(nextUniforms, uk) || !nextUniforms[uk]) {
             nextUniforms[uk] = { value: decodeUniformValue(THREE, entry, uv) };
           } else {
             nextUniforms[uk].value = decodeUniformValue(THREE, entry, uv, nextUniforms[uk].value);
@@ -912,7 +938,7 @@ export class ThreeWorkerHost {
         case 'InstancedMesh': {
           const geo = entry.geometries.get(Number(spec.geo));
           const mat = this.resolveMaterial(entry, spec.mat);
-          const cap = Math.max(1, Number(spec.cap) || Number(spec.count) || 1);
+          const cap = Math.max(1, Math.min(MAX_INSTANCED_MESH_CAP, Math.floor(Number(spec.cap) || Number(spec.count) || 1)));
           obj = new THREE.InstancedMesh(geo, mat, cap);
           break;
         }

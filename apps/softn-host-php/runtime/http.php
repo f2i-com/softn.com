@@ -11,11 +11,14 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 // JSON is never a page: nothing in it may load, run or be framed.
-header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'");
+header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'");
 function reply(int $status, array $body): never { http_response_code($status); echo json_encode($body, JSON_INVALID_UTF8_SUBSTITUTE); exit; }
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if (!is_string($path) || !str_starts_with($path, '/api/') || strlen($path)>256) reply(404, ['error'=>'Not found.','code'=>'not_found']);
+if (str_contains($path, '..') || str_contains($path, '\\') || preg_match('/%(?:2e|2f|5c)/i', (string)($_SERVER['REQUEST_URI'] ?? ''))) {
+    reply(400, ['error'=>'Invalid path.','code'=>'invalid_request']);
+}
 $manifest=json_decode(@file_get_contents($backend.'/app/manifest.json')?:'null',true);
 if(!is_array($manifest))reply(503,['error'=>'Application bundle is unavailable.']);
 $isContainer=softn_is_container_manifest($manifest);
@@ -45,6 +48,10 @@ if ($method==='OPTIONS') {
     http_response_code(204); exit;
 }
 if(!$originAllowed)reply(403,['error'=>'Origin not allowed.','code'=>'origin_not_allowed']);
+// Block cross-site mutating requests that omit Origin (e.g. cookie-bearing CSRF).
+if($origin===null&&in_array($method,['POST','PUT','PATCH','DELETE'],true)&&strtolower((string)($_SERVER['HTTP_SEC_FETCH_SITE']??''))==='cross-site') {
+    reply(403,['error'=>'Cross-site request refused.','code'=>'origin_not_allowed']);
+}
 header('Access-Control-Expose-Headers: ETag, X-SoftN-Poll-Interval, Retry-After, Allow');
 // HEAD on a GET route is that GET with the body left off the answer, as on
 // the Rust host: the runner is asked for the GET. It was refused here, 405.
@@ -255,7 +262,7 @@ if(isset($result['bodyRaw'])) {
             'content-security-policy-report-only'=>true,'x-content-type-options'=>true,
             'strict-transport-security'=>true,'clear-site-data'=>true,
             'cross-origin-opener-policy'=>true,'cross-origin-embedder-policy'=>true,
-            'cross-origin-resource-policy'=>true,
+            'cross-origin-resource-policy'=>true,'refresh'=>true,
         ];
         foreach($result['headers'] as $pair) {
             if(!is_array($pair)||count($pair)<2)continue;
@@ -263,6 +270,11 @@ if(isset($result['bodyRaw'])) {
             $lk=strtolower($k);
             if($k===''||isset($blockedResponseHeaders[$lk])||str_starts_with($lk,'x-accel-')||str_starts_with($lk,'x-litespeed-'))continue;
             if(!preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/',$k))continue;
+            if($lk==='set-cookie') {
+                // Prevent cross-subdomain cookie tossing (`Domain=...`) and ensure SameSite default.
+                if(preg_match('/;\s*domain\s*=/i',$v))continue;
+                if(!preg_match('/;\s*samesite\s*=/i',$v))$v.='; SameSite=Lax';
+            }
             if($lk==='content-type'&&!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}
             else header($k.': '.$v,false);
         }

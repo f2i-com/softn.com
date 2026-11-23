@@ -1183,9 +1183,14 @@ impl SyncManager {
         // the condition is transient — an admin can increase the limit or
         // clean up data, and SyncReject would permanently discard user data.
         if self.max_storage_bytes > 0 {
-            let db_size = std::fs::metadata(&self.db_path)
+            let main_size = std::fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
+            let wal_size = std::fs::metadata(format!("{}-wal", self.db_path.display()))
                 .map(|m| m.len())
                 .unwrap_or(0);
+            let shm_size = std::fs::metadata(format!("{}-shm", self.db_path.display()))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let db_size = main_size.saturating_add(wal_size).saturating_add(shm_size);
             if db_size >= self.max_storage_bytes {
                 tracing::warn!(
                     "Storage quota exceeded ({:.1}MB >= {}MB limit) — rejecting sync_push",

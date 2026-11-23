@@ -6,7 +6,7 @@
  * or shell execution — backed by Node 24's built-in `node:sqlite` (`DatabaseSync`) in
  * multi-user WAL mode under `private/data/databases/`.
  */
-import {DatabaseSync} from 'node:sqlite';
+import {DatabaseSync, constants as SQLITE_CONST} from 'node:sqlite';
 import {
   readFileSync,
   writeFileSync,
@@ -422,13 +422,87 @@ function isMultiStatementOrControl(sql) {
 const MAX_SQL_RESULT_ROWS = 10_000;
 const MAX_SQL_RESULT_BYTES = 8 * 1024 * 1024;
 const MAX_OVERLAY_BYTES = 16 * 1024 * 1024;
+const MAX_CONTAINER_DATABASES = 8;
+const MAX_OPEN_DB_HANDLES = 32;
+const MAX_PYTHON_SQL_CACHE_BYTES = 8 * 1024 * 1024;
 const SAFE_PRAGMA_NAMES = new Set([
   'table_info', 'table_xinfo', 'index_list', 'index_info', 'foreign_key_list',
-  'foreign_keys', 'database_list', 'user_version', 'application_id', 'schema_version',
-  'busy_timeout', 'synchronous', 'journal_mode', 'cache_size', 'encoding',
-  'integrity_check', 'quick_check', 'compile_options', 'page_count', 'page_size',
-  'freelist_count', 'wal_checkpoint',
+  'foreign_keys', 'user_version', 'application_id', 'schema_version',
+  'busy_timeout', 'encoding', 'integrity_check', 'quick_check',
+  'page_count', 'page_size', 'freelist_count',
 ]);
+const WRITABLE_SAFE_PRAGMAS = new Set(['foreign_keys', 'busy_timeout', 'user_version', 'application_id']);
+
+function isHostReservedTable(name) {
+  return typeof name === 'string' && name.startsWith('_');
+}
+
+function containerSqlAuthorizer(action, a, b, database) {
+  const C = SQLITE_CONST;
+  if (action === C.SQLITE_ATTACH || action === C.SQLITE_DETACH) return C.SQLITE_DENY;
+  if (action === C.SQLITE_CREATE_VTABLE || action === C.SQLITE_DROP_VTABLE) return C.SQLITE_DENY;
+  if (action === C.SQLITE_ALTER_TABLE) {
+    return (a === 'main' || a === 'temp') && !isHostReservedTable(b) ? C.SQLITE_OK : C.SQLITE_DENY;
+  }
+  if (database && database !== 'main' && database !== 'temp') return C.SQLITE_DENY;
+  switch (action) {
+    case C.SQLITE_SELECT:
+    case C.SQLITE_RECURSIVE:
+    case C.SQLITE_TRANSACTION:
+    case C.SQLITE_SAVEPOINT:
+    case C.SQLITE_ANALYZE:
+    case C.SQLITE_REINDEX:
+      return C.SQLITE_OK;
+    case C.SQLITE_PRAGMA: {
+      const pName = typeof a === 'string' ? a.toLowerCase() : '';
+      if (!SAFE_PRAGMA_NAMES.has(pName)) return C.SQLITE_DENY;
+      if (b !== null && b !== undefined && !WRITABLE_SAFE_PRAGMAS.has(pName)) return C.SQLITE_DENY;
+      return C.SQLITE_OK;
+    }
+    case C.SQLITE_FUNCTION: {
+      const fnName = typeof b === 'string' ? b.toLowerCase() : '';
+      if (fnName === 'load_extension' || fnName === 'fts3_tokenizer') return C.SQLITE_DENY;
+      return C.SQLITE_OK;
+    }
+    case C.SQLITE_READ:
+    case C.SQLITE_INSERT:
+    case C.SQLITE_UPDATE:
+    case C.SQLITE_DELETE:
+    case C.SQLITE_CREATE_TABLE:
+    case C.SQLITE_DROP_TABLE:
+    case C.SQLITE_CREATE_TEMP_TABLE:
+    case C.SQLITE_DROP_TEMP_TABLE:
+    case C.SQLITE_CREATE_VIEW:
+    case C.SQLITE_DROP_VIEW:
+    case C.SQLITE_CREATE_TEMP_VIEW:
+    case C.SQLITE_DROP_TEMP_VIEW:
+      return !isHostReservedTable(a) ? C.SQLITE_OK : C.SQLITE_DENY;
+    case C.SQLITE_CREATE_INDEX:
+    case C.SQLITE_DROP_INDEX:
+    case C.SQLITE_CREATE_TEMP_INDEX:
+    case C.SQLITE_DROP_TEMP_INDEX:
+    case C.SQLITE_CREATE_TRIGGER:
+    case C.SQLITE_DROP_TRIGGER:
+    case C.SQLITE_CREATE_TEMP_TRIGGER:
+    case C.SQLITE_DROP_TEMP_TRIGGER:
+      return !isHostReservedTable(a) && !isHostReservedTable(b) ? C.SQLITE_OK : C.SQLITE_DENY;
+    default:
+      return C.SQLITE_DENY;
+  }
+}
+
+function isProtectedRustSourcePath(key, relEntry) {
+  const norm = normalizeVfsKey(key).toLowerCase();
+  if (!norm) return true;
+  if (relEntry && norm === normalizeVfsKey(relEntry).toLowerCase()) return true;
+  return (
+    norm.endsWith('.rs') ||
+    norm === 'cargo.toml' ||
+    norm === 'cargo.lock' ||
+    norm.endsWith('/cargo.toml') ||
+    norm.endsWith('/cargo.lock')
+  );
+}
 
 function assertSafeSqlStatement(sql) {
   const stripped = String(sql ?? '')
@@ -522,7 +596,22 @@ class NodeSqlManager {
     db.exec(
       'PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;'
     );
+    if (typeof db.setAuthorizer === 'function') {
+      db.setAuthorizer(containerSqlAuthorizer);
+    }
     return db;
+  }
+
+  isProtectedDbKey(key, filePath) {
+    if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(key)) return true;
+    const lower = key.toLowerCase();
+    if (this.primaryKey && lower === this.primaryKey.toLowerCase()) return true;
+    if (this.primaryDbFile && filePath && resolve(filePath) === resolve(this.primaryDbFile)) return true;
+    for (const cfg of this.databases) {
+      const cfgKey = normalizeDbKey(cfg.file || `${cfg.name}.db`).key.toLowerCase();
+      if (cfgKey && cfgKey !== ':memory:' && lower === cfgKey) return true;
+    }
+    return false;
   }
 
   preseedAll() {
@@ -574,6 +663,9 @@ class NodeSqlManager {
 
   open(rawUrl) {
     try {
+      if (this.handles.size >= MAX_OPEN_DB_HANDLES) {
+        return {error: `open SQLite handle limit exceeded (max ${MAX_OPEN_DB_HANDLES})`, code: 18, unique: false};
+      }
       const canonical = this.resolveCanonicalKey(rawUrl);
       if (canonical === ':memory:') {
         const db = this.openConfigured(':memory:');
@@ -581,8 +673,14 @@ class NodeSqlManager {
         this.handles.set(id, {key: ':memory:', db, ephemeral: true});
         return {id};
       }
+      if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(canonical)) {
+        return {error: 'cannot open SQLite sidecar file directly', code: 1, unique: false};
+      }
       let shared = this.byKey.get(canonical);
       if (!shared) {
+        if (this.byKey.size >= MAX_CONTAINER_DATABASES) {
+          return {error: `database file limit exceeded (max ${MAX_CONTAINER_DATABASES})`, code: 18, unique: false};
+        }
         const filePath = this.dbPathFor(canonical);
         shared = {key: canonical, db: this.openConfigured(filePath), ephemeral: false};
         this.byKey.set(canonical, shared);
@@ -633,21 +731,28 @@ class NodeSqlManager {
       if (typeof stmt.setReturnArrays === 'function') stmt.setReturnArrays(true);
       const colMeta = typeof stmt.columns === 'function' ? stmt.columns() : [];
       const columns = colMeta.map(c => String(c.name ?? c.column ?? ''));
-      const rawRows =
-        params.kind === 'array'
-          ? stmt.all(...params.values)
-          : params.kind === 'object'
-            ? stmt.all(params.values)
-            : stmt.all();
-      if (rawRows.length > MAX_SQL_RESULT_ROWS) {
-        return {error: `SQL query exceeded row limit (${MAX_SQL_RESULT_ROWS})`, code: 18, unique: false};
-      }
+      const iter =
+        typeof stmt.iterate === 'function'
+          ? (params.kind === 'array'
+              ? stmt.iterate(...params.values)
+              : params.kind === 'object'
+                ? stmt.iterate(params.values)
+                : stmt.iterate())
+          : (params.kind === 'array'
+              ? stmt.all(...params.values)
+              : params.kind === 'object'
+                ? stmt.all(params.values)
+                : stmt.all());
       const rows = [];
       let approxBytes = 0;
-      for (const row of rawRows) {
+      for (const row of iter) {
+        if (rows.length >= MAX_SQL_RESULT_ROWS) {
+          return {error: `SQL query exceeded row limit (${MAX_SQL_RESULT_ROWS})`, code: 18, unique: false};
+        }
         const mapped = Array.isArray(row) ? row.map(fromSqlValue) : columns.map(col => fromSqlValue(row[col]));
         for (const v of mapped) {
           if (typeof v === 'string') approxBytes += v.length * 2;
+          else if (v && typeof v === 'object' && typeof v.hex === 'string') approxBytes += v.hex.length + 16;
           else if (v && typeof v === 'object') approxBytes += 64;
           else approxBytes += 8;
         }
@@ -679,6 +784,12 @@ class NodeSqlManager {
       if (fromKey === ':memory:' || toNorm.inMemory) return {error: 'cannot copy :memory: database', code: 1, unique: false};
       const srcPath = this.dbPathFor(fromKey);
       const dstPath = this.dbPathFor(toNorm.key);
+      if (this.isProtectedDbKey(toNorm.key, dstPath)) {
+        return {error: 'cannot overwrite primary or configured database', code: 1, unique: false};
+      }
+      if (!this.byKey.has(toNorm.key) && this.byKey.size >= MAX_CONTAINER_DATABASES) {
+        return {error: `database file limit exceeded (max ${MAX_CONTAINER_DATABASES})`, code: 18, unique: false};
+      }
       if (srcPath === dstPath) return {bytes: existsSync(srcPath) ? lstatSync(srcPath).size : 0};
       const existing = this.byKey.get(toNorm.key);
       if (existing) {
@@ -932,19 +1043,33 @@ function checkContainerRateLimit({data, manifest, request, markLimited}) {
   const perMinute = Number.isInteger(declaredLimit) && declaredLimit >= 0 ? declaredLimit : 120;
   if (perMinute === 0) return false;
   const rateFile = join(data, 'container-rate.sqlite');
+  try {
+    const st = lstatSync(rateFile);
+    if (st.isSymbolicLink()) throw new Error('Rate-limit database symlink refused');
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
   const db = new DatabaseSync(rateFile, {allowExtension: false, limits: SQL_LIMITS});
   try {
     try { chmodSync(rateFile, 0o600); } catch {}
-    db.exec('PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL;');
+    db.exec('PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=4096;');
     db.exec('CREATE TABLE IF NOT EXISTS _request_limits(ip TEXT PRIMARY KEY, minute INTEGER NOT NULL, count INTEGER NOT NULL) STRICT');
     const rateKey = typeof request.rate_key === 'string' && request.rate_key ? request.rate_key : request.client_ip || '0.0.0.0';
     const minute = Math.floor(Date.now() / 60000);
     const ip = createHash('sha256').update(rateKey).digest('hex');
-    db.prepare('DELETE FROM _request_limits WHERE minute < ?').run(minute - 1);
-    db.prepare(
-      'INSERT INTO _request_limits VALUES(?,?,1) ON CONFLICT(ip) DO UPDATE SET count=CASE WHEN minute=excluded.minute THEN count+1 ELSE 1 END,minute=excluded.minute'
-    ).run(ip, minute);
-    const row = db.prepare('SELECT count FROM _request_limits WHERE ip=?').get(ip);
+    db.exec('BEGIN IMMEDIATE');
+    let row;
+    try {
+      db.prepare('DELETE FROM _request_limits WHERE minute < ?').run(minute - 1);
+      db.prepare(
+        'INSERT INTO _request_limits VALUES(?,?,1) ON CONFLICT(ip) DO UPDATE SET count=CASE WHEN minute=excluded.minute THEN count+1 ELSE 1 END,minute=excluded.minute'
+      ).run(ip, minute);
+      row = db.prepare('SELECT count FROM _request_limits WHERE ip=?').get(ip);
+      db.exec('COMMIT');
+    } catch (txErr) {
+      try { db.exec('ROLLBACK'); } catch {}
+      throw txErr;
+    }
     if (row && Number(row.count) > perMinute) {
       markLimited?.(minute, ip);
       return true;
@@ -1115,7 +1240,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
       }
       const vfsObj = vfsToZippObject(vfs);
       const overlayPath = join(data, 'php-overlay.json');
-      const initialOverlay = existsSync(overlayPath) ? readFileSync(overlayPath, 'utf8') : '';
+      const initialOverlay = existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink() ? readFileSync(overlayPath, 'utf8') : '';
 
       const contentType = headers['content-type'] || '';
       const host = String(request.host || headers['host'] || 'localhost');
@@ -1225,11 +1350,16 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         const dispatch = engine.pythonCall || engine.callFunction;
         const reqPayload = JSON.stringify({method, path, query: queryString, headers, body: bodyText, ...(verifiedContext ? {context: verifiedContext} : {})});
         const sqlCache = [];
+        let sqlCacheBytes = 2;
         let parsed = {};
         for (let step = 0; step <= 512; step++) {
+          const cacheJson = JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v));
+          if (Buffer.byteLength(cacheJson, 'utf8') > MAX_PYTHON_SQL_CACHE_BYTES) {
+            throw new Error('Python backend exceeded SQL cache memory limit');
+          }
           const rawResp = dispatch.call(engine, '__softn_backend_dispatch', [
             reqPayload,
-            JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)),
+            cacheJson,
           ]);
           parsed = JSON.parse(String(rawResp || '{}'));
           if (Array.isArray(parsed.__softn_sql_need)) {
@@ -1237,8 +1367,15 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
             const [op, a, b, c] = parsed.__softn_sql_need;
             try {
               const rawSql = sqlBridge.call(`sql.${op}`, [a ?? '', b ?? '', c ?? '']);
-              sqlCache.push(typeof rawSql === 'string' ? (rawSql ? JSON.parse(rawSql) : null) : (rawSql ?? null));
+              const val = typeof rawSql === 'string' ? (rawSql ? JSON.parse(rawSql) : null) : (rawSql ?? null);
+              const entrySize = Buffer.byteLength(JSON.stringify(val, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)) || 'null', 'utf8');
+              sqlCacheBytes += entrySize + 1;
+              if (sqlCacheBytes > MAX_PYTHON_SQL_CACHE_BYTES) {
+                throw new Error('Python backend exceeded SQL cache memory limit');
+              }
+              sqlCache.push(val);
             } catch (sqlErr) {
+              if (sqlErr instanceof Error && sqlErr.message.includes('SQL cache memory limit')) throw sqlErr;
               sqlCache.push({__sql_err: sqlErr instanceof Error ? sqlErr.message : String(sqlErr)});
             }
             continue;
@@ -1258,18 +1395,24 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     if (runtime === 'rust') {
       const rootPrefix = typeof backend.root === 'string' ? normalizeVfsKey(backend.root) : '';
       const vfsObj = vfsToZippObject(vfs, rootPrefix);
+      const relEntry = rootPrefix && entryKey.startsWith(`${rootPrefix}/`) ? entryKey.slice(rootPrefix.length + 1) : entryKey;
       const overlayPath = join(data, 'rust-overlay.json');
-      const initialOverlay = existsSync(overlayPath) ? readFileSync(overlayPath, 'utf8') : '';
+      const initialOverlay = existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink() ? readFileSync(overlayPath, 'utf8') : '';
       if (initialOverlay) {
         try {
           const ov = JSON.parse(initialOverlay);
-          if (Array.isArray(ov.deleted)) for (const d of ov.deleted) delete vfsObj[d];
+          if (Array.isArray(ov.deleted)) {
+            for (const d of ov.deleted) {
+              if (typeof d === 'string' && !isProtectedRustSourcePath(d, relEntry)) delete vfsObj[d];
+            }
+          }
           if (ov.writes && typeof ov.writes === 'object') {
-            for (const [k, b64] of Object.entries(ov.writes)) if (typeof b64 === 'string') vfsObj[k] = {base64: b64};
+            for (const [k, b64] of Object.entries(ov.writes)) {
+              if (typeof b64 === 'string' && !isProtectedRustSourcePath(k, relEntry)) vfsObj[k] = {base64: b64};
+            }
           }
         } catch {}
       }
-      const relEntry = rootPrefix && entryKey.startsWith(`${rootPrefix}/`) ? entryKey.slice(rootPrefix.length + 1) : entryKey;
       const engine = new engineMod.Engine();
       try {
         engine.setInstructionBudget(BOOT_INSTRUCTION_BUDGET);

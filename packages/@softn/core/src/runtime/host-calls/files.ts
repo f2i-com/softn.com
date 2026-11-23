@@ -17,7 +17,12 @@ import type { HostGate } from './permissions';
  * search or library, a disk image that mounts and shows its programs).
  */
 const RUNS_WHEN_OPENED =
-  /\.(?:exe|com|bat|cmd|msi|msix|msixbundle|appx|appxbundle|appinstaller|msp|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ws|wsc|ps1|psm1|reg|cpl|msc|chm|diagcab|library-ms|search-ms|settingcontent-ms|xll|xbap|jnlp|iso|img|vhd|vhdx|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|scf|inf|gadget|application|appref-ms)$/i;
+  /\.(?:exe|com|bat|cmd|msi|msix|msixbundle|appx|appxbundle|appinstaller|msp|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ws|wsc|ps1|ps2|psm1|psd1|ps1xml|reg|cpl|msc|chm|diagcab|library-ms|search-ms|settingcontent-ms|xll|xbap|jnlp|iso|img|vhd|vhdx|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|bash|zsh|csh|fish|py|pyw|rb|pl|php|phtml|dll|ocx|sys|drv|scf|inf|gadget|application|appref-ms)$/i;
+
+const MAX_FILE_READ_BYTES = 50 * 1024 * 1024;
+const MAX_FILE_SAVE_BYTES = 50 * 1024 * 1024;
+const ACTIVE_SAVE_MIME_RE =
+  /^(?:text\/html|application\/xhtml\+xml|image\/svg\+xml|text\/xml|application\/xml|text\/javascript|application\/javascript|application\/x-javascript)/i;
 
 /**
  * The name a file an app saves is offered under. A leaf, never a path, so an
@@ -35,7 +40,8 @@ export function downloadName(raw: unknown): string {
     .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
     .replace(/^[.\s]+/, '')
     .replace(/[.\s]+$/, '')
-    .slice(0, 200);
+    .slice(0, 200)
+    .replace(/[.\s]+$/, '');
   if (!name) name = 'download';
   if (/^(?:con|prn|aux|nul|com\d|lpt\d)(?:\.|$)/i.test(name)) name = `_${name}`;
   if (RUNS_WHEN_OPENED.test(name)) name = `${name}.txt`;
@@ -82,6 +88,9 @@ export async function readText(gate: HostGate, call: PendingHostCall): Promise<u
   const [fileRef] = call.args;
   const file = getFileByRef(fileRef);
   if (!file) throw new Error(`File not found: ${fileRef}`);
+  if (file.size > MAX_FILE_READ_BYTES) {
+    throw new Error(`File exceeds maximum read size (${MAX_FILE_READ_BYTES / (1024 * 1024)} MB)`);
+  }
   return await file.text();
 }
 
@@ -90,6 +99,9 @@ export async function readBase64(gate: HostGate, call: PendingHostCall): Promise
   const [fileRef] = call.args;
   const file = getFileByRef(fileRef);
   if (!file) throw new Error(`File not found: ${fileRef}`);
+  if (file.size > MAX_FILE_READ_BYTES) {
+    throw new Error(`File exceeds maximum read size (${MAX_FILE_READ_BYTES / (1024 * 1024)} MB)`);
+  }
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
@@ -125,18 +137,27 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
     return { error: 'A file is saved when the person asks for it: call files.saveFile from a click or a key press in the app.' };
   }
   const name = downloadName(rawName);
-  // A type the content says it is, or bytes.
-  const mime =
+  // Neutralize active document MIME types so an object URL created on the host
+  // origin can never execute HTML/SVG/JS if navigated to directly.
+  const requestedMime =
     typeof options.mime === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;\s*charset=[\w-]+)?$/.test(options.mime)
       ? options.mime
       : options.base64
         ? 'application/octet-stream'
         : 'text/plain;charset=utf-8';
+  const mime = ACTIVE_SAVE_MIME_RE.test(requestedMime) ? 'application/octet-stream' : requestedMime;
   let blob: Blob;
   if (options.base64) {
+    const rawB64 = String(content || '').replace(/^data:[^,]*,/, '');
+    if (rawB64.length > Math.ceil((MAX_FILE_SAVE_BYTES * 4) / 3) + 16) {
+      return { error: 'The file exceeds the maximum save size.' };
+    }
     let buffer: ArrayBuffer;
     try {
-      const bin = atob(String(content || '').replace(/^data:[^,]*,/, ''));
+      const bin = atob(rawB64);
+      if (bin.length > MAX_FILE_SAVE_BYTES) {
+        return { error: 'The file exceeds the maximum save size.' };
+      }
       buffer = new ArrayBuffer(bin.length);
       const bytes = new Uint8Array(buffer);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -145,7 +166,11 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
     }
     blob = new Blob([buffer], { type: mime });
   } else {
-    blob = new Blob([String(content ?? '')], { type: mime });
+    const text = String(content ?? '');
+    if (text.length > MAX_FILE_SAVE_BYTES) {
+      return { error: 'The file exceeds the maximum save size.' };
+    }
+    blob = new Blob([text], { type: mime });
   }
   if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
     return { error: 'Saving files is not available here.' };

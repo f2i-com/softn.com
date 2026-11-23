@@ -16,6 +16,7 @@ import React, {
 } from 'react';
 import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
+import { BLOCKED_MEMBER_KEYS } from '../renderer/evaluate';
 import { rootProps, shellOwnsTag } from '../renderer/render';
 import { sameSiteAddress } from '../renderer/html-elements';
 import { hasPageHandlers, SHELL_HTML_ID, usesDocument } from '../document-shell/names';
@@ -159,9 +160,12 @@ function perfMark(name: string): void {
  * Leaves relative url() intact (e.g. fonts/images bundled with the app).
  */
 export function sanitizeBundleCSS(css: string): string {
+  // Collapse CSS string line continuations (`\` + CRLF/LF/CR/FF) first so a
+  // scheme or quote cannot be split across lines (`"ht\\\ntps://..."`).
+  let sanitized = css.replace(/\\(?:\r\n|[\r\n\f])/g, '');
   // Strip CSS escape sequences that could bypass protocol detection
   // (e.g. \6a avascript:, \68 ttp:, \75rl)
-  let sanitized = css.replace(/\\[0-9a-fA-F]{1,6}\s?/g, '_');
+  sanitized = sanitized.replace(/\\[0-9a-fA-F]{1,6}\s?/g, '_');
   // A backslash before anything that is not a hex digit is an escape too: the
   // browser reads `u\rl(` as `url(`, `h\ttps:` as `https:` and `@im\port` as
   // `@import`, and the passes below match on the text as written, so each of
@@ -2067,6 +2071,7 @@ export function SoftNRenderer({
               if (!mountedRef.current || stale) return;
               setState((prev) => {
                 const parts = parseStatePath(path);
+                if (parts.length === 0 || parts.some((p) => BLOCKED_MEMBER_KEYS.has(p))) return prev;
                 const newState = { ...prev.componentState };
                 let current: unknown = newState;
                 for (let i = 0; i < parts.length - 1; i++) {
@@ -2083,7 +2088,7 @@ export function SoftNRenderer({
                     current = cloned[index];
                   } else {
                     const obj = current as Record<string, unknown>;
-                    if (!(part in obj) || typeof obj[part] !== 'object') {
+                    if (!Object.prototype.hasOwnProperty.call(obj, part) || typeof obj[part] !== 'object' || obj[part] === null) {
                       obj[part] = {};
                     }
                     obj[part] = Array.isArray(obj[part])
@@ -2106,6 +2111,7 @@ export function SoftNRenderer({
               setState((prev) => {
                 const newState = { ...prev.componentState };
                 for (const key of Object.keys(changes)) {
+                  if (BLOCKED_MEMBER_KEYS.has(key)) continue;
                   newState[key] = changes[key];
                 }
                 return { ...prev, componentState: newState };
@@ -2690,6 +2696,7 @@ export function SoftNRenderer({
   const setComponentState = useCallback((path: string, value: unknown) => {
     setState((prev) => {
       const parts = parseStatePath(path);
+      if (parts.length === 0 || parts.some((p) => BLOCKED_MEMBER_KEYS.has(p))) return prev;
       const newState = { ...prev.componentState };
 
       let current: unknown = newState;
@@ -2707,7 +2714,7 @@ export function SoftNRenderer({
           current = cloned[index];
         } else {
           const obj = current as Record<string, unknown>;
-          if (!(part in obj) || typeof obj[part] !== 'object') {
+          if (!Object.prototype.hasOwnProperty.call(obj, part) || typeof obj[part] !== 'object' || obj[part] === null) {
             obj[part] = {};
           }
           obj[part] = Array.isArray(obj[part])

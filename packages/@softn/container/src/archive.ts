@@ -494,6 +494,13 @@ export class ContainerArchive {
     return archivePath;
   }
 
+  /** Resolve an archive path only if it belongs to the untrusted frontend (never backend/private files). */
+  resolveFrontendExistingPath(path: string, basePath?: string): string | null {
+    const resolved = this.resolveExistingPath(path, basePath);
+    if (!resolved || !this.isFrontendPath(resolved)) return null;
+    return resolved;
+  }
+
   /** Whether an archive path belongs to the untrusted frontend (excluding backend/private files). */
   isFrontendPath(archivePath: string): boolean {
     const hasBackend = Boolean(this.manifest.backend);
@@ -562,7 +569,7 @@ export class ContainerArchive {
    */
   getBlobUrl(path: string, basePath?: string): string | null {
     if (this.disposed || typeof URL.createObjectURL !== 'function') return null;
-    const resolved = this.resolveExistingPath(path, basePath);
+    const resolved = this.resolveFrontendExistingPath(path, basePath);
     if (!resolved) return null;
     const existing = this.blobUrls.get(resolved);
     if (existing) return existing;
@@ -735,7 +742,21 @@ export class ContainerArchive {
         }
       } else {
         if (this.textCache.has(name)) {
-          textFiles[name] = this.textCache.get(name)!;
+          let text = this.textCache.get(name)!;
+          if (hasBackend && name === 'manifest.json') {
+            try {
+              const parsed = JSON.parse(text) as Record<string, unknown>;
+              if (parsed && typeof parsed === 'object' && parsed.backend && typeof parsed.backend === 'object' && !Array.isArray(parsed.backend)) {
+                const safeBackend = { ...(parsed.backend as Record<string, unknown>) };
+                delete safeBackend.env;
+                parsed.backend = safeBackend;
+                text = JSON.stringify(parsed);
+              }
+            } catch {
+              // Keep original if unparseable
+            }
+          }
+          textFiles[name] = text;
         } else {
           const bytes = this.readBytes(name);
           if (bytes) binaryFiles[name] = bytes;
@@ -842,7 +863,7 @@ export class ContainerArchive {
 
   /** Resolve a frontend asset path (respecting `manifest.frontendRoot`, `/` -> main, and directory `index.html`). */
   resolveFrontendPath(path: string, basePath?: string): string | null {
-    const existing = this.resolveExistingPath(path, basePath);
+    const existing = this.resolveFrontendExistingPath(path, basePath);
     if (existing) return existing;
     const feRoot = this.manifest.frontendRoot
       ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
@@ -853,12 +874,12 @@ export class ContainerArchive {
       const rel = resolveVfsPath(path, strippedBase);
       if (rel) {
         const underRoot = `${feRoot}/${rel}`;
-        if (this.normalizedNames.has(underRoot)) return underRoot;
-        if (this.normalizedNames.has(`${underRoot}/index.html`)) return `${underRoot}/index.html`;
-        if (this.normalizedNames.has(`${underRoot}/index.htm`)) return `${underRoot}/index.htm`;
+        if (this.normalizedNames.has(underRoot) && this.isFrontendPath(underRoot)) return underRoot;
+        if (this.normalizedNames.has(`${underRoot}/index.html`) && this.isFrontendPath(`${underRoot}/index.html`)) return `${underRoot}/index.html`;
+        if (this.normalizedNames.has(`${underRoot}/index.htm`) && this.isFrontendPath(`${underRoot}/index.htm`)) return `${underRoot}/index.htm`;
       }
     }
-    return direct;
+    return direct && this.isFrontendPath(direct) ? direct : null;
   }
 
   dispose(): void {

@@ -90,6 +90,11 @@ export function createHostElement(name: string, ns?: 'svg' | 'math'): Element {
   return ns === 'svg' ? document.createElementNS(SVG_NS, name) : ns === 'math' ? document.createElementNS(MATH_NS, name) : document.createElement(name);
 }
 
+export interface FontScopeContext {
+  prefix: string;
+  families: Set<string>;
+}
+
 export interface HostAttributeContext {
   entryPath: string;
   archive: ContainerArchive;
@@ -97,6 +102,8 @@ export interface HostAttributeContext {
   netGranted: boolean;
   /** The element's namespace, when it is not HTML's. */
   ns?: 'svg' | 'math';
+  /** Per-mount font-family scoping context to prevent host-page @font-face hijacking. */
+  fontScope?: FontScopeContext;
 }
 
 /** Attributes whose value is one address. */
@@ -115,7 +122,22 @@ const SRCSET_ATTRIBUTES = new Set(['srcset', 'imagesrcset']);
  *     page the person was typing (the app's script asks for the focus through the patcher,
  *     which gives it only where that takes it from nobody).
  */
-const DROPPED_ATTRIBUTES = new Set(['ping', 'srcdoc', 'http-equiv', 'popover', 'popovertarget', 'popovertargetaction', 'autofocus']);
+const DROPPED_ATTRIBUTES = new Set([
+  'ping',
+  'srcdoc',
+  'http-equiv',
+  'popover',
+  'popovertarget',
+  'popovertargetaction',
+  'autofocus',
+  'command',
+  'commandfor',
+  'interestfor',
+  'interesttarget',
+]);
+
+/** Safe CSS color syntax allowed for `<softn-chart color="...">` (no `url(...)` / `var(...)` / injection). */
+const SAFE_CHART_COLOR_RE = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,%\s/]+\)|[a-z]{3,24})$/i;
 
 /**
  * SVG presentation attributes whose value may be `url(…)`. As attributes they are CSS in all
@@ -243,8 +265,13 @@ export function hostAttributeValue(tag: string, name: string, value: string, con
     return kept.length > 0 ? kept.join(', ') : null;
   }
 
+  if (tag === 'softn-chart' && lower === 'color') {
+    const trimmedColor = value.trim();
+    return SAFE_CHART_COLOR_RE.test(trimmedColor) ? trimmedColor : null;
+  }
+
   if (lower === 'style' || (PAINT_ATTRIBUTES.has(lower) && /\(|\\/.test(value))) {
-    return sanitizeContainerCss(value, context.entryPath, context.archive, context.permissions, context.netGranted, 'inline');
+    return sanitizeContainerCss(value, context.entryPath, context.archive, context.permissions, context.netGranted, 'inline', context.fontScope);
   }
 
   return value;

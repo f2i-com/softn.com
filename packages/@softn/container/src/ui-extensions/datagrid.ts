@@ -3,6 +3,15 @@
  * Accepts data via `rows` JSON attribute or `.rows` property, and emits `CustomEvent('row-click')`.
  */
 
+const MAX_GRID_ROWS = 5000;
+const MAX_GRID_COLS = 64;
+const BLOCKED_GRID_COLS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function safeCellValue(row: Record<string, unknown>, col: string): unknown {
+  if (!row || typeof row !== 'object' || BLOCKED_GRID_COLS.has(col)) return undefined;
+  return Object.prototype.hasOwnProperty.call(row, col) ? row[col] : undefined;
+}
+
 export function defineSoftnDataGrid(): void {
   if (typeof customElements === 'undefined' || customElements.get('softn-datagrid')) return;
 
@@ -27,7 +36,9 @@ export function defineSoftnDataGrid(): void {
     }
 
     set rows(val: Array<Record<string, unknown>>) {
-      this._rows = Array.isArray(val) ? val : [];
+      this._rows = Array.isArray(val)
+        ? val.slice(0, MAX_GRID_ROWS).filter((r): r is Record<string, unknown> => Boolean(r && typeof r === 'object' && !Array.isArray(r)))
+        : [];
       this.render();
     }
 
@@ -46,7 +57,11 @@ export function defineSoftnDataGrid(): void {
       if (!raw) return;
       try {
         const parsed = JSON.parse(raw) as unknown;
-        if (Array.isArray(parsed)) this._rows = parsed as Array<Record<string, unknown>>;
+        if (Array.isArray(parsed)) {
+          this._rows = parsed
+            .slice(0, MAX_GRID_ROWS)
+            .filter((r): r is Record<string, unknown> => Boolean(r && typeof r === 'object' && !Array.isArray(r)));
+        }
       } catch {
         // Ignore invalid JSON
       }
@@ -54,23 +69,27 @@ export function defineSoftnDataGrid(): void {
 
     private render(): void {
       const colAttr = this.getAttribute('columns');
-      const cols = colAttr
-        ? colAttr.split(',').map((c) => c.trim()).filter(Boolean)
-        : this._rows.length > 0
-          ? Object.keys(this._rows[0]).filter((k) => !k.startsWith('_'))
-          : [];
+      const cols = (
+        colAttr
+          ? colAttr.split(',').map((c) => c.trim()).filter(Boolean)
+          : this._rows.length > 0
+            ? Object.keys(this._rows[0]).filter((k) => !k.startsWith('_'))
+            : []
+      )
+        .filter((c) => !BLOCKED_GRID_COLS.has(c))
+        .slice(0, MAX_GRID_COLS);
 
       const q = this._query.toLowerCase();
       const filtered = q
-        ? this._rows.filter((r) => cols.some((c) => String(r[c] ?? '').toLowerCase().includes(q)))
+        ? this._rows.filter((r) => cols.some((c) => String(safeCellValue(r, c) ?? '').toLowerCase().includes(q)))
         : [...this._rows];
 
-      if (this._sortKey) {
+      if (this._sortKey && !BLOCKED_GRID_COLS.has(this._sortKey)) {
         const k = this._sortKey;
         const dir = this._sortDir;
         filtered.sort((a, b) => {
-          const av = a[k];
-          const bv = b[k];
+          const av = safeCellValue(a, k);
+          const bv = safeCellValue(b, k);
           if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
           return String(av ?? '').localeCompare(String(bv ?? '')) * dir;
         });
@@ -94,7 +113,7 @@ export function defineSoftnDataGrid(): void {
             <tr>${cols.map((c) => `<th data-col="${escapeAttr(c)}">${escapeHtml(c)}${this._sortKey === c ? (this._sortDir === 1 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr>
           </thead>
           <tbody>
-            ${filtered.map((row, idx) => `<tr data-idx="${idx}">${cols.map((c) => `<td>${escapeHtml(String(row[c] ?? ''))}</td>`).join('')}</tr>`).join('')}
+            ${filtered.map((row, idx) => `<tr data-idx="${idx}">${cols.map((c) => `<td>${escapeHtml(String(safeCellValue(row, c) ?? ''))}</td>`).join('')}</tr>`).join('')}
           </tbody>
         </table>
       `;

@@ -19,7 +19,7 @@ it.each(['file map', 'ZIP'])('checks component freshness before mounting a %s, i
   (await open(prepared)).dispose();
   files[path] = files[path].replace('First', 'Second');
   await expect(open(prepared)).rejects.toThrow(path + ' has changed');
-  (await open(GENERATED_SOURCE_HEADER + 'export default function Card() {}')).dispose();
+  await expect(open(GENERATED_SOURCE_HEADER + 'export default function Card() {}')).rejects.toThrow(path + ' has changed');
 });
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

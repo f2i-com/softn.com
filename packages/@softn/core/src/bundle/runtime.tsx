@@ -152,8 +152,12 @@ export function createBundleRuntime(
       return url;
     }
 
-    // For text content, create a data URL
-    const mimeType = getMimeType(normalizedPath);
+    // For text content, create a data URL — never serve active HTML/XML/JS as an
+    // active document MIME (use text/plain for those, matching assetObjectUrl).
+    let mimeType = getMimeType(normalizedPath);
+    if (/^(?:text\/html|application\/xhtml\+xml|text\/xml|application\/xml|text\/javascript|application\/javascript)/i.test(mimeType)) {
+      mimeType = 'text/plain;charset=utf-8';
+    }
     // btoa accepts Latin-1 characters without throwing, but their byte values
     // are not UTF-8. Always encode text first, including accented SVG labels.
     const bytes = new TextEncoder().encode(content as string);
@@ -433,12 +437,27 @@ function BundleRendererInstance({
   const setState = useCallback((path: string, value: unknown) => {
     setComponentState((prev) => {
       const parts = parseStatePath(path);
+      if (
+        parts.length === 0 ||
+        parts.some(
+          (p) =>
+            p === '__proto__' ||
+            p === 'constructor' ||
+            p === 'prototype' ||
+            p === '__defineGetter__' ||
+            p === '__defineSetter__' ||
+            p === '__lookupGetter__' ||
+            p === '__lookupSetter__'
+        )
+      ) {
+        return prev;
+      }
       const newState = { ...prev };
       let current: Record<string, unknown> = newState;
 
       for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];
-        if (!(part in current) || typeof current[part] !== 'object') {
+        if (!Object.prototype.hasOwnProperty.call(current, part) || typeof current[part] !== 'object' || current[part] === null) {
           current[part] = {};
         }
         // Copy an array as an array. Spreading one into `{}` turned `todos`
