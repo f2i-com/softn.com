@@ -115,12 +115,23 @@ describe('the hosted editor with a host that announced aiTools', () => {
     expect(useAIStore.getState().toolProtocols['formlogic:host-default']).toBe('text');
   });
 
-  it('falls back the same way when the host refuses with tools-unsupported', async () => {
-    host.replies = [new HostedAIError('Your AI provider cannot call tools.', 'tools-unsupported'), '<tool_call name="finish">{"summary":"ok"}</tool_call>'];
+  it('falls back the same way when the host refuses with tools-unsupported, without permanently locking future runs out of native tools', async () => {
+    host.replies = [
+      new HostedAIError('Your AI provider cannot call tools.', 'tools-unsupported'),
+      '<tool_call name="finish">{"summary":"ok"}</tool_call>',
+      { text: '', toolCalls: [{ id: 'h4', name: 'finish', arguments: { summary: 'Native works now.' } }], stopReason: 'tool_use', usage: { inputTokens: 100, outputTokens: 10 } },
+    ];
     say('Do it');
     await startAgentRun();
     expect(lastRun().run.status).toBe('finished');
     expect(lastRun().run.protocol).toBe('text');
+    expect(useAIStore.getState().toolProtocols['formlogic:host-default']).toBeUndefined();
+
+    // Next run retries native tools (e.g. after OAIY comes online or Settings → AI changes).
+    say('Do it again');
+    await startAgentRun();
+    expect(lastRun().run.status).toBe('finished');
+    expect(lastRun().run.protocol).toBe('hosted');
   });
 });
 

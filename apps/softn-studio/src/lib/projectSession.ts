@@ -473,8 +473,12 @@ function applyGlobalSettings(): void {
     ai.setMaxOutputTokens(settings.maxOutputTokens === PREVIOUS_DEFAULT_MAX_OUTPUT_TOKENS ? DEFAULT_MAX_OUTPUT_TOKENS : settings.maxOutputTokens);
   }
   if (settings.agentSettings !== undefined) ai.updateAgentSettings(settings.agentSettings);
-  if (settings.toolProtocols !== undefined) useAIStore.setState({ toolProtocols: settings.toolProtocols });
+  if (settings.toolProtocols !== undefined) useAIStore.setState({ toolProtocols: stripHostedToolProtocols(settings.toolProtocols) });
   if (settings.streamModes !== undefined) useAIStore.setState({ streamModes: settings.streamModes });
+}
+
+function stripHostedToolProtocols(protocols: Record<string, 'native' | 'text'>): Record<string, 'native' | 'text'> {
+  return Object.fromEntries(Object.entries(protocols).filter(([key]) => !key.startsWith('formlogic:')));
 }
 
 /** The AI store's settings part to its own key. Returns the write's result. */
@@ -490,7 +494,7 @@ export function persistGlobalSettings(): SaveResult {
     maxOutputTokens: ai.maxOutputTokens,
     setupSkipped: ai.setupSkipped,
     agentSettings: ai.agentSettings,
-    toolProtocols: ai.toolProtocols,
+    toolProtocols: stripHostedToolProtocols(ai.toolProtocols),
     streamModes: ai.streamModes,
   });
 }

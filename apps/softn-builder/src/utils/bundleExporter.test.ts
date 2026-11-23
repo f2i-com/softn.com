@@ -93,10 +93,11 @@ describe('an export and a file named __proto__', () => {
     await expect(exportWith('__proto__')).rejects.toThrow(/may not be named "__proto__"/);
   });
 
-  it('is an ordinary file anywhere else', async () => {
-    const { files } = parseBundle(await exportWith('assets/__proto__'));
-    expect(files.get('assets/__proto__')).toEqual(new Uint8Array([7, 8, 9]));
-    expect([...files.keys()].sort()).toEqual(['assets/__proto__', 'manifest.json', 'ui/main.ui']);
+  it('is also refused inside a folder, while ordinary names archive cleanly', async () => {
+    await expect(exportWith('assets/__proto__')).rejects.toThrow(/cannot name a file in a bundle/);
+    const { files } = parseBundle(await exportWith('assets/proto.bin'));
+    expect(files.get('assets/proto.bin')).toEqual(new Uint8Array([7, 8, 9]));
+    expect([...files.keys()].sort()).toEqual(['assets/proto.bin', 'manifest.json', 'ui/main.ui']);
   });
 
   // Every reader drops a name with two dots in a row: the export wrote assets/version..png, and

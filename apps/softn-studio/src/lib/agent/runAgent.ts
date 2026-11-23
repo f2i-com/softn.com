@@ -1354,7 +1354,8 @@ async function drive(ctl: RunController): Promise<void> {
           // the text protocol for every run after it.
           const key = protocolKey(ctl.provider, model);
           const definite = isDefiniteToolsRejection(err);
-          if (definite) useAIStore.getState().rememberToolProtocol(key, 'text');
+          const hostedSourceLimit = ctl.provider.id === 'formlogic' && err instanceof AIProviderError && (err.detail ?? '').includes('hosted-tools-unsupported');
+          if (definite && !hostedSourceLimit) useAIStore.getState().rememberToolProtocol(key, 'text');
           else ctl.textForRun.add(key);
           protocol = 'text';
           system = ctl.systems[protocol] ??= buildAgentSystemPrompt(protocol);
@@ -1362,9 +1363,11 @@ async function drive(ctl: RunController): Promise<void> {
           addEntry(ctl, {
             kind: 'text',
             id: newId(),
-            text: definite
-              ? 'This model does not take tool calls natively; continuing with the text protocol.'
-              : 'The provider’s server failed on a request with tool calls, in words that read as if it does not take them. This run continues with the text protocol; the next run tries tool calls again.',
+            text: hostedSourceLimit
+              ? 'This AI source uses the text protocol for tool calls; continuing.'
+              : definite
+                ? 'This model does not take tool calls natively; continuing with the text protocol.'
+                : 'The provider’s server failed on a request with tool calls, in words that read as if it does not take them. This run continues with the text protocol; the next run tries tool calls again.',
             at: Date.now(),
           });
           reply = await request(ctl, system, model, protocol);
@@ -1403,8 +1406,11 @@ async function drive(ctl: RunController): Promise<void> {
     patch(ctl, (r) => ({ ...r, tokens: addUsage(r.tokens, usage, ctl.weights) }));
 
     // A native reply whose calls are written as text: this model does not use `tools`.
+    // For the hosted FormLogic provider, keep this scoped to the run so switching models in FormLogic retries native tools.
     if (reply.wroteCallsAsText && protocol !== 'text') {
-      useAIStore.getState().rememberToolProtocol(protocolKey(ctl.provider, model), 'text');
+      const key = protocolKey(ctl.provider, model);
+      if (ctl.provider.id === 'formlogic') ctl.textForRun.add(key);
+      else useAIStore.getState().rememberToolProtocol(key, 'text');
       protocol = 'text';
       patch(ctl, (r) => ({ ...r, protocol }));
       const parsed = parseTextToolCalls(reply.text);

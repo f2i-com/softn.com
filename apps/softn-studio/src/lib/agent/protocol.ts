@@ -244,7 +244,7 @@ async function sendHosted(request: AgentRequest): Promise<AgentReply> {
     if (error instanceof AIProviderError) throw error;
     if (request.signal?.aborted) throw new AIProviderError('cancelled', 'The request was cancelled.');
     if (error instanceof HostedAIError && error.code === 'tools-unsupported') {
-      throw new AIProviderError('http', error.message, { detail: 'tools not supported' });
+      throw new AIProviderError('http', error.message, { detail: 'tools not supported (hosted-tools-unsupported)' });
     }
     throw new AIProviderError('network', error instanceof Error ? error.message : 'FormLogic AI request failed.');
   }
