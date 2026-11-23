@@ -24,7 +24,7 @@ import {
   isLinkElement,
   type FontScopeContext,
 } from './host-policy';
-import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sameSite, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
 import { isAllowedUiExtension } from './ui-extensions/registry';
 import type {
   Canvas2DCmd,
@@ -1093,7 +1093,7 @@ export class HostDomPatcher {
       try {
         const parsed = new URL(url);
         if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
-        if (typeof location !== 'undefined' && (parsed.origin === location.origin || sameSite(parsed.hostname, location.hostname))) return false;
+        if (typeof location !== 'undefined' && location.origin && location.origin !== 'null' && parsed.origin === location.origin) return false;
       } catch {
         return false;
       }

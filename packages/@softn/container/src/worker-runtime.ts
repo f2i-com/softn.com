@@ -327,13 +327,23 @@ function requestBody(opts: StreamRequest): BodyInit | undefined {
   return typeof opts.bodyBase64 === 'string' ? base64ToBytes(opts.bodyBase64) : opts.body;
 }
 
-/** The host of the page the app is embedded in: the Worker's own origin, which is the page's. */
-function embeddingHost(): string {
+/** The origin of the page the app is embedded in: the Worker's own origin, which is the page's. */
+function embeddingOrigin(): string {
   try {
     const here = (globalThis as { location?: { origin?: string; href?: string } }).location;
     if (!here) return '';
     const origin = here.origin && here.origin !== 'null' ? here.origin : new URL(String(here.href)).origin;
-    return new URL(origin).hostname;
+    return origin && origin !== 'null' ? origin : '';
+  } catch {
+    return '';
+  }
+}
+
+/** The host of the page the app is embedded in: the Worker's own origin, which is the page's. */
+function embeddingHost(): string {
+  try {
+    const origin = embeddingOrigin();
+    return origin ? new URL(origin).hostname : '';
   } catch {
     return '';
   }
@@ -4173,9 +4183,8 @@ export class ContainerWorkerSession {
       return false;
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-    const host = embeddingHost();
-    if (host && sameSite(url.hostname, host)) return false;
-    if (typeof location !== 'undefined' && location.origin && location.origin !== 'null' && url.origin === location.origin) return false;
+    const origin = embeddingOrigin();
+    if (origin && url.origin === origin) return false;
     return isExternalUrlAllowed(url.href, this.permissions.permissions?.net, this.grantedCapabilities.has('net'));
   }
 

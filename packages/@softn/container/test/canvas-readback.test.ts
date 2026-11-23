@@ -395,6 +395,71 @@ describe('a canvas read back at once', () => {
     }
   });
 
+  it('refuses same-origin CORS picture readback but allows a distinct origin on the same host without cookies or cache', async () => {
+    const scopeBitmap = globalThis as { createImageBitmap?: unknown };
+    const hadBitmap = scopeBitmap.createImageBitmap;
+    scopeBitmap.createImageBitmap = standInImageBitmap(0);
+    const red = encodePng(1, 1, new Uint8Array([255, 0, 0, 255]));
+    const sameOriginUrl = `${window.location.origin}/own.png`;
+    const otherPort = window.location.port === '45678' ? '45679' : '45678';
+    const otherOriginUrl = `http://${window.location.hostname}:${otherPort}/cors.png`;
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      asked.push(`${String(input)}|${init?.mode}|${init?.credentials}|${init?.cache}|${init?.redirect}|${init?.referrerPolicy}`);
+      if (String(input) === otherOriginUrl && init?.mode === 'cors' && init.credentials === 'omit') {
+        return new Response(new Uint8Array(red), { status: 200, headers: { 'content-type': 'image/png' } });
+      }
+      throw new TypeError('Failed to fetch');
+    });
+    try {
+      const { handle, result } = await open(
+        {
+          'permission.json': JSON.stringify({
+            permissions: { net: { enabled: true, allow_http: true, allowed_hosts: [window.location.hostname] } },
+          }),
+          'index.html': `<!doctype html><html><body><canvas id="c" width="2" height="2"></canvas>
+            <img id="same" crossorigin="anonymous">
+            <img id="other" crossorigin="anonymous">
+            <p id="out">waiting</p><script>
+            var same = document.getElementById('same'), other = document.getElementById('other');
+            var c = document.getElementById('c');
+            var sameStatus = '', otherReady = false;
+            function finish() {
+              if (!sameStatus || !otherReady) return;
+              c.getContext('2d').drawImage(other, 0, 0);
+              setTimeout(function () {
+                document.getElementById('out').textContent = JSON.stringify({
+                  sameStatus: sameStatus,
+                  pixel: Array.prototype.join.call(c.getContext('2d').getImageData(0, 0, 1, 1).data, ','),
+                });
+              }, 50);
+            }
+            same.onload = function () { sameStatus = 'loaded'; finish(); };
+            same.onerror = function () { sameStatus = 'error'; finish(); };
+            other.onload = function () { otherReady = true; finish(); };
+            same.src = '${sameOriginUrl}';
+            other.src = '${otherOriginUrl}';
+          </script></body></html>`,
+        },
+        'preapproved'
+      );
+      await expect.poll(() => handle.shadowRoot.querySelector('#other')?.getAttribute('src')?.startsWith('blob:')).toBe(true);
+      const otherImg = handle.shadowRoot.querySelector('#other') as HTMLImageElement;
+      Object.defineProperty(otherImg, 'naturalWidth', { configurable: true, value: 1 });
+      Object.defineProperty(otherImg, 'naturalHeight', { configurable: true, value: 1 });
+      otherImg.dispatchEvent(new Event('load'));
+      expect(await result()).toEqual({ sameStatus: 'error', pixel: '255,0,0,255' });
+      expect(asked).toEqual([
+        `${otherOriginUrl}|cors|omit|no-store|error|no-referrer`,
+        `${otherOriginUrl}|cors|omit|no-store|error|no-referrer`,
+      ]);
+      handle.dispose();
+    } finally {
+      scopeBitmap.createImageBitmap = hadBitmap;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('reads a large part in as many answers as it takes, and says so past what it reads at all', async () => {
     const { handle, said, result } = await open({
       'index.html': `<!doctype html><html><body><canvas id="c" width="1200" height="1000"></canvas><canvas id="huge" width="8000" height="5000"></canvas><p id="out">waiting</p><script>
