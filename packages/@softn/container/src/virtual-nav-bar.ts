@@ -156,15 +156,19 @@ export function renderVirtualNavBar(options: {
       item.type = 'button';
       item.className = entry.kind === 'dir' || entry.navigable ? 'vnav-item' : 'vnav-item file-dim';
       item.textContent = entry.kind === 'dir' ? `[dir] ${entry.name}/` : entry.name;
-      item.addEventListener('click', () => {
-        if (entry.kind === 'dir') {
-          renderDir(`/${entry.path}`);
-        } else {
-          drawer.hidden = true;
-          folderBtn.classList.remove('active');
-          options.onNavigate(entry.urlPath);
-        }
-      });
+      if (entry.kind !== 'dir' && !entry.navigable) {
+        item.disabled = true;
+      } else {
+        item.addEventListener('click', () => {
+          if (entry.kind === 'dir') {
+            renderDir(`/${entry.path}`);
+          } else {
+            drawer.hidden = true;
+            folderBtn.classList.remove('active');
+            options.onNavigate(entry.urlPath);
+          }
+        });
+      }
       gridEl.appendChild(item);
     }
   };
@@ -179,6 +183,13 @@ export function renderVirtualNavBar(options: {
   return {
     element: root,
     setPath(urlPath: string) {
+      // Never overwrite the address bar while the user is actively typing a URL in it.
+      const inputRoot = input.getRootNode();
+      const active =
+        inputRoot instanceof ShadowRoot || inputRoot instanceof Document
+          ? inputRoot.activeElement
+          : null;
+      if (active === input) return;
       input.value = urlPath;
     },
     setHistoryState(canBack: boolean, canForward: boolean) {

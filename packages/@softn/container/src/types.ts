@@ -219,6 +219,10 @@ export interface ExtractedScript {
   src?: string;
   code: string;
   originPath: string;
+  /** Human-facing source file path for stack/error reporting (e.g. `about.html` for inline scripts). */
+  displayFile?: string;
+  /** 1-based starting line inside `displayFile` (`1` for external scripts, tag line for inline HTML scripts). */
+  startLine?: number;
   /** Run after the page's other scripts, as a browser runs a deferred one: a module, or a classic script by its address with `defer` (neither `async`). */
   defer?: boolean;
 }
@@ -629,4 +633,38 @@ export type WorkerToHostMsg =
   | { type: 'idb-hold'; id: number; name: string }
   | { type: 'idb-release'; name: string }
   | { type: 'host-request'; requestId: number; kind: string; payload: Record<string, unknown> }
-  | { type: 'error'; message: string; phase: string; fatal: boolean };
+  | {
+      type: 'error';
+      message: string;
+      phase: string;
+      fatal: boolean;
+      file?: string;
+      line?: number;
+      column?: number;
+      stack?: string;
+      snippet?: string;
+    };
+
+/** Structured error emitted by `@softn/container` with mapped source file, line, column, and code frame. */
+export class SoftNContainerError extends Error {
+  readonly phase: string;
+  readonly file?: string;
+  readonly line?: number;
+  readonly column?: number;
+  readonly snippet?: string;
+  readonly guestStack?: string;
+
+  constructor(
+    message: string,
+    details: { phase: string; file?: string; line?: number; column?: number; snippet?: string; stack?: string },
+  ) {
+    super(message);
+    this.name = 'SoftNContainerError';
+    this.phase = details.phase;
+    this.file = details.file;
+    this.line = details.line;
+    this.column = details.column;
+    this.snippet = details.snippet;
+    this.guestStack = details.stack;
+  }
+}

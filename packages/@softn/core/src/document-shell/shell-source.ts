@@ -1946,17 +1946,34 @@ var __softnShell = (function (win) {
       if (l.once) drop(r, event.type, l);
       event._passive = !!l.passive;
       try {
+        var ret;
         if (l.inline) {
           var handler = r.inline[event.type];
           // A handler that answers false cancels the event.
-          if (typeof handler === 'function' && handler.call(node, event) === false) {
-            event._passive = false;
-            event.preventDefault();
+          if (typeof handler === 'function') {
+            ret = handler.call(node, event);
+            if (ret === false) {
+              event._passive = false;
+              event.preventDefault();
+            }
           }
-        } else if (typeof l.fn === 'function') l.fn.call(node, event);
-        else if (l.fn && typeof l.fn.handleEvent === 'function') l.fn.handleEvent(event);
+        } else if (typeof l.fn === 'function') ret = l.fn.call(node, event);
+        else if (l.fn && typeof l.fn.handleEvent === 'function') ret = l.fn.handleEvent(event);
+        if (ret && typeof ret.then === 'function') {
+          ret.then(undefined, function (reason) {
+            if (typeof globalThis.__softnReportError === 'function') {
+              globalThis.__softnReportError('unhandledrejection', reason, 0);
+            } else {
+              console.error('[SoftN] Unhandled promise rejection in ' + event.type + ' listener: ' + (reason && reason.message ? reason.message : reason));
+            }
+          });
+        }
       } catch (error) {
-        console.error('[SoftN] A ' + event.type + ' listener failed: ' + (error && error.message ? error.message : error));
+        if (typeof globalThis.__softnReportError === 'function') {
+          globalThis.__softnReportError('event', error, 0);
+        } else {
+          console.error('[SoftN] A ' + event.type + ' listener failed: ' + (error && error.message ? error.message : error));
+        }
       }
       event._passive = false;
       if (event._stop === 2) return;

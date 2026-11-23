@@ -96,3 +96,15 @@ examples/torch-trainer/*.softn
 
 # Built by examples/container-showcase/build.mjs from the source beside it.
 examples/container-showcase/bundles/*.softn
+
+# Built by examples/modula-suite/build.mjs from the source beside it.
+examples/modula-suite/bundles/*.softn
+examples/modula-suite/.standalone-data/
+
+# Built by examples/basegrid-suite/build.mjs from the source beside it.
+examples/basegrid-suite/bundles/*.softn
+examples/basegrid-suite/.standalone-data/
+
+# Built by examples/opal-business/build.mjs from the source beside it.
+examples/opal-business/bundles/*.softn
+examples/opal-business/.standalone-data/

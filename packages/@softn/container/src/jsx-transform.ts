@@ -56,6 +56,7 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
   'return',
   'throw',
   'case',
+  'default',
   'delete',
   'void',
   'typeof',
@@ -287,25 +288,77 @@ class JsxScanner {
     return out;
   }
 
+  /** Scan a JSX string attribute (`"..."` or `'...'`): backslashes are literal in JSX attributes. */
+  private scanJsxAttrString(quote: number): string {
+    const start = this.pos;
+    this.pos++;
+    while (this.pos < this.len) {
+      if (this.src.charCodeAt(this.pos) === quote) {
+        this.pos++;
+        break;
+      }
+      this.pos++;
+    }
+    return this.src.slice(start, this.pos);
+  }
+
+  /** Skip balanced TypeScript generic type arguments `<...>` starting at `startPos`, or return -1 if unbalanced. */
+  private skipBalancedAngle(startPos: number): number {
+    if (startPos >= this.len || this.src.charCodeAt(startPos) !== 60) return -1;
+    let p = startPos + 1;
+    let depth = 1;
+    while (p < this.len && depth > 0) {
+      const c = this.src.charCodeAt(p);
+      if (c === 34 || c === 39) {
+        const q = c;
+        p++;
+        while (p < this.len) {
+          if (this.src.charCodeAt(p) === 92) { p += 2; continue; }
+          if (this.src.charCodeAt(p) === q) { p++; break; }
+          p++;
+        }
+        continue;
+      }
+      if (c === 60) depth++;
+      else if (c === 62) {
+        // Ignore `=>` arrow inside generic function type `<(x: number) => void>`
+        if (p > startPos && this.src.charCodeAt(p - 1) === 61) {
+          p++;
+          continue;
+        }
+        depth--;
+      }
+      p++;
+    }
+    return depth === 0 ? p : -1;
+  }
+
   /**
    * Peek ahead from a `<` in expression position to determine whether it begins
-   * a JSX element/fragment or a TypeScript generic parameter list (`<T,>`, `<T extends X>`).
+   * a JSX element/fragment or a TypeScript generic parameter list (`<T,>`, `<T extends X>`, `<const T>`).
    */
   private looksLikeJsxStart(): boolean {
     const len = this.len;
     let p = this.pos + 1;
     if (p >= len) return false;
-    // Fragment: `<>` (optionally whitespace between `<` and `>` is invalid JSX, must be `<>`)
+    // Fragment: `<>`
     if (this.src.charCodeAt(p) === 62) return true;
     if (!isIdentStart(this.src.charCodeAt(p))) return false;
     const nameStart = p;
     p++;
     while (p < len && isJsxNamePart(this.src.charCodeAt(p))) p++;
     const tagName = this.src.slice(nameStart, p);
-    // Skip whitespace after tag name
+    // Optional TypeScript generic arguments on a JSX component: `<Comp<T> prop={1} />`
+    if (!isHtmlTag(tagName) && p < len && this.src.charCodeAt(p) === 60) {
+      const afterGeneric = this.skipBalancedAngle(p);
+      if (afterGeneric > p) p = afterGeneric;
+    }
+    // Skip whitespace after tag name (and optional type args)
     while (p < len && isWs(this.src.charCodeAt(p))) p++;
     if (p >= len) return false;
     const nextCh = this.src.charCodeAt(p);
+    // `<const T>` TypeScript 5.0 const type parameter
+    if (tagName === 'const' && isIdentStart(nextCh)) return false;
     // `<T,>` or `<T = X>` -> TS generic parameter list
     if (nextCh === 44 || nextCh === 61) return false;
     // `<T extends ...>` -> TS generic constraint
@@ -320,8 +373,9 @@ class JsxScanner {
         let q = p + 1;
         while (q < len && isWs(this.src.charCodeAt(q))) q++;
         if (q < len && this.src.charCodeAt(q) === 40) {
-          // Check if there is NO closing `</TagName>` ahead
-          if (!this.src.includes(`</${tagName}`)) return false;
+          // Check for exact closing `</TagName>` (word boundary, so `</P` never matches `</Panel>`).
+          const escapedTag = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (!new RegExp(`</${escapedTag}(?=[\\s>])`).test(this.src.slice(q))) return false;
         }
       }
       return true;
@@ -476,9 +530,21 @@ class JsxScanner {
         continue;
       }
 
-      // Multi-char operators relevant to expression start (`=>`, `&&`, `||`, `??`)
+      // Multi-char operators (`++`, `--`, `=>`, `&&`, `||`, `??`, etc.): keeping `++`/`--`
+      // intact ensures `a++ < b` and `a++ / b` never trigger JSX or regex scanning.
       const two = this.src.slice(this.pos, this.pos + 2);
-      if (two === '=>' || two === '&&' || two === '||' || two === '??' || two === '==' || two === '!=' || two === '<=' || two === '>=') {
+      if (
+        two === '++' ||
+        two === '--' ||
+        two === '=>' ||
+        two === '&&' ||
+        two === '||' ||
+        two === '??' ||
+        two === '==' ||
+        two === '!=' ||
+        two === '<=' ||
+        two === '>='
+      ) {
         out += two;
         this.pos += 2;
         prevSigType = 'punct';
@@ -508,10 +574,14 @@ class JsxScanner {
       return `globalThis.__softnJsx(${args.join(', ')})`;
     }
 
-    // Parse tag name
+    // Parse tag name (and skip optional TypeScript generic type arguments `<T>` on component tags)
     const tagStart = this.pos;
     while (this.pos < this.len && isJsxNamePart(this.src.charCodeAt(this.pos))) this.pos++;
     const tagName = this.src.slice(tagStart, this.pos);
+    if (!isHtmlTag(tagName) && this.pos < this.len && this.src.charCodeAt(this.pos) === 60) {
+      const afterGeneric = this.skipBalancedAngle(this.pos);
+      if (afterGeneric > this.pos) this.pos = afterGeneric;
+    }
     const tagExpr = isHtmlTag(tagName) ? JSON.stringify(tagName) : tagName;
 
     // Parse attributes / props
@@ -553,13 +623,14 @@ class JsxScanner {
           this.skipWsAndComments();
           const vCh = this.pos < this.len ? this.src.charCodeAt(this.pos) : 0;
           if (vCh === 34 || vCh === 39) {
-            const rawStr = this.scanString(vCh);
+            const rawStr = this.scanJsxAttrString(vCh);
             const inner = rawStr.slice(1, -1);
             propChunks.push({ kind: 'entry', key: attrName, val: JSON.stringify(decodeHtmlEntities(inner)) });
           } else if (vCh === 123) {
             this.pos++; // `{`
-            const expr = this.scanCode(true).trim();
-            propChunks.push({ kind: 'entry', key: attrName, val: expr || 'undefined' });
+            const rawExpr = this.scanCode(true).trim();
+            const safeExpr = rawExpr ? (rawExpr.includes('//') ? `${rawExpr}\n` : rawExpr) : 'undefined';
+            propChunks.push({ kind: 'entry', key: attrName, val: safeExpr });
           } else if (vCh === 60) {
             const elemExpr = this.parseJsxElement();
             propChunks.push({ kind: 'entry', key: attrName, val: elemExpr });
@@ -631,7 +702,9 @@ class JsxScanner {
         const expr = this.scanCode(true);
         const meaningful = stripLeadingComments(expr);
         if (meaningful.length > 0) {
-          children.push(expr.trim());
+          const trimmed = expr.trim();
+          // Ensure a trailing `//` comment inside `{expr // note}` never comments out the closing `,`/`)`.
+          children.push(trimmed.includes('//') ? `${trimmed}\n` : trimmed);
         }
         continue;
       }

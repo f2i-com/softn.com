@@ -259,7 +259,7 @@ function softn_is_container_text(string $name, bool $isContainer): bool
     $base = strtolower(basename($name));
     if ($base === '.htaccess') return true;
     $ext = strtolower((string)pathinfo($name, PATHINFO_EXTENSION));
-    return in_array($ext, ['htm', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'php', 'phtml', 'rs', 'toml'], true);
+    return in_array($ext, ['htm', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'vue', 'php', 'phtml', 'rs', 'toml'], true);
 }
 
 function softn_config(string $private): array

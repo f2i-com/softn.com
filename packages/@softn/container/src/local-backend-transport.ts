@@ -71,8 +71,57 @@ function openSqliteIdb(version = SQLITE_IDB_VERSION, retried = false): Promise<I
   });
 }
 
+function readFallbackStorage(
+  store: Storage,
+  sqlPrefix: string,
+  ovKey: string,
+  rustOvKey: string,
+  cookiesKey: string
+): {
+  dbs: Record<string, Uint8Array>;
+  phpOverlay?: string;
+  rustOverlay?: string;
+  cookies?: string;
+} {
+  const dbs: Record<string, Uint8Array> = Object.create(null);
+  let phpOverlay: string | undefined;
+  let rustOverlay: string | undefined;
+  let cookies: string | undefined;
+  try {
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      if (!k) continue;
+      if (k.startsWith(sqlPrefix)) {
+        const b64 = store.getItem(k);
+        if (b64) dbs[k.slice(sqlPrefix.length)] = base64ToBytes(b64);
+      } else if (k === ovKey) {
+        const val = store.getItem(k);
+        if (val) phpOverlay = val;
+      } else if (k === rustOvKey) {
+        const val = store.getItem(k);
+        if (val) rustOverlay = val;
+      } else if (k === cookiesKey) {
+        const val = store.getItem(k);
+        if (val) cookies = val;
+      }
+    }
+  } catch {
+    // ignore restricted storage
+  }
+  return { dbs, phpOverlay, rustOverlay, cookies };
+}
+
+function defaultWebStorage(): Storage | undefined {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function loadPersistedBlobs(
-  storagePrefix: string
+  storagePrefix: string,
+  explicitStorage?: Storage
 ): Promise<{
   dbs: Record<string, Uint8Array>;
   phpOverlay?: string;
@@ -87,6 +136,10 @@ async function loadPersistedBlobs(
   const ovKey = `${storagePrefix}php-overlay`;
   const rustOvKey = `${storagePrefix}rust-overlay`;
   const cookiesKey = `${storagePrefix}cookies`;
+
+  if (explicitStorage) {
+    return readFallbackStorage(explicitStorage, sqlPrefix, ovKey, rustOvKey, cookiesKey);
+  }
 
   const idb = await openSqliteIdb();
   if (idb) {
@@ -127,100 +180,87 @@ async function loadPersistedBlobs(
     return { dbs, phpOverlay, rustOverlay, cookies };
   }
 
-  // Fallback for environments with localStorage only (e.g. JSDOM tests)
-  if (typeof localStorage !== 'undefined') {
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        if (k.startsWith(sqlPrefix)) {
-          const b64 = localStorage.getItem(k);
-          if (b64) dbs[k.slice(sqlPrefix.length)] = base64ToBytes(b64);
-        } else if (k === ovKey) {
-          const val = localStorage.getItem(k);
-          if (val) phpOverlay = val;
-        } else if (k === rustOvKey) {
-          const val = localStorage.getItem(k);
-          if (val) rustOverlay = val;
-        } else if (k === cookiesKey) {
-          const val = localStorage.getItem(k);
-          if (val) cookies = val;
-        }
-      }
-    } catch {
-      // ignore restricted storage
-    }
+  // Fallback for environments with localStorage only (e.g. JSDOM tests or opaque-origin iframes)
+  const fallback = defaultWebStorage();
+  if (fallback) {
+    return readFallbackStorage(fallback, sqlPrefix, ovKey, rustOvKey, cookiesKey);
   }
   return { dbs, phpOverlay, rustOverlay, cookies };
 }
 
-export async function clearBackendPersistedBlobs(storagePrefix: string): Promise<void> {
-  const idb = await openSqliteIdb();
-  if (idb) {
-    try {
-      await new Promise<void>((resolve) => {
-        try {
-          const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
-          const store = tx.objectStore(SQLITE_IDB_STORE);
-          const curReq = store.openCursor();
-          curReq.onsuccess = () => {
-            const cur = curReq.result;
-            if (!cur) return;
-            if (String(cur.key).startsWith(storagePrefix)) cur.delete();
-            cur.continue();
-          };
-          curReq.onerror = () => resolve();
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
-          tx.onabort = () => resolve();
-        } catch {
-          resolve();
-        }
-      });
-    } finally {
-      try { idb.close(); } catch { /* ignore */ }
+export async function clearBackendPersistedBlobs(storagePrefix: string, explicitStorage?: Storage): Promise<void> {
+  if (!explicitStorage) {
+    const idb = await openSqliteIdb();
+    if (idb) {
+      try {
+        await new Promise<void>((resolve) => {
+          try {
+            const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
+            const store = tx.objectStore(SQLITE_IDB_STORE);
+            const curReq = store.openCursor();
+            curReq.onsuccess = () => {
+              const cur = curReq.result;
+              if (!cur) return;
+              if (String(cur.key).startsWith(storagePrefix)) cur.delete();
+              cur.continue();
+            };
+            curReq.onerror = () => resolve();
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+            tx.onabort = () => resolve();
+          } catch {
+            resolve();
+          }
+        });
+      } finally {
+        try { idb.close(); } catch { /* ignore */ }
+      }
     }
   }
-  if (typeof localStorage !== 'undefined') {
+  const store = explicitStorage ?? defaultWebStorage();
+  if (store) {
     try {
       const toRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
         if (k && k.startsWith(storagePrefix)) toRemove.push(k);
       }
-      for (const k of toRemove) localStorage.removeItem(k);
+      for (const k of toRemove) store.removeItem(k);
     } catch {
       // ignore
     }
   }
 }
 
-async function savePersistedBlob(key: string, value: Uint8Array | string): Promise<void> {
-  const idb = await openSqliteIdb();
-  if (idb) {
-    try {
-      await new Promise<void>((resolve) => {
-        try {
-          const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
-          tx.objectStore(SQLITE_IDB_STORE).put(value, key);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
-          tx.onabort = () => resolve();
-        } catch {
-          resolve();
-        }
-      });
-    } finally {
-      try { idb.close(); } catch { /* ignore */ }
+async function savePersistedBlob(key: string, value: Uint8Array | string, explicitStorage?: Storage): Promise<void> {
+  if (!explicitStorage) {
+    const idb = await openSqliteIdb();
+    if (idb) {
+      try {
+        await new Promise<void>((resolve) => {
+          try {
+            const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
+            tx.objectStore(SQLITE_IDB_STORE).put(value, key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+            tx.onabort = () => resolve();
+          } catch {
+            resolve();
+          }
+        });
+      } finally {
+        try { idb.close(); } catch { /* ignore */ }
+      }
+      return;
     }
-    return;
   }
-  if (typeof localStorage !== 'undefined') {
+  const store = explicitStorage ?? defaultWebStorage();
+  if (store) {
     try {
       if (typeof value === 'string') {
-        localStorage.setItem(key, value);
+        store.setItem(key, value);
       } else {
-        localStorage.setItem(key, bytesToBase64(value));
+        store.setItem(key, bytesToBase64(value));
       }
     } catch {
       // ignore quota/storage errors
@@ -232,6 +272,8 @@ export interface LocalBackendTransportOptions {
   appId: string;
   storagePrefix: string;
   persistStorage?: boolean;
+  /** Optional host-managed Web Storage backend (used in opaque-origin frames / tests). */
+  storage?: Storage;
   backend?: BackendConfig;
   databases?: DatabaseConfig[];
   textFiles: Record<string, string>;
@@ -253,6 +295,7 @@ export class LocalBackendTransport implements BackendTransport {
 
   private readonly storagePrefix: string;
   private readonly persistStorage: boolean;
+  private readonly storage?: Storage;
   private readonly onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
   private readonly onStatus?: (status: ContainerBootStatus) => void;
   private worker: Worker | null = null;
@@ -276,6 +319,7 @@ export class LocalBackendTransport implements BackendTransport {
   constructor(options: LocalBackendTransportOptions) {
     this.storagePrefix = options.storagePrefix;
     this.persistStorage = options.persistStorage !== false;
+    this.storage = options.storage;
     this.onConsole = options.onConsole;
     this.onStatus = options.onStatus;
     const useWorker = options.isolation === 'worker' && typeof Worker === 'function';
@@ -301,7 +345,7 @@ export class LocalBackendTransport implements BackendTransport {
   private async boot(options: LocalBackendTransportOptions, useWorker: boolean): Promise<void> {
     try {
       const persisted = this.persistStorage
-        ? await loadPersistedBlobs(this.storagePrefix)
+        ? await loadPersistedBlobs(this.storagePrefix, this.storage)
         : {
             dbs: Object.create(null) as Record<string, Uint8Array>,
             phpOverlay: undefined,
@@ -388,20 +432,20 @@ export class LocalBackendTransport implements BackendTransport {
         return;
 
       case 'sqlite-persist':
-        if (this.persistStorage) {
-          void savePersistedBlob(`${this.storagePrefix}sqlite:${msg.dbKey}`, msg.bytes);
+        if (this.persistStorage && msg.bytes.byteLength <= 64 * 1024 * 1024) {
+          void savePersistedBlob(`${this.storagePrefix}sqlite:${msg.dbKey}`, msg.bytes, this.storage);
         }
         return;
 
       case 'php-overlay-persist':
-        if (this.persistStorage) {
-          void savePersistedBlob(`${this.storagePrefix}php-overlay`, msg.overlayJson);
+        if (this.persistStorage && msg.overlayJson.length <= 16 * 1024 * 1024) {
+          void savePersistedBlob(`${this.storagePrefix}php-overlay`, msg.overlayJson, this.storage);
         }
         return;
 
       case 'rust-overlay-persist':
-        if (this.persistStorage) {
-          void savePersistedBlob(`${this.storagePrefix}rust-overlay`, msg.overlayJson);
+        if (this.persistStorage && msg.overlayJson.length <= 16 * 1024 * 1024) {
+          void savePersistedBlob(`${this.storagePrefix}rust-overlay`, msg.overlayJson, this.storage);
         }
         return;
 
@@ -410,7 +454,7 @@ export class LocalBackendTransport implements BackendTransport {
         if (!pending) return;
         this.pendingFetch.delete(msg.reqId);
         if (this.cookieJar.ingestResponseHeaders(msg.headers) && this.persistStorage) {
-          void savePersistedBlob(`${this.storagePrefix}cookies`, this.cookieJar.serialize());
+          void savePersistedBlob(`${this.storagePrefix}cookies`, this.cookieJar.serialize(), this.storage);
         }
         pending.resolve({
           status: msg.status,
@@ -597,15 +641,16 @@ export class LocalBackendTransport implements BackendTransport {
 
   dispose(): void {
     if (this.disposed) return;
+    // Flush inline session BEFORE marking disposed so final sqlite-persist messages save cleanly.
+    try {
+      this.inlineSession?.dispose();
+    } catch {
+      // ignore
+    }
     this.disposed = true;
     try {
       this.worker?.postMessage({ type: 'dispose' } satisfies HostToBackendMsg);
       this.worker?.terminate();
-    } catch {
-      // ignore
-    }
-    try {
-      this.inlineSession?.dispose();
     } catch {
       // ignore
     }

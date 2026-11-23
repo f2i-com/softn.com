@@ -144,12 +144,16 @@ function skipBalanced(css: string, at: number): number {
  * put in its place, or null for one the app may not load.
  */
 export function rewriteCss(css: string, mapUrl: (address: string) => string | null, options: { keepHost?: boolean } = {}): string {
+  // CSS Syntax Level 3 input stream preprocessing: normalize CR/CRLF/FF and replace NUL.
+  css = css.replace(/\r\n?|\f/g, '\n').replace(/\0/g, '\uFFFD');
   const address = (raw: string): string => cssString(mapUrl(raw.trim()) ?? 'about:blank');
   let out = '';
   let i = 0;
   let depth = 0;
   // Bracket depths at which a bare string is an address (inside image-set() and its like).
   const imageDepths: number[] = [];
+  // Bracket depths inside image-set(... type("image/webp")) where a string is a MIME type, not a URL.
+  const typeDepths: number[] = [];
 
   while (i < css.length) {
     const c = css[i];
@@ -163,7 +167,7 @@ export function rewriteCss(css: string, mapUrl: (address: string) => string | nu
 
     if (c === '"' || c === "'") {
       const str = readString(css, i);
-      out += imageDepths.length > 0 && imageDepths[imageDepths.length - 1] === depth ? address(str.value) : cssString(str.value);
+      out += imageDepths.length > 0 && typeDepths.length === 0 ? address(str.value) : cssString(str.value);
       i = str.end;
       continue;
     }
@@ -246,9 +250,17 @@ export function rewriteCss(css: string, mapUrl: (address: string) => string | nu
         i = skipBalanced(css, ident.end);
         continue;
       }
+      // Inside image-set() / image() / cross-fade(), CSS variable/env/attr substitution can
+      // smuggle an unsanitized URL string (e.g. `image-set(var(--u) 1x)` or fallback strings).
+      if (imageDepths.length > 0 && (lower === 'var' || lower === 'env' || lower === 'attr')) {
+        out += 'url("about:blank")';
+        i = skipBalanced(css, ident.end);
+        continue;
+      }
       out += `${css.slice(i, ident.end)}(`;
       depth++;
       if (IMAGE_FUNCTIONS.has(lower)) imageDepths.push(depth);
+      else if (imageDepths.length > 0 && lower === 'type') typeDepths.push(depth);
       i = ident.end + 1;
       continue;
     }
@@ -263,6 +275,7 @@ export function rewriteCss(css: string, mapUrl: (address: string) => string | nu
 
     if (c === '(') depth++;
     else if (c === ')') {
+      if (typeDepths.length > 0 && typeDepths[typeDepths.length - 1] === depth) typeDepths.pop();
       if (imageDepths.length > 0 && imageDepths[imageDepths.length - 1] === depth) imageDepths.pop();
       if (depth > 0) depth--;
     }

@@ -12,6 +12,7 @@
 import type { ContainerArchive } from './archive';
 import type { ContainerPermissions } from './types';
 import { sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { isAllowedUiExtension } from './ui-extensions/registry';
 
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 export const MATH_NS = 'http://www.w3.org/1998/Math/MathML';
@@ -20,7 +21,8 @@ export const MATH_NS = 'http://www.w3.org/1998/Math/MathML';
  * Elements that run script, load a document, or reach outside the app's box, by their local
  * name in any namespace: an SVG `script` runs as an HTML one does.
  *
- * `portal` and `fencedframe` are documents like `iframe`. (`link` and `style` are not here:
+ * `portal` and `fencedframe` are documents like `iframe`. `softn-app` would mount a nested
+ * container inside the embedding page's realm. (`link` and `style` are not here:
  * each has a rule of its own in the patcher, which reads their CSS before the page does.
  * `slot` has one below.)
  */
@@ -36,6 +38,7 @@ const FORBIDDEN_ELEMENTS = new Set([
   'noscript',
   'portal',
   'fencedframe',
+  'softn-app',
 ]);
 
 /**
@@ -64,9 +67,22 @@ export function slotsAreContained(): boolean {
 export function hostElementName(rawTag: string, ns?: 'svg' | 'math'): string | null {
   const local = String(rawTag).slice(String(rawTag).lastIndexOf(':') + 1);
   if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(local)) return null;
-  if (FORBIDDEN_ELEMENTS.has(local.toLowerCase())) return null;
+  const lower = local.toLowerCase();
+  if (FORBIDDEN_ELEMENTS.has(lower)) return null;
+  // Never let untrusted guest HTML instantiate a custom element already defined by the
+  // embedding host page (e.g. host widgets or container elements), except allowlisted SoftN UI
+  // extensions. Unregistered hyphenated tags remain inert guest custom elements.
+  if (
+    !ns &&
+    lower.includes('-') &&
+    typeof customElements !== 'undefined' &&
+    customElements.get(lower) &&
+    !isAllowedUiExtension(lower)
+  ) {
+    return null;
+  }
   // SVG and MathML names are case-sensitive (`foreignObject`, `linearGradient`); HTML's are not.
-  return ns ? local : local.toLowerCase();
+  return ns ? local : lower;
 }
 
 /** The element `name` (from hostElementName) in its namespace. */
@@ -111,6 +127,55 @@ const PAINT_ATTRIBUTES = new Set(['fill', 'stroke', 'filter', 'mask', 'clip-path
 /** The targets a link or form of the app's may name: a new tab, or itself. Never the page it is embedded in (`_top`, `_parent`) or a window by name. */
 const TARGETS = new Set(['_blank', '_self']);
 
+/** SVG attributes that an `<animate>` / `<set>` element must never retarget (addresses, styles, URL-bearing presentation refs). */
+const FORBIDDEN_ANIMATION_TARGETS = new Set([
+  'style',
+  'target',
+  'filter',
+  'mask',
+  'clip-path',
+  'cursor',
+  'marker',
+  'marker-start',
+  'marker-mid',
+  'marker-end',
+]);
+
+const SRCSET_DESCRIPTOR_RE = /^(?:[1-9]\d*w|(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?x)$/i;
+
+function parseSrcsetCandidates(raw: string): Array<{ url: string; descriptor: string }> {
+  const out: Array<{ url: string; descriptor: string }> = [];
+  let i = 0;
+  const n = raw.length;
+  while (i < n) {
+    while (i < n && (raw[i] === ',' || /\s/.test(raw[i]))) i++;
+    if (i >= n) break;
+    const urlStart = i;
+    while (i < n && !/\s/.test(raw[i])) {
+      if (raw[i] === ',' && !/^data:/i.test(raw.slice(urlStart, i))) break;
+      i++;
+    }
+    let url = raw.slice(urlStart, i);
+    if (i < n && raw[i] === ',') {
+      if (url) out.push({ url, descriptor: '' });
+      i++;
+      continue;
+    }
+    if (url.endsWith(',')) {
+      url = url.replace(/,+$/, '');
+      if (url) out.push({ url, descriptor: '' });
+      continue;
+    }
+    while (i < n && /\s/.test(raw[i])) i++;
+    const descStart = i;
+    while (i < n && raw[i] !== ',') i++;
+    const descriptor = raw.slice(descStart, i).trim();
+    if (i < n && raw[i] === ',') i++;
+    if (url) out.push({ url, descriptor });
+  }
+  return out;
+}
+
 /**
  * The value to set for attribute `name` of a `tag` element, or null to leave the attribute
  * off. `tag` is the element's lower-cased local name. Inline handlers (`on…`) are never set:
@@ -135,13 +200,30 @@ export function hostAttributeValue(tag: string, name: string, value: string, con
   // came back, readable.
   if (lower === 'crossorigin') return 'anonymous';
 
-  // SVG animation aimed at an address: `<set attributeName="href" to="javascript:…">` writes
-  // the link's address after every check here has passed. Neither half is set.
-  if (lower === 'attributename' && /^(?:xlink:)?href$/i.test(value.trim())) return null;
+  // SVG animation aimed at an address or URL-bearing presentation attribute:
+  // `<set attributeName="href" to="javascript:…">` or `<set attributeName="filter" to="url(…)">`
+  // would mutate the attribute after host checks. Block sensitive targets and sanitize URL/script keyframes.
+  if (lower === 'attributename') {
+    const targetAttr = value.trim().toLowerCase();
+    const localAttr = targetAttr.slice(targetAttr.lastIndexOf(':') + 1);
+    if (
+      URL_ATTRIBUTES.has(targetAttr) ||
+      URL_ATTRIBUTES.has(localAttr) ||
+      SRCSET_ATTRIBUTES.has(localAttr) ||
+      DROPPED_ATTRIBUTES.has(localAttr) ||
+      FORBIDDEN_ANIMATION_TARGETS.has(localAttr) ||
+      localAttr.startsWith('on')
+    ) {
+      return null;
+    }
+  }
   if (lower === 'to' || lower === 'from' || lower === 'by' || lower === 'values') {
     // As a browser reads an address: with the control characters and spaces in it dropped.
     // eslint-disable-next-line no-control-regex -- the C0 controls are what is being removed
     if (/(?:^|;)(?:java|vb)script:/i.test(value.replace(/[\u0000- ]+/g, ''))) return null;
+    if (/\(|\\/.test(value)) {
+      return sanitizeContainerCss(value, context.entryPath, context.archive, context.permissions, context.netGranted, 'inline');
+    }
   }
 
   if (URL_ATTRIBUTES.has(lower)) {
@@ -149,13 +231,14 @@ export function hostAttributeValue(tag: string, name: string, value: string, con
   }
 
   if (SRCSET_ATTRIBUTES.has(lower)) {
-    // Each candidate by the rule for a single address; one the app may not load is left out.
+    // Each candidate by the rule for a single address; descriptors must match HTML srcset syntax
+    // so trailing commas or extra tokens can never smuggle an unverified second URL.
     const kept: string[] = [];
-    for (const candidate of value.split(',')) {
-      const parts = candidate.trim().split(/\s+/);
-      if (!parts[0]) continue;
-      const clean = sanitizeHostAssetUrl('src', parts[0], tag, context.entryPath, context.archive, context.permissions, context.netGranted);
-      if (clean) kept.push([clean, ...parts.slice(1)].join(' '));
+    for (const { url, descriptor } of parseSrcsetCandidates(value)) {
+      if (descriptor && !SRCSET_DESCRIPTOR_RE.test(descriptor)) continue;
+      const clean = sanitizeHostAssetUrl('src', url, tag, context.entryPath, context.archive, context.permissions, context.netGranted);
+      if (!clean || /\s/.test(clean) || clean.endsWith(',')) continue;
+      kept.push(descriptor ? `${clean} ${descriptor}` : clean);
     }
     return kept.length > 0 ? kept.join(', ') : null;
   }

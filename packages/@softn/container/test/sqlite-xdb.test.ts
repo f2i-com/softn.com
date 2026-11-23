@@ -206,4 +206,180 @@ describe('Embedded XDB SQLite WASM & Declarative JSON Seed Data', () => {
 
     handle2.dispose();
   });
+
+  it('supports JS backend all/first/get/run helpers and persists XDB SQLite through custom host Storage', async () => {
+    const storeMap = new Map<string, string>();
+    const customStorage: Storage = {
+      get length() { return storeMap.size; },
+      key(i) { return Array.from(storeMap.keys())[i] ?? null; },
+      getItem(k) { return storeMap.get(String(k)) ?? null; },
+      setItem(k, v) { storeMap.set(String(k), String(v)); },
+      removeItem(k) { storeMap.delete(String(k)); },
+      clear() { storeMap.clear(); },
+    };
+
+    const source = {
+      'manifest.json': JSON.stringify({
+        name: 'JS Fullstack SQLite',
+        engine: 2,
+        main: 'index.html',
+        backend: { runtime: 'javascript', entry: 'backend/server.js', routes: ['/api/'] },
+        databases: [{ name: 'app', engine: 'sqlite', file: 'app.db', seedSql: 'db/schema.sql', persist: true }],
+      }),
+      'db/schema.sql': `
+        CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL);
+        INSERT INTO tasks (title) VALUES ('Initial task');
+      `,
+      'backend/server.js': `
+        function handleRequest(req) {
+          const db = sqlite.open('app.db');
+          if (req.method === 'POST' && req.path === '/api/tasks') {
+            const body = JSON.parse(req.body || '{}');
+            db.run('INSERT INTO tasks (title) VALUES (?)', [body.title]);
+            const latest = db.first('SELECT id, title FROM tasks ORDER BY id DESC LIMIT 1');
+            return { status: 201, json: { item: latest } };
+          }
+          if (req.path === '/api/tasks') {
+            const items = db.all('SELECT id, title FROM tasks ORDER BY id');
+            const countRow = db.get('SELECT COUNT(*) AS n FROM tasks');
+            return { status: 200, json: { count: countRow.n, items: items } };
+          }
+          return { status: 404, json: { error: 'not found' } };
+        }
+      `,
+      'index.html': `<!DOCTYPE html><html><body>
+        <div id="out"></div>
+        <button id="add" type="button">Add</button>
+        <script type="module">
+          async function refresh() {
+            const r = await fetch('/api/tasks');
+            const d = await r.json();
+            document.getElementById('out').textContent = d.count + ':' + d.items.map(x => x.title).join('|');
+          }
+          await refresh();
+          document.getElementById('add').addEventListener('click', async () => {
+            await fetch('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Added via API' }) });
+            await refresh();
+          });
+        </script>
+      </body></html>`,
+    };
+
+    const host1 = document.createElement('div');
+    document.body.appendChild(host1);
+    const h1 = await mountSoftNContainer(host1, {
+      source,
+      appId: 'js-fullstack-custom-storage',
+      isolation: 'inline',
+      storage: customStorage,
+      engineWasm: { lite: LITE_WASM, javascript: LITE_WASM },
+      xdbWasm: XDB_WASM,
+      xdbGlueUrl: XDB_GLUE,
+    });
+    await flushAsync(100);
+    expect(h1.shadowRoot.querySelector('#out')?.textContent).toBe('1:Initial task');
+
+    (h1.shadowRoot.querySelector('#add') as HTMLButtonElement).click();
+    await flushAsync(100);
+    expect(h1.shadowRoot.querySelector('#out')?.textContent).toBe('2:Initial task|Added via API');
+    h1.dispose();
+
+    expect(Array.from(storeMap.keys()).some((k) => k.includes('sqlite:app.db'))).toBe(true);
+
+    // Remount with the same customStorage -> persisted SQLite state survives!
+    const host2 = document.createElement('div');
+    document.body.appendChild(host2);
+    const h2 = await mountSoftNContainer(host2, {
+      source,
+      appId: 'js-fullstack-custom-storage',
+      isolation: 'inline',
+      storage: customStorage,
+      engineWasm: { lite: LITE_WASM, javascript: LITE_WASM },
+      xdbWasm: XDB_WASM,
+      xdbGlueUrl: XDB_GLUE,
+    });
+    await flushAsync(100);
+    expect(h2.shadowRoot.querySelector('#out')?.textContent).toBe('2:Initial task|Added via API');
+    h2.dispose();
+  });
+
+  it('supports Python backend sqlite.open() bridge with XDB SQLite', async () => {
+    const coreWasm = path.resolve(PKG_ROOT, '..', 'core', 'wasm-zipp', 'zipp_wasm_bg.wasm');
+    const source = {
+      'manifest.json': JSON.stringify({
+        name: 'Python SQLite App',
+        engine: 2,
+        main: 'index.html',
+        backend: { runtime: 'python', entry: 'backend/server.py', routes: ['/api/'] },
+        databases: [{ name: 'app', engine: 'sqlite', file: 'app.db', persist: false }],
+      }),
+      'backend/server.py': `
+def handle_request(req):
+    db = sqlite.open("app.db")
+    db.run("CREATE TABLE IF NOT EXISTS pings (id INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT)")
+    db.run("INSERT INTO pings (msg) VALUES (?)", ["hello-from-python"])
+    rows = db.all("SELECT id, msg FROM pings ORDER BY id")
+    first = db.first("SELECT msg FROM pings ORDER BY id LIMIT 1")
+    return {"status": 200, "json": {"count": len(rows), "first": first["msg"]}}
+`,
+      'index.html': `<!DOCTYPE html><html><body>
+        <div id="py-out"></div>
+        <script type="module">
+          const r = await fetch('/api/ping');
+          const txt = await r.text();
+          if (!r.ok) {
+            document.getElementById('py-out').textContent = 'HTTP ' + r.status + ': ' + txt;
+          } else {
+            const d = JSON.parse(txt);
+            document.getElementById('py-out').textContent = d.count + ':' + d.first;
+          }
+        </script>
+      </body></html>`,
+    };
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      source,
+      appId: 'py-backend-sqlite',
+      isolation: 'inline',
+      persistStorage: false,
+      engineWasm: { lite: LITE_WASM, python: coreWasm },
+      xdbWasm: XDB_WASM,
+      xdbGlueUrl: XDB_GLUE,
+    });
+    await flushAsync(150);
+    expect(handle.shadowRoot.querySelector('#py-out')?.textContent).toBe('1:hello-from-python');
+    handle.dispose();
+  });
+
+  it('lazily boots XDB SQLite for frontend softn:sqlite even without manifest.databases', async () => {
+    const source = {
+      'index.html': `<!DOCTYPE html><html><body>
+        <div id="lazy-out"></div>
+        <script type="module">
+          import sqlite from 'softn:sqlite';
+          const db = await sqlite.open('lazy.db');
+          await db.run('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)');
+          await db.run('INSERT INTO kv (k, v) VALUES (?, ?)', ['mode', 'lazy-boot']);
+          const row = await db.first('SELECT v FROM kv WHERE k = ?', ['mode']);
+          document.getElementById('lazy-out').textContent = row.v;
+        </script>
+      </body></html>`,
+    };
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const handle = await mountSoftNContainer(host, {
+      source,
+      appId: 'lazy-sqlite-frontend',
+      isolation: 'inline',
+      persistStorage: false,
+      engineWasm: { lite: LITE_WASM },
+      xdbWasm: XDB_WASM,
+      xdbGlueUrl: XDB_GLUE,
+    });
+    await flushAsync(120);
+    expect(handle.shadowRoot.querySelector('#lazy-out')?.textContent).toBe('lazy-boot');
+    handle.dispose();
+  });
 });

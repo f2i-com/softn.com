@@ -102,6 +102,8 @@ interface WebGLCtxEntry {
   gl: AnyWebGLContext;
   isWebGL2: boolean;
   handles: Map<number, unknown>;
+  /** Cache `programHid:uniformName` -> server handle id so per-frame getUniformLocation calls never leak handles. */
+  uniformLocations: Map<string, number>;
   extensions: Map<string, Record<string, unknown>>;
   nextServerHandleId: number;
   dirty: boolean;
@@ -259,6 +261,7 @@ export class WebGLWorkerHost {
       gl,
       isWebGL2,
       handles: new Map(),
+      uniformLocations: new Map(),
       extensions: new Map(),
       nextServerHandleId: SERVER_HANDLE_BASE,
       dirty: false,
@@ -427,6 +430,15 @@ export class WebGLWorkerHost {
           const decoded: unknown[] = [];
           for (let j = 2; j < cmd.length; j++) decoded.push(this.decodeArg(cmd[j], entry, resolvers));
           fn.apply(gl, decoded);
+          if (method === 'linkProgram' && Array.isArray(cmd[2]) && cmd[2][0] === '$h') {
+            const progPrefix = `${Number(cmd[2][1])}:`;
+            for (const [key, uHid] of entry.uniformLocations) {
+              if (key.startsWith(progPrefix)) {
+                entry.uniformLocations.delete(key);
+                entry.handles.delete(uHid);
+              }
+            }
+          }
           if (DRAW_METHODS.has(method)) {
             entry.dirty = true;
             entry.hasDrawn = true;
@@ -445,6 +457,15 @@ export class WebGLWorkerHost {
           const hid = Number(cmd[2]);
           const obj = entry.handles.get(hid);
           entry.handles.delete(hid);
+          if (method === 'deleteProgram') {
+            const progPrefix = `${hid}:`;
+            for (const [key, uHid] of entry.uniformLocations) {
+              if (key.startsWith(progPrefix)) {
+                entry.uniformLocations.delete(key);
+                entry.handles.delete(uHid);
+              }
+            }
+          }
           const fn = glRec[method];
           if (typeof fn === 'function' && obj !== undefined) fn.call(gl, obj);
         } else if (op === 'resize') {
@@ -519,9 +540,20 @@ export class WebGLWorkerHost {
       const res = fn.apply(gl, decoded);
       if (method === 'getUniformLocation') {
         if (res === null || res === undefined) return null;
+        const progHid = Array.isArray(syncCmd[1]) && syncCmd[1][0] === '$h' ? Number(syncCmd[1][1]) : -1;
+        const uName = typeof syncCmd[2] === 'string' ? syncCmd[2] : '';
+        const cacheKey = progHid >= 0 ? `${progHid}:${uName}` : null;
+        if (cacheKey !== null) {
+          const existingHid = entry.uniformLocations.get(cacheKey);
+          if (existingHid !== undefined && entry.handles.has(existingHid)) {
+            entry.handles.set(existingHid, res);
+            return { __glH: existingHid };
+          }
+        }
         if (entry.handles.size >= MAX_WEBGL_HANDLES) return null;
         const hid = entry.nextServerHandleId++;
         entry.handles.set(hid, res);
+        if (cacheKey !== null) entry.uniformLocations.set(cacheKey, hid);
         return { __glH: hid };
       }
       return encodeSimpleReturn(res, entry);
@@ -589,6 +621,7 @@ export class WebGLWorkerHost {
       // ignore
     }
     entry.handles.clear();
+    entry.uniformLocations.clear();
     entry.extensions.clear();
   }
 }

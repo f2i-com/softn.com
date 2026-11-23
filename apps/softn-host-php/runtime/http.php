@@ -243,11 +243,25 @@ if($result['status']===429&&is_file(softn_rate_marker($backend,$rateKey,time()))
 if(isset($result['bodyRaw'])) {
     if(isset($result['headers'])&&is_array($result['headers'])) {
         $replacedCt=false;
+        $blockedResponseHeaders=[
+            'transfer-encoding'=>true,'connection'=>true,'content-length'=>true,
+            'x-sendfile'=>true,'x-accel-redirect'=>true,'x-accel-buffering'=>true,
+            'x-accel-charset'=>true,'x-accel-expires'=>true,'x-accel-limit-rate'=>true,
+            'x-litespeed-location'=>true,'x-litespeed-purge'=>true,'x-litespeed-tag'=>true,
+            'service-worker-allowed'=>true,'access-control-allow-origin'=>true,
+            'access-control-allow-credentials'=>true,'access-control-allow-headers'=>true,
+            'access-control-allow-methods'=>true,'access-control-expose-headers'=>true,
+            'access-control-max-age'=>true,'content-security-policy'=>true,
+            'content-security-policy-report-only'=>true,'x-content-type-options'=>true,
+            'strict-transport-security'=>true,'clear-site-data'=>true,
+            'cross-origin-opener-policy'=>true,'cross-origin-embedder-policy'=>true,
+            'cross-origin-resource-policy'=>true,
+        ];
         foreach($result['headers'] as $pair) {
             if(!is_array($pair)||count($pair)<2)continue;
-            $k=trim((string)$pair[0]);$v=str_replace(["\r","\n"],'',(string)$pair[1]);
+            $k=trim((string)$pair[0]);$v=str_replace(["\r","\n","\0"],'',(string)$pair[1]);
             $lk=strtolower($k);
-            if($k===''||in_array($lk,['transfer-encoding','connection','content-length'],true))continue;
+            if($k===''||isset($blockedResponseHeaders[$lk])||str_starts_with($lk,'x-accel-')||str_starts_with($lk,'x-litespeed-'))continue;
             if(!preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/',$k))continue;
             if($lk==='content-type'&&!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}
             else header($k.': '.$v,false);

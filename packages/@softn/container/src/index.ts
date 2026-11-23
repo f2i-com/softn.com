@@ -55,4 +55,6 @@ export {
   type XdbSqlManagerOptions,
 } from './xdb-sql-bridge';
 export { renderVirtualNavBar, type VirtualNavBarController } from './virtual-nav-bar';
+export { SourceMapRegistry, findInlineScriptStartLines, formatCodeFrame } from './source-map';
+export { SoftNContainerError } from './types';
 export type * from './types';

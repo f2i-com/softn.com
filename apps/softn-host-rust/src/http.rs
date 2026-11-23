@@ -513,10 +513,11 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, options: &ServeOptions, conn
 /// only ever what its Content-Type says.
 async fn no_sniff(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     let mut response = next.run(request).await;
-    response
-        .headers_mut()
-        .entry(axum::http::header::X_CONTENT_TYPE_OPTIONS)
-        .or_insert(axum::http::HeaderValue::from_static("nosniff"));
+    // Always enforce `nosniff` so a sandboxed container backend can never weaken it.
+    response.headers_mut().insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
     response
 }
 
@@ -984,10 +985,11 @@ async fn serve_container_request(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost")
         .to_owned();
-    let https = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+    let https = proxy.is_proxy(info.0.ip())
+        && headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("https"));
     let req_headers: Vec<(String, String)> = headers
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.as_str().to_owned(), vs.to_owned())))
@@ -1010,7 +1012,25 @@ async fn serve_container_request(
     let mut builder = axum::http::Response::builder().status(status);
     for (k, v) in resp.headers {
         let lower = k.to_ascii_lowercase();
-        if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" {
+        if matches!(
+            lower.as_str(),
+            "transfer-encoding"
+                | "connection"
+                | "content-length"
+                | "x-sendfile"
+                | "service-worker-allowed"
+                | "x-content-type-options"
+                | "strict-transport-security"
+                | "clear-site-data"
+                | "content-security-policy"
+                | "content-security-policy-report-only"
+                | "cross-origin-opener-policy"
+                | "cross-origin-embedder-policy"
+                | "cross-origin-resource-policy"
+        ) || lower.starts_with("x-accel-")
+            || lower.starts_with("x-litespeed-")
+            || lower.starts_with("access-control-")
+        {
             continue;
         }
         if let (Ok(name), Ok(val)) = (

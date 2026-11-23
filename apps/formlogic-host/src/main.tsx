@@ -130,6 +130,7 @@ const updates = createUpdater<ReturnType<typeof composeBundleSource>>({
  * pages, and showing that page. Set by `init`, read by the click listener below.
  */
 let pageLinks: { isPage(href: string): boolean; follow(href: string): boolean } | undefined;
+let navigatePlace: ((to: string) => void) | undefined;
 /**
  * What the browser would have done with a link the frame held (every one is, until its click is
  * over: links.ts): go to the place on the page it names, or save the file a `data:` or `blob:` link
@@ -234,6 +235,7 @@ window.addEventListener('message', async event => {
     // A newer version of the app, told apart by its type before anything is read as an answer:
     // its id is the parent's own, and may be a number one of the frame's calls has.
     if (event.data?.type === 'formlogic:update') { updates.receive(event.data); return; }
+    if (event.data?.type === 'formlogic:navigate' && typeof event.data.to === 'string') { navigatePlace?.(event.data.to); return; }
     if (!calls.settle(event.data?.id, event.data?.result)) storageCalls?.settle(event.data?.id, event.data?.result);
   };
   // A result the port could not deserialise names no id: nothing in flight
@@ -436,6 +438,23 @@ window.addEventListener('message', async event => {
     pageLinks = {
       isPage: href => linkedPage(updates.files(), mainPage(updates.files()), shown.file, href, bundlePageAt) !== null,
       follow: followLink,
+    };
+    navigatePlace = (to: string) => {
+      if (terminated) return;
+      const text = updates.files();
+      const main = mainPage(text);
+      const dest = startPlace(to, text, main, bundlePageAt);
+      const targetPath = dest.file ?? main;
+      if (!targetPath) return;
+      if (dest.file === shown.file && dest.section === section) return;
+      try {
+        const composed = composePage(text, targetPath);
+        shown = { file: dest.file, composed, live: createLiveApp(), imports: importsFrom(text), ...(dest.section ? { initialState: { currentPage: dest.section } } : {}) };
+        section = dest.section;
+        draw();
+      } catch (problem) {
+        console.warn(`[SoftN] ${targetPath} cannot be shown: ${reasonOf(problem)}`);
+      }
     };
     updates.open({
       files, media,

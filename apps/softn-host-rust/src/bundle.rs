@@ -164,7 +164,7 @@ pub fn requests_per_minute(manifest: &ServerManifest) -> Option<u32> {
         .and_then(|c| c.get("server"))
         .and_then(|s| s.get("requestsPerMinute"))
         .and_then(|v| v.as_u64());
-    let api_v1 = manifest.server.as_ref().is_some_and(|s| s.requires.is_some());
+    let api_v1 = manifest.server.as_ref().is_some_and(|s| s.requires.is_some()) || manifest.backend.is_some();
     match configured {
         Some(0) => None,
         Some(n) => Some(n.min(u64::from(u32::MAX)) as u32),

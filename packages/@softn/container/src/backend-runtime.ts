@@ -188,6 +188,19 @@ const JS_BACKEND_PRELUDE = `
         if (res && res.error) throw new Error(res.error);
         return res;
       },
+      all: function (sql, params) {
+        return this.query(sql, params).rows;
+      },
+      first: function (sql, params) {
+        var rows = this.query(sql, params).rows;
+        return rows.length > 0 ? rows[0] : null;
+      },
+      get: function (sql, params) {
+        return this.first(sql, params);
+      },
+      run: function (sql, params) {
+        return this.execute(sql, params);
+      },
       seedJson: function (seed) {
         var payload = typeof seed === "string" ? seed : JSON.stringify(seed);
         var res = sqlCall("seed_json", id, payload, "");
@@ -250,7 +263,81 @@ globalThis.__softnBackendDispatch = __softnBackendDispatch;
 const PYTHON_BACKEND_PRELUDE = `
 import json as _softn_json
 
-def __softn_backend_dispatch(req_json):
+class _SoftnSqlYield(BaseException):
+    def __init__(self, op, a, b, c):
+        self.op = op
+        self.a = a
+        self.b = b
+        self.c = c
+
+_softn_sql_cache = []
+_softn_sql_idx = 0
+
+def _softn_sql_call(op, a="", b="", c=""):
+    global _softn_sql_idx
+    idx = _softn_sql_idx
+    if idx < len(_softn_sql_cache):
+        _softn_sql_idx = idx + 1
+        res = _softn_sql_cache[idx]
+        if isinstance(res, dict) and "__sql_err" in res:
+            raise RuntimeError(str(res["__sql_err"]))
+        return res
+    raise _SoftnSqlYield(op, str(a), str(b), str(c))
+
+class _SoftnSqliteConn:
+    def __init__(self, db_id):
+        self.id = db_id
+    def query(self, sql, params=None):
+        p = _softn_json.dumps(params) if params is not None else ""
+        res = _softn_sql_call("query", self.id, sql, p)
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"]))
+        cols = res.get("columns") or []
+        raw_rows = res.get("rows") or []
+        rows = []
+        for arr in raw_rows:
+            row = {}
+            for i in range(len(cols)):
+                row[cols[i]] = arr[i] if i < len(arr) else None
+            rows.append(row)
+        return {"columns": cols, "rows": rows, "rawRows": raw_rows}
+    def all(self, sql, params=None):
+        return self.query(sql, params)["rows"]
+    def first(self, sql, params=None):
+        rows = self.query(sql, params)["rows"]
+        return rows[0] if len(rows) > 0 else None
+    def get(self, sql, params=None):
+        return self.first(sql, params)
+    def execute(self, sql, params=None):
+        p = _softn_json.dumps(params) if params is not None else ""
+        res = _softn_sql_call("execute", self.id, sql, p)
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"]))
+        return res
+    def run(self, sql, params=None):
+        return self.execute(sql, params)
+    def seed_json(self, seed):
+        payload = seed if isinstance(seed, str) else _softn_json.dumps(seed)
+        res = _softn_sql_call("seed_json", self.id, payload, "")
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"]))
+        return res
+    def close(self):
+        return _softn_sql_call("close", self.id, "", "")
+
+class _SoftnSqliteModule:
+    def open(self, url="app.db"):
+        r = _softn_sql_call("open", url or "app.db", "1", "")
+        if isinstance(r, dict) and r.get("error"):
+            raise RuntimeError(str(r["error"]))
+        return _SoftnSqliteConn(r["id"])
+
+sqlite = _SoftnSqliteModule()
+
+def __softn_backend_dispatch(req_json, sql_cache_json="[]"):
+    global _softn_sql_cache, _softn_sql_idx
+    _softn_sql_cache = _softn_json.loads(sql_cache_json) if sql_cache_json else []
+    _softn_sql_idx = 0
     req = _softn_json.loads(req_json)
     fn = globals().get("handle_request") or globals().get("handleRequest")
     if fn is None or not callable(fn):
@@ -259,7 +346,10 @@ def __softn_backend_dispatch(req_json):
             "headers": [["Content-Type", "text/plain; charset=utf-8"]],
             "body": "Python backend did not define handle_request(req)"
         })
-    res = fn(req)
+    try:
+        res = fn(req)
+    except _SoftnSqlYield as y:
+        return _softn_json.dumps({"__softn_sql_need": [y.op, y.a, y.b, y.c]})
     if isinstance(res, str):
         return _softn_json.dumps({"status": 200, "headers": [["Content-Type", "text/html; charset=utf-8"]], "body": res})
     if isinstance(res, dict):
@@ -318,6 +408,7 @@ export class BackendWorkerSession {
   private binaryFiles: Record<string, Uint8Array> = Object.create(null);
   private htaccessFiles = new Map<string, ParsedHtaccess>();
   private sqlManager: XdbSqlManager | null = null;
+  private sqlBridge: { call: (kind: string, args: string[]) => unknown } | null = null;
   private zippBindings: LoadedZippBindings | null = null;
   private rustEngine: ZippEngineInstance | null = null;
   private phpApp: ZippPhpAppInstance | null = null;
@@ -400,8 +491,8 @@ export class BackendWorkerSession {
   private async init(msg: Extract<HostToBackendMsg, { type: 'init' }>): Promise<void> {
     try {
       this.backend = msg.backend;
-      this.textFiles = msg.textFiles ?? Object.create(null);
-      this.binaryFiles = msg.binaryFiles ?? Object.create(null);
+      this.textFiles = Object.assign(Object.create(null) as Record<string, string>, msg.textFiles ?? {});
+      this.binaryFiles = Object.assign(Object.create(null) as Record<string, Uint8Array>, msg.binaryFiles ?? {});
       if (msg.instructionBudget && msg.instructionBudget > 0) {
         this.instructionBudget = msg.instructionBudget;
       }
@@ -445,6 +536,9 @@ export class BackendWorkerSession {
         textFiles: this.textFiles,
         binaryFiles: this.binaryFiles,
         initialPersistedDbs: msg.initialPersistedDbs,
+        // Cap per-connection SQL VM steps and page reads so recursive CTEs cannot hang the worker.
+        maxStepsPerConnection: 200_000_000n,
+        maxPageReads: 5_000_000n,
         onPersist: (dbKey, bytes) => {
           if (!this.disposed) {
             this.postToHost({ type: 'sqlite-persist', dbKey, bytes });
@@ -777,6 +871,9 @@ export class BackendWorkerSession {
     if (engine.addAppBridge) engine.addAppBridge('sql', sqlBridge);
     else engine.setAppBridge(sqlBridge);
     engine.initSource(`${PYTHON_BACKEND_PRELUDE}\n${source}`, 'python');
+    // Python replay executes SQL from the outer host loop (outside a WASM sync host-call frame),
+    // so use a bridge without hostChargeSteps (XDB's own BudgetMeter still bounds SQL steps).
+    this.sqlBridge = this.sqlManager?.createZippSqlBridge() ?? sqlBridge;
     this.pythonEngine = engine;
   }
 
@@ -896,25 +993,49 @@ export class BackendWorkerSession {
         headers = Array.isArray(parsed.headers) ? parsed.headers : [];
         bodyBytes = encodeUtf8(parsed.body ?? '');
       } else if (this.pythonEngine) {
-        this.pythonEngine.renewInstructionBudget();
         const pyDispatch = this.pythonEngine.pythonCall ?? this.pythonEngine.callFunction;
         if (!pyDispatch) {
           throw new Error('Loaded ZIPP Python engine does not expose pythonCall');
         }
-        const rawResp = pyDispatch.call(this.pythonEngine, '__softn_backend_dispatch', [
-          JSON.stringify({
-            method: msg.method,
-            path: msg.path,
-            query: msg.query,
-            headers: msg.headers,
-            body: decodeBodyText(msg.bodyBytes),
-          }),
-        ]);
-        const parsed = JSON.parse(String(rawResp)) as {
+        const reqPayload = JSON.stringify({
+          method: msg.method,
+          path: msg.path,
+          query: msg.query,
+          headers: msg.headers,
+          body: decodeBodyText(msg.bodyBytes),
+        });
+        const sqlCache: unknown[] = [];
+        let parsed: {
           status?: number;
           headers?: Array<[string, string]>;
           body?: string;
-        };
+          __softn_sql_need?: [string, string, string, string];
+        } = {};
+        const MAX_SQL_STEPS = 512;
+        // Renew budget ONCE per HTTP request (not inside the SQL replay loop, which would
+        // amplify the per-request budget by up to 512x).
+        this.pythonEngine.renewInstructionBudget();
+        for (let step = 0; step <= MAX_SQL_STEPS; step++) {
+          const rawResp = pyDispatch.call(this.pythonEngine, '__softn_backend_dispatch', [
+            reqPayload,
+            JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)),
+          ]);
+          parsed = JSON.parse(String(rawResp)) as typeof parsed;
+          if (Array.isArray(parsed.__softn_sql_need) && this.sqlBridge) {
+            if (step >= MAX_SQL_STEPS) {
+              throw new Error('Python backend exceeded maximum SQL operations per request');
+            }
+            const [op, a, b, c] = parsed.__softn_sql_need;
+            try {
+              const rawSql = this.sqlBridge.call(`sql.${op}`, [a ?? '', b ?? '', c ?? '']);
+              sqlCache.push(typeof rawSql === 'string' ? (rawSql ? JSON.parse(rawSql) : null) : (rawSql ?? null));
+            } catch (sqlErr) {
+              sqlCache.push({ __sql_err: sqlErr instanceof Error ? sqlErr.message : String(sqlErr) });
+            }
+            continue;
+          }
+          break;
+        }
         status = parsed.status ?? 200;
         headers = Array.isArray(parsed.headers) ? parsed.headers : [];
         bodyBytes = encodeUtf8(parsed.body ?? '');
@@ -936,6 +1057,14 @@ export class BackendWorkerSession {
         }
       }
 
+      // Flush mutating HTTP requests before returning so committed SQLite writes survive
+      // an immediate reload or preview dispose; coalesce any incidental GET writes.
+      if (msg.method !== 'GET' && msg.method !== 'HEAD') {
+        this.flushSqlNow();
+      } else {
+        this.scheduleSqlFlush();
+      }
+
       this.postToHost({
         type: 'response',
         reqId: msg.reqId,
@@ -944,14 +1073,6 @@ export class BackendWorkerSession {
         headers,
         bodyBytes,
       });
-
-      // Flush auth/session mutations immediately so refresh tokens survive an immediate F5;
-      // coalesce frequent simulation/CRUD writes off the HTTP response critical path.
-      if (msg.method !== 'GET' && msg.method !== 'HEAD' && /\/auth\//i.test(msg.path)) {
-        this.flushSqlNow();
-      } else {
-        this.scheduleSqlFlush();
-      }
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       this.postToHost({

@@ -394,15 +394,19 @@ export class XdbSqlManager {
 
   private findArchiveBytes(path: string): Uint8Array | null {
     const clean = path.replace(/\\/g, '/').replace(/^\/+/, '');
-    if (this.binaryFiles[clean]) return this.binaryFiles[clean];
-    if (this.textFiles[clean] !== undefined) return new TextEncoder().encode(this.textFiles[clean]);
+    if (Object.hasOwn(this.binaryFiles, clean) && this.binaryFiles[clean]) return this.binaryFiles[clean];
+    if (Object.hasOwn(this.textFiles, clean) && this.textFiles[clean] !== undefined) {
+      return new TextEncoder().encode(this.textFiles[clean]);
+    }
     return null;
   }
 
   private findArchiveText(path: string): string | null {
     const clean = path.replace(/\\/g, '/').replace(/^\/+/, '');
-    if (this.textFiles[clean] !== undefined) return this.textFiles[clean];
-    if (this.binaryFiles[clean]) return new TextDecoder().decode(this.binaryFiles[clean]);
+    if (Object.hasOwn(this.textFiles, clean) && this.textFiles[clean] !== undefined) return this.textFiles[clean];
+    if (Object.hasOwn(this.binaryFiles, clean) && this.binaryFiles[clean]) {
+      return new TextDecoder().decode(this.binaryFiles[clean]);
+    }
     return null;
   }
 
@@ -410,7 +414,8 @@ export class XdbSqlManager {
     const cfg = ephemeral ? undefined : this.findConfigForKey(dbKey);
     const persisted = ephemeral
       ? undefined
-      : this.initialPersistedDbs[dbKey] ?? (cfg ? this.initialPersistedDbs[cfg.name] : undefined);
+      : (Object.hasOwn(this.initialPersistedDbs, dbKey) ? this.initialPersistedDbs[dbKey] : undefined) ??
+        (cfg && Object.hasOwn(this.initialPersistedDbs, cfg.name) ? this.initialPersistedDbs[cfg.name] : undefined);
 
     let initialBytes: Uint8Array | null = null;
     let walBytes: Uint8Array | null = null;

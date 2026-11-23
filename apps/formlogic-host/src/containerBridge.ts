@@ -41,8 +41,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function isContainerBundle(manifest: unknown, files: ReadonlyMap<string, string>): boolean {
   if (isRecord(manifest)) {
-    if (manifest.engine === 2 || manifest.container === true) return true;
-    if (isRecord(manifest.backend)) return true;
+    const main = typeof manifest.main === 'string' ? manifest.main : '';
+    const isUiMain = /\.ui$/i.test(main);
+    if ((manifest.engine === 2 || manifest.container === true) && !isUiMain) return true;
+    if (isRecord(manifest.backend) && !isUiMain) return true;
   }
   if (!files.has('manifest.json')) {
     if (files.has('index.html') || files.has('app.html')) return true;
@@ -70,30 +72,61 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** Whether a path is safe to mount into the guest VFS (never traversal, never server/private files). */
-export function isSafeClientPath(name: string): boolean {
+function isSafeNormalizedPath(name: string): boolean {
   if (!name || name.includes('\0') || name.includes('\\') || /^[A-Za-z]:/.test(name)) return false;
   if (!name.split('/').every((part) => part !== '' && part !== '.' && part !== '..')) return false;
-  if (/^(?:__softn_generated__\/)?(?:server|backend|private)\/|\.sql$/i.test(name)) return false;
+  return true;
+}
+
+/** Whether a path is safe to mount into the guest VFS (never traversal, never server/private/secret files). */
+export function isSafeClientPath(name: string): boolean {
+  if (!isSafeNormalizedPath(name)) return false;
+  const lower = name.toLowerCase();
+  const base = lower.slice(lower.lastIndexOf('/') + 1);
+  if (
+    /^(?:__softn_generated__\/)?(?:server|backend|private)\//.test(lower) ||
+    /(?:^|\/)\.git(?:\/|$)/.test(lower) ||
+    /\.(?:sql|php|phtml|db|sqlite|sqlite3|db-wal|db-shm|db-journal|htpasswd|htaccess)$/i.test(lower) ||
+    base === '.env' ||
+    base.startsWith('.env.')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Whether a path is safe to pass to `@softn/container` when running an embedded backend
+ * locally inside the browser sandbox (not `containerBackend === 'host'`).
+ *
+ * `private/` is still always rejected; `@softn/container`'s `ContainerArchive` separates
+ * backend/SQL files into `exportBackendVfs()` so the untrusted frontend Worker never sees them.
+ */
+export function isSafeLocalContainerPath(name: string): boolean {
+  if (!isSafeNormalizedPath(name)) return false;
+  if (/^(?:__softn_generated__\/)?private\//i.test(name)) return false;
   return true;
 }
 
 /**
  * Combine `init.client` text files and `init.assets` (bytes or base64 strings) into the
- * VFS map `@softn/container` mounts from. Unsafe and server-only paths are dropped.
+ * VFS map `@softn/container` mounts from. Unsafe and server-only paths are dropped unless
+ * `options.allowLocalBackend` is enabled for a local-sandbox container.
  */
 export function buildContainerSource(
   files: ReadonlyMap<string, string>,
-  assets: Record<string, unknown> | undefined
+  assets: Record<string, unknown> | undefined,
+  options?: { allowLocalBackend?: boolean }
 ): Record<string, string | Uint8Array> {
   const out: Record<string, string | Uint8Array> = Object.create(null);
+  const allow = options?.allowLocalBackend ? isSafeLocalContainerPath : isSafeClientPath;
 
   for (const [path, text] of files.entries()) {
-    if (isSafeClientPath(path) && typeof text === 'string') out[path] = text;
+    if (allow(path) && typeof text === 'string') out[path] = text;
   }
   if (isRecord(assets)) {
     for (const [path, value] of Object.entries(assets)) {
-      if (!isSafeClientPath(path)) continue;
+      if (!allow(path)) continue;
       if (value instanceof Uint8Array) {
         out[path] = value;
       } else if (value instanceof ArrayBuffer) {
@@ -124,6 +157,100 @@ export function grantedContainerCapabilities(permissions: { permissions?: Record
   return granted.sort();
 }
 
+const MAX_PORT_HTTP_BODY_BYTES = 16 * 1024 * 1024;
+const FORBIDDEN_PORT_HEADERS = new Set([
+  'host', 'origin', 'referer', 'content-length', 'connection', 'keep-alive',
+  'upgrade', 'te', 'trailer', 'transfer-encoding', 'accept-encoding',
+]);
+
+function isSafePortHttpPath(rawPath: string): boolean {
+  if (!rawPath || typeof rawPath !== 'string') return false;
+  const clean = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+  if (
+    clean.startsWith('//') ||
+    clean.includes('\\') ||
+    clean.includes('\0') ||
+    /(?:^|\/)\.\.(?:\/|$)/.test(clean) ||
+    /%(?:2e|2f|5c|00)/i.test(clean)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+class PortCookieJar {
+  private readonly cookies = new Map<string, { value: string; path: string; expiresAt: number | null }>();
+
+  ingest(headers: ReadonlyArray<[string, string]>): void {
+    const now = Date.now();
+    for (const [k, raw] of headers) {
+      if (k.toLowerCase() !== 'set-cookie') continue;
+      const parts = raw.split(';');
+      const eq = parts[0].indexOf('=');
+      if (eq <= 0) continue;
+      const name = parts[0].slice(0, eq).trim();
+      const value = parts[0].slice(eq + 1).trim();
+      if (!name) continue;
+      let path = '/';
+      let expiresAt: number | null = null;
+      let expired = false;
+      for (let i = 1; i < parts.length; i++) {
+        const attr = parts[i].trim();
+        const aEq = attr.indexOf('=');
+        const aKey = (aEq >= 0 ? attr.slice(0, aEq) : attr).trim().toLowerCase();
+        const aVal = aEq >= 0 ? attr.slice(aEq + 1).trim() : '';
+        if (aKey === 'path' && aVal.startsWith('/')) {
+          path = aVal;
+        } else if (aKey === 'max-age') {
+          const secs = Number(aVal);
+          if (Number.isFinite(secs)) {
+            if (secs <= 0) expired = true;
+            else expiresAt = now + secs * 1000;
+          }
+        } else if (aKey === 'expires' && expiresAt === null) {
+          const ts = Date.parse(aVal);
+          if (Number.isFinite(ts)) {
+            if (ts <= now) expired = true;
+            else expiresAt = ts;
+          }
+        }
+      }
+      const key = `${name}\0${path}`;
+      if (expired) {
+        this.cookies.delete(key);
+      } else {
+        this.cookies.set(key, { value, path, expiresAt });
+      }
+    }
+  }
+
+  headerFor(reqPath: string): string {
+    const now = Date.now();
+    const normPath = reqPath.startsWith('/') ? reqPath : `/${reqPath}`;
+    const matched: Array<[string, string]> = [];
+    for (const [key, entry] of this.cookies) {
+      if (entry.expiresAt !== null && entry.expiresAt <= now) {
+        this.cookies.delete(key);
+        continue;
+      }
+      const cookiePath = entry.path;
+      const matchesPath =
+        cookiePath === '/' ||
+        normPath === cookiePath ||
+        normPath.startsWith(cookiePath.endsWith('/') ? cookiePath : `${cookiePath}/`);
+      if (matchesPath) {
+        const name = key.slice(0, key.indexOf('\0'));
+        matched.push([name, entry.value]);
+      }
+    }
+    return matched.map(([n, v]) => `${n}=${v}`).join('; ');
+  }
+
+  clear(): void {
+    this.cookies.clear();
+  }
+}
+
 /**
  * Bridge a v2 container's `/api/*` backend traffic across FormLogic's MessagePort
  * (`containerHttp` action) so authenticated multi-user backends run on the server
@@ -131,6 +258,7 @@ export function grantedContainerCapabilities(permissions: { permissions?: Record
  */
 export function createPortBackendTransport(call: FrameBackendCall): ContainerBackendTransport {
   let disposed = false;
+  const cookieJar = new PortCookieJar();
   return {
     kind: 'remote',
     ready: Promise.resolve(),
@@ -143,17 +271,52 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           body: new TextEncoder().encode(JSON.stringify({ error: 'Container backend disposed' })),
         };
       }
+      const reqPath = req.path.startsWith('/') ? req.path : `/${req.path}`;
+      if (!isSafePortHttpPath(reqPath)) {
+        return {
+          status: 400,
+          statusText: 'Bad Request',
+          headers: [['content-type', 'application/json']],
+          body: new TextEncoder().encode(JSON.stringify({ error: 'Invalid backend request path' })),
+        };
+      }
       const bodyBytes =
         typeof req.body === 'string'
           ? new TextEncoder().encode(req.body)
           : req.body instanceof Uint8Array
             ? req.body
             : null;
+      if (bodyBytes && bodyBytes.byteLength > MAX_PORT_HTTP_BODY_BYTES) {
+        return {
+          status: 413,
+          statusText: 'Payload Too Large',
+          headers: [['content-type', 'application/json']],
+          body: new TextEncoder().encode(JSON.stringify({ error: 'Request body too large' })),
+        };
+      }
+      const safeHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers ?? {})) {
+        const lower = k.toLowerCase();
+        if (
+          !/^[a-z0-9-]+$/.test(lower) ||
+          FORBIDDEN_PORT_HEADERS.has(lower) ||
+          lower.startsWith('sec-') ||
+          lower.startsWith('proxy-') ||
+          lower.startsWith('x-formlogic')
+        ) {
+          continue;
+        }
+        safeHeaders[lower] = v;
+      }
+      const jarCookies = cookieJar.headerFor(reqPath);
+      if (jarCookies) {
+        safeHeaders.cookie = safeHeaders.cookie ? `${safeHeaders.cookie}; ${jarCookies}` : jarCookies;
+      }
       const envelope = await call('containerHttp', {
         method: req.method,
-        path: req.path,
+        path: reqPath,
         query: req.query ?? '',
-        headers: req.headers ?? {},
+        headers: safeHeaders,
         bodyBase64: bodyBytes && bodyBytes.byteLength > 0 ? encodeBase64(bodyBytes) : '',
       });
       if (!isRecord(envelope)) {
@@ -199,11 +362,21 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           }
         }
       }
+      cookieJar.ingest(headers);
       let body: Uint8Array;
       if (raw.body instanceof Uint8Array) {
         body = raw.body;
       } else if (typeof raw.bodyBase64 === 'string') {
-        body = decodeBase64(raw.bodyBase64);
+        try {
+          body = decodeBase64(raw.bodyBase64);
+        } catch {
+          return {
+            status: 502,
+            statusText: 'Bad Gateway',
+            headers: [['content-type', 'application/json']],
+            body: new TextEncoder().encode(JSON.stringify({ error: 'Malformed base64 response body' })),
+          };
+        }
       } else if (typeof raw.body === 'string') {
         body = new TextEncoder().encode(raw.body);
       } else {
@@ -213,6 +386,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
     },
     dispose(): void {
       disposed = true;
+      cookieJar.clear();
     },
   };
 }

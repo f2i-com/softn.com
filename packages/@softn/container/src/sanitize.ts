@@ -15,6 +15,7 @@
 import { ContainerArchive, readRunnableModule, resolveVfsPath, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
 import { extractFontFaces, rewriteCss, transformContainerCss } from './css-policy';
 import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement } from './host-policy';
+import { findInlineScriptStartLines } from './source-map';
 import { SOFTN_UI_CSS } from './ui-css';
 import type {
   ContainerPermissions,
@@ -170,6 +171,15 @@ export function sanitizeHostAssetUrl(
     // address: one made by this page is this page's origin, and a link the person opens in
     // a new tab would show the app's file there as a document of the embedding site.
     if (isLink) {
+      try {
+        const baseUrl = `${VIRTUAL_ORIGIN}/${basePath.replace(/^\/+/, '')}`;
+        const parsed = new URL(originalTrimmed, baseUrl);
+        if (parsed.search || parsed.hash) {
+          return `${vfsPath}${parsed.search}${parsed.hash}`;
+        }
+      } catch {
+        // Fallback to plain resolved path
+      }
       return vfsPath;
     }
     return archive.getBlobUrl(vfsPath) ?? '';
@@ -345,6 +355,9 @@ export function prepareHtmlDocument(
 
   const styles: string[] = [];
   const scripts: ExtractedScript[] = [];
+  const scriptStartLines = findInlineScriptStartLines(htmlSource);
+  let scriptTagIndex = 0;
+  const pageDisplayFile = archive.toFrontendVfsPath(entryPath);
   let usesSoftnUiCss = false;
   let scriptSeq = 1;
   /** Every `<script>` of the page, with where it was: placed in the app's document by its id (PlacedScript). */
@@ -388,6 +401,7 @@ export function prepareHtmlDocument(
     }
 
     if (tag === 'script') {
+      const htmlLine = scriptStartLines[scriptTagIndex++] ?? 1;
       const srcAttr = el.getAttribute('src')?.trim();
       const classified = classifyScriptLanguage(el.getAttribute('type'), srcAttr, el.getAttribute('language'));
       // A browser that runs modules runs no nomodule script (a build's copy for old browsers).
@@ -402,6 +416,7 @@ export function prepareHtmlDocument(
           const resolvedSrc = archive.resolveExistingPath(srcAttr, entryPath);
           const code = resolvedSrc ? readRunnableModule(resolvedSrc, (path) => archive.readText(path)) : null;
           if (code !== null && resolvedSrc) {
+            const vfsFile = archive.toFrontendVfsPath(resolvedSrc);
             ran = scriptSeq;
             scripts.push({
               id: scriptSeq++,
@@ -409,7 +424,9 @@ export function prepareHtmlDocument(
               language: classified.language,
               src: srcAttr,
               code,
-              originPath: archive.toFrontendVfsPath(resolvedSrc),
+              originPath: vfsFile,
+              displayFile: vfsFile,
+              startLine: 1,
               ...(deferred ? { defer: true } : {}),
             });
           }
@@ -431,7 +448,9 @@ export function prepareHtmlDocument(
               kind: classified.kind,
               language: classified.language,
               code: inlineCode,
-              originPath: `${archive.toFrontendVfsPath(entryPath)}.inline-${scriptSeq}.${ext}`,
+              originPath: `${pageDisplayFile}.inline-${scriptSeq}.${ext}`,
+              displayFile: pageDisplayFile,
+              startLine: htmlLine,
               ...(deferred ? { defer: true } : {}),
             });
             scriptSeq++;
@@ -709,7 +728,11 @@ export function prepareHtmlDocument(
       if (bp.hostAttrs) {
         for (const [k, v] of Object.entries(bp.hostAttrs)) {
           try {
-            el.setAttribute(k, v);
+            if (bp.ns === 'svg' && k.toLowerCase() === 'xlink:href') {
+              el.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', v);
+            } else {
+              el.setAttribute(k, v);
+            }
           } catch {
             // Ignore invalid attribute names
           }

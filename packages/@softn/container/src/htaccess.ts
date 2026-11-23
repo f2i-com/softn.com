@@ -21,6 +21,7 @@
 export interface HtaccessRewriteCond {
   testString: string;
   pattern: string;
+  regex?: RegExp | null;
   negated: boolean;
   nocase: boolean;
   orNext: boolean;
@@ -119,11 +120,29 @@ function tokenizeDirective(line: string): string[] {
 }
 
 function safeCompileRegex(pattern: string, flags = ''): RegExp | null {
+  // Reject overly long patterns and obvious catastrophic nested-quantifier ReDoS patterns.
+  if (pattern.length > 512) return null;
+  if (/\([^()]*[+*][^()]*\)[+*{]/.test(pattern)) return null;
   try {
     return new RegExp(pattern, flags);
   } catch {
     return null;
   }
+}
+
+function normalizeHtaccessPathname(raw: string): string {
+  const withSlash = raw.startsWith('/') ? raw : `/${raw}`;
+  const trailing = withSlash.length > 1 && withSlash.endsWith('/');
+  const resolved: string[] = [];
+  for (const seg of withSlash.replace(/\\/g, '/').split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') {
+      if (resolved.length > 0) resolved.pop();
+      continue;
+    }
+    resolved.push(seg);
+  }
+  return '/' + resolved.join('/') + (trailing && resolved.length > 0 ? '/' : '');
 }
 
 function parseFlags(raw: string | undefined): Set<string> {
@@ -283,7 +302,16 @@ export function parseHtaccess(source: string, dirPrefix = ''): ParsedHtaccess {
         if (up === 'NC' || up === 'NOCASE') nocase = true;
         if (up === 'OR' || up === 'ORNEXT') orNext = true;
       }
-      pendingConds.push({ testString, pattern: rawPat, negated, nocase, orNext });
+      const isSpecialCond =
+        rawPat === '-f' ||
+        rawPat === '-F' ||
+        rawPat === '-d' ||
+        rawPat === '-s' ||
+        rawPat === '-l' ||
+        rawPat === '-L' ||
+        rawPat.startsWith('=');
+      const regex = isSpecialCond ? null : safeCompileRegex(rawPat, nocase ? 'i' : '');
+      pendingConds.push({ testString, pattern: rawPat, regex, negated, nocase, orNext });
       continue;
     }
 
@@ -407,7 +435,7 @@ function evaluateCond(
     const rhs = cond.pattern.slice(1);
     rawMatched = cond.nocase ? testVal.toLowerCase() === rhs.toLowerCase() : testVal === rhs;
   } else {
-    const rx = safeCompileRegex(cond.pattern, cond.nocase ? 'i' : '');
+    const rx = cond.regex !== undefined ? cond.regex : safeCompileRegex(cond.pattern, cond.nocase ? 'i' : '');
     if (rx) {
       const m = rx.exec(testVal);
       if (m) {
@@ -448,20 +476,29 @@ export function evaluateHtaccess(
   input: HtaccessEvalInput,
   vfs: HtaccessVfsProbe
 ): HtaccessEvalResult {
-  const cleanPathname = input.pathname.startsWith('/') ? input.pathname : `/${input.pathname}`;
-  const lowerHeaders: Record<string, string> = {};
+  const cleanPathname = normalizeHtaccessPathname(input.pathname);
+  const lowerHeaders: Record<string, string> = Object.create(null);
   if (input.headers) {
     for (const [k, v] of Object.entries(input.headers)) {
       lowerHeaders[k.toLowerCase()] = v;
     }
   }
 
-  // 1. <FilesMatch> security blocks (applied against the filename segment)
-  const basename = cleanPathname.slice(cleanPathname.lastIndexOf('/') + 1);
-  if (basename) {
-    for (const rx of htaccess.denyFilesPatterns) {
-      if (rx.test(basename)) {
-        return { action: 'deny', status: 403 };
+  // 1. <FilesMatch> security blocks (strip trailing slashes AND check PATH_INFO file segments)
+  if (htaccess.denyFilesPatterns.length > 0) {
+    const segs = cleanPathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+    const basenamesToCheck = new Set<string>();
+    if (segs.length > 0) basenamesToCheck.add(segs[segs.length - 1]);
+    let prefix = '';
+    for (let i = 0; i < segs.length - 1; i++) {
+      prefix = prefix ? `${prefix}/${segs[i]}` : segs[i];
+      if (vfs.isFile(prefix)) basenamesToCheck.add(segs[i]);
+    }
+    for (const candidate of basenamesToCheck) {
+      for (const rx of htaccess.denyFilesPatterns) {
+        if (rx.test(candidate)) {
+          return { action: 'deny', status: 403 };
+        }
       }
     }
   }
@@ -644,7 +681,7 @@ export function evaluateHtaccessChain(
   input: HtaccessEvalInput,
   vfs: HtaccessVfsProbe
 ): HtaccessEvalResult {
-  const cleanPath = input.pathname.startsWith('/') ? input.pathname : `/${input.pathname}`;
+  const cleanPath = normalizeHtaccessPathname(input.pathname);
   const segments = cleanPath.replace(/^\/+/, '').split('/').filter(Boolean);
 
   // Build list of applicable directory prefixes from root down to the request's folder

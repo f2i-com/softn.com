@@ -146,7 +146,81 @@ globalThis.__softnBackendDispatch = __softnBackendDispatch;
 const PYTHON_BACKEND_PRELUDE = `
 import json as _softn_json
 
-def __softn_backend_dispatch(req_json):
+class _SoftnSqlYield(BaseException):
+    def __init__(self, op, a, b, c):
+        self.op = op
+        self.a = a
+        self.b = b
+        self.c = c
+
+_softn_sql_cache = []
+_softn_sql_idx = 0
+
+def _softn_sql_call(op, a="", b="", c=""):
+    global _softn_sql_idx
+    idx = _softn_sql_idx
+    if idx < len(_softn_sql_cache):
+        _softn_sql_idx = idx + 1
+        res = _softn_sql_cache[idx]
+        if isinstance(res, dict) and "__sql_err" in res:
+            raise RuntimeError(str(res["__sql_err"]))
+        return res
+    raise _SoftnSqlYield(op, str(a), str(b), str(c))
+
+class _SoftnSqliteConn:
+    def __init__(self, db_id):
+        self.id = db_id
+    def query(self, sql, params=None):
+        p = _softn_json.dumps(params) if params is not None else ""
+        res = _softn_sql_call("query", self.id, sql, p)
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"]))
+        cols = res.get("columns") or []
+        raw_rows = res.get("rows") or []
+        rows = []
+        for arr in raw_rows:
+            row = {}
+            for i in range(len(cols)):
+                row[cols[i]] = arr[i] if i < len(arr) else None
+            rows.append(row)
+        return {"columns": cols, "rows": rows, "rawRows": raw_rows}
+    def all(self, sql, params=None):
+        return self.query(sql, params)["rows"]
+    def first(self, sql, params=None):
+        rows = self.query(sql, params)["rows"]
+        return rows[0] if len(rows) > 0 else None
+    def get(self, sql, params=None):
+        return self.first(sql, params)
+    def execute(self, sql, params=None):
+        p = _softn_json.dumps(params) if params is not None else ""
+        res = _softn_sql_call("execute", self.id, sql, p)
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"]))
+        return res
+    def run(self, sql, params=None):
+        return self.execute(sql, params)
+    def seed_json(self, seed):
+        payload = seed if isinstance(seed, str) else _softn_json.dumps(seed)
+        res = _softn_sql_call("seed_json", self.id, payload, "")
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"]))
+        return res
+    def close(self):
+        return _softn_sql_call("close", self.id, "", "")
+
+class _SoftnSqliteModule:
+    def open(self, url="app.db"):
+        r = _softn_sql_call("open", url or "app.db", "1", "")
+        if isinstance(r, dict) and r.get("error"):
+            raise RuntimeError(str(r["error"]))
+        return _SoftnSqliteConn(r["id"])
+
+sqlite = _SoftnSqliteModule()
+
+def __softn_backend_dispatch(req_json, sql_cache_json="[]"):
+    global _softn_sql_cache, _softn_sql_idx
+    _softn_sql_cache = _softn_json.loads(sql_cache_json) if sql_cache_json else []
+    _softn_sql_idx = 0
     req = _softn_json.loads(req_json)
     fn = globals().get("handle_request") or globals().get("handleRequest")
     if fn is None or not callable(fn):
@@ -155,7 +229,10 @@ def __softn_backend_dispatch(req_json):
             "headers": [["Content-Type", "text/plain; charset=utf-8"]],
             "body": "Python backend did not define handle_request(req)"
         })
-    res = fn(req)
+    try:
+        res = fn(req)
+    except _SoftnSqlYield as y:
+        return _softn_json.dumps({"__softn_sql_need": [y.op, y.a, y.b, y.c]})
     if isinstance(res, str):
         return _softn_json.dumps({"status": 200, "headers": [["Content-Type", "text/html; charset=utf-8"]], "body": res})
     if isinstance(res, dict):
@@ -342,6 +419,36 @@ function isMultiStatementOrControl(sql) {
   return false;
 }
 
+const MAX_SQL_RESULT_ROWS = 10_000;
+const MAX_SQL_RESULT_BYTES = 8 * 1024 * 1024;
+const MAX_OVERLAY_BYTES = 16 * 1024 * 1024;
+const SAFE_PRAGMA_NAMES = new Set([
+  'table_info', 'table_xinfo', 'index_list', 'index_info', 'foreign_key_list',
+  'foreign_keys', 'database_list', 'user_version', 'application_id', 'schema_version',
+  'busy_timeout', 'synchronous', 'journal_mode', 'cache_size', 'encoding',
+  'integrity_check', 'quick_check', 'compile_options', 'page_count', 'page_size',
+  'freelist_count', 'wal_checkpoint',
+]);
+
+function assertSafeSqlStatement(sql) {
+  const stripped = String(sql ?? '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--[^\r\n]*/g, ' ');
+  if (/\b(?:ATTACH|DETACH)\b/i.test(stripped)) {
+    throw new Error('SQLite ATTACH/DETACH is not permitted in sandboxed container');
+  }
+  if (/\bload_extension\s*\(/i.test(stripped) || /\bfts3_tokenizer\s*\(/i.test(stripped)) {
+    throw new Error('SQLite extension loading is not permitted in sandboxed container');
+  }
+  const pragmaRe = /\bPRAGMA\s+(?:[A-Za-z0-9_]+\s*\.\s*)?([A-Za-z0-9_]+)/gi;
+  let m;
+  while ((m = pragmaRe.exec(stripped)) !== null) {
+    if (!SAFE_PRAGMA_NAMES.has(m[1].toLowerCase())) {
+      throw new Error(`SQLite PRAGMA ${m[1]} is not permitted in sandboxed container`);
+    }
+  }
+}
+
 class NodeSqlManager {
   constructor({dbDir, databases, vfs, primaryDbFile = null}) {
     this.dbDir = dbDir;
@@ -492,6 +599,7 @@ class NodeSqlManager {
     const managed = this.handles.get(handleId);
     if (!managed) return {error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false};
     try {
+      assertSafeSqlStatement(sql);
       const params = parseSqlParams(paramsJson);
       if (params.kind === 'none' && isMultiStatementOrControl(sql)) {
         managed.db.exec(sql);
@@ -518,6 +626,7 @@ class NodeSqlManager {
     const managed = this.handles.get(handleId);
     if (!managed) return {error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false};
     try {
+      assertSafeSqlStatement(sql);
       const params = parseSqlParams(paramsJson);
       const stmt = managed.db.prepare(sql);
       if (typeof stmt.setAllowBareNamedParameters === 'function') stmt.setAllowBareNamedParameters(true);
@@ -530,9 +639,23 @@ class NodeSqlManager {
           : params.kind === 'object'
             ? stmt.all(params.values)
             : stmt.all();
-      const rows = rawRows.map(row =>
-        Array.isArray(row) ? row.map(fromSqlValue) : columns.map(col => fromSqlValue(row[col]))
-      );
+      if (rawRows.length > MAX_SQL_RESULT_ROWS) {
+        return {error: `SQL query exceeded row limit (${MAX_SQL_RESULT_ROWS})`, code: 18, unique: false};
+      }
+      const rows = [];
+      let approxBytes = 0;
+      for (const row of rawRows) {
+        const mapped = Array.isArray(row) ? row.map(fromSqlValue) : columns.map(col => fromSqlValue(row[col]));
+        for (const v of mapped) {
+          if (typeof v === 'string') approxBytes += v.length * 2;
+          else if (v && typeof v === 'object') approxBytes += 64;
+          else approxBytes += 8;
+        }
+        if (approxBytes > MAX_SQL_RESULT_BYTES) {
+          return {error: `SQL query exceeded result byte limit (${MAX_SQL_RESULT_BYTES})`, code: 18, unique: false};
+        }
+        rows.push(mapped);
+      }
       return {columns, rows};
     } catch (err) {
       return classifySqlError(err);
@@ -573,7 +696,11 @@ class NodeSqlManager {
   remove(rawUrl) {
     const {key, inMemory} = normalizeDbKey(rawUrl);
     if (inMemory) return {ok: true, removed: false};
-    if (/(?:-wal|-shm|-journal)$/i.test(key)) return {ok: true, removed: true};
+    if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(key)) return {ok: true, removed: true};
+    // Never delete the container's configured primary or declared database files.
+    if (this.primaryKey && key.toLowerCase() === this.primaryKey.toLowerCase()) {
+      return {error: 'cannot remove primary database', code: 1, unique: false};
+    }
     const existing = this.byKey.get(key);
     if (existing) {
       try { existing.db.close(); } catch {}
@@ -581,6 +708,9 @@ class NodeSqlManager {
     }
     try {
       const file = this.dbPathFor(key);
+      if (this.primaryDbFile && resolve(file) === resolve(this.primaryDbFile)) {
+        return {error: 'cannot remove primary database', code: 1, unique: false};
+      }
       if (existsSync(file)) {
         rmSync(file, {force: true});
         return {ok: true, removed: true};
@@ -770,23 +900,23 @@ async function loadZippSandboxEngine(runtime, root) {
 }
 
 function parseCookieHeader(cookieStr) {
-  const out = {};
+  const out = Object.create(null);
   if (!cookieStr) return out;
   for (const part of String(cookieStr).split(';')) {
     const eq = part.indexOf('=');
     if (eq <= 0) continue;
     const k = part.slice(0, eq).trim();
     const v = part.slice(eq + 1).trim();
-    if (k) out[k] = v;
+    if (k && k !== '__proto__' && k !== 'constructor' && k !== 'prototype') out[k] = v;
   }
   return out;
 }
 
 function parseUrlEncoded(bodyText) {
-  const out = {};
+  const out = Object.create(null);
   if (!bodyText) return out;
   for (const [k, v] of new URLSearchParams(bodyText).entries()) {
-    out[k] = v;
+    if (k && k !== '__proto__' && k !== 'constructor' && k !== 'prototype') out[k] = v;
   }
   return out;
 }
@@ -852,6 +982,14 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
       ? join(data, 'application.sqlite')
       : null;
 
+  if (checkContainerRateLimit({data, manifest, request, markLimited})) {
+    return {
+      status: 429,
+      headers: [['Content-Type', 'application/json; charset=utf-8']],
+      bodyBase64: Buffer.from(JSON.stringify({error: 'Too many requests.', code: 'rate_limited'})).toString('base64'),
+    };
+  }
+
   // /api/meta answers host diagnostics directly for setup.php and health checks,
   // validating the container backend entry and seeding declared SQLite databases.
   if (request.path === '/api/meta' && request.method === 'GET') {
@@ -884,14 +1022,6 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     };
   }
 
-  if (checkContainerRateLimit({data, manifest, request, markLimited})) {
-    return {
-      status: 429,
-      headers: [['Content-Type', 'application/json; charset=utf-8']],
-      bodyBase64: Buffer.from(JSON.stringify({error: 'Too many requests.', code: 'rate_limited'})).toString('base64'),
-    };
-  }
-
   const vfs = loadBundleVfs(bundle);
   const entryKey = normalizeVfsKey(backend.entry);
   if (!vfs.has(entryKey)) {
@@ -921,7 +1051,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
             ? new URLSearchParams(Object.entries(request.query).map(([k, v]) => [k, String(v ?? '')])).toString()
             : '';
     const rawHeaders = request.headers;
-    const headers = {};
+    const headers = Object.create(null);
     const headerEntries = Array.isArray(rawHeaders)
       ? rawHeaders.filter(pair => Array.isArray(pair) && pair.length >= 2)
       : rawHeaders && typeof rawHeaders === 'object'
@@ -929,8 +1059,10 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         : [];
     for (const [k, v] of headerEntries) {
       const lower = String(k).toLowerCase();
-      // Never allow untrusted client headers to spoof host identity headers.
-      if (lower.startsWith('x-formlogic-')) continue;
+      // Reject non-token header names (including underscores, which CGI/PHP collapse to `_`
+      // just like hyphens, allowing `x_formlogic_user_id` to spoof `HTTP_X_FORMLOGIC_USER_ID`).
+      if (!/^[a-z0-9-]+$/.test(lower)) continue;
+      if (lower.startsWith('x-formlogic-') || lower === 'x-formlogic') continue;
       if (typeof v === 'string') headers[lower] = v;
     }
     const verifiedContext = hostContext && typeof hostContext === 'object' && !Array.isArray(hostContext) ? hostContext : null;
@@ -1038,7 +1170,12 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         const bodyBase64 = raw.bodyBase64 || Buffer.from(String(meta.body ?? ''), 'utf8').toString('base64');
         try {
           const snap = app.exportOverlayJson();
-          if (snap && snap !== initialOverlay && snap !== '{"writes":{},"deleted":[],"dirs":[]}') {
+          if (
+            snap &&
+            snap !== initialOverlay &&
+            snap !== '{"writes":{},"deleted":[],"dirs":[]}' &&
+            Buffer.byteLength(snap, 'utf8') <= MAX_OVERLAY_BYTES
+          ) {
             atomicWriteJson(overlayPath, snap);
           }
         } catch {}
@@ -1086,10 +1223,28 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         else engine.setAppBridge(sqlBridge);
         engine.initSource(`${PYTHON_BACKEND_PRELUDE}\n${source}`, 'python');
         const dispatch = engine.pythonCall || engine.callFunction;
-        const rawResp = dispatch.call(engine, '__softn_backend_dispatch', [
-          JSON.stringify({method, path, query: queryString, headers, body: bodyText, ...(verifiedContext ? {context: verifiedContext} : {})}),
-        ]);
-        const parsed = JSON.parse(String(rawResp || '{}'));
+        const reqPayload = JSON.stringify({method, path, query: queryString, headers, body: bodyText, ...(verifiedContext ? {context: verifiedContext} : {})});
+        const sqlCache = [];
+        let parsed = {};
+        for (let step = 0; step <= 512; step++) {
+          const rawResp = dispatch.call(engine, '__softn_backend_dispatch', [
+            reqPayload,
+            JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)),
+          ]);
+          parsed = JSON.parse(String(rawResp || '{}'));
+          if (Array.isArray(parsed.__softn_sql_need)) {
+            if (step >= 512) throw new Error('Python backend exceeded maximum SQL operations per request');
+            const [op, a, b, c] = parsed.__softn_sql_need;
+            try {
+              const rawSql = sqlBridge.call(`sql.${op}`, [a ?? '', b ?? '', c ?? '']);
+              sqlCache.push(typeof rawSql === 'string' ? (rawSql ? JSON.parse(rawSql) : null) : (rawSql ?? null));
+            } catch (sqlErr) {
+              sqlCache.push({__sql_err: sqlErr instanceof Error ? sqlErr.message : String(sqlErr)});
+            }
+            continue;
+          }
+          break;
+        }
         return {
           status: Number.isInteger(parsed.status) ? parsed.status : 200,
           headers: Array.isArray(parsed.headers) ? parsed.headers : [['Content-Type', 'application/json; charset=utf-8']],
@@ -1133,7 +1288,12 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         try {
           if (typeof engine.exportRustOverlayJson === 'function') {
             const snap = engine.exportRustOverlayJson();
-            if (snap && snap !== initialOverlay && snap !== '{"writes":{},"deleted":[],"dirs":[]}') {
+            if (
+              snap &&
+              snap !== initialOverlay &&
+              snap !== '{"writes":{},"deleted":[],"dirs":[]}' &&
+              Buffer.byteLength(snap, 'utf8') <= MAX_OVERLAY_BYTES
+            ) {
               atomicWriteJson(overlayPath, snap);
             }
           }

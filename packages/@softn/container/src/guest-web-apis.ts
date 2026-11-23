@@ -513,28 +513,55 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   var FormClass = g.FormData;
   if (typeof FormClass === 'function' && !FormClass.prototype._softnFiles) {
     var MARK = '\u0000softn-file:';
-    var kept = Object.create(null);
+    // Keep File/Blob values scoped to each FormData instance via WeakMap so GC collects
+    // files once the FormData is discarded or entries are deleted/replaced.
+    var keptPerForm = typeof WeakMap === 'function' ? new WeakMap() : null;
+    var fallbackKept = Object.create(null);
     var keptSeq = 0;
-    var keep = function (value, filename) {
+    var storeOf = function (form) {
+      if (!keptPerForm) return fallbackKept;
+      var map = keptPerForm.get(form);
+      if (!map) {
+        map = Object.create(null);
+        keptPerForm.set(form, map);
+      }
+      return map;
+    };
+    var keep = function (form, value, filename) {
       if (!isBlob(value)) return value;
       var file = value instanceof File && filename === undefined ? value : renamed(value, filename === undefined ? (value.name === undefined ? 'blob' : value.name) : String(filename));
       var mark = MARK + (++keptSeq);
-      kept[mark] = file;
+      storeOf(form)[mark] = file;
       return mark;
     };
-    var back = function (value) { return typeof value === 'string' && value.indexOf(MARK) === 0 && kept[value] ? kept[value] : value; };
+    var back = function (form, value) {
+      if (typeof value !== 'string' || value.indexOf(MARK) !== 0) return value;
+      var map = keptPerForm ? keptPerForm.get(form) : fallbackKept;
+      return map && map[value] ? map[value] : value;
+    };
+    var dropMarks = function (form, name) {
+      var map = keptPerForm ? keptPerForm.get(form) : fallbackKept;
+      if (!map) return;
+      var existing = plain.getAll.call(form, name);
+      for (var i = 0; i < existing.length; i++) {
+        if (typeof existing[i] === 'string' && existing[i].indexOf(MARK) === 0) delete map[existing[i]];
+      }
+    };
     var formProto = FormClass.prototype;
-    var plain = { append: formProto.append, set: formProto.set, get: formProto.get, getAll: formProto.getAll, forEach: formProto.forEach, entries: formProto.entries, values: formProto.values };
+    var plain = { append: formProto.append, set: formProto.set, delete: formProto.delete, get: formProto.get, getAll: formProto.getAll, forEach: formProto.forEach, entries: formProto.entries, values: formProto.values };
     formProto._softnFiles = true;
-    formProto.append = function (name, value, filename) { return plain.append.call(this, name, keep(value, filename)); };
-    formProto.set = function (name, value, filename) { return plain.set.call(this, name, keep(value, filename)); };
-    formProto.get = function (name) { return back(plain.get.call(this, name)); };
-    formProto.getAll = function (name) { return plain.getAll.call(this, name).map(back); };
+    formProto.append = function (name, value, filename) { return plain.append.call(this, name, keep(this, value, filename)); };
+    formProto.set = function (name, value, filename) { dropMarks(this, name); return plain.set.call(this, name, keep(this, value, filename)); };
+    if (typeof plain.delete === 'function') {
+      formProto.delete = function (name) { dropMarks(this, name); return plain.delete.call(this, name); };
+    }
+    formProto.get = function (name) { return back(this, plain.get.call(this, name)); };
+    formProto.getAll = function (name) { var self = this; return plain.getAll.call(this, name).map(function (v) { return back(self, v); }); };
     formProto.forEach = function (fn, thisArg) {
       var self = this;
-      return plain.forEach.call(this, function (value, name) { fn.call(thisArg, back(value), name, self); });
+      return plain.forEach.call(this, function (value, name) { fn.call(thisArg, back(self, value), name, self); });
     };
-    var pairs = function (form) { var list = []; plain.forEach.call(form, function (value, name) { list.push([name, back(value)]); }); return list; };
+    var pairs = function (form) { var list = []; plain.forEach.call(form, function (value, name) { list.push([name, back(form, value)]); }); return list; };
     formProto.entries = function () { return pairs(this)[Symbol.iterator](); };
     formProto.values = function () { return pairs(this).map(function (pair) { return pair[1]; })[Symbol.iterator](); };
     formProto[Symbol.iterator] = function () { return this.entries(); };
@@ -706,23 +733,40 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         get: function () { return String(this.type || '').toLowerCase() === 'file' ? filesOf(this) || empty : null; },
       });
     }
+    // Setting fileInput.value = '' clears its selected FileList (standard DOM reset pattern).
+    var valOwner = InputClass.prototype;
+    var valDesc = Object.getOwnPropertyDescriptor(valOwner, 'value') || (g.HTMLElement && Object.getOwnPropertyDescriptor(g.HTMLElement.prototype, 'value'));
+    if (valDesc && typeof valDesc.set === 'function') {
+      Object.defineProperty(InputClass.prototype, 'value', {
+        configurable: true,
+        enumerable: valDesc.enumerable !== false,
+        get: valDesc.get,
+        set: function (v) {
+          if (String(this.type || '').toLowerCase() === 'file' && String(v == null ? '' : v) === '') {
+            given.delete(this.__softnNode);
+          }
+          valDesc.set.call(this, v);
+        },
+      });
+    }
     if (typeof g.FileList === 'undefined') {
       var FileListClass = function () { throw new TypeError('Illegal constructor'); };
       try { Object.defineProperty(FileListClass, Symbol.hasInstance, { value: function (value) { return !!value && value._softnFileList === true; } }); } catch (e) {}
       define('FileList', FileListClass);
     }
-    // A form's data has the files of its file fields in it.
+    // A form's data has the files of its file fields in it (forwarding optional submitter).
     var FormBase = g.FormData;
     if (typeof FormBase === 'function' && !FormBase._softnPicked) {
-      var FormWithFiles = function (form) {
-        var data = form === undefined ? new FormBase() : new FormBase(form);
+      var FormWithFiles = function (form, submitter) {
+        var data = form === undefined ? new FormBase() : submitter === undefined ? new FormBase(form) : new FormBase(form, submitter);
         if (!form || typeof form.querySelectorAll !== 'function') return data;
-        // What each file field of the form holds, by the field's name.
+        // What each enabled file field of the form holds, by the field's name.
         var held = Object.create(null);
         var any = false;
         var fileFields = form.querySelectorAll('input[name]');
         for (var i = 0; i < fileFields.length; i++) {
           if (String(fileFields[i].type || '').toLowerCase() !== 'file') continue;
+          if (fileFields[i].disabled || (typeof fileFields[i].hasAttribute === 'function' && fileFields[i].hasAttribute('disabled'))) continue;
           var files = filesOf(fileFields[i]);
           var name = fileFields[i].getAttribute('name');
           var list = held[name] || (held[name] = []);
@@ -1142,10 +1186,15 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       var finished = new Promise(function (done, fail) { whole = [done, fail]; });
       finished.then(undefined, function () {});
       var answered = function () { if (awaited) { awaited = false; unanswered--; } };
+      var onAbortListener = null;
       // The end, however it came: once.
       var settle = function (error) {
         if (over) return;
         over = true;
+        if (signal && onAbortListener && typeof signal.removeEventListener === 'function') {
+          try { signal.removeEventListener('abort', onAbortListener); } catch (e) {}
+          onAbortListener = null;
+        }
         problem = error || null;
         for (var i = 0; i < branches.length; i++) {
           if (error) branches[i].controller.error(error);
@@ -1257,7 +1306,8 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       if (signal) {
         var stopped = function () { return signal.reason !== undefined ? signal.reason : failure('The operation was aborted.', 'AbortError'); };
         if (signal.aborted) { reject(stopped()); return; }
-        signal.addEventListener('abort', function () { stop(stopped()); });
+        onAbortListener = function () { stop(stopped()); };
+        signal.addEventListener('abort', onAbortListener);
       }
       inTurn.push(function () {
         if (over) return;
@@ -1380,11 +1430,17 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
           // The feed ended or failed: said, and asked for again after the wait the server gave.
           self.readyState = 0;
           tell(self, 'error', {});
-          g.setTimeout(function () { self._open(); }, self._wait);
+          if (self.readyState !== 2) {
+            self._retryTimer = g.setTimeout(function () {
+              self._retryTimer = 0;
+              if (self.readyState !== 2) self._open();
+            }, self._wait);
+          }
         });
       }
       close() {
         this.readyState = 2;
+        if (this._retryTimer) { g.clearTimeout(this._retryTimer); this._retryTimer = 0; }
         if (this._reader) { try { this._reader.cancel(); } catch (e) {} this._reader = null; }
         if (this._stop) { try { this._stop.abort(); } catch (e) {} this._stop = null; }
       }
@@ -1438,12 +1494,17 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         var self = this;
         var run = ++this._run;
         var done = false;
+        var controller = typeof g.AbortController === 'function' ? new g.AbortController() : null;
         var options = { method: this._method, headers: this._headers };
+        if (controller) options.signal = controller.signal;
         if (body !== undefined && body !== null && this._method !== 'GET' && this._method !== 'HEAD') options.body = body;
         var finish = function (type) {
           if (done || run !== self._run) return;
           done = true;
           if (timer) g.clearTimeout(timer);
+          if (type === 'abort' || type === 'timeout') {
+            if (controller) { try { controller.abort(); } catch (e) {} }
+          }
           if (type !== 'load') { self.status = 0; self.statusText = ''; self._text = ''; self.response = self.responseType === '' || self.responseType === 'text' ? '' : null; }
           self._state(4);
           var size = self._size || 0;
@@ -1531,7 +1592,9 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
             var data = event.data;
             if (typeof event.base64 === 'string') {
               var bytes = fromBase64(event.base64);
-              data = self.binaryType === 'arraybuffer' ? bytes.buffer : new BlobClass([bytes]);
+              data = self.binaryType === 'arraybuffer'
+                ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+                : new BlobClass([bytes]);
             }
             tell(self, 'message', { data: data, origin: self.url.replace(/^(wss?:\/\/[^/]+).*$/, '$1') }, g.MessageEvent);
           } else if (event.t === 'error') {
@@ -1853,9 +1916,16 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       };
     }
 
-    // Reported as a script's uncaught error is, and the next goes on.
-    var scriptFailed = function (e) {
-      try { g.console.error('[SoftN] A script the app added failed: ' + (e && e.stack ? e.stack : e && e.message ? e.message : String(e))); } catch (ignored) {}
+    // Runtime exceptions from added scripts go through __softnReportError; resource-load
+    // failures (404 / blocked net) log to console.error and dispatch the element's error event.
+    var scriptFailed = function (e, isLoadFailure) {
+      try {
+        if (!isLoadFailure && typeof g.__softnReportError === 'function') {
+          g.__softnReportError('script', e, 0);
+        } else {
+          g.console.error('[SoftN] A script the app added failed: ' + (e && e.stack ? e.stack : e && e.message ? e.message : String(e)));
+        }
+      } catch (ignored) {}
     };
     var tellScript = function (el, type) {
       try { el.dispatchEvent(new g.Event(type)); } catch (e) { scriptFailed(e); }
@@ -1889,7 +1959,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     };
     var finishScript = function (entry) {
       if (entry.error !== null) {
-        if (entry.error) scriptFailed(entry.error);
+        if (entry.error) scriptFailed(entry.error, true);
         tellScript(entry.el, 'error');
         return;
       }

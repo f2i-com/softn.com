@@ -1698,12 +1698,14 @@ export const GUEST_INDEXEDDB_SOURCE = String.raw`
   Cursor.prototype.delete = function () {
     var os = this._os;
     os._ok(true);
-    if (!this._got || this._keyOnly) throw failure('The cursor is not at a record with a value.', 'InvalidStateError');
+    if (!this._got) throw failure('The cursor is not at a record.', 'InvalidStateError');
     var store = os._store;
     var tx = os.transaction;
     var key = this._primary;
     var only = { _lo: key, _hi: key, lowerOpen: false, upperOpen: false };
-    return os._ask(function () { removeRange(tx, store, only); return undefined; });
+    var req = os._ask(function () { removeRange(tx, store, only); return undefined; });
+    req.source = this;
+    return req;
   };
 
   // ---------------------------------------------------------------- databases
@@ -1733,7 +1735,9 @@ export const GUEST_INDEXEDDB_SOURCE = String.raw`
   Database.prototype.transaction = function (names, mode, options) {
     if (this._closed) throw failure('The database connection is closing.', 'InvalidStateError');
     if (this._upgrade && this._upgrade._state === 'active') throw failure('A version change transaction is running.', 'InvalidStateError');
-    var list = typeof names === 'string' ? [names] : Array.prototype.slice.call(names || []).map(String);
+    var list = typeof names === 'string'
+      ? [names]
+      : (typeof Array.from === 'function' ? Array.from(names || [], String) : Array.prototype.slice.call(names || []).map(String));
     var seen = Object.create(null);
     list = list.filter(function (name) { if (seen[name]) return false; seen[name] = true; return true; });
     if (list.length === 0) throw failure('The storeNames parameter was empty.', 'InvalidAccessError');
@@ -1931,12 +1935,22 @@ export const GUEST_INDEXEDDB_SOURCE = String.raw`
         data.deleted = true;
         // Every store kept under its name, not only the ones its description lists: a store
         // kept by an upgrade that was then undone is not listed, and was kept for good.
-        var prefix = 's' + JSON.stringify([key]).slice(0, -1) + ',';
-        var pages = 'p' + JSON.stringify([key]).slice(0, -1) + ',';
-        var files = fileKeys();
-        for (var f = 0; f < files.length; f++) if (String(files[f]).indexOf(prefix) === 0 || String(files[f]).indexOf(pages) === 0) fileRemove(files[f]);
-        for (var store in data.stores) fileRemove(storeFile(key, store));
-        fileRemove(metaFile(key));
+        // Wrap in idb.begin / idb.end so deletions are persisted to the host IndexedDB backing.
+        var stagedDel = false;
+        try {
+          bridge.callSync('idb.begin');
+          stagedDel = true;
+          var prefix = 's' + JSON.stringify([key]).slice(0, -1) + ',';
+          var pages = 'p' + JSON.stringify([key]).slice(0, -1) + ',';
+          var files = fileKeys();
+          for (var f = 0; f < files.length; f++) if (String(files[f]).indexOf(prefix) === 0 || String(files[f]).indexOf(pages) === 0) fileRemove(files[f]);
+          for (var store in data.stores) fileRemove(storeFile(key, store));
+          fileRemove(metaFile(key));
+          stagedDel = false;
+          bridge.callSync('idb.end');
+        } catch (delErr) {
+          if (stagedDel) { try { bridge.callSync('idb.end', 'cancel'); } catch (ignored) {} }
+        }
         delete databases[key];
         h.users--;
         letGoSoon(key);

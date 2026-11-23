@@ -57,13 +57,14 @@ export function resolveModuleSpecifier(
 ): ResolvedSpecifier {
   const raw = specifier.trim();
 
-  // 1. Check user/HTML importmap exact match or prefix match (`pkg/` -> `./vendor/pkg/`)
-  let mapped = importMap[raw];
+  // 1. Check user/HTML importmap exact match or longest-prefix match (`pkg/` -> `./vendor/pkg/`)
+  let mapped = Object.hasOwn(importMap, raw) ? importMap[raw] : undefined;
   if (!mapped) {
+    let bestPrefix = '';
     for (const [prefix, target] of Object.entries(importMap)) {
-      if (prefix.endsWith('/') && raw.startsWith(prefix)) {
+      if (prefix.endsWith('/') && raw.startsWith(prefix) && prefix.length > bestPrefix.length) {
+        bestPrefix = prefix;
         mapped = target + raw.slice(prefix.length);
-        break;
       }
     }
   }
@@ -78,12 +79,13 @@ export function resolveModuleSpecifier(
   }
   // 2. Check SoftN default hosted vendor catalog
   if (!mapped) {
-    mapped = DEFAULT_VENDOR_IMPORT_MAP[raw];
+    mapped = Object.hasOwn(DEFAULT_VENDOR_IMPORT_MAP, raw) ? DEFAULT_VENDOR_IMPORT_MAP[raw] : undefined;
     if (!mapped) {
+      let bestPrefix = '';
       for (const [prefix, target] of Object.entries(DEFAULT_VENDOR_IMPORT_MAP)) {
-        if (prefix.endsWith('/') && raw.startsWith(prefix)) {
+        if (prefix.endsWith('/') && raw.startsWith(prefix) && prefix.length > bestPrefix.length) {
+          bestPrefix = prefix;
           mapped = target + raw.slice(prefix.length);
-          break;
         }
       }
     }
@@ -144,7 +146,7 @@ interface Token {
 }
 
 const REGEX_PRECEDING_KEYWORDS = new Set([
-  'return', 'throw', 'case', 'delete', 'void', 'typeof', 'instanceof', 'in', 'of', 'new', 'yield', 'await', 'else', 'do',
+  'return', 'throw', 'case', 'default', 'delete', 'void', 'typeof', 'instanceof', 'in', 'of', 'new', 'yield', 'await', 'else', 'do',
 ]);
 const REGEX_PRECEDING_PUNCT = new Set([
   '(', '[', '{', ',', ';', ':', '=', '!', '&', '|', '?', '+', '-', '*', '%', '^', '~', '<', '>',
@@ -157,12 +159,15 @@ function isIdentPart(ch: number): boolean {
   return isIdentStart(ch) || (ch >= 48 && ch <= 57);
 }
 
-/** Tokenize JS/TS code skipping comments, strings, template literals, and regex literals accurately. */
+/** Tokenize JS/TS code skipping comments, strings, template literals (tokenizing `${...}` expressions), and regex literals accurately. */
 function tokenizeTopLevel(code: string): Token[] {
   const tokens: Token[] = [];
   const len = code.length;
   let i = 0;
   let prevSig: Token | null = null;
+  // Stack of brace depths for active template `${...}` expressions so closing `}` resumes template text.
+  const templateBraceStack: number[] = [];
+  let activeBraceDepth = 0;
 
   const canStartRegex = (): boolean => {
     if (!prevSig) return true;
@@ -171,8 +176,9 @@ function tokenizeTopLevel(code: string): Token[] {
     return false;
   };
 
-  const skipTemplate = (): void => {
-    i++; // opening `
+  const scanTemplateChunk = (isHead: boolean): void => {
+    const start = i;
+    i++; // opening ` or resuming }
     while (i < len) {
       const ch = code.charCodeAt(i);
       if (ch === 92 /* \ */) {
@@ -181,56 +187,31 @@ function tokenizeTopLevel(code: string): Token[] {
       }
       if (ch === 96 /* ` */) {
         i++;
+        const tok: Token = { type: isHead ? 'string' : 'other', value: code.slice(start, i), start, end: i };
+        tokens.push(tok);
+        prevSig = tok;
         return;
       }
       if (ch === 36 /* $ */ && code.charCodeAt(i + 1) === 123 /* { */) {
+        // Emit template chunk up through `$`, then emit `{` as a normal punct token so `${...}`
+        // expressions are tokenized (enabling `import.meta` and `import()` inside templates)
+        // while keeping every `{`/`}` depth counter balanced.
+        const chunkEnd = i + 1;
+        const headTok: Token = { type: 'other', value: code.slice(start, chunkEnd), start, end: chunkEnd };
+        tokens.push(headTok);
+        const braceTok: Token = { type: 'punct', value: '{', start: i + 1, end: i + 2 };
+        tokens.push(braceTok);
+        prevSig = braceTok;
+        activeBraceDepth++;
+        templateBraceStack.push(activeBraceDepth);
         i += 2;
-        let depth = 1;
-        let prevKind: 'punct' | 'kw' | 'other' = 'punct';
-        let prevVal = '{';
-        while (i < len && depth > 0) {
-          const c = code.charCodeAt(i);
-          if (c <= 32) { i++; continue; }
-          if (c === 92) { i += 2; prevKind = 'other'; prevVal = ''; continue; }
-          if (c === 39 || c === 34) { skipString(c); prevKind = 'other'; prevVal = ''; continue; }
-          if (c === 96) { skipTemplate(); prevKind = 'other'; prevVal = ''; continue; }
-          if (c === 47) {
-            const nxt = code.charCodeAt(i + 1);
-            if (nxt === 47) { skipLineComment(); continue; }
-            if (nxt === 42) { skipBlockComment(); continue; }
-            if (
-              (prevKind === 'punct' && REGEX_PRECEDING_PUNCT.has(prevVal)) ||
-              (prevKind === 'kw' && REGEX_PRECEDING_KEYWORDS.has(prevVal))
-            ) {
-              skipRegex();
-              prevKind = 'other';
-              prevVal = '';
-              continue;
-            }
-            i++;
-            prevKind = 'punct';
-            prevVal = '/';
-            continue;
-          }
-          if (isIdentStart(c)) {
-            const st = i;
-            i++;
-            while (i < len && isIdentPart(code.charCodeAt(i))) i++;
-            const w = code.slice(st, i);
-            prevKind = REGEX_PRECEDING_KEYWORDS.has(w) ? 'kw' : 'other';
-            prevVal = w;
-            continue;
-          }
-          if (c === 123) { depth++; prevKind = 'punct'; prevVal = '{'; i++; continue; }
-          if (c === 125) { depth--; prevKind = 'punct'; prevVal = '}'; i++; continue; }
-          prevKind = 'punct';
-          prevVal = code[i];
-          i++;
-        }
-        continue;
+        return;
       }
       i++;
     }
+    const tok: Token = { type: isHead ? 'string' : 'other', value: code.slice(start, i), start, end: i };
+    tokens.push(tok);
+    prevSig = tok;
   };
 
   const skipString = (quote: number): void => {
@@ -306,11 +287,30 @@ function tokenizeTopLevel(code: string): Token[] {
       continue;
     }
     if (ch === 96) {
-      const start = i;
-      skipTemplate();
-      const tok: Token = { type: 'string', value: code.slice(start, i), start, end: i };
+      scanTemplateChunk(true);
+      continue;
+    }
+    if (ch === 123 /* { */) {
+      activeBraceDepth++;
+      const tok: Token = { type: 'punct', value: '{', start: i, end: i + 1 };
       tokens.push(tok);
       prevSig = tok;
+      i++;
+      continue;
+    }
+    if (ch === 125 /* } */) {
+      const closingTemplate =
+        templateBraceStack.length > 0 && templateBraceStack[templateBraceStack.length - 1] === activeBraceDepth;
+      const tok: Token = { type: 'punct', value: '}', start: i, end: i + 1 };
+      tokens.push(tok);
+      prevSig = tok;
+      if (activeBraceDepth > 0) activeBraceDepth--;
+      if (closingTemplate) {
+        templateBraceStack.pop();
+        scanTemplateChunk(false);
+        continue;
+      }
+      i++;
       continue;
     }
     if (isIdentStart(ch)) {
@@ -334,6 +334,16 @@ function tokenizeTopLevel(code: string): Token[] {
       i++;
       while (i < len && (isIdentPart(code.charCodeAt(i)) || code.charCodeAt(i) === 46)) i++;
       const tok: Token = { type: 'other', value: code.slice(start, i), start, end: i };
+      tokens.push(tok);
+      prevSig = tok;
+      continue;
+    }
+    // Keep `++` and `--` intact so `a++ / b` parses `/` as division instead of a regex literal.
+    if ((ch === 43 && code.charCodeAt(i + 1) === 43) || (ch === 45 && code.charCodeAt(i + 1) === 45)) {
+      const start = i;
+      const op = ch === 43 ? '++' : '--';
+      i += 2;
+      const tok: Token = { type: 'punct', value: op, start, end: i };
       tokens.push(tok);
       prevSig = tok;
       continue;
@@ -858,6 +868,8 @@ export interface TransformedModule {
   staticImports: string[];
   /** The specifiers of `import()` calls that name their module as text (`import('./part.js')`). */
   dynamicImports: string[];
+  /** Synthetic wrapper lines prepended before the module body (`1 + exportGetters.size`). */
+  headerLines?: number;
 }
 
 /**
@@ -879,6 +891,46 @@ export function utf8Length(text: string): number {
     } else bytes += 3;
   }
   return bytes;
+}
+
+function preserveLineCount(originalSlice: string, replacement: string): string {
+  let origLines = 0;
+  for (let i = 0; i < originalSlice.length; i++) {
+    const c = originalSlice.charCodeAt(i);
+    if (c === 10) origLines++;
+    else if (c === 13) {
+      origLines++;
+      if (originalSlice.charCodeAt(i + 1) === 10) i++;
+    }
+  }
+  if (origLines === 0) return replacement;
+  let repLines = 0;
+  for (let i = 0; i < replacement.length; i++) {
+    if (replacement.charCodeAt(i) === 10) repLines++;
+  }
+  return origLines > repLines ? replacement + '\n'.repeat(origLines - repLines) : replacement;
+}
+
+function skipImportAttributes(tokens: Token[], endIdx: number): number {
+  let idx = endIdx;
+  if (tokens[idx + 1]?.value === 'with' || tokens[idx + 1]?.value === 'assert') {
+    idx += 2;
+    if (tokens[idx]?.value === '{') {
+      let d = 1;
+      idx++;
+      while (idx < tokens.length && d > 0) {
+        if (tokens[idx].value === '{') d++;
+        else if (tokens[idx].value === '}') d--;
+        idx++;
+      }
+      idx--;
+    }
+  }
+  return idx;
+}
+
+function readExportedIdent(tok: Token): string {
+  return tok.type === 'string' ? unquote(tok.value) : tok.value;
 }
 
 /**
@@ -937,14 +989,20 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
     // Top-level `import ...` statement
     // (Not `import (`: a type of TypeScript's that names a module, which is no statement.)
     if (tok.value === 'import' && braceDepth === 0 && parenDepth === 0 && bracketDepth === 0 && prev?.value !== '.' && tokens[i + 1]?.value !== '(') {
-      // TypeScript `import type ...` -> strip completely
-      if (tokens[i + 1]?.value === 'type' && tokens[i + 2]?.value !== 'from' && tokens[i + 2]?.value !== '=') {
+      // TypeScript `import type ...` -> strip completely (but NOT `import type from ...` or `import type, { x } from ...`)
+      if (
+        tokens[i + 1]?.value === 'type' &&
+        tokens[i + 2]?.value !== 'from' &&
+        tokens[i + 2]?.value !== '=' &&
+        tokens[i + 2]?.value !== ','
+      ) {
         let j = i + 2;
         while (j < tokens.length && tokens[j].type !== 'string') j++;
-        let endPos = j < tokens.length ? tokens[j].end : tok.end;
-        if (tokens[j + 1]?.value === ';') { j++; endPos = tokens[j].end; }
-        edits.push({ start: tok.start, end: endPos, replacement: '' });
-        i = j;
+        let endIdx = Math.min(j, tokens.length - 1);
+        endIdx = skipImportAttributes(tokens, endIdx);
+        if (tokens[endIdx + 1]?.value === ';') endIdx++;
+        edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: '' });
+        i = endIdx;
         continue;
       }
 
@@ -952,7 +1010,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
       if (tokens[i + 1]?.type === 'string') {
         const spec = unquote(tokens[i + 1].value);
         staticImports.push(spec);
-        let j = i + 1;
+        let j = skipImportAttributes(tokens, i + 1);
         let endPos = tokens[j].end;
         if (tokens[j + 1]?.value === ';') { j++; endPos = tokens[j].end; }
         edits.push({
@@ -981,27 +1039,13 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         const spec = unquote(specLit.value);
         staticImports.push(spec);
         const clauseTokens = tokens.slice(i + 1, j);
-        let endIdx = j + 1;
-        // Optional import attributes `with { type: 'json' }` / `assert { ... }`
-        if (tokens[endIdx + 1]?.value === 'with' || tokens[endIdx + 1]?.value === 'assert') {
-          endIdx += 2;
-          if (tokens[endIdx]?.value === '{') {
-            let d = 1;
-            endIdx++;
-            while (endIdx < tokens.length && d > 0) {
-              if (tokens[endIdx].value === '{') d++;
-              else if (tokens[endIdx].value === '}') d--;
-              endIdx++;
-            }
-            endIdx--;
-          }
-        }
+        let endIdx = skipImportAttributes(tokens, j + 1);
         if (tokens[endIdx + 1]?.value === ';') endIdx++;
 
         const modVar = `__softn_m${modCounter++}`;
         const lines: string[] = [`const ${modVar} = await __import(${JSON.stringify(spec)}, __meta.url);`];
 
-        // Parse clauseTokens: defaultIdent, `* as ns`, `{ a, b as c, type T }`
+        // Parse clauseTokens: defaultIdent, `* as ns`, `{ a, b as c, "str" as d, type T }`
         let k = 0;
         if (clauseTokens[k] && (clauseTokens[k].type === 'ident' || clauseTokens[k].type === 'keyword') && clauseTokens[k].value !== '*') {
           const defName = clauseTokens[k].value;
@@ -1022,7 +1066,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
               if (clauseTokens[k]?.value === 'as') k += 2;
               continue;
             }
-            const imported = clauseTokens[k].value;
+            const imported = readExportedIdent(clauseTokens[k]);
             let local = imported;
             k++;
             if (clauseTokens[k]?.value === 'as' && clauseTokens[k + 1]) {
@@ -1049,10 +1093,21 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         edits.push({ start: tok.start, end: tok.end, replacement: '' });
         continue;
       }
+      if (next.value === 'type' && tokens[i + 2]?.value === '*') {
+        let j = i + 3;
+        if (tokens[j]?.value === 'as' && tokens[j + 1]) j += 2;
+        if (tokens[j]?.value === 'from' && tokens[j + 1]?.type === 'string') j += 1;
+        j = skipImportAttributes(tokens, Math.min(j, tokens.length - 1));
+        if (tokens[j + 1]?.value === ';') j++;
+        edits.push({ start: tok.start, end: tokens[Math.min(j, tokens.length - 1)].end, replacement: '' });
+        i = j;
+        continue;
+      }
       if (next.value === 'type' && tokens[i + 2]?.value === '{') {
         let j = i + 3;
         while (j < tokens.length && tokens[j].value !== '}') j++;
         if (tokens[j + 1]?.value === 'from' && tokens[j + 2]?.type === 'string') j += 2;
+        j = skipImportAttributes(tokens, Math.min(j, tokens.length - 1));
         if (tokens[j + 1]?.value === ';') j++;
         edits.push({ start: tok.start, end: tokens[Math.min(j, tokens.length - 1)].end, replacement: '' });
         i = j;
@@ -1070,14 +1125,36 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
           (afterDef?.value === 'function' && tokens[i + 3]?.type === 'ident') ||
           (afterDef?.value === 'function' && tokens[i + 3]?.value === '*' && tokens[i + 4]?.type === 'ident') ||
           (afterDef?.value === 'async' && tokens[i + 3]?.value === 'function' && tokens[i + 4]?.type === 'ident') ||
-          (afterDef?.value === 'class' && tokens[i + 3]?.type === 'ident');
+          (afterDef?.value === 'async' && tokens[i + 3]?.value === 'function' && tokens[i + 4]?.value === '*' && tokens[i + 5]?.type === 'ident') ||
+          (afterDef?.value === 'class' && tokens[i + 3]?.type === 'ident') ||
+          (afterDef?.value === 'abstract' && tokens[i + 3]?.value === 'class' && tokens[i + 4]?.type === 'ident');
 
         if (isNamedDecl) {
           let nameIdx = i + 3;
-          if (afterDef.value === 'async' || tokens[i + 3]?.value === '*') nameIdx = i + 4;
+          if (afterDef.value === 'async' || afterDef.value === 'abstract' || tokens[i + 3]?.value === '*') nameIdx = i + 4;
+          if (afterDef.value === 'async' && tokens[i + 4]?.value === '*') nameIdx = i + 5;
           const declName = tokens[nameIdx].value;
           edits.push({ start: tok.start, end: next.end, replacement: '' });
           exportGetters.set('default', declName);
+          i = i + 1;
+          continue;
+        } else if (
+          (afterDef?.value === 'function' && (tokens[i + 3]?.value === '(' || (tokens[i + 3]?.value === '*' && tokens[i + 4]?.value === '('))) ||
+          (afterDef?.value === 'async' && tokens[i + 3]?.value === 'function' && (tokens[i + 4]?.value === '(' || (tokens[i + 4]?.value === '*' && tokens[i + 5]?.value === '('))) ||
+          (afterDef?.value === 'class' && (tokens[i + 3]?.value === '{' || tokens[i + 3]?.value === 'extends'))
+        ) {
+          // Anonymous default function/class declaration: keep it as a named declaration so
+          // hoisting and ASI before `[...]`/`(...)` on the next line match ES spec.
+          const defVar = `__softn_default`;
+          let insertAt = afterDef.end;
+          if (afterDef.value === 'async') {
+            insertAt = tokens[i + 4]?.value === '*' ? tokens[i + 4].end : tokens[i + 3].end;
+          } else if (afterDef.value === 'function' && tokens[i + 3]?.value === '*') {
+            insertAt = tokens[i + 3].end;
+          }
+          edits.push({ start: tok.start, end: next.end, replacement: '' });
+          edits.push({ start: insertAt, end: insertAt, replacement: ` ${defVar}` });
+          exportGetters.set('default', defVar);
           i = i + 1;
           continue;
         } else {
@@ -1094,13 +1171,13 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         let j = i + 2;
         let asNs: string | null = null;
         if (tokens[j]?.value === 'as' && tokens[j + 1]) {
-          asNs = tokens[j + 1].value;
+          asNs = readExportedIdent(tokens[j + 1]);
           j += 2;
         }
         if (tokens[j]?.value === 'from' && tokens[j + 1]?.type === 'string') {
           const spec = unquote(tokens[j + 1].value);
           staticImports.push(spec);
-          let endIdx = j + 1;
+          let endIdx = skipImportAttributes(tokens, j + 1);
           if (tokens[endIdx + 1]?.value === ';') endIdx++;
           const modVar = `__softn_m${modCounter++}`;
           const rep = asNs
@@ -1112,7 +1189,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         }
       }
 
-      // `export { a, b as c } [from './mod']`
+      // `export { a, b as c, "str" as d } [from './mod']`
       if (next.value === '{') {
         let j = i + 2;
         const specs: Array<{ local: string; exported: string }> = [];
@@ -1123,11 +1200,11 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
             if (tokens[j]?.value === 'as') j += 2;
             continue;
           }
-          const local = tokens[j].value;
+          const local = readExportedIdent(tokens[j]);
           let exported = local;
           j++;
           if (tokens[j]?.value === 'as' && tokens[j + 1]) {
-            exported = tokens[j + 1].value;
+            exported = readExportedIdent(tokens[j + 1]);
             j += 2;
           }
           specs.push({ local, exported });
@@ -1136,7 +1213,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         if (tokens[j + 1]?.value === 'from' && tokens[j + 2]?.type === 'string') {
           const spec = unquote(tokens[j + 2].value);
           staticImports.push(spec);
-          endIdx = j + 2;
+          endIdx = skipImportAttributes(tokens, j + 2);
           if (tokens[endIdx + 1]?.value === ';') endIdx++;
           const modVar = `__softn_m${modCounter++}`;
           const defs = specs
@@ -1161,15 +1238,16 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         }
       }
 
-      // `export function foo`, `export async function foo`, `export class Bar`, `export enum E`
+      // `export function foo`, `export async function foo`, `export class Bar`, `export abstract class Bar`, `export enum E`
       if (
         next.value === 'function' ||
         next.value === 'class' ||
         next.value === 'enum' ||
+        (next.value === 'abstract' && tokens[i + 2]?.value === 'class') ||
         (next.value === 'async' && tokens[i + 2]?.value === 'function')
       ) {
         let nameIdx = i + 2;
-        if (next.value === 'async') nameIdx = i + 3;
+        if (next.value === 'async' || next.value === 'abstract') nameIdx = i + 3;
         if (tokens[nameIdx]?.value === '*') nameIdx++;
         if (tokens[nameIdx]) {
           exportGetters.set(tokens[nameIdx].value, tokens[nameIdx].value);
@@ -1224,11 +1302,12 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
     }
   }
 
-  // Apply edits in reverse offset order
+  // Apply edits in reverse offset order, preserving original line counts for exact source-map line numbers.
   edits.sort((a, b) => b.start - a.start);
   let body = code;
   for (const edit of edits) {
-    body = body.slice(0, edit.start) + edit.replacement + body.slice(edit.end);
+    const rep = preserveLineCount(body.slice(edit.start, edit.end), edit.replacement);
+    body = body.slice(0, edit.start) + rep + body.slice(edit.end);
   }
 
   const getterLines: string[] = [];
@@ -1244,7 +1323,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
     body +
     `\n});\n`;
 
-  return { factoryCode, staticImports, dynamicImports };
+  return { factoryCode, staticImports, dynamicImports, headerLines: 1 + getterLines.length };
 }
 
 /**
@@ -1254,6 +1333,7 @@ export const ESM_REGISTRY_PREAMBLE = String.raw`
 var __softnModules = (function () {
   var factories = Object.create(null);
   var evaluating = Object.create(null);
+  var namespaces = Object.create(null);
   var evaluated = Object.create(null);
 
   function reexport(target, source) {
@@ -1290,13 +1370,26 @@ var __softnModules = (function () {
         // The modules' registrations, each compiled on its own here: the host has held each to
         // what the engine compiles at once while the app runs.
         var blocks = reply.blocks || [];
+        var urls = reply.urls || [];
+        var failedAt = -1;
         try {
-          for (var i = 0; i < blocks.length; i++) compile(String(blocks[i]));
+          for (var i = 0; i < blocks.length; i++) {
+            failedAt = i;
+            compile(String(blocks[i]));
+          }
         } catch (e) {
           // Not compiled: the host lets go of them, so that asking again asks again (it kept
           // them, and every later import of them failed with nothing to say why).
-          try { host.call('esm.forget', [JSON.stringify(reply.urls || [])], function () {}); } catch (ignored) {}
-          reject(e);
+          try { host.call('esm.forget', [JSON.stringify(urls)], function () {}); } catch (ignored) {}
+          var failedUrl = (failedAt >= 0 && urls[failedAt]) ? String(urls[failedAt]) : String(specifier);
+          var msg = (e && e.message) ? String(e.message) : String(e);
+          if (msg.indexOf(failedUrl) < 0) {
+            var wrapped = new SyntaxError(failedUrl + ': ' + msg);
+            if (e && e.stack) wrapped.stack = e.stack;
+            reject(wrapped);
+          } else {
+            reject(e);
+          }
           return;
         }
         resolve(reply.url);
@@ -1304,50 +1397,65 @@ var __softnModules = (function () {
     });
   }
 
-  function importModule(specifier, importerUrl) {
+  function resolveKnown(url, ancestors) {
+    if (evaluated[url]) return Promise.resolve(evaluated[url]);
+    // True circular dependency: caller is already inside url's evaluation chain -> return live namespace.
+    if (ancestors && ancestors[url] && namespaces[url]) return Promise.resolve(namespaces[url]);
+    // Concurrent / diamond non-circular import: wait for the in-flight factory to finish!
+    if (evaluating[url]) return evaluating[url];
+    return null;
+  }
+
+  function importModule(specifier, importerUrl, ancestors) {
     var specStr = String(specifier);
-    if (evaluated[specStr]) return Promise.resolve(evaluated[specStr]);
-    if (evaluating[specStr]) return evaluating[specStr];
-    if (factories[specStr]) return runFactory(specStr);
+    var known = resolveKnown(specStr, ancestors);
+    if (known) return known;
+    if (factories[specStr]) return runFactory(specStr, ancestors);
 
     var resolvedUrl = null;
     try {
       resolvedUrl = host.callSync('esm.resolve', specStr, String(importerUrl || ''));
     } catch (e) {}
 
-    if (resolvedUrl && evaluated[resolvedUrl]) {
-      return Promise.resolve(evaluated[resolvedUrl]);
-    }
-    if (resolvedUrl && evaluating[resolvedUrl]) {
-      return evaluating[resolvedUrl];
-    }
-    if (resolvedUrl && factories[resolvedUrl]) {
-      return runFactory(resolvedUrl);
+    if (resolvedUrl) {
+      var knownResolved = resolveKnown(resolvedUrl, ancestors);
+      if (knownResolved) return knownResolved;
+      if (factories[resolvedUrl]) return runFactory(resolvedUrl, ancestors);
     }
     return loadFromHost(specifier, importerUrl).then(function (url) {
-      if (evaluated[url]) return evaluated[url];
-      if (evaluating[url]) return evaluating[url];
+      var knownLoaded = resolveKnown(url, ancestors);
+      if (knownLoaded) return knownLoaded;
       if (!factories[url]) throw new TypeError('Module did not register factory: ' + url);
-      return runFactory(url);
+      return runFactory(url, ancestors);
     });
   }
 
-  function runFactory(url) {
+  function runFactory(url, ancestors) {
     var ns = makeNamespace();
-    evaluated[url] = ns; // Pre-install namespace so circular live getters resolve cleanly
+    namespaces[url] = ns;
+    var nextAncestors = Object.create(null);
+    if (ancestors) {
+      for (var k in ancestors) nextAncestors[k] = true;
+    }
+    nextAncestors[url] = true;
+    var childImport = function (spec, impUrl) {
+      return importModule(spec, impUrl, nextAncestors);
+    };
     var meta = {
       url: url,
       env: { MODE: 'production', PROD: true, DEV: false, BASE_URL: '/' },
     };
     var p = Promise.resolve()
       .then(function () {
-        return factories[url](ns, importModule, meta, reexport);
+        return factories[url](ns, childImport, meta, reexport);
       })
       .then(function () {
+        evaluated[url] = ns;
         delete evaluating[url];
         return ns;
       }, function (err) {
         delete evaluating[url];
+        delete namespaces[url];
         delete evaluated[url];
         throw err;
       });
@@ -1358,7 +1466,7 @@ var __softnModules = (function () {
   return {
     define: function (url, fn) { factories[url] = fn; },
     has: function (url) { return !!factories[url] || !!evaluated[url]; },
-    import: importModule,
+    import: function (specifier, importerUrl) { return importModule(specifier, importerUrl, null); },
   };
 })();
 `;

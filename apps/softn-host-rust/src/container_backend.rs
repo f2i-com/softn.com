@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use regex::Regex;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::limits::Limit;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params_from_iter, Connection};
@@ -69,6 +70,19 @@ const JS_BACKEND_PRELUDE: &str = r#"
         var res = sqlCall("execute", id, sql, params !== undefined ? JSON.stringify(params) : "");
         if (res && res.error) throw new Error(res.error);
         return res;
+      },
+      all: function (sql, params) {
+        return this.query(sql, params).rows;
+      },
+      first: function (sql, params) {
+        var rows = this.query(sql, params).rows;
+        return rows.length > 0 ? rows[0] : null;
+      },
+      get: function (sql, params) {
+        return this.first(sql, params);
+      },
+      run: function (sql, params) {
+        return this.execute(sql, params);
       },
       seedJson: function (seed) {
         var payload = typeof seed === "string" ? seed : JSON.stringify(seed);
@@ -160,27 +174,54 @@ const PYTHON_SQLITE_BRIDGE_JS: &str = r#"
     const raw = __zippHostCall("app.sql." + op, String(a === undefined ? "" : a), String(b === undefined ? "" : b), String(c === undefined ? "" : c));
     return raw ? JSON.parse(raw) : null;
   }
+  function runQuery(id, args) {
+    const sql = rt.needStr(args[0]);
+    const params = args[1] !== undefined && args[1] !== null ? JSON.stringify(toJsVal(args[1])) : "";
+    const res = sqlCall("query", id, sql, params);
+    if (res && res.error) rt.fail(E.RuntimeError, String(res.error));
+    const cols = res.columns || [];
+    const rawRows = res.rows || [];
+    const rows = rawRows.map(function (arr) {
+      const o = {};
+      for (let i = 0; i < cols.length; i++) o[cols[i]] = arr[i];
+      return o;
+    });
+    return { columns: cols, rows: rows, rawRows: rawRows };
+  }
+  function runExec(id, args) {
+    const sql = rt.needStr(args[0]);
+    const params = args[1] !== undefined && args[1] !== null ? JSON.stringify(toJsVal(args[1])) : "";
+    const res = sqlCall("execute", id, sql, params);
+    if (res && res.error) rt.fail(E.RuntimeError, String(res.error));
+    return res;
+  }
   function makeConn(id) {
     const conn = rt.newModule("sqlite_conn", null);
     conn.globals.set("id", BigInt(id));
     conn.globals.set("query", rt.builtin("query", 2, function (args) {
-      const sql = rt.needStr(args[0]);
-      const params = args[1] !== undefined && args[1] !== null ? JSON.stringify(toJsVal(args[1])) : "";
-      const res = sqlCall("query", id, sql, params);
-      if (res && res.error) rt.fail(E.RuntimeError, String(res.error));
-      const cols = res.columns || [];
-      const rawRows = res.rows || [];
-      const rows = rawRows.map(function (arr) {
-        const o = {};
-        for (let i = 0; i < cols.length; i++) o[cols[i]] = arr[i];
-        return o;
-      });
-      return fromJsVal({ columns: cols, rows: rows, rawRows: rawRows });
+      return fromJsVal(runQuery(id, args));
+    }, 1));
+    conn.globals.set("all", rt.builtin("all", 2, function (args) {
+      return fromJsVal(runQuery(id, args).rows);
+    }, 1));
+    conn.globals.set("first", rt.builtin("first", 2, function (args) {
+      const rows = runQuery(id, args).rows;
+      return rows.length > 0 ? fromJsVal(rows[0]) : null;
+    }, 1));
+    conn.globals.set("get", rt.builtin("get", 2, function (args) {
+      const rows = runQuery(id, args).rows;
+      return rows.length > 0 ? fromJsVal(rows[0]) : null;
     }, 1));
     conn.globals.set("execute", rt.builtin("execute", 2, function (args) {
-      const sql = rt.needStr(args[0]);
-      const params = args[1] !== undefined && args[1] !== null ? JSON.stringify(toJsVal(args[1])) : "";
-      const res = sqlCall("execute", id, sql, params);
+      return fromJsVal(runExec(id, args));
+    }, 1));
+    conn.globals.set("run", rt.builtin("run", 2, function (args) {
+      return fromJsVal(runExec(id, args));
+    }, 1));
+    conn.globals.set("seed_json", rt.builtin("seed_json", 1, function (args) {
+      const val = toJsVal(args[0]);
+      const payload = typeof val === "string" ? val : JSON.stringify(val);
+      const res = sqlCall("seed_json", id, payload, "");
       if (res && res.error) rt.fail(E.RuntimeError, String(res.error));
       return fromJsVal(res);
     }, 1));
@@ -333,8 +374,11 @@ pub fn is_private_static_path(rel_path: &str) -> bool {
     }
     if lower == "manifest.json"
         || lower == "permission.json"
+        || lower == ".git"
+        || lower.starts_with(".git/")
         || lower.starts_with("server/")
         || lower.starts_with("backend/")
+        || lower.starts_with("private/")
         || lower.contains("/.git/")
     {
         return true;
@@ -348,6 +392,7 @@ pub fn is_private_static_path(rel_path: &str) -> bool {
         || base == "cargo.lock"
         || base == "composer.json"
         || base == "composer.lock"
+        || base == "seed.json"
     {
         return true;
     }
@@ -718,10 +763,14 @@ fn evaluate_htaccess_chain(
     headers: &HashMap<String, String>,
     vfs: &HashMap<String, Vec<u8>>,
 ) -> HtaccessEval {
-    let clean = if pathname.starts_with('/') {
-        pathname.to_owned()
+    let trailing_slash = pathname.len() > 1 && pathname.ends_with('/');
+    let norm_rel = normalize_vfs_key(pathname);
+    let clean = if norm_rel.is_empty() {
+        "/".to_owned()
+    } else if trailing_slash {
+        format!("/{norm_rel}/")
     } else {
-        format!("/{pathname}")
+        format!("/{norm_rel}")
     };
     let mut prefixes = vec![String::new()];
     let mut acc = String::new();
@@ -742,9 +791,24 @@ fn evaluate_htaccess_chain(
         let Some(ht) = htaccess_map.get(&prefix) else {
             continue;
         };
-        let basename = cur_path.rsplit('/').next().unwrap_or("");
-        if !basename.is_empty() && ht.deny_files.iter().any(|rx| rx.is_match(basename)) {
-            return HtaccessEval::Deny(403);
+        if !ht.deny_files.is_empty() {
+            let trimmed = cur_path.trim_matches('/');
+            let segs: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+            if let Some(&last_seg) = segs.last() {
+                if ht.deny_files.iter().any(|rx| rx.is_match(last_seg)) {
+                    return HtaccessEval::Deny(403);
+                }
+            }
+            let mut probe = String::new();
+            for &seg in segs.iter().take(segs.len().saturating_sub(1)) {
+                if !probe.is_empty() {
+                    probe.push('/');
+                }
+                probe.push_str(seg);
+                if vfs.contains_key(&probe) && ht.deny_files.iter().any(|rx| rx.is_match(seg)) {
+                    return HtaccessEval::Deny(403);
+                }
+            }
         }
         if !ht.rewrite_engine || ht.rules.is_empty() {
             continue;
@@ -962,6 +1026,21 @@ impl SqlStorageConfig {
     }
 
     fn resolve_db_path(&self, raw: &str) -> Result<Option<PathBuf>, String> {
+        self.resolve_db_path_inner(raw, true)
+    }
+
+    fn resolve_exact_db_path(&self, raw: &str) -> Result<Option<PathBuf>, String> {
+        self.resolve_db_path_inner(raw, false)
+    }
+
+    fn is_configured_db_path(&self, path: &Path) -> bool {
+        self.databases.iter().any(|cfg| {
+            let target = cfg.file.as_deref().unwrap_or(&cfg.name);
+            matches!(self.resolve_db_path(target), Ok(Some(cfg_path)) if cfg_path == path)
+        })
+    }
+
+    fn resolve_db_path_inner(&self, raw: &str, allow_single_alias: bool) -> Result<Option<PathBuf>, String> {
         let (key, in_memory) = Self::normalize_db_key(raw);
         if in_memory {
             return Ok(None);
@@ -990,7 +1069,7 @@ impl SqlStorageConfig {
             }
         }
         // Single-DB aliasing (matches XdbSqlManager in @softn/container)
-        if !matched_cfg && self.databases.len() == 1 {
+        if allow_single_alias && !matched_cfg && self.databases.len() == 1 {
             let cfg = &self.databases[0];
             let cfg_target = cfg.file.as_deref().unwrap_or(&cfg.name);
             let (cfg_key, _) = Self::normalize_db_key(cfg_target);
@@ -1024,7 +1103,7 @@ impl SqlStorageConfig {
     }
 
     fn open_configured_connection(path: Option<&Path>) -> Result<Connection, String> {
-        let conn = match path {
+        let mut conn = match path {
             Some(p) => Connection::open(p).map_err(|e| format!("Cannot open SQLite DB: {e}"))?,
             None => Connection::open_in_memory().map_err(|e| format!("Cannot open memory SQLite DB: {e}"))?,
         };
@@ -1046,6 +1125,51 @@ impl SqlStorageConfig {
         conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 250_000);
         conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0);
         conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT);
+        // Install SQLite semantic authorizer blocking host-filesystem ATTACH/DETACH,
+        // extension loading, and unsafe PRAGMAs (e.g. trusted_schema, writable_schema, max_page_count).
+        conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
+            AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+            AuthAction::Function { function_name }
+                if function_name.eq_ignore_ascii_case("load_extension")
+                    || function_name.eq_ignore_ascii_case("fts3_tokenizer") =>
+            {
+                Authorization::Deny
+            }
+            AuthAction::Pragma { pragma_name, .. } => {
+                let lower = pragma_name.to_ascii_lowercase();
+                if matches!(
+                    lower.as_str(),
+                    "table_info"
+                        | "table_xinfo"
+                        | "index_list"
+                        | "index_info"
+                        | "foreign_key_list"
+                        | "foreign_keys"
+                        | "database_list"
+                        | "user_version"
+                        | "application_id"
+                        | "schema_version"
+                        | "busy_timeout"
+                        | "synchronous"
+                        | "journal_mode"
+                        | "cache_size"
+                        | "encoding"
+                        | "integrity_check"
+                        | "quick_check"
+                        | "compile_options"
+                        | "page_count"
+                        | "page_size"
+                        | "freelist_count"
+                        | "wal_checkpoint"
+                ) {
+                    Authorization::Allow
+                } else {
+                    Authorization::Deny
+                }
+            }
+            _ => Authorization::Allow,
+        }))
+        .map_err(|e| format!("Cannot install SQLite authorizer: {e}"))?;
         Ok(conn)
     }
 
@@ -1365,20 +1489,45 @@ impl RequestSqlBridge {
             "copy" => {
                 let from = arg(0);
                 let to = arg(1);
-                match (self.config.resolve_db_path(from), self.config.resolve_db_path(to)) {
-                    (Ok(Some(src)), Ok(Some(dst))) => match fs::copy(&src, &dst) {
-                        Ok(bytes) => json!({ "bytes": bytes }).to_string(),
-                        Err(e) => classify_sqlite_error(&e.to_string()).to_string(),
-                    },
+                match (self.config.resolve_db_path(from), self.config.resolve_exact_db_path(to)) {
+                    (Ok(Some(src)), Ok(Some(dst))) => {
+                        if src == dst {
+                            let bytes = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+                            return json!({ "bytes": bytes }).to_string();
+                        }
+                        match fs::copy(&src, &dst) {
+                            Ok(bytes) => json!({ "bytes": bytes }).to_string(),
+                            Err(e) => classify_sqlite_error(&e.to_string()).to_string(),
+                        }
+                    }
                     _ => json!({ "error": "cannot copy in-memory database", "code": 1, "unique": false }).to_string(),
                 }
             }
             "remove" => {
                 let target = arg(0);
-                match self.config.resolve_db_path(target) {
-                    Ok(Some(path)) if path.exists() => {
-                        let removed = fs::remove_file(&path).is_ok();
-                        json!({ "ok": true, "removed": removed }).to_string()
+                let (key, in_memory) = SqlStorageConfig::normalize_db_key(target);
+                if in_memory {
+                    return json!({ "ok": true, "removed": false }).to_string();
+                }
+                let lower_key = key.to_ascii_lowercase();
+                if lower_key.ends_with("-wal")
+                    || lower_key.ends_with("-shm")
+                    || lower_key.ends_with("-journal")
+                    || lower_key.ends_with(".softn_seeded")
+                {
+                    return json!({ "ok": true, "removed": true }).to_string();
+                }
+                match self.config.resolve_exact_db_path(target) {
+                    Ok(Some(path)) => {
+                        if self.config.is_configured_db_path(&path) {
+                            return json!({ "error": "cannot remove configured primary database", "code": 1, "unique": false }).to_string();
+                        }
+                        if path.exists() {
+                            let removed = fs::remove_file(&path).is_ok();
+                            json!({ "ok": true, "removed": removed }).to_string()
+                        } else {
+                            json!({ "ok": true, "removed": false }).to_string()
+                        }
                     }
                     _ => json!({ "ok": true, "removed": false }).to_string(),
                 }
@@ -1746,13 +1895,18 @@ fn execute_php_request(
     }
 
     let rel = normalize_vfs_key(&target_path);
+    let rel_lower = rel.to_ascii_lowercase();
+    let is_private_dir = rel_lower.starts_with("server/")
+        || rel_lower.starts_with("backend/")
+        || rel_lower.starts_with("private/");
     let entry_key = normalize_vfs_key(&backend.entry);
     let script_key: Option<String> = if !rel.is_empty()
+        && !is_private_dir
         && vfs.contains_key(&rel)
         && (rel.ends_with(".php") || rel.ends_with(".phtml"))
     {
         Some(rel.clone())
-    } else if !rel.is_empty() && vfs.contains_key(&format!("{rel}.php")) {
+    } else if !rel.is_empty() && !is_private_dir && vfs.contains_key(&format!("{rel}.php")) {
         Some(format!("{rel}.php"))
     } else if vfs.contains_key(&entry_key) {
         Some(entry_key.clone())
@@ -2550,7 +2704,6 @@ impl ContainerBackendRuntime {
                     format!("{root}/{rel}")
                 };
                 candidates.push(prefixed);
-                candidates.push(rel.clone());
             }
         } else if rel.is_empty() {
             if let Some(main) = &self.main_file {
@@ -2605,15 +2758,22 @@ impl ContainerBackendRuntime {
 
     /// Decide whether an HTTP request routes to the ZIPP-sandboxed backend or static frontend assets.
     pub fn should_route_to_backend(&self, method: &str, req_path: &str) -> bool {
-        let pathname = if req_path.starts_with('/') {
-            req_path.to_owned()
+        let norm_rel = normalize_vfs_key(req_path);
+        let pathname = if norm_rel.is_empty() {
+            "/".to_owned()
         } else {
-            format!("/{req_path}")
+            format!("/{norm_rel}")
         };
         let lower = pathname.to_ascii_lowercase();
-        // Never directly invoke private server/ or backend/ directories via HTTP paths;
+        // Never directly invoke private server/, backend/, or private/ directories via HTTP paths;
         // let resolve_static_asset refuse them with 403 Forbidden.
-        if lower.starts_with("/server/") || lower.starts_with("/backend/") || lower == "/server" || lower == "/backend" {
+        if lower.starts_with("/server/")
+            || lower.starts_with("/backend/")
+            || lower.starts_with("/private/")
+            || lower == "/server"
+            || lower == "/backend"
+            || lower == "/private"
+        {
             return false;
         }
         if lower.ends_with(".php") || lower.ends_with(".phtml") {

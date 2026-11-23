@@ -355,6 +355,33 @@ const FORBIDDEN_FETCH_REQUEST_HEADERS = new Set([
   'accept-encoding',
 ]);
 
+const DEFAULT_REMOTE_TIMEOUT_MS = 30_000;
+
+function validateRemoteBackendPath(baseUrl: string, rawInputPath: string): { cleanPath: string; targetUrl: string } {
+  const cleanPath = rawInputPath.startsWith('/') ? rawInputPath : `/${rawInputPath}`;
+  if (
+    cleanPath.startsWith('//') ||
+    cleanPath.includes('\\') ||
+    cleanPath.includes('\0') ||
+    /(?:^|\/)\.\.(?:\/|$)/.test(cleanPath) ||
+    /%(?:2e|2f|5c|00)/i.test(cleanPath)
+  ) {
+    throw new Error(`Invalid backend request path: ${rawInputPath}`);
+  }
+  const fallbackOrigin =
+    typeof location !== 'undefined' && location.origin && location.origin !== 'null'
+      ? location.origin
+      : 'https://softn.invalid';
+  const resolvedBase = new URL(baseUrl ? `${baseUrl}/` : '/', fallbackOrigin);
+  const resolvedTarget = new URL(baseUrl ? `${baseUrl}${cleanPath}` : cleanPath, fallbackOrigin);
+  const basePrefix = resolvedBase.pathname.endsWith('/') ? resolvedBase.pathname : `${resolvedBase.pathname}/`;
+  const targetWithSlash = resolvedTarget.pathname.endsWith('/') ? resolvedTarget.pathname : `${resolvedTarget.pathname}/`;
+  if (resolvedTarget.origin !== resolvedBase.origin || !targetWithSlash.startsWith(basePrefix)) {
+    throw new Error(`Backend request path escapes configured baseUrl: ${rawInputPath}`);
+  }
+  return { cleanPath, targetUrl: baseUrl ? `${baseUrl}${cleanPath}` : cleanPath };
+}
+
 /**
  * Reference remote `BackendTransport` for multi-user deployments (`softn-server` / FormLogic):
  * forwards container frontend requests to a separate remote ZIPP-sandboxed backend URL
@@ -366,6 +393,7 @@ export class RemoteBackendTransport implements BackendTransport {
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
   private readonly credentials: RequestCredentials;
+  private readonly timeoutMs: number;
   private readonly sockets = new Set<WebSocket>();
   private disposed = false;
 
@@ -373,25 +401,42 @@ export class RemoteBackendTransport implements BackendTransport {
     baseUrl: string;
     headers?: Record<string, string>;
     credentials?: RequestCredentials;
+    timeoutMs?: number;
   }) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.extraHeaders = options.headers ?? {};
     this.credentials = options.credentials ?? 'same-origin';
+    this.timeoutMs = typeof options.timeoutMs === 'number' && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_REMOTE_TIMEOUT_MS;
   }
 
   async fetch(req: BackendHttpRequest): Promise<BackendHttpResponse> {
     if (this.disposed) {
       throw new Error('RemoteBackendTransport is disposed');
     }
-    const path = req.path.startsWith('/') ? req.path : `/${req.path}`;
-    const url = req.query ? `${this.baseUrl}${path}?${req.query}` : `${this.baseUrl}${path}`;
+    const { targetUrl } = validateRemoteBackendPath(this.baseUrl, req.path);
+    const url = req.query ? `${targetUrl}?${req.query}` : targetUrl;
     const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries({ ...this.extraHeaders, ...(req.headers ?? {}) })) {
+    // Apply guest-supplied headers first (filtering forbidden & host identity headers),
+    // then apply trusted host `extraHeaders` last so guest headers can never overwrite them.
+    for (const [k, v] of Object.entries(req.headers ?? {})) {
+      const lower = k.toLowerCase();
+      if (
+        !/^[a-z0-9-]+$/.test(lower) ||
+        FORBIDDEN_FETCH_REQUEST_HEADERS.has(lower) ||
+        lower.startsWith('sec-') ||
+        lower.startsWith('proxy-') ||
+        lower.startsWith('x-formlogic')
+      ) {
+        continue;
+      }
+      headers[lower] = v;
+    }
+    for (const [k, v] of Object.entries(this.extraHeaders)) {
       const lower = k.toLowerCase();
       if (FORBIDDEN_FETCH_REQUEST_HEADERS.has(lower) || lower.startsWith('sec-') || lower.startsWith('proxy-')) {
         continue;
       }
-      headers[k] = v;
+      headers[lower] = v;
     }
     const method = (req.method || 'GET').toUpperCase();
     let body: BodyInit | undefined;
@@ -405,13 +450,21 @@ export class RemoteBackendTransport implements BackendTransport {
       }
     }
 
-    const resp = await fetch(url, {
-      method,
-      headers,
-      body,
-      credentials: this.credentials,
-      redirect: 'manual',
-    });
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : null;
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method,
+        headers,
+        body,
+        credentials: this.credentials,
+        redirect: 'manual',
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
     const outHeaders: Array<[string, string]> = [];
     resp.headers.forEach((v, k) => outHeaders.push([k, v]));
     const buf = new Uint8Array(await resp.arrayBuffer());
@@ -428,7 +481,7 @@ export class RemoteBackendTransport implements BackendTransport {
     protocols: string[],
     onEvent: (event: BackendWsEvent) => void
   ): BackendWsHandle {
-    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    const { cleanPath } = validateRemoteBackendPath(this.baseUrl, path);
     const wsBase = this.baseUrl.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:');
     const ws = protocols.length > 0 ? new WebSocket(`${wsBase}${cleanPath}`, protocols) : new WebSocket(`${wsBase}${cleanPath}`);
     ws.binaryType = 'arraybuffer';

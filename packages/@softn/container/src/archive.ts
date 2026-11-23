@@ -85,7 +85,8 @@ function extOf(path: string): string {
 }
 
 export function mimeTypeFor(path: string): string {
-  return MIME_TYPES[extOf(path)] ?? 'application/octet-stream';
+  const ext = extOf(path);
+  return Object.hasOwn(MIME_TYPES, ext) ? MIME_TYPES[ext] : 'application/octet-stream';
 }
 
 export function isTextPath(path: string): boolean {
@@ -262,7 +263,9 @@ function hasEmbeddedContainerBackend(manifestText: string | null | undefined, na
   return names.some((n) =>
     n === 'index.php' ||
     n === 'Cargo.toml' ||
-    /^(?:server|backend)\/(?:Cargo\.toml|index\.php|server\.(?:js|mjs|ts|py)|app\.py|main\.py|src\/main\.rs)$/i.test(n) ||
+    n === 'schema.sql' ||
+    n === 'seed.sql' ||
+    /^(?:server|backend)\/(?:Cargo\.toml|index\.(?:php|js|mjs|ts)|server\.(?:js|mjs|ts|py)|app\.py|main\.py|src\/main\.rs)$/i.test(n) ||
     /^(?:db|database|migrations)\/[^/]+\.(?:json|sql)$/i.test(n)
   );
 }
@@ -370,14 +373,19 @@ export class ContainerArchive {
       });
     }
 
-    // Unpacked file map
-    const rawKeys = Object.keys(input).map((k) => k.replace(/\\/g, '/').replace(/^\/+/, ''));
+    // Unpacked file map — apply the same path-safety checks as ZIP entries.
+    const isUnsafeMapKey = (key: string): boolean =>
+      !key || key.includes('..') || key.includes('\0') || /^[a-zA-Z]:/.test(key) || key.endsWith('/');
+    const rawKeys = Object.keys(input)
+      .map((k) => k.replace(/\\/g, '/').replace(/^\/+/, ''))
+      .filter((k) => !isUnsafeMapKey(k));
     const rawPrefix = detectSingleRootPrefix(rawKeys);
     const normalizedList = rawKeys.map((k) => (rawPrefix && k.startsWith(rawPrefix) ? k.slice(rawPrefix.length) : k)).filter(Boolean);
     const decoder = new TextDecoder();
     let peekManifestText: string | null = null;
     for (const [origKey, val] of Object.entries(input)) {
       const cleanKey = origKey.replace(/\\/g, '/').replace(/^\/+/, '');
+      if (isUnsafeMapKey(cleanKey)) continue;
       const norm = rawPrefix && cleanKey.startsWith(rawPrefix) ? cleanKey.slice(rawPrefix.length) : cleanKey;
       if (norm === 'manifest.json') {
         peekManifestText = typeof val === 'string' ? val : decoder.decode(val);
@@ -393,6 +401,7 @@ export class ContainerArchive {
 
     for (const [origKey, val] of Object.entries(input)) {
       const cleanKey = origKey.replace(/\\/g, '/').replace(/^\/+/, '');
+      if (isUnsafeMapKey(cleanKey)) continue;
       const norm = rawPrefix && cleanKey.startsWith(rawPrefix) ? cleanKey.slice(rawPrefix.length) : cleanKey;
       if (!norm) continue;
       // Preserve the identity used for storage when the author includes server files.
@@ -432,16 +441,44 @@ export class ContainerArchive {
     });
   }
 
-  /** Resolve a path in this archive, falling back to `manifest.frontendRoot` if configured. */
+  /** Resolve a path in this archive, falling back to `manifest.frontendRoot`, `/` -> main, and directory `index.html`. */
   resolveExistingPath(path: string, basePath?: string): string | null {
-    const resolved = resolveVfsPath(path, basePath);
-    if (resolved && this.normalizedNames.has(resolved)) return resolved;
     const feRoot = this.manifest.frontendRoot
       ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
       : '';
-    if (feRoot && resolved && !resolved.startsWith(`${feRoot}/`)) {
-      const prefixed = resolveVfsPath(`${feRoot}/${resolved}`);
-      if (prefixed && this.normalizedNames.has(prefixed)) return prefixed;
+    const checkCandidate = (candidate: string | null): string | null => {
+      if (!candidate) return null;
+      if (this.normalizedNames.has(candidate)) return candidate;
+      if (this.normalizedNames.has(`${candidate}/index.html`)) return `${candidate}/index.html`;
+      if (this.normalizedNames.has(`${candidate}/index.htm`)) return `${candidate}/index.htm`;
+      if (feRoot && !candidate.startsWith(`${feRoot}/`)) {
+        const prefixed = resolveVfsPath(`${feRoot}/${candidate}`);
+        if (prefixed) {
+          if (this.normalizedNames.has(prefixed)) return prefixed;
+          if (this.normalizedNames.has(`${prefixed}/index.html`)) return `${prefixed}/index.html`;
+          if (this.normalizedNames.has(`${prefixed}/index.htm`)) return `${prefixed}/index.htm`;
+        }
+      }
+      return null;
+    };
+
+    const resolved = resolveVfsPath(path, basePath);
+    const direct = checkCandidate(resolved);
+    if (direct) return direct;
+
+    // Handle root path `/` (or `https://app.softn.local/` / `./` at root) -> manifest.main / index.html
+    const raw = String(path ?? '').trim();
+    if (raw && !raw.startsWith('#') && !raw.startsWith('data:') && !raw.startsWith('blob:') && !raw.startsWith('javascript:')) {
+      try {
+        const base = `${VIRTUAL_ORIGIN}/${(basePath ?? 'index.html').replace(/\\/g, '/').replace(/^\/+/, '')}`;
+        const parsed = new URL(raw, base);
+        if (parsed.origin === VIRTUAL_ORIGIN && parsed.pathname === '/') {
+          if (this.manifest?.main && this.normalizedNames.has(this.manifest.main)) return this.manifest.main;
+          return checkCandidate('index.html') ?? checkCandidate('index.htm');
+        }
+      } catch {
+        // Ignore unparseable URL
+      }
     }
     return null;
   }
@@ -455,6 +492,20 @@ export class ContainerArchive {
       return archivePath.slice(feRoot.length);
     }
     return archivePath;
+  }
+
+  /** Whether an archive path belongs to the untrusted frontend (excluding backend/private files). */
+  isFrontendPath(archivePath: string): boolean {
+    const hasBackend = Boolean(this.manifest.backend);
+    const backendRoot = this.manifest.backend?.root
+      ? this.manifest.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
+      : '';
+    if (isBackendPrivatePath(archivePath, hasBackend, backendRoot)) return false;
+    const feRoot = this.manifest.frontendRoot
+      ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
+      : '';
+    if (feRoot && !archivePath.startsWith(feRoot)) return false;
+    return true;
   }
 
   has(path: string): boolean {
@@ -522,12 +573,64 @@ export class ContainerArchive {
     return url;
   }
 
+  /** Strict allowlist of non-executable MIME types safe to mint as host `blob:` URLs. */
+  private static readonly INERT_BLOB_TYPES = new Set([
+    'text/plain',
+    'text/css',
+    'text/csv',
+    'application/json',
+    'application/octet-stream',
+    'application/wasm',
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+    'image/avif',
+    'image/x-icon',
+    'image/bmp',
+    'image/apng',
+    'font/woff',
+    'font/woff2',
+    'font/ttf',
+    'font/otf',
+    'audio/mpeg',
+    'audio/wav',
+    'audio/ogg',
+    'audio/webm',
+    'audio/mp4',
+    'audio/aac',
+    'audio/flac',
+    'video/mp4',
+    'video/webm',
+    'video/ogg',
+    'model/gltf-binary',
+    'model/gltf+json',
+  ]);
+
   /** An address the page can load `bytes` from, by the rule above: never one a browser would open as a document. */
   private mintUrl(bytes: Uint8Array, type: string): string {
-    if (/^image\/svg\+xml/i.test(type)) return `data:image/svg+xml;base64,${bytesToBase64(bytes)}`;
+    const baseType = type.split(';')[0].trim().toLowerCase();
+    // Always keep base64 non-empty so an empty SVG `data:` URL never ends with a trailing comma.
+    if (baseType === 'image/svg+xml') {
+      const encoded = bytes.byteLength > 0 ? bytesToBase64(bytes) : 'IA==';
+      return `data:image/svg+xml;base64,${encoded}`;
+    }
     const copy = new Uint8Array(bytes.byteLength);
     copy.set(bytes);
-    const inert = /^(?:text\/html|application\/xhtml\+xml|application\/xml|text\/xml)/i.test(type) ? 'text/plain; charset=utf-8' : type;
+    let inert: string;
+    if (
+      baseType === 'text/html' ||
+      baseType === 'application/xhtml+xml' ||
+      baseType === 'application/xml' ||
+      baseType === 'text/xml'
+    ) {
+      inert = 'text/plain; charset=utf-8';
+    } else if (ContainerArchive.INERT_BLOB_TYPES.has(baseType)) {
+      inert = baseType;
+    } else {
+      // Downgrade active document/XML/PDF/multipart types (e.g. MathML, XSLT, PDF, MHTML) to inert bytes.
+      inert = 'application/octet-stream';
+    }
     return URL.createObjectURL(new Blob([copy], { type: inert }));
   }
 
@@ -572,6 +675,13 @@ export class ContainerArchive {
       } catch {
         // Ignore revoke errors
       }
+    }
+  }
+
+  /** Revoke and drop all runtime blobs minted during the current page session (called on navigation). */
+  clearRuntimeBlobs(): void {
+    for (const id of [...this.runtimeBlobs.keys()]) {
+      this.dropRuntimeBlob(id);
     }
   }
 
@@ -730,19 +840,22 @@ export class ContainerArchive {
     return [...dirEntries, ...files];
   }
 
-  /** Resolve a frontend asset path (respecting `manifest.frontendRoot` when present). */
+  /** Resolve a frontend asset path (respecting `manifest.frontendRoot`, `/` -> main, and directory `index.html`). */
   resolveFrontendPath(path: string, basePath?: string): string | null {
+    const existing = this.resolveExistingPath(path, basePath);
+    if (existing) return existing;
     const feRoot = this.manifest.frontendRoot
       ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
       : '';
     const direct = resolveVfsPath(path, basePath);
-    if (direct && this.normalizedNames.has(direct)) return direct;
     if (feRoot) {
       const strippedBase = basePath && basePath.startsWith(`${feRoot}/`) ? basePath.slice(feRoot.length + 1) : basePath;
       const rel = resolveVfsPath(path, strippedBase);
       if (rel) {
         const underRoot = `${feRoot}/${rel}`;
         if (this.normalizedNames.has(underRoot)) return underRoot;
+        if (this.normalizedNames.has(`${underRoot}/index.html`)) return `${underRoot}/index.html`;
+        if (this.normalizedNames.has(`${underRoot}/index.htm`)) return `${underRoot}/index.htm`;
       }
     }
     return direct;
@@ -804,12 +917,23 @@ function isBackendPrivatePath(path: string, hasBackend: boolean, backendRootWith
   ) {
     return true;
   }
+  if (/^(?:__softn_generated__\/)?private\//.test(lower) || /(?:^|\/)\.git(?:\/|$)/.test(lower)) {
+    return true;
+  }
   const ext = extOf(lower);
   if (BACKEND_PRIVATE_EXTENSIONS.has(ext)) {
     return true;
   }
-  if (hasBackend && backendRootWithSlash && path.startsWith(backendRootWithSlash)) {
-    return true;
+  if (hasBackend) {
+    if (
+      /^(?:__softn_generated__\/)?(?:server|backend|db|database|migrations)\//.test(lower) ||
+      base === 'seed.json'
+    ) {
+      return true;
+    }
+    if (backendRootWithSlash && lower.startsWith(backendRootWithSlash.toLowerCase())) {
+      return true;
+    }
   }
   return false;
 }

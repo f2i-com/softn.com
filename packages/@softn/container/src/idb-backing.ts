@@ -168,19 +168,28 @@ export async function indexedDbBacking(base: string): Promise<IdbBacking | null>
   };
 }
 
-/** The page's localStorage, under `<base>idb:<name>`: where there is no IndexedDB to keep them in. */
-export function localStorageBacking(base: string): IdbBacking {
+/** The page's localStorage (or custom `Storage`), under `<base>idb:<name>`: where there is no IndexedDB to keep them in. */
+export function localStorageBacking(base: string, storage?: Storage): IdbBacking {
   const prefix = `${base}idb:`;
+  const getStore = (): Storage | undefined => {
+    if (storage) return storage;
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const readPrefixes = (prefixes: readonly string[]): IdbParts => {
     const out: IdbParts = new Map();
-    if (typeof localStorage === 'undefined') return out;
+    const store = getStore();
+    if (!store) return out;
     try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i);
         if (!key || !key.startsWith(prefix)) continue;
         const name = key.slice(prefix.length);
         if (!prefixes.some((p) => name.startsWith(p))) continue;
-        const value = localStorage.getItem(key);
+        const value = store.getItem(key);
         if (value !== null) out.set(name, value);
       }
     } catch {
@@ -193,11 +202,12 @@ export function localStorageBacking(base: string): IdbBacking {
     loadAll: () => Promise.resolve(readPrefixes([''])),
     read: (prefixes) => Promise.resolve(readPrefixes(prefixes)),
     write(changes) {
-      if (typeof localStorage === 'undefined') return Promise.resolve(false);
+      const store = getStore();
+      if (!store) return Promise.resolve(false);
       try {
         for (const [name, value] of changes) {
-          if (value === null) localStorage.removeItem(prefix + name);
-          else localStorage.setItem(prefix + name, value);
+          if (value === null) store.removeItem(prefix + name);
+          else store.setItem(prefix + name, value);
         }
         return Promise.resolve(true);
       } catch {

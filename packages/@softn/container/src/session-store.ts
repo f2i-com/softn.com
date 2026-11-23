@@ -106,66 +106,81 @@ export async function loadContainerSession(storageBase: string): Promise<Persist
   }
 }
 
-export async function saveContainerSession(
+const writeChains = new Map<string, Promise<unknown>>();
+
+function enqueueWrite<T>(storageBase: string, task: () => Promise<T>): Promise<T> {
+  const prev = writeChains.get(storageBase) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(task);
+  writeChains.set(storageBase, next);
+  void next.finally(() => {
+    if (writeChains.get(storageBase) === next) writeChains.delete(storageBase);
+  });
+  return next;
+}
+
+export function saveContainerSession(
   storageBase: string,
   session: PersistedContainerSession
 ): Promise<boolean> {
-  const idb = await openSessionIdb();
-  if (!idb) return false;
-  try {
-    return await new Promise<boolean>((resolve) => {
-      try {
-        const tx = idb.transaction(SESSION_IDB_STORE, 'readwrite');
-        // Convert null-prototype records to plain objects for structured clone safety
-        const plainSessionStorage: Record<string, string> = {};
-        for (const [k, v] of Object.entries(session.sessionStorage)) plainSessionStorage[k] = v;
-        const plainLocalStorage: Record<string, string> = {};
-        for (const [k, v] of Object.entries(session.localStorage)) plainLocalStorage[k] = v;
-        tx.objectStore(SESSION_IDB_STORE).put(
-          {
-            urlPath: session.urlPath,
-            sessionStorage: plainSessionStorage,
-            localStorage: plainLocalStorage,
-            updatedAt: session.updatedAt,
-          },
-          storageBase
-        );
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-        tx.onabort = () => resolve(false);
-      } catch {
-        resolve(false);
-      }
-    });
-  } finally {
+  // Snapshot synchronously so queued writes preserve the exact state at call time
+  // and never race out-of-order against earlier/later saves.
+  const plainSessionStorage: Record<string, string> = {};
+  for (const [k, v] of Object.entries(session.sessionStorage)) plainSessionStorage[k] = v;
+  const plainLocalStorage: Record<string, string> = {};
+  for (const [k, v] of Object.entries(session.localStorage)) plainLocalStorage[k] = v;
+  const snapshot = {
+    urlPath: session.urlPath,
+    sessionStorage: plainSessionStorage,
+    localStorage: plainLocalStorage,
+    updatedAt: session.updatedAt,
+  };
+  return enqueueWrite(storageBase, async () => {
+    const idb = await openSessionIdb();
+    if (!idb) return false;
     try {
-      idb.close();
-    } catch {
-      // ignore
+      return await new Promise<boolean>((resolve) => {
+        try {
+          const tx = idb.transaction(SESSION_IDB_STORE, 'readwrite');
+          tx.objectStore(SESSION_IDB_STORE).put(snapshot, storageBase);
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => resolve(false);
+          tx.onabort = () => resolve(false);
+        } catch {
+          resolve(false);
+        }
+      });
+    } finally {
+      try {
+        idb.close();
+      } catch {
+        // ignore
+      }
     }
-  }
+  });
 }
 
-export async function clearContainerSession(storageBase: string): Promise<void> {
-  const idb = await openSessionIdb();
-  if (!idb) return;
-  try {
-    await new Promise<void>((resolve) => {
-      try {
-        const tx = idb.transaction(SESSION_IDB_STORE, 'readwrite');
-        tx.objectStore(SESSION_IDB_STORE).delete(storageBase);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
-        tx.onabort = () => resolve();
-      } catch {
-        resolve();
-      }
-    });
-  } finally {
+export function clearContainerSession(storageBase: string): Promise<void> {
+  return enqueueWrite(storageBase, async () => {
+    const idb = await openSessionIdb();
+    if (!idb) return;
     try {
-      idb.close();
-    } catch {
-      // ignore
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = idb.transaction(SESSION_IDB_STORE, 'readwrite');
+          tx.objectStore(SESSION_IDB_STORE).delete(storageBase);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
+      });
+    } finally {
+      try {
+        idb.close();
+      } catch {
+        // ignore
+      }
     }
-  }
+  });
 }

@@ -12,13 +12,23 @@ type ExtensionLoader = () => Promise<void>;
 const extensionLoaders = new Map<string, ExtensionLoader>();
 const inFlight = new Map<string, Promise<void>>();
 
+const BUILTIN_EXTENSIONS = new Set(['softn-datagrid', 'softn-chart']);
+
 export function registerUiExtension(tagName: string, loader: ExtensionLoader): void {
-  extensionLoaders.set(tagName.toLowerCase(), loader);
+  const lower = tagName.toLowerCase();
+  if (!lower.startsWith('softn-') || lower === 'softn-app') return;
+  extensionLoaders.set(lower, loader);
+}
+
+/** Whether `tagName` is an allowlisted host-provided SoftN UI extension element. */
+export function isAllowedUiExtension(tagName: string): boolean {
+  const lower = tagName.toLowerCase();
+  return BUILTIN_EXTENSIONS.has(lower) || extensionLoaders.has(lower);
 }
 
 export function ensureUiExtension(tagName: string, runtimeUrl = '/runtime/'): Promise<void> {
   const lower = tagName.toLowerCase();
-  if (!lower.startsWith('softn-') || lower === 'softn-app') return Promise.resolve();
+  if (!isAllowedUiExtension(lower)) return Promise.resolve();
   if (typeof customElements !== 'undefined' && customElements.get(lower)) {
     return Promise.resolve();
   }
@@ -29,7 +39,7 @@ export function ensureUiExtension(tagName: string, runtimeUrl = '/runtime/'): Pr
   const promise = (
     registered
       ? registered()
-      : loadBuiltinOrRemoteExtension(lower, runtimeUrl)
+      : loadBuiltinExtension(lower, runtimeUrl)
   ).catch((err) => {
     console.warn(`[SoftN] Could not load UI extension <${lower}>:`, err);
   });
@@ -38,7 +48,7 @@ export function ensureUiExtension(tagName: string, runtimeUrl = '/runtime/'): Pr
   return promise;
 }
 
-async function loadBuiltinOrRemoteExtension(tag: string, runtimeUrl: string): Promise<void> {
+async function loadBuiltinExtension(tag: string, _runtimeUrl: string): Promise<void> {
   if (typeof customElements === 'undefined' || customElements.get(tag)) return;
 
   switch (tag) {
@@ -52,10 +62,8 @@ async function loadBuiltinOrRemoteExtension(tag: string, runtimeUrl: string): Pr
       defineSoftnChart();
       return;
     }
-    default: {
-      const base = runtimeUrl.endsWith('/') ? runtimeUrl : `${runtimeUrl}/`;
-      const name = tag.slice('softn-'.length);
-      await import(/* @vite-ignore */ `${base}ui/${name}.js`);
-    }
+    default:
+      // Never dynamically import arbitrary remote modules from untrusted guest tag names.
+      return;
   }
 }

@@ -236,6 +236,8 @@ export class HostDomPatcher {
   private measureScheduled = false;
   private readonly imageCache = new Map<string, HTMLImageElement>();
   /** The blob each image fetched for the app to read back is shown from (loadReadable), and what each holds. */
+  /** CSS custom properties (`--*`) set by guest script on `document.documentElement.style`. */
+  private readonly guestRootCustomProps = new Set<string>();
   private readonly readableUrls = new Map<HTMLImageElement, string>();
   private readonly readableSizes = new Map<string, number>();
   /** Bytes of such pictures being read now, held with those kept to their total. */
@@ -574,6 +576,32 @@ export class HostDomPatcher {
             } else if (id === 1 && lowerName === 'style') {
               if (value === null) root.removeAttribute('style');
               else root.setAttribute('style', sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline'));
+            } else if ((id === 0 || id === GUEST_HTML_ID) && lowerName === 'style') {
+              // Allow CSS custom properties (`--*`) on `document.documentElement` so theme
+              // variables work without letting guest CSS override container box layout.
+              const nextProps = new Map<string, string>();
+              if (value) {
+                const sanitized = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline');
+                for (const decl of sanitized.split(';')) {
+                  const colon = decl.indexOf(':');
+                  if (colon <= 0) continue;
+                  const prop = decl.slice(0, colon).trim();
+                  const propVal = decl.slice(colon + 1).trim();
+                  if (/^--[A-Za-z0-9_-]+$/.test(prop) && !prop.startsWith('--softn-') && propVal) {
+                    nextProps.set(prop, propVal);
+                  }
+                }
+              }
+              for (const oldProp of this.guestRootCustomProps) {
+                if (!nextProps.has(oldProp)) {
+                  this.docRootEl.style.removeProperty(oldProp);
+                  this.guestRootCustomProps.delete(oldProp);
+                }
+              }
+              for (const [prop, propVal] of nextProps) {
+                this.docRootEl.style.setProperty(prop, propVal);
+                this.guestRootCustomProps.add(prop);
+              }
             }
             break;
           }
@@ -791,8 +819,16 @@ export class HostDomPatcher {
       }
     }
     try {
-      if (clean === null) el.removeAttribute(name);
-      else el.setAttribute(name, clean);
+      if (clean === null) {
+        if (lowerName === 'xlink:href' && el.namespaceURI === SVG_NS) {
+          el.removeAttributeNS('http://www.w3.org/1999/xlink', 'href');
+        }
+        el.removeAttribute(name);
+      } else if (lowerName === 'xlink:href' && el.namespaceURI === SVG_NS) {
+        el.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', clean);
+      } else {
+        el.setAttribute(name, clean);
+      }
     } catch {
       // Ignore invalid attribute names
     }
@@ -1085,7 +1121,28 @@ export class HostDomPatcher {
         let total = blob.size;
         for (const kept of this.readableSizes.values()) total += kept;
         if (total > MAX_READABLE_TOTAL_BYTES) throw new Error('too much');
-        const url = URL.createObjectURL(blob);
+        // Never mint an active-document host `blob:` URL (e.g. text/html, image/svg+xml, *+xml)
+        // from an untrusted remote CORS response.
+        const rawType = (blob.type || response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        let url: string;
+        if (rawType === 'image/svg+xml') {
+          const buf = new Uint8Array(await blob.arrayBuffer());
+          url = `data:image/svg+xml;base64,${buf.byteLength > 0 ? bytesToBase64(buf) : 'IA=='}`;
+        } else {
+          const safeType =
+            rawType === 'image/png' ||
+            rawType === 'image/jpeg' ||
+            rawType === 'image/gif' ||
+            rawType === 'image/webp' ||
+            rawType === 'image/avif' ||
+            rawType === 'image/bmp' ||
+            rawType === 'image/apng' ||
+            rawType === 'image/x-icon'
+              ? rawType
+              : 'application/octet-stream';
+          const safeBlob = safeType === blob.type ? blob : new Blob([blob], { type: safeType });
+          url = URL.createObjectURL(safeBlob);
+        }
         this.readableUrls.set(img, url);
         this.readableSizes.set(url, blob.size);
         img.src = url;
@@ -1099,7 +1156,7 @@ export class HostDomPatcher {
     if (url === undefined) return;
     this.readableUrls.delete(img);
     this.readableSizes.delete(url);
-    URL.revokeObjectURL(url);
+    if (url.startsWith('blob:')) URL.revokeObjectURL(url);
   }
 
   /**
@@ -1517,7 +1574,15 @@ export class HostDomPatcher {
     }
     const img = new Image();
     img.addEventListener('load', () => answer(true, img.naturalWidth, img.naturalHeight), { once: true });
-    img.addEventListener('error', () => answer(false), { once: true });
+    img.addEventListener(
+      'error',
+      () => {
+        // Evict failed loads so a transient network failure can be retried.
+        if (this.imageCache.get(name) === img) this.imageCache.delete(name);
+        answer(false);
+      },
+      { once: true }
+    );
     this.imageCache.set(name, img);
     // From another site, fetched to be read back; the app's own file, a blob or data: address
     // is loaded as it is (and read back as it is: isOwnPicture). Every crossOrigin image was
@@ -1537,8 +1602,13 @@ export class HostDomPatcher {
     const ended = (state: 'finished' | 'cancelled') => {
       if (!this.disposed) this.callbacks.onEvent(-1, 'softn:animation', { id: key, state }, []);
     };
-    // Those of elements that have left the page are let go.
-    for (const [other, kept] of this.animations) if (!kept.el.isConnected) this.animations.delete(other);
+    // Prune animations whose elements left the page or whose playback already finished/idled
+    // so short-lived UI animations never exhaust MAX_ANIMATIONS.
+    for (const [other, kept] of this.animations) {
+      if (!kept.el.isConnected || kept.animation.playState === 'finished' || kept.animation.playState === 'idle') {
+        this.animations.delete(other);
+      }
+    }
     const node = id === 1 ? this.viewportEl : this.nodes.get(id);
     if (!(node instanceof Element) || typeof node.animate !== 'function' || this.animations.has(key) || this.animations.size >= MAX_ANIMATIONS) {
       // Nothing to run it on (or no more room): it ends at once, so whatever waits on it goes on.
@@ -1656,8 +1726,14 @@ export class HostDomPatcher {
   }
 
   private followClickedLink(href: string): void {
-    if (isExternalHref(href)) this.callbacks.onExternalLink?.(href);
-    else this.callbacks.onNavigate?.(href);
+    if (isExternalHref(href)) {
+      this.callbacks.onExternalLink?.(href);
+    } else {
+      // Sanitized static `<a href>` values are already resolved to archive-root paths
+      // (e.g. `docs/other.html`); lead with `/` so navigating from `/docs/guide.html`
+      // never double-prefixes `/docs/docs/other.html`.
+      this.callbacks.onNavigate?.(href.startsWith('/') ? href : `/${href}`);
+    }
   }
 
   private afterGuestEvent(event: Event, action: () => void): void {
@@ -1767,7 +1843,7 @@ export class HostDomPatcher {
         } catch {
           to = null;
         }
-        if (to && this.owns(to)) to.scrollIntoView({ block: 'start' });
+        if (to && this.owns(to)) this.scrollIntoBox(to as HTMLElement);
         return;
       }
       if (isExternalHref(href) && !this.callbacks.onExternalLink) {
@@ -1920,7 +1996,7 @@ export class HostDomPatcher {
       let activeEl = root.activeElement;
       while (activeEl?.shadowRoot && this.shadowRoots.has(activeEl.shadowRoot) && activeEl.shadowRoot.activeElement) activeEl = activeEl.shadowRoot.activeElement;
       const activeId = activeEl instanceof Element && this.owns(activeEl) ? this.findNearestNodeId(activeEl) : null;
-      if (activeId !== null) syncChanges.push(['f', activeId]);
+      syncChanges.push(['f', activeId ?? 0]);
 
       const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this), this.origin());
       const answered =
@@ -2155,10 +2231,19 @@ export class HostDomPatcher {
     this.shadowSheets.clear();
     this.rootIds.clear();
     this.imageCache.clear();
-    for (const url of this.readableUrls.values()) URL.revokeObjectURL(url);
+    for (const kept of this.animations.values()) {
+      try { kept.animation.cancel(); } catch { /* ignore */ }
+    }
+    this.animations.clear();
+    for (const url of this.readableUrls.values()) {
+      if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+    }
     this.readableUrls.clear();
     this.readableSizes.clear();
-    this.animations.clear();
+    this.offPage2d.clear();
+    this.drawnLately.clear();
+    this.shadowRoots.clear();
+    this.guestRootCustomProps.clear();
     this.styleSheets.clear();
     this.links.clear();
     this.pendingProperties.clear();

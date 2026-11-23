@@ -1,4 +1,4 @@
-import { mountSoftNContainer, type SoftNContainerHandle } from '@softn/container';
+import { mountSoftNContainer, SoftNContainerError, type SoftNContainerHandle } from '@softn/container';
 import { manifestRunsInContainer } from '@softn/bundle-format/engine';
 import { containerRuntimeUrl } from '@softn/runtime-shell/containerHost';
 import type { Capability } from '@softn/bundle-format/capabilities';
@@ -8,6 +8,7 @@ import {
   grantedContainerCapabilities,
   isContainerBundle,
   isSafeClientPath,
+  isSafeLocalContainerPath,
   type ContainerBackendTransport,
 } from './containerBridge';
 import { bytesOf } from './media';
@@ -44,12 +45,47 @@ window.addEventListener('message', async event => {
   if (closed || port || event.source !== parent || event.data?.type !== 'formlogic:init' || !event.ports[0]) return;
   const data = event.data;
   port = event.ports[0];
+  let shown = false;
+  let pendingNavigate: string | null = null;
+  let pendingPlace: string | null = null;
+  let lastPostedPlace: string | null = null;
+  const emitPlace = (place: string) => {
+    if (closed) return;
+    if (!shown) {
+      pendingPlace = place;
+      return;
+    }
+    if (place === lastPostedPlace) return;
+    lastPostedPlace = place;
+    post({ type: 'place', place });
+  };
+  const navigateToPlace = (raw: string) => {
+    const parsed = readPlace(raw);
+    if (!parsed || !container) return;
+    const basePage = parsed.file ?? container.manifest.main;
+    const targetUrl = parsed.section
+      ? `${basePage.startsWith('/') ? basePage : `/${basePage}`}#${encodeURIComponent(parsed.section)}`
+      : basePage;
+    void container.navigate(targetUrl).catch(() => {});
+  };
   port.onmessage = ({ data }) => {
     if (data?.type === 'formlogic:dispose') { close(); return; }
+    if (data?.type === 'formlogic:update') {
+      if (!closed) post({ type: 'updated', id: data.id, outcome: 'reopen' });
+      return;
+    }
+    if (data?.type === 'formlogic:navigate' && typeof (data.to ?? data.place) === 'string') {
+      const targetStr = String(data.to ?? data.place);
+      if (container) navigateToPlace(targetStr);
+      else pendingNavigate = targetStr;
+      return;
+    }
+    // Only settle in-flight backend/storage calls for untyped reply packets (never for typed
+    // parent control messages that happen to carry a numeric `id`).
+    if (data?.type !== undefined) return;
     if (!calls.settle(data?.id, data?.result)) saves.settle(data?.id, data?.result);
   };
   port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); saves.failInFlight(BACKEND_UNREADABLE); };
-  let shown = false;
   try {
     if (self.origin !== 'null' || parent === window || !data.native || data.engine !== 'web-container') {
       throw new Error('Open this app from its sandboxed FormLogic frame.');
@@ -64,13 +100,15 @@ window.addEventListener('message', async event => {
       ? manifestRunsInContainer(parsedManifest) || isContainerBundle(parsedManifest, clientEntries)
       : isContainerBundle(null, clientEntries);
     if (!runsInContainer) throw new Error('This project requires the classic SoftN renderer.');
+    const allowLocalBackend = data.containerBackend !== 'host';
+    const allowPath = allowLocalBackend ? isSafeLocalContainerPath : isSafeClientPath;
     const source: Record<string, string | Uint8Array> = Object.create(null);
     for (const [path, content] of clientEntries.entries()) {
-      if (isSafeClientPath(path)) source[path] = content;
+      if (allowPath(path)) source[path] = content;
     }
     for (const [path, content] of Object.entries(data.assets ?? {})) {
       const bytes = bytesOf(content);
-      if (bytes && isSafeClientPath(path)) source[path] = bytes;
+      if (bytes && allowPath(path)) source[path] = bytes;
     }
     const lane = data.storageLane === true ? saves : calls;
     store = installAppStorage(data.storage ?? {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle),
@@ -94,12 +132,44 @@ window.addEventListener('message', async event => {
     hostBackend = data.containerBackend === 'host'
       ? createPortBackendTransport((action, input) => calls.call(action, input))
       : undefined;
+    type ErrorPacket = {
+      phase: 'load' | 'runtime';
+      reason: string;
+      file?: string;
+      line?: number;
+      column?: number;
+      snippet?: string;
+      stack?: string;
+    };
+    const bootErrors: ErrorPacket[] = [];
+    const buildErrorPacket = (error: unknown, phase: 'load' | 'runtime'): ErrorPacket => {
+      const reason = (error instanceof Error ? error.message : String(error)).slice(0, 600);
+      if (error instanceof SoftNContainerError) {
+        return {
+          phase,
+          reason,
+          ...(error.file ? { file: error.file } : {}),
+          ...(error.line !== undefined ? { line: error.line } : {}),
+          ...(error.column !== undefined ? { column: error.column } : {}),
+          ...(error.snippet ? { snippet: error.snippet.slice(0, 1200) } : {}),
+          ...(error.guestStack ? { stack: error.guestStack.slice(0, 2000) } : {}),
+        };
+      }
+      const stack = error instanceof Error && typeof error.stack === 'string' ? error.stack.slice(0, 2000) : undefined;
+      return { phase, reason, ...(stack ? { stack } : {}) };
+    };
+    const initialPlace = readPlace(data.place);
     container = await mountSoftNContainer(target, {
       source, appId: data.appId, runtimeUrl, storage: store.storage,
       ...(hostBackend ? { backendTransport: hostBackend } : {}),
-      initialPage: readPlace(data.place)?.file ?? undefined,
+      initialPage: initialPlace?.file ?? undefined,
+      ...(initialPlace?.section
+        ? {
+            initialPath: `/${initialPlace.file ?? ''}${initialPlace.section ? `#${encodeURIComponent(initialPlace.section)}` : ''}`,
+          }
+        : {}),
       onPageChange: (page, manifest) => {
-        if (!closed) post({ type: 'place', place: writePlace({ file: page === manifest.main ? null : page, section: null }) });
+        emitPlace(writePlace({ file: page === manifest.main ? null : page, section: null }));
       },
       onExternalLink: href => { if (!closed) post({ type: 'link', href }); },
       engineWasm: { javascript: fullEngine, python: pythonEngine, 'python-torch': pythonEngine },
@@ -107,22 +177,74 @@ window.addEventListener('message', async event => {
       initialGrantedCapabilities: grantedCaps, downloads: allowFiles ? 'ask' : 'deny',
       theme: data.dark === true ? 'dark' : 'light',
       backendCall: (action, input) => {
-        if (action !== 'nativeRequest' || typeof input.url !== 'string' || !/^\/api\/[A-Za-z0-9_/-]+(?:\?[^#]*)?$/.test(input.url)) {
+        if (action === 'formlogicUpload') {
+          return calls.call('formlogicUpload', input);
+        }
+        const pathOnly = typeof input.url === 'string' ? input.url.split('?')[0] : '';
+        if (
+          action !== 'nativeRequest' ||
+          typeof input.url !== 'string' ||
+          !/^\/api\/[A-Za-z0-9_.%~/-]+(?:\?[^#]*)?$/.test(input.url) ||
+          /(?:^|\/)\.\.(?:\/|$)/.test(pathOnly) ||
+          /%2e%2e/i.test(pathOnly)
+        ) {
           return Promise.resolve({ error: 'Use an app-relative API route under /api/.' });
         }
         return calls.call('nativeRequest', input);
       },
-      onError: error => { if (shown) post({ type: 'error', phase: 'runtime', reason: error.message.slice(0, 300) }); },
+      onConsole: (level, text) => {
+        const safeText = String(text).slice(0, 1200);
+        try {
+          if (level === 'error') console.error('[SoftN App]', safeText);
+          else if (level === 'warn') console.warn('[SoftN App]', safeText);
+          else console.debug('[SoftN App]', safeText);
+        } catch { /* ignore */ }
+        if (!closed) {
+          post({ type: 'console', level, text: safeText });
+          if (level === 'error' && safeText.startsWith('[backend]')) {
+            const packet: ErrorPacket = { phase: 'runtime', reason: safeText.slice(0, 600) };
+            if (shown) post({ type: 'error', ...packet });
+            else if (bootErrors.length < 8) bootErrors.push(packet);
+          }
+        }
+      },
+      onError: error => {
+        const packet = buildErrorPacket(error, 'runtime');
+        if (shown) post({ type: 'error', ...packet });
+        else if (bootErrors.length < 8) bootErrors.push(packet);
+      },
     });
     if (closed) { container.dispose(); return; }
     shown = true;
     post({ type: 'shown' });
+    if (pendingPlace !== null) {
+      const queuedPlace = pendingPlace;
+      pendingPlace = null;
+      emitPlace(queuedPlace);
+    }
+    if (pendingNavigate !== null) {
+      const queuedNav = pendingNavigate;
+      pendingNavigate = null;
+      navigateToPlace(queuedNav);
+    }
+    for (const packet of bootErrors) {
+      post({ type: 'error', ...packet });
+    }
   } catch (error) {
     if (closed) return;
-    const reason = error instanceof Error ? error.message.slice(0, 300) : 'The web app could not be opened.';
+    const reason = error instanceof Error ? error.message.slice(0, 600) : 'The web app could not be opened.';
     target.textContent = reason;
-    post({ type: 'error', phase: 'load', reason });
+    const extra = error instanceof SoftNContainerError
+      ? {
+          ...(error.file ? { file: error.file } : {}),
+          ...(error.line !== undefined ? { line: error.line } : {}),
+          ...(error.column !== undefined ? { column: error.column } : {}),
+          ...(error.snippet ? { snippet: error.snippet.slice(0, 1200) } : {}),
+          ...(error.guestStack ? { stack: error.guestStack.slice(0, 2000) } : {}),
+        }
+      : {};
+    post({ type: 'error', phase: 'load', reason, ...extra });
   }
 });
 
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, webContainer: 1, containerBackend: 1, places: 1, links: 1, shown: 1, mediaBytes: 1, storageProtocol: STORAGE_PROTOCOL }, '*');
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, webContainer: 1, containerBackend: 1, places: 1, navigate: 1, links: 1, shown: 1, mediaBytes: 1, storageProtocol: STORAGE_PROTOCOL }, '*');

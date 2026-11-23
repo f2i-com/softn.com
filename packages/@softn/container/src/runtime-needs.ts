@@ -43,7 +43,7 @@ export async function containerRuntimeNeeds(
     // A SoftN `.ui` bundle the element was handed is not the container's to run.
     if (archive.manifest.mode === 'legacy-ui') return needs;
 
-    const names = archive.names();
+    const names = archive.names().filter((name) => archive.isFrontendPath(name));
     // Text only, and only what is read as text: a picture is not inflated to be looked through.
     const textFiles: Record<string, string> = Object.create(null);
     for (const name of names) {

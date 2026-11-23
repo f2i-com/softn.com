@@ -7,6 +7,7 @@ import {
   grantedContainerCapabilities,
   isContainerBundle,
   isSafeClientPath,
+  isSafeLocalContainerPath,
 } from '../src/containerBridge.ts';
 
 test('identifies v2 Web Containers by manifest engine, container flag, backend block, or zero-config HTML', () => {
@@ -31,6 +32,10 @@ test('identifies v2 Web Containers by manifest engine, container flag, backend b
   ]);
   assert.equal(isContainerBundle({ name: 'Notes', main: 'ui/main.ui' }, v1), false);
   assert.equal(isContainerBundle({ engine: '2', name: 'Notes', main: 'ui/main.ui' }, v1), false);
+  assert.equal(
+    isContainerBundle({ name: 'Notes', main: 'ui/main.ui', backend: { runtime: 'javascript', entry: 'backend/server.js' } }, v1),
+    false
+  );
 });
 
 test('assembles container VFS from client text and binary/base64 assets while dropping unsafe paths', () => {
@@ -104,6 +109,27 @@ test('bridges container HTTP requests across MessagePort via containerHttp actio
   assert.equal(isSafeClientPath('private/config.json'), false);
   assert.equal(isSafeClientPath('db/schema.sql'), false);
 
+  assert.equal(isSafeLocalContainerPath('backend/server.js'), true);
+  assert.equal(isSafeLocalContainerPath('server/index.php'), true);
+  assert.equal(isSafeLocalContainerPath('db/schema.sql'), true);
+  assert.equal(isSafeLocalContainerPath('private/config.json'), false);
+  assert.equal(isSafeLocalContainerPath('../escape.sql'), false);
+
+  const localVfs = buildContainerSource(
+    new Map([
+      ['manifest.json', '{"engine":2,"main":"index.html","backend":{"runtime":"javascript","entry":"backend/server.js"}}'],
+      ['index.html', '<h1>App</h1>'],
+      ['backend/server.js', 'function handleRequest() { return "ok"; }'],
+      ['db/schema.sql', 'CREATE TABLE t (id INTEGER PRIMARY KEY);'],
+      ['private/secret.json', '{"key":"no"}'],
+    ]),
+    undefined,
+    { allowLocalBackend: true }
+  );
+  assert.equal(localVfs['backend/server.js'], 'function handleRequest() { return "ok"; }');
+  assert.equal(localVfs['db/schema.sql'], 'CREATE TABLE t (id INTEGER PRIMARY KEY);');
+  assert.equal(localVfs['private/secret.json'], undefined);
+
   const wrappedTransport = createPortBackendTransport(async () => ({
     result: {
       status: 200,
@@ -121,4 +147,77 @@ test('bridges container HTTP requests across MessagePort via containerHttp actio
     path: '/api/items',
   });
   assert.equal(afterDispose.status, 503);
+});
+
+test('PortBackendTransport maintains Set-Cookie session jar, blocks SSRF/spoofing headers, and survives bad base64', async () => {
+  const seen = [];
+  let callNum = 0;
+  const transport = createPortBackendTransport(async (_action, input) => {
+    seen.push(input);
+    callNum++;
+    if (callNum === 1) {
+      return {
+        status: 200,
+        headers: [['Set-Cookie', 'sid=abc123; Path=/; HttpOnly']],
+        bodyBase64: Buffer.from('ok').toString('base64'),
+      };
+    }
+    if (callNum === 2) {
+      return {
+        status: 200,
+        headers: [['Set-Cookie', 'sid=; Path=/; Max-Age=0']],
+        bodyBase64: '!!!not-valid-base64!!!',
+      };
+    }
+    return { status: 200, headers: [], bodyBase64: '' };
+  });
+
+  // 1. Path traversal / protocol-relative SSRF rejected locally before reaching host.
+  assert.equal((await transport.fetch({ method: 'GET', path: '//evil.example/x' })).status, 400);
+  assert.equal((await transport.fetch({ method: 'GET', path: '/../secret' })).status, 400);
+  assert.equal((await transport.fetch({ method: 'GET', path: '/%2e%2e/secret' })).status, 400);
+  assert.equal(seen.length, 0);
+
+  // 2. Host-identity headers (hyphen AND underscore variants) stripped before sending.
+  const first = await transport.fetch({
+    method: 'GET',
+    path: '/api/login',
+    headers: {
+      'X-FormLogic-User-Id': 'spoof',
+      'x_formlogic_user_id': 'spoof',
+      'X-App-Token': 'ok',
+    },
+  });
+  assert.equal(first.status, 200);
+  assert.equal(seen[0].headers['x-formlogic-user-id'], undefined);
+  assert.equal(seen[0].headers['x_formlogic_user_id'], undefined);
+  assert.equal(seen[0].headers['x-app-token'], 'ok');
+
+  // 3. Second request automatically carries captured cookie, and malformed base64 returns 502 instead of throwing.
+  const second = await transport.fetch({ method: 'GET', path: '/api/me' });
+  assert.equal(seen[1].headers.cookie, 'sid=abc123');
+  assert.equal(second.status, 502);
+
+  // 4. Third request has Max-Age=0 cookie cleared.
+  const third = await transport.fetch({ method: 'GET', path: '/api/me' });
+  assert.equal(third.status, 200);
+  assert.equal(seen[2].headers.cookie, undefined);
+
+  // 5. Tightened isSafeClientPath blocks secrets and backend code extensions.
+  assert.equal(isSafeClientPath('.env'), false);
+  assert.equal(isSafeClientPath('.env.production'), false);
+  assert.equal(isSafeClientPath('.htaccess'), false);
+  assert.equal(isSafeClientPath('.git/config'), false);
+  assert.equal(isSafeClientPath('admin.php'), false);
+  assert.equal(isSafeClientPath('data.sqlite'), false);
+});
+
+test('web.ts handles formlogic:update, guards typed message IDs from settling backend calls, and gates place until shown', async () => {
+  const { readFileSync } = await import('node:fs');
+  const webSrc = readFileSync(new URL('../src/web.ts', import.meta.url), 'utf8');
+  assert.match(webSrc, /data\?\.type === 'formlogic:update'/);
+  assert.match(webSrc, /outcome: 'reopen'/);
+  assert.match(webSrc, /if \(data\?\.type !== undefined\) return;/);
+  assert.match(webSrc, /pendingNavigate/);
+  assert.match(webSrc, /pendingPlace/);
 });

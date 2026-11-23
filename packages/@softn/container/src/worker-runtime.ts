@@ -45,6 +45,7 @@ import { loadZippEngine, type LoadedZippBindings, type ZippEngineInstance } from
 import { WebGLWorkerHost } from './webgl-worker-host';
 import { ThreeWorkerHost } from './three-worker-host';
 import { GUEST_THREE_NATIVE_SOURCE, hasBundledThree, instrumentBundledThree } from './guest-three-native';
+import { SourceMapRegistry, type EvalFallbackSource, type SourceSegment } from './source-map';
 import type {
   Canvas2DCmd,
   ContainerPermissions,
@@ -409,6 +410,7 @@ const WARNINGS_MARKED = `(function () { var c = globalThis.console; if (!c || ty
 
 const LS_SYNC_OPS = ['ls.getItem', 'ls.setItem', 'ls.removeItem', 'ls.clear'];
 const APP_SYNC_OPS = ['app.esm.resolve', 'app.vfs.fetch', 'app.xdb.watch', 'app.idb.keys', 'app.idb.read', 'app.idb.write', 'app.idb.remove', 'app.canvas.image', 'app.canvas.dataurl', 'app.canvas.pixels', 'app.webgl', 'app.three', 'app.session', 'app.bytes.decode', 'app.idb.begin', 'app.idb.end', 'app.script.prepare', 'app.scripts.placed'];
+const SCRIPT_ERROR_MARK = '\u0000softn:err:';
 
 interface DbRecord {
   id: string;
@@ -522,6 +524,12 @@ export class ContainerWorkerSession {
   private readonly standbyRefused = new Map<string, string>();
   /** The page's own scripts, handed to the app's side once at the start (scripts.placed). */
   private placedScripts: unknown[] = [];
+  /** Source-line map translating combined ZIPP program lines back to original app files & lines. */
+  private readonly sourceMap = new SourceMapRegistry();
+  /** Metadata per extracted script id for mapping indirect-eval errors back to exact file & line. */
+  private readonly scriptSources = new Map<number, EvalFallbackSource>();
+  /** Metadata per registered module URL for mapping combined module lines back to file & line. */
+  private readonly moduleSources = new Map<string, { file: string; startLine: number; wrapperLines: number; sourceText: string }>();
   /** Module scripts of text the app added, each at an address of its own. */
   private addedModules = 0;
   /** A drain under way (drainTurn), and whether an answer given in it asks for another round. */
@@ -761,12 +769,23 @@ export class ContainerWorkerSession {
       this.externalThreeLoaded = false;
 
       // Pre-link all reachable VFS & inline-supplied vendor ES modules
+      this.sourceMap.clear();
+      this.scriptSources.clear();
+      this.moduleSources.clear();
+      for (const s of msg.scripts) {
+        this.scriptSources.set(s.id, {
+          file: s.displayFile || s.originPath,
+          startLine: s.startLine ?? 1,
+          sourceText: s.code,
+          isEval: false,
+        });
+      }
       const factoryBlocks: string[] = [];
       const namedOnDemand: Array<{ spec: string; from: string }> = [];
       for (const s of msg.scripts) {
         if (s.kind === 'module') {
           const entryUrl = `${VIRTUAL_ORIGIN}/${s.originPath.replace(/^\/+/, '')}`;
-          await this.collectModuleGraph(s.code, s.originPath, entryUrl, factoryBlocks, undefined, namedOnDemand);
+          await this.collectModuleGraph(s.code, s.originPath, entryUrl, factoryBlocks, undefined, namedOnDemand, this.definedModules, s.displayFile, s.startLine);
         }
       }
       // A classic script's import() calls, made the app's modules' (the engine's own refused
@@ -904,9 +923,12 @@ export class ContainerWorkerSession {
       //
       // A script that throws, or does not parse, says so and the next one still runs.
       const bootSteps: string[] = [];
+      const bootStepMeta: Array<EvalFallbackSource | null> = [];
       const classicBlocks: string[] = [];
       /** Each long classic script's file, by its block. */
       const classicFiles: string[] = [];
+      const classicScriptIds: number[] = [];
+      const classicSources: Array<{ file: string; startLine: number; sourceText: string }> = [];
       // In the order a browser runs them: the page's scripts as they come, then the deferred
       // ones (a module, a script by its address with defer), in their order.
       const runOrder = [...msg.scripts.filter((s) => !s.defer), ...msg.scripts.filter((s) => s.defer)];
@@ -918,27 +940,37 @@ export class ContainerWorkerSession {
           let body: string;
           const code = classicCode.get(s) ?? s.code;
           const evaluated = s.language === 'typescript' ? '' : scriptForEval(code);
+          const displayFile = s.displayFile || (s.src ? s.originPath : 'inline-script.js');
+          const startLine = s.startLine ?? 1;
           if (s.language === 'typescript') {
             body = `\n${typeScriptScriptPublished(code)}\n`;
+            bootStepMeta.push({ file: displayFile, startLine, sourceText: s.code });
           } else if (tooLongForEval(evaluated)) {
             // Past what the engine compiles at run time: written into the program as a
             // function, run in its turn, with what it declares at its top made global.
             const fn = `__softnClassic${classicBlocks.length}`;
             const { source, trusted } = classicScriptAsFunction(code, fn);
             classicBlocks.push(source);
-            classicFiles.push(s.src ? s.originPath : 'a script in the page');
+            classicFiles.push(displayFile);
+            classicScriptIds.push(Number(s.id));
+            classicSources.push({ file: displayFile, startLine, sourceText: s.code });
             body = ` ${fn}.call(globalThis); `;
             if (!trusted) body = ` console.warn('[SoftN] A long script could not be read for the names it declares: what it declares at its top is not global here.');${body}`;
+            bootStepMeta.push(null);
           } else {
+            const existingMeta = this.scriptSources.get(s.id);
+            if (existingMeta) existingMeta.isEval = true;
             body = ` (0, eval)(${JSON.stringify(evaluated)}); `;
+            bootStepMeta.push(null);
           }
           // Its element is document.currentScript while it runs (webpack finds where its parts are by it).
-          bootSteps.push(`__softnBoot = __softnBoot.then(function () { __softnScriptRunning(${Number(s.id)});${body}__softnScriptRunning(null); }).then(undefined, function (err) { __softnScriptRunning(null); __softnScriptFailed(err); });`);
+          bootSteps.push(`__softnBoot = __softnBoot.then(function () { __softnScriptRunning(${Number(s.id)});${body}__softnScriptRunning(null); }).then(undefined, function (err) { __softnScriptRunning(null); __softnScriptFailed(err, ${Number(s.id)}); });`);
         } else if (s.kind === 'module') {
           const entryUrl = `${VIRTUAL_ORIGIN}/${s.originPath.replace(/^\/+/, '')}`;
           bootSteps.push(
-            `__softnBoot = __softnBoot.then(function () { return __softnModules.import(${JSON.stringify(entryUrl)}, ${JSON.stringify(entryUrl)}); }).then(undefined, __softnScriptFailed);`
+            `__softnBoot = __softnBoot.then(function () { return __softnModules.import(${JSON.stringify(entryUrl)}, ${JSON.stringify(entryUrl)}); }).then(undefined, function (err) { __softnScriptFailed(err, ${Number(s.id)}); });`
           );
+          bootStepMeta.push(null);
         }
       }
 
@@ -1001,7 +1033,9 @@ export class ContainerWorkerSession {
         `function __softnContainerWorkerMessage(id, packed) { if (typeof globalThis.__softnWorkerFromWorker === 'function') globalThis.__softnWorkerFromWorker(id, packed); }`,
         `function __softnContainerWorkerError(id, message) { if (typeof globalThis.__softnWorkerFailedAt === 'function') globalThis.__softnWorkerFailedAt(id, message); }`,
         `function __softnContainerDbChanged(names) { return globalThis.__softnDbChanged(names); }`,
-        `function __softnScriptFailed(err) { console.error('[SoftN] Script startup error:', err && err.stack ? err.stack : String(err)); }`,
+        `function __softnReportError(phase, err, scriptId) { var msg = err && err.message ? String(err.message) : String(err); var st = err && err.stack ? String(err.stack) : ''; console.error(${JSON.stringify(SCRIPT_ERROR_MARK)} + JSON.stringify({ phase: phase || 'runtime', scriptId: scriptId || 0, message: msg, stack: st })); }`,
+        `globalThis.__softnReportError = __softnReportError;`,
+        `function __softnScriptFailed(err, scriptId) { __softnReportError('script-startup', err, scriptId); }`,
         // A warning and an error are one stream to the engine. A warning is written with a
         // mark in front, which drainConsole reads and takes off, so a host hears each as it is.
         WARNINGS_MARKED,
@@ -1010,22 +1044,86 @@ export class ContainerWorkerSession {
         `if (typeof globalThis.__softnPlaceScripts === 'function') globalThis.__softnPlaceScripts(host.callSync('scripts.placed'));`,
         `var __softnBoot = Promise.resolve();`,
         ...bootSteps,
-        `__softnBoot.then(function () { globalThis.__softnDocReady(); }, function (err) { __softnScriptFailed(err); globalThis.__softnDocReady(); });`,
+        `__softnBoot.then(function () { globalThis.__softnDocReady(); }, function (err) { __softnScriptFailed(err, 0); globalThis.__softnDocReady(); });`,
         ];
-        // The lines each block that may be stood in for is on, as the engine counts them in what it reports.
+        // The lines each block that may be stood in for is on, as the engine counts them in what it reports,
+        // PLUS exact SourceSegments for translating combined ZIPP line numbers back to real app files & lines.
         const firstModule = modules.length > 0 ? parts.indexOf(modules[0]) : -1;
         const firstBlock = blocks.length > 0 ? parts.indexOf(blocks[0]) : -1;
         const firstStandby = standby.length > 0 ? parts.indexOf(standby[0]) : -1;
+        const firstBootStep = bootSteps.length > 0 ? parts.indexOf(bootSteps[0]) : -1;
         const lines: Array<{ key: string; from: number; to: number }> = [];
+        const segments: SourceSegment[] = [];
         let line = 1;
         parts.forEach((part, index) => {
           const end = line + lineBreaks(part);
-          if (firstBlock >= 0 && index >= firstBlock && index < firstBlock + blocks.length) lines.push({ key: `classic:${index - firstBlock}`, from: line, to: end });
-          if (firstStandby >= 0 && index >= firstStandby && index < firstStandby + standby.length) lines.push({ key: `standby:${index - firstStandby}`, from: line, to: end });
-          if (firstModule >= 0 && index >= firstModule && index < firstModule + modules.length && onDemand.has(index - firstModule)) lines.push({ key: `module:${index - firstModule}`, from: line, to: end });
+          if (firstModule >= 0 && index >= firstModule && index < firstModule + modules.length) {
+            const modIdx = index - firstModule;
+            if (onDemand.has(modIdx)) lines.push({ key: `module:${modIdx}`, from: line, to: end });
+            const urlMatch = /^__softnModules\.define\(("[^"]+")/.exec(part);
+            if (urlMatch) {
+              try {
+                const modUrl = JSON.parse(urlMatch[1]) as string;
+                const meta = this.moduleSources.get(modUrl);
+                if (meta) {
+                  segments.push({
+                    file: meta.file,
+                    combinedStart: line,
+                    combinedEnd: end,
+                    sourceStartLine: meta.startLine,
+                    wrapperLines: meta.wrapperLines,
+                    sourceText: meta.sourceText,
+                  });
+                }
+              } catch { /* ignore */ }
+            }
+          }
+          if (firstBlock >= 0 && index >= firstBlock && index < firstBlock + blocks.length) {
+            const blkIdx = index - firstBlock;
+            lines.push({ key: `classic:${blkIdx}`, from: line, to: end });
+            const meta = classicSources[blkIdx];
+            if (meta && !broken.has(`classic:${blkIdx}`)) {
+              segments.push({
+                file: meta.file,
+                combinedStart: line,
+                combinedEnd: end,
+                sourceStartLine: meta.startLine,
+                wrapperLines: 1,
+                sourceText: meta.sourceText,
+              });
+            }
+          }
+          if (firstStandby >= 0 && index >= firstStandby && index < firstStandby + standby.length) {
+            const stIdx = index - firstStandby;
+            lines.push({ key: `standby:${stIdx}`, from: line, to: end });
+            const stFile = standbyFiles[stIdx];
+            if (stFile && !broken.has(`standby:${stIdx}`)) {
+              segments.push({
+                file: stFile,
+                combinedStart: line,
+                combinedEnd: end,
+                sourceStartLine: 1,
+                wrapperLines: 1,
+                sourceText: this.textFiles[stFile],
+              });
+            }
+          }
+          if (firstBootStep >= 0 && index >= firstBootStep && index < firstBootStep + bootSteps.length) {
+            const meta = bootStepMeta[index - firstBootStep];
+            if (meta) {
+              segments.push({
+                file: meta.file,
+                combinedStart: line,
+                combinedEnd: end,
+                sourceStartLine: meta.startLine,
+                wrapperLines: 1,
+                sourceText: meta.sourceText,
+              });
+            }
+          }
           line = end + 1;
         });
-        return { source: parts.join('\n'), lines };
+        return { source: parts.join('\n'), lines, segments };
       };
 
       // What is compiled ahead let go of, all of it or the app's long script files: each is then
@@ -1046,7 +1144,9 @@ export class ContainerWorkerSession {
       const broken = new Map<string, string>();
       let standbyFailures = 0;
       for (;;) {
-        const { source, lines } = program(broken);
+        const { source, lines, segments } = program(broken);
+        this.sourceMap.clear();
+        for (const seg of segments) this.sourceMap.addSegment(seg);
         engine.setSyncHostCapabilities([...DB_SYNC_OPS, ...LS_SYNC_OPS, ...APP_SYNC_OPS]);
         engine.setInstructionBudget(this.instructionsPerTurn);
         try {
@@ -1065,12 +1165,14 @@ export class ContainerWorkerSession {
             // stand-in that says why, for a few of them; past that all of them are let go of at
             // once, a compile again for each costing more than they are worth.
             const file = standbyFiles[Number(failed.slice('standby:'.length))];
-            if (file !== undefined) this.standbyRefused.set(file, message.split('\n')[0]);
-            if (++standbyFailures <= MAX_STANDBY_FAILURES) broken.set(failed, message.split('\n')[0]);
+            const mapped = this.sourceMap.enrichError(err);
+            if (file !== undefined) this.standbyRefused.set(file, mapped.message.split('\n')[0]);
+            if (++standbyFailures <= MAX_STANDBY_FAILURES) broken.set(failed, mapped.message.split('\n')[0]);
             else dropAhead(false);
           } else {
             if (failed === undefined || broken.has(failed) || this.disposed) throw err;
-            broken.set(failed, message.split('\n')[0]);
+            const mapped = this.sourceMap.enrichError(err);
+            broken.set(failed, mapped.message.split('\n')[0]);
           }
           // An engine that could not compile its program has stopped: a new one, set up as this one was.
           engine = new bindings.Engine();
@@ -1083,8 +1185,17 @@ export class ContainerWorkerSession {
       this.postToHost({ type: 'ready' });
     } catch (err) {
       this.drainFailedConsole();
-      const message = err instanceof Error ? err.message : String(err);
-      this.postToHost({ type: 'error', message, phase: 'init', fatal: true });
+      const enriched = this.sourceMap.enrichError(err);
+      this.postToHost({
+        type: 'error',
+        message: enriched.message,
+        phase: 'init',
+        fatal: true,
+        ...(enriched.file ? { file: enriched.file, line: enriched.line } : {}),
+        ...(enriched.column !== undefined ? { column: enriched.column } : {}),
+        ...(enriched.stack ? { stack: enriched.stack } : {}),
+        ...(enriched.snippet ? { snippet: enriched.snippet } : {}),
+      });
     }
   }
 
@@ -1137,7 +1248,16 @@ export class ContainerWorkerSession {
         this.bundledThreeDetected = true;
       }
     }
-    return transformEsModule(source, moduleUrl);
+    const transformed = transformEsModule(source, moduleUrl);
+    if (!this.moduleSources.has(moduleUrl)) {
+      this.moduleSources.set(moduleUrl, {
+        file: filePath,
+        startLine: 1,
+        wrapperLines: transformed.headerLines ?? 1,
+        sourceText: code,
+      });
+    }
+    return transformed;
   }
 
   private async collectModuleGraph(
@@ -1147,13 +1267,23 @@ export class ContainerWorkerSession {
     outBlocks: string[],
     collected?: string[],
     named?: Array<{ spec: string; from: string }>,
-    defined: Set<string> = this.definedModules
+    defined: Set<string> = this.definedModules,
+    displayFile?: string,
+    startLine?: number
   ): Promise<void> {
     if (defined.has(moduleUrl)) return;
     defined.add(moduleUrl);
     collected?.push(moduleUrl);
 
-    const { factoryCode, staticImports, dynamicImports } = this.transformModuleByPath(code, filePath, moduleUrl);
+    const { factoryCode, staticImports, dynamicImports, headerLines } = this.transformModuleByPath(code, filePath, moduleUrl);
+    if (displayFile || startLine !== undefined) {
+      this.moduleSources.set(moduleUrl, {
+        file: displayFile || filePath,
+        startLine: startLine ?? 1,
+        wrapperLines: headerLines ?? 1,
+        sourceText: code,
+      });
+    }
     if (named) for (const spec of dynamicImports) named.push({ spec, from: filePath });
 
     for (const spec of staticImports) {
@@ -1269,7 +1399,10 @@ export class ContainerWorkerSession {
     props: Record<string, unknown>,
     syncChanges?: unknown[]
   ): void {
-    if (!this.engine || this.language === 'python') return;
+    if (!this.engine || this.language === 'python') {
+      if (!this.disposed) this.postToHost({ type: 'ops', ops: [], turnId, eventBits: 0 });
+      return;
+    }
     try {
       this.engine.renewInstructionBudget();
       if (syncChanges && syncChanges.length > 0) {
@@ -1280,6 +1413,9 @@ export class ContainerWorkerSession {
       this.drainTurn(turnId, eventBits);
     } catch (err) {
       this.reportGuestError('event', err);
+      // Always settle the host turnId if the engine survived so the watchdog never kills a healthy app
+      // and coalesced pointer/wheel events never deadlock.
+      if (!this.disposed) this.postToHost({ type: 'ops', ops: [], turnId, eventBits: 0 });
     }
   }
 
@@ -1423,13 +1559,18 @@ export class ContainerWorkerSession {
   }
 
   private handleRaf(timestamp: number): void {
-    if (!this.engine || this.language === 'python') return;
+    if (!this.engine || this.language === 'python') {
+      if (!this.disposed) this.postToHost({ type: 'ops', ops: [], rafReply: true });
+      return;
+    }
     try {
       this.engine.renewInstructionBudget();
       this.callGuest('__softnContainerRaf', [timestamp]);
       this.drainTurn(undefined, undefined, true);
     } catch (err) {
       this.reportGuestError('raf', err);
+      // Always clear host `rafInFlight` when a frame callback throws so future frames are not permanently frozen.
+      if (!this.disposed) this.postToHost({ type: 'ops', ops: [], rafReply: true });
     }
   }
 
@@ -1959,6 +2100,18 @@ export class ContainerWorkerSession {
         }
         if (!asPage || !isExternalUrlAllowed(asPage, this.permissions.permissions?.net, this.grantedCapabilities.has('net'))) {
           this.resolveCallbackAndFlush(callId, { error: `Network access to ${url} is not permitted by this container` });
+          return;
+        }
+        // Prevent Cross-Site WebSocket Hijacking (CSWSH): WebSocket connections always attach
+        // ambient browser cookies (there is no `credentials: 'omit'` option), so never allow a
+        // guest app to open a socket to the embedding page's site.
+        try {
+          if (sameSite(new URL(asPage).hostname, embeddingHost())) {
+            this.resolveCallbackAndFlush(callId, { error: `WebSocket access to the embedding site (${url}) is not permitted` });
+            return;
+          }
+        } catch {
+          this.resolveCallbackAndFlush(callId, { error: `Invalid WebSocket URL: ${url}` });
           return;
         }
         if (this.sockets.has(id) || this.sockets.size >= MAX_SOCKETS) {
@@ -4096,6 +4249,44 @@ export class ContainerWorkerSession {
     }, 0);
   }
 
+  private emitMappedConsoleLine(text: string): boolean {
+    if (!text.startsWith(SCRIPT_ERROR_MARK)) return false;
+    try {
+      const parsed = JSON.parse(text.slice(SCRIPT_ERROR_MARK.length)) as {
+        phase?: string;
+        scriptId?: number;
+        message?: string;
+        stack?: string;
+      };
+      const phase = typeof parsed.phase === 'string' && parsed.phase ? parsed.phase : 'script-startup';
+      const scriptId = typeof parsed.scriptId === 'number' ? parsed.scriptId : 0;
+      const synth = new Error(typeof parsed.message === 'string' ? parsed.message : 'Script error');
+      synth.stack = typeof parsed.stack === 'string' && parsed.stack ? parsed.stack : undefined;
+      const fallback = scriptId > 0 ? this.scriptSources.get(scriptId) : undefined;
+      const enriched = this.sourceMap.enrichError(synth, fallback);
+      this.postToHost({
+        type: 'error',
+        message: enriched.message,
+        phase,
+        fatal: false,
+        ...(enriched.file ? { file: enriched.file, line: enriched.line } : {}),
+        ...(enriched.column !== undefined ? { column: enriched.column } : {}),
+        ...(enriched.stack ? { stack: enriched.stack } : {}),
+        ...(enriched.snippet ? { snippet: enriched.snippet } : {}),
+      });
+      const label =
+        phase === 'script-startup'
+          ? 'Script startup error'
+          : phase === 'unhandledrejection'
+            ? 'Unhandled promise rejection'
+            : `${phase} error`;
+      this.postToHost({ type: 'console', level: 'error', text: `[SoftN] ${label}: ${enriched.message}` });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private drainConsole(): void {
     if (!this.engine) return;
     for (;;) {
@@ -4108,6 +4299,7 @@ export class ContainerWorkerSession {
         // log: nothing a host shows or counts as an error (Studio's check of an app) saw one.
         const text = String(entry.text ?? '');
         if (entry.stream !== 'stderr') this.postToHost({ type: 'console', level: 'log', text });
+        else if (this.emitMappedConsoleLine(text)) continue;
         else if (text.startsWith(WARNING_MARK)) this.postToHost({ type: 'console', level: 'warn', text: text.slice(WARNING_MARK.length).replace(/^ /, '') });
         else this.postToHost({ type: 'console', level: 'error', text });
       }
@@ -4122,6 +4314,7 @@ export class ContainerWorkerSession {
         if (!Array.isArray(entries) || entries.length === 0) break;
         for (const entry of entries) {
           const text = String(entry.text ?? '');
+          if (this.emitMappedConsoleLine(text)) continue;
           this.postToHost({ type: 'console', level: 'error', text: text.startsWith(WARNING_MARK) ? text.slice(WARNING_MARK.length).replace(/^ /, '') : text });
         }
       }
@@ -4155,8 +4348,18 @@ export class ContainerWorkerSession {
     } catch {
       // Nothing more to read from it.
     }
-    const message = err instanceof Error ? err.message : String(err);
-    this.postToHost({ type: 'error', message: stopped ? stoppedBecause(message) : message, phase, fatal: stopped });
+    const enriched = this.sourceMap.enrichError(err);
+    const message = stopped ? stoppedBecause(enriched.message) : enriched.message;
+    this.postToHost({
+      type: 'error',
+      message,
+      phase,
+      fatal: stopped,
+      ...(enriched.file ? { file: enriched.file, line: enriched.line } : {}),
+      ...(enriched.column !== undefined ? { column: enriched.column } : {}),
+      ...(enriched.stack ? { stack: enriched.stack } : {}),
+      ...(enriched.snippet ? { snippet: enriched.snippet } : {}),
+    });
     if (stopped) this.dispose();
   }
 

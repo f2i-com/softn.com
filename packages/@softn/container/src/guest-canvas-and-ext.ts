@@ -26,6 +26,24 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   }
   var __timers = Object.create(null);
   var __nextTimerId = 1;
+  function __reportAsyncError(phase, err) {
+    if (typeof g.__softnReportError === 'function') {
+      g.__softnReportError(phase, err, 0);
+    } else {
+      console.error('[SoftN] ' + phase + ' error:', err && err.stack ? err.stack : err && err.message ? err.message : String(err));
+    }
+  }
+  function __invokeTracked(phase, fn, thisArg, args) {
+    try {
+      var res = args ? fn.apply(thisArg, args) : fn.call(thisArg);
+      if (res && typeof res.then === 'function') {
+        res.then(undefined, function (err) { __reportAsyncError('unhandledrejection', err); });
+      }
+    } catch (err) {
+      __reportAsyncError(phase, err);
+    }
+  }
+
   g.setTimeout = function (fn, ms) {
     var id = __nextTimerId++;
     var args = Array.prototype.slice.call(arguments, 2);
@@ -35,7 +53,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
       var entry = __timers[id];
       if (!entry) return;
       delete __timers[id];
-      if (typeof entry.fn === 'function') entry.fn.apply(g, entry.args);
+      if (typeof entry.fn === 'function') __invokeTracked('timer', entry.fn, g, entry.args);
     });
     return id;
   };
@@ -56,7 +74,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
         var entry = __timers[id];
         if (!entry) return;
         try {
-          if (typeof entry.fn === 'function') entry.fn.apply(g, entry.args);
+          if (typeof entry.fn === 'function') __invokeTracked('timer', entry.fn, g, entry.args);
         } finally {
           if (__timers[id]) arm();
         }
@@ -99,11 +117,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     __rafCbs = Object.create(null);
     var ids = Object.keys(batch);
     for (var i = 0; i < ids.length; i++) {
-      try {
-        batch[ids[i]](ts);
-      } catch (err) {
-        console.error('[SoftN] requestAnimationFrame error:', err && err.message ? err.message : String(err));
-      }
+      __invokeTracked('raf', batch[ids[i]], g, [ts]);
     }
   };
   g.__softnWantsRaf = function () {
@@ -545,7 +559,11 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
       }
       var pending = [];
       if (v.__ctx2d && v.__ctx2d._cmds && v.__ctx2d._cmds.length > 0) {
-        pending = v.__ctx2d._cmds.splice(0, v.__ctx2d._cmds.length);
+        pending = v.__ctx2d._cmds.slice();
+        // Flush those commands to the host 2D canvas too instead of stealing them from it.
+        var c2dId = v.__softnNode || 0;
+        if (c2dId) __extraOps.push(['k2d', c2dId, v.width, v.height, v.__ctx2d._cmds.splice(0, v.__ctx2d._cmds.length)]);
+        else v.__ctx2d._cmds.length = 0;
         if (__drawing === v.__ctx2d) __drawing = null;
       }
       est.n += pending.length * 40;
@@ -593,6 +611,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   }
 
   var __glContexts = [];
+  var __hasWeakRef = typeof g.WeakRef === 'function';
   var __glWiredProto = false;
   var __glConstantsInstalled = false;
 
@@ -613,7 +632,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     this._lost = false;
     this.drawingBufferColorSpace = 'srgb';
     this.unpackColorSpace = 'srgb';
-    __glContexts.push(this);
+    __glContexts.push(__hasWeakRef ? new g.WeakRef(this) : this);
   }
   if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
     WebGLRenderingContext.prototype[Symbol.toStringTag] = 'WebGLRenderingContext';
@@ -836,10 +855,15 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   }
 
   function flushWebGL() {
+    var alive = [];
     for (var i = 0; i < __glContexts.length; i++) {
-      var ctx = __glContexts[i];
-      if (ctx && ctx._q.length > 0) ctx._flush();
+      var ref = __glContexts[i];
+      var ctx = __hasWeakRef && ref && typeof ref.deref === 'function' ? ref.deref() : ref;
+      if (!ctx) continue;
+      alive.push(ref);
+      if (ctx._q.length > 0) ctx._flush();
     }
+    if (alive.length !== __glContexts.length) __glContexts = alive;
   }
 
   if (g.HTMLElement) {
@@ -849,13 +873,17 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
       get: function () {
         if (this.tagName === 'CANVAS') {
           var attr = this.getAttribute('width');
-          return attr !== null ? Number(attr) || 300 : 300;
+          if (attr === null) return 300;
+          var parsed = Number(attr);
+          return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 300;
         }
         return this.offsetWidth || 0;
       },
       set: function (v) {
         if (this.tagName === 'CANVAS') {
-          this.setAttribute('width', String(Math.max(1, Number(v) || 300)));
+          var n = Number(v);
+          var clean = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 300;
+          this.setAttribute('width', String(clean));
           if (this.__ctx2d) resetCanvas(this);
           if (this.__ctxGl) this.__ctxGl._resize(this.width, this.height);
         }
@@ -866,13 +894,17 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
       get: function () {
         if (this.tagName === 'CANVAS') {
           var attr = this.getAttribute('height');
-          return attr !== null ? Number(attr) || 150 : 150;
+          if (attr === null) return 150;
+          var parsed = Number(attr);
+          return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 150;
         }
         return this.offsetHeight || 0;
       },
       set: function (v) {
         if (this.tagName === 'CANVAS') {
-          this.setAttribute('height', String(Math.max(1, Number(v) || 150)));
+          var n = Number(v);
+          var clean = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 150;
+          this.setAttribute('height', String(clean));
           if (this.__ctx2d) resetCanvas(this);
           if (this.__ctxGl) this.__ctxGl._resize(this.width, this.height);
         }
@@ -1198,9 +1230,33 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
             new g.Headers(opts.headers).forEach(function (v, k) { options.headers[k] = v; });
           }
           if (opts.body !== undefined) {
-            var contentType = options.headers && options.headers['content-type'];
-            options.body = typeof opts.body === 'string' && contentType && /\bjson\b/i.test(contentType)
-              ? JSON.parse(opts.body) : opts.body;
+            if (typeof g.FormData === 'function' && opts.body instanceof g.FormData) {
+              // Convert FormData entries into a plain object (with base64 file payloads) rather
+              // than letting JSON.stringify serialize FormData to an empty object.
+              var formObj = Object.create(null);
+              var entries = [];
+              opts.body.forEach(function (val, key) { entries.push([key, val]); });
+              for (var ei = 0; ei < entries.length; ei++) {
+                var ek = entries[ei][0];
+                var ev = entries[ei][1];
+                if (ev && typeof ev.arrayBuffer === 'function') {
+                  var buf = new Uint8Array(await ev.arrayBuffer());
+                  formObj[ek] = { name: ev.name || 'file', type: ev.type || 'application/octet-stream', size: buf.byteLength, base64: bytesToB64(buf) };
+                } else {
+                  formObj[ek] = ev;
+                }
+              }
+              options.body = formObj;
+            } else if (typeof g.Blob === 'function' && opts.body instanceof g.Blob) {
+              var blobBuf = new Uint8Array(await opts.body.arrayBuffer());
+              options.body = { name: opts.body.name || 'blob', type: opts.body.type || 'application/octet-stream', size: blobBuf.byteLength, base64: bytesToB64(blobBuf) };
+            } else if (typeof g.URLSearchParams === 'function' && opts.body instanceof g.URLSearchParams) {
+              options.body = opts.body.toString();
+            } else {
+              var contentType = options.headers && options.headers['content-type'];
+              options.body = typeof opts.body === 'string' && contentType && /\bjson\b/i.test(contentType)
+                ? JSON.parse(opts.body) : opts.body;
+            }
           }
           var reply = await backend.call('nativeRequest', { url: path, options: options });
           if (!reply || reply.error || !reply.result) throw new TypeError(reply && reply.error || 'Backend request failed.');
@@ -1271,8 +1327,11 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
             all: function (sql, params) {
               return this.query(sql, params).then(function (res) { return res.rows; });
             },
-            get: function (sql, params) {
+            first: function (sql, params) {
               return this.query(sql, params).then(function (res) { return res.rows.length > 0 ? res.rows[0] : null; });
+            },
+            get: function (sql, params) {
+              return this.first(sql, params);
             },
             run: function (sql, params) {
               return this.execute(sql, params);

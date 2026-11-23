@@ -153,6 +153,26 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
       if (options.binaryFiles) {
         for (const [k, v] of Object.entries(options.binaryFiles)) binaryFiles[k] = v;
       }
+      const backendTier =
+        backend.runtime === 'rust'
+          ? 'rust'
+          : backend.runtime === 'php'
+            ? 'php'
+            : backend.runtime === 'typescript'
+              ? 'typescript'
+              : backend.runtime === 'python'
+                ? 'python'
+                : 'javascript';
+      const suppliedEngine = hosted.engineWasm?.[backendTier];
+      const resolvedEngine = typeof suppliedEngine === 'function' ? await suppliedEngine() : suppliedEngine;
+      const engineModule =
+        resolvedEngine instanceof WebAssembly.Module || typeof resolvedEngine === 'string'
+          ? resolvedEngine
+          : resolvedEngine instanceof ArrayBuffer
+            ? new Uint8Array(resolvedEngine)
+            : resolvedEngine
+              ? new Uint8Array(resolvedEngine.buffer, resolvedEngine.byteOffset, resolvedEngine.byteLength)
+              : undefined;
       const transport = new container.LocalBackendTransport({
         appId: options.appId,
         storagePrefix: `softn-ui-backend:${cleanId}:`,
@@ -163,6 +183,7 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
         binaryFiles,
         runtimeUrl,
         isolation: options.isolation ?? 'worker',
+        engineModule,
         onConsole: options.onConsole,
       });
       if (disposed) {
