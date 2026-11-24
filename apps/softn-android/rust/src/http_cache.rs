@@ -429,7 +429,9 @@ impl MobileCookieJar {
                             has_max_age = true;
                             if secs <= 0 {
                                 expired_now = true;
+                                expires_at = None;
                             } else {
+                                expired_now = false;
                                 expires_at = Some(unix_now().saturating_add(secs as u64));
                             }
                         }
@@ -498,7 +500,16 @@ impl MobileCookieJar {
         });
         if !expired_now {
             if list.len() >= MAX_COOKIES {
-                let evicted = list.remove(0);
+                let evict_idx = if !from_http {
+                    // Never allow JS (`document.cookie`) to evict `HttpOnly` cookies via jar flooding.
+                    match list.iter().position(|c| !c.http_only) {
+                        Some(idx) => idx,
+                        None => return persistent_changed,
+                    }
+                } else {
+                    list.iter().position(|c| !c.http_only).unwrap_or(0)
+                };
+                let evicted = list.remove(evict_idx);
                 if evicted.expires_at.is_some() {
                     persistent_changed = true;
                 }

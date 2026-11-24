@@ -196,6 +196,7 @@ export class DocumentShell implements DocumentShellView {
   private readonly listeners = new Map<number, Set<() => void>>();
   private readonly versions = new Map<number, number>();
   private readonly pendingProps = new Map<number, Array<[string, unknown]>>();
+  private pendingPropCount = 0;
   private readonly listened = new Set<string>();
   /** Attributes of the markup's elements SoftN draws from a `{value}`, by element. */
   private readonly drawnFromValues = new Map<number, string[]>();
@@ -425,6 +426,7 @@ export class DocumentShell implements DocumentShellView {
     const props = this.pendingProps.get(id);
     if (!props || !this.container) return;
     this.pendingProps.delete(id);
+    this.pendingPropCount = Math.max(0, this.pendingPropCount - props.length);
     const element = this.elementById(id);
     if (!element) return;
     for (const [name, value] of props) {
@@ -551,9 +553,12 @@ export class DocumentShell implements DocumentShellView {
           if (depth >= MAX_SHELL_DEPTH) break;
           const nextChildren: number[] = [];
           const now = new Set<number>();
+          const maxChildSubtreeDepth = MAX_SHELL_DEPTH - depth - 1;
           for (const child of rawChildren) {
             if (!isValidNodeId(child) || ancestors.has(child) || now.has(child)) continue;
-            if (!this.nodes.has(child)) continue;
+            const cNode = this.nodes.get(child);
+            if (!cNode) continue;
+            if (this.subtreeHeight(child, maxChildSubtreeDepth + 1) > maxChildSubtreeDepth) continue;
             now.add(child);
             nextChildren.push(child);
           }
@@ -562,7 +567,21 @@ export class DocumentShell implements DocumentShellView {
           node.childrenTouched = true;
           for (const child of nextChildren) {
             const c = this.nodes.get(child);
-            if (c) c.parent = id;
+            if (!c) continue;
+            // Detach from any previous parent so a node can never belong to two
+            // parents simultaneously (prevents exponential 2^N DAG render bombs).
+            if (c.parent !== 0 && c.parent !== id) {
+              const prevParent = this.nodes.get(c.parent);
+              if (prevParent && prevParent.kind === 'element') {
+                const idx = prevParent.children.indexOf(child);
+                if (idx >= 0) {
+                  prevParent.children.splice(idx, 1);
+                  prevParent.childrenTouched = true;
+                  touched.add(c.parent);
+                }
+              }
+            }
+            c.parent = id;
           }
           touched.add(id);
           break;
@@ -570,12 +589,11 @@ export class DocumentShell implements DocumentShellView {
         case 'p': {
           const [, id, name, value] = op;
           if (!isValidNodeId(id) || !this.nodes.has(id)) break;
-          let totalPending = 0;
-          for (const queued of this.pendingProps.values()) totalPending += queued.length;
-          if (totalPending >= MAX_PENDING_PROPS_TOTAL) break;
+          if (this.pendingPropCount >= MAX_PENDING_PROPS_TOTAL) break;
           let list = this.pendingProps.get(id);
           if (!list) this.pendingProps.set(id, (list = []));
           list.push([name, value]);
+          this.pendingPropCount++;
           touched.add(id);
           break;
         }
@@ -594,6 +612,24 @@ export class DocumentShell implements DocumentShellView {
     for (const id of touched) this.changed(id);
     // After what the code drew: the last place it asked to go is where it goes.
     if (navigations.length > 0) this.onNavigate?.(navigations[navigations.length - 1]);
+  }
+
+  private subtreeHeight(rootId: number, stopAt: number): number {
+    let maxH = 0;
+    const seen = new Set<number>();
+    const stack: Array<[number, number]> = [[rootId, 0]];
+    while (stack.length > 0) {
+      const [curId, h] = stack.pop()!;
+      if (h > maxH) maxH = h;
+      if (maxH >= stopAt) return maxH;
+      if (seen.has(curId)) continue;
+      seen.add(curId);
+      const cur = this.nodes.get(curId);
+      if (cur && cur.kind === 'element') {
+        for (const ch of cur.children) stack.push([ch, h + 1]);
+      }
+    }
+    return maxH;
   }
 
   /** Whether a node is in its parent's children: on the page, or in a part of it taken off whole. */
@@ -622,7 +658,11 @@ export class DocumentShell implements DocumentShellView {
     this.drawnBy.delete(id);
     this.versions.delete(id);
     this.listeners.delete(id);
-    this.pendingProps.delete(id);
+    const pending = this.pendingProps.get(id);
+    if (pending) {
+      this.pendingProps.delete(id);
+      this.pendingPropCount = Math.max(0, this.pendingPropCount - pending.length);
+    }
   }
 
   /** A text node changed: its element is drawn from the mirror from now on. */
@@ -809,7 +849,8 @@ export class DocumentShell implements DocumentShellView {
   }
 
   private listen(type: string): void {
-    if (this.listened.has(type)) return;
+    if (typeof type !== 'string' || type.length === 0 || type.length > 64) return;
+    if (this.listened.has(type) || this.listened.size >= 64) return;
     this.listened.add(type);
     if (this.container) this.hear(type);
   }
@@ -847,6 +888,8 @@ export class DocumentShell implements DocumentShellView {
     };
     const aroundApp = (event: Event) => {
       if (!this.dispatcher) return;
+      if (!container.isConnected) return;
+      if (typeof container.checkVisibility === 'function' && !container.checkVisibility()) return;
       const target = event.target as Node | null;
       if (target !== doc && target !== doc.body && target !== doc.documentElement) return;
       this.dispatcher(BODY, type, eventData(event), []);

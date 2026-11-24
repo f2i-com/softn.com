@@ -3,12 +3,18 @@
 //! document seeding).
 
 use std::borrow::Cow;
-use std::cell::{Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::fmt::Write;
+use std::rc::Rc;
 
 use html5ever::tendril::{StrTendril, TendrilSink};
 use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeBuilderOpts, TreeSink};
 use html5ever::{local_name, ns, Attribute, ParseOpts, QualName};
+
+const MAX_HTML_PARSE_INPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_DOM_DEPTH: usize = 512;
+const MAX_DOM_NODES: usize = 100_000;
+const HTML_CHUNK_BYTES: usize = 8192;
 
 #[derive(Clone)]
 enum Kind {
@@ -30,6 +36,7 @@ struct Node {
 
 struct Sink {
     nodes: RefCell<Vec<Node>>,
+    node_count: Rc<Cell<usize>>,
 }
 
 impl Sink {
@@ -40,7 +47,9 @@ impl Sink {
             parent: None,
             children: Vec::new(),
         });
-        nodes.len() - 1
+        let len = nodes.len();
+        self.node_count.set(len);
+        len - 1
     }
 }
 
@@ -49,9 +58,6 @@ fn detach(nodes: &mut [Node], id: usize) {
         nodes[parent].children.retain(|&c| c != id);
     }
 }
-
-const MAX_DOM_DEPTH: usize = 512;
-const MAX_DOM_NODES: usize = 100_000;
 
 fn clone_subtree(nodes: &mut Vec<Node>, root_id: usize) -> usize {
     if root_id >= nodes.len() {
@@ -145,12 +151,16 @@ impl TreeSink for Sink {
                         return;
                     }
                 }
+                if nodes.len() >= MAX_DOM_NODES {
+                    return;
+                }
                 nodes.push(Node {
                     kind: Kind::Text(text),
                     parent: Some(*parent),
                     children: Vec::new(),
                 });
                 let id = nodes.len() - 1;
+                self.node_count.set(nodes.len());
                 nodes[*parent].children.push(id);
             }
         }
@@ -223,12 +233,16 @@ impl TreeSink for Sink {
                         return;
                     }
                 }
+                if nodes.len() >= MAX_DOM_NODES {
+                    return;
+                }
                 nodes.push(Node {
                     kind: Kind::Text(text),
                     parent: Some(parent),
                     children: Vec::new(),
                 });
                 let id = nodes.len() - 1;
+                self.node_count.set(nodes.len());
                 nodes[parent].children.insert(at, id);
             }
         }
@@ -261,18 +275,26 @@ impl TreeSink for Sink {
     }
 
     fn clone_subtree(&self, node: &usize) -> usize {
-        clone_subtree(&mut self.nodes.borrow_mut(), *node)
+        let mut nodes = self.nodes.borrow_mut();
+        let copy = clone_subtree(&mut nodes, *node);
+        self.node_count.set(nodes.len());
+        copy
     }
 }
 
 /// Full HTML5 parse for `DOMParser.prototype.parseFromString(html, "text/html")`.
 pub(crate) fn parse_html_json(html: &str) -> Option<String> {
+    if html.len() > MAX_HTML_PARSE_INPUT_BYTES {
+        return None;
+    }
+    let node_count = Rc::new(Cell::new(1usize));
     let sink = Sink {
         nodes: RefCell::new(vec![Node {
             kind: Kind::Document,
             parent: None,
             children: Vec::new(),
         }]),
+        node_count: Rc::clone(&node_count),
     };
     let opts = ParseOpts {
         tree_builder: TreeBuilderOpts {
@@ -282,10 +304,20 @@ pub(crate) fn parse_html_json(html: &str) -> Option<String> {
         },
         ..Default::default()
     };
-    let nodes = html5ever::parse_document(sink, opts)
-        .one(html)
-        .nodes
-        .into_inner();
+    let mut parser = html5ever::parse_document(sink, opts);
+    let mut pos = 0usize;
+    while pos < html.len() {
+        if node_count.get() >= MAX_DOM_NODES {
+            break;
+        }
+        let mut end = (pos + HTML_CHUNK_BYTES).min(html.len());
+        while end < html.len() && !html.is_char_boundary(end) {
+            end += 1;
+        }
+        parser.process(StrTendril::from_slice(&html[pos..end]));
+        pos = end;
+    }
+    let nodes = parser.finish().nodes.into_inner();
     let is = |id: usize, tag: &html5ever::LocalName| {
         matches!(&nodes[id].kind, Kind::Element { name, .. } if name.ns == ns!(html) && name.local == *tag)
     };

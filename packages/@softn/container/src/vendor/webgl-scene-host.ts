@@ -61,6 +61,7 @@ export class SplitRealmSceneHost {
   private readonly hostThree?: () => Promise<unknown>;
   private loading = false;
   private disposed = false;
+  private inflightGltf = 0;
   /** Three.js could not be loaded for this mount; a later mount asks again. */
   private unavailable = false;
 
@@ -308,7 +309,8 @@ export class SplitRealmSceneHost {
           const holder = new THREE.Group();
           if (!putObj(state, id, holder)) break;
           const blobUrl = typeof path === 'string' ? this.archive.getBlobUrl(path) : null;
-          if (blobUrl) {
+          if (blobUrl && this.inflightGltf < 8) {
+            this.inflightGltf++;
             void import('three/examples/jsm/loaders/GLTFLoader.js')
               .then(({ GLTFLoader }) => {
                 // A model names its buffers and textures by address, and the loader fetches
@@ -331,11 +333,33 @@ export class SplitRealmSceneHost {
                   return 'data:,';
                 });
                 const loader = new GLTFLoader(manager);
-                loader.load(blobUrl, (gltf) => {
-                  if (!this.disposed) holder.add(gltf.scene);
-                });
+                loader.load(
+                  blobUrl,
+                  (gltf) => {
+                    this.inflightGltf = Math.max(0, this.inflightGltf - 1);
+                    if (!this.disposed && state?.objects.get(id) === holder) {
+                      holder.add(gltf.scene);
+                    } else {
+                      gltf.scene.traverse((node) => {
+                        const m = node as { geometry?: { dispose?: () => void }; material?: { dispose?: () => void } | Array<{ dispose?: () => void }> };
+                        try { m.geometry?.dispose?.(); } catch { /* ignore */ }
+                        if (Array.isArray(m.material)) {
+                          for (const mat of m.material) { try { mat?.dispose?.(); } catch { /* ignore */ } }
+                        } else {
+                          try { m.material?.dispose?.(); } catch { /* ignore */ }
+                        }
+                      });
+                    }
+                  },
+                  undefined,
+                  () => {
+                    this.inflightGltf = Math.max(0, this.inflightGltf - 1);
+                  }
+                );
               })
-              .catch(() => undefined);
+              .catch(() => {
+                this.inflightGltf = Math.max(0, this.inflightGltf - 1);
+              });
           }
           break;
         }

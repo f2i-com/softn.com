@@ -75,6 +75,9 @@ impl SoftNThumbnailProvider {
 
     /// Convert image bytes (PNG, JPEG, etc.) to HBITMAP
     fn raster_to_hbitmap(&self, img_data: &[u8], cx: u32) -> Option<HBITMAP> {
+        if cx == 0 || cx > MAX_ICON_SIDE {
+            return None;
+        }
         // Held to an icon's size: a 500 KB, 16000×8000 PNG took 556 MB to
         // decode under the image crate's default limits.
         let mut reader = image::ImageReader::new(std::io::Cursor::new(img_data)).with_guessed_format().ok()?;
@@ -92,6 +95,9 @@ impl SoftNThumbnailProvider {
 
     /// Render SVG bytes to HBITMAP using resvg
     fn svg_to_hbitmap(&self, svg_data: &[u8], cx: u32) -> Option<HBITMAP> {
+        if cx == 0 || cx > MAX_ICON_SIDE {
+            return None;
+        }
         // Parsed and drawn on a thread of its own with a large stack: an SVG
         // of some 700 nested groups (16 KB) overflowed the shell's 1 MB
         // thread stack and ended the process showing the folder.
@@ -106,15 +112,36 @@ impl SoftNThumbnailProvider {
     }
 }
 
-/// An SVG icon names images only inside itself (`data:` URLs). usvg's
-/// default resolver reads any path an `<image>` names: the thumbnail of a
-/// crafted `.softn` drew local files, and with `\\host\share\a.png` made
-/// Windows connect to that share, the user's NTLM credentials with it, for no
-/// more than showing the file in a folder.
+/// An SVG icon names images only inside itself (`data:` URLs), bounded by the
+/// same size and pixel limits as standalone raster icons. usvg's default string
+/// resolver reads any path an `<image>` names (including `\\host\share\a.png`,
+/// leaking NTLM credentials), and its default data resolver decodes arbitrarily
+/// large embedded PNGs or nested SVGs without dimension caps.
 fn svg_options() -> resvg::usvg::Options<'static> {
     let mut options = resvg::usvg::Options::default();
+    let default_data = resvg::usvg::ImageHrefResolver::default_data_resolver();
     options.image_href_resolver = resvg::usvg::ImageHrefResolver {
-        resolve_data: resvg::usvg::ImageHrefResolver::default_data_resolver(),
+        resolve_data: Box::new(move |mime, data, opts| {
+            if data.len() as u64 > MAX_ENTRY_BYTES {
+                return None;
+            }
+            if mime.eq_ignore_ascii_case("image/svg+xml") {
+                return None;
+            }
+            let reader = image::ImageReader::new(std::io::Cursor::new(data.as_slice()))
+                .with_guessed_format()
+                .ok()?;
+            let (w, h) = reader.into_dimensions().ok()?;
+            if w == 0
+                || h == 0
+                || w > MAX_ICON_SIDE
+                || h > MAX_ICON_SIDE
+                || (w as u64).saturating_mul(h as u64).saturating_mul(4) > MAX_ENTRY_BYTES * 8
+            {
+                return None;
+            }
+            default_data(mime, data, opts)
+        }),
         resolve_string: Box::new(|_, _| None),
     };
     options
@@ -122,46 +149,70 @@ fn svg_options() -> resvg::usvg::Options<'static> {
 
 /// The icon drawn into a cx×cx square of premultiplied BGRA, for Windows.
 fn render_svg(svg_data: &[u8], cx: u32) -> Option<Vec<u8>> {
-    {
-        let tree = resvg::usvg::Tree::from_data(svg_data, &svg_options()).ok()?;
-        let size = tree.size();
-        // Compute scale to fit the requested thumbnail size
-        let scale = cx as f32 / size.width().max(size.height());
-        let scaled_w = (size.width() * scale).ceil() as u32;
-        let scaled_h = (size.height() * scale).ceil() as u32;
+    if cx == 0 || cx > MAX_ICON_SIDE {
+        return None;
+    }
+    let tree = resvg::usvg::Tree::from_data(svg_data, &svg_options()).ok()?;
+    let size = tree.size();
+    let max_dim = size.width().max(size.height());
+    if !max_dim.is_finite() || max_dim <= 0.0 {
+        return None;
+    }
+    // Compute scale to fit the requested thumbnail size; clamp to [1, cx] so
+    // IEEE-754 rounding never pushes scaled_w/scaled_h past cx and underflows.
+    let scale = cx as f32 / max_dim;
+    let scaled_w = ((size.width() * scale).round() as u32).clamp(1, cx);
+    let scaled_h = ((size.height() * scale).round() as u32).clamp(1, cx);
 
-        let mut pixmap = resvg::tiny_skia::Pixmap::new(scaled_w, scaled_h)?;
-        resvg::render(
-            &tree,
-            resvg::tiny_skia::Transform::from_scale(scale, scale),
-            &mut pixmap.as_mut(),
-        );
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(scaled_w, scaled_h)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
 
-        // Center the rendered image in a cx×cx square
-        let mut final_pixmap = resvg::tiny_skia::Pixmap::new(cx, cx)?;
-        let offset_x = ((cx - scaled_w) / 2) as i32;
-        let offset_y = ((cx - scaled_h) / 2) as i32;
-        final_pixmap.draw_pixmap(
-            offset_x,
-            offset_y,
-            pixmap.as_ref(),
-            &resvg::tiny_skia::PixmapPaint::default(),
-            resvg::tiny_skia::Transform::identity(),
-            None,
-        );
+    // Center the rendered image in a cx×cx square
+    let mut final_pixmap = resvg::tiny_skia::Pixmap::new(cx, cx)?;
+    let offset_x = (cx.saturating_sub(scaled_w) / 2) as i32;
+    let offset_y = (cx.saturating_sub(scaled_h) / 2) as i32;
+    final_pixmap.draw_pixmap(
+        offset_x,
+        offset_y,
+        pixmap.as_ref(),
+        &resvg::tiny_skia::PixmapPaint::default(),
+        resvg::tiny_skia::Transform::identity(),
+        None,
+    );
 
-        let pixels = final_pixmap.data();
-        // resvg outputs premultiplied RGBA; we need premultiplied BGRA for Windows
-        let mut bgra = vec![0u8; (cx * cx * 4) as usize];
-        for i in 0..(cx * cx) as usize {
-            let off = i * 4;
-            bgra[off] = pixels[off + 2];     // B
-            bgra[off + 1] = pixels[off + 1]; // G
-            bgra[off + 2] = pixels[off];     // R
-            bgra[off + 3] = pixels[off + 3]; // A
+    let pixels = final_pixmap.data();
+    let pixel_count = (cx as usize).checked_mul(cx as usize)?;
+    let byte_len = pixel_count.checked_mul(4)?;
+    if pixels.len() < byte_len {
+        return None;
+    }
+    // resvg outputs premultiplied RGBA; we need premultiplied BGRA for Windows
+    let mut bgra = vec![0u8; byte_len];
+    for i in 0..pixel_count {
+        let off = i * 4;
+        bgra[off] = pixels[off + 2];     // B
+        bgra[off + 1] = pixels[off + 1]; // G
+        bgra[off + 2] = pixels[off];     // R
+        bgra[off + 3] = pixels[off + 3]; // A
+    }
+
+    Some(bgra)
+}
+
+/// RAII guard for the screen DC acquired via `GetDC(HWND::default())`.
+struct ScreenDcGuard(HDC);
+
+impl Drop for ScreenDcGuard {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = ReleaseDC(HWND::default(), self.0);
+            }
         }
-
-        Some(bgra)
     }
 }
 
@@ -184,6 +235,13 @@ impl SoftNThumbnailProvider {
 
     /// Create an HBITMAP from raw premultiplied BGRA pixel data
     fn raw_bgra_to_hbitmap(&self, bgra: &[u8], width: u32, height: u32) -> Option<HBITMAP> {
+        if width == 0 || height == 0 || width > MAX_ICON_SIDE || height > MAX_ICON_SIDE {
+            return None;
+        }
+        let expected_len = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+        if bgra.len() != expected_len {
+            return None;
+        }
         unsafe {
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -203,16 +261,16 @@ impl SoftNThumbnailProvider {
             };
 
             let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-            let hdc = GetDC(HWND::default());
-            let hbitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-            ReleaseDC(HWND::default(), hdc);
+            let hdc = ScreenDcGuard(GetDC(HWND::default()));
+            let hbitmap = CreateDIBSection(hdc.0, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+            drop(hdc);
 
             if bits.is_null() {
                 let _ = DeleteObject(hbitmap);
                 return None;
             }
 
-            let dst = std::slice::from_raw_parts_mut(bits as *mut u8, (width * height * 4) as usize);
+            let dst = std::slice::from_raw_parts_mut(bits as *mut u8, expected_len);
             dst.copy_from_slice(bgra);
 
             Some(hbitmap)
@@ -310,23 +368,27 @@ impl IInitializeWithStream_Impl for SoftNThumbnailProvider_Impl {
         let mut buffer = [0u8; 8192];
         loop {
             let mut bytes_read = 0u32;
-            unsafe {
-                let hr = stream.Read(
+            let hr = unsafe {
+                stream.Read(
                     buffer.as_mut_ptr() as *mut _,
                     buffer.len() as u32,
                     Some(&mut bytes_read),
-                );
-                if hr.is_err() && bytes_read == 0 {
-                    break;
-                }
+                )
+            };
+            if hr.is_err() {
+                return Err(hr.into());
             }
             if bytes_read == 0 {
                 break;
             }
-            data.extend_from_slice(&buffer[..bytes_read as usize]);
+            let n = (bytes_read as usize).min(buffer.len());
+            data.extend_from_slice(&buffer[..n]);
             // Past what a bundle may be there is no thumbnail to draw.
             if data.len() as u64 > MAX_BUNDLE_BYTES {
                 return Err(E_FAIL.into());
+            }
+            if hr == S_FALSE {
+                break;
             }
         }
 
@@ -337,6 +399,17 @@ impl IInitializeWithStream_Impl for SoftNThumbnailProvider_Impl {
 
 impl IThumbnailProvider_Impl for SoftNThumbnailProvider_Impl {
     fn GetThumbnail(&self, cx: u32, phbmp: *mut HBITMAP, pdwalpha: *mut WTS_ALPHATYPE) -> Result<()> {
+        if phbmp.is_null() || pdwalpha.is_null() {
+            return Err(E_POINTER.into());
+        }
+        unsafe {
+            *phbmp = HBITMAP::default();
+            *pdwalpha = WTSAT_UNKNOWN;
+        }
+        if cx == 0 || cx > MAX_ICON_SIDE {
+            return Err(E_INVALIDARG.into());
+        }
+
         // Extract icon with name for format detection
         let (icon_data, icon_name) = self.extract_icon_with_name().ok_or(E_FAIL)?;
 
@@ -358,6 +431,12 @@ struct SoftNClassFactory;
 
 impl IClassFactory_Impl for SoftNClassFactory_Impl {
     fn CreateInstance(&self, punkouter: Option<&IUnknown>, riid: *const GUID, ppvobject: *mut *mut std::ffi::c_void) -> Result<()> {
+        if riid.is_null() || ppvobject.is_null() {
+            return Err(E_POINTER.into());
+        }
+        unsafe {
+            *ppvobject = std::ptr::null_mut();
+        }
         if punkouter.is_some() {
             return Err(CLASS_E_NOAGGREGATION.into());
         }
@@ -437,59 +516,84 @@ fn register_server() -> std::io::Result<()> {
         CLSID_SOFTN_THUMBNAIL.data4[4], CLSID_SOFTN_THUMBNAIL.data4[5],
         CLSID_SOFTN_THUMBNAIL.data4[6], CLSID_SOFTN_THUMBNAIL.data4[7]);
 
+    struct RegKeyGuard(HKEY);
+    impl Drop for RegKeyGuard {
+        fn drop(&mut self) {
+            if !self.0.is_invalid() {
+                unsafe {
+                    let _ = RegCloseKey(self.0);
+                }
+            }
+        }
+    }
+
     unsafe {
-        // Get DLL path using our stored module handle
+        // Get DLL path using our stored module handle; grow buffer if truncated.
         let module_ptr = DLL_MODULE.load(Ordering::SeqCst);
         let module = HMODULE(module_ptr as *mut std::ffi::c_void);
-        let mut path = [0u16; 260];
-        let len = windows::Win32::System::LibraryLoader::GetModuleFileNameW(module, &mut path);
-        if len == 0 {
-            return Err(Error::last_os_error());
-        }
-        let dll_path = String::from_utf16_lossy(&path[..len as usize]);
+        let mut buf_len: usize = 512;
+        let dll_path = loop {
+            let mut path = vec![0u16; buf_len];
+            let len = windows::Win32::System::LibraryLoader::GetModuleFileNameW(module, &mut path);
+            if len == 0 {
+                return Err(Error::last_os_error());
+            }
+            if (len as usize) < path.len() {
+                break String::from_utf16_lossy(&path[..len as usize]);
+            }
+            if buf_len >= 32_768 {
+                return Err(Error::new(ErrorKind::InvalidData, "DLL path exceeds maximum length"));
+            }
+            buf_len *= 2;
+        };
 
         // Use HKEY_CURRENT_USER for per-user registration (no admin needed)
-        let mut hkey = HKEY::default();
+        let mut raw_key = HKEY::default();
 
         // Register CLSID under HKCU\Software\Classes
         let clsid_key = format!("Software\\Classes\\CLSID\\{}", clsid_str);
-        let result = RegCreateKeyW(HKEY_CURRENT_USER, &HSTRING::from(&clsid_key), &mut hkey);
+        let result = RegCreateKeyW(HKEY_CURRENT_USER, &HSTRING::from(&clsid_key), &mut raw_key);
         if result != ERROR_SUCCESS {
             return Err(Error::new(ErrorKind::Other, format!("RegCreateKeyW failed: {:?}", result)));
         }
-
-        let value = HSTRING::from("SoftN Thumbnail Provider");
-        RegSetValueExW(hkey, None, 0, REG_SZ, Some(value.as_wide().align_to::<u8>().1)).ok()
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-        let _ = RegCloseKey(hkey);
+        {
+            let hkey = RegKeyGuard(raw_key);
+            let value = HSTRING::from("SoftN Thumbnail Provider");
+            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(value.as_wide().align_to::<u8>().1)).ok()
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        }
 
         // Register InprocServer32
+        raw_key = HKEY::default();
         let inproc_key = format!("Software\\Classes\\CLSID\\{}\\InprocServer32", clsid_str);
-        let result = RegCreateKeyW(HKEY_CURRENT_USER, &HSTRING::from(&inproc_key), &mut hkey);
+        let result = RegCreateKeyW(HKEY_CURRENT_USER, &HSTRING::from(&inproc_key), &mut raw_key);
         if result != ERROR_SUCCESS {
             return Err(Error::new(ErrorKind::Other, format!("RegCreateKeyW failed: {:?}", result)));
         }
+        {
+            let hkey = RegKeyGuard(raw_key);
+            let dll_path_h = HSTRING::from(&dll_path);
+            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(dll_path_h.as_wide().align_to::<u8>().1)).ok()
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
-        let dll_path_h = HSTRING::from(&dll_path);
-        RegSetValueExW(hkey, None, 0, REG_SZ, Some(dll_path_h.as_wide().align_to::<u8>().1)).ok()
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-
-        let threading = HSTRING::from("Apartment");
-        RegSetValueExW(hkey, &HSTRING::from("ThreadingModel"), 0, REG_SZ, Some(threading.as_wide().align_to::<u8>().1)).ok()
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-        let _ = RegCloseKey(hkey);
+            let threading = HSTRING::from("Apartment");
+            RegSetValueExW(hkey.0, &HSTRING::from("ThreadingModel"), 0, REG_SZ, Some(threading.as_wide().align_to::<u8>().1)).ok()
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        }
 
         // Register for .softn extension under HKCU\Software\Classes
+        raw_key = HKEY::default();
         let ext_key = "Software\\Classes\\.softn\\ShellEx\\{e357fccd-a995-4576-b01f-234630154e96}";
-        let result = RegCreateKeyW(HKEY_CURRENT_USER, &HSTRING::from(ext_key), &mut hkey);
+        let result = RegCreateKeyW(HKEY_CURRENT_USER, &HSTRING::from(ext_key), &mut raw_key);
         if result != ERROR_SUCCESS {
             return Err(Error::new(ErrorKind::Other, format!("RegCreateKeyW failed: {:?}", result)));
         }
-
-        let clsid_h = HSTRING::from(&clsid_str);
-        RegSetValueExW(hkey, None, 0, REG_SZ, Some(clsid_h.as_wide().align_to::<u8>().1)).ok()
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-        let _ = RegCloseKey(hkey);
+        {
+            let hkey = RegKeyGuard(raw_key);
+            let clsid_h = HSTRING::from(&clsid_str);
+            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(clsid_h.as_wide().align_to::<u8>().1)).ok()
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        }
     }
 
     Ok(())

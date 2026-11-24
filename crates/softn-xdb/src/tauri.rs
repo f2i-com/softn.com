@@ -935,7 +935,12 @@ pub async fn update_records(
             refuse_other_collection(&db_lock, update)?;
         }
         let out = db_lock
-            .update_records(updates.into_iter().map(|u| (u.id, u.data)).collect())
+            .update_records_removing(
+                updates
+                    .into_iter()
+                    .map(|u| (u.id, u.data, u.updated_at, u.remove))
+                    .collect(),
+            )
             .map_err(|e| e.to_string())?;
         let mut records = Vec::with_capacity(out.len());
         let mut deltas = Vec::with_capacity(out.len());

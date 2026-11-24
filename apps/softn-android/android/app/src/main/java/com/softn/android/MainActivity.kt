@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -16,7 +15,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.util.zip.ZipInputStream
+import java.util.zip.Inflater
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -71,10 +70,19 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val MAX_BUNDLE_BYTES = 128 * 1024 * 1024
         private const val MAX_META_JSON_BYTES = 256 * 1024
+        private val KNOWN_CAPS = setOf(
+            "camera", "mic", "location", "bluetooth", "clipboard", "files", "net",
+            "notifications", "haptics", "accel", "qr", "storage", "sync", "gpu", "ai"
+        )
         private val SENSITIVE_CAPS = setOf(
             "camera", "mic", "location", "bluetooth", "clipboard", "files", "net", "notifications"
         )
     }
+
+    private data class PendingBundle(
+        val bytes: ByteArray,
+        val grantedCapabilities: List<String>?
+    )
 
     // Dedicated 8 MiB native-stack Looper thread for `zipp-vm` + `zipp-dom` + TinySkia
     // (Android's default HandlerThread only allocates ~1 MiB, which large React apps can exceed).
@@ -104,8 +112,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var viewportWidth: Int = 0
     @Volatile private var viewportHeight: Int = 0
     @Volatile private var viewportDensity: Float = 2f
-    @Volatile private var pendingBundleBytes: ByteArray? = null
-    @Volatile private var pendingGrantedCapabilities: List<String>? = null
+    @Volatile private var pendingBundle: PendingBundle? = null
     private var playerLandingView: View? = null
     private var suppressImeWatcher = false
     @Volatile private var tickerRunning = false
@@ -314,12 +321,26 @@ class MainActivity : AppCompatActivity() {
 
         // Security: check embedded `assets/app.softn` FIRST so standalone packaged APKs
         // CANNOT be hijacked into running an attacker-supplied `.softn` bundle via ACTION_VIEW.
-        val embedded = readEmbeddedBundle()
-        if (embedded != null) {
+        // Detect presence cheaply on UI thread, then read the bundle bytes off-thread to avoid ANR.
+        if (hasEmbeddedBundle()) {
             isStandaloneMode = true
             isPlayerMode = false
-            pendingGrantedCapabilities = null
-            pendingBundleBytes = embedded
+            surfaceView.setStatusMessage("Loading SoftN App...")
+            bundleIoExecutor.execute {
+                if (destroyed.get()) return@execute
+                val embedded = readEmbeddedBundle()
+                mainHandler.post {
+                    if (destroyed.get()) return@post
+                    if (embedded == null || embedded.isEmpty()) {
+                        surfaceView.setStatusMessage("Failed to read embedded SoftN bundle")
+                        return@post
+                    }
+                    pendingBundle = PendingBundle(embedded, null)
+                    if (viewportWidth > 0 && viewportHeight > 0) {
+                        bootPendingBundle()
+                    }
+                }
+            }
         } else {
             isStandaloneMode = false
             isPlayerMode = true
@@ -413,6 +434,7 @@ class MainActivity : AppCompatActivity() {
                 lines.add("  • $cap  —  Player: $userState | OS: $osState")
             }
         }
+        if (isFinishing || isDestroyed) return
         AlertDialog.Builder(this)
             .setTitle("App Permissions & Runtime")
             .setMessage(lines.joinToString("\n"))
@@ -429,6 +451,7 @@ class MainActivity : AppCompatActivity() {
             val entries = obj.optInt("entries", 0)
             val kb = obj.optLong("bytes", 0L) / 1024L
             mainHandler.post {
+                if (isFinishing || isDestroyed) return@post
                 Toast.makeText(
                     this,
                     "Cleared cache ($entries entries, ${kb} KB)",
@@ -439,6 +462,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun confirmClearSiteData() {
+        if (isFinishing || isDestroyed) return
         AlertDialog.Builder(this)
             .setTitle("Clear Site Data?")
             .setMessage("Clears HTTP cache, cookies, sessions, localStorage, and IndexedDB for this SoftN app.")
@@ -451,6 +475,7 @@ class MainActivity : AppCompatActivity() {
                     val cookies = obj.optInt("cookies", 0)
                     val entries = obj.optInt("entries", 0)
                     mainHandler.post {
+                        if (isFinishing || isDestroyed) return@post
                         Toast.makeText(
                             this,
                             "Cleared site data ($cookies cookies, $entries cached entries)",
@@ -462,9 +487,29 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun hasEmbeddedBundle(): Boolean {
+        return try {
+            assets.list("")?.contains("app.softn") == true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun readEmbeddedBundle(): ByteArray? {
         return try {
-            assets.open("app.softn").use { it.readBytes() }
+            assets.open("app.softn").use { input ->
+                val out = ByteArrayOutputStream()
+                val chunk = ByteArray(32 * 1024)
+                var total = 0
+                while (true) {
+                    val n = input.read(chunk)
+                    if (n <= 0) break
+                    total += n
+                    if (total > MAX_BUNDLE_BYTES) return null
+                    out.write(chunk, 0, n)
+                }
+                out.toByteArray()
+            }
         } catch (_: Throwable) {
             null
         }
@@ -476,60 +521,160 @@ class MainActivity : AppCompatActivity() {
         val capabilities: List<String>
     )
 
+    private fun u16Le(buf: ByteArray, off: Int): Int =
+        (buf[off].toInt() and 0xFF) or ((buf[off + 1].toInt() and 0xFF) shl 8)
+
+    private fun u32Le(buf: ByteArray, off: Int): Long =
+        (buf[off].toLong() and 0xFFL) or
+            ((buf[off + 1].toLong() and 0xFFL) shl 8) or
+            ((buf[off + 2].toLong() and 0xFFL) shl 16) or
+            ((buf[off + 3].toLong() and 0xFFL) shl 24)
+
+    /**
+     * Parses the ZIP Central Directory directly in memory so non-metadata entries are
+     * skipped in O(1) without ever decompressing potential ZIP-bomb payload files.
+     * Takes the union of all `permission.json` entries (in case of duplicate ZIP entries)
+     * and normalizes/whitelists capability keys against `KNOWN_CAPS`.
+     */
     private fun inspectBundleMeta(bytes: ByteArray): BundlePreviewMeta {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(bytes)
             .joinToString("") { "%02x".format(it) }
         var appName = "SoftN Bundle"
-        val caps = mutableListOf<String>()
+        val caps = LinkedHashSet<String>()
         try {
-            ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
-                var entries = 0
-                while (entries < 10_000) {
-                    val entry = zis.nextEntry ?: break
-                    entries++
-                    val norm = entry.name.replace('\\', '/').trimStart('/')
-                    if (norm == "manifest.json" || norm == "permission.json") {
-                        val out = ByteArrayOutputStream()
-                        val buf = ByteArray(8192)
-                        var total = 0
-                        while (true) {
-                            val n = zis.read(buf)
-                            if (n <= 0) break
-                            total += n
-                            if (total > MAX_META_JSON_BYTES) break
-                            out.write(buf, 0, n)
+            if (bytes.size >= 22) {
+                var eocd = -1
+                val minPos = maxOf(0, bytes.size - 65557)
+                for (pos in (bytes.size - 22) downTo minPos) {
+                    if (bytes[pos] == 0x50.toByte() &&
+                        bytes[pos + 1] == 0x4B.toByte() &&
+                        bytes[pos + 2] == 0x05.toByte() &&
+                        bytes[pos + 3] == 0x06.toByte()
+                    ) {
+                        val commentLen = u16Le(bytes, pos + 20)
+                        if (pos + 22 + commentLen == bytes.size) {
+                            eocd = pos
+                            break
                         }
-                        if (total <= MAX_META_JSON_BYTES) {
-                            val json = try {
-                                JSONObject(out.toString(Charsets.UTF_8.name()))
-                            } catch (_: Throwable) {
-                                null
+                    }
+                }
+                if (eocd >= 0) {
+                    val cdEntryCount = u16Le(bytes, eocd + 10)
+                    val cdSize = u32Le(bytes, eocd + 12)
+                    val cdOffset = u32Le(bytes, eocd + 16)
+                    if (cdOffset >= 0 && cdSize >= 0 && cdOffset + cdSize <= bytes.size.toLong()) {
+                        var cursor = cdOffset.toInt()
+                        val cdEnd = (cdOffset + cdSize).toInt()
+                        val limitEntries = minOf(cdEntryCount, 10_000)
+                        var seen = 0
+                        while (seen < limitEntries && cursor + 46 <= cdEnd) {
+                            if (bytes[cursor] != 0x50.toByte() ||
+                                bytes[cursor + 1] != 0x4B.toByte() ||
+                                bytes[cursor + 2] != 0x01.toByte() ||
+                                bytes[cursor + 3] != 0x02.toByte()
+                            ) break
+                            val method = u16Le(bytes, cursor + 10)
+                            val compSize = u32Le(bytes, cursor + 20)
+                            val nameLen = u16Le(bytes, cursor + 28)
+                            val extraLen = u16Le(bytes, cursor + 30)
+                            val commentLen = u16Le(bytes, cursor + 32)
+                            val localOffset = u32Le(bytes, cursor + 42)
+                            val nextCursor = cursor + 46 + nameLen + extraLen + commentLen
+                            if (nextCursor > cdEnd || nextCursor <= cursor) break
+                            val rawName = String(bytes, cursor + 46, nameLen, Charsets.UTF_8)
+                            var norm = rawName.replace('\\', '/').trimStart('/')
+                            while (norm.startsWith("./")) {
+                                norm = norm.removePrefix("./")
                             }
-                            if (norm == "manifest.json" && json != null) {
-                                val n = json.optString("name", "").trim()
-                                if (n.isNotEmpty()) appName = n
-                            } else if (norm == "permission.json" && json != null) {
-                                val perms = json.optJSONObject("permissions")
-                                if (perms != null) {
-                                    val keys = perms.keys()
-                                    while (keys.hasNext()) {
-                                        val k = keys.next()
-                                        val obj = perms.optJSONObject(k)
-                                        if (obj != null && obj.optBoolean("enabled", false)) {
-                                            caps.add(k)
+                            if (norm == "manifest.json" || norm == "permission.json") {
+                                val entryBytes = extractSmallZipEntry(bytes, localOffset, method, compSize)
+                                if (entryBytes != null) {
+                                    val json = try {
+                                        JSONObject(String(entryBytes, Charsets.UTF_8))
+                                    } catch (_: Throwable) {
+                                        null
+                                    }
+                                    if (norm == "manifest.json" && json != null) {
+                                        val cleaned = json.optString("name", "")
+                                            .replace(Regex("[\\x00-\\x1f\\x7f]"), " ")
+                                            .replace(Regex("\\s+"), " ")
+                                            .trim()
+                                            .take(80)
+                                        if (cleaned.isNotEmpty()) appName = cleaned
+                                    } else if (norm == "permission.json" && json != null) {
+                                        val perms = json.optJSONObject("permissions")
+                                        if (perms != null) {
+                                            val keys = perms.keys()
+                                            while (keys.hasNext()) {
+                                                val rawKey = keys.next()
+                                                val normKey = rawKey.trim().lowercase()
+                                                if (!KNOWN_CAPS.contains(normKey)) continue
+                                                val obj = perms.optJSONObject(rawKey)
+                                                if (obj != null && obj.optBoolean("enabled", false)) {
+                                                    caps.add(normKey)
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
+                            cursor = nextCursor
+                            seen++
                         }
                     }
-                    zis.closeEntry()
                 }
             }
         } catch (_: Throwable) {
         }
         return BundlePreviewMeta(digest = digest, name = appName, capabilities = caps.sorted())
+    }
+
+    private fun extractSmallZipEntry(
+        bytes: ByteArray,
+        localOffset: Long,
+        method: Int,
+        compSize: Long
+    ): ByteArray? {
+        if (localOffset < 0 || localOffset + 30 > bytes.size.toLong()) return null
+        val off = localOffset.toInt()
+        if (bytes[off] != 0x50.toByte() ||
+            bytes[off + 1] != 0x4B.toByte() ||
+            bytes[off + 2] != 0x03.toByte() ||
+            bytes[off + 3] != 0x04.toByte()
+        ) return null
+        val localNameLen = u16Le(bytes, off + 26)
+        val localExtraLen = u16Le(bytes, off + 28)
+        val dataStart = off.toLong() + 30L + localNameLen.toLong() + localExtraLen.toLong()
+        if (compSize < 0 || dataStart + compSize > bytes.size.toLong()) return null
+        if (method == 0) {
+            if (compSize > MAX_META_JSON_BYTES.toLong()) return null
+            return bytes.copyOfRange(dataStart.toInt(), (dataStart + compSize).toInt())
+        }
+        if (method == 8) {
+            if (compSize > MAX_META_JSON_BYTES.toLong() * 2L) return null
+            val inflater = Inflater(true)
+            return try {
+                inflater.setInput(bytes, dataStart.toInt(), compSize.toInt())
+                val out = ByteArrayOutputStream()
+                val buf = ByteArray(8192)
+                var total = 0
+                while (!inflater.finished()) {
+                    val n = inflater.inflate(buf)
+                    if (n == 0) {
+                        if (inflater.needsInput() || inflater.needsDictionary()) break
+                    } else {
+                        total += n
+                        if (total > MAX_META_JSON_BYTES) return null
+                        out.write(buf, 0, n)
+                    }
+                }
+                out.toByteArray()
+            } finally {
+                inflater.end()
+            }
+        }
+        return null
     }
 
     private fun loadBundleFromUri(uri: Uri) {
@@ -581,6 +726,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun promptForBundleCapabilities(bytes: ByteArray, meta: BundlePreviewMeta) {
+        if (isFinishing || isDestroyed) return
         val labels = meta.capabilities.toTypedArray()
         // Sensitive capabilities start unchecked so the user makes an explicit opt-in decision.
         val checked = BooleanArray(labels.size) { i -> !SENSITIVE_CAPS.contains(labels[i]) }
@@ -612,8 +758,7 @@ class MainActivity : AppCompatActivity() {
     private fun launchPlayerBundle(bytes: ByteArray, grantedCapabilities: List<String>?) {
         playerLandingView?.visibility = View.GONE
         surfaceView.setStatusMessage("Booting SoftN Engine...")
-        pendingGrantedCapabilities = grantedCapabilities
-        pendingBundleBytes = bytes
+        pendingBundle = PendingBundle(bytes, grantedCapabilities)
         if (viewportWidth > 0 && viewportHeight > 0) {
             bootPendingBundle()
         }
@@ -672,13 +817,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun bootPendingBundleOnEngineThread() {
-        val bytes = pendingBundleBytes ?: return
-        val grantedCaps = pendingGrantedCapabilities
+        if (destroyed.get()) return
+        val pending = pendingBundle ?: return
         val w = viewportWidth
         val h = viewportHeight
         val d = viewportDensity
         if (w <= 0 || h <= 0) return
-        pendingBundleBytes = null
+        pendingBundle = null
+        val bytes = pending.bytes
+        val grantedCaps = pending.grantedCapabilities
 
         val gen = engineGeneration.incrementAndGet()
         deviceBridge.reset(gen)
@@ -701,6 +848,10 @@ class MainActivity : AppCompatActivity() {
         )
         if (handle == 0L) {
             mainHandler.post { surfaceView.setStatusMessage("Failed to load SoftN bundle (see logcat)") }
+            return
+        }
+        if (destroyed.get()) {
+            SoftnNative.nativeDestroy(handle)
             return
         }
         engineHandle = handle
@@ -841,19 +992,32 @@ class MainActivity : AppCompatActivity() {
         }
         val latch = CountDownLatch(1)
         val captured = AtomicBoolean(false)
+        val timedOut = AtomicBoolean(false)
         engineHandler.post {
             try {
                 val h = engineHandle
                 if (h != 0L && !destroyed.get()) {
-                    captured.set(SoftnNative.nativePointerDown(h, x, y))
+                    val didCapture = SoftnNative.nativePointerDown(h, x, y)
+                    if (timedOut.get()) {
+                        if (didCapture) {
+                            SoftnNative.nativePointerUp(h, x, y)
+                        }
+                    } else {
+                        captured.set(didCapture)
+                    }
                 }
             } finally {
                 latch.countDown()
             }
         }
-        try {
+        val finished = try {
             latch.await(16L, TimeUnit.MILLISECONDS)
         } catch (_: InterruptedException) {
+            false
+        }
+        if (!finished) {
+            timedOut.set(true)
+            return false
         }
         return captured.get()
     }
@@ -927,13 +1091,14 @@ class MainActivity : AppCompatActivity() {
             if (flid >= 0 && optsArr != null && optsArr.length() > 0) {
                 val labels = Array(optsArr.length()) { i -> optsArr.optString(i, "") }
                 mainHandler.post {
+                    if (isFinishing || isDestroyed || engineGeneration.get() != gen) return@post
                     AlertDialog.Builder(this)
                         .setSingleChoiceItems(labels, selIdx) { dialog, which ->
                             dialog.dismiss()
                             engineHandler.post {
-                                if (engineHandle == 0L) return@post
+                                if (engineHandle == 0L || destroyed.get() || engineGeneration.get() != gen) return@post
                                 val res = SoftnNative.nativeSelectOption(engineHandle, flid, which)
-                                handleInteractionJson(res)
+                                handleInteractionJson(res, gen)
                             }
                         }
                         .setNegativeButton("Cancel", null)

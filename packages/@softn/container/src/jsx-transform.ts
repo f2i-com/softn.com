@@ -579,7 +579,21 @@ class JsxScanner {
     return out;
   }
 
+  private jsxDepth = 0;
+
   private parseJsxElement(): string {
+    if (this.jsxDepth >= 256) {
+      throw new Error('JSX nesting depth limit exceeded (max 256)');
+    }
+    this.jsxDepth++;
+    try {
+      return this.parseJsxElementInner();
+    } finally {
+      this.jsxDepth--;
+    }
+  }
+
+  private parseJsxElementInner(): string {
     // Expect `<`
     this.pos++;
 

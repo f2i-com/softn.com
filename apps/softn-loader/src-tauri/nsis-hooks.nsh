@@ -8,7 +8,7 @@
   ; Copy and register the shell extension DLL
   SetOutPath "$INSTDIR"
   File "${SHELL_EXT_PATH}"
-  ExecWait 'regsvr32 /s "$INSTDIR\softn_shell_extension.dll"'
+  ExecWait '"$SYSDIR\regsvr32.exe" /s "$INSTDIR\softn_shell_extension.dll"'
 
   ; Notify shell of the change
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
@@ -16,7 +16,7 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   ; Unregister the shell extension DLL before removal
-  ExecWait 'regsvr32 /u /s "$INSTDIR\softn_shell_extension.dll"'
+  ExecWait '"$SYSDIR\regsvr32.exe" /u /s "$INSTDIR\softn_shell_extension.dll"'
 
   ; Notify shell of the change
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'

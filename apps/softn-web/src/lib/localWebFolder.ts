@@ -89,13 +89,17 @@ export async function readLocalWebFolder(files: readonly File[]): Promise<{ data
 
   // The cache and permission answers belong to the hash of the archive. Identical files
   // must produce the same bytes regardless of selection order, modification times or time zone.
-  // Write straight into the final buffer, freeing each input file before reading the next.
-  const data = new Uint8Array(finalSize);
-  let offset = 0;
+  // Accumulate exact emitted chunks so a local file whose size changes between selection and
+  // read never causes a RangeError or trailing zero bytes after the ZIP EOCD record.
+  const chunks: Uint8Array[] = [];
+  let totalOut = 0;
   const zip = new Zip((error, chunk) => {
     if (error) throw error;
-    data.set(chunk, offset);
-    offset += chunk.length;
+    totalOut += chunk.byteLength;
+    if (totalOut > MAX_ZIP_INPUT_BYTES) {
+      throw new Error('The packaged web app exceeds the archive size limit.');
+    }
+    chunks.push(chunk);
   });
   for (const path of [...byPath.keys()].sort()) {
     const file = new ZipPassThrough(path);
@@ -105,5 +109,11 @@ export async function readLocalWebFolder(files: readonly File[]): Promise<{ data
     file.push(bytes, true);
   }
   zip.end();
+  const data = new Uint8Array(totalOut);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
   return { data, fileName: `${folder}.softn` };
 }

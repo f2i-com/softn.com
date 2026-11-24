@@ -42,9 +42,18 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 use url::{Host, Url};
+
+#[cfg(target_os = "android")]
+static ANDROID_ROOT_CERTS: std::sync::LazyLock<Vec<reqwest::Certificate>> =
+    std::sync::LazyLock::new(|| {
+        webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .filter_map(|der| reqwest::Certificate::from_der(der.as_ref()).ok())
+            .collect()
+    });
 
 /// The same cap the script runtime puts on a response it reads itself.
 pub const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
@@ -119,7 +128,9 @@ fn local_refusal(host: &str) -> String {
 }
 
 /// An address on this computer or its local network: loopback, private, link-local, the
-/// shared address space, unspecified, multicast and broadcast, and IPv4 written as IPv6.
+/// shared address space, benchmark/interconnect, unspecified, multicast and broadcast,
+/// deprecated site-local, and IPv4 embedded in IPv6 (mapped, compatible, translated,
+/// NAT64, and 6to4).
 pub fn is_local_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -132,18 +143,47 @@ pub fn is_local_ip(ip: IpAddr) -> bool {
                 || v4.is_multicast()
                 || a == 0
                 || (a == 100 && (64..=127).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
                 || a >= 240
         }
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_local_ip(IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
+            let s = v6.segments();
+            // Deprecated IPv4-compatible `::/96` (excluding `::` and `::1`, handled below).
+            if s[0..6] == [0, 0, 0, 0, 0, 0] && (s[6] != 0 || s[7] > 1) {
+                let v4 = Ipv4Addr::from(((s[6] as u32) << 16) | (s[7] as u32));
+                return is_local_ip(IpAddr::V4(v4));
+            }
+            // IPv4-translated `::ffff:0:0:0/96` (RFC 2765).
+            if s[0..4] == [0, 0, 0, 0] && s[4] == 0xffff && s[5] == 0 {
+                let v4 = Ipv4Addr::from(((s[6] as u32) << 16) | (s[7] as u32));
+                return is_local_ip(IpAddr::V4(v4));
+            }
+            // NAT64 well-known prefix `64:ff9b::/96` (RFC 6052).
+            if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+                let v4 = Ipv4Addr::from(((s[6] as u32) << 16) | (s[7] as u32));
+                return is_local_ip(IpAddr::V4(v4));
+            }
+            // NAT64 local-use prefix `64:ff9b:1::/48` (RFC 8215).
+            if s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0x0001 {
+                return true;
+            }
+            // 6to4 `2002::/16` embedding an IPv4 address in segments 1..=2.
+            if s[0] == 0x2002 {
+                let v4 = Ipv4Addr::from(((s[1] as u32) << 16) | (s[2] as u32));
+                if is_local_ip(IpAddr::V4(v4)) {
+                    return true;
+                }
+            }
+            let first = s[0];
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (first & 0xfe00) == 0xfc00
                 || (first & 0xffc0) == 0xfe80
+                || (first & 0xffc0) == 0xfec0
         }
     }
 }
@@ -180,9 +220,10 @@ pub enum Destination {
         name: String,
         addresses: Vec<SocketAddr>,
         /// For a listed name that looks like a server on the internet and leads to this
-        /// computer or the local network: the first such address. The person is asked
-        /// about it before the request is made.
-        local: Option<IpAddr>,
+        /// computer or the local network: every distinct such address in `addresses`. The
+        /// person is asked about each before the request is made so a second unapproved
+        /// local IP in the same DNS answer cannot be reached via fallback.
+        local: Vec<IpAddr>,
     },
 }
 
@@ -198,13 +239,21 @@ fn judge(name: &str, listed: bool, addresses: Vec<SocketAddr>) -> Result<Destina
     if addresses.is_empty() {
         return Err(format!("Network request failed: {} could not be found", name));
     }
-    let local = addresses.iter().map(|address| address.ip()).find(|ip| is_local_ip(*ip));
-    if local.is_some() && !listed {
+    let mut local: Vec<IpAddr> = Vec::new();
+    for address in &addresses {
+        let ip = address.ip();
+        if is_local_ip(ip) && !local.contains(&ip) {
+            local.push(ip);
+        }
+    }
+    if !local.is_empty() && !listed {
         return Err(local_refusal(name));
     }
     // A listed name that says it is local was read as local in the question.
-    let says_local = names_local_host(&Host::Domain(name));
-    Ok(Destination::Name { name: name.to_string(), addresses, local: local.filter(|_| !says_local) })
+    if names_local_host(&Host::Domain(name)) {
+        local.clear();
+    }
+    Ok(Destination::Name { name: name.to_string(), addresses, local })
 }
 
 /// The request's destination: the grant's rules, then the name looked up and judged.
@@ -240,11 +289,7 @@ fn client(timeout: Duration, destination: &Destination) -> Result<reqwest::Clien
         builder = builder.resolve_to_addrs(name, addresses);
     }
     #[cfg(target_os = "android")]
-    let builder = builder.tls_certs_only(
-        webpki_root_certs::TLS_SERVER_ROOT_CERTS
-            .iter()
-            .filter_map(|der| reqwest::Certificate::from_der(der.as_ref()).ok()),
-    );
+    let builder = builder.tls_certs_only(ANDROID_ROOT_CERTS.iter().cloned());
     builder.build().map_err(|e| format!("The network client could not start: {}", e))
 }
 
@@ -309,8 +354,7 @@ pub async fn net_fetch(
     // Until the bundle chosen last has started on its data, nothing in the page is that
     // bundle: the app before it stays mounted while it loads, and a request from it then was
     // asked about in the new one's name. The choice is read before and after, so a choice
-    // made between the two reads is seen.
-    #[cfg(desktop)]
+    // made between the two reads is seen. Enforced on every platform (desktop and mobile).
     let opened = {
         let opened = consent.opened();
         if !identity.open_started() || consent.opened() != opened {
@@ -318,25 +362,21 @@ pub async fn net_fetch(
         }
         opened
     };
-    #[cfg(not(desktop))]
-    let _ = &identity;
     // The rules arrive with the request, from a page that also runs the bundle, so they may
     // be any caller's invention. Whether the network may be used under them is asked of
     // the person here (consent.rs), once for the bundle that is open.
-    #[cfg(desktop)]
     consent
         .require_net(&app, &crate::consent::NetPolicy::new(request.allow_http, &request.allowed_hosts), opened)
         .await?;
     let destination = destination(&request, system_lookup).await?;
-    // Asked of the person on the desktop. Android puts no network question, and reaches a
-    // listed name as it did, at the addresses checked: refusing it there would break an
-    // HTTPS intranet name, which cannot be listed as an address instead.
-    #[cfg(desktop)]
-    if let Destination::Name { name, local: Some(address), .. } = &destination {
-        consent.require_local_host(&app, name, *address, opened).await?;
+    // Every distinct local address in the DNS reply requires explicit native consent keyed
+    // by `(host, ip)` so DNS rebinding or multi-record fallback cannot reach an unapproved
+    // local device or loopback service.
+    if let Destination::Name { name, local, .. } = &destination {
+        for address in local {
+            consent.require_local_host(&app, name, *address, opened).await?;
+        }
     }
-    #[cfg(not(desktop))]
-    let _ = (&app, &consent);
     send(request, &destination).await
 }
 
@@ -431,6 +471,15 @@ mod tests {
         assert!(check_destination(url.as_str(), false, &[]).is_err());
         assert!(is_local_ip("127.0.0.1".parse().unwrap()));
         assert!(is_local_ip("::ffff:10.1.2.3".parse().unwrap()));
+        assert!(is_local_ip("64:ff9b::127.0.0.1".parse().unwrap()));
+        assert!(is_local_ip("64:ff9b::169.254.169.254".parse().unwrap()));
+        assert!(is_local_ip("64:ff9b:1::1".parse().unwrap()));
+        assert!(is_local_ip("fec0::1".parse().unwrap()));
+        assert!(is_local_ip("::ffff:0:127.0.0.1".parse().unwrap()));
+        assert!(is_local_ip("::127.0.0.1".parse().unwrap()));
+        assert!(is_local_ip("2002:7f00:0001::".parse().unwrap()));
+        assert!(is_local_ip("198.18.0.1".parse().unwrap()));
+        assert!(!is_local_ip("64:ff9b::93.184.216.34".parse().unwrap()));
         assert!(!is_local_ip("93.184.216.34".parse().unwrap()));
     }
 
@@ -608,7 +657,7 @@ mod tests {
         for allowed in [&[][..], &["api.example.com"][..]] {
             assert_eq!(
                 lookup(&to("https://api.example.com:8443/v1", allowed), public),
-                Ok(Destination::Name { name: "api.example.com".to_string(), addresses: vec!["93.184.216.34:8443".parse().unwrap()], local: None }),
+                Ok(Destination::Name { name: "api.example.com".to_string(), addresses: vec!["93.184.216.34:8443".parse().unwrap()], local: vec![] }),
                 "{:?}",
                 allowed
             );
@@ -626,7 +675,20 @@ mod tests {
     #[test]
     fn a_listed_name_that_looks_public_and_leads_home_is_asked_about() {
         let found = lookup(&to("https://api.example.com/", &["api.example.com"]), router).unwrap();
-        assert!(matches!(found, Destination::Name { local: Some(ip), ref addresses, .. } if ip == "192.168.1.1".parse::<IpAddr>().unwrap() && addresses.len() == 2), "{:?}", found);
+        assert!(matches!(found, Destination::Name { ref local, ref addresses, .. } if local.as_slice() == ["192.168.1.1".parse::<IpAddr>().unwrap()] && addresses.len() == 2), "{:?}", found);
+
+        fn multi_local(_: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+            Ok(vec![
+                SocketAddr::new("192.168.1.1".parse().unwrap(), port),
+                SocketAddr::new("127.0.0.1".parse().unwrap(), port),
+            ])
+        }
+        let multi = lookup(&to("https://api.example.com/", &["api.example.com"]), multi_local).unwrap();
+        assert!(
+            matches!(multi, Destination::Name { ref local, .. } if local == &vec!["192.168.1.1".parse::<IpAddr>().unwrap(), "127.0.0.1".parse::<IpAddr>().unwrap()]),
+            "{:?}",
+            multi
+        );
     }
 
     #[test]
@@ -636,7 +698,7 @@ mod tests {
         }
         for (url, listed) in [("http://localhost:3000/", "localhost"), ("https://printer.local/", "printer.local"), ("https://nas.home.arpa/", "nas.home.arpa")] {
             let found = lookup(&to(url, &[listed]), home).unwrap();
-            assert!(matches!(found, Destination::Name { local: None, .. }), "{}: {:?}", url, found);
+            assert!(matches!(found, Destination::Name { ref local, .. } if local.is_empty()), "{}: {:?}", url, found);
         }
         assert!(is_local_host("localhost") && is_local_host("printer.local") && is_local_host("192.168.1.20") && is_local_host("[::1]"));
         assert!(!is_local_host("api.example.com") && !is_local_host("93.184.216.34"));

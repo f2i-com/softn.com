@@ -293,10 +293,12 @@ enum RustWorkerCmd {
 
 struct RustWorkerHandle {
     tx: mpsc::Sender<RustWorkerCmd>,
+    abort: Arc<AtomicBool>,
 }
 
 impl Drop for RustWorkerHandle {
     fn drop(&mut self) {
+        self.abort.store(true, Ordering::SeqCst);
         let _ = self.tx.send(RustWorkerCmd::Shutdown);
     }
 }
@@ -403,7 +405,11 @@ impl LocalContainerBackend {
             } else {
                 "/"
             };
-            if norm == p.trim_end_matches('/') || norm.starts_with(p) {
+            if p == "/" {
+                return true;
+            }
+            let trimmed = p.trim_end_matches('/');
+            if norm == trimmed || norm.starts_with(&format!("{trimmed}/")) {
                 return true;
             }
         }
@@ -846,6 +852,7 @@ impl LocalContainerBackend {
         cfg: &BackendConfig,
         vfs: &Arc<HashMap<String, Vec<u8>>>,
         sql_storage: &SqlStorage,
+        abort: Arc<AtomicBool>,
     ) -> Result<RustBackendWorker, String> {
         let entry_key = normalize_vfs_path(&cfg.entry);
         let root_prefix = cfg
@@ -926,9 +933,8 @@ impl LocalContainerBackend {
             stream_stdout: false,
             mode: "worker_boot".to_string(),
         };
-        let mut st = compile_rust_program(&entry_source, config)?.into_state();
-        let abort = Arc::new(AtomicBool::new(false));
         let _boot_watchdog = WallDeadlineGuard::arm(Arc::clone(&abort), WALL_TIME_MS);
+        let mut st = compile_rust_program(&entry_source, config)?.into_state();
         harden_vm(&mut st, BOOT_STEP_BUDGET, abort.clone());
         let sql_bridge = Arc::new(Mutex::new(RequestSqlBridge::new(
             sql_storage.clone(),
@@ -988,6 +994,8 @@ impl LocalContainerBackend {
         let cfg_owned = cfg.clone();
         let vfs_owned = Arc::clone(vfs);
         let sql_owned = sql_storage.clone();
+        let abort = Arc::new(AtomicBool::new(false));
+        let boot_abort = Arc::clone(&abort);
         let (cmd_tx, cmd_rx) = mpsc::channel::<RustWorkerCmd>();
         let (boot_tx, boot_rx) = mpsc::channel::<Result<(), String>>();
 
@@ -995,16 +1003,17 @@ impl LocalContainerBackend {
             .name("softn-rust-backend".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                let mut worker = match Self::boot_rust_worker(&cfg_owned, &vfs_owned, &sql_owned) {
-                    Ok(w) => {
-                        let _ = boot_tx.send(Ok(()));
-                        w
-                    }
-                    Err(e) => {
-                        let _ = boot_tx.send(Err(e));
-                        return;
-                    }
-                };
+                let mut worker =
+                    match Self::boot_rust_worker(&cfg_owned, &vfs_owned, &sql_owned, boot_abort) {
+                        Ok(w) => {
+                            let _ = boot_tx.send(Ok(()));
+                            w
+                        }
+                        Err(e) => {
+                            let _ = boot_tx.send(Err(e));
+                            return;
+                        }
+                    };
                 while let Ok(cmd) = cmd_rx.recv() {
                     match cmd {
                         RustWorkerCmd::Http { req, reply } => {
@@ -1023,16 +1032,19 @@ impl LocalContainerBackend {
 
         boot_rx
             .recv_timeout(RUST_WORKER_RECV_TIMEOUT)
-            .map_err(|e| match e {
-                mpsc::RecvTimeoutError::Timeout => {
-                    "Rust backend worker timed out during boot".to_string()
-                }
-                mpsc::RecvTimeoutError::Disconnected => {
-                    "Rust backend worker thread terminated during boot".to_string()
+            .map_err(|e| {
+                abort.store(true, Ordering::SeqCst);
+                match e {
+                    mpsc::RecvTimeoutError::Timeout => {
+                        "Rust backend worker timed out during boot".to_string()
+                    }
+                    mpsc::RecvTimeoutError::Disconnected => {
+                        "Rust backend worker thread terminated during boot".to_string()
+                    }
                 }
             })??;
 
-        Ok(RustWorkerHandle { tx: cmd_tx })
+        Ok(RustWorkerHandle { tx: cmd_tx, abort })
     }
 
     fn execute_rust(&self, req: &BackendHttpRequest) -> BackendHttpResponse {
@@ -1060,11 +1072,14 @@ impl LocalContainerBackend {
         }
         match rx.recv_timeout(RUST_WORKER_RECV_TIMEOUT) {
             Ok(resp) => resp,
-            Err(mpsc::RecvTimeoutError::Timeout) => BackendHttpResponse {
-                status: 503,
-                headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: b"Rust backend request timed out".to_vec(),
-            },
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                handle.abort.store(true, Ordering::SeqCst);
+                BackendHttpResponse {
+                    status: 503,
+                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                    body: b"Rust backend request timed out".to_vec(),
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => BackendHttpResponse {
                 status: 500,
                 headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
@@ -1087,7 +1102,10 @@ impl LocalContainerBackend {
             return json!({ "ok": false });
         }
         rx.recv_timeout(RUST_WORKER_RECV_TIMEOUT)
-            .unwrap_or_else(|_| json!({ "ok": false, "error": "timeout" }))
+            .unwrap_or_else(|_| {
+                handle.abort.store(true, Ordering::SeqCst);
+                json!({ "ok": false, "error": "timeout" })
+            })
     }
 
     /// Returns `true` when this app runs a persistent Rust Axum backend that may emit
@@ -1111,11 +1129,11 @@ impl LocalContainerBackend {
 
 impl RustBackendWorker {
     fn handle_http(&mut self, req: &BackendHttpRequest) -> BackendHttpResponse {
-        // Renew per-request instruction budget so long-lived sessions never starve
+        // Renew per-request instruction budget WITHOUT calling `set_limits` (which would
+        // replace the instrumentation Recorder and drop `heap_limit` / `dynamic_code_limits`).
         self.abort.store(false, Ordering::SeqCst);
         let _watchdog = WallDeadlineGuard::arm(Arc::clone(&self.abort), WALL_TIME_MS);
-        self.state
-            .set_limits(REQUEST_STEP_BUDGET, Some(self.abort.clone()));
+        let _ = self.state.renew_step_budget(REQUEST_STEP_BUDGET);
 
         let uri = if req.query.is_empty() {
             req.path.clone()
@@ -1162,19 +1180,20 @@ impl RustBackendWorker {
         };
         let _ = self.state.take_rust_output();
         let _ = self.state.take_rust_stderr();
-        self.last_overlay_hash = persist_rust_vfs_overlay(
-            &mut self.state,
-            &self.overlay_path,
-            self.last_overlay_hash,
-        );
+        if resp.status < 500 {
+            self.last_overlay_hash = persist_rust_vfs_overlay(
+                &mut self.state,
+                &self.overlay_path,
+                self.last_overlay_hash,
+            );
+        }
         resp
     }
 
     fn handle_control(&mut self, payload: Value) -> Value {
         self.abort.store(false, Ordering::SeqCst);
         let _watchdog = WallDeadlineGuard::arm(Arc::clone(&self.abort), WALL_TIME_MS);
-        self.state
-            .set_limits(REQUEST_STEP_BUDGET / 2, Some(self.abort.clone()));
+        let _ = self.state.renew_step_budget(REQUEST_STEP_BUDGET / 2);
         let mut budget = HostValueBudget::new(65_536, 16 * 1024 * 1024);
         let raw = match self.state.call_slot_bounded(
             self.dispatch_slot,
@@ -1232,6 +1251,9 @@ fn is_protected_overlay_path(p: &str, backend_entry: Option<&str>) -> bool {
         ".sqlite3-journal",
         ".pem",
         ".key",
+        ".tpl",
+        ".yaml",
+        ".yml",
         ".ini",
         ".bak",
         ".log",
@@ -1506,7 +1528,8 @@ fn decode_hex_bytes(hex: &str) -> Option<Vec<u8>> {
 
 fn harden_vm(st: &mut ScriptState, steps: u64, abort: Arc<AtomicBool>) {
     st.set_limits(steps, Some(abort));
-    st.set_heap_limit(VM_HEAP_LIMIT);
+    let baseline = st.heap_bytes();
+    st.set_heap_limit(baseline.saturating_add(VM_HEAP_LIMIT));
     st.set_output_limit(VM_OUTPUT_LIMIT);
     st.set_dynamic_code_limits(256 * 1024, 1024 * 1024, 64, 512, 256);
     st.disable_vm_jit();

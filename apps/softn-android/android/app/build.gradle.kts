@@ -12,17 +12,23 @@ val softnAssetsDir = System.getenv("SOFTN_ASSETS_DIR") ?: (project.findProperty(
 
 fun escapeAndroidStringRes(raw: String): String {
     val sb = StringBuilder(raw.length + 16)
+    var first = true
     for (ch in raw) {
+        if (first && (ch == '@' || ch == '?')) {
+            sb.append('\\').append(ch)
+            first = false
+            continue
+        }
         when (ch) {
-            '&' -> sb.append("&amp;")
-            '<' -> sb.append("&lt;")
-            '>' -> sb.append("&gt;")
-            '"' -> sb.append("\\\"")
-            '\'' -> sb.append("\\'")
-            '\\' -> sb.append("\\\\")
-            '\n' -> sb.append("\\n")
+            '&' -> { sb.append("&amp;"); first = false }
+            '<' -> { sb.append("&lt;"); first = false }
+            '>' -> { sb.append("&gt;"); first = false }
+            '"' -> { sb.append("\\\""); first = false }
+            '\'' -> { sb.append("\\'"); first = false }
+            '\\' -> { sb.append("\\\\"); first = false }
+            '\n' -> { sb.append("\\n"); first = false }
             '\r' -> {}
-            else -> if (ch.code >= 0x20) sb.append(ch)
+            else -> if (ch.code >= 0x20) { sb.append(ch); first = false }
         }
     }
     return sb.toString()

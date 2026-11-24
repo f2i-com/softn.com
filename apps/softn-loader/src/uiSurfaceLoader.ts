@@ -13,11 +13,16 @@ export function getLoadedUiLoaderSurface(): LoadedUiLoaderSurface | null {
 export function preloadUiLoaderSurface(): Promise<LoadedUiLoaderSurface> {
   if (cachedUiSurface) return Promise.resolve(cachedUiSurface);
   if (!pendingUiSurface) {
-    pendingUiSurface = import('./UiLoaderSurface').then((mod) => {
-      mod.initUiRuntimeComponents();
-      cachedUiSurface = mod;
-      return mod;
-    });
+    pendingUiSurface = import('./UiLoaderSurface')
+      .then((mod) => {
+        mod.initUiRuntimeComponents();
+        cachedUiSurface = mod;
+        return mod;
+      })
+      .catch((err) => {
+        pendingUiSurface = null;
+        throw err;
+      });
   }
   return pendingUiSurface;
 }

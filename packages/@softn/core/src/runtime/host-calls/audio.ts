@@ -105,6 +105,21 @@ export class AppAudio {
     if (remote) {
       this.gate.checkPermission('net');
       this.gate.checkNetHost(src);
+      // Never load an embedding-host-origin URL through `el.src`: `crossOrigin = 'anonymous'`
+      // maps to Fetch credentials mode `same-origin` and would attach host session cookies.
+      const hostOrigin =
+        typeof globalThis.location?.origin === 'string' && globalThis.location.origin !== 'null'
+          ? globalThis.location.origin
+          : null;
+      if (hostOrigin) {
+        try {
+          if (new URL(src, hostOrigin).origin === hostOrigin) {
+            return { played: false, reason: 'Host-origin audio URL is not permitted' };
+          }
+        } catch {
+          return { played: false, reason: 'Invalid audio URL' };
+        }
+      }
     } else if (!fromAsset && !/^(?:blob|data):/i.test(src)) {
       const hasBundleResolver = typeof this.assetFunction() === 'function';
       const trimmed = src.trim();
@@ -118,6 +133,9 @@ export class AppAudio {
       }
     }
 
+    if (this.playing.size >= 32) {
+      return { played: false, reason: 'too many concurrent sounds playing (max 32)' };
+    }
     const el = new Audio();
     if (remote) {
       el.crossOrigin = 'anonymous';

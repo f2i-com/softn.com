@@ -165,13 +165,17 @@ export function sanitizeSvgReferences(props: SoftNProps, tag: string, policy: Eg
     let refused: boolean;
     if (lower === 'href' || lower === 'xlinkhref' || lower === 'xlink:href') {
       const text = urlText(value);
+      const isUse = tag.toLowerCase() === 'use';
+      const allowSvgData = tag.toLowerCase() === 'image';
       refused =
         value !== undefined &&
         value !== null &&
         value !== false &&
         (text === undefined ||
-          (!text.trim().startsWith('#') &&
-            (!isSafeUrl(text) || isWithheldUrl('src', text, policy))));
+          (isUse
+            ? !text.trim().startsWith('#')
+            : !text.trim().startsWith('#') &&
+              (!isSafeUrl(text, allowSvgData) || isWithheldUrl('src', text, policy))));
     } else {
       const primitiveOrHandler =
         value === undefined ||
@@ -219,7 +223,9 @@ function urlText(value: unknown): string | undefined {
 function judgedUrl(name: string, value: unknown, policy: EgressPolicy): string | undefined {
   const text = urlText(value);
   if (text === undefined) return undefined;
-  return isSafeUrl(text) && !isWithheldUrl(name, text, policy) ? text : undefined;
+  const canonical = urlPropName(name);
+  const allowSvgData = canonical === 'src' || canonical === 'fallbacksrc';
+  return isSafeUrl(text, allowSvgData) && !isWithheldUrl(name, text, policy) ? text : undefined;
 }
 
 /** A refused URL value for the development warning: its text, or what kind of thing it was. */

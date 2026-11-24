@@ -63,27 +63,27 @@ self.addEventListener('fetch', function (event) {
     if (!isAppEntry) return;
     event.respondWith(
       fetch(request).then(function (response) {
-        if (response.ok) {
+        var cc = (response.headers.get('cache-control') || '').toLowerCase();
+        if (response.ok && cc.indexOf('no-store') < 0) {
           var copy = response.clone();
           caches.open(CACHE_NAME).then(function (cache) { return cache.put(base, copy); }).catch(function () {});
         }
         return response;
       }).catch(function () {
-        // This worker's own cache, as below: an app's model downloads share
-        // the origin's Cache Storage under addresses its script names.
+        // When the private index.php shell is uncacheable (`no-store`), fall back cleanly to offlinePage().
         return caches.open(CACHE_NAME).then(function (cache) { return cache.match(base); }).then(function (cached) { return cached || offlinePage(); });
       })
     );
     return;
   }
   var relative = url.pathname.slice(base.length);
-  // The runtime's workers and the torch package keep their names from release
-  // to release (assets/core-runtime/runtime/script-worker.js), unlike every
-  // other file under assets/, which is named by its contents. Answered cache
-  // first, a returning visitor ran the copy kept from the release they first
-  // saw, with this release's page: a fix to the sandbox worker never reached
-  // them. So the network first, and the copy when there is no network.
-  if (relative.indexOf('assets/core-runtime/') === 0) {
+  // The runtime's workers and unhashed assets keep their names from release to release,
+  // unlike content-hashed bundles under assets/ or digest-foldered container-runtime/<hex>/.
+  // Use network-first for unhashed runtime paths so security updates take effect immediately.
+  var isUnhashedContainerRuntime =
+    relative.indexOf('assets/container-runtime/') === 0 &&
+    !/^assets\/container-runtime\/[0-9a-f]{8,}\//i.test(relative);
+  if (relative.indexOf('assets/core-runtime/') === 0 || isUnhashedContainerRuntime) {
     event.respondWith(
       fetch(request).then(function (response) {
         if (response.ok) {

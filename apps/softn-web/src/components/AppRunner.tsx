@@ -322,14 +322,19 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
     }
   }, [webContainer, textFiles]);
 
+  const consentPendingRef = useRef(false);
+  consentPendingRef.current = Boolean(consent) || consentStatus.waiting.length > 0;
+
   const uiBackendBridge = useMemo(() => {
     if (webContainer || !hasEmbeddedBackend(uiManifest)) return null;
     return createUiBackendBridge({
       appId: runtimeAppId,
+      storagePrefix: `softn-container:${encodeURIComponent(runtimeAppId)}:`,
       manifest: uiManifest,
       textFiles: textFiles ? Object.fromEntries(textFiles) : undefined,
       bundleBytes: bundleData,
       persistStorage: true,
+      isConsentPending: () => consentPendingRef.current,
     });
   }, [webContainer, uiManifest, runtimeAppId, textFiles, bundleData]);
 

@@ -515,7 +515,22 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
         const family = unquote((rule as CSSFontFaceRule).style.getPropertyValue('font-family'));
         keep = family === '' || family.endsWith(` ${app}`);
       }
-      if (keep && kind === 'CSSKeyframesRule') keep = (rule as CSSKeyframesRule).name.endsWith(`-${app}`);
+      if (keep && kind === 'CSSKeyframesRule') {
+        const kf = rule as CSSKeyframesRule;
+        keep = kf.name.endsWith(`-${app}`);
+        if (keep && kf.cssRules) {
+          for (let k = 0; k < kf.cssRules.length; k++) {
+            const frameStyle = (kf.cssRules[k] as Partial<CSSKeyframeRule>).style;
+            if (!frameStyle) continue;
+            for (const prop of ['appearance', '-webkit-appearance', '-moz-appearance']) {
+              if (TOP_LAYER_APPEARANCE.test(frameStyle.getPropertyValue(prop))) {
+                frameStyle.removeProperty(prop);
+                removed = true;
+              }
+            }
+          }
+        }
+      }
       const style = (rule as Partial<CSSStyleRule>).style;
       if (keep && style) {
         for (const prop of ['appearance', '-webkit-appearance', '-moz-appearance']) {

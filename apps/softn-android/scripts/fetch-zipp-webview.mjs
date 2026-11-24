@@ -22,11 +22,42 @@ const SOFTN_ROOT = path.resolve(ANDROID_ROOT, '..', '..');
 const CACHE_ROOT = path.join(SOFTN_ROOT, '.zipp-browser-release');
 const DEFAULT_JNI_LIBS_DIR = path.join(ANDROID_ROOT, 'android', 'app', 'src', 'main', 'jniLibs');
 
-const ZIPP_BROWSER_REPO = process.env.ZIPP_BROWSER_REPO || 'f2i-com/zipp-browser';
+function validateRepoSlug(repo) {
+  if (typeof repo !== 'string' || repo.length > 128 || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+    throw new Error(`Invalid ZIPP_BROWSER_REPO slug: ${JSON.stringify(repo)}`);
+  }
+  return repo;
+}
+
+const ZIPP_BROWSER_REPO = validateRepoSlug(process.env.ZIPP_BROWSER_REPO || 'f2i-com/zipp-browser');
 const SUPPORTED_ABIS = ['arm64-v8a', 'x86_64'];
 const MAX_WEBVIEW_ZIP_BYTES = 256 * 1024 * 1024;
 const MAX_WEBVIEW_ENTRY_BYTES = 128 * 1024 * 1024;
 const MAX_WEBVIEW_ENTRIES = 512;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+const ALLOWED_DOWNLOAD_HOSTS = new Set([
+  'api.github.com',
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+]);
+
+function validateDownloadUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid download URL: ${JSON.stringify(rawUrl)}`);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`Refusing non-HTTPS download URL: ${parsed.protocol}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (!ALLOWED_DOWNLOAD_HOSTS.has(host)) {
+    throw new Error(`Refusing download from untrusted host: ${host}`);
+  }
+  return parsed.toString();
+}
 
 export function validateReleaseTag(tag) {
   if (typeof tag !== 'string' || tag.length === 0 || tag.length > 64 || tag.includes('..') || !/^[a-zA-Z0-9._-]+$/.test(tag)) {
@@ -90,7 +121,10 @@ async function fetchReleaseMetadata(tag, fetchImpl = globalThis.fetch) {
   const endpoint = tag
     ? `https://api.github.com/repos/${ZIPP_BROWSER_REPO}/releases/tags/${encodeURIComponent(tag)}`
     : `https://api.github.com/repos/${ZIPP_BROWSER_REPO}/releases/latest`;
-  const resp = await fetchImpl(endpoint, { headers: ghHeaders() });
+  const resp = await fetchImpl(endpoint, {
+    headers: ghHeaders(),
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+  });
   if (!resp.ok) {
     throw new Error(`Failed to query ${endpoint}: HTTP ${resp.status}`);
   }
@@ -110,18 +144,61 @@ async function fetchReleaseMetadata(tag, fetchImpl = globalThis.fetch) {
   };
 }
 
-async function downloadBytes(url, fetchImpl = globalThis.fetch) {
-  const headers = { 'User-Agent': 'softn-android-packager' };
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (token && url.startsWith('https://api.github.com/')) {
-    headers.Authorization = `Bearer ${token}`;
-    headers.Accept = 'application/octet-stream';
+async function downloadBytes(url, fetchImpl = globalThis.fetch, maxBytes = MAX_WEBVIEW_ZIP_BYTES) {
+  let currentUrl = validateDownloadUrl(url);
+  for (let hop = 0; hop < 6; hop++) {
+    const headers = { 'User-Agent': 'softn-android-packager' };
+    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    if (token && currentUrl.startsWith('https://api.github.com/')) {
+      headers.Authorization = `Bearer ${token}`;
+      headers.Accept = 'application/octet-stream';
+    }
+    const resp = await fetchImpl(currentUrl, {
+      headers,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+    });
+    if (resp.status >= 300 && resp.status < 400 && resp.headers?.get?.('location')) {
+      const nextUrl = new URL(resp.headers.get('location'), currentUrl).toString();
+      currentUrl = validateDownloadUrl(nextUrl);
+      continue;
+    }
+    if (!resp.ok) {
+      throw new Error(`Download failed for ${currentUrl}: HTTP ${resp.status}`);
+    }
+    if (resp.body && typeof resp.body.getReader === 'function') {
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let total = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          total += value.byteLength;
+          if (total > maxBytes) {
+            throw new Error(`Downloaded asset from ${currentUrl} exceeds ${maxBytes} byte limit`);
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return out;
+    }
+    const buf = new Uint8Array(await resp.arrayBuffer());
+    if (buf.byteLength > maxBytes) {
+      throw new Error(`Downloaded asset from ${currentUrl} exceeds ${maxBytes} byte limit`);
+    }
+    return buf;
   }
-  const resp = await fetchImpl(url, { headers, redirect: 'follow' });
-  if (!resp.ok) {
-    throw new Error(`Download failed for ${url}: HTTP ${resp.status}`);
-  }
-  return new Uint8Array(await resp.arrayBuffer());
+  throw new Error(`Too many redirects downloading ${url}`);
 }
 
 /**
@@ -151,6 +228,12 @@ export function extractVerifiedAndroidWebView(zipBytes, { abis = SUPPORTED_ABIS,
       return true;
     },
   });
+  for (const [entryName, entryBytes] of Object.entries(entries)) {
+    const cap = entryName.endsWith('.so') ? MAX_WEBVIEW_ENTRY_BYTES : 1024 * 1024;
+    if (entryBytes.byteLength > cap) {
+      throw new Error(`Android WebView archive entry '${entryName}' exceeds size limit after decompression`);
+    }
+  }
   const sumsRaw = entries['SHA256SUMS.txt'] ? strFromU8(entries['SHA256SUMS.txt']) : null;
   if (!sumsRaw) {
     throw new Error('Android WebView archive is missing SHA256SUMS.txt');
@@ -189,7 +272,9 @@ export function extractVerifiedAndroidWebView(zipBytes, { abis = SUPPORTED_ABIS,
 }
 
 function verifyCachedZipAgainstSums(cachedZip, zipBytes, cachedSums) {
-  if (!fs.existsSync(cachedSums)) return;
+  if (!fs.existsSync(cachedSums)) {
+    throw new Error(`Cached archive ${path.basename(cachedZip)} is missing SHA256SUMS.txt; refusing unverified cache.`);
+  }
   const sumsText = fs.readFileSync(cachedSums, 'utf8');
   const sumsMap = parseChecksums(sumsText);
   const expected = sumsMap.get(path.basename(cachedZip));
@@ -310,7 +395,7 @@ export async function ensureAndroidWebView({
     console.log(`[softn-apk] Downloading Zipp Browser ${resolvedTag} Android WebView (${assetName})...`);
     zipBytes = await downloadBytes(meta.webviewAsset.browser_download_url, fetchImpl);
 
-    const sumsBytes = await downloadBytes(meta.sumsAsset.browser_download_url, fetchImpl);
+    const sumsBytes = await downloadBytes(meta.sumsAsset.browser_download_url, fetchImpl, 1024 * 1024);
     const sumsText = new TextDecoder().decode(sumsBytes);
     const sumsMap = parseChecksums(sumsText);
     const expectedZipHash = sumsMap.get(assetName);

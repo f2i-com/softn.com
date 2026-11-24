@@ -119,8 +119,8 @@ function tokenizeDirective(line: string): string[] {
   return tokens;
 }
 
-const MAX_HTACCESS_REGEX_INPUT_LEN = 2048;
-const MAX_HTACCESS_UNBOUNDED_QUANTIFIERS = 6;
+const MAX_HTACCESS_REGEX_INPUT_LEN = 512;
+const MAX_HTACCESS_UNBOUNDED_QUANTIFIERS = 3;
 
 /** Parse a `{m}` / `{m,}` / `{m,n}` quantifier starting at `i`. Returns null if literal `{`. */
 function parseBraceQuantifier(
@@ -154,8 +154,9 @@ function parseBraceQuantifier(
  */
 function hasUnsafeRegexStructure(pattern: string): boolean {
   if (pattern.length > 512) return true;
-  // Reject adjacent unbounded dot/wildcard quantifiers like `.*.*`, `.+.+`, `.*.+`.
+  // Reject adjacent unbounded quantifiers (`.*.*`, `a+a+`, `\w+\w+`, `[a-z]+[a-z]+`) which cause polynomial ReDoS.
   if (/(?:^|[^\\])\.[*+]\??\.[*+]/.test(pattern)) return true;
+  if (/(?:\*|(?<!\\)\+|\{\d+,\})\??(?:\([^)]*\)|\[[^\]]*\]|\\.|[^|()[\]{}*+?])(?:\*|(?<!\\)\+|\{\d+,\})/.test(pattern)) return true;
 
   interface GroupFrame {
     hasQuantifier: boolean;
@@ -371,14 +372,22 @@ export function parseHtaccess(source: string, dirPrefix = ''): ParsedHtaccess {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 
-    // Container blocks: <FilesMatch "..."> ... </FilesMatch>
+    // Container blocks: <FilesMatch "..."> ... </FilesMatch> and <Files "glob"> ... </Files>
     const fmOpen = /^<FilesMatch\s+["']?([^"'>]+)["']?\s*>$/i.exec(trimmed);
     if (fmOpen) {
       inFilesMatchRegex = safeCompileRegex(fmOpen[1], 'i');
       filesMatchDenied = false;
       continue;
     }
-    if (/^<\/FilesMatch>$/i.test(trimmed)) {
+    const filesOpen = /^<Files\s+(?:"([^"]+)"|'([^']+)'|([^>\s]+))\s*>$/i.exec(trimmed);
+    if (filesOpen) {
+      const glob = (filesOpen[1] ?? filesOpen[2] ?? filesOpen[3] ?? '').trim();
+      const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]');
+      inFilesMatchRegex = safeCompileRegex(`^${escaped}$`, 'i');
+      filesMatchDenied = false;
+      continue;
+    }
+    if (/^<\/(?:FilesMatch|Files)\s*>$/i.test(trimmed)) {
       if (inFilesMatchRegex && filesMatchDenied) {
         result.denyFilesPatterns.push(inFilesMatchRegex);
       }
@@ -394,7 +403,7 @@ export function parseHtaccess(source: string, dirPrefix = ''): ParsedHtaccess {
     }
 
     // Ignore <IfModule ...> / </IfModule> wrappers so inner rules still take effect
-    if (/^<\/?IfModule\b/i.test(trimmed) || /^<\/?Files\b/i.test(trimmed) || /^<\/?Directory\b/i.test(trimmed)) {
+    if (/^<\/?IfModule\b/i.test(trimmed) || /^<\/?Directory\b/i.test(trimmed)) {
       continue;
     }
 

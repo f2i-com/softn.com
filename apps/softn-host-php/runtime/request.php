@@ -512,6 +512,25 @@ function softn_body_limit(mixed $route, mixed $global, bool $upload): ?int {
 }
 
 /**
+ * Whether this request arrived over HTTPS, honoring the rightmost non-empty
+ * `X-Forwarded-Proto` entry only when the immediate peer is a trusted proxy.
+ * @param array<string,mixed> $server
+ */
+function softn_request_is_https(array $server, bool $peerIsTrustedProxy): bool {
+    $https=(isset($server['HTTPS'])&&$server['HTTPS']!==''&&strtolower((string)$server['HTTPS'])!=='off')
+        ||strtolower((string)($server['REQUEST_SCHEME']??''))==='https'
+        ||((int)($server['SERVER_PORT']??0)===443);
+    if($peerIsTrustedProxy&&isset($server['HTTP_X_FORWARDED_PROTO'])) {
+        $parts=array_values(array_filter(array_map('trim',explode(',',(string)$server['HTTP_X_FORWARDED_PROTO'])),static fn(string $v): bool=>$v!==''));
+        if($parts!==[]) {
+            $proto=strtolower($parts[count($parts)-1]);
+            if($proto==='https'||$proto==='http')$https=$proto==='https';
+        }
+    }
+    return $https;
+}
+
+/**
  * This site's own origin, the one a same-origin page sends. The scheme is
  * the connection's, or a trusted proxy's X-Forwarded-Proto. Null when Host
  * is not a plain host name or address.
@@ -520,11 +539,7 @@ function softn_body_limit(mixed $route, mixed $global, bool $upload): ?int {
 function softn_own_origin(array $server, bool $peerIsTrustedProxy): ?string {
     $host=strtolower((string)($server['HTTP_HOST']??''));
     if(!preg_match('/^([a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|\[[0-9a-f:.]{2,45}\])(?::([0-9]{1,5}))?$/D',$host,$parts))return null;
-    $https=(isset($server['HTTPS'])&&$server['HTTPS']!==''&&strtolower((string)$server['HTTPS'])!=='off')||strtolower((string)($server['REQUEST_SCHEME']??''))==='https';
-    if($peerIsTrustedProxy&&isset($server['HTTP_X_FORWARDED_PROTO'])) {
-        $proto=strtolower(trim(explode(',',(string)$server['HTTP_X_FORWARDED_PROTO'])[0]));
-        if($proto==='https'||$proto==='http')$https=$proto==='https';
-    }
+    $https=softn_request_is_https($server,$peerIsTrustedProxy);
     // Match the browser's serialized origin even if a proxy kept the port in Host.
     $port=isset($parts[2])?(int)$parts[2]:null;
     if($port!==null && $port>65535)return null;

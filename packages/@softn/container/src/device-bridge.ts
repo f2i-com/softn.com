@@ -170,6 +170,7 @@ export function createWebDeviceBridge(): ContainerDeviceBridge {
   };
   const bleDevices = new Map<string, WebBleDevice>();
   let nextNotificationId = 1;
+  let cameraCaptureInFlight = false;
 
   const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & {
     bluetooth?: {
@@ -198,11 +199,6 @@ export function createWebDeviceBridge(): ContainerDeviceBridge {
         await nav.share({ title: opts.title, text: opts.text, url: opts.url });
         return { shared: true };
       }
-      if (nav?.clipboard && typeof nav.clipboard.writeText === 'function') {
-        const text = [opts.title, opts.text, opts.url].filter(Boolean).join('\n');
-        if (text) await nav.clipboard.writeText(text);
-        return { shared: false };
-      }
       return { shared: false };
     },
 
@@ -222,55 +218,63 @@ export function createWebDeviceBridge(): ContainerDeviceBridge {
         if (!nav?.mediaDevices || typeof nav.mediaDevices.getUserMedia !== 'function') {
           throw new Error('Camera is not available in this browser');
         }
-        const facingMode = options?.facing === 'user' ? 'user' : 'environment';
-        const maxWidth = Math.max(160, Math.min(2048, Number(options?.maxWidth) || 960));
-        const quality = Math.max(0.2, Math.min(1, Number(options?.quality) || 0.85));
-        const stream = await nav.mediaDevices.getUserMedia({
-          video: { facingMode },
-          audio: false,
-        });
+        if (cameraCaptureInFlight) {
+          throw new Error('A camera capture is already in progress');
+        }
+        cameraCaptureInFlight = true;
         try {
-          const video = document.createElement('video');
-          video.muted = true;
-          video.playsInline = true;
-          video.srcObject = stream;
-          await video.play();
-          await new Promise<void>((resolve, reject) => {
-            if (video.readyState >= 2 && video.videoWidth > 0) {
-              resolve();
-              return;
-            }
-            const timer = setTimeout(() => reject(new Error('Camera stream timed out')), 10_000);
-            video.onloadeddata = () => {
-              clearTimeout(timer);
-              resolve();
-            };
-            video.onerror = () => {
-              clearTimeout(timer);
-              reject(new Error('Camera stream failed to load'));
-            };
+          const facingMode = options?.facing === 'user' ? 'user' : 'environment';
+          const maxWidth = Math.max(160, Math.min(2048, Number(options?.maxWidth) || 960));
+          const quality = Math.max(0.2, Math.min(1, Number(options?.quality) || 0.85));
+          const stream = await nav.mediaDevices.getUserMedia({
+            video: { facingMode },
+            audio: false,
           });
-          const srcW = video.videoWidth || 640;
-          const srcH = video.videoHeight || 480;
-          const scale = srcW > maxWidth ? maxWidth / srcW : 1;
-          const width = Math.max(1, Math.round(srcW * scale));
-          const height = Math.max(1, Math.round(srcH * scale));
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) throw new Error('Unable to create 2D capture context');
-          ctx.drawImage(video, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          return {
-            dataUrl,
-            mimeType: 'image/jpeg',
-            width,
-            height,
-            size: Math.round((dataUrl.length * 3) / 4),
-          };
+          try {
+            const video = document.createElement('video');
+            video.muted = true;
+            video.playsInline = true;
+            video.srcObject = stream;
+            await video.play();
+            await new Promise<void>((resolve, reject) => {
+              if (video.readyState >= 2 && video.videoWidth > 0) {
+                resolve();
+                return;
+              }
+              const timer = setTimeout(() => reject(new Error('Camera stream timed out')), 10_000);
+              video.onloadeddata = () => {
+                clearTimeout(timer);
+                resolve();
+              };
+              video.onerror = () => {
+                clearTimeout(timer);
+                reject(new Error('Camera stream failed to load'));
+              };
+            });
+            const srcW = video.videoWidth || 640;
+            const srcH = video.videoHeight || 480;
+            const scale = srcW > maxWidth ? maxWidth / srcW : 1;
+            const width = Math.max(1, Math.round(srcW * scale));
+            const height = Math.max(1, Math.round(srcH * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('Unable to create 2D capture context');
+            ctx.drawImage(video, 0, 0, width, height);
+            const dataUrl = canvas.toDataURL('image/jpeg', quality);
+            return {
+              dataUrl,
+              mimeType: 'image/jpeg',
+              width,
+              height,
+              size: Math.round((dataUrl.length * 3) / 4),
+            };
+          } finally {
+            for (const track of stream.getTracks()) track.stop();
+          }
         } finally {
-          for (const track of stream.getTracks()) track.stop();
+          cameraCaptureInFlight = false;
         }
       },
     },
@@ -291,7 +295,20 @@ export function createWebDeviceBridge(): ContainerDeviceBridge {
               ? { filters: [{ namePrefix: options.namePrefix }] }
               : { acceptAllDevices: true };
         const dev = await nav.bluetooth.requestDevice(reqOpts);
+        if (bleDevices.size >= 64 && !bleDevices.has(dev.id)) {
+          const oldest = bleDevices.keys().next().value;
+          if (oldest !== undefined) bleDevices.delete(oldest);
+        }
         bleDevices.set(dev.id, dev);
+        if (typeof (dev as unknown as EventTarget).addEventListener === 'function') {
+          (dev as unknown as EventTarget).addEventListener(
+            'gattserverdisconnected',
+            () => {
+              if (bleDevices.get(dev.id) === dev) bleDevices.delete(dev.id);
+            },
+            { once: true }
+          );
+        }
         return {
           devices: [
             {
@@ -577,11 +594,15 @@ export async function dispatchDeviceBridgeCall(
         if (allowedBleServices && !allowedBleServices.has(normalizeUuid(svc))) {
           throw new Error(`Bluetooth service ${svc} is not allowed by permission.json`);
         }
+        const b64 = String(params.base64 ?? '');
+        if (b64.length > 65_536) {
+          throw new Error('Bluetooth write payload exceeds maximum allowed size (64 KiB base64)');
+        }
         return await bridge.bluetooth.write(
           String(params.deviceId ?? ''),
           svc,
           String(params.characteristicUuid ?? ''),
-          String(params.base64 ?? ''),
+          b64,
           Boolean(params.withoutResponse)
         );
       }

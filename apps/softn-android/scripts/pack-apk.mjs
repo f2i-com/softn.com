@@ -206,6 +206,9 @@ function inspectSoftnBundle(bundleBytes, fallbackName) {
   });
   let manifest = {};
   if (entries['manifest.json']) {
+    if (entries['manifest.json'].byteLength > MAX_META_ENTRY_BYTES) {
+      throw new Error(`Bundle metadata entry 'manifest.json' exceeds 1 MiB limit after decompression`);
+    }
     try {
       manifest = JSON.parse(strFromU8(entries['manifest.json']));
     } catch {
@@ -214,6 +217,9 @@ function inspectSoftnBundle(bundleBytes, fallbackName) {
   }
   let permissions = {};
   if (entries['permission.json']) {
+    if (entries['permission.json'].byteLength > MAX_META_ENTRY_BYTES) {
+      throw new Error(`Bundle metadata entry 'permission.json' exceeds 1 MiB limit after decompression`);
+    }
     try {
       permissions = JSON.parse(strFromU8(entries['permission.json']))?.permissions || {};
     } catch {
@@ -257,7 +263,7 @@ export function generateLeastPrivilegeManifest(capabilities) {
   const perms = [];
   const features = [];
 
-  if (capSet.has('net') || capSet.has('sync') || capSet.has('storage')) {
+  if (capSet.has('net') || capSet.has('sync')) {
     perms.push('    <uses-permission android:name="android.permission.INTERNET" />');
   }
   if (capSet.has('camera') || capSet.has('qr')) {

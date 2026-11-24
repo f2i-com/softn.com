@@ -303,9 +303,18 @@ export function sanitizeHostAssetUrl(
   const isFormAction =
     (tagName === 'form' && attrName === 'action') ||
     ((tagName === 'button' || tagName === 'input') && attrName === 'formaction');
-  if (isLink && /^https?:/i.test(trimmed)) {
-    // eslint-disable-next-line no-control-regex -- strip embedded ASCII controls so downstream isExternalHref matches WHATWG URL parsing
-    return originalTrimmed.replace(/[\u0000-\u001f\u007f]+/g, '');
+  if (isLink && /^https?:\/\//i.test(trimmed)) {
+    // eslint-disable-next-line no-control-regex -- strip embedded ASCII controls before WHATWG URL parsing
+    const cleaned = originalTrimmed.replace(/[\u0000-\u001f\u007f]+/g, '');
+    try {
+      const parsed = new URL(cleaned);
+      if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.username || parsed.password) {
+        return null;
+      }
+      return parsed.href;
+    } catch {
+      return null;
+    }
   }
 
   // When an embedded backend is active, allow same-virtual-origin links & form actions

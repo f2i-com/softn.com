@@ -795,7 +795,15 @@ export class BackendWorkerSession {
     if (!this.rustEngine || typeof this.rustEngine.exportRustOverlayJson !== 'function') return;
     try {
       const raw = this.rustEngine.exportRustOverlayJson();
-      if (!raw || raw === '{"writes":{},"deleted":[],"dirs":[]}' || raw.length > MAX_OVERLAY_TOTAL_BYTES) return;
+      if (!raw || raw.length > MAX_OVERLAY_TOTAL_BYTES) return;
+      if (raw === '{"writes":{},"deleted":[],"dirs":[]}') {
+        if (Object.keys(this.rustOverlayWrites).length > 0 || this.rustOverlayDeleted.size > 0) {
+          this.rustOverlayWrites = {};
+          this.rustOverlayDeleted.clear();
+          this.postToHost({ type: 'rust-overlay-persist', overlayJson: raw });
+        }
+        return;
+      }
       const delta = JSON.parse(raw) as {
         writes?: Record<string, string>;
         deleted?: string[];
@@ -1218,7 +1226,8 @@ export class BackendWorkerSession {
       if (this.phpApp) {
         try {
           const snap = sanitizePhpOverlayJson(this.phpApp.exportOverlayJson(), this.backend?.entry);
-          if (snap !== this.lastPhpOverlaySnapshot && snap !== '{"writes":{},"deleted":[],"dirs":[]}') {
+          const isEmptySnap = snap === '{"writes":{},"deleted":[],"dirs":[]}';
+          if (snap !== this.lastPhpOverlaySnapshot && (!isEmptySnap || this.lastPhpOverlaySnapshot !== '')) {
             this.lastPhpOverlaySnapshot = snap;
             this.postToHost({ type: 'php-overlay-persist', overlayJson: snap });
           }
@@ -1326,6 +1335,31 @@ export class BackendWorkerSession {
       const lastSeg = rel.slice(rel.lastIndexOf('/') + 1);
       if (!lastSeg.includes('.') && this.hasArchiveFile(this.backend.entry)) {
         scriptToRun = this.backend.entry;
+      }
+    }
+
+    // Re-evaluate `.htaccess` access rules against the resolved target path whenever
+    // DirectoryIndex, extensionless `.php`, or front-controller fallback changed the target.
+    const resolvedTarget = scriptToRun ? `/${scriptToRun}` : staticFile ? `/${staticFile}` : null;
+    if (resolvedTarget && resolvedTarget !== targetPath && this.htaccessFiles.size > 0) {
+      const resolvedCheck = evaluateHtaccessChain(
+        this.htaccessFiles,
+        {
+          pathname: resolvedTarget,
+          query: targetQuery,
+          method: msg.method,
+          host: msg.headers['host'] || 'app.softn.local',
+          headers: msg.headers,
+          https: true,
+        },
+        vfsProbe
+      );
+      if (resolvedCheck.action === 'deny') {
+        return {
+          status: resolvedCheck.status,
+          headers: [['Content-Type', 'text/plain; charset=utf-8']],
+          bodyBytes: encodeUtf8(statusTextFor(resolvedCheck.status)),
+        };
       }
     }
 

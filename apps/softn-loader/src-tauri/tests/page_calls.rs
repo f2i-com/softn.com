@@ -316,7 +316,10 @@ fn a_backup_is_only_of_the_app_open_now() {
     };
     assert_eq!(snapshots(&a_folder), 0);
     let written = page.call("backup_database", serde_json::json!({ "appId": b })).unwrap();
-    let written = PathBuf::from(written.as_str().unwrap());
-    assert_eq!(written.parent().unwrap(), page.manager.get_app_path(&b).parent().unwrap());
-    assert!(written.exists());
+    let backup_name = written.as_str().unwrap();
+    assert!(backup_name.starts_with("pre-upgrade-") && backup_name.ends_with(".sqlite"), "{}", backup_name);
+    assert!(!backup_name.contains('/') && !backup_name.contains('\\'), "backup name leaked a directory path: {}", backup_name);
+    let b_path = page.manager.get_app_path(&b);
+    let b_folder = b_path.parent().unwrap();
+    assert!(b_folder.join(backup_name).exists());
 }

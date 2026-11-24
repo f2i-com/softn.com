@@ -396,7 +396,12 @@ export class GpuComputeManager {
       },
     });
 
-    const count = options.bindGroupCount || 1;
+    const maxGroups = Math.min(16, Math.max(1, device.limits?.maxBindGroups ?? 4));
+    const rawCount = options.bindGroupCount === undefined ? 1 : Number(options.bindGroupCount);
+    if (!Number.isInteger(rawCount) || rawCount < 1 || rawCount > maxGroups) {
+      throw new Error(`Invalid bindGroupCount: ${options.bindGroupCount} (must be 1..${maxGroups})`);
+    }
+    const count = rawCount;
     const layouts: GPUBindGroupLayout[] = [];
     for (let i = 0; i < count; i++) {
       layouts.push(pipeline.getBindGroupLayout(i));

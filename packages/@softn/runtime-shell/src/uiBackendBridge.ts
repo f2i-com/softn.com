@@ -32,6 +32,10 @@ export interface UiBackendBridgeOptions {
   bundleBytes?: Uint8Array;
   /** Persist SQLite state in IndexedDB across reloads (true in SoftN Web, false in editor previews). */
   persistStorage?: boolean;
+  /** Optional explicit container storage prefix (aligned with host origin storage cleanup). */
+  storagePrefix?: string;
+  /** Optional gate that returns true while consent is still pending (blocks backend startup/requests). */
+  isConsentPending?: () => boolean;
   /** Optional runtime base URL override; defaults to `hostedContainerOptions().runtimeUrl`. */
   runtimeUrl?: string;
   /** Worker vs inline isolation; defaults to `'worker'` in browsers. */
@@ -200,7 +204,7 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
               : undefined;
       const transport = new container.LocalBackendTransport({
         appId: options.appId,
-        storagePrefix: `softn-ui-backend:${cleanId}:`,
+        storagePrefix: options.storagePrefix ?? `softn-ui-backend:${cleanId}:`,
         persistStorage: options.persistStorage ?? false,
         backend,
         databases,
@@ -232,6 +236,15 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
     reqOptions: Record<string, unknown>
   ): Promise<NetFetchResult | null> => {
     if (disposed || !looksLikeBackendUrl(url)) return null;
+    if (options.isConsentPending?.()) {
+      return {
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+        body: 'Embedded backend access is withheld until permissions are approved.',
+      };
+    }
 
     const { transport, match, routing, statusTextFor } = await ensureTransport();
     const method = typeof reqOptions.method === 'string' && reqOptions.method.trim()

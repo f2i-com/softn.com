@@ -125,6 +125,7 @@ test('ensureAndroidWebView falls back to verified cached archive when GitHub is 
     'SHA256SUMS.txt': strToU8(`${x64Sha}  jniLibs/x86_64/libsoftn_mobile.so\n`),
     'manifest.json': strToU8(JSON.stringify({ schema: 1, tag: 'v0.1.2', abis: ['x86_64'] })),
   });
+  const cachedZipSha = crypto.createHash('sha256').update(cachedZip).digest('hex');
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-webview-fallback-'));
   try {
@@ -134,6 +135,22 @@ test('ensureAndroidWebView falls back to verified cached archive when GitHub is 
     fs.writeFileSync(path.join(cacheDir, 'zipp-browser-v0.1.2-android-webview.zip'), cachedZip);
 
     const offlineFetch = async () => ({ ok: false, status: 403 });
+    // Missing SHA256SUMS.txt in cache must fail closed.
+    await assert.rejects(
+      () =>
+        ensureAndroidWebView({
+          abis: ['x86_64'],
+          cacheRoot: path.join(tmpRoot, 'cache'),
+          jniLibsDir,
+          fetchImpl: offlineFetch,
+        }),
+      /missing SHA256SUMS\.txt/
+    );
+
+    fs.writeFileSync(
+      path.join(cacheDir, 'SHA256SUMS.txt'),
+      `${cachedZipSha}  zipp-browser-v0.1.2-android-webview.zip\n`
+    );
     const res = await ensureAndroidWebView({
       abis: ['x86_64'],
       cacheRoot: path.join(tmpRoot, 'cache'),

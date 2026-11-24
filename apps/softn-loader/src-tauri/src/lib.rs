@@ -7,6 +7,7 @@
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 #[cfg(desktop)]
@@ -203,6 +204,47 @@ fn read_softn_bundle(
     read_bundle_bytes(app, files, identity, path).map(tauri::ipc::Response::new)
 }
 
+/// Maximum bundle file size read into memory (matches @softn/bundle-format & shell extension).
+const MAX_BUNDLE_BYTES: u64 = 200 * 1024 * 1024;
+
+/// Read a regular bundle file with a hard byte cap so oversized files cannot OOM
+/// the host and special files (FIFOs, devices, directories) cannot hang it.
+fn read_bounded_file(path: &Path, reject_symlink: bool) -> Result<Vec<u8>, String> {
+    let meta = if reject_symlink {
+        fs::symlink_metadata(path)
+    } else {
+        fs::metadata(path)
+    }
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("File not found: {}", path.display())
+        } else {
+            format!("Failed to read file: {}", e)
+        }
+    })?;
+    if !meta.file_type().is_file() {
+        return Err("Only regular .softn files can be read".to_string());
+    }
+    if meta.len() > MAX_BUNDLE_BYTES {
+        return Err(format!(
+            "Bundle file exceeds the {} MiB limit",
+            MAX_BUNDLE_BYTES / (1024 * 1024)
+        ));
+    }
+    let file = fs::File::open(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let mut bytes = Vec::with_capacity((meta.len() as usize).min(4 * 1024 * 1024));
+    file.take(MAX_BUNDLE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    if bytes.len() as u64 > MAX_BUNDLE_BYTES {
+        return Err(format!(
+            "Bundle file exceeds the {} MiB limit",
+            MAX_BUNDLE_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(bytes)
+}
+
 fn read_bundle_bytes(
     #[allow(unused_variables)] app: tauri::AppHandle,
     files: State<'_, OpenableFiles>,
@@ -229,12 +271,7 @@ fn read_bundle_bytes(
         return Ok(bytes);
     }
 
-    // Check if file exists
-    if !path.exists() {
-        return Err(format!("File not found: {}", path.display()));
-    }
-
-    let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let bytes = read_bounded_file(&path, false)?;
     identity.bundle_read(&path, &bytes);
     Ok(bytes)
 }
@@ -244,9 +281,17 @@ fn read_bundle_bytes(
 fn read_content_uri(app: &tauri::AppHandle, uri: &str) -> Result<Vec<u8>, String> {
     use tauri_plugin_fs::FsExt;
     let url = url::Url::parse(uri).map_err(|e| format!("Not a file the picker returned: {}", e))?;
-    app.fs()
+    let bytes = app
+        .fs()
         .read(tauri_plugin_fs::FilePath::Url(url))
-        .map_err(|e| format!("Failed to read file: {}", e))
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    if bytes.len() as u64 > MAX_BUNDLE_BYTES {
+        return Err(format!(
+            "Bundle file exceeds the {} MiB limit",
+            MAX_BUNDLE_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Open the system file picker for one `.softn` file, record the choice as
@@ -298,6 +343,29 @@ fn is_own_snapshot(directory: &Path, backup: &Path) -> bool {
         })
 }
 
+/// Resolve a snapshot identifier from `backup_database` into a validated path directly
+/// inside `directory`. Accepts opaque `pre-upgrade-*.sqlite` basenames (returned by
+/// `backup_database` so OS paths are never disclosed to the webview) as well as legacy
+/// full paths directly inside `directory` from earlier upgrade markers.
+fn resolve_snapshot_path(directory: &Path, backup: &str) -> Result<PathBuf, String> {
+    let is_single_name = !backup.contains('/')
+        && !backup.contains('\\')
+        && !backup.contains("..")
+        && !(cfg!(windows) && backup.contains(':'))
+        && {
+            let mut parts = Path::new(backup).components();
+            matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None))
+        };
+    if is_single_name && backup.starts_with("pre-upgrade-") && backup.ends_with(".sqlite") {
+        return Ok(directory.join(backup));
+    }
+    let path = PathBuf::from(backup);
+    if is_own_snapshot(directory, &path) {
+        return Ok(path);
+    }
+    Err("Only a pre-upgrade snapshot beside the database can be restored".to_string())
+}
+
 /// Restore an app's database from a snapshot `backup_database` wrote (local
 /// scope: this device only). Only a `pre-upgrade-*.sqlite` file inside the
 /// database's own directory is accepted, and only for the app open now.
@@ -314,10 +382,17 @@ async fn restore_database(
     let app_id = Some(identity.require(app_id.as_deref())?);
     let db_path = PathBuf::from(xdb::tauri::get_db_path(db_manager.clone(), app_id.clone())?);
     let directory = db_path.parent().ok_or("The database has no parent directory")?;
-    if !is_own_snapshot(directory, Path::new(&backup)) {
-        return Err("Only a pre-upgrade snapshot beside the database can be restored".to_string());
-    }
-    xdb::tauri::import_database(app, db_manager, network, control, app_id, backup, Some("local".to_string())).await
+    let snapshot_path = resolve_snapshot_path(directory, &backup)?;
+    xdb::tauri::import_database(
+        app,
+        db_manager,
+        network,
+        control,
+        app_id,
+        snapshot_path.to_string_lossy().into_owned(),
+        Some("local".to_string()),
+    )
+    .await
 }
 
 /// Take over the page's installation registry, once, before any bundle has run in the page
@@ -384,12 +459,17 @@ async fn set_network_enabled(
     network: State<'_, xdb::tauri::SharedNetworkState>,
     control: State<'_, xdb::tauri::SharedNetworkControl>,
     consent: State<'_, consent::Consent>,
+    identity: State<'_, DataIdentity>,
     enabled: bool,
     discovery: Option<bool>,
     listen: Option<bool>,
 ) -> Result<xdb::tauri::NetworkSettings, String> {
     if turns_peer_sync_on(&control.settings(), enabled, discovery, listen) {
-        consent.require_peer_sync(&app).await?;
+        let opened = consent.opened();
+        if !identity.open_started() || consent.opened() != opened {
+            return Err("Peer sync was not turned on: the app that asked is no longer the one open".to_string());
+        }
+        consent.require_peer_sync(&app, opened).await?;
     }
     xdb::tauri::set_network_enabled(app, network, control, enabled, discovery, listen).await
 }
@@ -402,6 +482,7 @@ fn get_opened_file(state: State<'_, OpenedFile>) -> Option<String> {
 }
 
 /// Where the cached bundle called `filename` is: directly inside `cache_dir`, or nowhere.
+#[cfg_attr(desktop, allow(dead_code))]
 fn cached_bundle_path(cache_dir: &Path, filename: &str) -> Result<PathBuf, String> {
     // Reject filenames with path separators or traversal
     if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
@@ -425,12 +506,13 @@ fn cached_bundle_path(cache_dir: &Path, filename: &str) -> Result<PathBuf, Strin
 /// Read a cached .softn bundle from the app cache directory (for Android intent-opened files).
 /// The page names the file, so reading one is not the person choosing it: these bytes do not
 /// become the bundle open now, and give no app's data.
+#[cfg(not(desktop))]
 #[tauri::command]
 fn read_cached_bundle(app: tauri::AppHandle, identity: State<'_, DataIdentity>, filename: String) -> Result<tauri::ipc::Response, String> {
     let cache_dir = app.path().app_cache_dir()
         .map_err(|e| format!("Failed to get cache dir: {}", e))?;
     let path = cached_bundle_path(&cache_dir, &filename)?;
-    let bytes = fs::read(&path).map_err(|e| format!("Failed to read cached file: {}", e))?;
+    let bytes = read_bounded_file(&path, true)?;
     identity.bundle_handed_over();
     // As bytes, as read_softn_bundle hands them over.
     Ok(tauri::ipc::Response::new(bytes))
@@ -627,7 +709,6 @@ pub fn run() {
             {
                 tauri::generate_handler![
                     read_softn_bundle,
-                    read_cached_bundle,
                     get_opened_file,
                     net::net_fetch,
                     pick_softn_bundle,
@@ -649,7 +730,7 @@ pub fn run() {
                     scoped_xdb::get_collections,
                     scoped_xdb::clear_collection,
                     scoped_xdb::get_db_stats,
-                    xdb::tauri::get_network_status,
+                    scoped_xdb::get_network_status,
                     xdb::tauri::get_network_settings,
                     set_network_enabled,
                     xdb::tauri::resume_sync,
@@ -688,7 +769,7 @@ pub fn run() {
                     scoped_xdb::get_collections,
                     scoped_xdb::clear_collection,
                     scoped_xdb::get_db_stats,
-                    xdb::tauri::get_network_status,
+                    scoped_xdb::get_network_status,
                     xdb::tauri::get_network_settings,
                     set_network_enabled,
                     xdb::tauri::resume_sync,
@@ -933,19 +1014,20 @@ mod tests {
     /// The same on Android, where the page picked and read the bundle itself: `fs:default`
     /// let it read the app's own folders, where every app's database and its snapshots are,
     /// and `fs:allow-read-file` reads a `file://` or `content://` URL with no scope check at
-    /// all (tauri-plugin-fs, `resolve_file` on mobile). The picker and the read are this
-    /// side's now (`pick_softn_bundle`, `read_softn_bundle`).
+    /// all (tauri-plugin-fs, `resolve_file` on mobile). `core:default` and `core:window:default`
+    /// are also withheld so the Android page gets only events and setting the title.
     #[test]
     fn the_android_page_is_granted_no_dialog_or_file_plugin() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/android.json")).unwrap();
-        let granted: Vec<&str> = capability["permissions"]
+        let mut granted: Vec<&str> = capability["permissions"]
             .as_array()
             .unwrap()
             .iter()
             .map(|permission| permission.as_str().or_else(|| permission["identifier"].as_str()).unwrap())
             .collect();
-        assert!(granted.contains(&"core:default"));
+        granted.sort();
+        assert_eq!(granted, vec!["core:event:default", "core:window:allow-set-title"]);
         for permission in &granted {
             for plugin in ["dialog:", "fs:", "shell:", "opener:"] {
                 assert!(!permission.starts_with(plugin), "the Android page is granted {}", permission);
@@ -984,6 +1066,14 @@ mod tests {
         assert!(!is_own_snapshot(&dir, &dir.join("data.sqlite")));
         assert!(!is_own_snapshot(&dir, &dir.join("pre-upgrade-19a.sqlite.txt")));
         assert!(!is_own_snapshot(&dir, Path::new("pre-upgrade-19a.sqlite")));
+        // Opaque snapshot basenames resolve strictly inside `dir`, while traversal is refused.
+        assert_eq!(
+            resolve_snapshot_path(&dir, "pre-upgrade-19a-0.sqlite").unwrap(),
+            dir.join("pre-upgrade-19a-0.sqlite")
+        );
+        assert!(resolve_snapshot_path(&dir, "../pre-upgrade-19a.sqlite").is_err());
+        assert!(resolve_snapshot_path(&dir, "sub/pre-upgrade-19a.sqlite").is_err());
+        assert!(resolve_snapshot_path(&dir, "data.sqlite").is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

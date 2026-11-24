@@ -410,29 +410,48 @@ export function savePersistedDbCollection(base: string, collection: string, reco
   }
 }
 
-/** What the app's IndexedDB databases are kept as there: `<base>idb:<name>`, each a text. */
-function loadPersistedIdb(base: string, storage: Storage | undefined = browserStorage()): Record<string, string> {
-  // No prototype, as above: a part named `__proto__` is counted too.
-  const out: Record<string, string> = Object.create(null) as Record<string, string>;
-  if (!storage) return out;
-  const prefix = `${base}idb:`;
+/** Total UTF-16 bytes kept for `base` across localStorage, DB, and IDB fallback in one zero-alloc scan. */
+function persistedTotalBytes(base: string, storage: Storage | undefined): number {
+  if (!storage) return 0;
+  const lsPrefix = `${base}ls:`;
+  const idbPrefix = `${base}idb:`;
+  const dbKey = `${base}db`;
+  let bytes = 0;
   try {
     for (let i = 0; i < storage.length; i++) {
-      const key = storage.key(i);
-      if (!key || !key.startsWith(prefix)) continue;
-      const value = storage.getItem(key);
-      if (value !== null) out[key.slice(prefix.length)] = value;
+      const k = storage.key(i);
+      if (!k || !k.startsWith(base)) continue;
+      const v = storage.getItem(k);
+      if (v === null) continue;
+      if (k.startsWith(lsPrefix)) {
+        bytes += (k.length - lsPrefix.length + v.length) * 2;
+      } else if (k.startsWith(idbPrefix)) {
+        bytes += (k.length - idbPrefix.length + v.length) * 2;
+      } else if (k === dbKey) {
+        bytes += v.length * 2;
+      }
     }
   } catch {
-    // Storage closed to this page: the app starts with no databases.
+    return 0;
   }
-  return out;
+  return bytes;
 }
 
 /** The bytes they take, as the Worker counts them. */
 function persistedIdbBytes(base: string, storage: Storage | undefined = browserStorage()): number {
+  if (!storage) return 0;
+  const prefix = `${base}idb:`;
   let bytes = 0;
-  for (const [name, value] of Object.entries(loadPersistedIdb(base, storage))) bytes += (name.length + value.length) * 2;
+  try {
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (!k || !k.startsWith(prefix)) continue;
+      const v = storage.getItem(k);
+      if (v !== null) bytes += (k.length - prefix.length + v.length) * 2;
+    }
+  } catch {
+    return 0;
+  }
   return bytes;
 }
 
@@ -452,7 +471,7 @@ export function savePersistedIdb(base: string, name: string, value: string | nul
     }
     if (typeof value !== 'string') return true;
     const old = storage.getItem(key);
-    const others = persistedStorageBytes(base, storage) + persistedDbBytes(base, storage) + persistedIdbBytes(base, storage) - (old === null ? 0 : (name.length + old.length) * 2);
+    const others = persistedTotalBytes(base, storage) - (old === null ? 0 : (name.length + old.length) * 2);
     if (others + (name.length + value.length) * 2 > quotaBytes) return false;
     storage.setItem(key, value);
     return true;
@@ -464,19 +483,20 @@ export function savePersistedIdb(base: string, name: string, value: string | nul
 
 /** The bytes the app's kept localStorage takes in the embedding page's, as the Worker counts them. */
 function persistedStorageBytes(base: string, storage: Storage | undefined): number {
-  let bytes = 0;
-  for (const [key, value] of Object.entries(loadPersistedStorage(base, storage))) bytes += (key.length + value.length) * 2;
-  return bytes;
-}
-
-/** The bytes the app's kept records take there. */
-function persistedDbBytes(base: string, storage: Storage | undefined): number {
   if (!storage) return 0;
+  const prefix = `${base}ls:`;
+  let bytes = 0;
   try {
-    return (storage.getItem(`${base}db`)?.length ?? 0) * 2;
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (!k || !k.startsWith(prefix)) continue;
+      const v = storage.getItem(k);
+      if (v !== null) bytes += (k.length - prefix.length + v.length) * 2;
+    }
   } catch {
     return 0;
   }
+  return bytes;
 }
 
 /**
@@ -493,7 +513,7 @@ export function storageWriteFits(base: string, key: string, value: string, quota
   } catch {
     replaced = 0;
   }
-  return persistedStorageBytes(base, storage) + persistedDbBytes(base, storage) + persistedIdbBytes(base, storage) - replaced + (key.length + value.length) * 2 <= quotaBytes;
+  return persistedTotalBytes(base, storage) - replaced + (key.length + value.length) * 2 <= quotaBytes;
 }
 
 /**
@@ -1772,8 +1792,15 @@ export async function mountSoftNContainer(
       fontScope,
       callbacks: {
         onStyleFonts: (sheet, fontFacesCss) => {
-          if (fontFacesCss) dynamicFontSheets.set(sheet, fontFacesCss);
-          else dynamicFontSheets.delete(sheet);
+          if (fontFacesCss) {
+            if (!dynamicFontSheets.has(sheet) && dynamicFontSheets.size >= 64) {
+              const oldest = dynamicFontSheets.keys().next().value;
+              if (oldest !== undefined) dynamicFontSheets.delete(oldest);
+            }
+            dynamicFontSheets.set(sheet, fontFacesCss);
+          } else {
+            dynamicFontSheets.delete(sheet);
+          }
           syncHostFonts();
         },
         onSaveRequest: (file) => {
@@ -2363,6 +2390,20 @@ export async function mountSoftNContainer(
                 msg.payload?.params && typeof msg.payload.params === 'object' && !Array.isArray(msg.payload.params)
                   ? (msg.payload.params as Record<string, unknown>)
                   : {};
+              if (namespace === 'device' && (method === 'clipboardWrite' || method === 'share')) {
+                const pendingConsent =
+                  permissionMode === 'prompt' &&
+                  !consentDenied &&
+                  requestedCaps.some((cap) => !grantedCaps.has(cap));
+                if (pendingConsent || !currentPatcher?.consumeActivation()) {
+                  reply(
+                    false,
+                    undefined,
+                    'Clipboard write and share require a direct user click or key press inside the app'
+                  );
+                  break;
+                }
+              }
               void dispatchDeviceBridgeCall(deviceBridge, namespace, method, params, grantedCaps, permissions).then(
                 (res) => reply(true, res),
                 (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))

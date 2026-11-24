@@ -2107,7 +2107,19 @@ export class ContainerWorkerSession {
           }
           return;
         }
+        const isExplicitEmbeddingHost = (() => {
+          try {
+            const parsed = new URL(url);
+            const emb = embeddingHost();
+            if (!emb || parsed.hostname.toLowerCase().replace(/\.+$/, '') !== emb) return true;
+            const hosts = this.permissions.permissions?.net?.allowed_hosts;
+            return Array.isArray(hosts) && hosts.some((h) => h.trim().toLowerCase().replace(/\.+$/, '') === emb);
+          } catch {
+            return false;
+          }
+        })();
         if (
+          !isExplicitEmbeddingHost ||
           !isExternalUrlAllowed(
             url,
             this.permissions.permissions?.net,
@@ -2177,7 +2189,23 @@ export class ContainerWorkerSession {
           method: opts.method ?? 'GET',
           isStaticVfsFile: (p) => p in this.textFiles || p in this.binaryFiles,
         });
-        if (!backendTarget && !isExternalUrlAllowed(url, this.permissions.permissions?.net, this.grantedCapabilities.has('net'))) {
+        const streamAllowedOnEmbeddingHost = (() => {
+          if (backendTarget) return true;
+          try {
+            const parsed = new URL(url);
+            const emb = embeddingHost();
+            if (!emb || parsed.hostname.toLowerCase().replace(/\.+$/, '') !== emb) return true;
+            const hosts = this.permissions.permissions?.net?.allowed_hosts;
+            return Array.isArray(hosts) && hosts.some((h) => h.trim().toLowerCase().replace(/\.+$/, '') === emb);
+          } catch {
+            return false;
+          }
+        })();
+        if (
+          !backendTarget &&
+          (!streamAllowedOnEmbeddingHost ||
+            !isExternalUrlAllowed(url, this.permissions.permissions?.net, this.grantedCapabilities.has('net')))
+        ) {
           this.resolveCallbackAndFlush(callId, { error: `Network access to ${url} is not permitted by this container`, denied: true });
           return;
         }
@@ -3930,6 +3958,9 @@ export class ContainerWorkerSession {
       if (!name.startsWith(prefix)) continue;
       stream.over = true;
       stream.abort.abort();
+      const wake = stream.drained;
+      stream.drained = null;
+      wake?.();
       this.streams.delete(name);
     }
     for (const [name, socket] of [...this.sockets]) {

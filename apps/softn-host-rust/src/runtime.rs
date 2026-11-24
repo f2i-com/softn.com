@@ -12,7 +12,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use zipp_vm::embed::{
-    compile_script, compile_script_with_preamble_and_origin, CompileOptions, HostValue, ScriptOrigin, ScriptState,
+    compile_script, compile_script_with_preamble_and_origin, CompileOptions, HostValue, HostValueBudget, ScriptOrigin,
+    ScriptState,
 };
 
 use crate::host;
@@ -56,6 +57,15 @@ const MAX_STEPS_PER_CALL: u64 = 100_000_000;
 /// memory. `set_limits` installs a fresh recorder and with it no heap limit,
 /// so this follows each call of it.
 const SCRIPT_HEAP_LIMIT: usize = if cfg!(test) { 64 << 20 } else { 512 << 20 };
+
+/// Install the per-call step budget and abort flag together with every limit
+/// `set_limits` resets on its fresh recorder (heap, output, and dynamic code).
+fn apply_script_limits(state: &mut ScriptState, abort: Arc<AtomicBool>) {
+    state.set_limits(MAX_STEPS_PER_CALL, Some(abort));
+    state.set_heap_limit(SCRIPT_HEAP_LIMIT);
+    state.set_output_limit(256 * 1024);
+    state.set_dynamic_code_limits(256 * 1024, 1024 * 1024, 64, 512, 256);
+}
 
 /// VM wall-time. Must stay under the HTTP/WS timeout (30s) so the engine
 /// terminates and sends a clean error before the outer timeout fires.
@@ -810,8 +820,7 @@ impl ServerRuntime {
         // The caller owns the deadline. Arming here as well would hand the top
         // level a fresh 25s on top of the one covering the request, so a rebuild
         // could outlive the HTTP timeout the wall-time limit exists to stay under.
-        state.set_limits(MAX_STEPS_PER_CALL, Some(guard.abort.clone()));
-        state.set_heap_limit(SCRIPT_HEAP_LIMIT);
+        apply_script_limits(&mut state, guard.abort.clone());
         let init_result = state.run_init();
         drain_output(&mut state);
         init_result?;
@@ -948,17 +957,16 @@ impl ServerRuntime {
             args.into_iter().map(|v| json_to_host(v, 0)).collect();
         let host_args = host_args?;
 
-        // Reset the step budget for this request. Without this the 100M budget
-        // would span the worker's whole life and every worker would eventually
-        // refuse to run anything.
-        w.state.set_limits(MAX_STEPS_PER_CALL, Some(guard.abort.clone()));
-        w.state.set_heap_limit(SCRIPT_HEAP_LIMIT);
+        // Reset the step budget for this request while re-applying every limit
+        // that `set_limits` resets on its fresh recorder (heap, output, dynamic code).
+        apply_script_limits(&mut w.state, guard.abort.clone());
         // Anything the handler touches has to be assumed dirty from here, even
         // if it throws part-way through.
         w.dirty = true;
-        let call_result = w.state.call_slot(slot, &host_args);
+        let mut budget = HostValueBudget::new(131_072, 16 * 1024 * 1024);
+        let call_result = w.state.call_slot_bounded(slot, &host_args, &mut budget);
         drain_output(&mut w.state);
-        let value = call_result?;
+        let value = call_result.map_err(|e| e.into_message())?;
 
         // A handler whose result cannot cross as data — most often an `async`
         // one, which returns a Promise — would otherwise marshal to `null` and
@@ -1236,12 +1244,28 @@ impl Drop for ServerRuntime {
 /// The engine buffers `console.*` inside the VM rather than writing it out, so
 /// this must run after every re-entry — otherwise script output is invisible
 /// and the buffer grows for the life of the worker.
-fn drain_output(state: &mut ScriptState) {
-    for line in state.take_output() {
-        tracing::info!(target: "softn_script", "{}", line);
+fn sanitize_log_line(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(4096));
+    for ch in raw.chars() {
+        if out.len() >= 4096 {
+            out.push_str("...[truncated]");
+            break;
+        }
+        if ch.is_control() && ch != '\t' {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
     }
-    for line in state.take_errput() {
-        tracing::error!(target: "softn_script", "{}", line);
+    out
+}
+
+fn drain_output(state: &mut ScriptState) {
+    for line in state.take_output().into_iter().take(64) {
+        tracing::info!(target: "softn_script", "{}", sanitize_log_line(&line));
+    }
+    for line in state.take_errput().into_iter().take(64) {
+        tracing::error!(target: "softn_script", "{}", sanitize_log_line(&line));
     }
 }
 
@@ -1344,18 +1368,50 @@ fn holds_non_finite(value: &HostValue) -> bool {
     }
 }
 
+const MAX_HOST_JSON_NODES: usize = 131_072;
+const MAX_HOST_JSON_BYTES: usize = 16 * 1024 * 1024;
+
 fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, String> {
+    let mut nodes = 0usize;
+    let mut bytes = 0usize;
+    host_to_json_bounded(val, depth, &mut nodes, &mut bytes)
+}
+
+fn host_to_json_bounded(
+    val: &HostValue,
+    depth: usize,
+    nodes: &mut usize,
+    bytes: &mut usize,
+) -> Result<serde_json::Value, String> {
     if depth >= MAX_JSON_DEPTH {
         return Err(format!("Value nesting depth exceeds maximum of {}", MAX_JSON_DEPTH));
+    }
+    *nodes += 1;
+    if *nodes > MAX_HOST_JSON_NODES {
+        return Err("Handler result exceeds maximum node count".into());
     }
     Ok(match val {
         // A function, class, Map or Date cannot cross as data. Null is what the
         // previous engine produced for the same values.
-        HostValue::Undefined | HostValue::Null | HostValue::Opaque => serde_json::Value::Null,
-        HostValue::Bool(b) => serde_json::Value::Bool(*b),
-        HostValue::Number(n) => number_to_json(*n),
+        HostValue::Undefined | HostValue::Null | HostValue::Opaque => {
+            *bytes += 4;
+            if *bytes > MAX_HOST_JSON_BYTES { return Err("Handler result exceeds host byte limit".into()); }
+            serde_json::Value::Null
+        }
+        HostValue::Bool(b) => {
+            *bytes += 5;
+            if *bytes > MAX_HOST_JSON_BYTES { return Err("Handler result exceeds host byte limit".into()); }
+            serde_json::Value::Bool(*b)
+        }
+        HostValue::Number(n) => {
+            *bytes += 16;
+            if *bytes > MAX_HOST_JSON_BYTES { return Err("Handler result exceeds host byte limit".into()); }
+            number_to_json(*n)
+        }
         HostValue::String(s) => {
             if s.len() > MAX_STRING_VALUE_LEN { return Err("Handler string result exceeds host limit".into()); }
+            *bytes = bytes.saturating_add(s.len().saturating_add(2));
+            if *bytes > MAX_HOST_JSON_BYTES { return Err("Handler result exceeds host byte limit".into()); }
             serde_json::Value::String(s.clone())
         },
         HostValue::Utf16(units) => {
@@ -1374,48 +1430,37 @@ fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, Stri
                 }
                 text.push(character);
             }
+            *bytes = bytes.saturating_add(text.len().saturating_add(2));
+            if *bytes > MAX_HOST_JSON_BYTES { return Err("Handler result exceeds host byte limit".into()); }
             serde_json::Value::String(text)
         },
         HostValue::Array(items) => {
-            let mut vals = Vec::with_capacity(items.len());
+            let mut vals = Vec::with_capacity(items.len().min(4096));
             for v in items {
-                vals.push(host_to_json(v, depth + 1)?);
+                vals.push(host_to_json_bounded(v, depth + 1, nodes, bytes)?);
             }
             serde_json::Value::Array(vals)
         }
         HostValue::Object(pairs) => {
-            let mut map = serde_json::Map::with_capacity(pairs.len());
+            let mut map = serde_json::Map::with_capacity(pairs.len().min(4096));
             for (k, v) in pairs {
-                map.insert(k.clone(), host_to_json(v, depth + 1)?);
+                *bytes = bytes.saturating_add(k.len().saturating_add(4));
+                if *bytes > MAX_HOST_JSON_BYTES { return Err("Handler result exceeds host byte limit".into()); }
+                map.insert(k.clone(), host_to_json_bounded(v, depth + 1, nodes, bytes)?);
             }
             serde_json::Value::Object(map)
         }
-        // ZIPP 0.0.19 marshals a Float32Array as its elements, where 0.0.18
-        // read one as Opaque. JSON has no typed arrays: it crosses as an array
-        // of numbers, each the f64 the element reads as in JavaScript and a
-        // non-finite one null as JSON.stringify spells it.
-        //
-        // What is bounded is the JSON the array becomes, held to the same
-        // 2 MiB a string is — not the elements' own bytes, which say little
-        // about the JSON: 600k zeros are 2.4 MiB of f32 and 1.2 MB of text,
-        // while 300k small-exponent values are 1.2 MiB of f32 and some 5 MB of
-        // text. The whole response is bounded again on its serialised bytes by
-        // `validate_private_response`; this is the early refusal that names
-        // the tensor rather than reporting an oversized response after every
-        // other field was built. The element-count check ahead of the
-        // serialisation is a floor — `[0,0,…,0]` is 2n+1 bytes, and no element
-        // spells shorter than one digit and a separator — so an array that
-        // cannot fit however it is spelled is refused before its text is
-        // allocated, and the serialisation below is bounded by that floor.
         HostValue::Float32Array(values) => {
             if values.len().saturating_mul(2).saturating_add(1) > MAX_STRING_VALUE_LEN {
                 return Err("Handler Float32Array result exceeds host limit".into());
             }
             let array = serde_json::Value::Array(values.iter().map(|v| number_to_json(f64::from(*v))).collect());
-            let bounded = serde_json::to_vec(&array).is_ok_and(|bytes| bytes.len() <= MAX_STRING_VALUE_LEN);
-            if !bounded {
+            let vec = serde_json::to_vec(&array).map_err(|_| "Handler Float32Array serialization failed")?;
+            if vec.len() > MAX_STRING_VALUE_LEN {
                 return Err("Handler Float32Array result exceeds host limit".into());
             }
+            *bytes = bytes.saturating_add(vec.len());
+            if *bytes > MAX_HOST_JSON_BYTES { return Err("Handler result exceeds host byte limit".into()); }
             array
         }
     })

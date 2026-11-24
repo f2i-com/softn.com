@@ -435,6 +435,29 @@ function clearContainerIndexedDb(prefix: string): void {
       try { db.close(); } catch { /* ignore */ }
     }
   });
+  void openContainerStoreDb('softn-container', 'idb').then((db) => {
+    if (!db) return;
+    try {
+      const tx = db.transaction('idb', 'readwrite');
+      const store = tx.objectStore('idb');
+      const range =
+        typeof IDBKeyRange !== 'undefined'
+          ? IDBKeyRange.bound([prefix, ''], [prefix, '\uffff'])
+          : undefined;
+      const curReq = store.openCursor(range);
+      curReq.onsuccess = () => {
+        const cur = curReq.result;
+        if (!cur) return;
+        if (Array.isArray(cur.key) && cur.key[0] === prefix) cur.delete();
+        cur.continue();
+      };
+      tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } };
+      tx.onerror = () => { try { db.close(); } catch { /* ignore */ } };
+      tx.onabort = () => { try { db.close(); } catch { /* ignore */ } };
+    } catch {
+      try { db.close(); } catch { /* ignore */ }
+    }
+  });
 }
 
 /** Snapshot of one build's localStorage and container IndexedDB state for Undo after removal. */
@@ -443,6 +466,7 @@ export interface AppStorageBackup {
   localEntries: Array<[string, string]>;
   containerSession?: unknown;
   containerSqliteBlobs: Array<[IDBValidKey, unknown]>;
+  containerIdbParts?: Array<[IDBValidKey, unknown]>;
 }
 
 const SYNC_KEY_PREFIXES = [
@@ -468,7 +492,11 @@ function syncKeysForOrigin(origin: string): string[] {
   return keys;
 }
 
-function readContainerIndexedDb(prefix: string): Promise<{ session?: unknown; blobs: Array<[IDBValidKey, unknown]> }> {
+function readContainerIndexedDb(prefix: string): Promise<{
+  session?: unknown;
+  blobs: Array<[IDBValidKey, unknown]>;
+  idbParts: Array<[IDBValidKey, unknown]>;
+}> {
   const readSession = openContainerStoreDb('softn-container-session', 'sessions').then(
     (db) =>
       new Promise<unknown>((resolve) => {
@@ -524,10 +552,54 @@ function readContainerIndexedDb(prefix: string): Promise<{ session?: unknown; bl
         }
       })
   );
-  return Promise.all([readSession, readBlobs]).then(([session, blobs]) => ({ session, blobs }));
+  const readIdbParts = openContainerStoreDb('softn-container', 'idb').then(
+    (db) =>
+      new Promise<Array<[IDBValidKey, unknown]>>((resolve) => {
+        if (!db) {
+          resolve([]);
+          return;
+        }
+        const found: Array<[IDBValidKey, unknown]> = [];
+        try {
+          const tx = db.transaction('idb', 'readonly');
+          const range =
+            typeof IDBKeyRange !== 'undefined'
+              ? IDBKeyRange.bound([prefix, ''], [prefix, '\uffff'])
+              : undefined;
+          const curReq = tx.objectStore('idb').openCursor(range);
+          curReq.onerror = () => {
+            try { db.close(); } catch { /* ignore */ }
+            resolve(found);
+          };
+          curReq.onsuccess = () => {
+            const cur = curReq.result;
+            if (!cur) {
+              try { db.close(); } catch { /* ignore */ }
+              resolve(found);
+              return;
+            }
+            if (Array.isArray(cur.key) && cur.key[0] === prefix) found.push([cur.key, cur.value]);
+            cur.continue();
+          };
+        } catch {
+          try { db.close(); } catch { /* ignore */ }
+          resolve(found);
+        }
+      })
+  );
+  return Promise.all([readSession, readBlobs, readIdbParts]).then(([session, blobs, idbParts]) => ({
+    session,
+    blobs,
+    idbParts,
+  }));
 }
 
-async function writeContainerIndexedDb(prefix: string, session: unknown, blobs: Array<[IDBValidKey, unknown]>): Promise<void> {
+async function writeContainerIndexedDb(
+  prefix: string,
+  session: unknown,
+  blobs: Array<[IDBValidKey, unknown]>,
+  idbParts: Array<[IDBValidKey, unknown]> = []
+): Promise<void> {
   if (session !== undefined) {
     const db = await openContainerStoreDb('softn-container-session', 'sessions');
     if (db) {
@@ -553,6 +625,24 @@ async function writeContainerIndexedDb(prefix: string, session: unknown, blobs: 
           const tx = db.transaction('blobs', 'readwrite');
           const store = tx.objectStore('blobs');
           for (const [k, v] of blobs) store.put(v, k);
+          tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+          tx.onabort = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
+        } catch {
+          try { db.close(); } catch { /* ignore */ }
+          resolve();
+        }
+      });
+    }
+  }
+  if (idbParts.length > 0) {
+    const db = await openContainerStoreDb('softn-container', 'idb');
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction('idb', 'readwrite');
+          const store = tx.objectStore('idb');
+          for (const [k, v] of idbParts) store.put(v, k);
           tx.oncomplete = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
           tx.onerror = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
           tx.onabort = () => { try { db.close(); } catch { /* ignore */ } resolve(); };
@@ -594,6 +684,7 @@ export async function captureAppStorageBackup(origin: string | undefined): Promi
     localEntries,
     containerSession: idb.session,
     containerSqliteBlobs: idb.blobs,
+    containerIdbParts: idb.idbParts,
   };
 }
 
@@ -610,7 +701,8 @@ export async function restoreAppStorageBackup(backup: AppStorageBackup | null): 
   await writeContainerIndexedDb(
     containerStoragePrefix(backup.origin),
     backup.containerSession,
-    backup.containerSqliteBlobs
+    backup.containerSqliteBlobs,
+    backup.containerIdbParts ?? []
   );
 }
 
@@ -623,6 +715,10 @@ export function removeAppData(origin: string | undefined): number {
         localStorage.removeItem(key);
         removed += 1;
       }
+    }
+    for (const key of syncKeysForOrigin(origin)) {
+      localStorage.removeItem(key);
+      removed += 1;
     }
   } catch {
     // Storage unavailable; the cache record still goes.

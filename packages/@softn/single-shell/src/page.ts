@@ -31,6 +31,7 @@ import {
   resolveBundlePath,
 } from '@softn/core';
 import type { AssetResolver, BundleManifest } from '@softn/runtime-shell/bundleProcessor';
+import { readBoundedBody } from '@softn/runtime-shell/net';
 import { assembleApplication, mark } from './assemble';
 import { adoptHeadMetas, pageHeadMetas } from './headMetas';
 // Where the tests and the page entry have always found them.
@@ -62,7 +63,12 @@ const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 /** The path of `url` inside the folder at `base`, or null when it is not inside it. */
 function pathIn(base: URL, url: URL): string | null {
   if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) return null;
-  const path = decodeURIComponent(url.pathname.slice(base.pathname.length));
+  let path: string;
+  try {
+    path = decodeURIComponent(url.pathname.slice(base.pathname.length));
+  } catch {
+    return null;
+  }
   return path === '' ? null : path;
 }
 
@@ -147,7 +153,8 @@ export async function loadPageApplication(
   signal: AbortSignal,
   progress?: () => void
 ): Promise<LoadedPage> {
-  const pageUrl = localUrl(source.pageUrl.split('#')[0], source.pageUrl.split('#')[0]);
+  const originBase = source.documentUrl ?? source.pageUrl;
+  const pageUrl = localUrl(source.pageUrl.split('#')[0], originBase);
   const page = new URL(pageUrl);
   const base = new URL('.', page);
   const mainPath = pathIn(base, page) ?? 'index.html';
@@ -174,7 +181,9 @@ export async function loadPageApplication(
     // so in the page's type. A manifest, a seed or a script answered with a
     // page is a file the site does not have.
     if (!/\.html?$/i.test(path) && /text\/html/i.test(response.headers.get('content-type') ?? '')) return null;
-    const text = await response.text();
+    const rawBytes = await readBoundedBody(response, MAX_FILE_BYTES, { onChunk: () => progress?.() });
+    if (rawBytes === null) throw Error(`${path} is larger than this page may load`);
+    const text = new TextDecoder().decode(rawBytes);
     if (text.length > MAX_FILE_BYTES) throw Error(`${path} is larger than this page may load`);
     total += text.length;
     if (total > MAX_TOTAL_BYTES) throw Error('The files this page names are larger than it may load');

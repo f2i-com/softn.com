@@ -812,25 +812,74 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
         val["frontendRoot"] = serde_json::json!(frontend_root);
     }
     if let Some(files) = &manifest.files {
-        // Filter out private server/backend paths so clients never see backend sources.
+        // Filter out private server/backend paths so clients never see backend sources or secrets.
+        let mut private_server_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(server) = &manifest.server {
+            if let Some(entry) = &server.entry {
+                private_server_paths.insert(entry.replace('\\', "/").trim_start_matches("./").to_ascii_lowercase());
+            }
+            if let Some(scripts) = &server.scripts {
+                for s in scripts {
+                    private_server_paths.insert(s.replace('\\', "/").trim_start_matches("./").to_ascii_lowercase());
+                }
+            }
+        }
         let filtered: HashMap<String, Vec<String>> = files
             .iter()
-            .filter(|(k, _)| !k.eq_ignore_ascii_case("server") && !k.eq_ignore_ascii_case("backend"))
+            .filter(|(k, _)| {
+                !matches!(
+                    k.to_ascii_lowercase().as_str(),
+                    "server" | "backend" | "private" | "db" | "database" | "migrations"
+                )
+            })
             .map(|(k, v)| {
                 let safe: Vec<String> = v
                     .iter()
                     .filter(|p| {
-                        let lower = p.to_lowercase();
-                        !lower.starts_with("server/")
-                            && !lower.starts_with("server\\")
-                            && !lower.starts_with("backend/")
-                            && !lower.starts_with("backend\\")
-                            && !lower.ends_with(".php")
-                            && !lower.ends_with(".phtml")
-                            && !lower.ends_with(".rs")
-                            && !lower.ends_with(".sql")
-                            && !lower.ends_with(".db")
-                            && !lower.ends_with(".sqlite")
+                        let norm = p.replace('\\', "/").trim_start_matches("./").to_ascii_lowercase();
+                        let base = norm.rsplit('/').next().unwrap_or(&norm);
+                        !private_server_paths.contains(&norm)
+                            && !norm.starts_with("server/")
+                            && !norm.starts_with("backend/")
+                            && !norm.starts_with("private/")
+                            && !norm.starts_with("db/")
+                            && !norm.starts_with("database/")
+                            && !norm.starts_with("migrations/")
+                            && base != ".env"
+                            && !base.starts_with(".env.")
+                            && base != ".htaccess"
+                            && base != ".htpasswd"
+                            && base != "cargo.toml"
+                            && base != "cargo.lock"
+                            && base != "composer.json"
+                            && base != "composer.lock"
+                            && !base.ends_with(".php")
+                            && !base.ends_with(".phtml")
+                            && !base.ends_with(".php5")
+                            && !base.ends_with(".php7")
+                            && !base.ends_with(".php8")
+                            && !base.ends_with(".pht")
+                            && !base.ends_with(".phps")
+                            && !base.ends_with(".phar")
+                            && !base.ends_with(".rs")
+                            && !base.ends_with(".py")
+                            && !base.ends_with(".sql")
+                            && !base.ends_with(".db")
+                            && !base.ends_with(".db-wal")
+                            && !base.ends_with(".db-shm")
+                            && !base.ends_with(".db-journal")
+                            && !base.ends_with(".sqlite")
+                            && !base.ends_with(".sqlite-wal")
+                            && !base.ends_with(".sqlite-shm")
+                            && !base.ends_with(".sqlite-journal")
+                            && !base.ends_with(".sqlite3")
+                            && !base.ends_with(".sqlite3-wal")
+                            && !base.ends_with(".sqlite3-shm")
+                            && !base.ends_with(".sqlite3-journal")
+                            && !base.ends_with(".pem")
+                            && !base.ends_with(".key")
+                            && !base.ends_with(".secret")
+                            && !base.ends_with(".toml")
                     })
                     .cloned()
                     .collect();

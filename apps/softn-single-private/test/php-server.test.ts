@@ -340,11 +340,16 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     // A page another site can frame can have its permission bar covered with a
     // look-alike and its Allow clicked for the visitor.
     let response = await fetch(`${origin}/`);
-    expect(response.headers.get('content-security-policy')).toBe("base-uri 'self'; object-src 'none'; frame-ancestors 'self'");
+    const defaultCsp = response.headers.get('content-security-policy') ?? '';
+    expect(defaultCsp).toMatch(/^base-uri 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'/);
+    expect(defaultCsp).toContain("worker-src 'self' blob:");
+    expect(defaultCsp).toMatch(/; frame-ancestors 'self'$/);
     expect(response.headers.get('x-frame-options')).toBe('SAMEORIGIN');
     writeFileSync(join(root, 'private/serve.config.php'), config(`'frameAncestors' => ['https://portal.example.com'],`));
     response = await fetch(`${origin}/`);
-    expect(response.headers.get('content-security-policy')).toBe("base-uri 'self'; object-src 'none'; frame-ancestors 'self' https://portal.example.com");
+    const customCsp = response.headers.get('content-security-policy') ?? '';
+    expect(customCsp).toMatch(/^base-uri 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'/);
+    expect(customCsp).toMatch(/; frame-ancestors 'self' https:\/\/portal\.example\.com$/);
     expect(response.headers.get('x-frame-options')).toBeNull();
     writeFileSync(join(root, 'private/serve.config.php'), config(`'frameAncestors' => ["https://x.example.com; script-src *"],`));
     expect((await fetch(`${origin}/`)).status).toBe(503);

@@ -1,14 +1,11 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "android",
-  "description": "Android capabilities for SoftN Loader",
+  "description": "Android capabilities for SoftN Loader: minimal permissions matching desktop (no core:default, no core:window:default, no fs/dialog/shell plugins).",
   "platforms": ["android"],
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "core:window:default",
     "core:event:default",
-    "core:event:allow-listen",
-    "core:event:allow-emit"
+    "core:window:allow-set-title"
   ]
 }

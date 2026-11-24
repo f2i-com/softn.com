@@ -368,7 +368,7 @@ export const isLinkElement = (tag: string): boolean => tag === 'a' || tag === 'a
 /** Whether `href` leaves the app for the web. */
 export const isExternalHref = (href: string): boolean => {
   // eslint-disable-next-line no-control-regex -- strip C0 controls/spaces identically to WHATWG URL parser
-  return /^https?:/i.test(href.replace(/[\u0000-\u0020\u007f]+/g, ''));
+  return /^https?:\/\//i.test(href.replace(/[\u0000-\u0020\u007f]+/g, ''));
 };
 
 /**

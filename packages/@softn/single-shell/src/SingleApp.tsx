@@ -86,6 +86,8 @@ export interface RunnableApplication {
    * is mounted from the text files alone and the app's images, fonts and wasm are missing.
    */
   containerFiles?: Record<string, string | Uint8Array>;
+  /** Background first-screen ZIP warmup handle, aborted on unmount or reload. */
+  warmup?: { abort(): void };
 }
 export function Loading({ text = 'Loading…' }: { text?: string }) {
   return (
@@ -548,11 +550,17 @@ export function SingleApp({
     void loading
       .then(async (result) => {
         owned = result;
+        if (!active) {
+          result.warmup?.abort();
+          result.assets.dispose();
+          return;
+        }
         // Before the app mounts, so its first action has somewhere to go. A
         // host that is named and fails to load is a failure of the whole
         // page, not an app left running without its backend.
         const host = passed.current ? undefined : await loadHost(result.config);
         if (!active) {
+          result.warmup?.abort();
           result.assets.dispose();
           return;
         }
@@ -571,6 +579,7 @@ export function SingleApp({
       active = false;
       controller.abort();
       stall.stop();
+      owned?.warmup?.abort();
       owned?.assets.dispose();
       restoreFavicon?.();
     };

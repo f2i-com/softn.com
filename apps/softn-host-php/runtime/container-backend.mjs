@@ -356,7 +356,14 @@ function sanitizeIdent(name) {
   return `"${name}"`;
 }
 
+const MAX_SEED_TABLES = 64;
+const MAX_SEED_COLUMNS = 128;
+const MAX_SEED_ROWS = 50_000;
+
 function applySeedJson(db, payload) {
+  if (typeof payload === 'string' && Buffer.byteLength(payload, 'utf8') > MAX_SQL_RESULT_BYTES * 2) {
+    throw new Error('seedJson payload exceeds size limit');
+  }
   const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
   const tables = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
     ? (parsed.tables && typeof parsed.tables === 'object' && !Array.isArray(parsed.tables) ? parsed.tables : parsed)
@@ -366,29 +373,53 @@ function applySeedJson(db, payload) {
   let tablesSeeded = 0;
   let rowsInserted = 0;
   let statementsExecuted = 0;
-  for (const [tableName, rows] of Object.entries(tables)) {
-    if (!Array.isArray(rows) || rows.length === 0) continue;
-    const quotedTable = sanitizeIdent(tableName);
-    const cols = [];
-    for (const row of rows) {
-      if (row && typeof row === 'object' && !Array.isArray(row)) {
-        for (const k of Object.keys(row)) if (!cols.includes(k)) cols.push(k);
+  db.exec('BEGIN');
+  try {
+    for (const [tableName, rows] of Object.entries(tables)) {
+      if (!Array.isArray(rows) || rows.length === 0) continue;
+      if (tablesCreated >= MAX_SEED_TABLES) {
+        throw new Error(`seedJson exceeds maximum table limit (${MAX_SEED_TABLES})`);
       }
-    }
-    if (!cols.length) continue;
-    const defs = cols.map(c => `${sanitizeIdent(c)} TEXT`).join(', ');
-    db.exec(`CREATE TABLE IF NOT EXISTS ${quotedTable} (${defs})`);
-    tablesCreated++;
-    statementsExecuted++;
-    const placeholders = cols.map(() => '?').join(', ');
-    const stmt = db.prepare(`INSERT OR IGNORE INTO ${quotedTable} (${cols.map(sanitizeIdent).join(', ')}) VALUES (${placeholders})`);
-    for (const row of rows) {
-      if (!row || typeof row !== 'object') continue;
-      stmt.run(...cols.map(c => toSqlValue(row[c])));
-      rowsInserted++;
+      if (tableName.startsWith('_')) {
+        throw new Error(`seedJson cannot create host-reserved table: ${tableName}`);
+      }
+      const quotedTable = sanitizeIdent(tableName);
+      const colSet = new Set();
+      for (const row of rows) {
+        if (row && typeof row === 'object' && !Array.isArray(row)) {
+          for (const k of Object.keys(row)) {
+            if (!colSet.has(k)) {
+              if (colSet.size >= MAX_SEED_COLUMNS) {
+                throw new Error(`seedJson table "${tableName}" exceeds column limit (${MAX_SEED_COLUMNS})`);
+              }
+              colSet.add(k);
+            }
+          }
+        }
+      }
+      const cols = [...colSet];
+      if (!cols.length) continue;
+      const defs = cols.map(c => `${sanitizeIdent(c)} TEXT`).join(', ');
+      db.exec(`CREATE TABLE IF NOT EXISTS ${quotedTable} (${defs})`);
+      tablesCreated++;
       statementsExecuted++;
+      const placeholders = cols.map(() => '?').join(', ');
+      const stmt = db.prepare(`INSERT OR IGNORE INTO ${quotedTable} (${cols.map(sanitizeIdent).join(', ')}) VALUES (${placeholders})`);
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        if (rowsInserted >= MAX_SEED_ROWS) {
+          throw new Error(`seedJson exceeds maximum row limit (${MAX_SEED_ROWS})`);
+        }
+        stmt.run(...cols.map(c => toSqlValue(row[c])));
+        rowsInserted++;
+        statementsExecuted++;
+      }
+      tablesSeeded++;
     }
-    tablesSeeded++;
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw err;
   }
   return {tablesCreated, tablesSeeded, rowsInserted, statementsExecuted};
 }
@@ -601,7 +632,12 @@ function withOverlayLock(lockPath, fn) {
       try {
         const st = statSync(lockPath);
         if (Date.now() - st.mtimeMs > 30_000) {
-          rmSync(lockPath, {force: true});
+          // Atomically rename stale lock before removing so concurrent waiters cannot unlink a newly acquired lock.
+          const stalePath = `${lockPath}.stale.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+          try {
+            renameSync(lockPath, stalePath);
+            rmSync(stalePath, {force: true});
+          } catch {}
           continue;
         }
       } catch {}
@@ -697,10 +733,10 @@ function assertSafeSqlStatement(sql) {
   if (/\bload_extension\s*\(/i.test(stripped) || /\bfts3_tokenizer\s*\(/i.test(stripped)) {
     throw new Error('SQLite extension loading is not permitted in sandboxed container');
   }
-  if (/\bRENAME\s+TO\s+["'`[]?_/i.test(stripped)) {
+  if (/\bRENAME\s+TO(?:\s+|(?=["'`[]))["'`[]?_/i.test(stripped)) {
     throw new Error('SQLite RENAME TO host-reserved namespace is not permitted in sandboxed container');
   }
-  const pragmaRe = /\bPRAGMA\s+(?:[A-Za-z0-9_]+\s*\.\s*)?([A-Za-z0-9_]+)/gi;
+  const pragmaRe = /\bPRAGMA\s+(?:["'`[]?[A-Za-z0-9_]+["'`\]]?\s*\.\s*)?["'`[]?([A-Za-z0-9_]+)["'`\]]?/gi;
   let m;
   while ((m = pragmaRe.exec(stripped)) !== null) {
     if (!SAFE_PRAGMA_NAMES.has(m[1].toLowerCase())) {
@@ -785,9 +821,11 @@ class NodeSqlManager {
         'PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;'
       );
     }
-    if (typeof db.setAuthorizer === 'function') {
-      db.setAuthorizer(containerSqlAuthorizer);
+    if (typeof db.setAuthorizer !== 'function') {
+      try { db.close(); } catch {}
+      throw new Error('Node sqlite setAuthorizer is required for sandboxed container SQL');
     }
+    db.setAuthorizer(containerSqlAuthorizer);
     return db;
   }
 
@@ -805,20 +843,29 @@ class NodeSqlManager {
 
   isProtectedDbKey(key, filePath) {
     const safeName = (() => { try { return safeDbFilename(key); } catch { return ''; } })();
+    const safeLower = safeName.toLowerCase();
     if (/(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(key) || /(?:-wal|-shm|-journal|\.softn_seeded)$/i.test(safeName)) {
       return true;
     }
     const lower = key.toLowerCase();
-    const resolvedTarget = filePath ? resolve(filePath) : null;
-    if (this.primaryKey && lower === this.primaryKey.toLowerCase()) return true;
-    if (this.primaryDbFile && resolvedTarget && resolvedTarget === resolve(this.primaryDbFile)) return true;
+    const resolvedTarget = filePath ? resolve(filePath).toLowerCase() : null;
+    if (this.primaryKey) {
+      if (lower === this.primaryKey.toLowerCase()) return true;
+      try {
+        if (safeLower && safeLower === safeDbFilename(this.primaryKey).toLowerCase()) return true;
+      } catch {}
+    }
+    if (this.primaryDbFile && resolvedTarget && resolvedTarget === resolve(this.primaryDbFile).toLowerCase()) return true;
     for (const cfg of this.databases) {
       const cfgKey = normalizeDbKey(cfg.file || `${cfg.name}.db`).key;
       if (!cfgKey || cfgKey === ':memory:') continue;
       if (lower === cfgKey.toLowerCase()) return true;
+      try {
+        if (safeLower && safeLower === safeDbFilename(cfgKey).toLowerCase()) return true;
+      } catch {}
       if (resolvedTarget) {
         try {
-          if (resolvedTarget === resolve(this.dbPathFor(cfgKey))) return true;
+          if (resolvedTarget === resolve(this.dbPathFor(cfgKey)).toLowerCase()) return true;
         } catch {}
       }
     }
@@ -926,28 +973,76 @@ class NodeSqlManager {
     }
   }
 
+  reservedObjects(db) {
+    const names = new Set();
+    try {
+      for (const row of db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'").all()) {
+        names.add(`main:${String(row.name)}`);
+      }
+    } catch {}
+    try {
+      for (const row of db.prepare("SELECT name FROM sqlite_temp_master WHERE name LIKE '\\_%' ESCAPE '\\'").all()) {
+        names.add(`temp:${String(row.name)}`);
+      }
+    } catch {}
+    return names;
+  }
+
   execute(handleId, sql, paramsJson) {
     const managed = this.handles.get(handleId);
     if (!managed) return {error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false};
     try {
       assertSafeSqlStatement(sql);
+      const lower = String(sql ?? '').toLowerCase();
+      const mayMutateSchema = lower.includes('alter') || lower.includes('create') || lower.includes('rename');
+      const reservedBefore = mayMutateSchema ? this.reservedObjects(managed.db) : null;
       const params = parseSqlParams(paramsJson);
-      if (params.kind === 'none' && isMultiStatementOrControl(sql)) {
-        managed.db.exec(sql);
-        return {rows_affected: 0, last_insert_rowid: 0};
+      const multi = params.kind === 'none' && isMultiStatementOrControl(sql);
+      if (mayMutateSchema && multi && /\b(?:savepoint|release|commit|rollback|begin)\b/i.test(lower)) {
+        return {error: 'Cannot mix transaction/savepoint control with multi-statement DDL', code: 23, unique: false};
       }
-      const stmt = managed.db.prepare(sql);
-      if (typeof stmt.setAllowBareNamedParameters === 'function') stmt.setAllowBareNamedParameters(true);
-      const info =
-        params.kind === 'array'
-          ? stmt.run(...params.values)
-          : params.kind === 'object'
-            ? stmt.run(params.values)
-            : stmt.run();
-      return {
-        rows_affected: Number(info?.changes ?? 0),
-        last_insert_rowid: Number(info?.lastInsertRowid ?? 0),
-      };
+      const spName = mayMutateSchema ? `softn_ddl_${Math.random().toString(16).slice(2, 10)}` : null;
+      let spOpen = false;
+      if (spName) {
+        try {
+          managed.db.exec(`SAVEPOINT ${spName}`);
+          spOpen = true;
+        } catch {}
+      }
+      let out;
+      try {
+        if (multi) {
+          managed.db.exec(sql);
+          out = {rows_affected: 0, last_insert_rowid: 0};
+        } else {
+          const stmt = managed.db.prepare(sql);
+          if (typeof stmt.setAllowBareNamedParameters === 'function') stmt.setAllowBareNamedParameters(true);
+          const info =
+            params.kind === 'array'
+              ? stmt.run(...params.values)
+              : params.kind === 'object'
+                ? stmt.run(params.values)
+                : stmt.run();
+          out = {
+            rows_affected: Number(info?.changes ?? 0),
+            last_insert_rowid: Number(info?.lastInsertRowid ?? 0),
+          };
+        }
+        if (reservedBefore) {
+          for (const name of this.reservedObjects(managed.db)) {
+            if (!reservedBefore.has(name)) {
+              throw new Error('Creating or renaming a table into the host-reserved _ namespace is not permitted');
+            }
+          }
+        }
+        if (spOpen) managed.db.exec(`RELEASE ${spName}`);
+        return out;
+      } catch (innerErr) {
+        if (spOpen) {
+          try { managed.db.exec(`ROLLBACK TO ${spName}; RELEASE ${spName}`); } catch {}
+        }
+        throw innerErr;
+      }
     } catch (err) {
       return classifySqlError(err);
     }
@@ -960,6 +1055,9 @@ class NodeSqlManager {
       assertSafeSqlStatement(sql);
       const params = parseSqlParams(paramsJson);
       const stmt = managed.db.prepare(sql);
+      if (typeof stmt.readOnly === 'boolean' && !stmt.readOnly) {
+        return {error: 'SQLite query() only permits read-only statements; use execute() for writes/DDL', code: 23, unique: false};
+      }
       if (typeof stmt.setAllowBareNamedParameters === 'function') stmt.setAllowBareNamedParameters(true);
       if (typeof stmt.setReturnArrays === 'function') stmt.setReturnArrays(true);
       const colMeta = typeof stmt.columns === 'function' ? stmt.columns() : [];

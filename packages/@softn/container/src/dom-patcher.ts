@@ -900,9 +900,17 @@ export class HostDomPatcher {
     }
   }
 
+  /** Consume a recent in-container user activation (single-use for sensitive host actions like clipboard/share). */
+  consumeActivation(): boolean {
+    if (performance.now() - this.lastActivation > ACTIVATION_MS) return false;
+    this.lastActivation = Number.NEGATIVE_INFINITY;
+    this.quietUntil = performance.now() + SAME_PRESS_MS;
+    return true;
+  }
+
   /** Sanitize an inline `style` value with a bounded O(1) cache for pure (URL-free) declarations. */
   private sanitizeInlineStyleCached(value: string): string {
-    if (value.length <= 512 && !/url|src|image|softn-blob:|\\/i.test(value)) {
+    if (value.length <= 512 && !/url|src|image|cross-fade|blob:|\\/i.test(value)) {
       const cached = this.inlineStyleCache.get(value);
       if (cached !== undefined) return cached;
       const clean = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
@@ -1905,8 +1913,10 @@ export class HostDomPatcher {
       const target = this.originOf(e);
       const form = target instanceof HTMLFormElement ? target : target?.closest?.('form') ?? null;
       if (!form || !this.owns(form)) return;
-      const action = (form.getAttribute('action') ?? '').trim();
-      const method = (form.getAttribute('method') ?? 'GET').trim().toUpperCase() || 'GET';
+      const submitter = 'submitter' in e ? ((e as SubmitEvent).submitter as Element | null) : null;
+      const isControlSubmitter = submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement;
+      const action = ((isControlSubmitter ? submitter.getAttribute('formaction') : null) ?? form.getAttribute('action') ?? '').trim();
+      const method = (((isControlSubmitter ? submitter.getAttribute('formmethod') : null) ?? form.getAttribute('method') ?? 'GET').trim().toUpperCase()) || 'GET';
       const params = new URLSearchParams();
       for (const el of Array.from(form.elements)) {
         if (el instanceof HTMLInputElement) {
@@ -1923,8 +1933,7 @@ export class HostDomPatcher {
           for (const opt of Array.from(el.selectedOptions)) params.append(el.name, opt.value);
         }
       }
-      const submitter = 'submitter' in e ? ((e as SubmitEvent).submitter as Element | null) : null;
-      if ((submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) && submitter.name && !submitter.disabled) {
+      if (isControlSubmitter && submitter.name && !submitter.disabled) {
         params.append(submitter.name, submitter.value);
       }
       const req = { action, method, encoded: params.toString() };

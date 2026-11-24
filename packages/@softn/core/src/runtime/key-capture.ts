@@ -61,6 +61,8 @@ export function setAppElement(owner: object, element: Element | null): void {
  * whose press it was.
  */
 let lastPress: EventTarget | null = null;
+let lastPressAt = 0;
+const LAST_PRESS_TTL_MS = 5_000;
 const watchedWindows = new WeakSet<object>();
 
 /**
@@ -108,6 +110,7 @@ function watchPresses(view: Window | null): void {
   // app's markup cannot make one, so every press is taken as it comes.
   const note = (event: Event) => {
     lastPress = event.target;
+    lastPressAt = Date.now();
   };
   // The events the browser counts as the person's activation, seen first.
   for (const type of ['pointerdown', 'mousedown', 'touchend', 'keydown']) {
@@ -173,6 +176,7 @@ const APP_BOX = '[data-softn-app]';
 export function lastPressWasFor(owner: object): boolean {
   const element = appElements.get(owner);
   if (!element) return true;
+  if (lastPressAt === 0 || Date.now() - lastPressAt > LAST_PRESS_TTL_MS) return false;
   const target = lastPress as (Node & { ownerDocument: Document | null }) | null;
   if (!target || typeof target.nodeType !== 'number') return false;
   if (element.contains(target)) return true;

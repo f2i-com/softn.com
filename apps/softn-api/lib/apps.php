@@ -227,9 +227,28 @@ final class Apps
             throw new ApiError(400, 'backendUrl must be a same-origin path (/...) or an http(s) URL of at most 300 characters.');
         }
         // Prevent non-admin publishers from pointing their play page's credentialed
-        // RemoteBackendTransport at another app's backend or directory API routes.
-        if (!$byAdmin && str_starts_with($url, '/')) {
-            throw new ApiError(403, 'Only the site owner may set a custom same-origin backendUrl path.');
+        // RemoteBackendTransport at another app's backend or directory API routes
+        // (via either relative `/...` paths or absolute URLs targeting this site's origin).
+        if (!$byAdmin) {
+            if (str_starts_with($url, '/')) {
+                throw new ApiError(403, 'Only the site owner may set a custom same-origin backendUrl path.');
+            }
+            $siteOrigin = Pages::origin();
+            $parsedUrl = parse_url($url);
+            if ($siteOrigin !== null && is_array($parsedUrl) && isset($parsedUrl['scheme'], $parsedUrl['host'])) {
+                $parsedSite = parse_url($siteOrigin);
+                if (is_array($parsedSite) && isset($parsedSite['scheme'], $parsedSite['host'])) {
+                    $normOrigin = static function (array $p): string {
+                        $scheme = strtolower((string) $p['scheme']);
+                        $host = strtolower(rtrim((string) $p['host'], '.'));
+                        $port = isset($p['port']) ? (int) $p['port'] : ($scheme === 'https' ? 443 : 80);
+                        return "$scheme://$host:$port";
+                    };
+                    if ($normOrigin($parsedUrl) === $normOrigin($parsedSite)) {
+                        throw new ApiError(403, 'Only the site owner may set a custom same-origin backendUrl.');
+                    }
+                }
+            }
         }
         return $url;
     }

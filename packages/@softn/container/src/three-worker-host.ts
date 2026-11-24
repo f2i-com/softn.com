@@ -87,6 +87,7 @@ interface NativeThreeRendererEntry {
   geometries: Map<number, import('three').BufferGeometry>;
   materials: Map<number, import('three').Material>;
   textures: Map<number, import('three').Texture>;
+  resourceBytes: Map<string, number>;
   allocatedBytes: number;
   dirty: boolean;
   disposed?: boolean;
@@ -403,6 +404,7 @@ export class ThreeWorkerHost {
       geometries: new Map(),
       materials: new Map(),
       textures: new Map(),
+      resourceBytes: new Map(),
       allocatedBytes: 0,
       dirty: false,
     };
@@ -639,10 +641,12 @@ export class ThreeWorkerHost {
             break;
           }
           case 'im': {
-            const inst = entry.objects.get(Number(op[1])) as import('three').InstancedMesh | undefined;
+            const id = Number(op[1]);
+            const inst = entry.objects.get(id) as import('three').InstancedMesh | undefined;
             if (!inst || !inst.isInstancedMesh) break;
             if (typeof op[3] === 'string' && op[3].length > 0) {
               const arr = decodeTypedArray('f32', op[3]) as Float32Array;
+              if (!this.trackResourceBytes(entry, `im-mat:${id}`, arr.byteLength)) break;
               if (inst.instanceMatrix.array.length !== arr.length) {
                 inst.instanceMatrix = new THREE.InstancedBufferAttribute(arr, 16);
               } else {
@@ -656,6 +660,7 @@ export class ThreeWorkerHost {
             }
             if (typeof op[4] === 'string' && op[4].length > 0) {
               const colArr = decodeTypedArray('f32', op[4]) as Float32Array;
+              if (!this.trackResourceBytes(entry, `im-col:${id}`, colArr.byteLength)) break;
               const hadColor = Boolean(inst.instanceColor);
               if (!inst.instanceColor || inst.instanceColor.array.length !== colArr.length) {
                 inst.instanceColor = new THREE.InstancedBufferAttribute(colArr, 3);
@@ -684,16 +689,23 @@ export class ThreeWorkerHost {
             if (kind === 'geo') {
               entry.geometries.get(id)?.dispose();
               entry.geometries.delete(id);
+              this.releaseResourceBytesPrefix(entry, `geo:${id}:`);
             } else if (kind === 'mat') {
               entry.materials.get(id)?.dispose();
               entry.materials.delete(id);
             } else if (kind === 'tex') {
               entry.textures.get(id)?.dispose();
               entry.textures.delete(id);
+              this.releaseResourceBytes(entry, `tex:${id}`);
             } else if (kind === 'obj') {
               const o = entry.objects.get(id);
               o?.parent?.remove(o);
+              if (o && (o.userData as Record<string, unknown> | undefined)?.__softnGltf) {
+                disposeObjectTree(o);
+              }
               entry.objects.delete(id);
+              this.releaseResourceBytes(entry, `im-mat:${id}`);
+              this.releaseResourceBytes(entry, `im-col:${id}`);
             }
             break;
           }
@@ -715,6 +727,39 @@ export class ThreeWorkerHost {
       }
     }
     return true;
+  }
+
+  private trackResourceBytes(entry: NativeThreeRendererEntry, key: string, nextBytes: number): boolean {
+    if (!entry.resourceBytes) entry.resourceBytes = new Map();
+    if (typeof entry.allocatedBytes !== 'number') entry.allocatedBytes = 0;
+    const prev = entry.resourceBytes.get(key) ?? 0;
+    const nextTotal = entry.allocatedBytes - prev + nextBytes;
+    if (nextTotal > MAX_THREE_CUMULATIVE_BYTES) return false;
+    entry.allocatedBytes = Math.max(0, nextTotal);
+    if (nextBytes > 0) entry.resourceBytes.set(key, nextBytes);
+    else entry.resourceBytes.delete(key);
+    return true;
+  }
+
+  private releaseResourceBytes(entry: NativeThreeRendererEntry, key: string): void {
+    if (!entry.resourceBytes) return;
+    if (typeof entry.allocatedBytes !== 'number') entry.allocatedBytes = 0;
+    const prev = entry.resourceBytes.get(key);
+    if (prev !== undefined) {
+      entry.allocatedBytes = Math.max(0, entry.allocatedBytes - prev);
+      entry.resourceBytes.delete(key);
+    }
+  }
+
+  private releaseResourceBytesPrefix(entry: NativeThreeRendererEntry, prefix: string): void {
+    if (!entry.resourceBytes) return;
+    if (typeof entry.allocatedBytes !== 'number') entry.allocatedBytes = 0;
+    for (const [k, v] of [...entry.resourceBytes]) {
+      if (k.startsWith(prefix)) {
+        entry.allocatedBytes = Math.max(0, entry.allocatedBytes - v);
+        entry.resourceBytes.delete(k);
+      }
+    }
   }
 
   private applyTextureOp(
@@ -746,11 +791,11 @@ export class ThreeWorkerHost {
       const h = Math.max(1, Math.min(MAX_THREE_TEXTURE_SIDE, Math.floor(Number(spec.h) || 1)));
       const allocSize = w * h * 4;
       if (allocSize > MAX_THREE_TEXTURE_BYTES) return;
-      if (entry.allocatedBytes + allocSize > MAX_THREE_CUMULATIVE_BYTES) return;
+      const prevTexBytes = entry.resourceBytes.get(`tex:${id}`) ?? 0;
+      if (entry.allocatedBytes - prevTexBytes + allocSize > MAX_THREE_CUMULATIVE_BYTES) return;
       if (typeof spec.b64 === 'string' && Math.ceil((spec.b64.length * 3) / 4) > MAX_THREE_TEXTURE_BYTES) return;
       const data = typeof spec.b64 === 'string' ? decodeTypedArray(String(spec.tc || 'u8'), spec.b64) : new Uint8Array(allocSize);
-      if (data.byteLength > MAX_THREE_TEXTURE_BYTES || entry.allocatedBytes + data.byteLength > MAX_THREE_CUMULATIVE_BYTES) return;
-      entry.allocatedBytes += data.byteLength;
+      if (data.byteLength > MAX_THREE_TEXTURE_BYTES || !this.trackResourceBytes(entry, `tex:${id}`, data.byteLength)) return;
       const fmt = typeof spec.format === 'number' ? (spec.format as import('three').PixelFormat) : THREE.RGBAFormat;
       const typ = typeof spec.type === 'number' ? (spec.type as import('three').TextureDataType) : THREE.UnsignedByteType;
       tex?.dispose();
@@ -799,6 +844,7 @@ export class ThreeWorkerHost {
         if (BLOCKED_THREE_KEYS.has(name)) continue;
         if (!aSpec || typeof aSpec.b64 !== 'string') continue;
         const arr = decodeTypedArray(String(aSpec.tc || 'f32'), aSpec.b64);
+        if (!this.trackResourceBytes(entry, `geo:${id}:attr:${name}`, arr.byteLength)) continue;
         const itemSize = Number(aSpec.s) || 3;
         const normalized = Boolean(aSpec.n);
         if (aSpec.inst) {
@@ -812,8 +858,11 @@ export class ThreeWorkerHost {
       const idx = spec.index as { tc?: string; b64?: string } | null;
       if (idx && typeof idx.b64 === 'string') {
         const arr = decodeTypedArray(String(idx.tc || 'u16'), idx.b64);
-        geo.setIndex(new THREE.BufferAttribute(arr, 1));
+        if (this.trackResourceBytes(entry, `geo:${id}:index`, arr.byteLength)) {
+          geo.setIndex(new THREE.BufferAttribute(arr, 1));
+        }
       } else {
+        this.releaseResourceBytes(entry, `geo:${id}:index`);
         geo.setIndex(null);
       }
     }
@@ -988,6 +1037,7 @@ export class ThreeWorkerHost {
         case 'Group': obj = new THREE.Group(); break;
         case 'GLTF': {
           const holder = new THREE.Group();
+          (holder.userData as Record<string, unknown>).__softnGltf = true;
           obj = holder;
           if (typeof spec.src === 'string' && spec.src) {
             this.loadGltfIntoHolder(THREE, entry, holder, spec.src, resolvers);
@@ -1005,8 +1055,7 @@ export class ThreeWorkerHost {
           const mat = this.resolveMaterial(entry, spec.mat);
           const cap = Math.max(1, Math.min(MAX_INSTANCED_MESH_CAP, Math.floor(Number(spec.cap) || Number(spec.count) || 1)));
           const matrixBytes = cap * 64;
-          if (entry.allocatedBytes + matrixBytes > MAX_THREE_CUMULATIVE_BYTES) return;
-          entry.allocatedBytes += matrixBytes;
+          if (!this.trackResourceBytes(entry, `im-mat:${id}`, matrixBytes)) return;
           obj = new THREE.InstancedMesh(geo, mat, cap);
           break;
         }

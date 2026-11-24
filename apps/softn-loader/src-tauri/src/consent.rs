@@ -12,10 +12,6 @@
 //! The answer stands until they choose another bundle, so a no is not asked about again and
 //! again until it becomes a yes.
 
-// Only the desktop runtime puts the network question (net.rs says why), so on other
-// platforms part of this is unused.
-#![cfg_attr(not(desktop), allow(dead_code))]
-
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::Path;
@@ -117,8 +113,9 @@ struct Standing {
     /// The answer to the peer sync question, if it has been put since then.
     peer_sync: Option<bool>,
     /// Listed names that looked like servers on the internet and led to this computer or
-    /// the local network, each with the answer to the question put about it.
-    local_hosts: HashMap<String, bool>,
+    /// the local network, keyed by `(host, resolved_ip)` so approving one local address
+    /// never silently authorizes DNS rebinding to a different local address (e.g. loopback).
+    local_hosts: HashMap<(String, IpAddr), bool>,
 }
 
 /// What the person has answered for the bundle now open.
@@ -241,15 +238,16 @@ impl Consent {
         self.record_net(opened, policy, allowed)
     }
 
-    fn local_host_answer(&self, host: &str) -> Option<Result<(), String>> {
+    fn local_host_answer(&self, host: &str, address: IpAddr) -> Option<Result<(), String>> {
         let standing = self.standing.lock().ok()?;
-        standing.local_hosts.get(host).map(|allowed| {
+        standing.local_hosts.get(&(host.to_string(), address)).map(|allowed| {
             if *allowed {
                 Ok(())
             } else {
                 Err(format!(
-                    "Network access not permitted: {} leads to this computer or your local network, and you chose not to allow it. Open the app again to be asked afresh.",
-                    printable(host)
+                    "Network access not permitted: {} leads to this computer or your local network ({}), and you chose not to allow it. Open the app again to be asked afresh.",
+                    printable(host),
+                    address
                 ))
             }
         })
@@ -273,39 +271,39 @@ impl Consent {
         )
     }
 
-    fn record_local_host(&self, opened: u64, host: &str, allowed: bool) -> Result<(), String> {
+    fn record_local_host(&self, opened: u64, host: &str, address: IpAddr, allowed: bool) -> Result<(), String> {
         {
             let mut standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
             if standing.opened != opened {
                 return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
             }
-            standing.local_hosts.insert(host.to_string(), allowed);
+            standing.local_hosts.insert((host.to_string(), address), allowed);
         }
-        self.local_host_answer(host).unwrap_or_else(|| Err("Network access not permitted".to_string()))
+        self.local_host_answer(host, address).unwrap_or_else(|| Err("Network access not permitted".to_string()))
     }
 
     /// The steps of `require_local_host` with the dialog replaced by `ask`.
     #[cfg(test)]
     fn decide_local_host(&self, host: &str, address: IpAddr, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
-        if let Some(answer) = self.local_host_answer(host) {
+        if let Some(answer) = self.local_host_answer(host, address) {
             return answer;
         }
         let (opened, title, text) = self.local_host_question(host, address);
         let allowed = ask(&title, &text);
-        self.record_local_host(opened, host, allowed)
+        self.record_local_host(opened, host, address, allowed)
     }
 
     /// Whether a request to `host`, a name the rules list that leads to `address` on this
-    /// computer or the local network, may be made: asked once for each such name.
+    /// computer or the local network, may be made: asked once per `(host, address)` pair.
     pub async fn require_local_host(&self, app: &tauri::AppHandle, host: &str, address: IpAddr, opened: u64) -> Result<(), String> {
         let _turn = self.asking.lock().await;
         self.refuse_if_replaced(opened)?;
-        if let Some(answer) = self.local_host_answer(host) {
+        if let Some(answer) = self.local_host_answer(host, address) {
             return answer;
         }
         let (opened, title, text) = self.local_host_question(host, address);
         let allowed = ask(app, title, text, "Allow", "Don't allow").await;
-        self.record_local_host(opened, host, allowed)
+        self.record_local_host(opened, host, address, allowed)
     }
 
     fn peer_sync_answer(&self) -> Option<Result<(), String>> {
@@ -353,10 +351,21 @@ impl Consent {
         self.record_peer_sync(opened, allowed)
     }
 
-    /// Whether peer sync may be turned on, putting the question to the person in a native
-    /// dialog if it has not been put yet.
-    pub async fn require_peer_sync(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(test)]
+    fn decide_peer_sync_under(&self, opened: u64, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
+        if self.opened() != opened {
+            return Err(format!("Peer sync was not turned on: {}", ANOTHER_APP_OPENED));
+        }
+        self.decide_peer_sync(ask)
+    }
+
+    /// Whether peer sync may be turned on for the bundle choice `opened`, putting the
+    /// question to the person in a native dialog if it has not been put yet.
+    pub async fn require_peer_sync(&self, app: &tauri::AppHandle, opened: u64) -> Result<(), String> {
         let _turn = self.asking.lock().await;
+        if self.opened() != opened {
+            return Err(format!("Peer sync was not turned on: {}", ANOTHER_APP_OPENED));
+        }
         if let Some(answer) = self.peer_sync_answer() {
             return answer;
         }
@@ -617,5 +626,35 @@ mod tests {
             true
         });
         assert!(outcome.unwrap_err().contains("another app was opened"));
+    }
+
+    #[test]
+    fn approving_one_local_address_does_not_allow_rebinding_to_another() {
+        let consent = Consent::default();
+        consent.bundle_opened(Path::new("dash.softn"));
+        let printer: IpAddr = "192.168.1.50".parse().unwrap();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(consent.decide_local_host("api.example.com", printer, |_, _| true), Ok(()));
+        // Same host, same IP: no second prompt.
+        assert_eq!(consent.decide_local_host("api.example.com", printer, |_, _| panic!("asked twice")), Ok(()));
+        // Same host rebinding to loopback: MUST ask again.
+        let mut prompted = false;
+        let refused = consent.decide_local_host("api.example.com", loopback, |_, text| {
+            prompted = true;
+            assert!(text.contains("127.0.0.1"), "{}", text);
+            false
+        });
+        assert!(prompted);
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn peer_sync_request_from_previous_bundle_is_refused() {
+        let consent = Consent::default();
+        consent.bundle_opened(Path::new("a.softn"));
+        let under_a = consent.opened();
+        consent.bundle_opened(Path::new("b.softn"));
+        let refused = consent.decide_peer_sync_under(under_a, |_, _| panic!("asked in b's name"));
+        assert!(refused.unwrap_err().contains(ANOTHER_APP_OPENED));
     }
 }

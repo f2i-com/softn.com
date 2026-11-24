@@ -132,9 +132,37 @@ final class Pages
             $ownBackendPrefix = "/api/apps/$slug/backend";
             $isOwnHosted = $bUrl === $ownBackendPrefix;
             $isTrustedCustom = $hosting['customBackendUrl'] !== null && Apps::isTrusted($row);
-            $sameOrigin = str_starts_with($bUrl, '/') || ($siteOrigin !== null && str_starts_with(strtolower($bUrl), strtolower($siteOrigin) . '/'));
-            if ($isOwnHosted || ($sameOrigin && ($isTrustedCustom || !preg_match('#^/api/(?:admin|apps/(?!' . preg_quote($slug, '#') . '/backend(?:/|$)))#i', $bUrl)))) {
+            $sameOrigin = str_starts_with($bUrl, '/');
+            if (!$sameOrigin && $siteOrigin !== null) {
+                $pUrl = parse_url($bUrl);
+                $pSite = parse_url($siteOrigin);
+                if (is_array($pUrl) && is_array($pSite) && isset($pUrl['scheme'], $pUrl['host'], $pSite['scheme'], $pSite['host'])) {
+                    $norm = static function (array $p): string {
+                        $sc = strtolower((string) $p['scheme']);
+                        $h = strtolower(rtrim((string) $p['host'], '.'));
+                        $pt = isset($p['port']) ? (int) $p['port'] : ($sc === 'https' ? 443 : 80);
+                        return "$sc://$h:$pt";
+                    };
+                    $sameOrigin = $norm($pUrl) === $norm($pSite);
+                }
+            }
+            if ($isOwnHosted) {
                 $config['backendUrl'] = $bUrl;
+            } elseif ($sameOrigin && $isTrustedCustom) {
+                // Canonicalize the URL path so non-canonical paths (`/api//admin`, `/./api/...`,
+                // absolute `https://<site>/api/apps/<other>/backend`) are checked accurately.
+                $rawPath = (string) (parse_url($bUrl, PHP_URL_PATH) ?? '/');
+                $decodedPath = rawurldecode($rawPath);
+                $segs = [];
+                foreach (explode('/', str_replace('\\', '/', $decodedPath)) as $seg) {
+                    if ($seg === '' || $seg === '.') continue;
+                    if ($seg === '..') { array_pop($segs); continue; }
+                    $segs[] = $seg;
+                }
+                $canonPath = '/' . implode('/', $segs);
+                if (!preg_match('#^/api/(?:admin(?:/|$)|apps/(?!' . preg_quote($slug, '#') . '/backend(?:/|$)))#i', $canonPath)) {
+                    $config['backendUrl'] = $bUrl;
+                }
             }
         }
         return $config;

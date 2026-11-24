@@ -1134,7 +1134,7 @@ function rewriteFontOrVarValue(
  * Collect lowercase font-family names declared by `@font-face` rules in `sanitizedCss`.
  */
 export function collectFontFaceFamilies(sanitizedCss: string): string[] {
-  if (!/@(?:font-face|\\)/i.test(sanitizedCss)) return [];
+  if (!sanitizedCss.includes('@') || (!/@font-face/i.test(sanitizedCss) && !sanitizedCss.includes('\\'))) return [];
   const names = new Set<string>();
   const extracted = extractFontFaces(sanitizedCss);
   let i = 0;
@@ -1175,7 +1175,10 @@ export function namespaceContainerFonts(
   for (const fam of collectFontFaceFamilies(sanitizedCss)) {
     declaredFamilies.add(fam);
   }
-  if (declaredFamilies.size === 0 && !/@(?:font-face|\\)/i.test(sanitizedCss)) {
+  if (
+    declaredFamilies.size === 0 &&
+    (!sanitizedCss.includes('@') || (!/@font-face/i.test(sanitizedCss) && !sanitizedCss.includes('\\')))
+  ) {
     return sanitizedCss;
   }
 
@@ -1326,7 +1329,7 @@ export function namespaceContainerFonts(
  * When `scopePrefix` is given, every `font-family` descriptor is unconditionally namespaced.
  */
 export function extractFontFaces(sanitizedCss: string, scopePrefix?: string): string {
-  if (!/@(?:font-face|\\)/i.test(sanitizedCss)) return '';
+  if (!sanitizedCss.includes('@') || (!/@font-face/i.test(sanitizedCss) && !sanitizedCss.includes('\\'))) return '';
   const blocks: string[] = [];
 
   const scan = (start: number, end: number, depth = 0) => {

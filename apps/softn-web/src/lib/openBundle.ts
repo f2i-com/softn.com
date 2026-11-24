@@ -237,6 +237,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
   // began stops it rather than leaving a worker inflating for a tab that
   // will never exist.
   let warmup: FirstScreenWarmup | undefined;
+  let importResolver: ReturnType<typeof createImportResolver> | undefined;
 
   // Whether what the person changed in this app with the runtime's editor
   // was laid over its files (below), and what the bundle asked permission
@@ -473,7 +474,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // meanwhile is kept for the answer (nothing of it happens before) and is
     // done when the person allows it. "Not now" turns that off (`onAsking`).
     const runningConfig = hasGrant ? permissionConfig : withheldPermissions(permissionConfig, { asking: true });
-    const importResolver = containerCheck.isWebContainer ? undefined : createImportResolver(textFiles, runningConfig);
+    importResolver = containerCheck.isWebContainer ? undefined : createImportResolver(textFiles, runningConfig);
 
     // Unconditional, and before any consent: the app is about to run and
     // can already write records into its own database, and removing it from
@@ -673,6 +674,8 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       }
       return [...prev, newTab];
     });
+    // Ownership of importResolver transferred to the mounted tab.
+    importResolver = undefined;
     // Home or another app may have been selected while this download was
     // being prepared. Finish its tab in the background without stealing focus.
     if (isForeground() && (!placeholderId || host.activeTabId() === placeholderId)) host.setActiveTabId(tabId);
@@ -691,6 +694,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     return appName;
   } catch (err) {
     warmup?.abort();
+    importResolver?.dispose();
     if (edited && !request.plain) {
       // With the person's changes laid over it the app does not open. It is
       // opened as it was instead; their changes are still in the editor.

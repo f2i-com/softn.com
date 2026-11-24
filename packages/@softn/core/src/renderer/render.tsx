@@ -1535,11 +1535,48 @@ function renderElement(
   }
   dropRawMarkupProp(props);
   // Prevent DOM clobbering of internal `window.__*` host globals via either raw elements
-  // or registered components forwarding `id` / `name` to the DOM.
+  // or registered components forwarding `id` / `name` to the DOM — including non-string
+  // values (e.g. `id={["__TAURI__"]}`) that React coerces with `String()`.
   for (const attr of Object.keys(props)) {
     const lower = attr.toLowerCase();
-    if ((lower === 'id' || lower === 'name') && typeof props[attr] === 'string' && props[attr].startsWith('__')) {
+    if (lower === 'id' || lower === 'name') {
+      const val = props[attr];
+      if (val !== undefined && val !== null) {
+        const str =
+          typeof val === 'string'
+            ? val
+            : typeof val === 'number' && Number.isFinite(val)
+              ? String(val)
+              : null;
+        if (str === null || str.trimStart().startsWith('__')) {
+          delete props[attr];
+        }
+      }
+    }
+  }
+  // Fold any case-variant `STYLE` / `Style` prop into `props.style` so raw HTML elements
+  // cannot bypass CSS egress or top-layer checks via mixed-case attribute names.
+  for (const attr of Object.keys(props)) {
+    if (attr !== 'style' && attr.toLowerCase() === 'style') {
+      const rawVariant = props[attr];
       delete props[attr];
+      const parsedVariant =
+        typeof rawVariant === 'string'
+          ? inlineStyleObject(rawVariant)
+          : isPlainObject(rawVariant)
+            ? rawVariant
+            : null;
+      if (parsedVariant) {
+        const baseStyle =
+          typeof props.style === 'string'
+            ? inlineStyleObject(props.style)
+            : isPlainObject(props.style)
+              ? props.style
+              : {};
+        props.style = { ...baseStyle, ...parsedVariant };
+      }
+    } else if (attr !== 'style' && attr.endsWith('Style') && typeof props[attr] === 'string') {
+      props[attr] = inlineStyleObject(props[attr] as string);
     }
   }
   // CSS text becomes an object first, so it is checked the way an object is
@@ -1578,9 +1615,10 @@ function renderElement(
   // `hostHoldsKeyboard`): an app drew a field with it on a timer, and what
   // was being typed for the host went into the app. On an element or on a
   // component, however the page spelled it.
-  if (('autoFocus' in props || 'autofocus' in props) && hostHoldsKeyboard()) {
-    delete props.autoFocus;
-    delete props.autofocus;
+  if (hostHoldsKeyboard()) {
+    for (const attr of Object.keys(props)) {
+      if (attr.toLowerCase() === 'autofocus') delete props[attr];
+    }
   }
 
   // With everything this element would be made from in hand, see whether it

@@ -58,13 +58,27 @@ struct Rewritten {
 }
 
 fn js_string(s: &str) -> String {
-    format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-    )
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\u0000"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn source_type_for(path: &str) -> SourceType {
@@ -427,7 +441,7 @@ fn declared_names<'a>(decl: &ox::Declaration<'a>) -> Vec<String> {
     match decl {
         ox::Declaration::VariableDeclaration(d) => {
             for dd in &d.declarations {
-                collect_pattern_names(&dd.id, &mut out);
+                collect_pattern_names(&dd.id, &mut out, 0);
             }
         }
         ox::Declaration::FunctionDeclaration(f) => {
@@ -445,26 +459,31 @@ fn declared_names<'a>(decl: &ox::Declaration<'a>) -> Vec<String> {
     out
 }
 
-fn collect_pattern_names<'a>(pat: &ox::BindingPattern<'a>, out: &mut Vec<String>) {
+const MAX_PATTERN_DEPTH: usize = 128;
+
+fn collect_pattern_names<'a>(pat: &ox::BindingPattern<'a>, out: &mut Vec<String>, depth: usize) {
+    if depth >= MAX_PATTERN_DEPTH {
+        return;
+    }
     match pat {
         ox::BindingPattern::BindingIdentifier(id) => out.push(id.name.to_string()),
         ox::BindingPattern::ObjectPattern(o) => {
             for prop in &o.properties {
-                collect_pattern_names(&prop.value, out);
+                collect_pattern_names(&prop.value, out, depth + 1);
             }
             if let Some(rest) = &o.rest {
-                collect_pattern_names(&rest.argument, out);
+                collect_pattern_names(&rest.argument, out, depth + 1);
             }
         }
         ox::BindingPattern::ArrayPattern(a) => {
             for elem in a.elements.iter().flatten() {
-                collect_pattern_names(elem, out);
+                collect_pattern_names(elem, out, depth + 1);
             }
             if let Some(rest) = &a.rest {
-                collect_pattern_names(&rest.argument, out);
+                collect_pattern_names(&rest.argument, out, depth + 1);
             }
         }
-        ox::BindingPattern::AssignmentPattern(ap) => collect_pattern_names(&ap.left, out),
+        ox::BindingPattern::AssignmentPattern(ap) => collect_pattern_names(&ap.left, out, depth + 1),
     }
 }
 
@@ -540,13 +559,48 @@ pub fn link_modules(
     }
 }
 
-const MODULE_RUNTIME: &str = r#"
-var __zippModDefs = {};
-var __zippModCache = {};
+const MODULE_RUNTIME: &str = r##"
+var __zippModDefs = Object.create(null);
+var __zippModCache = Object.create(null);
 function __zippDef(url, fn) { __zippModDefs[url] = fn; }
+function __zippResolveSpec(base, spec) {
+  var s = String(spec || "");
+  if (!s || s.indexOf("softn:") === 0 || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) return s;
+  var origin = "";
+  var basePath = String(base || "/");
+  var m = basePath.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/]+)(\/.*)?$/);
+  if (m) {
+    origin = m[1];
+    basePath = m[2] || "/";
+  }
+  basePath = basePath.split("?")[0].split("#")[0];
+  var combined;
+  if (s.charAt(0) === "/") {
+    combined = s;
+  } else {
+    var slash = basePath.lastIndexOf("/");
+    var dir = slash >= 0 ? basePath.slice(0, slash + 1) : "/";
+    combined = dir + s;
+  }
+  var parts = combined.split("/");
+  var stack = [];
+  for (var i = 0; i < parts.length; i++) {
+    var seg = parts[i];
+    if (!seg || seg === ".") continue;
+    if (seg === "..") { if (stack.length > 0) stack.pop(); }
+    else stack.push(seg);
+  }
+  var norm = origin + "/" + stack.join("/");
+  if (__zippModDefs[norm]) return norm;
+  var exts = [".js", ".mjs", ".ts", ".tsx", ".jsx", "/index.js", "/index.ts"];
+  for (var j = 0; j < exts.length; j++) {
+    if (__zippModDefs[norm + exts[j]]) return norm + exts[j];
+  }
+  return norm;
+}
 function __zippImp(url) {
   if (url && url.indexOf("softn:") === 0) {
-    if (typeof __softnBuiltins === "object" && __softnBuiltins && __softnBuiltins[url]) {
+    if (typeof __softnBuiltins === "object" && __softnBuiltins && Object.prototype.hasOwnProperty.call(__softnBuiltins, url)) {
       return __softnBuiltins[url];
     }
     throw new Error("Unknown SoftN built-in module: " + url);
@@ -575,9 +629,9 @@ function __zippImp(url) {
     });
   }
   function __dynRel(base, spec) {
-    return __dyn(spec);
+    return __dyn(__zippResolveSpec(base, spec));
   }
   fn(__zippImp, __exp, __expAll, __dyn, __dynRel, { url: url });
   return ns;
 }
-"#;
+"##;

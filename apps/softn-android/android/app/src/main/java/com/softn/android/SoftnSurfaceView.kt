@@ -150,14 +150,17 @@ class SoftnSurfaceView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.parseColor("#0F172A"))
         synchronized(bitmapLock) {
             val bmp = frontBitmap
             if (bmp != null && !bmp.isRecycled) {
+                if (bmp.width < width || bmp.height < height) {
+                    canvas.drawColor(Color.parseColor("#0F172A"))
+                }
                 canvas.drawBitmap(bmp, 0f, 0f, null)
                 return
             }
         }
+        canvas.drawColor(Color.parseColor("#0F172A"))
         statusMessage?.let { msg ->
             canvas.drawText(msg, width / 2f, height / 2f, statusPaint)
         }

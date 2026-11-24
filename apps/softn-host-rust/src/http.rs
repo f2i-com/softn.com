@@ -1047,6 +1047,10 @@ async fn serve_safe_static_file(
     {
         return json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden");
     }
+    static STATIC_READ_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+    let Ok(_permit) = STATIC_READ_SEM.acquire().await else {
+        return json_error(StatusCode::SERVICE_UNAVAILABLE, "Server busy.", "busy");
+    };
     let base_dir_bg = base_dir.clone();
     let rel_owned = trimmed.to_owned();
     let is_head = method == axum::http::Method::HEAD;
@@ -1157,62 +1161,73 @@ async fn serve_container_request(
     .or_else(|| headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()))
     .unwrap_or("localhost")
     .to_owned();
-    let lower_headers: HashMap<String, String> = headers
-        .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned())))
-        .collect();
+    let mut lower_headers: HashMap<String, String> = HashMap::new();
+    for (k, v) in &headers {
+        if let Ok(vs) = v.to_str() {
+            let lk = k.as_str().to_ascii_lowercase();
+            let sep = if lk == "cookie" { "; " } else { ", " };
+            lower_headers
+                .entry(lk)
+                .and_modify(|existing| {
+                    existing.push_str(sep);
+                    existing.push_str(vs);
+                })
+                .or_insert_with(|| vs.to_owned());
+        }
+    }
 
-    match backend.resolve_ingress(&method_str, &req_path, &query, &host_hdr, https, &lower_headers) {
-        crate::container_backend::StaticOrBackend::Static { mime, bytes } => {
-            let mut builder = axum::http::Response::builder()
-                .status(StatusCode::OK)
-                .header(axum::http::header::CONTENT_TYPE, mime)
-                .header("x-content-type-options", "nosniff")
-                .header("x-frame-options", "SAMEORIGIN")
-                .header("referrer-policy", "no-referrer")
-                .header(axum::http::header::CONTENT_SECURITY_POLICY, CONTAINER_DEFAULT_CSP);
-            return if method == axum::http::Method::HEAD {
-                builder = builder.header(axum::http::header::CONTENT_LENGTH, bytes.len());
-                builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
-            } else {
-                builder.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| not_found_sync())
-            };
-        }
-        crate::container_backend::StaticOrBackend::NotFound => return not_found_sync(),
-        crate::container_backend::StaticOrBackend::Deny(403) => {
-            return json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden");
-        }
-        crate::container_backend::StaticOrBackend::Deny(400) => {
-            return json_error(StatusCode::BAD_REQUEST, "Bad request.", "invalid_request");
-        }
-        crate::container_backend::StaticOrBackend::Deny(code) => {
-            return json_error(
-                StatusCode::from_u16(code).unwrap_or(StatusCode::NOT_FOUND),
-                "Not found.",
-                "not_found",
-            );
-        }
-        crate::container_backend::StaticOrBackend::Redirect(code, loc) => {
-            if loc.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error");
-            }
-            let status = StatusCode::from_u16(code)
-                .ok()
-                .filter(|s| s.is_redirection())
-                .unwrap_or(StatusCode::FOUND);
-            return match axum::http::HeaderValue::from_str(&loc) {
-                Ok(val) => axum::http::Response::builder()
-                    .status(status)
-                    .header(axum::http::header::LOCATION, val)
+    let (effective_path, effective_query) =
+        match backend.resolve_ingress(&method_str, &req_path, &query, &host_hdr, https, &lower_headers) {
+            crate::container_backend::StaticOrBackend::Static { mime, bytes } => {
+                let mut builder = axum::http::Response::builder()
+                    .status(StatusCode::OK)
+                    .header(axum::http::header::CONTENT_TYPE, mime)
+                    .header("x-content-type-options", "nosniff")
                     .header("x-frame-options", "SAMEORIGIN")
                     .header("referrer-policy", "no-referrer")
-                    .body(axum::body::Body::empty())
-                    .unwrap_or_else(|_| json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error")),
-                Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error"),
-            };
-        }
-        crate::container_backend::StaticOrBackend::Backend => {}
-    }
+                    .header(axum::http::header::CONTENT_SECURITY_POLICY, CONTAINER_DEFAULT_CSP);
+                return if method == axum::http::Method::HEAD {
+                    builder = builder.header(axum::http::header::CONTENT_LENGTH, bytes.len());
+                    builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
+                } else {
+                    builder.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| not_found_sync())
+                };
+            }
+            crate::container_backend::StaticOrBackend::NotFound => return not_found_sync(),
+            crate::container_backend::StaticOrBackend::Deny(403) => {
+                return json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden");
+            }
+            crate::container_backend::StaticOrBackend::Deny(400) => {
+                return json_error(StatusCode::BAD_REQUEST, "Bad request.", "invalid_request");
+            }
+            crate::container_backend::StaticOrBackend::Deny(code) => {
+                return json_error(
+                    StatusCode::from_u16(code).unwrap_or(StatusCode::NOT_FOUND),
+                    "Not found.",
+                    "not_found",
+                );
+            }
+            crate::container_backend::StaticOrBackend::Redirect(code, loc) => {
+                if loc.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+                    return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error");
+                }
+                let status = StatusCode::from_u16(code)
+                    .ok()
+                    .filter(|s| s.is_redirection())
+                    .unwrap_or(StatusCode::FOUND);
+                return match axum::http::HeaderValue::from_str(&loc) {
+                    Ok(val) => axum::http::Response::builder()
+                        .status(status)
+                        .header(axum::http::header::LOCATION, val)
+                        .header("x-frame-options", "SAMEORIGIN")
+                        .header("referrer-policy", "no-referrer")
+                        .body(axum::body::Body::empty())
+                        .unwrap_or_else(|_| json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error")),
+                    Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error"),
+                };
+            }
+            crate::container_backend::StaticOrBackend::Backend { path, query } => (path, query),
+        };
 
     if let Some(rejection) = check_origin(&policy, &headers, peer_is_proxy) {
         return rejection;
@@ -1255,8 +1270,8 @@ async fn serve_container_request(
     let resp = backend
         .dispatch(crate::container_backend::ContainerHttpRequest {
             method: method_str,
-            path: req_path,
-            query,
+            path: effective_path,
+            query: effective_query,
             headers: req_headers,
             body,
             client_ip: client_ip.to_string(),

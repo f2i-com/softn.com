@@ -1015,11 +1015,26 @@ impl XdbDatabase {
         &mut self,
         updates: Vec<(String, serde_json::Value)>,
     ) -> DbResult<Vec<(Record, Vec<u8>)>> {
+        self.update_records_removing(
+            updates
+                .into_iter()
+                .map(|(id, data)| (id, data, None, Vec::new()))
+                .collect(),
+        )
+    }
+
+    /// `update_records`, honoring each item's optional client `updated_at` stamp
+    /// and `remove` field list so batched updates match single-record `update_record_removing`.
+    pub fn update_records_removing(
+        &mut self,
+        updates: Vec<(String, serde_json::Value, Option<String>, Vec<String>)>,
+    ) -> DbResult<Vec<(Record, Vec<u8>)>> {
         self.with_transaction(|this| {
             let mut out = Vec::with_capacity(updates.len());
             let mut touched: Vec<String> = Vec::new();
-            for (id, data) in updates {
-                let (record, update) = this.update_record_batched(&id, data, false, None, &[])?;
+            for (id, data, stamp, remove) in updates {
+                let (record, update) =
+                    this.update_record_batched(&id, data, false, stamp.as_deref(), &remove)?;
                 if !touched.contains(&record.collection) {
                     touched.push(record.collection.clone());
                 }

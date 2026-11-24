@@ -97,7 +97,7 @@ export function parsePack(input: unknown): SourcePack {
   for (const [name, value] of Object.entries(text))
     if (!entryName(name) || typeof value !== 'string') throw Error('Invalid source pack');
   for (const [name, size] of Object.entries(entries))
-    if (!entryName(name) || name in text || !Number.isInteger(size) || (size as number) < 0)
+    if (!entryName(name) || Object.prototype.hasOwnProperty.call(text, name) || !Number.isInteger(size) || (size as number) < 0)
       throw Error('Invalid source pack');
   if (
     p.backendUrl !== undefined &&
@@ -177,7 +177,9 @@ export async function loadServedApplication(
   // app's images, fonts and wasm were not there.
   let containerFiles: Record<string, string | Uint8Array> | undefined;
   if (app.webContainer) {
-    containerFiles = { ...pack.text, 'manifest.json': JSON.stringify(pack.manifest) };
+    containerFiles = Object.assign(Object.create(null) as Record<string, string | Uint8Array>, pack.text, {
+      'manifest.json': JSON.stringify(pack.manifest),
+    });
     const names = Object.keys(pack.entries);
     const total = names.reduce((sum, name) => sum + pack.entries[name], 0);
     if (total > MAX_CONTAINER_BYTES) throw Error('This app’s files are larger than this host opens in the browser.');

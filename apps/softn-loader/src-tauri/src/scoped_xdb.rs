@@ -7,9 +7,16 @@
 //! its restore (`restore_database` in lib.rs) is held to the same app.
 
 use crate::data_identity::DataIdentity;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::State;
-use xdb::tauri::{CreateRecordPayload, SharedDbManager, SharedNetworkState, UpdateRecordPayload};
+use xdb::tauri::{
+    CreateRecordPayload, NetworkStatus, SharedDbManager, SharedNetworkControl, SharedNetworkState,
+    UpdateRecordPayload,
+};
 use xdb::{CollectionImport, DbStats, ImportSummary, Record};
+
+static BACKUP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
 pub async fn create_record(
@@ -176,11 +183,12 @@ pub fn get_db_stats(
     xdb::tauri::get_db_stats(db_manager, Some(app_id))
 }
 
-/// Snapshot an app's database beside itself before an upgrade and return the
-/// snapshot's path. Wraps XDB's export so the webview never learns or chooses
-/// a file system path: the location is always the database's own directory.
-/// Only the data of the app open now (data_identity.rs) can be snapshotted, and only
-/// while the snapshot leaves room on the disk (disk.rs).
+/// Snapshot an app's database beside itself before an upgrade and return only
+/// the opaque snapshot filename (never a full OS path). Wraps XDB's export so
+/// the webview never learns or chooses a file system path: the location is
+/// always the database's own directory. Only the data of the app open now
+/// (data_identity.rs) can be snapshotted, and only while the snapshot leaves
+/// room on the disk (disk.rs).
 #[tauri::command]
 pub async fn backup_database(
     db_manager: State<'_, SharedDbManager>,
@@ -201,6 +209,33 @@ pub async fn backup_database(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let target = directory.join(format!("pre-upgrade-{:x}.sqlite", stamp));
-    xdb::tauri::export_database(db_manager, app_id, target.to_string_lossy().to_string()).await
+    let seq = BACKUP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let filename = format!("pre-upgrade-{:x}-{}.sqlite", stamp, seq);
+    let target = directory.join(&filename);
+    xdb::tauri::export_database(db_manager, app_id, target.to_string_lossy().to_string()).await?;
+    Ok(filename)
+}
+
+/// Redact an OS path to its basename so directory structures and usernames are
+/// never disclosed to the webview.
+fn redact_path(path: Option<String>) -> Option<String> {
+    path.and_then(|raw| {
+        Path::new(&raw)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    })
+}
+
+/// Network status with OS paths inside `pending_restore` redacted to basenames.
+#[tauri::command]
+pub async fn get_network_status(
+    network: State<'_, SharedNetworkState>,
+    control: State<'_, SharedNetworkControl>,
+) -> Result<NetworkStatus, String> {
+    let mut status = xdb::tauri::get_network_status(network, control).await?;
+    if let Some(pending) = status.pending_restore.as_mut() {
+        pending.backup_path = redact_path(pending.backup_path.take());
+        pending.source_path = redact_path(pending.source_path.take());
+    }
+    Ok(status)
 }

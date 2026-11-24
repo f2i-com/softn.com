@@ -241,20 +241,34 @@ function valType(r: Reader): WasmValType {
   }
 }
 
+const MAX_WASM_TYPE_ITEMS = 10_000;
+
+function readBoundedCount(r: Reader, max = MAX_WASM_TYPE_ITEMS): number {
+  const count = r.uleb();
+  if (count > max || count > r.end - r.pos) {
+    throw new WasmFormatError('A WebAssembly type vector declares more entries than the section holds.');
+  }
+  return count;
+}
+
 /** A composite type: a function type, or (`gc`) a struct or an array, which is no function. */
 function compositeType(r: Reader, found: Found): WasmFuncType | null {
   const form = r.byte();
   if (form === 0x60) {
     // A function may take or give an exception reference: on the stack, it is as bounded as the
     // stack. An exception that carries one is not (tags, checked once they are read).
-    const params = Array.from({ length: r.uleb() }, () => valType(r));
-    const results = Array.from({ length: r.uleb() }, () => valType(r));
+    const paramCount = readBoundedCount(r);
+    const params: WasmValType[] = [];
+    for (let i = 0; i < paramCount; i++) params.push(valType(r));
+    const resultCount = readBoundedCount(r);
+    const results: WasmValType[] = [];
+    for (let i = 0; i < resultCount; i++) results.push(valType(r));
     return { params, results };
   }
   if (form === 0x5f) {
     found.gc = true;
     // struct: fields of a storage type and a mutability each.
-    const fields = r.uleb();
+    const fields = readBoundedCount(r);
     for (let i = 0; i < fields; i++) {
       storageType(r);
       r.byte();

@@ -395,7 +395,7 @@ pub fn decode_http_path(raw: &str) -> Result<String, u16> {
             }
             if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
                 if let Ok(b) = u8::from_str_radix(hex, 16) {
-                    if b == 0 || b == b'/' || b == b'\\' {
+                    if b < 0x20 || b == 0x7f || b == b'/' || b == b'\\' || b == b'?' || b == b'#' {
                         return Err(400);
                     }
                     decoded.push(b);
@@ -1230,9 +1230,19 @@ impl SqlStorageConfig {
     }
 
     fn is_configured_db_path(&self, path: &Path) -> bool {
+        let target_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_ascii_lowercase);
         self.databases.iter().any(|cfg| {
             let target = cfg.file.as_deref().unwrap_or(&cfg.name);
-            matches!(self.resolve_db_path(target), Ok(Some(cfg_path)) if cfg_path == path)
+            matches!(self.resolve_db_path(target), Ok(Some(cfg_path)) if cfg_path == path
+                || target_name.is_some()
+                    && cfg_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(str::to_ascii_lowercase)
+                        == target_name)
         })
     }
 
@@ -1579,12 +1589,13 @@ fn sanitize_ident(name: &str) -> Result<String, String> {
 
 fn reserved_sqlite_objects(conn: &Connection) -> HashSet<String> {
     let mut set = HashSet::new();
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'")
-    {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for name in rows.flatten() {
-                set.insert(name);
+    for (prefix, catalog) in [("main", "sqlite_master"), ("temp", "sqlite_temp_master")] {
+        let q = format!("SELECT name FROM {catalog} WHERE name LIKE '\\_%' ESCAPE '\\'");
+        if let Ok(mut stmt) = conn.prepare(&q) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for name in rows.flatten() {
+                    set.insert(format!("{prefix}:{name}"));
+                }
             }
         }
     }
@@ -2033,17 +2044,30 @@ impl RequestSqlBridge {
     }
 
     fn run_execute(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
+        static DDL_SP_SEQ: AtomicU64 = AtomicU64::new(1);
         let lower = sql.to_ascii_lowercase();
         let may_mutate_schema = lower.contains("alter") || lower.contains("create") || lower.contains("rename");
+        let no_params = params_raw.is_empty() || params_raw == "[]" || params_raw == "{}" || params_raw == "null";
+        let is_multi = no_params && has_multiple_statements(sql);
+        if may_mutate_schema
+            && is_multi
+            && (lower.contains("savepoint")
+                || lower.contains("release")
+                || lower.contains("commit")
+                || lower.contains("rollback")
+                || lower.contains("begin"))
+        {
+            return Err("Cannot mix transaction/savepoint control with multi-statement DDL".into());
+        }
         let reserved_before = if may_mutate_schema {
             Some(reserved_sqlite_objects(conn))
         } else {
             None
         };
-        let use_sp = may_mutate_schema && conn.execute_batch("SAVEPOINT softn_ddl_chk").is_ok();
+        let sp_name = format!("softn_ddl_{}", DDL_SP_SEQ.fetch_add(1, Ordering::Relaxed));
+        let use_sp = may_mutate_schema && conn.execute_batch(&format!("SAVEPOINT {sp_name}")).is_ok();
 
-        let no_params = params_raw.is_empty() || params_raw == "[]" || params_raw == "{}" || params_raw == "null";
-        let exec_res: Result<Value, String> = if no_params && has_multiple_statements(sql) {
+        let exec_res: Result<Value, String> = if is_multi {
             conn.execute_batch(sql)
                 .map_err(|e| e.to_string())
                 .map(|()| {
@@ -2074,7 +2098,7 @@ impl RequestSqlBridge {
                     .any(|n| !before.contains(n));
             if created_reserved {
                 if use_sp {
-                    let _ = conn.execute_batch("ROLLBACK TO softn_ddl_chk; RELEASE softn_ddl_chk");
+                    let _ = conn.execute_batch(&format!("ROLLBACK TO {sp_name}; RELEASE {sp_name}"));
                 }
                 return Err(
                     "Creating or renaming a table into the host-reserved underscore-prefixed namespace is not allowed"
@@ -2084,9 +2108,12 @@ impl RequestSqlBridge {
         }
         if use_sp {
             if exec_res.is_ok() {
-                let _ = conn.execute_batch("RELEASE softn_ddl_chk");
+                if conn.execute_batch(&format!("RELEASE {sp_name}")).is_err() {
+                    let _ = conn.execute_batch(&format!("ROLLBACK TO {sp_name}; RELEASE {sp_name}"));
+                    return Err("SQLite DDL savepoint integrity check failed".into());
+                }
             } else {
-                let _ = conn.execute_batch("ROLLBACK TO softn_ddl_chk; RELEASE softn_ddl_chk");
+                let _ = conn.execute_batch(&format!("ROLLBACK TO {sp_name}; RELEASE {sp_name}"));
             }
         }
         exec_res
@@ -2094,6 +2121,9 @@ impl RequestSqlBridge {
 
     fn run_query(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        if !stmt.readonly() {
+            return Err("SQLite query() only permits read-only statements; use execute() for writes/DDL".into());
+        }
         let columns: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         Self::bind_params(&mut stmt, params_raw)?;
         let mut rows = stmt.raw_query();
@@ -2272,26 +2302,40 @@ fn merge_and_save_php_overlay(
     let Ok(mut shared) = shared_overlay.lock() else {
         return;
     };
-    for (k, v) in &final_req.writes {
-        if initial.writes.get(k) != Some(v) {
-            shared.writes.insert(k.clone(), v.clone());
-            shared.deleted.remove(k);
-        }
-    }
+    // Apply deletions first to reclaim quota, then only accept new/updated writes that fit
+    // within MAX_OVERLAY_BYTES so incoming writes can never alphabetically evict existing files.
     for k in initial.writes.keys() {
         if !final_req.writes.contains_key(k) {
-            shared.writes.remove(k);
+            if let Some(old) = shared.writes.remove(k) {
+                shared.total_bytes = shared.total_bytes.saturating_sub(old.len());
+            }
         }
     }
     for d in &final_req.deleted {
         if !initial.deleted.contains(d) {
             shared.deleted.insert(d.clone());
-            shared.writes.remove(d);
+            if let Some(old) = shared.writes.remove(d) {
+                shared.total_bytes = shared.total_bytes.saturating_sub(old.len());
+            }
         }
     }
     for d in &initial.deleted {
         if !final_req.deleted.contains(d) && !final_req.writes.contains_key(d) {
             shared.deleted.remove(d);
+        }
+    }
+    for (k, v) in &final_req.writes {
+        if initial.writes.get(k) != Some(v) {
+            let old_len = shared.writes.get(k).map(Vec::len).unwrap_or(0);
+            let next_total = shared
+                .total_bytes
+                .saturating_sub(old_len)
+                .saturating_add(v.len());
+            if next_total <= MAX_OVERLAY_BYTES {
+                shared.writes.insert(k.clone(), v.clone());
+                shared.total_bytes = next_total;
+                shared.deleted.remove(k);
+            }
         }
     }
     for d in &final_req.dirs {
@@ -2530,9 +2574,17 @@ fn execute_php_request(
     sql_cfg: &SqlStorageConfig,
     abort: Arc<AtomicBool>,
 ) -> ContainerHttpResponse {
-    let mut lower_headers = HashMap::new();
+    let mut lower_headers: HashMap<String, String> = HashMap::new();
     for (k, v) in &req.headers {
-        lower_headers.insert(k.to_ascii_lowercase(), v.clone());
+        let lk = k.to_ascii_lowercase();
+        let sep = if lk == "cookie" { "; " } else { ", " };
+        lower_headers
+            .entry(lk)
+            .and_modify(|existing| {
+                existing.push_str(sep);
+                existing.push_str(v);
+            })
+            .or_insert_with(|| v.clone());
     }
     let original_uri = if req.query.is_empty() {
         req.path.clone()
@@ -2618,6 +2670,29 @@ fn execute_php_request(
         };
     };
 
+    // Re-evaluate `.htaccess` access rules against the resolved script path (e.g., `/config` -> `/config.php`)
+    // so `<FilesMatch>` / `RewriteRule [F]` rules cannot be bypassed via extensionless PHP resolution.
+    let resolved_script_path = format!("/{script_key}");
+    if !htaccess_map.is_empty() && resolved_script_path != target_path {
+        if let HtaccessEval::Deny(status) = evaluate_htaccess_chain(
+            htaccess_map,
+            &resolved_script_path,
+            &target_query,
+            &req.method,
+            &req.host,
+            req.https,
+            &lower_headers,
+            vfs,
+            vfs_dirs,
+        ) {
+            return ContainerHttpResponse {
+                status,
+                headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                body: b"Forbidden".to_vec(),
+            };
+        }
+    }
+
     let entry_source = match vfs.get(&script_key) {
         Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         None => {
@@ -2665,6 +2740,10 @@ fn execute_php_request(
     server.insert("CONTENT_TYPE".into(), json!(content_type));
     server.insert("CONTENT_LENGTH".into(), json!(req.body.len().to_string()));
     for (k, v) in &lower_headers {
+        if k == "host" {
+            // Preserve trusted-proxy-derived `req.host` already set in SERVER_NAME and HTTP_HOST.
+            continue;
+        }
         let php_key = format!("HTTP_{}", k.to_ascii_uppercase().replace('-', "_"));
         server.insert(php_key, json!(v));
     }
@@ -3239,7 +3318,7 @@ pub enum StaticOrBackend {
     Deny(u16),
     Redirect(u16, String),
     NotFound,
-    Backend,
+    Backend { path: String, query: String },
 }
 
 pub struct ContainerBackendRuntime {
@@ -3503,17 +3582,19 @@ impl ContainerBackendRuntime {
                                         &sql_cfg,
                                         Arc::clone(&abort),
                                     );
-                                    if let Ok(mut guard) = req_ov.lock() {
-                                        let final_ov = std::mem::take(&mut *guard);
-                                        drop(guard);
-                                        merge_and_save_php_overlay(
-                                            &overlay_path,
-                                            &php_overlay,
-                                            &initial_ov,
-                                            final_ov,
-                                            &backend_cfg.entry,
-                                            &last_saved_overlay,
-                                        );
+                                    if out.status < 500 {
+                                        if let Ok(mut guard) = req_ov.lock() {
+                                            let final_ov = std::mem::take(&mut *guard);
+                                            drop(guard);
+                                            merge_and_save_php_overlay(
+                                                &overlay_path,
+                                                &php_overlay,
+                                                &initial_ov,
+                                                final_ov,
+                                                &backend_cfg.entry,
+                                                &last_saved_overlay,
+                                            );
+                                        }
                                     }
                                     out
                                 }
@@ -3597,6 +3678,11 @@ impl ContainerBackendRuntime {
         }
 
         if let Some(err) = startup_err {
+            if let Ok(list) = watches.lock() {
+                for w in list.iter() {
+                    w.abort.store(true, Ordering::SeqCst);
+                }
+            }
             stop_watchdog.store(true, Ordering::Relaxed);
             return Err(err);
         }
@@ -3730,11 +3816,12 @@ impl ContainerBackendRuntime {
             Err(code) => return StaticOrBackend::Deny(code),
         };
         let mut effective_path = pathname;
+        let mut effective_query = query.to_owned();
         if !self.htaccess_map.is_empty() {
             match evaluate_htaccess_chain(
                 &self.htaccess_map,
                 &effective_path,
-                query,
+                &effective_query,
                 method,
                 host,
                 https,
@@ -3744,8 +3831,9 @@ impl ContainerBackendRuntime {
             ) {
                 HtaccessEval::Deny(code) => return StaticOrBackend::Deny(code),
                 HtaccessEval::Redirect(code, loc) => return StaticOrBackend::Redirect(code, loc),
-                HtaccessEval::Rewrite { pathname: next, .. } => {
+                HtaccessEval::Rewrite { pathname: next, query: next_q } => {
                     effective_path = next;
+                    effective_query = next_q;
                 }
             }
         }
@@ -3760,11 +3848,17 @@ impl ContainerBackendRuntime {
             return StaticOrBackend::Deny(403);
         }
         if lower.ends_with(".php") || lower.ends_with(".phtml") {
-            return StaticOrBackend::Backend;
+            return StaticOrBackend::Backend {
+                path: effective_path,
+                query: effective_query,
+            };
         }
         let upper_method = method.to_ascii_uppercase();
         if upper_method != "GET" && upper_method != "HEAD" {
-            return StaticOrBackend::Backend;
+            return StaticOrBackend::Backend {
+                path: effective_path,
+                query: effective_query,
+            };
         }
         for prefix in &self.routes {
             if prefix == "/" || prefix == "/*" {
@@ -3772,11 +3866,17 @@ impl ContainerBackendRuntime {
                 if !rel.is_empty() && !rel.ends_with(".html") && !rel.ends_with(".htm") {
                     return match self.resolve_static_asset(&effective_path) {
                         Ok(Some((mime, bytes))) => StaticOrBackend::Static { mime, bytes },
-                        Ok(None) => StaticOrBackend::Backend,
+                        Ok(None) => StaticOrBackend::Backend {
+                            path: effective_path,
+                            query: effective_query,
+                        },
                         Err(code) => StaticOrBackend::Deny(code),
                     };
                 }
-                return StaticOrBackend::Backend;
+                return StaticOrBackend::Backend {
+                    path: effective_path,
+                    query: effective_query,
+                };
             }
             let clean = if prefix.starts_with('/') {
                 prefix.clone()
@@ -3788,7 +3888,10 @@ impl ContainerBackendRuntime {
                 || effective_path.starts_with(&clean)
                 || effective_path.starts_with(&format!("{bare}/"))
             {
-                return StaticOrBackend::Backend;
+                return StaticOrBackend::Backend {
+                    path: effective_path,
+                    query: effective_query,
+                };
             }
         }
         match self.resolve_static_asset(&effective_path) {

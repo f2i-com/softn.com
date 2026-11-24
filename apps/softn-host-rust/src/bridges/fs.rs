@@ -56,11 +56,16 @@ const MAX_LIST_DIR_ENTRIES: usize = 10_000;
 const MAX_PATH_BYTES: usize = 1024;
 const MAX_PATH_DEPTH: usize = 32;
 
-/// Per-app filesystem write serialization & disk-quota guard shared across all
+#[derive(Default)]
+struct FsUsageState {
+    cached: Option<(u64, usize)>,
+}
+
+/// Per-app filesystem write serialization & incremental disk-quota guard shared across all
 /// worker threads of an app/tenant.
 #[derive(Default)]
 pub struct FsQuota {
-    lock: Mutex<()>,
+    state: Mutex<FsUsageState>,
 }
 
 impl FsQuota {
@@ -323,10 +328,17 @@ impl FsBridge for NativeFsBridge {
         if content.len() > MAX_SANDBOX_FILE_BYTES {
             return Err("File content exceeds sandbox size limit".into());
         }
-        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut usage_guard = self.quota.state.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
         let canonical_root = self.canonical_root()?;
-        let (used_bytes, used_entries) = dir_usage(&canonical_root)?;
+        let (used_bytes, used_entries) = match usage_guard.cached {
+            Some(pair) => pair,
+            None => {
+                let pair = dir_usage(&canonical_root)?;
+                usage_guard.cached = Some(pair);
+                pair
+            }
+        };
         let existing_meta = std::fs::symlink_metadata(&resolved).ok();
         let existing_len = existing_meta.as_ref().map(|m| m.len()).unwrap_or(0);
         let new_entries = if existing_meta.is_some() { 0 } else { 1 };
@@ -344,8 +356,12 @@ impl FsBridge for NativeFsBridge {
         opts.write(true).create(true).truncate(true);
         let mut file = open_nofollow(&mut opts, &resolved)
             .map_err(|e| format!("Write error: {}", e))?;
-        file.write_all(content.as_bytes())
-            .map_err(|e| format!("Write error: {}", e))
+        if let Err(e) = file.write_all(content.as_bytes()) {
+            usage_guard.cached = None;
+            return Err(format!("Write error: {}", e));
+        }
+        usage_guard.cached = Some((next_total, used_entries.saturating_add(new_entries)));
+        Ok(())
     }
 
     fn append_file(&mut self, path: &str, content: &str) -> Result<(), String> {
@@ -353,10 +369,17 @@ impl FsBridge for NativeFsBridge {
         if content.len() > MAX_SANDBOX_FILE_BYTES {
             return Err("File content exceeds sandbox size limit".into());
         }
-        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut usage_guard = self.quota.state.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
         let canonical_root = self.canonical_root()?;
-        let (used_bytes, used_entries) = dir_usage(&canonical_root)?;
+        let (used_bytes, used_entries) = match usage_guard.cached {
+            Some(pair) => pair,
+            None => {
+                let pair = dir_usage(&canonical_root)?;
+                usage_guard.cached = Some(pair);
+                pair
+            }
+        };
         let existing_meta = std::fs::symlink_metadata(&resolved).ok();
         let existing_len = existing_meta.as_ref().map(|m| m.len()).unwrap_or(0);
         if existing_len.saturating_add(content.len() as u64) > MAX_SANDBOX_FILE_BYTES as u64 {
@@ -366,7 +389,8 @@ impl FsBridge for NativeFsBridge {
         if used_entries.saturating_add(new_entries) > MAX_SANDBOX_ENTRIES {
             return Err("Sandbox file count quota exceeded".into());
         }
-        if used_bytes.saturating_add(content.len() as u64) > MAX_SANDBOX_TOTAL_BYTES {
+        let next_total = used_bytes.saturating_add(content.len() as u64);
+        if next_total > MAX_SANDBOX_TOTAL_BYTES {
             return Err("Sandbox total storage quota exceeded".into());
         }
         self.ensure_parent(&resolved)?;
@@ -374,8 +398,12 @@ impl FsBridge for NativeFsBridge {
         opts.create(true).append(true);
         let mut file = open_nofollow(&mut opts, &resolved)
             .map_err(|e| format!("Append error: {}", e))?;
-        file.write_all(content.as_bytes())
-            .map_err(|e| format!("Write error: {}", e))
+        if let Err(e) = file.write_all(content.as_bytes()) {
+            usage_guard.cached = None;
+            return Err(format!("Write error: {}", e));
+        }
+        usage_guard.cached = Some((next_total, used_entries.saturating_add(new_entries)));
+        Ok(())
     }
 
     fn exists(&self, path: &str) -> bool {
@@ -400,22 +428,42 @@ impl FsBridge for NativeFsBridge {
     }
 
     fn delete_file(&mut self, path: &str) -> Result<(), String> {
-        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut usage_guard = self.quota.state.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
+        let prev_len = std::fs::symlink_metadata(&resolved).map(|m| m.len()).unwrap_or(0);
         std::fs::remove_file(&resolved)
-            .map_err(|e| format!("Delete error: {}", e))
+            .map_err(|e| format!("Delete error: {}", e))?;
+        if let Some((used_bytes, used_entries)) = usage_guard.cached {
+            usage_guard.cached = Some((
+                used_bytes.saturating_sub(prev_len),
+                used_entries.saturating_sub(1),
+            ));
+        }
+        Ok(())
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), String> {
-        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut usage_guard = self.quota.state.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
         let canonical_root = self.canonical_root()?;
-        let (_used_bytes, used_entries) = dir_usage(&canonical_root)?;
+        let (used_bytes, used_entries) = match usage_guard.cached {
+            Some(pair) => pair,
+            None => {
+                let pair = dir_usage(&canonical_root)?;
+                usage_guard.cached = Some(pair);
+                pair
+            }
+        };
         if used_entries >= MAX_SANDBOX_ENTRIES {
             return Err("Sandbox file count quota exceeded".into());
         }
+        let existed = resolved.exists();
         std::fs::create_dir_all(&resolved)
-            .map_err(|e| format!("Mkdir error: {}", e))
+            .map_err(|e| format!("Mkdir error: {}", e))?;
+        if !existed {
+            usage_guard.cached = Some((used_bytes, used_entries.saturating_add(1)));
+        }
+        Ok(())
     }
 }
 

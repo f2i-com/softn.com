@@ -404,7 +404,8 @@ final class Bundle
                 $backendRoot = trim(str_replace('\\', '/', $manifest['backend']['root']), '/');
             } elseif (is_string($manifest['backend']['entry'] ?? null) && str_contains($manifest['backend']['entry'], '/')) {
                 $entryDir = explode('/', trim(str_replace('\\', '/', $manifest['backend']['entry']), '/'))[0];
-                if ($entryDir !== '' && $entryDir !== 'assets' && $entryDir !== 'css' && $entryDir !== 'js') {
+                $feRoots = ['assets', 'css', 'js', 'public', 'static', 'dist', 'frontend'];
+                if ($entryDir !== '' && !in_array(strtolower($entryDir), $feRoots, true)) {
                     $backendRoot = $entryDir;
                 }
             }

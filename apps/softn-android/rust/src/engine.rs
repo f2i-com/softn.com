@@ -1,9 +1,10 @@
 //! Core SoftN Mobile Runtime Engine powered by `zipp-browser` (`zipp-dom` + `zipp-renderer`)
 //! and `zipp-vm` (frontend JS/TS/React + full-stack Container v2 backend + native SQLite).
 
-use std::collections::HashMap;
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,13 @@ const MAX_LOCAL_STORAGE_KEYS: usize = 1024;
 const MAX_SESSION_STORAGE_KEYS: usize = 256;
 const MAX_XDB_COLLECTIONS: usize = 64;
 const MAX_PENDING_DEVICE_CALLS: usize = 64;
+const MAX_OPEN_WS: usize = 64;
+const MAX_SINGLE_BLOB_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PARSE_HTML_BYTES: usize = 4 * 1024 * 1024;
+const FRONTEND_BOOT_STEP_BUDGET: u64 = 2_000_000_000;
+const FRONTEND_INTERACT_STEP_BUDGET: u64 = 500_000_000;
+const FRONTEND_HEAP_LIMIT_BYTES: usize = 128 * 1024 * 1024;
+const FRONTEND_BOOT_WALL_MS: u64 = 15_000;
 const MAX_DRAIN_WALL_MS: u64 = 5_000;
 const RUST_TIMER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_DATA_URL_BYTES: usize = 32 * 1024 * 1024;
@@ -410,7 +418,7 @@ impl HostDeviceInfo {
     pub fn host_allows_capability(&self, cap: &str) -> bool {
         match &self.granted_capabilities {
             None => true,
-            Some(list) => list.iter().any(|c| c.eq_ignore_ascii_case(cap)),
+            Some(list) => list.iter().any(|c| c == cap),
         }
     }
 }
@@ -472,41 +480,41 @@ pub struct InteractionResult {
     pub select_picker: Option<SelectPickerRequest>,
 }
 
+thread_local! {
+    /// Scoped read-only pointer to the active `BaseDocument` during synchronous JS execution
+    /// so `getComputedStyle()` queries Stylo on demand instead of eagerly serializing 14 CSS
+    /// properties for every DOM node on every rebuild.
+    static ACTIVE_LAYOUT_DOC: Cell<*const BaseDocument> = const { Cell::new(std::ptr::null()) };
+}
+
+struct LayoutDocGuard {
+    prev: *const BaseDocument,
+}
+
+impl LayoutDocGuard {
+    fn enter(doc: &BaseDocument) -> Self {
+        let prev = ACTIVE_LAYOUT_DOC.with(|c| c.replace(doc as *const BaseDocument));
+        Self { prev }
+    }
+}
+
+impl Drop for LayoutDocGuard {
+    fn drop(&mut self) {
+        ACTIVE_LAYOUT_DOC.with(|c| c.set(self.prev));
+    }
+}
+
 /// Snapshot of laid-out CSS box metrics (`clientWidth`/`clientHeight`/`getBoundingClientRect`),
-/// computed styles (`getComputedStyle`), and hit-test rects (`elementFromPoint`) exposed
-/// synchronously to JS via `__zippHostCall`.
+/// `flid -> dom` mapping for lazy `getComputedStyle`, and hit-test rects (`elementFromPoint`)
+/// exposed synchronously to JS via `__zippHostCall`.
 #[derive(Default)]
 struct LayoutCache {
     boxes: HashMap<u32, [f32; 6]>,
     rects: HashMap<u32, [f32; 4]>,
     order: Vec<u32>,
-    styles: HashMap<u32, Box<[Option<String>; CACHED_STYLE_PROPS.len()]>>,
+    flid_to_dom: HashMap<u32, usize>,
     scroll_x: f64,
     scroll_y: f64,
-}
-
-const CACHED_STYLE_PROPS: &[&str] = &[
-    "display",
-    "visibility",
-    "opacity",
-    "position",
-    "overflow",
-    "overflow-x",
-    "overflow-y",
-    "z-index",
-    "transform",
-    "width",
-    "height",
-    "background-color",
-    "color",
-    "font-size",
-];
-
-fn style_prop_index(prop: &str) -> Option<usize> {
-    let trimmed = prop.trim();
-    CACHED_STYLE_PROPS
-        .iter()
-        .position(|&p| p.eq_ignore_ascii_case(trimmed))
 }
 
 impl LayoutCache {
@@ -520,7 +528,7 @@ impl LayoutCache {
         self.boxes.clear();
         self.rects.clear();
         self.order.clear();
-        self.styles.clear();
+        self.flid_to_dom.clear();
         self.scroll_x = scroll_x;
         self.scroll_y = scroll_y;
         let mut pairs: Vec<(usize, u32)> = flid_to_dom.iter().map(|(&f, &n)| (n, f)).collect();
@@ -528,6 +536,7 @@ impl LayoutCache {
         self.boxes.reserve(pairs.len());
         self.rects.reserve(pairs.len());
         self.order.reserve(pairs.len());
+        self.flid_to_dom.reserve(pairs.len());
         for (node_id, flid) in pairs {
             let Some(node) = doc.get_node(node_id) else {
                 continue;
@@ -546,21 +555,7 @@ impl LayoutCache {
             let (tx, ty, tw, th) = node.transformed_border_rect();
             self.rects.insert(flid, [tx as f32, ty as f32, tw as f32, th as f32]);
             self.order.push(flid);
-            if node.element_data().is_some() && node.primary_styles().is_some() {
-                let mut slots: [Option<String>; CACHED_STYLE_PROPS.len()] = Default::default();
-                let mut any = false;
-                for (idx, &prop) in CACHED_STYLE_PROPS.iter().enumerate() {
-                    if let Some(val) = node.computed_style_value(prop) {
-                        if !val.is_empty() {
-                            slots[idx] = Some(val);
-                            any = true;
-                        }
-                    }
-                }
-                if any {
-                    self.styles.insert(flid, Box::new(slots));
-                }
-            }
+            self.flid_to_dom.insert(flid, node_id);
         }
     }
 
@@ -619,14 +614,25 @@ impl LayoutCache {
         let Ok(flid) = flid_str.parse::<u32>() else {
             return String::new();
         };
-        let Some(idx) = style_prop_index(prop) else {
+        let Some(&node_id) = self.flid_to_dom.get(&flid) else {
             return String::new();
         };
-        self.styles
-            .get(&flid)
-            .and_then(|slots| slots[idx].as_deref())
-            .unwrap_or("")
-            .to_string()
+        let trimmed = prop.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        ACTIVE_LAYOUT_DOC.with(|cell| {
+            let ptr = cell.get();
+            if ptr.is_null() {
+                return String::new();
+            }
+            // SAFETY: `LayoutDocGuard` ensures `ptr` points to the immutably borrowed
+            // `BaseDocument` for the exact dynamic extent of synchronous JS execution.
+            let doc = unsafe { &*ptr };
+            doc.get_node(node_id)
+                .and_then(|n| n.computed_style_value(trimmed))
+                .unwrap_or_default()
+        })
     }
 
     fn hit(&self, x_str: &str, y_str: &str) -> String {
@@ -762,6 +768,8 @@ pub struct SoftnMobileEngine {
     last_synced_html: String,
     last_dom_mutations: i64,
     last_rust_poll: Instant,
+    rust_active_until: Instant,
+    open_ws_count: Arc<AtomicUsize>,
     layout_dirty: bool,
     full_repaint: bool,
     dirty_canvas_nodes: Vec<usize>,
@@ -841,6 +849,7 @@ impl SoftnMobileEngine {
         let logical_w = ((width.max(1) as f32) / scale.max(1.0)).round().max(320.0) as u32;
         let logical_h = ((height.max(1) as f32) / scale.max(1.0)).round().max(480.0) as u32;
         let js_abort = Arc::new(AtomicBool::new(false));
+        let open_ws_count = Arc::new(AtomicUsize::new(0));
 
         // Boot frontend JavaScript/TypeScript inside `zipp-vm`
         let js_state = boot_frontend_vm(
@@ -863,6 +872,7 @@ impl SoftnMobileEngine {
             Arc::clone(&pending_calls),
             Arc::clone(&logs),
             Arc::clone(&js_abort),
+            Arc::clone(&open_ws_count),
         )?;
 
         let mut engine = Self {
@@ -911,6 +921,8 @@ impl SoftnMobileEngine {
             last_synced_html: String::new(),
             last_dom_mutations: -1,
             last_rust_poll: Instant::now() - Duration::from_secs(1),
+            rust_active_until: Instant::now() + Duration::from_secs(2),
+            open_ws_count,
             layout_dirty: true,
             full_repaint: true,
             dirty_canvas_nodes: Vec::new(),
@@ -921,10 +933,14 @@ impl SoftnMobileEngine {
         engine.sync_dom_from_vm();
         // Run initial animation frame so Canvas 2D scenes (e.g. 3D mine maps & charts)
         // measure their real LayoutCache container dimensions and render Frame 1 immediately.
-        if let Some(ref mut st) = engine.js_state {
-            let _ = st.call_global("__zippStepRaf", &[]);
-            drain_js(st);
-            let _ = st.call_global("__zippEndSettle", &[]);
+        {
+            let _wd = engine.renew_frontend_budget();
+            let _doc_guard = LayoutDocGuard::enter(engine.doc.as_ref());
+            if let Some(ref mut st) = engine.js_state {
+                let _ = st.call_global("__zippStepRaf", &[]);
+                drain_js(st);
+                let _ = st.call_global("__zippEndSettle", &[]);
+            }
         }
         engine.sync_dom_from_vm();
         Ok(engine)
@@ -1133,8 +1149,12 @@ impl SoftnMobileEngine {
         }
     }
 
-    fn renew_frontend_budget(&mut self) {
-        self.js_abort.store(false, std::sync::atomic::Ordering::Relaxed);
+    fn renew_frontend_budget(&mut self) -> WallDeadlineGuard {
+        self.js_abort.store(false, Ordering::SeqCst);
+        if let Some(ref mut st) = self.js_state {
+            let _ = st.renew_step_budget(FRONTEND_INTERACT_STEP_BUDGET);
+        }
+        WallDeadlineGuard::arm(Arc::clone(&self.js_abort), MAX_DRAIN_WALL_MS)
     }
 
     fn has_pending_raf(&mut self) -> bool {
@@ -1165,7 +1185,10 @@ impl SoftnMobileEngine {
                 }
             }
         }
-        if self.backend.as_ref().is_some_and(|b| b.is_rust_backend()) {
+        if self.backend.as_ref().is_some_and(|b| b.is_rust_backend())
+            && (self.open_ws_count.load(Ordering::Relaxed) > 0
+                || Instant::now() < self.rust_active_until)
+        {
             return if js_next < 0 { 120 } else { js_next.min(120) };
         }
         js_next
@@ -1197,7 +1220,10 @@ impl SoftnMobileEngine {
 
     /// Handle a tap at physical pixel coordinates `(x, y)` on Android.
     pub fn on_tap(&mut self, phys_x: f32, phys_y: f32) -> InteractionResult {
-        self.renew_frontend_budget();
+        let _watchdog = self.renew_frontend_budget();
+        if self.backend.as_ref().is_some_and(|b| b.is_rust_backend()) {
+            self.rust_active_until = Instant::now() + Duration::from_secs(2);
+        }
         let logical_x = phys_x / self.scale + self.scroll_x as f32;
         let logical_y = phys_y / self.scale + self.scroll_y as f32;
 
@@ -1301,65 +1327,68 @@ impl SoftnMobileEngine {
                     }
                 }
                 if select_picker.is_none() {
-                    if let Some(ref mut st) = self.js_state {
-                        stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
-                            let mut prevented = false;
-                            for handler_flid in &flid_chain {
-                                if let Ok(JsValue::Bool(true)) = st.call_global(
-                                    "__zippDispatchEvent",
-                                    &[
-                                        JsValue::Number(f64::from(*handler_flid)),
-                                        JsValue::Number(f64::from(flid)),
-                                        JsValue::String("click".into()),
-                                    ],
-                                ) {
-                                    prevented = true;
+                    {
+                        let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+                        if let Some(ref mut st) = self.js_state {
+                            stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                                let mut prevented = false;
+                                for handler_flid in &flid_chain {
+                                    if let Ok(JsValue::Bool(true)) = st.call_global(
+                                        "__zippDispatchEvent",
+                                        &[
+                                            JsValue::Number(f64::from(*handler_flid)),
+                                            JsValue::Number(f64::from(flid)),
+                                            JsValue::String("click".into()),
+                                        ],
+                                    ) {
+                                        prevented = true;
+                                    }
                                 }
-                            }
-                            // If a submit button (or a child inside a submit button) was clicked and click didn't preventDefault, submit ancestor form
-                            let is_submit_trigger = (tag == "button" && (itype == "submit" || itype == "text"))
-                                || (tag == "input" && itype == "submit");
-                            if !prevented {
-                                if is_submit_trigger {
-                                    let _ = st.call_global(
-                                        "__softnSubmitAncestorForm",
-                                        &[JsValue::Number(f64::from(flid))],
-                                    );
-                                } else {
-                                    // Check if any ancestor in flid_chain is a submit <button> (e.g., tapping an SVG/span inside a button)
-                                    for &anc_flid in &flid_chain {
-                                        if anc_flid == flid {
-                                            continue;
-                                        }
-                                        let anc_json = match st.call_global(
-                                            "__softnInspectNode",
-                                            &[JsValue::Number(f64::from(anc_flid))],
-                                        ) {
-                                            Ok(JsValue::String(s)) => serde_json::from_str::<Value>(&s).unwrap_or_else(|_| json!({})),
-                                            _ => json!({}),
-                                        };
-                                        let atag = anc_json.get("tag").and_then(|v| v.as_str()).unwrap_or("");
-                                        let atype = anc_json.get("type").and_then(|v| v.as_str()).unwrap_or("text");
-                                        if atag == "button" && (atype == "submit" || atype == "text") {
-                                            let _ = st.call_global(
-                                                "__softnSubmitAncestorForm",
+                                // If a submit button (or a child inside a submit button) was clicked and click didn't preventDefault, submit ancestor form
+                                let is_submit_trigger = (tag == "button" && (itype == "submit" || itype == "text"))
+                                    || (tag == "input" && itype == "submit");
+                                if !prevented {
+                                    if is_submit_trigger {
+                                        let _ = st.call_global(
+                                            "__softnSubmitAncestorForm",
+                                            &[JsValue::Number(f64::from(flid))],
+                                        );
+                                    } else {
+                                        // Check if any ancestor in flid_chain is a submit <button> (e.g., tapping an SVG/span inside a button)
+                                        for &anc_flid in &flid_chain {
+                                            if anc_flid == flid {
+                                                continue;
+                                            }
+                                            let anc_json = match st.call_global(
+                                                "__softnInspectNode",
                                                 &[JsValue::Number(f64::from(anc_flid))],
-                                            );
-                                            break;
+                                            ) {
+                                                Ok(JsValue::String(s)) => serde_json::from_str::<Value>(&s).unwrap_or_else(|_| json!({})),
+                                                _ => json!({}),
+                                            };
+                                            let atag = anc_json.get("tag").and_then(|v| v.as_str()).unwrap_or("");
+                                            let atype = anc_json.get("type").and_then(|v| v.as_str()).unwrap_or("text");
+                                            if atag == "button" && (atype == "submit" || atype == "text") {
+                                                let _ = st.call_global(
+                                                    "__softnSubmitAncestorForm",
+                                                    &[JsValue::Number(f64::from(anc_flid))],
+                                                );
+                                                break;
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            drain_js(st);
-                        });
-                    }
-                    // Step rAF once only if a callback or active canvas exists before syncing DOM.
-                    if self.has_canvas() || self.has_any_raf_queued() {
-                        if let Some(ref mut st) = self.js_state {
-                            stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
-                                let _ = st.call_global("__zippStepRaf", &[]);
                                 drain_js(st);
                             });
+                        }
+                        // Step rAF once only if a callback or active canvas exists before syncing DOM.
+                        if self.has_canvas() || self.has_any_raf_queued() {
+                            if let Some(ref mut st) = self.js_state {
+                                stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                                    let _ = st.call_global("__zippStepRaf", &[]);
+                                    drain_js(st);
+                                });
+                            }
                         }
                     }
                     let prev_canvases = self.canvas_flids.clone();
@@ -1367,11 +1396,14 @@ impl SoftnMobileEngine {
                     // Only run a second rAF + DOM sync if the click mounted a brand-new <canvas>
                     // (now that LayoutCache has its real container size, render Frame 1 immediately).
                     if !self.canvas_flids.is_empty() && self.canvas_flids != prev_canvases {
-                        if let Some(ref mut st) = self.js_state {
-                            stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
-                                let _ = st.call_global("__zippStepRaf", &[]);
-                                drain_js(st);
-                            });
+                        {
+                            let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+                            if let Some(ref mut st) = self.js_state {
+                                stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                                    let _ = st.call_global("__zippStepRaf", &[]);
+                                    drain_js(st);
+                                });
+                            }
                         }
                         self.sync_dom_from_vm();
                     }
@@ -1384,26 +1416,35 @@ impl SoftnMobileEngine {
 
     /// Select an option on a `<select>` element chosen from Android's native picker dialog.
     pub fn on_select_option(&mut self, flid: u32, index: i32) -> InteractionResult {
-        self.renew_frontend_budget();
-        if let Some(ref mut st) = self.js_state {
-            let _ = st.call_global(
-                "__softnSetSelectIndex",
-                &[JsValue::Number(f64::from(flid)), JsValue::Number(f64::from(index))],
-            );
-            drain_js(st);
+        let _watchdog = self.renew_frontend_budget();
+        if self.backend.as_ref().is_some_and(|b| b.is_rust_backend()) {
+            self.rust_active_until = Instant::now() + Duration::from_secs(2);
         }
-        if self.has_canvas() || self.has_any_raf_queued() {
+        {
+            let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
             if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global("__zippStepRaf", &[]);
+                let _ = st.call_global(
+                    "__softnSetSelectIndex",
+                    &[JsValue::Number(f64::from(flid)), JsValue::Number(f64::from(index))],
+                );
                 drain_js(st);
+            }
+            if self.has_canvas() || self.has_any_raf_queued() {
+                if let Some(ref mut st) = self.js_state {
+                    let _ = st.call_global("__zippStepRaf", &[]);
+                    drain_js(st);
+                }
             }
         }
         let prev_canvases = self.canvas_flids.clone();
         self.sync_dom_from_vm();
         if !self.canvas_flids.is_empty() && self.canvas_flids != prev_canvases {
-            if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global("__zippStepRaf", &[]);
-                drain_js(st);
+            {
+                let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+                if let Some(ref mut st) = self.js_state {
+                    let _ = st.call_global("__zippStepRaf", &[]);
+                    drain_js(st);
+                }
             }
             self.sync_dom_from_vm();
         }
@@ -1441,7 +1482,8 @@ impl SoftnMobileEngine {
             return false;
         };
         self.active_canvas_flid = Some(flid);
-        self.renew_frontend_budget();
+        let _watchdog = self.renew_frontend_budget();
+        let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
         let client_x = f64::from(phys_x / self.scale);
         let client_y = f64::from(phys_y / self.scale);
         if let Some(ref mut st) = self.js_state {
@@ -1465,25 +1507,28 @@ impl SoftnMobileEngine {
     /// Route pointer movement while a `<canvas>` drag is active (3D camera orbit/pan).
     pub fn on_pointer_move(&mut self, phys_x: f32, phys_y: f32) -> InteractionResult {
         if let Some(flid) = self.active_canvas_flid {
-            self.renew_frontend_budget();
+            let _watchdog = self.renew_frontend_budget();
             let client_x = f64::from(phys_x / self.scale);
             let client_y = f64::from(phys_y / self.scale);
-            if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global(
-                    "__zippDispatchPointerEvent",
-                    &[
-                        JsValue::Number(f64::from(flid)),
-                        JsValue::String("pointermove".into()),
-                        JsValue::Number(client_x),
-                        JsValue::Number(client_y),
-                        JsValue::Number(0.0),
-                        JsValue::Number(1.0),
-                        JsValue::Number(1.0),
-                    ],
-                );
-                drain_js(st);
-                let _ = st.call_global("__zippStepRaf", &[]);
-                drain_js(st);
+            {
+                let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+                if let Some(ref mut st) = self.js_state {
+                    let _ = st.call_global(
+                        "__zippDispatchPointerEvent",
+                        &[
+                            JsValue::Number(f64::from(flid)),
+                            JsValue::String("pointermove".into()),
+                            JsValue::Number(client_x),
+                            JsValue::Number(client_y),
+                            JsValue::Number(0.0),
+                            JsValue::Number(1.0),
+                            JsValue::Number(1.0),
+                        ],
+                    );
+                    drain_js(st);
+                    let _ = st.call_global("__zippStepRaf", &[]);
+                    drain_js(st);
+                }
             }
             self.sync_dom_from_vm();
         }
@@ -1493,25 +1538,28 @@ impl SoftnMobileEngine {
     /// Finish a `<canvas>` touch drag (triggers click-picking on short taps inside 3D view).
     pub fn on_pointer_up(&mut self, phys_x: f32, phys_y: f32) -> InteractionResult {
         if let Some(flid) = self.active_canvas_flid.take() {
-            self.renew_frontend_budget();
+            let _watchdog = self.renew_frontend_budget();
             let client_x = f64::from(phys_x / self.scale);
             let client_y = f64::from(phys_y / self.scale);
-            if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global(
-                    "__zippDispatchPointerEvent",
-                    &[
-                        JsValue::Number(f64::from(flid)),
-                        JsValue::String("pointerup".into()),
-                        JsValue::Number(client_x),
-                        JsValue::Number(client_y),
-                        JsValue::Number(0.0),
-                        JsValue::Number(0.0),
-                        JsValue::Number(1.0),
-                    ],
-                );
-                drain_js(st);
-                let _ = st.call_global("__zippStepRaf", &[]);
-                drain_js(st);
+            {
+                let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+                if let Some(ref mut st) = self.js_state {
+                    let _ = st.call_global(
+                        "__zippDispatchPointerEvent",
+                        &[
+                            JsValue::Number(f64::from(flid)),
+                            JsValue::String("pointerup".into()),
+                            JsValue::Number(client_x),
+                            JsValue::Number(client_y),
+                            JsValue::Number(0.0),
+                            JsValue::Number(0.0),
+                            JsValue::Number(1.0),
+                        ],
+                    );
+                    drain_js(st);
+                    let _ = st.call_global("__zippStepRaf", &[]);
+                    drain_js(st);
+                }
             }
             self.sync_dom_from_vm();
         }
@@ -1584,17 +1632,20 @@ impl SoftnMobileEngine {
 
     /// Set text value of the currently focused `<input>` / `<textarea>` from Android IME.
     pub fn on_text_input(&mut self, full_text: &str) -> InteractionResult {
-        self.renew_frontend_budget();
+        let _watchdog = self.renew_frontend_budget();
         if let Some(flid) = self.focused_flid {
-            if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global(
-                    "__softnSetInputValue",
-                    &[
-                        JsValue::Number(f64::from(flid)),
-                        JsValue::String(full_text.to_string()),
-                    ],
-                );
-                drain_js(st);
+            {
+                let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+                if let Some(ref mut st) = self.js_state {
+                    let _ = st.call_global(
+                        "__softnSetInputValue",
+                        &[
+                            JsValue::Number(f64::from(flid)),
+                            JsValue::String(full_text.to_string()),
+                        ],
+                    );
+                    drain_js(st);
+                }
             }
             self.sync_dom_from_vm();
         }
@@ -1610,14 +1661,20 @@ impl SoftnMobileEngine {
 
     /// Submit focused form on IME Done/Enter key.
     pub fn on_submit_ime(&mut self) -> InteractionResult {
-        self.renew_frontend_budget();
+        let _watchdog = self.renew_frontend_budget();
+        if self.backend.as_ref().is_some_and(|b| b.is_rust_backend()) {
+            self.rust_active_until = Instant::now() + Duration::from_secs(2);
+        }
         if let Some(flid) = self.focused_flid {
-            if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global(
-                    "__softnSubmitAncestorForm",
-                    &[JsValue::Number(f64::from(flid))],
-                );
-                drain_js(st);
+            {
+                let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+                if let Some(ref mut st) = self.js_state {
+                    let _ = st.call_global(
+                        "__softnSubmitAncestorForm",
+                        &[JsValue::Number(f64::from(flid))],
+                    );
+                    drain_js(st);
+                }
             }
             self.focused_flid = None;
             self.sync_dom_from_vm();
@@ -1632,17 +1689,20 @@ impl SoftnMobileEngine {
         ok: bool,
         payload_json: &str,
     ) -> InteractionResult {
-        self.renew_frontend_budget();
-        if let Some(ref mut st) = self.js_state {
-            let _ = st.call_global(
-                "__softnResolveDeviceCall",
-                &[
-                    JsValue::Number(request_id as f64),
-                    JsValue::Bool(ok),
-                    JsValue::String(payload_json.to_string()),
-                ],
-            );
-            drain_js(st);
+        let _watchdog = self.renew_frontend_budget();
+        {
+            let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+            if let Some(ref mut st) = self.js_state {
+                let _ = st.call_global(
+                    "__softnResolveDeviceCall",
+                    &[
+                        JsValue::Number(request_id as f64),
+                        JsValue::Bool(ok),
+                        JsValue::String(payload_json.to_string()),
+                    ],
+                );
+                drain_js(st);
+            }
         }
         self.sync_dom_from_vm();
         let wants_ime = self.focused_flid.is_some();
@@ -1650,38 +1710,46 @@ impl SoftnMobileEngine {
     }
 
     pub fn tick(&mut self) -> InteractionResult {
-        self.renew_frontend_budget();
+        let _watchdog = self.renew_frontend_budget();
         let mut changed = false;
-        if let Some(ref be) = self.backend {
-            if be.is_rust_backend() && self.last_rust_poll.elapsed() >= RUST_TIMER_POLL_INTERVAL {
-                self.last_rust_poll = Instant::now();
-                let ws_frames = be.poll_rust_timers();
-                if !ws_frames.is_empty() {
-                    if let Some(ref mut st) = self.js_state {
-                        let frames_json = Value::Array(ws_frames).to_string();
-                        let _ = st.call_global(
-                            "__softnDeliverWsFrames",
-                            &[JsValue::String(frames_json)],
-                        );
+        {
+            let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
+            if let Some(ref be) = self.backend {
+                if be.is_rust_backend()
+                    && (self.open_ws_count.load(Ordering::Relaxed) > 0
+                        || Instant::now() < self.rust_active_until)
+                    && self.last_rust_poll.elapsed() >= RUST_TIMER_POLL_INTERVAL
+                {
+                    self.last_rust_poll = Instant::now();
+                    let ws_frames = be.poll_rust_timers();
+                    if !ws_frames.is_empty() {
+                        self.rust_active_until = Instant::now() + Duration::from_secs(2);
+                        if let Some(ref mut st) = self.js_state {
+                            let frames_json = Value::Array(ws_frames).to_string();
+                            let _ = st.call_global(
+                                "__softnDeliverWsFrames",
+                                &[JsValue::String(frames_json)],
+                            );
+                            st.run_microtasks();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if let Some(ref mut st) = self.js_state {
+                if let Ok(JsValue::Number(n)) =
+                    st.call_global("__zippDrainQueues", &[JsValue::Number(8.0)])
+                {
+                    if n > 0.0 {
                         st.run_microtasks();
                         changed = true;
                     }
                 }
-            }
-        }
-        if let Some(ref mut st) = self.js_state {
-            if let Ok(JsValue::Number(n)) =
-                st.call_global("__zippDrainQueues", &[JsValue::Number(8.0)])
-            {
-                if n > 0.0 {
-                    st.run_microtasks();
-                    changed = true;
-                }
-            }
-            if let Ok(JsValue::Number(r)) = st.call_global("__zippStepRaf", &[]) {
-                if r > 0.0 {
-                    st.run_microtasks();
-                    changed = true;
+                if let Ok(JsValue::Number(r)) = st.call_global("__zippStepRaf", &[]) {
+                    if r > 0.0 {
+                        st.run_microtasks();
+                        changed = true;
+                    }
                 }
             }
         }
@@ -2202,6 +2270,7 @@ fn boot_frontend_vm(
     pending_calls: Arc<Mutex<Vec<PendingDeviceRequest>>>,
     logs: Arc<Mutex<Vec<String>>>,
     abort: Arc<AtomicBool>,
+    open_ws_count: Arc<AtomicUsize>,
 ) -> Result<Option<ScriptState>, String> {
     let (classic_scripts, module_entries) = extract_scripts(raw_html, bundle);
     if classic_scripts.is_empty() && module_entries.is_empty() {
@@ -2304,9 +2373,25 @@ fn boot_frontend_vm(
     .map_err(|e| format!("Frontend JS/TS compile error: {e}"))?
     .into_state();
 
-    // Match `zipp-browser`'s interactive page VM: keep instrumentation step limits unset
-    // on the interactive frontend VM so both x86-64 and ARM64 native JIT stay enabled
-    // at full speed, while still bounding console output and dynamic eval/Function sizes.
+    // Allocate the instrumentation recorder FIRST (`set_limits`) so `set_heap_limit`,
+    // `set_output_limit`, `set_dynamic_code_limits`, and wall-clock `abort` are all active!
+    // On x86-64 with the native JIT enabled, `zipp-vm` pins a 256 MiB register reservation
+    // on the first `run_init()` entry (`reserve_jit_regs`) and counts its capacity in
+    // `audit_heap_bytes()`. Account for that static reservation on x86-64 so guest heap
+    // growth stays strictly capped at `FRONTEND_HEAP_LIMIT_BYTES` (128 MiB) on every arch.
+    // Per-interaction re-entry uses `renew_step_budget()` so these ceilings are never dropped.
+    st.set_limits(FRONTEND_BOOT_STEP_BUDGET, Some(Arc::clone(&abort)));
+    const JIT_REG_RESERVE_BYTES: usize = if cfg!(target_arch = "x86_64") {
+        256 * 1024 * 1024
+    } else {
+        0
+    };
+    let heap_baseline = st.heap_bytes();
+    st.set_heap_limit(
+        heap_baseline
+            .saturating_add(JIT_REG_RESERVE_BYTES)
+            .saturating_add(FRONTEND_HEAP_LIMIT_BYTES),
+    );
     st.set_output_limit(32 * 1024 * 1024);
     st.set_dynamic_code_limits(256 * 1024, 1024 * 1024, 64, 512, 256);
 
@@ -2323,7 +2408,9 @@ fn boot_frontend_vm(
     let pending_hc = Arc::clone(&pending_calls);
     let logs_hc = Arc::clone(&logs);
     let mut pending_bytes: Vec<u8> = Vec::new();
-    let sql_abort = Arc::clone(&abort);
+    let mut open_ws_ids: HashSet<String> = HashSet::new();
+    let ws_count_hc = Arc::clone(&open_ws_count);
+    let sql_abort = Arc::new(AtomicBool::new(false));
     let mut frontend_sql = RequestSqlBridge::new(storage.clone(), Arc::clone(&sql_abort));
 
     st.set_host_call_ctx(Box::new(move |ctx: &mut dyn HostCtx, kind: &str, args: &[String]| {
@@ -2346,21 +2433,33 @@ fn boot_frontend_vm(
                 let n: usize = arg(0).parse().unwrap_or(0).min(65536);
                 Ok(random_hex(n))
             }
-            "parse_html" => Ok(html_seed::parse_html_json(arg(0))
-                .unwrap_or_else(|| "[[],[],[],[]]".to_string())),
+            "parse_html" => {
+                let raw = arg(0);
+                if raw.len() > MAX_PARSE_HTML_BYTES {
+                    return Ok("[[],[],[],[]]".to_string());
+                }
+                Ok(html_seed::parse_html_json(raw).unwrap_or_else(|| "[[],[],[],[]]".to_string()))
+            }
             "blob_create" => {
                 let mode = arg(0);
                 let mime = arg(1);
                 let origin = arg(2);
                 let bytes = if mode == "text" {
-                    arg(3).as_bytes().to_vec()
+                    let raw = arg(3);
+                    if raw.len() > MAX_SINGLE_BLOB_BYTES {
+                        return Err("RangeError: Blob exceeds 32 MiB single-blob limit".into());
+                    }
+                    raw.as_bytes().to_vec()
                 } else {
                     let len: usize = mode.parse().unwrap_or(0);
+                    if len > MAX_SINGLE_BLOB_BYTES {
+                        return Err("RangeError: Blob exceeds 32 MiB single-blob limit".into());
+                    }
                     if len == 0 {
                         Vec::new()
                     } else {
                         let (addr, count, ty) = ctx.typed_array_region("__zippHostBytes")?;
-                        if ty != 1 || len > count {
+                        if ty != 1 || len > count || addr == 0 {
                             return Err("RangeError: blob_create buffer mismatch".into());
                         }
                         unsafe { std::slice::from_raw_parts(addr as *const u8, len).to_vec() }
@@ -2384,6 +2483,7 @@ fn boot_frontend_vm(
             "http_bytes" => {
                 let raw_url = arg(0);
                 let credentials = arg(1);
+                let headers_json = arg(2);
                 let (status, mime, bytes, err) = handle_softn_fetch_bytes(
                     &bundle_hc,
                     backend_hc.as_deref(),
@@ -2393,6 +2493,7 @@ fn boot_frontend_vm(
                     host_allows_net,
                     raw_url,
                     credentials,
+                    headers_json,
                 );
                 if let Some(error) = err {
                     return Ok(json!({ "error": error }).to_string());
@@ -2416,8 +2517,13 @@ fn boot_frontend_vm(
                 if bytes.len() > count {
                     return Err("RangeError: __zippHostBytes is too small".into());
                 }
-                unsafe {
-                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
+                if !bytes.is_empty() {
+                    if addr == 0 {
+                        return Err("TypeError: __zippHostBytes has null buffer".into());
+                    }
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
+                    }
                 }
                 Ok(bytes.len().to_string())
             }
@@ -2555,8 +2661,10 @@ fn boot_frontend_vm(
                             || storage_hc.count_local_storage_keys() < MAX_LOCAL_STORAGE_KEYS)
                     {
                         storage_hc.set_local_storage(k, v);
+                        Ok("true".into())
+                    } else {
+                        Ok("false".into())
                     }
-                    Ok("true".into())
                 }
                 "remove" => {
                     storage_hc.remove_local_storage(arg(1));
@@ -2639,14 +2747,51 @@ fn boot_frontend_vm(
                 if let Some(ref be) = backend_hc {
                     let payload = match op {
                         "open" => {
-                            let uri = extract_ws_uri(a1);
+                            if !open_ws_ids.contains(ws_id) && open_ws_ids.len() >= MAX_OPEN_WS {
+                                return Ok(json!({
+                                    "ok": false,
+                                    "accepted": false,
+                                    "body": "WebSocket connection limit exceeded"
+                                })
+                                .to_string());
+                            }
+                            let Some(uri) = extract_local_ws_uri(a1, be) else {
+                                return Ok(json!({
+                                    "ok": false,
+                                    "accepted": false,
+                                    "body": "External WebSocket origins are not supported by local container backend"
+                                })
+                                .to_string());
+                            };
                             json!({ "__control": "ws_open", "wsId": ws_id, "uri": uri, "headers": [] })
                         }
                         "send" => json!({ "__control": "ws_send", "wsId": ws_id, "data": a1, "binary": false }),
-                        "close" => json!({ "__control": "ws_close", "wsId": ws_id, "code": a1.parse::<u16>().unwrap_or(1000), "reason": a2 }),
+                        "close" => {
+                            open_ws_ids.remove(ws_id);
+                            ws_count_hc.store(open_ws_ids.len(), Ordering::Relaxed);
+                            json!({ "__control": "ws_close", "wsId": ws_id, "code": a1.parse::<u16>().unwrap_or(1000), "reason": a2 })
+                        }
                         _ => return Ok(json!({ "ok": false }).to_string()),
                     };
-                    Ok(be.rust_control(payload).to_string())
+                    let res = be.rust_control(payload);
+                    if op == "open" && res.get("accepted").and_then(|v| v.as_bool()) == Some(true) {
+                        open_ws_ids.insert(ws_id.to_string());
+                        ws_count_hc.store(open_ws_ids.len(), Ordering::Relaxed);
+                    }
+                    if let Some(frames) = res.get("wsFrames").and_then(|v| v.as_array()) {
+                        let mut removed = false;
+                        for f in frames {
+                            if f.get("type").and_then(|v| v.as_str()) == Some("close") {
+                                if let Some(fid) = f.get("wsId").and_then(|v| v.as_str()) {
+                                    removed |= open_ws_ids.remove(fid);
+                                }
+                            }
+                        }
+                        if removed {
+                            ws_count_hc.store(open_ws_ids.len(), Ordering::Relaxed);
+                        }
+                    }
+                    Ok(res.to_string())
                 } else {
                     Ok(json!({ "ok": false, "accepted": false, "body": "No backend WebSocket handler" }).to_string())
                 }
@@ -2656,6 +2801,8 @@ fn boot_frontend_vm(
         }
     }));
 
+    abort.store(false, Ordering::SeqCst);
+    let _boot_watchdog = WallDeadlineGuard::arm(Arc::clone(&abort), FRONTEND_BOOT_WALL_MS);
     st.run_init()
         .map_err(|e| format!("Frontend runtime init error: {e}"))?;
     drain_js(&mut st);
@@ -2997,8 +3144,12 @@ fn execute_safe_http_request(
     let mut body_opt: Option<&str> = Some(initial_body);
     let initial_origin = url::Url::parse(initial_url).ok().map(|u| u.origin());
     let mut any_cookie_sent = false;
+    let deadline = Instant::now() + HTTP_TIMEOUT_GLOBAL;
 
     for hop in 0..=MAX_HTTP_REDIRECTS {
+        if Instant::now() >= deadline {
+            return Err("Network error: global request timeout exceeded".into());
+        }
         bundle.check_net_url(&current_url)?;
         let parsed = url::Url::parse(&current_url).map_err(|e| format!("Invalid URL: {e}"))?;
         let same_origin = initial_origin
@@ -3128,6 +3279,7 @@ fn handle_softn_fetch_bytes(
     host_allows_net: bool,
     raw_url: &str,
     credentials: &str,
+    headers_json: &str,
 ) -> (u16, String, Vec<u8>, Option<String>) {
     if raw_url.starts_with("blob:") {
         return match blobs.lookup(raw_url) {
@@ -3152,7 +3304,59 @@ fn handle_softn_fetch_bytes(
         };
     }
 
+    let mut req_headers: Vec<(String, String)> = Vec::new();
+    if !headers_json.is_empty() {
+        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(headers_json) {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() {
+                    if is_valid_http_header_name(&k)
+                        && is_valid_http_header_value(s)
+                        && !is_forbidden_outbound_header(&k.to_ascii_lowercase())
+                    {
+                        req_headers.push((k, s.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    let has_auth_hdr = req_headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+
     let send_same_origin_cookies = credentials != "omit";
+    // 1. Check backend interceptOrigins first (matches `handle_softn_fetch`).
+    if let Some(be) = backend {
+        if let Some((path, query)) = be.matches_intercept_origin(raw_url) {
+            if send_same_origin_cookies {
+                if let Ok(u) = url::Url::parse(raw_url) {
+                    if let Some(c) = cookies.cookie_header(&u) {
+                        req_headers.push(("Cookie".into(), c));
+                    }
+                }
+            }
+            let resp = be.handle_request_opts(
+                BackendHttpRequest {
+                    method: "GET".into(),
+                    path,
+                    query,
+                    headers: req_headers,
+                    body: Vec::new(),
+                },
+                false,
+            );
+            if send_same_origin_cookies {
+                store_set_cookies(cookies, raw_url, &resp.headers);
+            }
+            let ct = resp
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| "application/octet-stream".into());
+            return (resp.status, ct, resp.body, None);
+        }
+    }
+
     let local_part = if let Some(rest) = strip_virtual_origin(raw_url) {
         Some(rest)
     } else if !raw_url.starts_with("http://") && !raw_url.starts_with("https://") {
@@ -3173,11 +3377,10 @@ fn handle_softn_fetch_bytes(
         };
         if let Some(be) = backend {
             if be.should_route(&norm_path) {
-                let mut hdrs = Vec::new();
                 if send_same_origin_cookies {
                     if let Ok(u) = url::Url::parse(&format!("{VIRTUAL_ORIGIN}{norm_path}")) {
                         if let Some(c) = cookies.cookie_header(&u) {
-                            hdrs.push(("Cookie".into(), c));
+                            req_headers.push(("Cookie".into(), c));
                         }
                     }
                 }
@@ -3186,7 +3389,7 @@ fn handle_softn_fetch_bytes(
                         method: "GET".into(),
                         path: norm_path.clone(),
                         query: query.to_string(),
-                        headers: hdrs,
+                        headers: req_headers,
                         body: Vec::new(),
                     },
                     false,
@@ -3224,7 +3427,7 @@ fn handle_softn_fetch_bytes(
     // External URLs are cross-origin relative to `https://app.softn.local`:
     // only send/store cookies when `credentials === "include"`.
     let send_external_cookies = credentials == "include";
-    let revalidate = if !send_external_cookies {
+    let revalidate = if !send_external_cookies && !has_auth_hdr {
         match http_cache.lookup(raw_url) {
             CacheLookup::Fresh(e) => return (e.status, e.content_type, e.body.as_ref().clone(), None),
             CacheLookup::Revalidate(e) => Some(e),
@@ -3234,7 +3437,7 @@ fn handle_softn_fetch_bytes(
         None
     };
 
-    let mut cond_headers = Vec::new();
+    let mut cond_headers = req_headers;
     if let Some(ref prev) = revalidate {
         if let Some(ref etag) = prev.etag {
             cond_headers.push(("If-None-Match".to_string(), etag.clone()));
@@ -3269,7 +3472,7 @@ fn handle_softn_fetch_bytes(
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| "application/octet-stream".into());
-            if !sent_cookie && final_url == raw_url {
+            if !has_auth_hdr && !sent_cookie && final_url == raw_url {
                 http_cache.store(raw_url, status, &resp_hdrs, body.clone());
             }
             (status, ct, body, None)
@@ -3302,6 +3505,7 @@ fn handle_softn_fetch(
             host_allows_net,
             raw_url,
             credentials,
+            headers_json,
         );
         if let Some(error) = err {
             return json!({ "error": error }).to_string();
@@ -3467,10 +3671,18 @@ fn handle_softn_fetch(
             if status == 304 {
                 if let Some(prev) = revalidate {
                     let refreshed = http_cache.revalidate_304(raw_url, prev, &resp_hdrs);
+                    let mut merged_hdrs = resp_hdrs;
+                    if !merged_hdrs
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                        && !refreshed.content_type.is_empty()
+                    {
+                        merged_hdrs.push(("Content-Type".into(), refreshed.content_type));
+                    }
                     return format_fetch_response(
                         &final_url,
                         refreshed.status,
-                        resp_hdrs,
+                        merged_hdrs,
                         &refreshed.body,
                     );
                 }
@@ -3519,6 +3731,9 @@ fn handle_softn_device(
     method: &str,
     mut params: Value,
 ) -> String {
+    if !params.is_object() {
+        params = json!({});
+    }
     // 1. Non-sensitive device metadata (always permitted)
     if namespace == "device" && method == "getInfo" {
         return json!({
@@ -3560,7 +3775,7 @@ fn handle_softn_device(
 
     // 3. Enforce capability declaration in permission.json + host user consent natively in Rust
     let required_cap = match namespace {
-        "device" if method == "clipboardRead" => Some("clipboard"),
+        "device" if method == "clipboardRead" || method == "clipboardWrite" => Some("clipboard"),
         "device" | "permissions" => None,
         "camera" => Some("camera"),
         "bluetooth" => Some("bluetooth"),
@@ -3589,10 +3804,10 @@ fn handle_softn_device(
             "geolocation" => "location",
             "microphone" => "mic",
             "accelerometer" | "gyroscope" | "magnetometer" => "accel",
-            "clipboard-read" => "clipboard",
+            "clipboard-read" | "clipboard-write" => "clipboard",
             other => other,
         };
-        if !mapped.is_empty() && mapped != "clipboard-write" {
+        if !mapped.is_empty() {
             if !bundle.has_capability(mapped) {
                 return json!({
                     "ok": true,
@@ -3684,6 +3899,17 @@ fn handle_softn_device(
                             );
                         }
                     }
+                }
+            } else if method == "connect" {
+                // Propagate the canonical BLE service allowlist into Kotlin so GATT service
+                // discovery and subsequent read/write calls only expose allowlisted services.
+                let mut allowed_sorted: Vec<String> = allowed.iter().cloned().collect();
+                allowed_sorted.sort();
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert(
+                        "allowedServices".into(),
+                        Value::Array(allowed_sorted.into_iter().map(Value::String).collect()),
+                    );
                 }
             } else if method == "read" || method == "write" {
                 let raw_svc = params
@@ -3792,23 +4018,55 @@ fn collect_head_css(raw_html: &str, bundle: &SoftnBundle) -> String {
     css
 }
 
-fn extract_ws_uri(raw_url: &str) -> String {
-    if let Some(rest) = raw_url
-        .strip_prefix("wss://")
-        .or_else(|| raw_url.strip_prefix("ws://"))
-        .or_else(|| raw_url.strip_prefix("https://"))
-        .or_else(|| raw_url.strip_prefix("http://"))
-    {
-        if let Some(idx) = rest.find('/') {
-            return rest[idx..].to_string();
-        }
-        return "/".to_string();
+/// Extract a local WebSocket request URI for the embedded container backend.
+/// Rejects arbitrary external `ws://` / `wss://` hosts so external origins cannot
+/// be silently misrouted into the local backend.
+fn extract_local_ws_uri(raw_url: &str, backend: &LocalContainerBackend) -> Option<String> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-    if raw_url.starts_with('/') {
-        raw_url.to_string()
+    if trimmed.starts_with('/') && !trimmed.starts_with("//") {
+        return Some(trimmed.to_string());
+    }
+    if let Some((path, query)) = backend.matches_intercept_origin(trimmed) {
+        return Some(if query.is_empty() {
+            path
+        } else {
+            format!("{path}?{query}")
+        });
+    }
+    let normalized = if let Some(rest) = trimmed.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+        trimmed.to_string()
+    } else if trimmed.contains("://") {
+        return None;
     } else {
-        format!("/{raw_url}")
+        return Some(format!("/{trimmed}"));
+    };
+    if let Some((path, query)) = backend.matches_intercept_origin(&normalized) {
+        return Some(if query.is_empty() {
+            path
+        } else {
+            format!("{path}?{query}")
+        });
     }
+    let parsed = url::Url::parse(&normalized).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let virtual_host = url::Url::parse(VIRTUAL_ORIGIN)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .unwrap_or_else(|| "app.softn.local".to_string());
+    if host != virtual_host {
+        return None;
+    }
+    Some(match parsed.query() {
+        Some(q) if !q.is_empty() => format!("{}?{q}", parsed.path()),
+        _ => parsed.path().to_string(),
+    })
 }
 
 fn extract_html_open_attrs(raw_html: &str) -> Vec<(String, String)> {

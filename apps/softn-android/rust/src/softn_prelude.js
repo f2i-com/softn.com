@@ -8,7 +8,7 @@
 //   - Upgraded HTML/CSS/inline-style/input serializer & interactive event helpers
 
 // Top-level global slot bindings (zipp-vm resolves bare global identifiers at compile time)
-var __softnBuiltins = {};
+var __softnBuiltins = Object.create(null);
 var __softnResolveDeviceCall = function () { return false; };
 var __softnDeliverWsFrames = function () { return 0; };
 var __getDynamicHeadStyles = function () { return ""; };
@@ -173,7 +173,7 @@ var softn = {};
           /\.(glb|hdr|png|jpe?g|webp|gif|bmp|wasm|bin|woff2?|ttf|otf|mp3|ogg|wav)$/.test(lowerUrl)
         );
         if (isBinaryAsset) {
-          var info = JSON.parse(__zippHostCall("http_bytes", url, credentials));
+          var info = JSON.parse(__zippHostCall("http_bytes", url, credentials, JSON.stringify(headersObj)));
           if (info && info.error && !info.status) {
             reject(new TypeError(String(info.error)));
             return;
@@ -423,8 +423,12 @@ var softn = {};
     setItem: function (k, v) {
       var key = String(k);
       var val = String(v);
+      var ok = false;
+      try { ok = __zippHostCall("softn.storage", "set", key, val) === "true"; } catch (e) { ok = false; }
+      if (!ok) {
+        throw new Error("QuotaExceededError: localStorage limit exceeded");
+      }
       lsData[key] = val;
-      try { __zippHostCall("softn.storage", "set", key, val); } catch (e) {}
     },
     removeItem: function (k) {
       var key = String(k);
@@ -678,7 +682,7 @@ var softn = {};
   g.softn = softnRoot;
   window.softn = softnRoot;
 
-  __softnBuiltins = {
+  __softnBuiltins = Object.assign(Object.create(null), {
     "softn:device": Object.assign({ device: softnDevice, default: softnDevice }, softnDevice),
     "softn:camera": Object.assign({ camera: softnCamera, default: softnCamera }, softnCamera),
     "softn:bluetooth": Object.assign({ bluetooth: softnBluetooth, ble: softnBluetooth, default: softnBluetooth }, softnBluetooth),
@@ -694,7 +698,7 @@ var softn = {};
     "softn:api": { api: softnApiObj, fetch: softnFetch, default: softnApiObj },
     "softn:sqlite": { open: softnSqlite.open, default: softnSqlite },
     "softn:backend": { backend: { call: function () { return Promise.reject(new Error("Use fetch('/api/...') for container v2 backends")); } } }
-  };
+  });
   g.__softnBuiltins = __softnBuiltins;
 
   // Wire standard Web APIs to the permission-gated SoftN native bridges so
@@ -967,10 +971,10 @@ var softn = {};
   // ── 6. Delegate serialization to zipp-browser's full Shadow DOM / SVG / !important serializer ──
   g.__getRenderedHTML = function () {
     if (!doc || !doc.body) return "";
-    var out = "";
     var kids = doc.body.childNodes || [];
-    for (var i = 0; i < kids.length; i++) out += __serializeNode(kids[i]);
-    return out;
+    var parts = new Array(kids.length);
+    for (var i = 0; i < kids.length; i++) parts[i] = __serializeNode(kids[i]);
+    return parts.join("");
   };
   __getRenderedHTML = g.__getRenderedHTML;
 
@@ -1207,9 +1211,26 @@ var softn = {};
       .replace(/&amp;/g, "&");
   }
 
-  var VOID_TAGS = { area:1, base:1, br:1, col:1, embed:1, hr:1, img:1, input:1, link:1, meta:1, param:1, source:1, track:1, wbr:1 };
+  var VOID_TAGS = Object.assign(Object.create(null), { area:1, base:1, br:1, col:1, embed:1, hr:1, img:1, input:1, link:1, meta:1, param:1, source:1, track:1, wbr:1 });
+
+  function pruneSubtreeIds(root) {
+    if (!root || !root.childNodes || root.childNodes.length === 0) return;
+    var stack = root.childNodes.slice();
+    while (stack.length > 0) {
+      var n = stack.pop();
+      if (!n) continue;
+      if (n._id !== undefined) {
+        if (typeof __nodesById === "object" && __nodesById) delete __nodesById[n._id];
+        if (typeof __eventHandlers === "object" && __eventHandlers) delete __eventHandlers[n._id];
+      }
+      if (n.childNodes && n.childNodes.length > 0) {
+        for (var ci = 0; ci < n.childNodes.length; ci++) stack.push(n.childNodes[ci]);
+      }
+    }
+  }
 
   function parseHtmlInto(parent, html) {
+    pruneSubtreeIds(parent);
     parent.childNodes = [];
     if (typeof __domMutations === "number") __domMutations++;
     if (!html) return;
@@ -1323,10 +1344,10 @@ var softn = {};
   Object.defineProperty(DOMNode.prototype, "innerHTML", {
     configurable: true,
     get: function () {
-      var out = "";
       var kids = this.childNodes || [];
-      for (var i = 0; i < kids.length; i++) out += __serializeNode(kids[i]);
-      return out;
+      var parts = new Array(kids.length);
+      for (var i = 0; i < kids.length; i++) parts[i] = __serializeNode(kids[i]);
+      return parts.join("");
     },
     set: function (v) {
       parseHtmlInto(this, v);

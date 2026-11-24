@@ -117,7 +117,9 @@ export function isSafeClientPath(name: string, manifest?: Record<string, unknown
       if (entry) {
         if (lower === entry) return false;
         const slash = entry.indexOf('/');
-        if (slash > 0 && lower.startsWith(entry.slice(0, slash + 1))) return false;
+        const topDir = slash > 0 ? entry.slice(0, slash) : '';
+        const feRoots = new Set(['public', 'static', 'dist', 'frontend', 'assets', 'css', 'js']);
+        if (slash > 0 && !feRoots.has(topDir) && lower.startsWith(`${topDir}/`)) return false;
       }
     }
     const ssrEntry = normalizeManifestRel(manifest.ssrEntry);

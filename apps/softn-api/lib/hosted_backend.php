@@ -178,16 +178,20 @@ final class HostedBackend
         // Read the raw request body BEFORE releasing locks or spawning the sandbox worker.
         $rawBody = ($req->method === 'GET' || $req->method === 'HEAD') ? '' : $req->body();
 
-        // Release the directory catalogue lock BEFORE extraction or ZIPP WASM execution so
-        // directory reads and writes are never stalled by an app's backend request.
-        Catalog::release();
-
-        $slot = self::acquireSlot($dataDirRoot);
+        // Acquire storage.lock (LOCK_SH) BEFORE releasing catalog.lock so a concurrent retire()
+        // or moveAppFolder() cannot delete or move `$appDir` between release and lock acquisition.
         $storageLock = @fopen($dataDirRoot . '/storage.lock', 'c');
         if ($storageLock !== false) {
             flock($storageLock, LOCK_SH);
         }
+        Catalog::release();
+
+        $slot = null;
         try {
+            $slot = self::acquireSlot($dataDirRoot);
+            if (!is_file($bundlePath)) {
+                throw new ApiError(404, 'The bundle file is missing.');
+            }
             $bundleDir = self::ensureExtracted($appDir, $bundlePath, $versionNum, $shaPrefix);
             $backendDataDir = $appDir . '/backend-data';
             if (!is_dir($backendDataDir) && !@mkdir($backendDataDir, 0700, true) && !is_dir($backendDataDir)) {
@@ -263,12 +267,14 @@ final class HostedBackend
             }
             return Response::raw($status, $outHeaders, $body);
         } finally {
+            if (is_resource($slot)) {
+                flock($slot, LOCK_UN);
+                fclose($slot);
+            }
             if ($storageLock !== false) {
                 flock($storageLock, LOCK_UN);
                 fclose($storageLock);
             }
-            flock($slot, LOCK_UN);
-            fclose($slot);
         }
     }
 
@@ -366,13 +372,19 @@ final class HostedBackend
             if (is_dir($target) && is_file($target . '/manifest.json')) return $target;
             throw new ApiError(503, 'Could not finalize hosted backend bundle cache.');
         }
-        // Prune superseded version caches for this app so backend-cache/ stays bounded.
+        // Prune superseded version caches older than the max request timeout + grace window
+        // so concurrent requests executing against the previous version are never deleted mid-flight.
         $activeName = basename($target);
+        $pruneCutoff = time() - 120;
         foreach (@scandir($cacheRoot) ?: [] as $entry) {
             if ($entry === '.' || $entry === '..' || $entry === $activeName) continue;
             if (!str_starts_with($entry, 'v')) continue;
             $stale = $cacheRoot . '/' . $entry;
-            if (is_dir($stale) && !is_link($stale)) self::removeTree($stale);
+            if (!is_dir($stale) || is_link($stale)) continue;
+            $mtime = @filemtime($stale);
+            if ($mtime !== false && $mtime < $pruneCutoff) {
+                self::removeTree($stale);
+            }
         }
         return $target;
     }

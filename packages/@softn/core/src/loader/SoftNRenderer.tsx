@@ -210,14 +210,16 @@ export function sanitizeBundleCSS(css: string): string {
       isRemoteUrl(target) ||
       /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/|\\)/i.test(target)
   );
-  // Remove expression() (IE) — a code execution vector.
-  sanitized = removeCssFunction(sanitized, 'expression', '/* expression removed */');
+  // Remove expression() (IE) — a code execution vector. Replace with whitespace
+  // (never a CSS comment) so downstream declaration sanitizers cannot be evaded.
+  sanitized = removeCssFunction(sanitized, 'expression', ' ');
   // Match legacy properties at declaration boundaries, not the suffix of
   // scroll-behavior / overscroll-behavior. Preserve rule braces and separators:
-  // a final declaration need not have a semicolon, even inside a media query.
+  // a final declaration need not have a semicolon, even inside a media query,
+  // and tolerate an intervening `/* @import removed */` marker.
   sanitized = sanitized.replace(
-    /((?:^|[;{])\s*)(-moz-binding|behavior)\s*:[^;{}]*/gi,
-    '$1/* $2 removed */'
+    /((?:^|[;{])(?:\s|\/\*[^*]*\*\/)*)(-moz-binding|behavior)\s*:[^;{}]*/gi,
+    '$1 '
   );
   return sanitized;
 }

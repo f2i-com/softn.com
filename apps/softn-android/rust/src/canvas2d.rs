@@ -36,6 +36,8 @@ use crate::http_cache::BlobStore;
 
 const MAX_CANVAS_DIM: u32 = 4096;
 const MAX_CANVAS_READ_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CANVAS_TOTAL_BYTES: usize = 128 * 1024 * 1024;
+const MAX_PATH_SEGS: usize = 131_072;
 const MAX_DATA_URL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CANVASES: usize = 64;
 const MAX_GRADIENTS: usize = 4096;
@@ -109,6 +111,9 @@ fn map(t: &Transform, x: f32, y: f32) -> Point {
 
 impl SegPath {
     fn move_to(&mut self, p: Point) {
+        if self.segs.len() >= MAX_PATH_SEGS {
+            return;
+        }
         self.segs.push(Seg::Move(p));
         self.current = Some(p);
         self.start = Some(p);
@@ -118,12 +123,18 @@ impl SegPath {
         if self.current.is_none() {
             return self.move_to(p);
         }
+        if self.segs.len() >= MAX_PATH_SEGS {
+            return;
+        }
         self.segs.push(Seg::Line(p));
         self.current = Some(p);
     }
     fn quad_to(&mut self, c: Point, p: Point) {
         if self.current.is_none() {
             self.move_to(c);
+        }
+        if self.segs.len() >= MAX_PATH_SEGS {
+            return;
         }
         self.segs.push(Seg::Quad(c, p));
         self.current = Some(p);
@@ -132,12 +143,17 @@ impl SegPath {
         if self.current.is_none() {
             self.move_to(c1);
         }
+        if self.segs.len() >= MAX_PATH_SEGS {
+            return;
+        }
         self.segs.push(Seg::Cubic(c1, c2, p));
         self.current = Some(p);
     }
     fn close(&mut self) {
         if self.current.is_some() {
-            self.segs.push(Seg::Close);
+            if self.segs.len() < MAX_PATH_SEGS {
+                self.segs.push(Seg::Close);
+            }
             self.current = self.start;
         }
     }
@@ -255,6 +271,10 @@ impl Font {
                 rest = after.trim_start();
                 continue;
             }
+            if !font.size.is_finite() || font.size <= 0.0 {
+                return None;
+            }
+            font.size = font.size.clamp(0.5, 2048.0);
             font.family = after.trim().to_string();
             return Some(font);
         }
@@ -378,10 +398,10 @@ pub(crate) fn host_call(
     }
     let payload = if len > 0 {
         let (addr, count, kind) = ctx.typed_array_region("__zippHostBytes")?;
-        if kind != 1 || count < len {
+        if kind != 1 || count < len || addr == 0 {
             return Err("Error: c2d: __zippHostBytes is not the batch's bytes".into());
         }
-        // SAFETY: the engine pinned `count` bytes at `addr` for this call.
+        // SAFETY: the engine pinned `count` bytes at non-null `addr` for this call.
         unsafe { std::slice::from_raw_parts(addr as *const u8, len) }.to_vec()
     } else {
         Vec::new()
@@ -400,16 +420,18 @@ pub(crate) fn host_call(
         eprintln!("[CANVAS] {error}");
     }
     if let Some(bytes) = reply.bytes {
-        let (addr, count, kind) = ctx.typed_array_region("__zippHostBytes")?;
-        if kind == 1 {
-            // SAFETY: as above; never more than the array holds.
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len().min(count)) };
+        if !bytes.is_empty() {
+            let (addr, count, kind) = ctx.typed_array_region("__zippHostBytes")?;
+            if kind == 1 && addr != 0 {
+                // SAFETY: non-null pinned buffer; never more than the array holds.
+                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len().min(count)) };
+            }
         }
     }
     Ok(reply.result)
 }
 
-fn new_pixmap(w: f64, h: f64) -> Pixmap {
+fn clamp_canvas_dims(w: f64, h: f64) -> (u32, u32) {
     let cw = if !w.is_finite() || w < 1.0 {
         1
     } else {
@@ -420,7 +442,38 @@ fn new_pixmap(w: f64, h: f64) -> Pixmap {
     } else {
         (h as u32).min(MAX_CANVAS_DIM)
     };
+    (cw, ch)
+}
+
+fn new_pixmap(w: f64, h: f64) -> Pixmap {
+    let (cw, ch) = clamp_canvas_dims(w, h);
     Pixmap::new(cw, ch).unwrap_or_else(|| Pixmap::new(1, 1).unwrap())
+}
+
+fn canvas_mem_bytes(c: &Canvas2D) -> usize {
+    let mut total = c.pixmap.data().len();
+    let mut seen: Vec<*const Mask> = Vec::new();
+    let mut add_mask = |m: &Option<Arc<Mask>>| {
+        if let Some(arc) = m {
+            let ptr = Arc::as_ptr(arc);
+            if !seen.contains(&ptr) {
+                seen.push(ptr);
+                total = total.saturating_add(arc.data().len());
+            }
+        }
+    };
+    add_mask(&c.state.clip);
+    for s in &c.stack {
+        add_mask(&s.clip);
+    }
+    total
+}
+
+fn total_canvases_mem_bytes(map: &HashMap<u32, Canvas2D>, exclude_ctx: Option<u32>) -> usize {
+    map.iter()
+        .filter(|(&id, _)| Some(id) != exclude_ctx)
+        .map(|(_, c)| canvas_mem_bytes(c))
+        .fold(0usize, usize::saturating_add)
 }
 
 thread_local! {
@@ -488,7 +541,27 @@ fn image(
         return Ok(found);
     }
     let raw = fetch_canvas_image_bytes(url, bundle, blobs)?;
-    let pixmap = if let Ok(img) = image::load_from_memory(&raw) {
+    let decoded_raster = (|| -> Result<Option<image::DynamicImage>, String> {
+        let Ok(mut reader) = image::ImageReader::new(std::io::Cursor::new(&raw)).with_guessed_format() else {
+            return Ok(None);
+        };
+        if reader.format().is_none() {
+            return Ok(None);
+        }
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_CANVAS_DIM);
+        limits.max_image_height = Some(MAX_CANVAS_DIM);
+        limits.max_alloc = Some(64 * 1024 * 1024);
+        reader.limits(limits);
+        match reader.decode() {
+            Ok(img) => Ok(Some(img)),
+            Err(image::ImageError::Limits(e)) => {
+                Err(format!("image {url}: exceeds decode limits ({e})"))
+            }
+            Err(_) => Ok(None),
+        }
+    })()?;
+    let pixmap = if let Some(img) = decoded_raster {
         let (w, h) = (img.width(), img.height());
         if w > MAX_CANVAS_DIM || h > MAX_CANVAS_DIM {
             return Err(format!("image {url}: dimensions {w}x{h} exceed {MAX_CANVAS_DIM} limit"));
@@ -910,13 +983,33 @@ impl Canvas2D {
         let mask = match self.state.clip.as_deref() {
             Some(existing) => {
                 let mut mask = existing.clone();
-                mask.intersect_path(&path, rule, true, Transform::identity());
-                mask
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    mask.intersect_path(&path, rule, true, Transform::identity());
+                }));
+                if res.is_err() {
+                    let mut fallback = existing.clone();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        fallback.intersect_path(&path, rule, false, Transform::identity());
+                    }));
+                    fallback
+                } else {
+                    mask
+                }
             }
             None => {
                 let Some(mut mask) = Mask::new(self.pixmap.width(), self.pixmap.height()) else { return };
-                mask.fill_path(&path, rule, true, Transform::identity());
-                mask
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    mask.fill_path(&path, rule, true, Transform::identity());
+                }));
+                if res.is_err() {
+                    let Some(mut fallback) = Mask::new(self.pixmap.width(), self.pixmap.height()) else { return };
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        fallback.fill_path(&path, rule, false, Transform::identity());
+                    }));
+                    fallback
+                } else {
+                    mask
+                }
             }
         };
         self.state.clip = Some(Arc::new(mask));
@@ -963,9 +1056,14 @@ impl Canvas2D {
 
     /// Whether (x, y), in canvas pixels, is in `path`.
     fn contains(&self, path: &Path, rule: FillRule, x: f32, y: f32) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
         let Some(mut mask) = Mask::new(1, 1) else { return false };
-        mask.fill_path(path, rule, false, Transform::from_translate(-x.floor(), -y.floor()));
-        mask.data()[0] > 0
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mask.fill_path(path, rule, false, Transform::from_translate(-x.floor(), -y.floor()));
+        }));
+        res.is_ok() && mask.data()[0] > 0
     }
 
     fn frame(&self) -> Frame {
@@ -1139,12 +1237,20 @@ fn run(
         }
         "create" => {
             let opaque = cmd.get(4).and_then(Json::as_bool).unwrap_or(false);
-            let canvas = Canvas2D::new(num(1) as u32, num(2), num(3), opaque);
+            let (cw, ch) = clamp_canvas_dims(num(2), num(3));
+            let needed_bytes = (cw as usize)
+                .saturating_mul(ch as usize)
+                .saturating_mul(4);
             CANVASES.with(|c| {
                 let mut map = c.borrow_mut();
                 if !map.contains_key(&context) && map.len() >= MAX_CANVASES {
                     return Err("canvas context limit exceeded".to_string());
                 }
+                let existing_other = total_canvases_mem_bytes(&map, Some(context));
+                if existing_other.saturating_add(needed_bytes) > MAX_CANVAS_TOTAL_BYTES {
+                    return Err("canvas total pixel memory limit exceeded".to_string());
+                }
+                let canvas = Canvas2D::new(num(1) as u32, f64::from(cw), f64::from(ch), opaque);
                 map.insert(context, canvas);
                 Ok(())
             })?;
@@ -1203,13 +1309,39 @@ fn run(
     };
     CANVASES.with(|c| {
         let mut canvases = c.borrow_mut();
+        match op {
+            "resize" => {
+                let (cw, ch) = clamp_canvas_dims(num(1), num(2));
+                let needed_bytes = (cw as usize)
+                    .saturating_mul(ch as usize)
+                    .saturating_mul(4);
+                let other_bytes = total_canvases_mem_bytes(&canvases, Some(context));
+                if other_bytes.saturating_add(needed_bytes) > MAX_CANVAS_TOTAL_BYTES {
+                    return Err("canvas total pixel memory limit exceeded".to_string());
+                }
+                let canvas = canvases.get_mut(&context).ok_or("no such canvas")?;
+                let opaque = canvas.opaque;
+                *canvas = Canvas2D::new(canvas.flid, f64::from(cw), f64::from(ch), opaque);
+                return Ok(());
+            }
+            "clip" => {
+                let canvas_ro = canvases.get(&context).ok_or("no such canvas")?;
+                let mask_bytes = (canvas_ro.pixmap.width() as usize)
+                    .saturating_mul(canvas_ro.pixmap.height() as usize);
+                let total_bytes = total_canvases_mem_bytes(&canvases, None);
+                if total_bytes.saturating_add(mask_bytes) > MAX_CANVAS_TOTAL_BYTES {
+                    return Err("canvas clip mask memory limit exceeded".to_string());
+                }
+                let canvas = canvases.get_mut(&context).ok_or("no such canvas")?;
+                let path = canvas.path_arg(cmd.get(2));
+                canvas.clip(&path, fill_rule(cmd.get(1)));
+                return Ok(());
+            }
+            _ => {}
+        }
         let canvas = canvases.get_mut(&context).ok_or("no such canvas")?;
         let state = &mut canvas.state;
         match op {
-            "resize" => {
-                let opaque = canvas.opaque;
-                *canvas = Canvas2D::new(canvas.flid, num(1), num(2), opaque);
-            }
             "save" => {
                 if canvas.stack.len() >= MAX_SAVE_STACK {
                     return Err("canvas save() stack depth limit exceeded".to_string());
@@ -1221,12 +1353,22 @@ fn run(
                     *state = saved;
                 }
             }
-            "reset" | "resetContext" => {
+            "resetContext" => {
                 let (w, h, opaque) = (canvas.pixmap.width(), canvas.pixmap.height(), canvas.opaque);
                 *canvas = Canvas2D::new(canvas.flid, w as f64, h as f64, opaque);
             }
-            "setTransform" => state.transform = Transform::from_row(n(1), n(2), n(3), n(4), n(5), n(6)),
-            "transform" => state.transform = state.transform.pre_concat(Transform::from_row(n(1), n(2), n(3), n(4), n(5), n(6))),
+            "setTransform" => {
+                let vals = [n(1), n(2), n(3), n(4), n(5), n(6)];
+                if vals.iter().all(|v| v.is_finite()) {
+                    state.transform = Transform::from_row(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]);
+                }
+            }
+            "transform" => {
+                let vals = [n(1), n(2), n(3), n(4), n(5), n(6)];
+                if vals.iter().all(|v| v.is_finite()) {
+                    state.transform = state.transform.pre_concat(Transform::from_row(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]));
+                }
+            }
             "set" => {
                 let value = cmd.get(2).unwrap_or(&Json::Null);
                 let s = value.as_str().unwrap_or("");
@@ -1251,8 +1393,8 @@ fn run(
                             state.stroke = style;
                         }
                     }
-                    "lineWidth" if v > 0.0 && v.is_finite() => state.line_width = v,
-                    "miterLimit" if v > 0.0 && v.is_finite() => state.miter_limit = v,
+                    "lineWidth" if v > 0.0 && v.is_finite() => state.line_width = v.min(2048.0),
+                    "miterLimit" if v > 0.0 && v.is_finite() => state.miter_limit = v.min(1024.0),
                     "lineDashOffset" if v.is_finite() => state.dash_offset = v,
                     "globalAlpha" if (0.0..=1.0).contains(&v) => state.alpha = v,
                     "lineCap" => {
@@ -1293,12 +1435,16 @@ fn run(
             }
             "dash" => {
                 let mut dash: Vec<f32> = cmd.get(1).and_then(Json::as_array).map_or_else(Vec::new, |a| {
-                    a.iter().filter_map(Json::as_f64).map(|v| v as f32).collect()
+                    a.iter().take(256).filter_map(Json::as_f64).map(|v| v as f32).collect()
                 });
                 if dash.len() % 2 == 1 {
                     dash.extend(dash.clone());
                 }
-                state.dash = if dash.iter().all(|d| *d >= 0.0) && dash.iter().any(|d| *d > 0.0) { dash } else { Vec::new() };
+                state.dash = if dash.iter().all(|d| d.is_finite() && *d >= 0.0) && dash.iter().any(|d| *d > 0.0) {
+                    dash
+                } else {
+                    Vec::new()
+                };
             }
             "beginPath" => canvas.path = SegPath::default(),
             "moveTo" | "lineTo" | "quadraticCurveTo" | "bezierCurveTo" | "closePath" | "arc" | "ellipse" | "rect"
@@ -1313,10 +1459,6 @@ fn run(
             "stroke" => {
                 let path = canvas.path_arg(cmd.get(1));
                 canvas.stroke_path(&path);
-            }
-            "clip" => {
-                let path = canvas.path_arg(cmd.get(2));
-                canvas.clip(&path, fill_rule(cmd.get(1)));
             }
             "fillRect" => {
                 let path = canvas.rect_path(n(1), n(2), n(3), n(4));
@@ -1342,11 +1484,12 @@ fn run(
                 let (_, _, _, user) = text(state, str_arg(1), n(2), n(3), max);
                 if op == "fillText" {
                     let t = state.transform;
-                    let mut device = SegPath::default();
                     if let Some(p) = user.to_path().and_then(|p| p.transform(t)) {
-                        device.segs = path_segments(&p);
+                        let style = canvas.state.fill.clone();
+                        canvas.with_paint(&style, |pixmap, paint, clip| {
+                            safe_fill_path(pixmap, &p, paint, FillRule::Winding, Transform::identity(), clip);
+                        });
                     }
-                    canvas.fill_path(&device, FillRule::Winding);
                 } else if let Some(p) = user.to_path() {
                     let (t, stroke) = (state.transform, canvas.stroke());
                     let style = canvas.state.stroke.clone();
@@ -1465,20 +1608,6 @@ fn run(
         }
         Ok(())
     })
-}
-
-/// A tiny-skia path's segments, to fill as a `SegPath`.
-fn path_segments(path: &Path) -> Vec<Seg> {
-    use tiny_skia::PathSegment as P;
-    path.segments()
-        .map(|s| match s {
-            P::MoveTo(p) => Seg::Move(p),
-            P::LineTo(p) => Seg::Line(p),
-            P::QuadTo(c, p) => Seg::Quad(c, p),
-            P::CubicTo(c1, c2, p) => Seg::Cubic(c1, c2, p),
-            P::Close => Seg::Close,
-        })
-        .collect()
 }
 
 /// A 2D canvas's whole picture, straight alpha: `[width, height, bytes]`.

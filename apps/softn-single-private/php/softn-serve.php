@@ -305,7 +305,7 @@ function softn_withheld_for_bundle(string $name, array $withhold, array $manifes
             $base === 'composer.json' ||
             $base === 'composer.lock' ||
             $base === 'seed.json' ||
-            preg_match('/\.(?:php|phtml|php5|php8|phar|inc|tpl|rs|py|logic|sql|db|sqlite|sqlite3|ini|bak|sh)$/', $base) === 1 ||
+            preg_match('/\.(?:php|phtml|php5|php7|php8|pht|phps|phar|inc|tpl|rs|py|logic|sql|db|sqlite|sqlite3|ini|bak|sh|pem|key|secret|toml|yaml|yml)$/', $base) === 1 ||
             preg_match('/\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$/', $base) === 1
         ) {
             return true;
@@ -526,7 +526,8 @@ function softn_is_https_request(): bool
 {
     if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') return true;
     if ((string)($_SERVER['SERVER_PORT'] ?? '') === '443') return true;
-    $xfp = strtolower(trim(explode(',', (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))[0]));
+    $parts = array_values(array_filter(array_map('trim', explode(',', (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))), static fn(string $v): bool => $v !== ''));
+    $xfp = $parts !== [] ? strtolower($parts[count($parts) - 1]) : '';
     return $xfp === 'https';
 }
 
@@ -543,7 +544,7 @@ function softn_pwa_origin(array $pwa, string $base): ?string
         return null;
     }
     if (isset($m[1]) && $m[1] !== '' && ((int)$m[1] < 1 || (int)$m[1] > 65535)) return null;
-    $secure = !empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off';
+    $secure = softn_is_https_request();
     return ($secure ? 'https' : 'http') . '://' . $host . $base;
 }
 
@@ -627,7 +628,7 @@ function softn_webmanifest(array $config, string $private): never
     exit;
 }
 
-function softn_open(array $config): ZipArchive
+function softn_open(array $config, ?string $verifiedDigest = null): ZipArchive
 {
     // The one extension this host cannot do without, and one a stock Debian
     // or Ubuntu PHP does not have: say which package, not only which extension.
@@ -635,6 +636,9 @@ function softn_open(array $config): ZipArchive
     if (is_string($config['sha256'] ?? null) && $config['sha256'] !== '') {
         static $verified = [];
         $cacheKey = $config['bundle'] . "\0" . $config['sha256'];
+        if ($verifiedDigest !== null && hash_equals($config['sha256'], $verifiedDigest)) {
+            $verified[$cacheKey] = true;
+        }
         if (!isset($verified[$cacheKey])) {
             $actual = @hash_file('sha256', $config['bundle']);
             if ($actual === false) softn_fail(503, 'Application bundle is unavailable.');
@@ -993,18 +997,34 @@ function softn_shell(array $config, string $private): never
         '{{LOADING_TEXT}}' => $escape($config['loadingText']),
         '{{BOOT_JSON}}' => $boot,
     ]);
+    $https = softn_is_https_request();
+    $crossSiteFramed = !empty($config['frameAncestors']) && $https;
     if ($config['viewerToken']) {
         setcookie(SOFTN_COOKIE, softn_token_issue(softn_secret($config, $private), $config['tokenLifetime']), [
             'expires' => time() + $config['tokenLifetime'],
             'path' => softn_cookie_path(),
-            'secure' => softn_is_https_request(),
+            'secure' => $https,
             'httponly' => true,
-            'samesite' => 'Strict',
+            'samesite' => $crossSiteFramed ? 'None' : 'Strict',
         ]);
     }
+    // Hash any inline executable `<script>` blocks (ENTRY_WATCH + optional SW register) so CSP
+    // enforces strict `script-src` and `worker-src` without breaking the shell bootstrap.
+    $inlineHashes = [];
+    if (preg_match_all('#<script\b([^>]*)>(.*?)</script>#is', $page, $scriptMatches, PREG_SET_ORDER)) {
+        foreach ($scriptMatches as $sm) {
+            $attrs = $sm[1];
+            $body = $sm[2];
+            if (preg_match('/\bsrc\s*=/i', $attrs)) continue;
+            if (preg_match('/\btype\s*=\s*["\']?\s*application\/json\b/i', $attrs)) continue;
+            if ($body === '') continue;
+            $inlineHashes["'sha256-" . base64_encode(hash('sha256', $body, true)) . "'"] = true;
+        }
+    }
+    $scriptSrc = "'self' 'wasm-unsafe-eval'" . ($inlineHashes !== [] ? ' ' . implode(' ', array_keys($inlineHashes)) : '');
     header('Content-Type: text/html; charset=utf-8');
     header('Cache-Control: no-store');
-    header("Content-Security-Policy: base-uri 'self'; object-src 'none'; frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
+    header("Content-Security-Policy: base-uri 'self'; object-src 'none'; script-src $scriptSrc; worker-src 'self' blob:; frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
     if (!$config['frameAncestors']) header('X-Frame-Options: SAMEORIGIN');
     header('Content-Length: ' . strlen($page));
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') echo $page;
@@ -1018,7 +1038,7 @@ function softn_source(array $config): never
     $digest = hash_file('sha256', $config['bundle']);
     if ($digest === false) softn_fail(503, 'Application bundle is unavailable.');
     if ($config['sha256'] !== null && !hash_equals($config['sha256'], $digest)) softn_fail(503, 'Application integrity check failed.');
-    $zip = softn_open($config);
+    $zip = softn_open($config, $digest);
     $index = softn_index($zip);
     $manifest = softn_manifest($zip);
     $declared = null;

@@ -96,9 +96,21 @@ class DeviceBridge(
         private const val MAX_SAVE_FILE_BYTES = 16 * 1024 * 1024
         private const val MAX_SAVE_BASE64_CHARS = 22 * 1024 * 1024
         private const val MAX_BLE_SCAN_DEVICES = 256
+        private const val MAX_BLE_WRITE_BYTES = 512
+        private const val MAX_BLE_WRITE_BASE64_CHARS = 1024
+        private const val BLE_OP_TIMEOUT_MS = 15_000L
+        private const val MAX_NOTIFICATION_TITLE_CHARS = 256
+        private const val MAX_NOTIFICATION_BODY_CHARS = 1024
+        private const val MAX_NOTIFICATIONS_PER_MINUTE = 10
+        private const val MIN_NOTIFICATION_INTERVAL_MS = 250L
+        private const val MIN_SHARE_INTERVAL_MS = 1500L
     }
 
+    private val notificationTimestamps = ArrayDeque<Long>()
+    private var lastShareAtMs: Long = 0L
+
     private data class QueuedPermRequest(
+        val generation: Long,
         val permissions: Array<String>,
         val missing: Array<String>,
         val requireAny: Boolean,
@@ -110,7 +122,7 @@ class DeviceBridge(
         activity.registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             val current = activePermRequest
             activePermRequest = null
-            if (current != null) {
+            if (current != null && !closed.get() && current.generation == activeGeneration.get()) {
                 val ok = if (current.requireAny) {
                     results.values.any { it }
                 } else {
@@ -124,6 +136,7 @@ class DeviceBridge(
             pumpNextPermissionRequest()
         }
 
+    private var pendingPhotoGeneration: Long = 0L
     private var pendingPhotoRequestId: Long? = null
     private var pendingPhotoFile: File? = null
     private var pendingPhotoMaxWidth: Int = 960
@@ -131,69 +144,81 @@ class DeviceBridge(
 
     private val takePictureLauncher: ActivityResultLauncher<Uri> =
         activity.registerForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+            val reqGen = pendingPhotoGeneration
             val reqId = pendingPhotoRequestId
             val file = pendingPhotoFile
             val maxW = pendingPhotoMaxWidth
             val quality = pendingPhotoQuality
             pendingPhotoRequestId = null
             pendingPhotoFile = null
-            if (reqId == null) return@registerForActivityResult
+            if (reqId == null) {
+                file?.delete()
+                return@registerForActivityResult
+            }
+            if (reqGen != activeGeneration.get()) {
+                file?.delete()
+                return@registerForActivityResult
+            }
 
             if (!saved || file == null || !file.exists() || file.length() == 0L) {
                 file?.delete()
-                fail(reqId, "Camera capture cancelled")
+                fail(reqGen, reqId, "Camera capture cancelled")
                 return@registerForActivityResult
             }
-            submitIo(reqId, "Camera processing failed") {
+            submitIo(reqGen, reqId, "Camera processing failed") {
                 try {
                     val decoded = decodeSampledFile(file, maxW)
                     if (decoded == null) {
-                        fail(reqId, "Failed to decode captured photo")
+                        fail(reqGen, reqId, "Failed to decode captured photo")
                         return@submitIo
                     }
-                    encodeAndResolveBitmap(reqId, decoded, maxW, quality)
+                    encodeAndResolveBitmap(reqGen, reqId, decoded, maxW, quality)
                 } finally {
                     file.delete()
                 }
             }
         }
 
+    private var pendingPickPhotoGeneration: Long = 0L
     private var pendingPickPhotoRequestId: Long? = null
     private var pendingPickPhotoMaxWidth: Int = 960
     private var pendingPickPhotoQuality: Int = 85
 
     private val pickPhotoLauncher: ActivityResultLauncher<String> =
         activity.registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            val reqGen = pendingPickPhotoGeneration
             val reqId = pendingPickPhotoRequestId
             val maxW = pendingPickPhotoMaxWidth
             val quality = pendingPickPhotoQuality
             pendingPickPhotoRequestId = null
-            if (reqId == null) return@registerForActivityResult
+            if (reqId == null || reqGen != activeGeneration.get()) return@registerForActivityResult
             if (uri == null) {
-                fail(reqId, "Photo selection cancelled")
+                fail(reqGen, reqId, "Photo selection cancelled")
                 return@registerForActivityResult
             }
-            submitIo(reqId, "Photo pick failed") {
+            submitIo(reqGen, reqId, "Photo pick failed") {
                 val decoded = decodeSampledUri(uri, maxW)
                 if (decoded == null) {
-                    fail(reqId, "Failed to decode selected photo")
+                    fail(reqGen, reqId, "Failed to decode selected photo")
                     return@submitIo
                 }
-                encodeAndResolveBitmap(reqId, decoded, maxW, quality)
+                encodeAndResolveBitmap(reqGen, reqId, decoded, maxW, quality)
             }
         }
 
+    private var pendingFilePickGeneration: Long = 0L
     private var pendingFilePickRequestId: Long? = null
     private val openDocumentLauncher: ActivityResultLauncher<Array<String>> =
         activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+            val reqGen = pendingFilePickGeneration
             val reqId = pendingFilePickRequestId
             pendingFilePickRequestId = null
-            if (reqId == null) return@registerForActivityResult
+            if (reqId == null || reqGen != activeGeneration.get()) return@registerForActivityResult
             if (uri == null) {
-                fail(reqId, "File selection cancelled")
+                fail(reqGen, reqId, "File selection cancelled")
                 return@registerForActivityResult
             }
-            submitIo(reqId, "Failed to read file") {
+            submitIo(reqGen, reqId, "Failed to read file") {
                 val name = queryDisplayName(uri) ?: "file"
                 val mimeType = activity.contentResolver.getType(uri) ?: "application/octet-stream"
                 val maxBytes = 16 * 1024 * 1024
@@ -227,33 +252,36 @@ class DeviceBridge(
                 if (looksText && bytes.size <= 2 * 1024 * 1024) {
                     res.put("text", String(bytes, Charsets.UTF_8))
                 }
-                succeed(reqId, res)
+                succeed(reqGen, reqId, res)
             }
         }
 
+    private var pendingFileSaveGeneration: Long = 0L
     private var pendingFileSaveRequestId: Long? = null
     private var pendingFileSaveBytes: ByteArray? = null
     private val createDocumentLauncher: ActivityResultLauncher<String> =
         activity.registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri: Uri? ->
+            val reqGen = pendingFileSaveGeneration
             val reqId = pendingFileSaveRequestId
             val data = pendingFileSaveBytes
             pendingFileSaveRequestId = null
             pendingFileSaveBytes = null
-            if (reqId == null) return@registerForActivityResult
+            if (reqId == null || reqGen != activeGeneration.get()) return@registerForActivityResult
             if (uri == null || data == null) {
-                fail(reqId, "File save cancelled")
+                fail(reqGen, reqId, "File save cancelled")
                 return@registerForActivityResult
             }
-            submitIo(reqId, "Failed to save file") {
+            submitIo(reqGen, reqId, "Failed to save file") {
                 activity.contentResolver.openOutputStream(uri)?.use { out ->
                     out.write(data)
                     out.flush()
                 } ?: run {
-                    fail(reqId, "Unable to open output stream for destination file")
+                    fail(reqGen, reqId, "Unable to open output stream for destination file")
                     return@submitIo
                 }
                 val name = queryDisplayName(uri) ?: "saved-file"
                 succeed(
+                    reqGen,
                     reqId,
                     JSONObject()
                         .put("ok", true)
@@ -263,19 +291,19 @@ class DeviceBridge(
             }
         }
 
-    private fun submitIo(reqId: Long, errorPrefix: String, block: () -> Unit) {
-        if (closed.get()) return
+    private fun submitIo(gen: Long, reqId: Long, errorPrefix: String, block: () -> Unit) {
+        if (closed.get() || activeGeneration.get() != gen) return
         try {
             ioExecutor.execute {
-                if (closed.get()) return@execute
+                if (closed.get() || activeGeneration.get() != gen) return@execute
                 try {
                     block()
                 } catch (t: Throwable) {
-                    fail(reqId, "$errorPrefix: ${t.message}")
+                    fail(gen, reqId, "$errorPrefix: ${t.message}")
                 }
             }
         } catch (t: Throwable) {
-            fail(reqId, "$errorPrefix: ${t.message}")
+            fail(gen, reqId, "$errorPrefix: ${t.message}")
         }
     }
 
@@ -365,7 +393,7 @@ class DeviceBridge(
         return applyExifOrientation(decoded, orientation)
     }
 
-    private fun encodeAndResolveBitmap(reqId: Long, decoded: Bitmap, maxW: Int, quality: Int) {
+    private fun encodeAndResolveBitmap(gen: Long, reqId: Long, decoded: Bitmap, maxW: Int, quality: Int) {
         val scaled = if (decoded.width > maxW) {
             val ratio = maxW.toFloat() / decoded.width.toFloat()
             val targetH = (decoded.height * ratio).toInt().coerceAtLeast(1)
@@ -384,6 +412,7 @@ class DeviceBridge(
 
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         succeed(
+            gen,
             reqId,
             JSONObject()
                 .put("dataUrl", "data:image/jpeg;base64,$b64")
@@ -422,10 +451,17 @@ class DeviceBridge(
         }
     }
 
+    private data class GattPendingOp(
+        val gen: Long,
+        val reqId: Long,
+        val timeout: Runnable
+    )
+
     private val activeGatts = ConcurrentHashMap<String, BluetoothGatt>()
-    private val gattPendingReads = ConcurrentHashMap<String, Long>()
-    private val gattPendingWrites = ConcurrentHashMap<String, Long>()
-    private val gattPendingConnects = ConcurrentHashMap<String, Long>()
+    private val gattAllowedServices = ConcurrentHashMap<String, Set<UUID>>()
+    private val gattPendingReads = ConcurrentHashMap<String, GattPendingOp>()
+    private val gattPendingWrites = ConcurrentHashMap<String, GattPendingOp>()
+    private val gattPendingConnects = ConcurrentHashMap<String, GattPendingOp>()
 
     fun buildHostDeviceInfoJson(
         playerMode: Boolean = false,
@@ -482,37 +518,43 @@ class DeviceBridge(
             val params = obj.optJSONObject("params") ?: JSONObject()
             mainHandler.post {
                 if (!closed.get() && activeGeneration.get() == generation) {
-                    dispatch(id, ns, method, params)
+                    dispatch(generation, id, ns, method, params)
                 }
             }
         }
     }
 
-    private fun dispatch(id: Long, namespace: String, method: String, params: JSONObject) {
+    private fun dispatch(gen: Long, id: Long, namespace: String, method: String, params: JSONObject) {
         try {
             when (namespace) {
-                "device" -> handleDevice(id, method, params)
-                "haptics" -> handleHaptics(id, method, params)
-                "notifications" -> handleNotifications(id, method, params)
-                "camera" -> handleCamera(id, method, params)
-                "location" -> handleLocation(id, method, params)
-                "bluetooth" -> handleBluetooth(id, method, params)
-                "files" -> handleFiles(id, method, params)
-                "sensors" -> handleSensors(id, method, params)
-                "permissions" -> handlePermissions(id, method, params)
-                else -> fail(id, "Unsupported native bridge namespace: $namespace")
+                "device" -> handleDevice(gen, id, method, params)
+                "haptics" -> handleHaptics(gen, id, method, params)
+                "notifications" -> handleNotifications(gen, id, method, params)
+                "camera" -> handleCamera(gen, id, method, params)
+                "location" -> handleLocation(gen, id, method, params)
+                "bluetooth" -> handleBluetooth(gen, id, method, params)
+                "files" -> handleFiles(gen, id, method, params)
+                "sensors" -> handleSensors(gen, id, method, params)
+                "permissions" -> handlePermissions(gen, id, method, params)
+                else -> fail(gen, id, "Unsupported native bridge namespace: $namespace")
             }
         } catch (t: Throwable) {
             Log.e("SoftN", "DeviceBridge error in $namespace.$method", t)
-            fail(id, t.message ?: "Native bridge failure")
+            fail(gen, id, t.message ?: "Native bridge failure")
         }
     }
 
     // ── Device (Share, Clipboard) ───────────────────────────────────────────
 
-    private fun handleDevice(id: Long, method: String, params: JSONObject) {
+    private fun handleDevice(gen: Long, id: Long, method: String, params: JSONObject) {
         when (method) {
             "share" -> {
+                val now = System.currentTimeMillis()
+                if (now - lastShareAtMs < MIN_SHARE_INTERVAL_MS) {
+                    fail(gen, id, "Share rate limit exceeded")
+                    return
+                }
+                lastShareAtMs = now
                 val rawUrl = params.optString("url", "").trim()
                 val safeUrl = if (rawUrl.startsWith("https://", ignoreCase = true) ||
                     rawUrl.startsWith("http://", ignoreCase = true)
@@ -532,17 +574,17 @@ class DeviceBridge(
                     putExtra(Intent.EXTRA_TEXT, text)
                 }
                 activity.startActivity(Intent.createChooser(intent, "Share"))
-                succeed(id, JSONObject().put("shared", true))
+                succeed(gen, id, JSONObject().put("shared", true))
             }
             "clipboardWrite" -> {
                 val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                 val text = params.optString("text", "")
                 if (text.length > MAX_CLIPBOARD_CHARS) {
-                    fail(id, "Clipboard payload exceeds 256 KB limit")
+                    fail(gen, id, "Clipboard payload exceeds 256 KB limit")
                     return
                 }
                 cm?.setPrimaryClip(ClipData.newPlainText("SoftN", text))
-                succeed(id, JSONObject().put("ok", cm != null))
+                succeed(gen, id, JSONObject().put("ok", cm != null))
             }
             "clipboardRead" -> {
                 val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -558,9 +600,9 @@ class DeviceBridge(
                 } catch (_: Throwable) {
                     ""
                 }
-                succeed(id, JSONObject().put("text", text))
+                succeed(gen, id, JSONObject().put("text", text))
             }
-            else -> fail(id, "Unknown device method: $method")
+            else -> fail(gen, id, "Unknown device method: $method")
         }
     }
 
@@ -577,10 +619,10 @@ class DeviceBridge(
     }
 
     @SuppressLint("MissingPermission")
-    private fun handleHaptics(id: Long, method: String, params: JSONObject) {
+    private fun handleHaptics(gen: Long, id: Long, method: String, params: JSONObject) {
         val vib = getVibrator()
         if (vib == null || !vib.hasVibrator()) {
-            succeed(id, JSONObject().put("ok", false))
+            succeed(gen, id, JSONObject().put("ok", false))
             return
         }
         val durationMs = when (method) {
@@ -591,7 +633,7 @@ class DeviceBridge(
             }
             "vibrate" -> params.optLong("durationMs", 40L).coerceIn(5L, 2000L)
             else -> {
-                fail(id, "Unknown haptics method: $method")
+                fail(gen, id, "Unknown haptics method: $method")
                 return
             }
         }
@@ -602,17 +644,28 @@ class DeviceBridge(
         }
         try {
             vib.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
-            succeed(id, JSONObject().put("ok", true))
+            succeed(gen, id, JSONObject().put("ok", true))
         } catch (se: SecurityException) {
-            fail(id, "VIBRATE permission missing from APK manifest: ${se.message}")
+            fail(gen, id, "VIBRATE permission missing from APK manifest: ${se.message}")
         }
     }
 
     // ── Notifications ───────────────────────────────────────────────────────
 
-    private fun handleNotifications(id: Long, method: String, params: JSONObject) {
+    private fun handleNotifications(gen: Long, id: Long, method: String, params: JSONObject) {
         if (method != "notify") {
-            fail(id, "Unknown notifications method: $method")
+            fail(gen, id, "Unknown notifications method: $method")
+            return
+        }
+        val now = System.currentTimeMillis()
+        while (notificationTimestamps.isNotEmpty() && now - notificationTimestamps.first() > 60_000L) {
+            notificationTimestamps.removeFirst()
+        }
+        val lastNotif = notificationTimestamps.lastOrNull()
+        if (notificationTimestamps.size >= MAX_NOTIFICATIONS_PER_MINUTE ||
+            (lastNotif != null && now - lastNotif < MIN_NOTIFICATION_INTERVAL_MS)
+        ) {
+            fail(gen, id, "Notification rate limit exceeded")
             return
         }
         val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -620,11 +673,20 @@ class DeviceBridge(
         } else {
             emptyArray()
         }
-        ensurePermissions(perms) { granted ->
+        ensurePermissions(gen, perms) { granted ->
             if (!granted) {
-                fail(id, "Notification permission denied")
+                fail(gen, id, "Notification permission denied")
                 return@ensurePermissions
             }
+            val postNow = System.currentTimeMillis()
+            while (notificationTimestamps.isNotEmpty() && postNow - notificationTimestamps.first() > 60_000L) {
+                notificationTimestamps.removeFirst()
+            }
+            if (notificationTimestamps.size >= MAX_NOTIFICATIONS_PER_MINUTE) {
+                fail(gen, id, "Notification rate limit exceeded")
+                return@ensurePermissions
+            }
+            notificationTimestamps.addLast(postNow)
             val nm = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val channelId = "softn_app_notifications"
             if (!notificationChannelCreated) {
@@ -636,26 +698,34 @@ class DeviceBridge(
                 nm.createNotificationChannel(channel)
                 notificationChannelCreated = true
             }
+            val title = params.optString("title", "SoftN")
+                .replace(Regex("[\\x00-\\x1f\\x7f]"), " ")
+                .trim()
+                .take(MAX_NOTIFICATION_TITLE_CHARS)
+                .ifEmpty { "SoftN" }
+            val body = params.optString("body", "")
+                .replace(Regex("[\\x00-\\x09\\x0b-\\x1f\\x7f]"), " ")
+                .take(MAX_NOTIFICATION_BODY_CHARS)
             val noteId = if (params.has("id")) params.optInt("id") else nextNotificationId.getAndIncrement()
             val notification = NotificationCompat.Builder(activity, channelId)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(params.optString("title", "SoftN"))
-                .setContentText(params.optString("body", ""))
+                .setContentTitle(title)
+                .setContentText(body)
                 .setAutoCancel(true)
                 .build()
             nm.notify(noteId, notification)
-            succeed(id, JSONObject().put("ok", true).put("id", noteId))
+            succeed(gen, id, JSONObject().put("ok", true).put("id", noteId))
         }
     }
 
     // ── Camera ──────────────────────────────────────────────────────────────
 
-    private fun handleCamera(id: Long, method: String, params: JSONObject) {
+    private fun handleCamera(gen: Long, id: Long, method: String, params: JSONObject) {
         when (method) {
             "takePhoto" -> {
-                ensurePermissions(arrayOf(Manifest.permission.CAMERA)) { granted ->
+                ensurePermissions(gen, arrayOf(Manifest.permission.CAMERA)) { granted ->
                     if (!granted) {
-                        fail(id, "Android CAMERA permission denied")
+                        fail(gen, id, "Android CAMERA permission denied")
                         return@ensurePermissions
                     }
                     try {
@@ -663,8 +733,11 @@ class DeviceBridge(
                         val photoFile = File(cameraCacheDir, "softn_photo_${System.currentTimeMillis()}.jpg")
                         val authority = "${activity.packageName}.fileprovider"
                         val uri = FileProvider.getUriForFile(activity, authority, photoFile)
-                        pendingPhotoRequestId?.let { prev -> fail(prev, "Superseded by newer camera request") }
+                        pendingPhotoRequestId?.let { prev ->
+                            fail(pendingPhotoGeneration, prev, "Superseded by newer camera request")
+                        }
                         pendingPhotoFile?.delete()
+                        pendingPhotoGeneration = gen
                         pendingPhotoRequestId = id
                         pendingPhotoFile = photoFile
                         pendingPhotoMaxWidth = params.optInt("maxWidth", 960).coerceIn(160, 2048)
@@ -675,13 +748,16 @@ class DeviceBridge(
                         pendingPhotoRequestId = null
                         pendingPhotoFile?.delete()
                         pendingPhotoFile = null
-                        fail(id, "Failed to launch camera: ${t.message}")
+                        fail(gen, id, "Failed to launch camera: ${t.message}")
                     }
                 }
             }
             "pickPhoto" -> {
                 try {
-                    pendingPickPhotoRequestId?.let { prev -> fail(prev, "Superseded by newer photo pick request") }
+                    pendingPickPhotoRequestId?.let { prev ->
+                        fail(pendingPickPhotoGeneration, prev, "Superseded by newer photo pick request")
+                    }
+                    pendingPickPhotoGeneration = gen
                     pendingPickPhotoRequestId = id
                     pendingPickPhotoMaxWidth = params.optInt("maxWidth", 960).coerceIn(160, 2048)
                     val rawQ = params.optDouble("quality", 0.85)
@@ -689,16 +765,16 @@ class DeviceBridge(
                     pickPhotoLauncher.launch("image/*")
                 } catch (t: Throwable) {
                     pendingPickPhotoRequestId = null
-                    fail(id, "Failed to launch photo picker: ${t.message}")
+                    fail(gen, id, "Failed to launch photo picker: ${t.message}")
                 }
             }
-            else -> fail(id, "Unknown camera method: $method")
+            else -> fail(gen, id, "Unknown camera method: $method")
         }
     }
 
     // ── Files (Storage Access Framework — zero broad storage permission) ───
 
-    private fun handleFiles(id: Long, method: String, params: JSONObject) {
+    private fun handleFiles(gen: Long, id: Long, method: String, params: JSONObject) {
         when (method) {
             "pick" -> {
                 val mimes = mutableListOf<String>()
@@ -711,12 +787,15 @@ class DeviceBridge(
                 }
                 if (mimes.isEmpty()) mimes.add("*/*")
                 try {
-                    pendingFilePickRequestId?.let { prev -> fail(prev, "Superseded by newer file pick request") }
+                    pendingFilePickRequestId?.let { prev ->
+                        fail(pendingFilePickGeneration, prev, "Superseded by newer file pick request")
+                    }
+                    pendingFilePickGeneration = gen
                     pendingFilePickRequestId = id
                     openDocumentLauncher.launch(mimes.toTypedArray())
                 } catch (t: Throwable) {
                     pendingFilePickRequestId = null
-                    fail(id, "Failed to open file picker: ${t.message}")
+                    fail(gen, id, "Failed to open file picker: ${t.message}")
                 }
             }
             "save" -> {
@@ -731,51 +810,53 @@ class DeviceBridge(
                 val hasText = params.has("text")
                 val txt = if (hasText) params.optString("text", "") else params.optString("content", "")
                 if (b64.length > MAX_SAVE_BASE64_CHARS || txt.length > MAX_SAVE_FILE_BYTES) {
-                    fail(id, "File save payload exceeds 16 MB limit")
+                    fail(gen, id, "File save payload exceeds 16 MB limit")
                     return
                 }
-                val gen = activeGeneration.get()
-                submitIo(id, "Invalid file save payload") {
+                submitIo(gen, id, "Invalid file save payload") {
                     val data = if (b64.isNotEmpty()) {
                         Base64.decode(b64, Base64.DEFAULT)
                     } else {
                         txt.toByteArray(Charsets.UTF_8)
                     }
                     if (data.size > MAX_SAVE_FILE_BYTES) {
-                        fail(id, "File save payload exceeds 16 MB limit")
+                        fail(gen, id, "File save payload exceeds 16 MB limit")
                         return@submitIo
                     }
                     mainHandler.post {
                         if (closed.get() || activeGeneration.get() != gen) return@post
                         try {
-                            pendingFileSaveRequestId?.let { prev -> fail(prev, "Superseded by newer file save request") }
+                            pendingFileSaveRequestId?.let { prev ->
+                                fail(pendingFileSaveGeneration, prev, "Superseded by newer file save request")
+                            }
+                            pendingFileSaveGeneration = gen
                             pendingFileSaveRequestId = id
                             pendingFileSaveBytes = data
                             createDocumentLauncher.launch(filename)
                         } catch (t: Throwable) {
                             pendingFileSaveRequestId = null
                             pendingFileSaveBytes = null
-                            fail(id, "Failed to launch save dialog: ${t.message}")
+                            fail(gen, id, "Failed to launch save dialog: ${t.message}")
                         }
                     }
                 }
             }
-            else -> fail(id, "Unknown files method: $method")
+            else -> fail(gen, id, "Unknown files method: $method")
         }
     }
 
     // ── Motion Sensors (Accelerometer / Gyroscope) ──────────────────────────
 
-    private fun handleSensors(id: Long, method: String, params: JSONObject) {
+    private fun handleSensors(gen: Long, id: Long, method: String, params: JSONObject) {
         if (method != "getMotion") {
-            fail(id, "Unknown sensors method: $method")
+            fail(gen, id, "Unknown sensors method: $method")
             return
         }
         val sm = activity.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val gyro = sm?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         if (sm == null || (accel == null && gyro == null)) {
-            fail(id, "Motion sensors are unavailable on this device")
+            fail(gen, id, "Motion sensors are unavailable on this device")
             return
         }
         val done = AtomicBoolean(false)
@@ -791,6 +872,7 @@ class DeviceBridge(
             activeCleanups.remove(cleanup)
             try { sm.unregisterListener(listener) } catch (_: Throwable) {}
             succeed(
+                gen,
                 id,
                 JSONObject()
                     .put("acceleration", JSONObject().put("x", ax).put("y", ay).put("z", az))
@@ -870,21 +952,21 @@ class DeviceBridge(
         }
     }
 
-    private fun handlePermissions(id: Long, method: String, params: JSONObject) {
+    private fun handlePermissions(gen: Long, id: Long, method: String, params: JSONObject) {
         if (method != "query") {
-            fail(id, "Unknown permissions method: $method")
+            fail(gen, id, "Unknown permissions method: $method")
             return
         }
         val state = describePermissionState(params.optString("name", ""))
-        succeed(id, JSONObject().put("state", state))
+        succeed(gen, id, JSONObject().put("state", state))
     }
 
     // ── Location ────────────────────────────────────────────────────────────
 
     @SuppressLint("MissingPermission")
-    private fun handleLocation(id: Long, method: String, params: JSONObject) {
+    private fun handleLocation(gen: Long, id: Long, method: String, params: JSONObject) {
         if (method != "getCurrentPosition") {
-            fail(id, "Unknown location method: $method")
+            fail(gen, id, "Unknown location method: $method")
             return
         }
         val highAccuracy = params.optBoolean("highAccuracy", false)
@@ -895,14 +977,14 @@ class DeviceBridge(
         } else {
             arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
         }
-        ensurePermissions(needed, requireAny = true) { granted ->
+        ensurePermissions(gen, needed, requireAny = true) { granted ->
             if (!granted) {
-                fail(id, "Android location permission denied")
+                fail(gen, id, "Android location permission denied")
                 return@ensurePermissions
             }
             val lm = activity.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             if (lm == null) {
-                fail(id, "LocationManager unavailable")
+                fail(gen, id, "LocationManager unavailable")
                 return@ensurePermissions
             }
             val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
@@ -921,7 +1003,7 @@ class DeviceBridge(
                 (maximumAgeMs > 0L && (now - cached.time) <= maximumAgeMs) ||
                 (!highAccuracy && (now - cached.time) <= 30_000L)
             )) {
-                succeed(id, locationToJson(cached))
+                succeed(gen, id, locationToJson(cached))
                 return@ensurePermissions
             }
             val preferredProvider = when {
@@ -931,8 +1013,8 @@ class DeviceBridge(
                 else -> null
             }
             if (preferredProvider == null) {
-                if (best != null) succeed(id, locationToJson(best))
-                else fail(id, "Location services are turned off on this device")
+                if (best != null) succeed(gen, id, locationToJson(best))
+                else fail(gen, id, "Location services are turned off on this device")
                 return@ensurePermissions
             }
 
@@ -949,8 +1031,8 @@ class DeviceBridge(
                     if (settled.compareAndSet(false, true)) {
                         activeCleanups.remove(locCleanup)
                         try { cancelSignal.cancel() } catch (_: Throwable) {}
-                        if (best != null) succeed(id, locationToJson(best))
-                        else fail(id, "Location request timed out")
+                        if (best != null) succeed(gen, id, locationToJson(best))
+                        else fail(gen, id, "Location request timed out")
                     }
                 }
                 mainHandler.postDelayed(timeoutRunnable, timeoutMs)
@@ -960,16 +1042,16 @@ class DeviceBridge(
                             activeCleanups.remove(locCleanup)
                             mainHandler.removeCallbacks(timeoutRunnable)
                             val resolved = loc ?: best
-                            if (resolved != null) succeed(id, locationToJson(resolved))
-                            else fail(id, "Unable to obtain GPS/network location fix")
+                            if (resolved != null) succeed(gen, id, locationToJson(resolved))
+                            else fail(gen, id, "Unable to obtain GPS/network location fix")
                         }
                     }
                 } catch (t: Throwable) {
                     if (settled.compareAndSet(false, true)) {
                         activeCleanups.remove(locCleanup)
                         mainHandler.removeCallbacks(timeoutRunnable)
-                        if (best != null) succeed(id, locationToJson(best))
-                        else fail(id, "Location query failed: ${t.message}")
+                        if (best != null) succeed(gen, id, locationToJson(best))
+                        else fail(gen, id, "Location query failed: ${t.message}")
                     }
                 }
             } else {
@@ -979,8 +1061,8 @@ class DeviceBridge(
                     if (settled.compareAndSet(false, true)) {
                         activeCleanups.remove(locCleanup)
                         try { lm.removeUpdates(listener) } catch (_: Throwable) {}
-                        if (best != null) succeed(id, locationToJson(best))
-                        else fail(id, "Location request timed out")
+                        if (best != null) succeed(gen, id, locationToJson(best))
+                        else fail(gen, id, "Location request timed out")
                     }
                 }
                 listener = object : LocationListener {
@@ -989,7 +1071,7 @@ class DeviceBridge(
                             activeCleanups.remove(locCleanup)
                             mainHandler.removeCallbacks(timeoutRunnable)
                             try { lm.removeUpdates(this) } catch (_: Throwable) {}
-                            succeed(id, locationToJson(loc))
+                            succeed(gen, id, locationToJson(loc))
                         }
                     }
                     @Deprecated("Deprecated in Java")
@@ -1011,8 +1093,8 @@ class DeviceBridge(
                     if (settled.compareAndSet(false, true)) {
                         activeCleanups.remove(locCleanup)
                         mainHandler.removeCallbacks(timeoutRunnable)
-                        if (best != null) succeed(id, locationToJson(best))
-                        else fail(id, "Location query failed: ${t.message}")
+                        if (best != null) succeed(gen, id, locationToJson(best))
+                        else fail(gen, id, "Location query failed: ${t.message}")
                     }
                 }
             }
@@ -1039,41 +1121,63 @@ class DeviceBridge(
         }
 
     @SuppressLint("MissingPermission")
-    private fun handleBluetooth(id: Long, method: String, params: JSONObject) {
+    private fun handleBluetooth(gen: Long, id: Long, method: String, params: JSONObject) {
         val bm = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter: BluetoothAdapter? = bm?.adapter
         if (adapter == null) {
-            fail(id, "Bluetooth hardware adapter is not available on this device")
+            fail(gen, id, "Bluetooth hardware adapter is not available on this device")
             return
         }
         if (!adapter.isEnabled) {
-            fail(id, "Bluetooth is currently turned off")
+            fail(gen, id, "Bluetooth is currently turned off")
             return
         }
 
-        ensurePermissions(blePermissions()) { granted ->
+        ensurePermissions(gen, blePermissions()) { granted ->
             if (!granted) {
-                fail(id, "Android Bluetooth permission denied")
+                fail(gen, id, "Android Bluetooth permission denied")
                 return@ensurePermissions
             }
             when (method) {
-                "scan" -> scanBle(id, adapter, params)
-                "connect" -> connectBle(id, adapter, params.optString("deviceId"))
+                "scan" -> scanBle(gen, id, adapter, params)
+                "connect" -> {
+                    val allowedArr = params.optJSONArray("allowedServices")
+                    val allowedSet = if (allowedArr != null && allowedArr.length() > 0) {
+                        val s = mutableSetOf<UUID>()
+                        for (i in 0 until allowedArr.length()) {
+                            parseBleUuid(allowedArr.optString(i))?.let { s.add(it) }
+                        }
+                        s
+                    } else {
+                        null
+                    }
+                    connectBle(gen, id, adapter, params.optString("deviceId"), allowedSet)
+                }
                 "disconnect" -> {
                     val devId = params.optString("deviceId")
-                    activeGatts.remove(devId)?.let {
-                        it.disconnect()
-                        it.close()
+                    gattAllowedServices.remove(devId)
+                    gattPendingConnects.remove(devId)?.let { op ->
+                        mainHandler.removeCallbacks(op.timeout)
+                        fail(op.gen, op.reqId, "Bluetooth device disconnected")
                     }
-                    succeed(id, JSONObject().put("disconnected", true).put("deviceId", devId))
+                    failPendingGattOpsForDevice(devId, "Bluetooth device disconnected")
+                    activeGatts.remove(devId)?.let {
+                        try {
+                            it.disconnect()
+                            it.close()
+                        } catch (_: Throwable) {}
+                    }
+                    succeed(gen, id, JSONObject().put("disconnected", true).put("deviceId", devId))
                 }
                 "read" -> readBleCharacteristic(
+                    gen,
                     id,
                     params.optString("deviceId"),
                     params.optString("serviceUuid"),
                     params.optString("characteristicUuid")
                 )
                 "write" -> writeBleCharacteristic(
+                    gen,
                     id,
                     params.optString("deviceId"),
                     params.optString("serviceUuid"),
@@ -1081,16 +1185,16 @@ class DeviceBridge(
                     params.optString("base64"),
                     params.optBoolean("withoutResponse", false)
                 )
-                else -> fail(id, "Unknown bluetooth method: $method")
+                else -> fail(gen, id, "Unknown bluetooth method: $method")
             }
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun scanBle(id: Long, adapter: BluetoothAdapter, params: JSONObject) {
+    private fun scanBle(gen: Long, id: Long, adapter: BluetoothAdapter, params: JSONObject) {
         val scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
-            fail(id, "BLE scanner unavailable on this device")
+            fail(gen, id, "BLE scanner unavailable on this device")
             return
         }
         val durationMs = params.optLong("durationMs", 2500L).coerceIn(500L, 10000L)
@@ -1129,7 +1233,7 @@ class DeviceBridge(
             override fun onScanFailed(errorCode: Int) {
                 if (scanSettled.compareAndSet(false, true)) {
                     activeCleanups.remove(stopCleanup)
-                    fail(id, "BLE scan failed (code $errorCode)")
+                    fail(gen, id, "BLE scan failed (code $errorCode)")
                 }
             }
         }
@@ -1154,21 +1258,27 @@ class DeviceBridge(
                 } catch (_: Throwable) {}
                 val arr = JSONArray()
                 found.values.forEach { arr.put(it) }
-                succeed(id, JSONObject().put("devices", arr))
+                succeed(gen, id, JSONObject().put("devices", arr))
             }
         }, durationMs)
     }
 
     @SuppressLint("MissingPermission")
-    private fun connectBle(id: Long, adapter: BluetoothAdapter, deviceId: String) {
+    private fun connectBle(
+        gen: Long,
+        id: Long,
+        adapter: BluetoothAdapter,
+        deviceId: String,
+        allowedServices: Set<UUID>?
+    ) {
         if (deviceId.isBlank()) {
-            fail(id, "Missing Bluetooth deviceId")
+            fail(gen, id, "Missing Bluetooth deviceId")
             return
         }
         val device = try {
             adapter.getRemoteDevice(deviceId)
         } catch (t: Throwable) {
-            fail(id, "Invalid Bluetooth address '$deviceId': ${t.message}")
+            fail(gen, id, "Invalid Bluetooth address '$deviceId': ${t.message}")
             return
         }
         // Close any existing GATT for this device before reconnecting to avoid leaking BluetoothGatt slots.
@@ -1178,19 +1288,49 @@ class DeviceBridge(
                 prevGatt.close()
             } catch (_: Throwable) {}
         }
-        gattPendingConnects.put(deviceId, id)?.let { prevReq ->
-            fail(prevReq, "Superseded by newer Bluetooth connect request")
+        if (allowedServices != null) {
+            gattAllowedServices[deviceId] = allowedServices
+        } else {
+            gattAllowedServices.remove(deviceId)
+        }
+        lateinit var connectOp: GattPendingOp
+        var gattRef: BluetoothGatt? = null
+        val connectTimeout = Runnable {
+            if (gattPendingConnects.remove(deviceId, connectOp)) {
+                activeGatts.remove(deviceId, gattRef)
+                try {
+                    gattRef?.disconnect()
+                    gattRef?.close()
+                } catch (_: Throwable) {}
+                fail(gen, id, "Bluetooth connect timed out")
+            }
+        }
+        connectOp = GattPendingOp(gen, id, connectTimeout)
+        gattPendingConnects.put(deviceId, connectOp)?.let { prevOp ->
+            mainHandler.removeCallbacks(prevOp.timeout)
+            fail(prevOp.gen, prevOp.reqId, "Superseded by newer Bluetooth connect request")
         }
         failPendingGattOpsForDevice(deviceId, "Bluetooth reconnecting")
+        mainHandler.postDelayed(connectTimeout, BLE_OP_TIMEOUT_MS)
+
         val gatt = device.connectGatt(activity, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+                if (closed.get() || activeGeneration.get() != gen) {
+                    try {
+                        g.disconnect()
+                        g.close()
+                    } catch (_: Throwable) {}
+                    return
+                }
                 if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                     activeGatts[deviceId] = g
                     g.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
                     activeGatts.remove(deviceId, g)
-                    gattPendingConnects.remove(deviceId)?.let { reqId ->
-                        fail(reqId, "Bluetooth device disconnected (status $status)")
+                    gattAllowedServices.remove(deviceId)
+                    gattPendingConnects.remove(deviceId)?.let { op ->
+                        mainHandler.removeCallbacks(op.timeout)
+                        fail(op.gen, op.reqId, "Bluetooth device disconnected (status $status)")
                     }
                     failPendingGattOpsForDevice(deviceId, "Bluetooth device disconnected (status $status)")
                     g.close()
@@ -1198,15 +1338,22 @@ class DeviceBridge(
             }
 
             override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-                val reqId = gattPendingConnects.remove(deviceId) ?: return
+                val op = gattPendingConnects.remove(deviceId) ?: return
+                mainHandler.removeCallbacks(op.timeout)
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    fail(reqId, "GATT service discovery failed (status $status)")
+                    fail(op.gen, op.reqId, "GATT service discovery failed (status $status)")
                     return
                 }
+                val allowed = gattAllowedServices[deviceId]
                 val svcs = JSONArray()
-                g.services.forEach { svcs.put(it.uuid.toString()) }
+                g.services.forEach { svc ->
+                    if (allowed == null || allowed.contains(svc.uuid)) {
+                        svcs.put(svc.uuid.toString())
+                    }
+                }
                 succeed(
-                    reqId,
+                    op.gen,
+                    op.reqId,
                     JSONObject()
                         .put("connected", true)
                         .put("deviceId", deviceId)
@@ -1241,13 +1388,15 @@ class DeviceBridge(
                 status: Int
             ) {
                 val key = gattCharKey(devId, characteristic.service?.uuid, characteristic.uuid)
-                val reqId = gattPendingReads.remove(key) ?: return
+                val op = gattPendingReads.remove(key) ?: return
+                mainHandler.removeCallbacks(op.timeout)
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    fail(reqId, "GATT read failed (status $status)")
+                    fail(op.gen, op.reqId, "GATT read failed (status $status)")
                     return
                 }
                 succeed(
-                    reqId,
+                    op.gen,
+                    op.reqId,
                     JSONObject()
                         .put("base64", Base64.encodeToString(value, Base64.NO_WRAP))
                         .put("utf8", String(value, Charsets.UTF_8))
@@ -1260,17 +1409,21 @@ class DeviceBridge(
                 status: Int
             ) {
                 val key = gattCharKey(deviceId, characteristic.service?.uuid, characteristic.uuid)
-                val reqId = gattPendingWrites.remove(key) ?: return
+                val op = gattPendingWrites.remove(key) ?: return
+                mainHandler.removeCallbacks(op.timeout)
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    succeed(reqId, JSONObject().put("ok", true))
+                    succeed(op.gen, op.reqId, JSONObject().put("ok", true))
                 } else {
-                    fail(reqId, "GATT write failed (status $status)")
+                    fail(op.gen, op.reqId, "GATT write failed (status $status)")
                 }
             }
         })
+        gattRef = gatt
         if (gatt == null) {
-            gattPendingConnects.remove(deviceId, id)
-            fail(id, "Failed to initiate GATT connection")
+            if (gattPendingConnects.remove(deviceId, connectOp)) {
+                mainHandler.removeCallbacks(connectTimeout)
+            }
+            fail(gen, id, "Failed to initiate GATT connection")
         }
     }
 
@@ -1281,47 +1434,75 @@ class DeviceBridge(
         val prefix = "$deviceId:"
         for (k in gattPendingReads.keys().toList()) {
             if (k.startsWith(prefix)) {
-                gattPendingReads.remove(k)?.let { fail(it, reason) }
+                gattPendingReads.remove(k)?.let { op ->
+                    mainHandler.removeCallbacks(op.timeout)
+                    fail(op.gen, op.reqId, reason)
+                }
             }
         }
         for (k in gattPendingWrites.keys().toList()) {
             if (k.startsWith(prefix)) {
-                gattPendingWrites.remove(k)?.let { fail(it, reason) }
+                gattPendingWrites.remove(k)?.let { op ->
+                    mainHandler.removeCallbacks(op.timeout)
+                    fail(op.gen, op.reqId, reason)
+                }
             }
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun readBleCharacteristic(
+        gen: Long,
         id: Long,
         deviceId: String,
         serviceUuid: String,
         charUuid: String
     ) {
         val gatt = activeGatts[deviceId] ?: run {
-            fail(id, "Device not connected: $deviceId")
+            fail(gen, id, "Device not connected: $deviceId")
             return
         }
-        val svc = parseBleUuid(serviceUuid)?.let { gatt.getService(it) } ?: run {
-            fail(id, "GATT service not found: $serviceUuid")
+        val parsedSvc = parseBleUuid(serviceUuid) ?: run {
+            fail(gen, id, "GATT service not found: $serviceUuid")
+            return
+        }
+        val allowed = gattAllowedServices[deviceId]
+        if (allowed != null && !allowed.contains(parsedSvc)) {
+            fail(gen, id, "GATT service $serviceUuid is not in allowedServices")
+            return
+        }
+        val svc = gatt.getService(parsedSvc) ?: run {
+            fail(gen, id, "GATT service not found: $serviceUuid")
             return
         }
         val ch = parseBleUuid(charUuid)?.let { svc.getCharacteristic(it) } ?: run {
-            fail(id, "GATT characteristic not found: $charUuid")
+            fail(gen, id, "GATT characteristic not found: $charUuid")
             return
         }
         val key = gattCharKey(deviceId, svc.uuid, ch.uuid)
-        gattPendingReads.put(key, id)?.let { prev ->
-            fail(prev, "Superseded by newer GATT read on same characteristic")
+        lateinit var readOp: GattPendingOp
+        val timeout = Runnable {
+            if (gattPendingReads.remove(key, readOp)) {
+                fail(gen, id, "GATT read timed out")
+            }
         }
+        readOp = GattPendingOp(gen, id, timeout)
+        gattPendingReads.put(key, readOp)?.let { prev ->
+            mainHandler.removeCallbacks(prev.timeout)
+            fail(prev.gen, prev.reqId, "Superseded by newer GATT read on same characteristic")
+        }
+        mainHandler.postDelayed(timeout, BLE_OP_TIMEOUT_MS)
         if (!gatt.readCharacteristic(ch)) {
-            gattPendingReads.remove(key, id)
-            fail(id, "GATT readCharacteristic rejected")
+            if (gattPendingReads.remove(key, readOp)) {
+                mainHandler.removeCallbacks(timeout)
+            }
+            fail(gen, id, "GATT readCharacteristic rejected")
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun writeBleCharacteristic(
+        gen: Long,
         id: Long,
         deviceId: String,
         serviceUuid: String,
@@ -1329,22 +1510,39 @@ class DeviceBridge(
         base64: String,
         withoutResponse: Boolean
     ) {
-        val gatt = activeGatts[deviceId] ?: run {
-            fail(id, "Device not connected: $deviceId")
+        if (base64.length > MAX_BLE_WRITE_BASE64_CHARS) {
+            fail(gen, id, "BLE write payload exceeds maximum size ($MAX_BLE_WRITE_BYTES bytes)")
             return
         }
-        val svc = parseBleUuid(serviceUuid)?.let { gatt.getService(it) } ?: run {
-            fail(id, "GATT service not found: $serviceUuid")
+        val gatt = activeGatts[deviceId] ?: run {
+            fail(gen, id, "Device not connected: $deviceId")
+            return
+        }
+        val parsedSvc = parseBleUuid(serviceUuid) ?: run {
+            fail(gen, id, "GATT service not found: $serviceUuid")
+            return
+        }
+        val allowed = gattAllowedServices[deviceId]
+        if (allowed != null && !allowed.contains(parsedSvc)) {
+            fail(gen, id, "GATT service $serviceUuid is not in allowedServices")
+            return
+        }
+        val svc = gatt.getService(parsedSvc) ?: run {
+            fail(gen, id, "GATT service not found: $serviceUuid")
             return
         }
         val ch = parseBleUuid(charUuid)?.let { svc.getCharacteristic(it) } ?: run {
-            fail(id, "GATT characteristic not found: $charUuid")
+            fail(gen, id, "GATT characteristic not found: $charUuid")
             return
         }
         val data = try {
             Base64.decode(base64, Base64.DEFAULT)
         } catch (t: Throwable) {
-            fail(id, "Invalid Base64 BLE payload: ${t.message}")
+            fail(gen, id, "Invalid Base64 BLE payload: ${t.message}")
+            return
+        }
+        if (data.size > MAX_BLE_WRITE_BYTES) {
+            fail(gen, id, "BLE write payload exceeds maximum size ($MAX_BLE_WRITE_BYTES bytes)")
             return
         }
         val writeType = if (withoutResponse) {
@@ -1353,9 +1551,18 @@ class DeviceBridge(
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
         val key = gattCharKey(deviceId, svc.uuid, ch.uuid)
-        gattPendingWrites.put(key, id)?.let { prev ->
-            fail(prev, "Superseded by newer GATT write on same characteristic")
+        lateinit var writeOp: GattPendingOp
+        val timeout = Runnable {
+            if (gattPendingWrites.remove(key, writeOp)) {
+                fail(gen, id, "GATT write timed out")
+            }
         }
+        writeOp = GattPendingOp(gen, id, timeout)
+        gattPendingWrites.put(key, writeOp)?.let { prev ->
+            mainHandler.removeCallbacks(prev.timeout)
+            fail(prev.gen, prev.reqId, "Superseded by newer GATT write on same characteristic")
+        }
+        mainHandler.postDelayed(timeout, BLE_OP_TIMEOUT_MS)
         val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             gatt.writeCharacteristic(ch, data, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
         } else {
@@ -1367,8 +1574,10 @@ class DeviceBridge(
             gatt.writeCharacteristic(ch)
         }
         if (!ok) {
-            gattPendingWrites.remove(key, id)
-            fail(id, "GATT writeCharacteristic rejected")
+            if (gattPendingWrites.remove(key, writeOp)) {
+                mainHandler.removeCallbacks(timeout)
+            }
+            fail(gen, id, "GATT writeCharacteristic rejected")
         }
     }
 
@@ -1388,10 +1597,12 @@ class DeviceBridge(
     // ── Permission & Completion Helpers ─────────────────────────────────────
 
     private fun ensurePermissions(
+        gen: Long,
         permissions: Array<String>,
         requireAny: Boolean = false,
         onResult: (Boolean) -> Unit
     ) {
+        if (closed.get() || activeGeneration.get() != gen) return
         if (permissions.isEmpty()) {
             onResult(true)
             return
@@ -1405,6 +1616,7 @@ class DeviceBridge(
         }
         permissionQueue.addLast(
             QueuedPermRequest(
+                generation = gen,
                 permissions = permissions,
                 missing = missing.toTypedArray(),
                 requireAny = requireAny,
@@ -1415,9 +1627,11 @@ class DeviceBridge(
     }
 
     private fun pumpNextPermissionRequest() {
-        if (activePermRequest != null) return
+        if (activePermRequest != null || closed.get()) return
+        val curGen = activeGeneration.get()
         while (permissionQueue.isNotEmpty()) {
             val next = permissionQueue.removeFirst()
+            if (next.generation != curGen) continue
             val stillMissing = next.permissions.filter {
                 ContextCompat.checkSelfPermission(activity, it) != PackageManager.PERMISSION_GRANTED
             }
@@ -1431,14 +1645,14 @@ class DeviceBridge(
         }
     }
 
-    private fun succeed(requestId: Long, result: JSONObject) {
-        if (closed.get()) return
-        onResolve(activeGeneration.get(), requestId, true, result.toString())
+    private fun succeed(gen: Long, requestId: Long, result: JSONObject) {
+        if (closed.get() || activeGeneration.get() != gen) return
+        onResolve(gen, requestId, true, result.toString())
     }
 
-    private fun fail(requestId: Long, message: String) {
-        if (closed.get()) return
-        onResolve(activeGeneration.get(), requestId, false, JSONObject().put("error", message).toString())
+    private fun fail(gen: Long, requestId: Long, message: String) {
+        if (closed.get() || activeGeneration.get() != gen) return
+        onResolve(gen, requestId, false, JSONObject().put("error", message).toString())
     }
 
     /**
@@ -1461,17 +1675,46 @@ class DeviceBridge(
             } catch (_: Throwable) {}
         }
         activeGatts.clear()
+        gattAllowedServices.clear()
         gattPendingReads.clear()
         gattPendingWrites.clear()
         gattPendingConnects.clear()
-        pendingPhotoRequestId = null
-        pendingPhotoFile?.delete()
-        pendingPhotoFile = null
-        pendingPickPhotoRequestId = null
-        pendingFilePickRequestId = null
-        pendingFileSaveRequestId = null
-        pendingFileSaveBytes = null
-        permissionQueue.clear()
+        val clearUiState = {
+            val curGen = activeGeneration.get()
+            val forceAll = closed.get()
+            if (forceAll || pendingPhotoGeneration < curGen) {
+                pendingPhotoRequestId = null
+                pendingPhotoFile?.delete()
+                pendingPhotoFile = null
+            }
+            if (forceAll || pendingPickPhotoGeneration < curGen) {
+                pendingPickPhotoRequestId = null
+            }
+            if (forceAll || pendingFilePickGeneration < curGen) {
+                pendingFilePickRequestId = null
+            }
+            if (forceAll || pendingFileSaveGeneration < curGen) {
+                pendingFileSaveRequestId = null
+                pendingFileSaveBytes = null
+            }
+            if (forceAll || (activePermRequest != null && activePermRequest!!.generation < curGen)) {
+                activePermRequest = null
+            }
+            val iter = permissionQueue.iterator()
+            while (iter.hasNext()) {
+                val item = iter.next()
+                if (forceAll || item.generation < curGen) {
+                    iter.remove()
+                }
+            }
+            notificationTimestamps.clear()
+            lastShareAtMs = 0L
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            clearUiState()
+        } else {
+            mainHandler.post(clearUiState)
+        }
     }
 
     @SuppressLint("MissingPermission")

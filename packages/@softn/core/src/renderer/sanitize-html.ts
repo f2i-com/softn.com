@@ -22,6 +22,7 @@
  */
 const SAFE_URL_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:', 'sms:', 'blob:']);
 const SAFE_DATA_URL = /^data:(?:image|audio|video|font)\//i;
+const SVG_DATA_URL = /^data:image\/svg(?:\+xml)?[;,]/i;
 
 /**
  * Characters a browser strips before resolving a scheme. Leaving them in means
@@ -42,13 +43,20 @@ const URL_IGNORED = /[\u0000-\u0020\u00a0\u1680\u2000-\u200f\u2028\u2029\u202f\u
  * `typeof value === 'string'` let it through unasked, which is worse. React
  * writes a list into an attribute as its entries joined, so a list holding
  * one `javascript:` URL is that URL once it is on the page.
+ *
+ * `data:image/svg+xml` is rejected by default because `<use href>` and `<a href>`
+ * execute/render unsanitized SVG in the host origin; pass `allowSvgData = true`
+ * only for scriptless image sinks such as `<img src>`.
  */
-export function isSafeUrl(value: string): boolean {
+export function isSafeUrl(value: string, allowSvgData = false): boolean {
   if (typeof value !== 'string') return false;
   const probe = value.replace(URL_IGNORED, '');
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(probe);
   if (!scheme) return true; // relative, fragment, or query — same origin
-  if (SAFE_DATA_URL.test(probe)) return true;
+  if (SAFE_DATA_URL.test(probe)) {
+    if (!allowSvgData && SVG_DATA_URL.test(probe)) return false;
+    return true;
+  }
   return SAFE_URL_SCHEMES.has(scheme[1].toLowerCase() + ':');
 }
 
@@ -442,7 +450,17 @@ export const URL_ATTRIBUTES = new Set([
  */
 export function dropsFromMarkup(name: string, value: unknown): boolean {
   if (name === 'is' || name === 'ping' || name === 'attributionsrc' || name === 'xml:base' || name === 'xmlbase') return true;
-  return (name === 'id' || name === 'name') && typeof value === 'string' && value.startsWith('__');
+  if (name === 'id' || name === 'name') {
+    if (value === undefined || value === null) return false;
+    const str =
+      typeof value === 'string'
+        ? value
+        : typeof value === 'number' && Number.isFinite(value)
+          ? String(value)
+          : null;
+    return str === null || str.trimStart().startsWith('__');
+  }
+  return false;
 }
 
 /** Elements that open what they link to in a window their `target` names. */
@@ -692,7 +710,16 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       // renderer asks of a `src` prop: an XSS filter and an egress policy
       // solve different problems, and this used to apply only the first.
       if (URL_ATTRIBUTES.has(name)) {
-        if (!isSafeUrl(attr.value)) {
+        // `<use href>` clones an arbitrary SVG subtree into the host DOM: allow strictly
+        // in-document `#id` fragment references (never `data:image/svg+xml` or external URLs).
+        if (tag === 'use' && (name === 'href' || name === 'xlink:href')) {
+          if (!attr.value.trim().startsWith('#')) {
+            node.removeAttribute(attr.name);
+          }
+          continue;
+        }
+        const allowSvgData = (tag === 'img' && name === 'src') || (tag === 'image' && (name === 'href' || name === 'xlink:href'));
+        if (!isSafeUrl(attr.value, allowSvgData)) {
           node.removeAttribute(attr.name);
           continue;
         }
@@ -717,7 +744,7 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
         continue;
       }
       // SVG presentation attributes (`filter`, `fill`, `stroke`, `mask`,
-      // `clip-path`, `marker-*`, `cursor`) accept `url(...)` references; allow
+      // `clip-path`, `marker`, `marker-*`, `cursor`) accept `url(...)` references; allow
       // only in-document `#id` references and strip external loads.
       if (
         (name === 'filter' ||
@@ -725,6 +752,7 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
           name === 'stroke' ||
           name === 'mask' ||
           name === 'clip-path' ||
+          name === 'marker' ||
           name === 'marker-start' ||
           name === 'marker-mid' ||
           name === 'marker-end' ||

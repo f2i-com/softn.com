@@ -11,12 +11,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
+use rusqlite::config::DbConfig;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::limits::Limit;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params, params_from_iter, Connection};
 use serde_json::{json, Value};
 
+use crate::backend::WallDeadlineGuard;
 use crate::bundle::{normalize_vfs_path, DatabaseConfig};
 
 const MAX_OPEN_HANDLES: usize = 64;
@@ -76,9 +78,11 @@ impl SqlStorage {
     }
 
     fn open_kv_connection(kv_path: &Path) -> Result<Connection, String> {
+        install_sqlite_hard_heap_limit();
         reject_symlink(kv_path)?;
         let conn = Connection::open(kv_path)
             .map_err(|e| format!("Failed to open KV SQLite: {e}"))?;
+        let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true);
         let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -362,25 +366,22 @@ impl SqlStorage {
                 .map_err(|e| format!("Failed to open in-memory SQLite DB: {e}"))?,
         };
         let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-        let pragmas = if path.is_some() {
-            format!(
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
+            .map_err(|e| format!("Failed to enable SQLite defensive mode: {e}"))?;
+        conn.execute_batch("PRAGMA trusted_schema=OFF;")
+            .map_err(|e| format!("Failed to disable SQLite trusted_schema: {e}"))?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(|e| format!("Failed to enable SQLite foreign_keys: {e}"))?;
+        conn.execute_batch("PRAGMA temp_store=MEMORY;")
+            .map_err(|e| format!("Failed to set SQLite temp_store: {e}"))?;
+        let _ = conn.pragma_update(None, "max_page_count", MAX_SQL_PAGES);
+        if path.is_some() {
+            let _ = conn.execute_batch(
                 "PRAGMA journal_mode=WAL;
                  PRAGMA synchronous=NORMAL;
-                 PRAGMA foreign_keys=ON;
-                 PRAGMA trusted_schema=OFF;
-                 PRAGMA temp_store=MEMORY;
-                 PRAGMA cache_size=-4000;
-                 PRAGMA max_page_count={MAX_SQL_PAGES};"
-            )
-        } else {
-            format!(
-                "PRAGMA foreign_keys=ON;
-                 PRAGMA trusted_schema=OFF;
-                 PRAGMA temp_store=MEMORY;
-                 PRAGMA max_page_count={MAX_SQL_PAGES};"
-            )
-        };
-        let _ = conn.execute_batch(&pragmas);
+                 PRAGMA cache_size=-4000;",
+            );
+        }
         let _ = conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_RESULT_BYTES as i32);
         let _ = conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 512 * 1024);
         let _ = conn.set_limit(Limit::SQLITE_LIMIT_COLUMN, 256);
@@ -453,6 +454,12 @@ impl SqlStorage {
     }
 
     pub fn preseed_all(&self, vfs: &HashMap<String, Vec<u8>>) -> Result<(), String> {
+        if self.databases.len() > MAX_CONTAINER_DATABASES {
+            return Err(format!(
+                "Manifest declares {} databases, exceeding limit ({MAX_CONTAINER_DATABASES})",
+                self.databases.len()
+            ));
+        }
         fs::create_dir_all(&self.db_dir)
             .map_err(|e| format!("Failed to create databases dir: {e}"))?;
 
@@ -474,7 +481,12 @@ impl SqlStorage {
                     }
                 }
             }
-            let conn = Self::open_configured_connection(Some(&path))?;
+            let mut conn = Self::open_configured_connection(Some(&path))?;
+            let abort = Arc::new(AtomicBool::new(false));
+            let _seed_watchdog = WallDeadlineGuard::arm(Arc::clone(&abort), 15_000);
+            let abort_cb = Arc::clone(&abort);
+            conn.progress_handler(1000, Some(move || abort_cb.load(Ordering::Relaxed)))
+                .map_err(|e| format!("Failed to arm SQLite progress handler: {}", e))?;
             if let Some(seed_sql) = &cfg.seed_sql {
                 let norm = normalize_vfs_path(seed_sql);
                 let sql_text = vfs
@@ -847,6 +859,9 @@ fn sanitize_ident(name: &str) -> Result<String, String> {
 }
 
 fn apply_seed_json(conn: &Connection, payload: &str) -> Result<Value, String> {
+    if payload.len() > MAX_RESULT_BYTES * 2 {
+        return Err("seedJson payload exceeds maximum byte limit".into());
+    }
     let parsed: Value = serde_json::from_str(payload)
         .map_err(|e| format!("Invalid seedJson payload: {e}"))?;
     let mut tables_created = 0usize;

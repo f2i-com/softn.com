@@ -626,6 +626,29 @@ export class LocalBackendTransport implements BackendTransport {
     });
   }
 
+  private registerPendingRpc(
+    reqId: number,
+    resolve: (v: unknown) => void,
+    reject: (err: Error) => void,
+    timeoutMs = 30_000
+  ): void {
+    const timer = setTimeout(() => {
+      if (this.pendingRpc.delete(reqId)) {
+        reject(new Error(`LocalBackendTransport RPC timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+    this.pendingRpc.set(reqId, {
+      resolve: (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      reject: (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    });
+  }
+
   async seedDatabase(
     dbName: string,
     seedJson: string | Record<string, unknown>
@@ -635,10 +658,7 @@ export class LocalBackendTransport implements BackendTransport {
     const reqId = this.nextReqId++;
     const payload = typeof seedJson === 'string' ? seedJson : JSON.stringify(seedJson);
     return new Promise<Record<string, unknown>>((resolve, reject) => {
-      this.pendingRpc.set(reqId, {
-        resolve: (v) => resolve((v ?? {}) as Record<string, unknown>),
-        reject,
-      });
+      this.registerPendingRpc(reqId, (v) => resolve((v ?? {}) as Record<string, unknown>), reject);
       this.post({ type: 'seed-db', reqId, dbName, seedJson: payload });
     });
   }
@@ -648,10 +668,7 @@ export class LocalBackendTransport implements BackendTransport {
     if (this.disposed) return null;
     const reqId = this.nextReqId++;
     return new Promise<Uint8Array | null>((resolve, reject) => {
-      this.pendingRpc.set(reqId, {
-        resolve: (v) => resolve(v instanceof Uint8Array ? v : null),
-        reject,
-      });
+      this.registerPendingRpc(reqId, (v) => resolve(v instanceof Uint8Array ? v : null), reject);
       this.post({ type: 'export-db', reqId, dbName });
     });
   }
@@ -664,7 +681,7 @@ export class LocalBackendTransport implements BackendTransport {
     if (this.disposed) throw new Error('LocalBackendTransport is disposed');
     const reqId = this.nextReqId++;
     return new Promise<unknown>((resolve, reject) => {
-      this.pendingRpc.set(reqId, { resolve, reject });
+      this.registerPendingRpc(reqId, resolve, reject);
       this.post({ type: 'sqlite-op', reqId, op, args });
     });
   }
@@ -715,11 +732,15 @@ export class LocalBackendTransport implements BackendTransport {
         if (typeof data === 'string') {
           this.post({ type: 'ws-send', wsId, data, binary: false });
         } else {
-          const hexParts = new Array<string>(data.byteLength);
-          for (let i = 0; i < data.byteLength; i++) {
-            hexParts[i] = HEX_TABLE[data[i]];
+          // Encode in 32 KiB chunks to avoid allocating millions of single-byte strings on the main thread.
+          const chunks: string[] = [];
+          for (let off = 0; off < data.byteLength; off += 32768) {
+            const end = Math.min(data.byteLength, off + 32768);
+            let s = '';
+            for (let i = off; i < end; i++) s += HEX_TABLE[data[i]];
+            chunks.push(s);
           }
-          this.post({ type: 'ws-send', wsId, data: hexParts.join(''), binary: true });
+          this.post({ type: 'ws-send', wsId, data: chunks.join(''), binary: true });
         }
       },
       close: (code?: number, reason?: string) => {

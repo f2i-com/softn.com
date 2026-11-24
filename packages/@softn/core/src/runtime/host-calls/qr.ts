@@ -40,6 +40,21 @@ export class QrReader {
     if (remote) {
       this.gate.checkPermission('net');
       this.gate.checkNetHost(trimmed);
+      // Never load an embedding-host-origin URL through `img.src`: `crossOrigin = 'anonymous'`
+      // maps to Fetch credentials mode `same-origin` and would attach host session cookies.
+      const hostOrigin =
+        typeof globalThis.location?.origin === 'string' && globalThis.location.origin !== 'null'
+          ? globalThis.location.origin
+          : null;
+      if (hostOrigin) {
+        try {
+          if (new URL(trimmed, hostOrigin).origin === hostOrigin) {
+            return { data: null, error: 'Host-origin QR image URL is not permitted' };
+          }
+        } catch {
+          return { data: null, error: 'Invalid QR image URL' };
+        }
+      }
     } else if (!/^(?:data|blob):/i.test(trimmed)) {
       return { data: null, error: 'Unsupported QR image source' };
     }

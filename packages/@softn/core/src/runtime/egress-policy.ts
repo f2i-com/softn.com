@@ -95,6 +95,15 @@ export function describeNetDestination(
       `Host not allowed: ${parsed.hostname} is on this computer or its local network. Name it in net.allowed_hosts to reach it.`
     );
   }
+  const hostOrigin =
+    typeof globalThis.location?.origin === 'string' && globalThis.location.origin !== 'null'
+      ? globalThis.location.origin
+      : null;
+  if (!listed && hostOrigin && parsed.origin === hostOrigin) {
+    return deny(
+      `Host not allowed: ${parsed.hostname} is the host origin. Name it in net.allowed_hosts to reach it.`
+    );
+  }
   return ALLOW;
 }
 

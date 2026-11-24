@@ -16,7 +16,8 @@ function reply(int $status, array $body): never { http_response_code($status); e
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if (!is_string($path) || !str_starts_with($path, '/api/') || strlen($path)>256) reply(404, ['error'=>'Not found.','code'=>'not_found']);
-if (str_contains($path, '..') || str_contains($path, '\\') || preg_match('/%(?:2e|2f|5c)/i', (string)($_SERVER['REQUEST_URI'] ?? ''))) {
+$rawPath = explode('?', (string)($_SERVER['REQUEST_URI'] ?? ''), 2)[0];
+if (str_contains($path, '..') || str_contains($path, '\\') || preg_match('/%(?:2e|2f|5c)/i', $rawPath)) {
     reply(400, ['error'=>'Invalid path.','code'=>'invalid_request']);
 }
 $manifest=json_decode(@file_get_contents($backend.'/app/manifest.json')?:'null',true);
@@ -161,9 +162,7 @@ if($slotWait>=1&&is_file(softn_rate_marker($backend,$rateKey,time()))){flock($sl
 // `body` marks where the body's own text goes (softn_runner_input); the
 // decoded copy is only for the photo adapter below.
 if($isContainer) {
-    $https=(isset($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!==''&&strtolower((string)$_SERVER['HTTPS'])!=='off')
-        ||strtolower((string)($_SERVER['REQUEST_SCHEME']??''))==='https'
-        ||(softn_peer_is_trusted_proxy($remoteAddr,$trustedProxies)&&strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO']??''))==='https');
+    $https=softn_request_is_https($_SERVER,softn_peer_is_trusted_proxy($remoteAddr,$trustedProxies));
     $request=['path'=>$path,'method'=>$method,'queryString'=>(string)($_SERVER['QUERY_STRING']??''),
         'query'=>(object)softn_query((string)($_SERVER['QUERY_STRING']??'')),
         'headers'=>(object)softn_request_headers($_SERVER,true),'body'=>null,
@@ -295,14 +294,17 @@ if(isset($result['bodyRaw'])) {
                     if($attrName==='samesite'){$hasSameSite=true;if(strtolower($attrVal)==='none')$sameSiteNone=true;}
                 }
                 if($hasDomain)continue;
-                $isHttps=(!empty($_SERVER['HTTPS'])&&strtolower((string)$_SERVER['HTTPS'])!=='off')||((int)($_SERVER['SERVER_PORT']??0)===443);
+                $isHttps=softn_request_is_https($_SERVER,softn_peer_is_trusted_proxy($remoteAddr,$trustedProxies));
                 if(stripos($cookieName,'__Host-')===0&&(!$hasSecure||!$isHttps||!$hasRootPath))continue;
                 if(stripos($cookieName,'__Secure-')===0&&(!$hasSecure||!$isHttps))continue;
                 if($sameSiteNone&&!$hasSecure)continue;
                 if(!$hasSameSite)$v.='; SameSite=Lax';
             }
-            if($lk==='content-type'&&!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}
-            else header($k.': '.$v,false);
+            if($lk==='content-type') {
+                if(!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}
+                continue;
+            }
+            header($k.': '.$v,false);
         }
     }
     $containerStatus=(int)$result['status'];

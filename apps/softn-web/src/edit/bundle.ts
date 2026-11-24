@@ -148,42 +148,46 @@ export function damagedFile(path: string): Error {
  */
 export async function bundleWith(bundle: Uint8Array, textFiles: ReadonlyMap<string, string>): Promise<Uint8Array> {
   const archive = openBundleArchive(bundle);
-  const names = new Set(archive.names());
-  const own = (path: string): Uint8Array | undefined => {
-    if (!names.has(path)) return undefined;
-    try {
-      return archive.read(path);
-    } catch {
-      throw damagedFile(path);
+  try {
+    const names = new Set(archive.names());
+    const own = (path: string): Uint8Array | undefined => {
+      if (!names.has(path)) return undefined;
+      try {
+        return archive.read(path);
+      } catch {
+        throw damagedFile(path);
+      }
+    };
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    const entries: Array<[string, Uint8Array]> = [];
+    // By name: a tab's files are read from its bundle as each is asked for, and
+    // a damaged one fails the read that asks for it.
+    for (const path of textFiles.keys()) {
+      // A name that is a binary file's is that file's: text is never written over one.
+      if (classifyAsset(path).binary) continue;
+      let text: string | undefined;
+      try {
+        text = textFiles.get(path);
+      } catch {
+        throw damagedFile(path);
+      }
+      if (text === undefined) continue;
+      const had = own(path);
+      entries.push([path, had !== undefined && decoder.decode(had) === text ? had : new Uint8Array(encoder.encode(text))]);
     }
-  };
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  const entries: Array<[string, Uint8Array]> = [];
-  // By name: a tab's files are read from its bundle as each is asked for, and
-  // a damaged one fails the read that asks for it.
-  for (const path of textFiles.keys()) {
-    // A name that is a binary file's is that file's: text is never written over one.
-    if (classifyAsset(path).binary) continue;
-    let text: string | undefined;
-    try {
-      text = textFiles.get(path);
-    } catch {
-      throw damagedFile(path);
+    for (const path of names) {
+      if (classifyAsset(path).binary) entries.push([path, own(path) as Uint8Array]);
+      // A text file of the bundle's that `textFiles` has not: taken out by the
+      // person, or never readable. Read here to tell the two apart, so that a
+      // damaged file is said, and not quietly left out as if it had been removed.
+      else if (!textFiles.has(path)) own(path);
     }
-    if (text === undefined) continue;
-    const had = own(path);
-    entries.push([path, had !== undefined && decoder.decode(had) === text ? had : new Uint8Array(encoder.encode(text))]);
+    if (entries.length > 0xffff) throw new Error('The app has more files than a bundle holds.');
+    return zipOf(entries);
+  } finally {
+    archive.release();
   }
-  for (const path of names) {
-    if (classifyAsset(path).binary) entries.push([path, own(path) as Uint8Array]);
-    // A text file of the bundle's that `textFiles` has not: taken out by the
-    // person, or never readable. Read here to tell the two apart, so that a
-    // damaged file is said, and not quietly left out as if it had been removed.
-    else if (!textFiles.has(path)) own(path);
-  }
-  if (entries.length > 0xffff) throw new Error('The app has more files than a bundle holds.');
-  return zipOf(entries);
 }
 
 /** Offer `bytes` to the person as a file called `name`. */

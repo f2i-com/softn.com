@@ -5,7 +5,7 @@
  */
 
 import type { CachedApp } from './appCacheDb';
-import { appDataStores, describeError, keysWithPrefix, type AppDataStore, type DataTransferResult } from './appCacheStorage';
+import { appDataStores, describeError, keysWithPrefix, storeKeys, type AppDataStore, type DataTransferResult } from './appCacheStorage';
 
 // ── Portable data ────────────────────────────────────────────────────
 //
@@ -71,10 +71,10 @@ export function exportAppData(app: Pick<CachedApp, 'name' | 'version' | 'origin'
   if (!app.origin) return null;
   const stores: AppDataSnapshot['stores'] = { xdb: {}, local: {} };
   try {
-    for (const { store, prefix } of appDataStores(app.origin)) {
-      for (const key of keysWithPrefix(prefix)) {
+    for (const entry of appDataStores(app.origin)) {
+      for (const key of storeKeys(entry)) {
         const value = localStorage.getItem(key);
-        if (value !== null) stores[store][key.slice(prefix.length)] = value;
+        if (value !== null) stores[entry.store][key.slice(entry.prefix.length)] = value;
       }
     }
   } catch {
@@ -183,7 +183,9 @@ interface RestoreJournal {
  * here, the same is done at once. Only once every new key is in place does
  * the journal go, and with it the last way to see the old state.
  */
-function replaceStorageRuns(runs: Array<{ prefix: string; entries: Record<string, string> }>): DataTransferResult {
+function replaceStorageRuns(
+  runs: Array<{ prefix: string; entries: Record<string, string>; owns?: (key: string) => boolean }>
+): DataTransferResult {
   const result: DataTransferResult = {
     ok: false,
     copied: 0,
@@ -192,14 +194,21 @@ function replaceStorageRuns(runs: Array<{ prefix: string; entries: Record<string
   };
   let previous: Array<[string, string]>;
   try {
-    previous = runs.flatMap(({ prefix }) => keysWithPrefix(prefix).map((key) => [key, localStorage.getItem(key) ?? ''] as [string, string]));
+    previous = runs.flatMap((run) =>
+      storeKeys({ prefix: run.prefix, owns: run.owns ?? (() => true) }).map((key) => [key, localStorage.getItem(key) ?? ''] as [string, string])
+    );
   } catch (err) {
     result.error = `Stored data could not be read: ${describeError(err)}`;
     return result;
   }
 
   const journalKey = `${RESTORE_JOURNAL_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const journal: RestoreJournal = { prefixes: runs.map((run) => run.prefix), previous, at: Date.now() };
+  const journal: RestoreJournal & { keys?: string[] } = {
+    prefixes: runs.map((run) => run.prefix),
+    keys: runs.flatMap((run) => Object.keys(run.entries).map((suffix) => run.prefix + suffix)),
+    previous,
+    at: Date.now(),
+  };
   try {
     localStorage.setItem(journalKey, JSON.stringify(journal));
   } catch (err) {
@@ -283,14 +292,20 @@ export function recoverInterruptedImports(): number {
   }
   for (const journalKey of journals) {
     try {
-      const journal = JSON.parse(localStorage.getItem(journalKey) ?? 'null') as RestoreJournal | null;
+      const journal = JSON.parse(localStorage.getItem(journalKey) ?? 'null') as (RestoreJournal & { keys?: string[] }) | null;
       if (!journal || !Array.isArray(journal.prefixes) || !Array.isArray(journal.previous)) {
         localStorage.removeItem(journalKey);
         continue;
       }
-      for (const prefix of journal.prefixes) {
-        if (typeof prefix !== 'string' || !prefix) continue;
-        for (const key of keysWithPrefix(prefix)) localStorage.removeItem(key);
+      if (Array.isArray(journal.keys)) {
+        for (const key of journal.keys) {
+          if (typeof key === 'string' && key) localStorage.removeItem(key);
+        }
+      } else {
+        for (const prefix of journal.prefixes) {
+          if (typeof prefix !== 'string' || !prefix) continue;
+          for (const key of keysWithPrefix(prefix)) localStorage.removeItem(key);
+        }
       }
       for (const entry of journal.previous) {
         if (Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string') {
@@ -333,5 +348,5 @@ export function importAppData(
       error: `This data was exported from "${snapshot.app.name}" v${snapshot.app.version}, a different build.`,
     };
   }
-  return replaceStorageRuns(appDataStores(app.origin).map(({ store, prefix }) => ({ prefix, entries: snapshot.stores[store] ?? {} })));
+  return replaceStorageRuns(appDataStores(app.origin).map(({ store, prefix, owns }) => ({ prefix, owns, entries: snapshot.stores[store] ?? {} })));
 }
