@@ -16,7 +16,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{AllowHeaders, AllowOrigin, Any, CorsLayer};
-use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 /// How long a client may take to send a request's headers, and how long an
@@ -166,7 +165,14 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, options: ServeOp
     let listener = bind(host, port).await?;
     tracing::info!("Listening on http://{}", listener.local_addr().map(|a| a.to_string()).unwrap_or_default());
 
-    serve_router(listener, router, HEADER_READ_TIMEOUT, shutdown_signal(shutdown_tx, "Shutting down...")).await?;
+    serve_router_with_proxy(
+        listener,
+        router,
+        ServeLimits::with_header_timeout(HEADER_READ_TIMEOUT),
+        &options.trusted_proxy,
+        shutdown_signal(shutdown_tx, "Shutting down..."),
+    )
+    .await?;
 
     // Wait for all WebSocket connections to close (senders dropped),
     // with a timeout to prevent hanging indefinitely on stuck connections.
@@ -198,11 +204,24 @@ pub async fn serve_multi(manager: Arc<TenantManager>, host: &str, port: u16, opt
 
     let tenant_ids = manager.tenant_ids();
     tracing::info!("Multi-tenant mode: {} tenant(s) on http://{}", tenant_ids.len(), addr);
+    if tenant_ids.len() > 1 {
+        tracing::warn!(
+            "Multi-tenant path-prefix mode serves {} tenants on one browser origin; isolate untrusted browser apps behind separate hostnames/subdomains so web storage and DOM origins are not shared.",
+            tenant_ids.len()
+        );
+    }
     for id in &tenant_ids {
         tracing::info!("  /{}/... -> tenant '{}'", id, id);
     }
 
-    serve_router(listener, router, HEADER_READ_TIMEOUT, shutdown_signal(shutdown_tx, "Shutting down multi-tenant server...")).await?;
+    serve_router_with_proxy(
+        listener,
+        router,
+        ServeLimits::with_header_timeout(HEADER_READ_TIMEOUT),
+        &options.trusted_proxy,
+        shutdown_signal(shutdown_tx, "Shutting down multi-tenant server..."),
+    )
+    .await?;
 
     let _ = tokio::time::timeout(Duration::from_secs(40), conn_rx.recv()).await;
 
@@ -220,6 +239,9 @@ pub struct ServeLimits {
     pub write_stall: Duration,
     /// Connections served at once. The rest wait in the listen queue.
     pub connections: usize,
+    /// Concurrent connections one direct (non-proxy) visitor IP (or IPv6 /64)
+    /// may hold at once, preventing a single peer from exhausting `connections`.
+    pub connections_per_visitor: usize,
     /// How many of those places open sync sockets may hold, every app's
     /// together. A socket keeps its connection's place for as long as it is
     /// open, and the per-app limit (1,024 by default) was more than the
@@ -238,6 +260,7 @@ impl ServeLimits {
             // Under the 1024 descriptors a process is given by default, with
             // room for the databases and files the host itself holds open.
             connections: 768,
+            connections_per_visitor: 64,
             sync_sockets: 384,
             // A handler in flight may take MAX_CALL_WAIT plus its margin.
             drain: Duration::from_secs(40),
@@ -331,6 +354,7 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for StallGuard<S> {
 
 /// Accept connections and serve `router` on each until `shutdown` resolves,
 /// then let the requests in flight finish.
+#[allow(dead_code)]
 pub async fn serve_router<F>(
     listener: tokio::net::TcpListener,
     router: Router,
@@ -355,6 +379,24 @@ where
 /// (`limits.connections`), and a shutdown that waited on them without end
 /// (`limits.drain`). Upgraded (WebSocket) connections leave hyper and are
 /// bounded by the sync layer's own limits, over the same guarded stream.
+struct VisitorConnGuard {
+    map: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, usize>>>,
+    key: std::net::IpAddr,
+}
+
+impl Drop for VisitorConnGuard {
+    fn drop(&mut self) {
+        let mut guard = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(count) = guard.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                guard.remove(&self.key);
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub async fn serve_router_with<F>(
     listener: tokio::net::TcpListener,
     router: Router,
@@ -364,10 +406,26 @@ pub async fn serve_router_with<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    serve_router_with_proxy(listener, router, limits, &TrustedProxy::Nobody, shutdown).await
+}
+
+async fn serve_router_with_proxy<F>(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    limits: ServeLimits,
+    trusted_proxy: &TrustedProxy,
+    shutdown: F,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     let (signal_tx, signal_rx) = tokio::sync::watch::channel(());
     let (close_tx, close_rx) = tokio::sync::watch::channel(());
     let places = Arc::new(tokio::sync::Semaphore::new(limits.connections.max(1)));
     let sockets = Arc::new(tokio::sync::Semaphore::new(limits.sync_sockets.min(limits.connections).max(1)));
+    let per_visitor_limit = limits.connections_per_visitor.max(1);
+    let visitor_conns: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, usize>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
     tokio::pin!(shutdown);
     loop {
         // A place before the connection is taken: at the limit the rest wait
@@ -393,6 +451,26 @@ where
             },
             _ = &mut shutdown => break,
         };
+        let visitor_guard = if !trusted_proxy.is_proxy(peer.ip()) {
+            let key = crate::limiter::limiter_key(peer.ip());
+            let mut map = visitor_conns.lock().unwrap_or_else(|p| p.into_inner());
+            let count = map.entry(key).or_insert(0);
+            if *count >= per_visitor_limit {
+                tracing::debug!(peer = %key, limit = per_visitor_limit, "Refused connection past per-visitor concurrent limit");
+                drop(map);
+                drop(stream);
+                drop(place);
+                continue;
+            }
+            *count += 1;
+            drop(map);
+            Some(Arc::new(VisitorConnGuard {
+                map: visitor_conns.clone(),
+                key,
+            }))
+        } else {
+            None
+        };
         let _ = stream.set_nodelay(true);
         let router = router.clone();
         let mut signal_rx = signal_rx.clone();
@@ -404,9 +482,14 @@ where
             // and the place with it, so open sync sockets, each a
             // descriptor, went uncounted beside the connections limit.
             let place = Arc::new(place);
+            let visitor = visitor_guard;
             let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
                 request.extensions_mut().insert(ConnectInfo(peer));
-                request.extensions_mut().insert(ConnectionPlace { _place: place.clone(), sockets: sockets.clone() });
+                request.extensions_mut().insert(ConnectionPlace {
+                    _place: place.clone(),
+                    _visitor: visitor.clone(),
+                    sockets: sockets.clone(),
+                });
                 tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))
             });
             // HTTP/1 itself, not hyper-util's auto builder: that one first
@@ -465,8 +548,8 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, options: &ServeOptions, conn
         }
     }
 
-    // Serve client bundle files (legacy bundles use ALLOWED_STATIC_DIRS; v2 container
-    // bundles serve safe frontendRoot assets and route backend calls via ZIPP safe-sandbox)
+    // Serve client bundle files (legacy bundles use ALLOWED_STATIC_DIRS with symlink-rejecting
+    // containment; v2 container bundles serve safe frontendRoot assets via ZIPP safe-sandbox)
     let has_container_backend = ctx.container_backend.is_some();
     if !has_container_backend {
         let bundle_path = ctx.bundle_path.clone();
@@ -474,7 +557,7 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, options: &ServeOptions, conn
             let dir = bundle_path.join(prefix);
             router = router.nest_service(
                 &format!("/{}", prefix),
-                ServeDir::new(dir),
+                safe_static_dir_router(dir),
             );
         }
     }
@@ -593,15 +676,15 @@ fn build_multi_tenant_router(
             }
         }
 
-        // Static files (legacy bundles use ALLOWED_STATIC_DIRS; container bundles serve safe
-        // frontend assets + ZIPP-sandboxed backend routes through container_fallback_tenant)
+        // Static files (legacy bundles use ALLOWED_STATIC_DIRS with symlink-rejecting containment;
+        // container bundles serve safe frontend assets + ZIPP-sandboxed backend routes)
         let has_container_backend = tenant.container_backend.is_some();
         if !has_container_backend {
             for &prefix in ALLOWED_STATIC_DIRS {
                 let dir = tenant.bundle_path.join(prefix);
                 tenant_router = tenant_router.nest_service(
                     &format!("/{}", prefix),
-                    ServeDir::new(dir),
+                    safe_static_dir_router(dir),
                 );
             }
         }
@@ -926,7 +1009,128 @@ async fn method_not_allowed() -> axum::response::Response {
     json_error(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed.", "method_not_allowed")
 }
 
+/// Maximum size of a legacy static bundle asset read into memory (64 MiB).
+const MAX_STATIC_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Build a symlink-rejecting, canonical-contained static file router for a legacy bundle directory.
+/// Unlike `tower_http::services::ServeDir`, this refuses symlinks anywhere on the base directory
+/// or relative path and refuses non-regular files (directories, FIFOs, sockets).
+fn safe_static_dir_router(dir: std::path::PathBuf) -> Router {
+    Router::new()
+        .route("/{*path}", get(serve_safe_static_file))
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
+        .with_state(Arc::new(dir))
+}
+
+async fn serve_safe_static_file(
+    State(base_dir): State<Arc<std::path::PathBuf>>,
+    method: axum::http::Method,
+    axum::extract::Path(rel): axum::extract::Path<String>,
+) -> axum::response::Response {
+    if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+        return json_error(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed.", "method_not_allowed");
+    }
+    let trimmed = rel.trim_start_matches('/');
+    if trimmed.is_empty()
+        || trimmed.len() > 2048
+        || trimmed.contains('\\')
+        || trimmed.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
+        return not_found_sync();
+    }
+    let segments: Vec<&str> = trimmed.split('/').collect();
+    if segments.len() > 32
+        || segments
+            .iter()
+            .any(|s| s.is_empty() || *s == "." || *s == ".." || s.len() > 255)
+    {
+        return json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden");
+    }
+    let base_dir_bg = base_dir.clone();
+    let rel_owned = trimmed.to_owned();
+    let is_head = method == axum::http::Method::HEAD;
+    let read_res = tokio::task::spawn_blocking(move || -> Result<(String, usize, Vec<u8>), StatusCode> {
+        let base_meta = std::fs::symlink_metadata(&*base_dir_bg).map_err(|_| StatusCode::NOT_FOUND)?;
+        if base_meta.file_type().is_symlink() || !base_meta.is_dir() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let canon_base = std::fs::canonicalize(&*base_dir_bg).map_err(|_| StatusCode::NOT_FOUND)?;
+        let mut cur = base_dir_bg.as_ref().clone();
+        for seg in rel_owned.split('/') {
+            cur.push(seg);
+            let meta = std::fs::symlink_metadata(&cur).map_err(|_| StatusCode::NOT_FOUND)?;
+            if meta.file_type().is_symlink() {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+        let final_meta = std::fs::symlink_metadata(&cur).map_err(|_| StatusCode::NOT_FOUND)?;
+        if !final_meta.file_type().is_file() {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let canon_file = std::fs::canonicalize(&cur).map_err(|_| StatusCode::NOT_FOUND)?;
+        if !canon_file.starts_with(&canon_base) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let flag = crate::bridges::fs::unix_o_nofollow();
+            if flag != 0 {
+                opts.custom_flags(flag);
+            }
+        }
+        let file = opts.open(&cur).map_err(|_| StatusCode::NOT_FOUND)?;
+        let open_meta = file.metadata().map_err(|_| StatusCode::NOT_FOUND)?;
+        if !open_meta.is_file() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        if open_meta.len() > MAX_STATIC_FILE_BYTES {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        let mime = crate::container_backend::mime_type_for(&rel_owned).to_owned();
+        if is_head {
+            return Ok((mime, open_meta.len() as usize, Vec::new()));
+        }
+        use std::io::Read;
+        let mut buf = Vec::with_capacity(open_meta.len().min(MAX_STATIC_FILE_BYTES) as usize);
+        file.take(MAX_STATIC_FILE_BYTES + 1)
+            .read_to_end(&mut buf)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if buf.len() as u64 > MAX_STATIC_FILE_BYTES {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        let len = buf.len();
+        Ok((mime, len, buf))
+    })
+    .await;
+
+    match read_res {
+        Ok(Ok((mime, len, bytes))) => {
+            let builder = axum::http::Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, mime)
+                .header(axum::http::header::CONTENT_LENGTH, len);
+            let body = if is_head {
+                axum::body::Body::empty()
+            } else {
+                axum::body::Body::from(bytes)
+            };
+            builder.body(body).unwrap_or_else(|_| not_found_sync())
+        }
+        Ok(Err(StatusCode::FORBIDDEN)) => json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden"),
+        Ok(Err(StatusCode::PAYLOAD_TOO_LARGE)) => {
+            json_error(StatusCode::PAYLOAD_TOO_LARGE, "Asset too large.", "payload_too_large")
+        }
+        Ok(Err(StatusCode::NOT_FOUND)) => not_found_sync(),
+        _ => json_error(StatusCode::INTERNAL_SERVER_ERROR, "Asset could not be read.", "host_error"),
+    }
+}
+
 /// Serve a v2 container request (static frontend asset OR ZIPP-sandboxed backend route).
+#[allow(clippy::too_many_arguments)]
 async fn serve_container_request(
     backend: Arc<crate::container_backend::ContainerBackendRuntime>,
     api_limiter: Option<&crate::limiter::AddressLimiter>,
@@ -939,36 +1143,75 @@ async fn serve_container_request(
     request: axum::extract::Request,
     multi_tenant: bool,
 ) -> axum::response::Response {
+    const CONTAINER_DEFAULT_CSP: &str = "frame-ancestors 'self'; base-uri 'self'; object-src 'none'";
     let peer_is_proxy = proxy.is_proxy(info.0.ip());
     let method_str = method.as_str().to_owned();
     let req_path = uri.path().to_owned();
     let query = uri.query().unwrap_or("").to_owned();
+    let https = request_scheme(&headers, peer_is_proxy) == "https";
+    let host_hdr = if peer_is_proxy {
+        rightmost_forwarded_header(&headers, "x-forwarded-host")
+    } else {
+        None
+    }
+    .or_else(|| headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()))
+    .unwrap_or("localhost")
+    .to_owned();
+    let lower_headers: HashMap<String, String> = headers
+        .iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned())))
+        .collect();
 
-    let route_to_backend = backend.should_route_to_backend(&method_str, &req_path);
-    if !route_to_backend {
-        return match backend.resolve_static_asset(&req_path) {
-            Ok(Some((mime, bytes))) => {
-                let mut builder = axum::http::Response::builder()
-                    .status(StatusCode::OK)
-                    .header(axum::http::header::CONTENT_TYPE, mime)
-                    .header("x-content-type-options", "nosniff")
-                    .header("x-frame-options", "SAMEORIGIN")
-                    .header("referrer-policy", "no-referrer");
-                if method == axum::http::Method::HEAD {
-                    builder = builder.header(axum::http::header::CONTENT_LENGTH, bytes.len());
-                    builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
-                } else {
-                    builder.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| not_found_sync())
-                }
-            }
-            Ok(None) => not_found_sync(),
-            Err(403) => json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden"),
-            Err(code) => json_error(
+    match backend.resolve_ingress(&method_str, &req_path, &query, &host_hdr, https, &lower_headers) {
+        crate::container_backend::StaticOrBackend::Static { mime, bytes } => {
+            let mut builder = axum::http::Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, mime)
+                .header("x-content-type-options", "nosniff")
+                .header("x-frame-options", "SAMEORIGIN")
+                .header("referrer-policy", "no-referrer")
+                .header(axum::http::header::CONTENT_SECURITY_POLICY, CONTAINER_DEFAULT_CSP);
+            return if method == axum::http::Method::HEAD {
+                builder = builder.header(axum::http::header::CONTENT_LENGTH, bytes.len());
+                builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
+            } else {
+                builder.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| not_found_sync())
+            };
+        }
+        crate::container_backend::StaticOrBackend::NotFound => return not_found_sync(),
+        crate::container_backend::StaticOrBackend::Deny(403) => {
+            return json_error(StatusCode::FORBIDDEN, "Forbidden.", "forbidden");
+        }
+        crate::container_backend::StaticOrBackend::Deny(400) => {
+            return json_error(StatusCode::BAD_REQUEST, "Bad request.", "invalid_request");
+        }
+        crate::container_backend::StaticOrBackend::Deny(code) => {
+            return json_error(
                 StatusCode::from_u16(code).unwrap_or(StatusCode::NOT_FOUND),
                 "Not found.",
                 "not_found",
-            ),
-        };
+            );
+        }
+        crate::container_backend::StaticOrBackend::Redirect(code, loc) => {
+            if loc.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error");
+            }
+            let status = StatusCode::from_u16(code)
+                .ok()
+                .filter(|s| s.is_redirection())
+                .unwrap_or(StatusCode::FOUND);
+            return match axum::http::HeaderValue::from_str(&loc) {
+                Ok(val) => axum::http::Response::builder()
+                    .status(status)
+                    .header(axum::http::header::LOCATION, val)
+                    .header("x-frame-options", "SAMEORIGIN")
+                    .header("referrer-policy", "no-referrer")
+                    .body(axum::body::Body::empty())
+                    .unwrap_or_else(|_| json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error")),
+                Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect.", "host_error"),
+            };
+        }
+        crate::container_backend::StaticOrBackend::Backend => {}
     }
 
     if let Some(rejection) = check_origin(&policy, &headers, peer_is_proxy) {
@@ -999,16 +1242,6 @@ async fn serve_container_request(
         Err(rejection) => return body_rejection(rejection),
     };
 
-    let host_hdr = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost")
-        .to_owned();
-    let https = proxy.is_proxy(info.0.ip())
-        && headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.eq_ignore_ascii_case("https"));
     let req_headers: Vec<(String, String)> = headers
         .iter()
         .filter(|(k, _)| {
@@ -1107,8 +1340,11 @@ async fn serve_container_request(
     if !has_cache_control {
         builder = builder.header(axum::http::header::CACHE_CONTROL, "no-store");
     }
-    builder = builder.header("x-frame-options", "SAMEORIGIN");
-    builder = builder.header("referrer-policy", "no-referrer");
+    builder = builder
+        .header("x-content-type-options", "nosniff")
+        .header("x-frame-options", "SAMEORIGIN")
+        .header("referrer-policy", "no-referrer")
+        .header(axum::http::header::CONTENT_SECURITY_POLICY, CONTAINER_DEFAULT_CSP);
     let out_body = if method == axum::http::Method::HEAD || status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED {
         axum::body::Body::empty()
     } else {
@@ -1496,8 +1732,21 @@ fn without_default_port<'a>(authority: &'a str, scheme: &str) -> &'a str {
     authority.strip_suffix(default).unwrap_or(authority)
 }
 
+/// Extract the rightmost non-empty comma-separated value across ALL occurrences of a forwarded
+/// header (`X-Forwarded-Host`, `X-Forwarded-Proto`), matching how `X-Forwarded-For` treats
+/// multiple proxy-appended header lines so a client-supplied first line cannot shadow the proxy.
+fn rightmost_forwarded_header<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(name)
+        .iter()
+        .flat_map(|v| v.to_str().unwrap_or("").split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .next_back()
+}
+
 /// The names a request was addressed to: its `Host` (or, lacking one, the
-/// URI's authority), and a trusted proxy's first `X-Forwarded-Host`.
+/// URI's authority), and a trusted proxy's rightmost `X-Forwarded-Host`.
 fn request_hosts<'a>(headers: &'a axum::http::HeaderMap, uri: Option<&'a axum::http::Uri>, behind_trusted_proxy: bool) -> Vec<&'a str> {
     let mut hosts: Vec<&str> = headers.get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -1505,9 +1754,8 @@ fn request_hosts<'a>(headers: &'a axum::http::HeaderMap, uri: Option<&'a axum::h
         .into_iter()
         .collect();
     if behind_trusted_proxy {
-        if let Some(forwarded) = headers.get("x-forwarded-host").and_then(|v| v.to_str().ok()) {
-            // Take the rightmost entry appended by the trusted proxy, never the client-spoofable leftmost one.
-            hosts.extend(forwarded.rsplit(',').next().map(str::trim).filter(|s| !s.is_empty()));
+        if let Some(forwarded) = rightmost_forwarded_header(headers, "x-forwarded-host") {
+            hosts.push(forwarded);
         }
     }
     hosts
@@ -1565,8 +1813,7 @@ async fn guard_host(
 
 fn request_scheme(headers: &axum::http::HeaderMap, behind_trusted_proxy: bool) -> &'static str {
     if behind_trusted_proxy {
-        if let Some(proto) = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) {
-            let last = proto.rsplit(',').next().map(str::trim).unwrap_or("");
+        if let Some(last) = rightmost_forwarded_header(headers, "x-forwarded-proto") {
             if last.eq_ignore_ascii_case("http") {
                 return "http";
             }
@@ -1664,7 +1911,7 @@ fn ticket_response(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     match sync.issue_ticket(token, client_ip) {
-        Ok(ticket) => Json(serde_json::json!({ "ticket": ticket })).into_response(),
+        Ok(ticket) => api_headers(Json(serde_json::json!({ "ticket": ticket })).into_response()),
         Err(crate::sync::TicketError::Unauthorized) => {
             json_error(StatusCode::UNAUTHORIZED, "Authentication failed", "unauthorized")
         }
@@ -1697,6 +1944,7 @@ async fn issue_ticket(
 #[derive(Clone)]
 pub(crate) struct ConnectionPlace {
     _place: Arc<tokio::sync::OwnedSemaphorePermit>,
+    _visitor: Option<Arc<VisitorConnGuard>>,
     sockets: Arc<tokio::sync::Semaphore>,
 }
 
@@ -2013,15 +2261,6 @@ fn script_headers(headers: &axum::http::HeaderMap, host_auth: bool, private_api:
     seen
 }
 
-/// Photo decodes that may run at once, across the host.
-fn photo_decodes() -> &'static tokio::sync::Semaphore {
-    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-    PERMITS.get_or_init(|| {
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
-        tokio::sync::Semaphore::new(cores.clamp(2, 8))
-    })
-}
-
 enum UploadRefused {
     /// Every decode the host allows at once is running.
     Busy,
@@ -2077,8 +2316,20 @@ async fn execute_api_handler(
             if !media_type.eq_ignore_ascii_case("application/json") {
                 return (StatusCode::UNSUPPORTED_MEDIA_TYPE, Json(serde_json::json!({"error":"Use application/json","code":"unsupported_media_type"})));
             }
-            let parsed = std::str::from_utf8(&body).ok()
-                .and_then(|text| util::parse_json_bounded(text, util::MAX_BODY_DEPTH).ok());
+            // Offload large (>64 KiB) JSON body parsing to the blocking pool so it cannot stall async worker threads.
+            let parsed = if body.len() > 64 * 1024 {
+                let bytes = body.clone();
+                tokio::task::spawn_blocking(move || {
+                    std::str::from_utf8(&bytes).ok()
+                        .and_then(|text| util::parse_json_bounded(text, util::MAX_BODY_DEPTH).ok())
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                std::str::from_utf8(&body).ok()
+                    .and_then(|text| util::parse_json_bounded(text, util::MAX_BODY_DEPTH).ok())
+            };
             match parsed {
                 Some(value) if value.is_object() => Some(value),
                 _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Request body must be a JSON object","code":"invalid_request"}))),
@@ -2094,7 +2345,7 @@ async fn execute_api_handler(
             .and_then(|b| b.get("data_url"))
             .and_then(|v| v.as_str())
             .map(String::from);
-        match sanitize_upload(photo_decodes(), data_url).await {
+        match sanitize_upload(crate::bridges::media::photo_decode_permits(), data_url).await {
             Ok(upload) => (Some(serde_json::json!({})), Some(upload)),
             Err(UploadRefused::Busy) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
                 "error": "The server is busy. Please retry.",
@@ -2744,12 +2995,44 @@ mod sync_upgrade_tests {
 
     async fn ticket(addr: SocketAddr, bearer: Option<&str>) -> (u16, Option<String>) {
         let auth = bearer.map(|t| format!("Authorization: Bearer {}\r\n", t)).unwrap_or_default();
-        let (status, body) = send(addr, format!(
+        let (status, head, body) = send_with_head(addr, format!(
             "POST /sync/ticket HTTP/1.1\r\nHost: {}\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", addr, auth)).await;
+        if status == 200 {
+            assert!(head.contains("cache-control: no-store"), "ticket response missing no-store: {head}");
+        }
         let ticket = body.find('{')
             .and_then(|i| serde_json::from_str::<serde_json::Value>(&body[i..]).ok())
             .and_then(|v| v["ticket"].as_str().map(String::from));
         (status, ticket)
+    }
+
+    async fn send_with_head(addr: SocketAddr, request: String) -> (u16, String, String) {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut chunk)).await.unwrap().unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let text = String::from_utf8_lossy(&buf);
+            if let Some(end) = text.find("\r\n\r\n") {
+                let head = text[..end].to_ascii_lowercase();
+                let wanted = head.lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|n| n.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buf.len() >= end + 4 + wanted {
+                    break;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf).to_string();
+        let status = text[9..12].parse().unwrap();
+        let (head, rest) = text.split_once("\r\n\r\n").map(|(h, b)| (h.to_ascii_lowercase(), b.to_string())).unwrap_or_default();
+        (status, head, rest)
     }
 
     #[tokio::test]
@@ -2831,6 +3114,18 @@ mod sync_upgrade_tests {
         assert!(policy.origin_allowed_for_scheme("https://site.example", &["site.example"], Some("https")));
         assert!(!policy.origin_allowed_for_scheme("http://site.example", &["site.example"], Some("https")));
         assert!(!policy.origin_allowed_for_scheme("https://site.example", &["site.example"], Some("http")));
+    }
+
+    #[test]
+    fn forwarded_host_and_proto_take_rightmost_across_multiple_header_lines() {
+        let mut h = axum::http::HeaderMap::new();
+        h.append("x-forwarded-host", "evil.example".parse().unwrap());
+        h.append("x-forwarded-host", "app.example".parse().unwrap());
+        h.append("x-forwarded-proto", "http".parse().unwrap());
+        h.append("x-forwarded-proto", "https".parse().unwrap());
+        assert_eq!(rightmost_forwarded_header(&h, "x-forwarded-host"), Some("app.example"));
+        assert_eq!(request_scheme(&h, true), "https");
+        assert_eq!(request_hosts(&h, None, true), vec!["app.example"]);
     }
 
     #[test]

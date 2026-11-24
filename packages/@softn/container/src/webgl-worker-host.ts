@@ -102,9 +102,12 @@ interface WebGLCtxEntry {
   gl: AnyWebGLContext;
   isWebGL2: boolean;
   handles: Map<number, unknown>;
+  /** O(1) reverse map from opaque WebGL object -> handle id (avoids O(N) scan in encodeSimpleReturn). */
+  handleIds: WeakMap<object, number>;
   /** Cache `programHid:uniformName` -> server handle id so per-frame getUniformLocation calls never leak handles. */
   uniformLocations: Map<string, number>;
   extensions: Map<string, Record<string, unknown>>;
+  extensionMeta: Map<string, { constants: Record<string, number>; methods: string[] }>;
   allowedMethods: Set<string>;
   extensionMethods: Map<string, Set<string>>;
   nextServerHandleId: number;
@@ -125,11 +128,17 @@ export interface WebGLExecResolvers {
 }
 
 function decodeTypedArray(typeCode: string, b64: string): ArrayBufferView | ArrayBuffer {
+  if (Math.ceil((b64.length * 3) / 4) > MAX_WEBGL_UPLOAD_BYTES + 4) {
+    throw new RangeError('WebGL buffer upload exceeds size limit');
+  }
   const bytes = base64ToBytes(b64);
   if (bytes.byteLength > MAX_WEBGL_UPLOAD_BYTES) {
     throw new RangeError('WebGL buffer upload exceeds size limit');
   }
-  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const buf =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? (bytes.buffer as ArrayBuffer)
+      : (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
   switch (typeCode) {
     case 'f32': return new Float32Array(buf);
     case 'f64': return new Float64Array(buf);
@@ -177,13 +186,17 @@ function encodeSimpleReturn(val: unknown, entry: WebGLCtxEntry): unknown {
     const fmt = val as WebGLShaderPrecisionFormat;
     return { rangeMin: fmt.rangeMin, rangeMax: fmt.rangeMax, precision: fmt.precision };
   }
-  // Opaque WebGL object (e.g. getParameter(CURRENT_PROGRAM) / getUniformLocation)
-  for (const [hid, obj] of entry.handles) {
-    if (obj === val) return { __glH: hid };
+  // Opaque WebGL object (e.g. getParameter(CURRENT_PROGRAM) / getUniformLocation) — O(1) via WeakMap.
+  if (typeof val === 'object') {
+    const existing = entry.handleIds.get(val as object);
+    if (existing !== undefined && entry.handles.get(existing) === val) {
+      return { __glH: existing };
+    }
   }
   if (entry.handles.size < MAX_WEBGL_HANDLES) {
     const hid = entry.nextServerHandleId++;
     entry.handles.set(hid, val);
+    if (typeof val === 'object') entry.handleIds.set(val as object, hid);
     return { __glH: hid };
   }
   return null;
@@ -264,8 +277,10 @@ export class WebGLWorkerHost {
       gl,
       isWebGL2,
       handles: new Map(),
+      handleIds: new WeakMap(),
       uniformLocations: new Map(),
       extensions: new Map(),
+      extensionMeta: new Map(),
       allowedMethods,
       extensionMethods: new Map(),
       nextServerHandleId: SERVER_HANDLE_BASE,
@@ -342,6 +357,8 @@ export class WebGLWorkerHost {
   getExtension(ctxId: number, name: string): Record<string, unknown> | null {
     const entry = this.contexts.get(ctxId);
     if (!entry) return null;
+    const cachedMeta = entry.extensionMeta.get(name);
+    if (cachedMeta) return cachedMeta;
     let ext = entry.extensions.get(name);
     if (!ext) {
       let raw: unknown = null;
@@ -373,7 +390,9 @@ export class WebGLWorkerHost {
       }
     }
     entry.extensionMethods.set(name, extMethodSet);
-    return { constants, methods };
+    const meta = { constants, methods };
+    entry.extensionMeta.set(name, meta);
+    return meta;
   }
 
   private decodeArg(arg: unknown, entry: WebGLCtxEntry, resolvers?: WebGLExecResolvers): unknown {
@@ -479,11 +498,15 @@ export class WebGLWorkerHost {
           if (!entry.allowedMethods.has(method)) continue;
           const hid = Number(cmd[2]);
           const fn = glRec[method];
-          if (typeof fn !== 'function' || entry.handles.size >= MAX_WEBGL_HANDLES) continue;
+          // Reject duplicate handle IDs so overwriting `hid` cannot leak unbounded GPU objects under MAX_WEBGL_HANDLES.
+          if (typeof fn !== 'function' || entry.handles.has(hid) || entry.handles.size >= MAX_WEBGL_HANDLES) continue;
           const decoded: unknown[] = [];
           for (let j = 3; j < cmd.length; j++) decoded.push(this.decodeArg(cmd[j], entry, resolvers));
           const created = fn.apply(gl, decoded);
-          if (created !== null && created !== undefined) entry.handles.set(hid, created);
+          if (created !== null && created !== undefined) {
+            entry.handles.set(hid, created);
+            if (typeof created === 'object') entry.handleIds.set(created as object, hid);
+          }
         } else if (op === 'd') {
           const method = String(cmd[1]);
           if (!entry.allowedMethods.has(method)) continue;

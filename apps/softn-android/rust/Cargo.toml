@@ -1,0 +1,71 @@
+[package]
+name = "softn-android-engine"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Native Android mobile runtime for SoftN v2 full-stack containers powered by zipp-browser and zipp-vm"
+
+[lib]
+name = "softn_mobile"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Own Rust browser engine (Stylo CSS + Taffy Flexbox/Grid + Parley/Skrifa + TinySkia)
+zipp-dom = { path = "../../../../zipp-browser/crates/zipp-dom", default-features = false, features = ["svg", "woff-rust", "block", "flexbox", "grid", "floats"] }
+zipp-renderer = { path = "../../../../zipp-browser/crates/zipp-renderer", default-features = false, features = ["svg"] }
+anyrender = "0.8"
+linebender_resource_handle = "0.1"
+tiny-skia = "0.11"
+skrifa = { version = "0.40", default-features = false, features = ["std"] }
+color = "0.3"
+svgtypes = "0.16"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+
+# Own ZIPP VM (native x86-64/ARM64 JIT + step/heap limits + TypeScript, PHP 8, Python, Rust backends)
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.40", default-features = false, features = ["jit", "php", "python", "rust", "typescript"] }
+
+# AST-based ES Module linker (matches zipp-browser)
+oxc_allocator = "0.126.0"
+oxc_ast = "0.126.0"
+oxc_ast_visit = "0.126.0"
+oxc_parser = "0.126.0"
+oxc_span = "0.126.0"
+
+# Persistent native SQLite 3 (bundled C SQLite compiled straight into Android .so)
+rusqlite = { version = "0.41", features = ["bundled", "hooks", "limits"] }
+
+# Bundle archive, JSON, crypto, HTTP helpers
+html5ever = "0.37.0"
+stacker = "0.1"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+base64 = "0.22"
+data-url = "0.3"
+url = "2"
+regex = "1"
+bytes = "1"
+
+# Optional external HTTPS egress (only when permission.json grants `net` + allowed_hosts)
+ureq = { version = "3", default-features = false, features = ["rustls", "rustls-webpki-roots"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+android_logger = "0.14"
+log = "0.4"
+glow = "0.18"
+libloading = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Match zipp-browser's patched Stylo (light-dark/dark system colors) and Taffy (intrinsic sizing & layout fixes)
+[patch.crates-io]
+stylo = { path = "../../../../zipp-browser/third_party/stylo" }
+
+[patch."https://github.com/DioxusLabs/taffy"]
+taffy = { path = "../../../../zipp-browser/third_party/taffy" }

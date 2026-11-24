@@ -39,8 +39,9 @@ import { GUEST_BROWSER_GLOBALS_SOURCE } from './guest-browser-globals';
 import { GUEST_WEB_APIS_SOURCE } from './guest-web-apis';
 import { GUEST_INDEXEDDB_SOURCE } from './guest-indexeddb';
 import { GUEST_WORKER_SCOPE_SOURCE } from './guest-worker-scope';
-import { blobWithin, textWithin } from './capped-body';
+import { blobWithin, bytesWithin, textWithin } from './capped-body';
 import { isExternalUrlAllowed, sameSite } from './sanitize';
+import { isSafeVirtualRoute } from './session-store';
 import { loadZippEngine, type LoadedZippBindings, type ZippEngineInstance } from './zipp-loader';
 import { WebGLWorkerHost } from './webgl-worker-host';
 import { ThreeWorkerHost } from './three-worker-host';
@@ -67,6 +68,8 @@ interface OpenSocket {
   over: boolean;
   /** True only when opened through an isolated AppWorker (never spoofable via guest socket IDs). */
   fromAppWorker: boolean;
+  /** True when connected to an external origin gated by the `net` capability (not embedded backend). */
+  external: boolean;
 }
 
 /** A request as the app's side hands it over: a body of bytes comes as base64, the bridge carries text. */
@@ -113,11 +116,14 @@ interface AppWorker {
   /** Messages for it that came before it started, what they hold, and whether the app was told some were not sent. */
   waiting: string[];
   waitingChars: number;
+  waitingCount: number;
   toldWaiting: boolean;
   started: boolean;
   /** Messages waiting to be handed over once it has started (both ways), and whether the app was told some were not sent. */
   queuedChars: number;
+  queuedCount: number;
   toldQueued: boolean;
+  errorCount: number;
   /** The crypto keys and the blob addresses it made: let go of when it ends. */
   keys: Set<string>;
   blobs: Set<string>;
@@ -182,6 +188,63 @@ const BLOCKED_STORAGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_DRAIN_MS = 50;
 /** What the messages posted to a Worker before it has started may hold in all (characters of their copies). */
 const MAX_WAITING_CHARS = 32 * 1024 * 1024;
+const MAX_QUEUED_MESSAGES = 4096;
+const MAX_WORKER_ERRORS = 64;
+const MAX_WORKER_ERROR_CHARS = 4096;
+const MAX_OP_PAGES = 256;
+const MAX_OPS_PER_TURN = 65_536;
+const MAX_INIT_RETRIES = 16;
+const MAX_MODULE_SOURCES = 2048;
+const MAX_BODY_PARTS = 4096;
+const UTF8_ENCODER = new TextEncoder();
+
+const FORBIDDEN_EXTERNAL_HEADERS = new Set([
+  'cookie', 'host', 'origin', 'referer', 'content-length',
+  'transfer-encoding', 'connection', 'upgrade', 'te', 'trailer', 'keep-alive',
+]);
+
+function filterExternalRequestHeaders(headers: HeadersInit | undefined): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const out: Record<string, string> = {};
+  let any = false;
+  const entries: Array<[string, string]> = Array.isArray(headers)
+    ? headers.filter((e): e is [string, string] => Array.isArray(e) && e.length >= 2).map(([k, v]) => [String(k), String(v)])
+    : headers instanceof Headers
+      ? Array.from(headers.entries())
+      : typeof headers === 'object'
+        ? Object.entries(headers as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+        : [];
+  for (const [k, v] of entries) {
+    const lower = k.toLowerCase();
+    if (
+      !k ||
+      FORBIDDEN_EXTERNAL_HEADERS.has(lower) ||
+      lower.startsWith('sec-') ||
+      lower.startsWith('proxy-') ||
+      /[\r\n\0]/.test(k) ||
+      /[\r\n\0]/.test(v)
+    ) {
+      continue;
+    }
+    out[k] = v;
+    any = true;
+  }
+  return any ? out : undefined;
+}
+
+function releaseEngine(engine: ZippEngineInstance | null): void {
+  if (!engine) return;
+  try {
+    engine.dispose();
+  } catch {
+    // Ignore
+  }
+  try {
+    engine.free?.();
+  } catch {
+    // Ignore
+  }
+}
 /** The numbers the runtime answers an app Worker's calls by, apart from any call of the app's own. */
 const WORKER_CALL_BASE = 2 ** 40;
 /** What an app Worker asks of the runtime at once: its files read, a module's address, bytes made. */
@@ -199,6 +262,12 @@ const BUILTIN_MODULES = [
   'softn:backend',
   'softn:api',
   'softn:sqlite',
+  'softn:device',
+  'softn:camera',
+  'softn:bluetooth',
+  'softn:location',
+  'softn:haptics',
+  'softn:notifications',
   'softn-vendor:react',
   'softn-vendor:react-dom',
   'softn-vendor:react-dom/client',
@@ -268,7 +337,17 @@ function fixedProgramBytes(): number {
 
 /** The line breaks in a text, as JavaScript counts them (a CR and LF together are one). */
 function lineBreaks(text: string): number {
-  return text.match(/\r\n|[\r\n\u2028\u2029]/g)?.length ?? 0;
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 13) {
+      count++;
+      if (i + 1 < text.length && text.charCodeAt(i + 1) === 10) i++;
+    } else if (c === 10 || c === 0x2028 || c === 0x2029) {
+      count++;
+    }
+  }
+  return count;
 }
 
 /** What a person and a host are told when the engine has stopped, in words. */
@@ -384,6 +463,10 @@ interface OpenStream {
   abort: AbortController;
   /** Called when the app has taken what was waiting: the read goes on. */
   drained: (() => void) | null;
+  /** True only when opened through an isolated AppWorker. */
+  fromAppWorker: boolean;
+  /** True when fetching an external origin gated by the `net` capability (not embedded backend). */
+  external: boolean;
 }
 
 /**
@@ -531,6 +614,7 @@ export class ContainerWorkerSession {
   private idbAcked = 0;
   private readonly idbRefused = new Set<number>();
   private readonly idbBatchPrev = new Map<number, Map<string, string | undefined>>();
+  private idbBatchPrevBytes = 0;
   private idbKeptWaiters: Array<{ id: number; callId: number }> = [];
   /** A commit's writes, kept when it ends (all or none); null when none is under way. */
   private idbStaged: Map<string, string | null> | null = null;
@@ -562,9 +646,13 @@ export class ContainerWorkerSession {
   private drainAgain = false;
   /** Work handed over in tasks of its own, in order (messages between the app and its Workers). */
   private readonly tasks: Array<() => void> = [];
+  private taskHead = 0;
   private taskChannel: MessageChannel | null = null;
   private tasksPending = false;
   private tasksYielded = 0;
+  /** Session-wide and external-net AbortControllers for cancelling in-flight fetches on dispose or net revoke. */
+  private readonly sessionAbort = new AbortController();
+  private netAbort = new AbortController();
   /** The app's side's synchronous calls (installBridges): an app Worker's engine takes some of them. */
   private appSyncCall: ((kind: unknown, args: unknown) => unknown) | null = null;
   /** The app's keys for crypto.subtle, by the id its side knows each by. */
@@ -619,9 +707,14 @@ export class ContainerWorkerSession {
       case 'raf':
         this.handleRaf(msg.timestamp);
         break;
-      case 'permissions-updated':
+      case 'permissions-updated': {
+        const hadNet = this.grantedCapabilities.has('net');
         this.grantedCapabilities = new Set(msg.grantedCapabilities);
+        if (hadNet && !this.grantedCapabilities.has('net')) {
+          this.revokeExternalNet();
+        }
         break;
+      }
       case 'host-reply': {
         const pending = this.pendingHostReqs.get(msg.requestId);
         if (pending) {
@@ -1042,7 +1135,6 @@ export class ContainerWorkerSession {
         `globalThis.__softnCanvasMirror = ${this.mirrorCanvases ? 'true' : JSON.stringify(this.namesReadBack ? 'this browser has no OffscreenCanvas for the app’s Worker' : 'the app’s code was not seen to name toDataURL or getImageData')};`,
         // Whether the app's crypto.subtle is there: the Worker's own does its work.
         `globalThis.__softnSubtle = ${typeof crypto !== 'undefined' && typeof crypto.subtle === 'object' && crypto.subtle !== null};`,
-        `globalThis.__softnInitSessionStorage = ${JSON.stringify(msg.initialSessionStorage ?? {}).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};`,
         prelude,
         GUEST_EXTENSIONS_SOURCE,
         ...(this.externalThreeLoaded ? [GUEST_THREE_NATIVE_SOURCE] : []),
@@ -1176,13 +1268,14 @@ export class ContainerWorkerSession {
           for (const [index, url] of [...onDemand].sort((a, b) => b[0] - a[0])) {
             factoryBlocks.splice(index, 1);
             this.definedModules.delete(url);
+            this.moduleSources.delete(url);
           }
           onDemand.clear();
         }
       };
       const broken = new Map<string, string>();
       let standbyFailures = 0;
-      for (;;) {
+      for (let attempt = 0; ; attempt++) {
         const { source, lines, segments } = program(broken);
         this.sourceMap.clear();
         for (const seg of segments) this.sourceMap.addSegment(seg);
@@ -1192,6 +1285,7 @@ export class ContainerWorkerSession {
           engine.initSource(source, this.language);
           break;
         } catch (err) {
+          if (attempt >= MAX_INIT_RETRIES) throw err;
           const message = err instanceof Error ? err.message : String(err);
           const at = /:(\d+):\d+/.exec(message);
           const failed = at ? lines.find(({ from, to }) => Number(at[1]) >= from && Number(at[1]) <= to)?.key : undefined;
@@ -1213,7 +1307,8 @@ export class ContainerWorkerSession {
             const mapped = this.sourceMap.enrichError(err);
             broken.set(failed, mapped.message.split('\n')[0]);
           }
-          // An engine that could not compile its program has stopped: a new one, set up as this one was.
+          // An engine that could not compile its program has stopped: release its WASM handle before creating a new one.
+          releaseEngine(engine);
           engine = new bindings.Engine();
           this.engine = engine;
           this.installBridges(engine);
@@ -1288,7 +1383,7 @@ export class ContainerWorkerSession {
       }
     }
     const transformed = transformEsModule(source, moduleUrl);
-    if (!this.moduleSources.has(moduleUrl)) {
+    if (!this.moduleSources.has(moduleUrl) && this.moduleSources.size < MAX_MODULE_SOURCES) {
       this.moduleSources.set(moduleUrl, {
         file: filePath,
         startLine: 1,
@@ -1583,6 +1678,40 @@ export class ContainerWorkerSession {
     }
   }
 
+  /** Close all open external sockets/streams and cancel in-flight external fetches when `net` is revoked. */
+  private revokeExternalNet(): void {
+    this.netAbort.abort();
+    this.netAbort = new AbortController();
+    for (const [id, socket] of [...this.sockets]) {
+      if (!socket.external) continue;
+      socket.over = true;
+      socket.events = [{ t: 'close', code: 1008, reason: 'Network permission revoked', wasClean: false }];
+      socket.bytes = 0;
+      try {
+        socket.ws.close(1008, 'Network permission revoked');
+      } catch {
+        // Already closing
+      }
+      this.pumpSocket(id);
+      this.sockets.delete(id);
+    }
+    for (const [id, stream] of [...this.streams]) {
+      if (!stream.external) continue;
+      stream.over = true;
+      this.streams.delete(id);
+      stream.abort.abort();
+      stream.drained?.();
+      if (stream.waiting !== null) {
+        const waiting = stream.waiting;
+        stream.waiting = null;
+        this.resolveCallbackAndFlush(waiting, { events: [{ t: 'error', message: 'Network permission revoked' }] });
+      }
+    }
+    if (!this.backendRouting?.enabled) {
+      this.bodies.clear();
+    }
+  }
+
   /**
    * The app is shown again: the timers that came due while it was not are run, in the order
    * they were set. A repeating timer is armed again by its own turn, so one that ran every
@@ -1592,27 +1721,45 @@ export class ContainerWorkerSession {
     if (!this.paused) return;
     this.paused = false;
     this.pausedIdbTicks = 0;
-    const held = [...this.heldTimers.values()];
+    const held = [...this.heldTimers.entries()];
     this.heldTimers.clear();
-    for (const callId of held) {
-      if (this.disposed || this.paused) break;
-      this.resolveCallbackAndFlush(callId, { ok: true });
+    for (let i = 0; i < held.length; i++) {
+      if (this.disposed) return;
+      if (this.paused) {
+        for (let j = i; j < held.length; j++) {
+          const [tid, cid] = held[j];
+          if (!this.heldTimers.has(tid)) this.heldTimers.set(tid, cid);
+        }
+        return;
+      }
+      this.resolveCallbackAndFlush(held[i][1], { ok: true });
     }
     if (this.heldIdbTicks.length > 0) {
       const ticks = this.heldIdbTicks.splice(0, this.heldIdbTicks.length);
-      for (const callId of ticks) {
-        if (this.disposed || this.paused) break;
-        this.resolveCallbackAndFlush(callId, { ok: true });
+      for (let i = 0; i < ticks.length; i++) {
+        if (this.disposed) return;
+        if (this.paused) {
+          this.heldIdbTicks.unshift(...ticks.slice(i));
+          return;
+        }
+        this.resolveCallbackAndFlush(ticks[i], { ok: true });
       }
     }
     for (const worker of [...this.appWorkers.values()]) {
       if (this.disposed || this.paused) break;
       if (worker.over || worker.heldTimers.size === 0) continue;
-      const wHeld = [...worker.heldTimers.values()];
+      const wHeld = [...worker.heldTimers.entries()];
       worker.heldTimers.clear();
-      for (const callId of wHeld) {
-        if (this.disposed || this.paused || worker.over) break;
-        this.answerAppWorker(worker, callId, { ok: true });
+      for (let i = 0; i < wHeld.length; i++) {
+        if (this.disposed || worker.over) break;
+        if (this.paused) {
+          for (let j = i; j < wHeld.length; j++) {
+            const [tid, cid] = wHeld[j];
+            if (!worker.heldTimers.has(tid)) worker.heldTimers.set(tid, cid);
+          }
+          return;
+        }
+        this.answerAppWorker(worker, wHeld[i][1], { ok: true });
       }
     }
     // What arrived on its sockets while it was not shown.
@@ -1674,12 +1821,15 @@ export class ContainerWorkerSession {
       this.postTask(() => this.drainTurn());
     }
 
-    // Drain paged ShellOp batches
+    // Drain paged ShellOp batches with strict page and total op bounds
     const allOps: ShellOp[] = [];
-    for (;;) {
+    for (let pages = 0; pages < MAX_OP_PAGES && allOps.length < MAX_OPS_PER_TURN; pages++) {
       const page = this.callGuest('__softnContainerTake', [false]);
       if (!Array.isArray(page) || page.length === 0) break;
-      allOps.push(...(page as ShellOp[]));
+      const take = Math.min(page.length, MAX_OPS_PER_TURN - allOps.length);
+      for (let i = 0; i < take; i++) {
+        allOps.push(page[i] as ShellOp);
+      }
     }
 
     if (this.mirrorCanvases) this.mirrorOps(allOps);
@@ -1749,10 +1899,11 @@ export class ContainerWorkerSession {
         if (prev !== undefined) {
           clearTimeout(prev);
           this.timers.delete(timerId);
-        } else if (this.timers.size >= MAX_TIMERS) {
+        } else if (this.timers.size + this.heldTimers.size >= MAX_TIMERS) {
           this.resolveCallbackAndFlush(callId, { ok: false, error: 'Too many active timers' });
           return;
         }
+        this.heldTimers.delete(timerId);
         const delayMs = Math.max(0, Math.min(Number(args[1]) || 0, 86_400_000));
         const handle = setTimeout(() => {
           this.timers.delete(timerId);
@@ -1855,7 +2006,13 @@ export class ContainerWorkerSession {
             if (!defined.has(resolved.url)) {
               // No redirects, as for the app's own fetches: a host the app was granted could
               // answer with a redirect to one it was not, whose script would then be run.
-              const resp = await fetch(resolved.url, { credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', cache: cacheModeFor(resolved.url, undefined) });
+              const resp = await fetch(resolved.url, {
+                credentials: 'omit',
+                redirect: 'error',
+                referrerPolicy: 'no-referrer',
+                cache: cacheModeFor(resolved.url, undefined),
+                signal: this.netAbort.signal,
+              });
               if (!resp.ok) throw new Error(`HTTP ${resp.status} loading ${resolved.url}`);
               const remoteSrc = await textWithin(resp, MAX_REMOTE_SCRIPT_BYTES);
               await this.collectModuleGraph(remoteSrc, 'index.html', resolved.url, blocks, collected, undefined, defined);
@@ -1903,7 +2060,18 @@ export class ContainerWorkerSession {
 
       case 'net.fetch': {
         const url = args[0] ?? '';
-        const rawOpts = args[1] ? (JSON.parse(args[1]) as RequestInit & StreamRequest) : {};
+        let rawOpts: RequestInit & StreamRequest = {};
+        if (args[1]) {
+          try {
+            const parsed: unknown = JSON.parse(args[1]);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              rawOpts = parsed as RequestInit & StreamRequest;
+            }
+          } catch {
+            this.resolveCallbackAndFlush(callId, { error: 'Invalid fetch options JSON' });
+            return;
+          }
+        }
         const backendTarget = matchBackendTarget(url, this.backendRouting, {
           baseUrl: this.pageBaseUrl,
           method: rawOpts.method ?? 'GET',
@@ -1955,28 +2123,26 @@ export class ContainerWorkerSession {
           // A body of bytes (a blob, a form with a file in it) comes as base64: the bridge carries text.
           const resp = await fetch(url, {
             method: rawOpts.method ?? 'GET',
-            headers: rawOpts.headers,
+            headers: filterExternalRequestHeaders(rawOpts.headers),
             body: requestBody(rawOpts as StreamRequest),
             cache: cacheModeFor(url, undefined),
             credentials: 'omit',
             redirect: 'error',
             referrerPolicy: 'no-referrer',
+            signal: this.netAbort.signal,
           });
           const headersObj: Record<string, string> = {};
           resp.headers.forEach((v, k) => {
+            if (k.toLowerCase() === 'set-cookie') return;
             headersObj[k] = v;
           });
-          const bytes = new Uint8Array(await (await blobWithin(resp, MAX_NET_FETCH_BYTES)).arrayBuffer());
-          let bin = '';
-          for (let i = 0; i < bytes.length; i += 0x8000) {
-            bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-          }
+          const bytes = await bytesWithin(resp, MAX_NET_FETCH_BYTES);
           this.resolveCallbackAndFlush(callId, {
             ok: resp.ok,
             status: resp.status,
             statusText: resp.statusText,
             headers: headersObj,
-            base64: btoa(bin),
+            base64: bytesToBase64(bytes),
           });
         } catch (err) {
           this.resolveCallbackAndFlush(callId, {
@@ -1987,7 +2153,12 @@ export class ContainerWorkerSession {
       }
 
       case 'stream.open': {
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
         const id = args[0] ?? '';
+        if (!id || (!fromAppWorker && id.includes(':'))) {
+          this.resolveCallbackAndFlush(callId, { error: 'Invalid stream id' });
+          return;
+        }
         const url = args[1] ?? '';
         let opts: StreamRequest = {};
         try {
@@ -1998,8 +2169,9 @@ export class ContainerWorkerSession {
         }
         // A body that came ahead in pieces is this request's, whatever becomes of the request:
         // let go of here first, so a request that is refused takes its body with it.
-        const body = typeof opts.bodyId === 'string' ? this.bodies.get(opts.bodyId) : undefined;
-        if (typeof opts.bodyId === 'string') this.bodies.delete(opts.bodyId);
+        const bodyId = typeof opts.bodyId === 'string' && (fromAppWorker || !opts.bodyId.includes(':')) ? opts.bodyId : undefined;
+        const body = bodyId !== undefined ? this.bodies.get(bodyId) : undefined;
+        if (bodyId !== undefined) this.bodies.delete(bodyId);
         const backendTarget = matchBackendTarget(url, this.backendRouting, {
           baseUrl: this.pageBaseUrl,
           method: opts.method ?? 'GET',
@@ -2028,7 +2200,16 @@ export class ContainerWorkerSession {
           this.resolveCallbackAndFlush(callId, { error: `This container has ${MAX_STREAMS} requests open already` });
           return;
         }
-        const stream: OpenStream = { events: [], bytes: 0, waiting: null, over: false, abort: new AbortController(), drained: null };
+        const stream: OpenStream = {
+          events: [],
+          bytes: 0,
+          waiting: null,
+          over: false,
+          abort: new AbortController(),
+          drained: null,
+          fromAppWorker,
+          external: !backendTarget,
+        };
         this.streams.set(id, stream);
         this.resolveCallbackAndFlush(callId, { ok: true });
         if (backendTarget) {
@@ -2042,7 +2223,9 @@ export class ContainerWorkerSession {
       case 'stream.body': {
         // Allow buffered request bodies when either embedded backend routing OR net capability is enabled.
         if (!this.backendRouting?.enabled && (!this.permissions.permissions?.net?.enabled || !this.grantedCapabilities.has('net'))) return;
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
         const id = args[0] ?? '';
+        if (!id || (!fromAppWorker && id.includes(':'))) return;
         let body = this.bodies.get(id);
         if (!body) {
           if (this.bodies.size >= MAX_PENDING_BODIES) return;
@@ -2051,8 +2234,10 @@ export class ContainerWorkerSession {
         }
         if (body.bytes < 0) return;
         try {
+          if (body.parts.length >= MAX_BODY_PARTS) throw new Error('too many parts');
           const part = bodyPiece(JSON.parse(args[1] ?? '{}') as BodyPiece | null);
-          const size = typeof part === 'string' ? part.length * 2 : part.byteLength;
+          const rawSize = typeof part === 'string' ? part.length * 2 : part.byteLength;
+          const size = Math.max(64, rawSize);
           let pending = 0;
           for (const other of this.bodies.values()) if (other.bytes > 0) pending += other.bytes;
           if (body.bytes + size > MAX_BODY_BYTES || pending + size > MAX_PENDING_BODY_BYTES) throw new Error('too large');
@@ -2067,9 +2252,10 @@ export class ContainerWorkerSession {
       }
 
       case 'stream.next': {
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
         const id = args[0] ?? '';
         const stream = this.streams.get(id);
-        if (!stream) {
+        if (!stream || stream.fromAppWorker !== fromAppWorker || (!fromAppWorker && id.includes(':'))) {
           this.resolveCallbackAndFlush(callId, { error: 'No such request' });
           return;
         }
@@ -2079,10 +2265,12 @@ export class ContainerWorkerSession {
       }
 
       case 'stream.close': {
-        const stream = this.streams.get(args[0] ?? '');
-        if (!stream) return;
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
+        const id = args[0] ?? '';
+        const stream = this.streams.get(id);
+        if (!stream || stream.fromAppWorker !== fromAppWorker || (!fromAppWorker && id.includes(':'))) return;
         stream.over = true;
-        this.streams.delete(args[0] ?? '');
+        this.streams.delete(id);
         stream.abort.abort();
         stream.drained?.();
         // What the app was waiting on is answered, with nothing: it is not left waiting for good.
@@ -2095,7 +2283,7 @@ export class ContainerWorkerSession {
       }
 
       case 'ws.open': {
-        const fromAppWorker = this.workerCalls.has(callId);
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
         const id = args[0] ?? '';
         if (!id || (!fromAppWorker && id.includes(':'))) {
           this.resolveCallbackAndFlush(callId, { error: 'Invalid socket id' });
@@ -2154,6 +2342,7 @@ export class ContainerWorkerSession {
             waiting: null,
             over: false,
             fromAppWorker,
+            external: false,
           };
           this.sockets.set(id, socket);
           const wsPath = wsBackendTarget.query
@@ -2207,7 +2396,7 @@ export class ContainerWorkerSession {
           return;
         }
         ws.binaryType = 'arraybuffer';
-        const socket: OpenSocket = { ws, events: [], bytes: 0, waiting: null, over: false, fromAppWorker };
+        const socket: OpenSocket = { ws, events: [], bytes: 0, waiting: null, over: false, fromAppWorker, external: true };
         this.sockets.set(id, socket);
         const heard = (event: Record<string, unknown>, size = 0) => {
           if (socket.over) return;
@@ -2227,8 +2416,22 @@ export class ContainerWorkerSession {
         };
         ws.onopen = () => heard({ t: 'open', protocol: ws.protocol, extensions: ws.extensions });
         ws.onmessage = (e: MessageEvent) => {
-          if (typeof e.data === 'string') heard({ t: 'message', data: e.data }, e.data.length * 2);
-          else if (e.data instanceof ArrayBuffer) heard({ t: 'message', base64: bytesToBase64(new Uint8Array(e.data)) }, e.data.byteLength * 2);
+          if (socket.over) return;
+          if (typeof e.data === 'string') {
+            const size = e.data.length * 2;
+            if (socket.bytes + size > MAX_SOCKET_QUEUE_BYTES) {
+              heard({ t: 'close', code: 1009, reason: 'Too much arrived unread', wasClean: false }, MAX_SOCKET_QUEUE_BYTES + 1);
+              return;
+            }
+            heard({ t: 'message', data: e.data }, size);
+          } else if (e.data instanceof ArrayBuffer) {
+            const size = e.data.byteLength * 2;
+            if (socket.bytes + size > MAX_SOCKET_QUEUE_BYTES) {
+              heard({ t: 'close', code: 1009, reason: 'Too much arrived unread', wasClean: false }, MAX_SOCKET_QUEUE_BYTES + 1);
+              return;
+            }
+            heard({ t: 'message', base64: bytesToBase64(new Uint8Array(e.data)) }, size);
+          }
         };
         ws.onerror = () => heard({ t: 'error' });
         ws.onclose = (e: CloseEvent) => {
@@ -2240,9 +2443,10 @@ export class ContainerWorkerSession {
       }
 
       case 'ws.next': {
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
         const id = args[0] ?? '';
         const socket = this.sockets.get(id);
-        if (!socket) {
+        if (!socket || socket.fromAppWorker !== fromAppWorker || (!fromAppWorker && id.includes(':'))) {
           this.resolveCallbackAndFlush(callId, { error: 'No such socket' });
           return;
         }
@@ -2252,8 +2456,10 @@ export class ContainerWorkerSession {
       }
 
       case 'ws.send': {
-        const socket = this.sockets.get(args[0] ?? '');
-        if (!socket || socket.ws.readyState !== 1) return;
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
+        const id = args[0] ?? '';
+        const socket = this.sockets.get(id);
+        if (!socket || socket.fromAppWorker !== fromAppWorker || (!fromAppWorker && id.includes(':')) || socket.ws.readyState !== 1) return;
         const data = args[2] ?? '';
         if (data.length > MAX_SOCKET_MESSAGE_CHARS) return;
         try {
@@ -2265,8 +2471,10 @@ export class ContainerWorkerSession {
       }
 
       case 'ws.close': {
-        const socket = this.sockets.get(args[0] ?? '');
-        if (!socket) return;
+        const fromAppWorker = callId >= WORKER_CALL_BASE;
+        const id = args[0] ?? '';
+        const socket = this.sockets.get(id);
+        if (!socket || socket.fromAppWorker !== fromAppWorker || (!fromAppWorker && id.includes(':'))) return;
         const code = Number(args[1]);
         try {
           if (Number.isInteger(code) && (code === 1000 || (code >= 3000 && code <= 4999))) socket.ws.close(code, (args[2] ?? '').slice(0, 123));
@@ -2282,7 +2490,14 @@ export class ContainerWorkerSession {
         try {
           const urls: unknown = JSON.parse(args[0] ?? '[]');
           const defined = this.workerCalls.get(callId)?.worker.defined ?? this.definedModules;
-          if (Array.isArray(urls)) for (const url of urls) if (typeof url === 'string') defined.delete(url);
+          if (Array.isArray(urls)) {
+            for (const url of urls) {
+              if (typeof url === 'string') {
+                defined.delete(url);
+                if (defined === this.definedModules) this.moduleSources.delete(url);
+              }
+            }
+          }
         } catch {
           // Not a list: nothing to let go of.
         }
@@ -2353,11 +2568,13 @@ export class ContainerWorkerSession {
         const worker = this.appWorkers.get(args[0] ?? '');
         const packed = args[1] ?? '';
         if (worker && !worker.over) {
+          const weight = Math.max(64, packed.length);
           if (worker.started) this.queueForWorker(worker, packed);
-          else if (!worker.toldWaiting && worker.waitingChars + packed.length <= MAX_WAITING_CHARS) {
+          else if (!worker.toldWaiting && worker.waitingCount < MAX_QUEUED_MESSAGES && worker.waitingChars + weight <= MAX_WAITING_CHARS) {
             // All of them, to what a Worker's start may take to come (they were cut at 1,024 without a word).
             worker.waiting.push(packed);
-            worker.waitingChars += packed.length;
+            worker.waitingChars += weight;
+            worker.waitingCount++;
           } else if (!worker.toldWaiting) {
             // And none after the first that did not fit: one that fitted after it went ahead of it.
             worker.toldWaiting = true;
@@ -2389,6 +2606,23 @@ export class ContainerWorkerSession {
           opArgs = [];
         }
         void this.requestHost('sqlite.op', { op, args: opArgs }).then(
+          (result) => this.resolveCallbackAndFlush(callId, { ok: true, result }),
+          (err) => this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) })
+        );
+        return;
+      }
+
+      case 'device.call': {
+        const namespace = String(args[0] ?? '');
+        const method = String(args[1] ?? '');
+        let params: Record<string, unknown> = {};
+        try {
+          const parsed = JSON.parse(args[2] ?? '{}');
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) params = parsed as Record<string, unknown>;
+        } catch {
+          params = {};
+        }
+        void this.requestHost('device.call', { namespace, method, params }).then(
           (result) => this.resolveCallbackAndFlush(callId, { ok: true, result }),
           (err) => this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) })
         );
@@ -2506,7 +2740,7 @@ export class ContainerWorkerSession {
     try {
       const resp = await fetch(url, {
         method: opts.method ?? 'GET',
-        headers: opts.headers,
+        headers: filterExternalRequestHeaders(opts.headers),
         body: sent ?? requestBody(opts),
         cache: cacheModeFor(url, opts.cache),
         credentials: 'omit',
@@ -2516,6 +2750,7 @@ export class ContainerWorkerSession {
       });
       const headers: Record<string, string> = {};
       resp.headers.forEach((v, k) => {
+        if (k.toLowerCase() === 'set-cookie') return;
         headers[k] = v;
       });
       push({ t: 'head', ok: resp.ok, status: resp.status, statusText: resp.statusText, headers });
@@ -2813,7 +3048,8 @@ export class ContainerWorkerSession {
     engine.setDbBridge({
       query: (collectionRaw: unknown, optsRaw: unknown) => {
         const collection = String(collectionRaw ?? '');
-        const col = getCollection(collection);
+        const col = this.dbCollections.get(collection);
+        if (!col || col.size === 0) return [];
         const opts =
           optsRaw && typeof optsRaw === 'object'
             ? (optsRaw as { filter?: Record<string, unknown> })
@@ -2827,7 +3063,9 @@ export class ContainerWorkerSession {
         ).map(guestRecord);
       },
       get: (collectionRaw: unknown, idRaw: unknown) => {
-        const rec = getCollection(String(collectionRaw ?? '')).get(String(idRaw ?? ''));
+        const col = this.dbCollections.get(String(collectionRaw ?? ''));
+        if (!col) return null;
+        const rec = col.get(String(idRaw ?? ''));
         return rec && !rec._deleted && !rec.deleted ? guestRecord(rec) : null;
       },
       create: (collectionRaw: unknown, dataRaw: unknown) => {
@@ -2891,7 +3129,8 @@ export class ContainerWorkerSession {
       },
       hardDelete: (collectionRaw: unknown, idRaw: unknown) => {
         const collection = String(collectionRaw ?? '');
-        const col = getCollection(collection);
+        const col = this.dbCollections.get(collection);
+        if (!col) return;
         const existing = col.get(String(idRaw ?? ''));
         if (existing && col.delete(existing.id)) commit(collection, () => col.set(existing.id, existing));
       },
@@ -3088,9 +3327,12 @@ export class ContainerWorkerSession {
         }
         if (kind === 'session') {
           const sub = String(args[0] ?? '');
+          if (sub === 'init') {
+            return Object.fromEntries(this.sessionStore);
+          }
           if (sub === 'route') {
             const urlPath = String(args[1] ?? '');
-            if (urlPath.startsWith('/') && urlPath.length <= MAX_SESSION_URL_LENGTH) {
+            if (isSafeVirtualRoute(urlPath) && urlPath.length <= MAX_SESSION_URL_LENGTH) {
               this.postToHost({ type: 'session-route', urlPath });
             }
             return true;
@@ -3323,7 +3565,27 @@ export class ContainerWorkerSession {
       code = text;
     }
     // Its program defines the built-in modules, as the app's does: not taken again for it.
-    const worker: AppWorker = { id, engine: null, timers: new Map(), heldTimers: new Map(), defined: new Set(BUILTIN_MODULES), over: false, waiting: [], waitingChars: 0, toldWaiting: false, started: false, queuedChars: 0, toldQueued: false, keys: new Set(), blobs: new Set(), draining: false, drainAgain: false };
+    const worker: AppWorker = {
+      id,
+      engine: null,
+      timers: new Map(),
+      heldTimers: new Map(),
+      defined: new Set(BUILTIN_MODULES),
+      over: false,
+      waiting: [],
+      waitingChars: 0,
+      waitingCount: 0,
+      toldWaiting: false,
+      started: false,
+      queuedChars: 0,
+      queuedCount: 0,
+      toldQueued: false,
+      errorCount: 0,
+      keys: new Set(),
+      blobs: new Set(),
+      draining: false,
+      drainAgain: false,
+    };
     this.appWorkers.set(id, worker);
     try {
       const workerName = typeof spec.name === 'string' ? spec.name : '';
@@ -3353,6 +3615,8 @@ export class ContainerWorkerSession {
         // The modules it names, compiled with it, did not compile: started again without them
         // (each is then compiled when asked for, or refused in words).
         if (program.onDemand === 0) throw err;
+        releaseEngine(engine);
+        worker.engine = null;
         worker.defined.clear();
         for (const url of definedBefore) worker.defined.add(url);
         program = await this.appWorkerProgram(worker, code, path, spec.type === 'module', workerName, workerHref, false);
@@ -3364,6 +3628,7 @@ export class ContainerWorkerSession {
       // What came for it before it started goes first, each in its turn, then what comes after.
       for (const packed of worker.waiting.splice(0)) this.queueForWorker(worker, packed);
       worker.waitingChars = 0;
+      worker.waitingCount = 0;
       worker.started = true;
       this.drainAppWorker(worker);
       this.resolveCallbackAndFlush(callId, { ok: true });
@@ -3543,9 +3808,11 @@ export class ContainerWorkerSession {
       case 'worker.post': {
         // A message for the Worker object in the app's page script, in a task of its own.
         const packed = String(args[0] ?? '');
+        const weight = Math.max(64, packed.length);
         if (this.mayQueue(worker, packed)) {
           this.postTask(() => {
-            worker.queuedChars -= packed.length;
+            worker.queuedChars = Math.max(0, worker.queuedChars - weight);
+            worker.queuedCount = Math.max(0, worker.queuedCount - 1);
             this.toApp('__softnContainerWorkerMessage', [worker.id, packed]);
           });
         }
@@ -3553,8 +3820,14 @@ export class ContainerWorkerSession {
         return;
       }
       case 'worker.error': {
-        const message = String(args[0] ?? '');
-        this.postTask(() => this.toApp('__softnContainerWorkerError', [worker.id, message]));
+        if (worker.errorCount < MAX_WORKER_ERRORS) {
+          worker.errorCount++;
+          const message = String(args[0] ?? '').slice(0, MAX_WORKER_ERROR_CHARS);
+          this.postTask(() => {
+            worker.errorCount = Math.max(0, worker.errorCount - 1);
+            this.toApp('__softnContainerWorkerError', [worker.id, message]);
+          });
+        }
         this.answerAppWorker(worker, callId, { ok: true });
         return;
       }
@@ -3614,28 +3887,32 @@ export class ContainerWorkerSession {
    * limit. Past it, the app is told once, and those messages are not sent.
    */
   private mayQueue(worker: AppWorker, packed: string): boolean {
-    if (worker.queuedChars + packed.length > MAX_WAITING_CHARS) {
+    const weight = Math.max(64, packed.length);
+    if (worker.queuedCount >= MAX_QUEUED_MESSAGES || worker.queuedChars + weight > MAX_WAITING_CHARS) {
       if (!worker.toldQueued) {
         worker.toldQueued = true;
         this.postTask(() => this.toApp('__softnContainerWorkerError', [worker.id, `Messages waiting to be handed over between the app and its Worker came to more than ${MAX_WAITING_CHARS / 1024 / 1024} M characters: the rest were not sent.`]));
       }
       return false;
     }
-    worker.queuedChars += packed.length;
+    worker.queuedChars += weight;
+    worker.queuedCount++;
     return true;
   }
 
   private queueForWorker(worker: AppWorker, packed: string): void {
     if (!this.mayQueue(worker, packed)) return;
+    const weight = Math.max(64, packed.length);
     this.postTask(() => {
-      worker.queuedChars -= packed.length;
+      worker.queuedChars = Math.max(0, worker.queuedChars - weight);
+      worker.queuedCount = Math.max(0, worker.queuedCount - 1);
       this.toAppWorker(worker, packed);
     });
   }
 
   /** What went wrong in an app Worker's turn, told to the Worker object as an error (in its turn, after its messages); one whose engine stopped is ended. */
   private appWorkerFailed(worker: AppWorker, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = (err instanceof Error ? err.message : String(err)).slice(0, MAX_WORKER_ERROR_CHARS);
     this.postTask(() => this.toApp('__softnContainerWorkerError', [worker.id, message]));
     if (!worker.engine || worker.engine.disposed) this.endAppWorker(worker);
   }
@@ -3675,11 +3952,7 @@ export class ContainerWorkerSession {
       if (this.mirrorCanvases) this.mirrorOps(gone);
       if (!this.disposed) this.postToHost({ type: 'ops', ops: gone });
     }
-    try {
-      worker.engine?.dispose();
-    } catch {
-      // Stopped already.
-    }
+    releaseEngine(worker.engine);
     worker.engine = null;
   }
 
@@ -3727,6 +4000,7 @@ export class ContainerWorkerSession {
       redirect: 'error',
       referrerPolicy: 'no-referrer',
       cache: cacheModeFor(url, undefined),
+      signal: this.netAbort.signal,
     });
     if (!response.ok) return { error: `HTTP ${response.status} loading ${url}` };
     const text = await textWithin(response, MAX_REMOTE_SCRIPT_BYTES);
@@ -3799,8 +4073,10 @@ export class ContainerWorkerSession {
 
   private runTasks(): void {
     const began = performance.now();
-    while (this.tasks.length > 0 && !this.disposed) {
-      const work = this.tasks.shift()!;
+    while (this.taskHead < this.tasks.length && !this.disposed) {
+      const work = this.tasks[this.taskHead]!;
+      this.tasks[this.taskHead] = undefined as unknown as () => void;
+      this.taskHead++;
       try {
         work();
       } catch (err) {
@@ -3808,7 +4084,14 @@ export class ContainerWorkerSession {
       }
       if (performance.now() - began > 8) break;
     }
-    if (this.tasks.length > 0 && !this.disposed) this.scheduleTasks();
+    if (this.taskHead >= this.tasks.length) {
+      this.tasks.length = 0;
+      this.taskHead = 0;
+    } else if (this.taskHead >= 256 && this.taskHead * 2 >= this.tasks.length) {
+      this.tasks.splice(0, this.taskHead);
+      this.taskHead = 0;
+    }
+    if (this.taskHead < this.tasks.length && !this.disposed) this.scheduleTasks();
     else this.tasksPending = false;
   }
 
@@ -3836,7 +4119,22 @@ export class ContainerWorkerSession {
     }
     // What it was before the batch: put back if the page does not keep the batch.
     const prev = this.idbBatchPrev.get(this.idbBatchId);
-    if (prev && !prev.has(name)) prev.set(name, before);
+    if (prev && !prev.has(name)) {
+      const entryBytes = (name.length + (before?.length ?? 0)) * 2 + 64;
+      const cap = Math.max(this.idbQuotaBytes, this.storageQuotaBytes);
+      // Bound total retained rollback snapshots while unacknowledged batches accumulate.
+      while (this.idbBatchPrevBytes + entryBytes > cap && this.idbBatchPrev.size > 1) {
+        const oldestKey = this.idbBatchPrev.keys().next().value as number;
+        if (oldestKey === this.idbBatchId) break;
+        const oldest = this.idbBatchPrev.get(oldestKey);
+        this.idbBatchPrev.delete(oldestKey);
+        if (oldest) {
+          for (const [k, v] of oldest) this.idbBatchPrevBytes = Math.max(0, this.idbBatchPrevBytes - ((k.length + (v?.length ?? 0)) * 2 + 64));
+        }
+      }
+      prev.set(name, before);
+      this.idbBatchPrevBytes += entryBytes;
+    }
     this.idbWrites.set(name, value);
   }
 
@@ -3856,7 +4154,11 @@ export class ContainerWorkerSession {
     if (!Number.isInteger(id) || id <= this.idbAcked) return;
     this.idbAcked = id;
     const prev = this.idbBatchPrev.get(id);
-    this.idbBatchPrev.delete(id);
+    for (const [batchId, map] of [...this.idbBatchPrev]) {
+      if (batchId > id) continue;
+      this.idbBatchPrev.delete(batchId);
+      for (const [k, v] of map) this.idbBatchPrevBytes = Math.max(0, this.idbBatchPrevBytes - ((k.length + (v?.length ?? 0)) * 2 + 64));
+    }
     if (!ok) {
       this.idbRefused.add(id);
       if (this.idbRefused.size > 256) this.idbRefused.delete(this.idbRefused.values().next().value as number);
@@ -3947,7 +4249,11 @@ export class ContainerWorkerSession {
       if (mirror.canvas.width !== w || mirror.canvas.height !== h) {
         this.mirrorPixels -= mirror.canvas.width * mirror.canvas.height;
         if (!this.makeRoomForMirror(w * h)) {
+          // Preserve unreadable taint and reclaim backing memory when a resize cannot fit.
+          mirror.canvas.width = 1;
+          mirror.canvas.height = 1;
           this.lostMirrors.add(id);
+          if (mirror.unreadable) this.unreadableMirrors.add(id);
           return null;
         }
         mirror.canvas.width = w;
@@ -4155,14 +4461,19 @@ export class ContainerWorkerSession {
       }
       this.deletePicture(ref);
     }
-    const picture: MirrorPicture = { src, basePath, bitmap: null, pixels: 0, foreign: false, cors, decoding: null, failed: false };
+    const trimmedSrc = src.trim();
+    const picture: MirrorPicture = { src: trimmedSrc, basePath, bitmap: null, pixels: 0, foreign: false, cors, decoding: null, failed: false };
     this.setPicture(ref, picture);
-    if (/^[a-z][a-z0-9+.-]*:/i.test(src) && !/^(blob|data):/i.test(src) && !src.startsWith(`${VIRTUAL_ORIGIN}/`)) {
+    if (
+      (trimmedSrc.startsWith('//') ||
+        (/^[a-z][a-z0-9+.-]*:/i.test(trimmedSrc) && !/^(blob|data):/i.test(trimmedSrc))) &&
+      !trimmedSrc.startsWith(`${VIRTUAL_ORIGIN}/`)
+    ) {
       // From another site: a canvas it is drawn into cannot be read back, as in a browser,
       // unless it was asked for with CORS from a site the app may reach that allows it.
       // (Fetched as it loads, as the app's own pictures are decoded: one asked for with CORS
       // is one the app means to read back, and it reads it back as soon as it has drawn it.)
-      if (!cors || !this.mayReadRemotePicture(src)) {
+      if (!cors || !this.mayReadRemotePicture(trimmedSrc)) {
         picture.foreign = true;
         return;
       }
@@ -4194,9 +4505,11 @@ export class ContainerWorkerSession {
     this.mirrorPictures.set(ref, picture);
     this.pictureChars += ref.length + picture.src.length + picture.basePath.length;
     this.forgottenPictures.delete(ref);
-    for (const oldest of [...this.mirrorPictures.keys()]) {
-      if (this.mirrorPictures.size <= MAX_MIRROR_PICTURES && this.pictureChars <= MAX_PICTURE_ADDRESS_CHARS) break;
-      if (oldest !== ref) this.deletePicture(oldest);
+    if (this.mirrorPictures.size > MAX_MIRROR_PICTURES || this.pictureChars > MAX_PICTURE_ADDRESS_CHARS) {
+      for (const oldest of this.mirrorPictures.keys()) {
+        if (this.mirrorPictures.size <= MAX_MIRROR_PICTURES && this.pictureChars <= MAX_PICTURE_ADDRESS_CHARS) break;
+        if (oldest !== ref) this.deletePicture(oldest);
+      }
     }
   }
 
@@ -4238,7 +4551,7 @@ export class ContainerWorkerSession {
       const found = /^data:([^;,]*)(;base64)?,(.*)$/is.exec(src);
       if (!found) return null;
       try {
-        return { bytes: found[2] ? base64ToBytes(found[3]) : new TextEncoder().encode(decodeURIComponent(found[3])), type: found[1] };
+        return { bytes: found[2] ? base64ToBytes(found[3]) : UTF8_ENCODER.encode(decodeURIComponent(found[3])), type: found[1] };
       } catch {
         return null;
       }
@@ -4281,15 +4594,28 @@ export class ContainerWorkerSession {
         return;
       }
       // Never from the browser's copy of an earlier answer (one fetched with cookies may be there).
-      picture.decoding = this.decodeInTurn(() => fetch(picture.src, { mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' })
-        .then(async (response) => {
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          // Where a redirect took it: read only from a site the app may read from.
-          if (response.redirected && !this.mayReadRemotePicture(response.url)) throw new Error('redirected elsewhere');
-          // Read a part at a time and held to its size as it comes (a size said first is not always there, nor true).
-          return createImageBitmap(await blobWithin(response, MAX_REMOTE_PICTURE_BYTES));
+      picture.decoding = this.decodeInTurn(() => {
+        if (this.disposed || this.mirrorPictures.get(ref) !== picture) {
+          picture.decoding = null;
+          return Promise.resolve();
+        }
+        return fetch(picture.src, {
+          mode: 'cors',
+          credentials: 'omit',
+          cache: 'no-store',
+          redirect: 'error',
+          referrerPolicy: 'no-referrer',
+          signal: this.netAbort.signal,
         })
-        .then(took, lost));
+          .then(async (response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            // Where a redirect took it: read only from a site the app may read from.
+            if (response.redirected && !this.mayReadRemotePicture(response.url)) throw new Error('redirected elsewhere');
+            // Read a part at a time and held to its size as it comes (a size said first is not always there, nor true).
+            return createImageBitmap(await blobWithin(response, MAX_REMOTE_PICTURE_BYTES));
+          })
+          .then(took, lost);
+      });
       return;
     }
     const found = this.pictureBytes(picture);
@@ -4306,9 +4632,17 @@ export class ContainerWorkerSession {
     // a larger one is decoded when it is first drawn. An image on no page (new Image()) is
     // made to be drawn, and is decoded whatever its size.
     if (early && ref.startsWith('node:') && found.bytes.byteLength > MAX_EARLY_PICTURE_BYTES) return;
-    const copy = new Uint8Array(found.bytes.byteLength);
-    copy.set(found.bytes);
-    picture.decoding = this.decodeInTurn(() => createImageBitmap(new Blob([copy], { type: found.type })).then(took, lost));
+    const rawBytes = found.bytes;
+    const rawType = found.type;
+    picture.decoding = this.decodeInTurn(() => {
+      if (this.disposed || this.mirrorPictures.get(ref) !== picture) {
+        picture.decoding = null;
+        return Promise.resolve();
+      }
+      const copy = new Uint8Array(rawBytes.byteLength);
+      copy.set(rawBytes);
+      return createImageBitmap(new Blob([copy], { type: rawType })).then(took, lost);
+    });
   }
 
   /**
@@ -4519,14 +4853,30 @@ export class ContainerWorkerSession {
     if (this.disposed) return;
     for (const worker of [...this.appWorkers.values()]) this.endAppWorker(worker);
     this.disposed = true;
+    this.sessionAbort.abort();
+    this.netAbort.abort();
     this.tasks.length = 0;
+    this.taskHead = 0;
+    this.tasksPending = false;
     this.taskChannel?.port1.close();
+    this.taskChannel?.port2.close();
     this.taskChannel = null;
     this.cryptoKeys.clear();
+    this.cryptoKeyWeights.clear();
+    this.cryptoKeyBytes = 0;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
     this.heldTimers.clear();
     this.heldIdbTicks.length = 0;
+    this.idbWrites = null;
+    this.idbPieces.clear();
+    this.idbPieceChars = 0;
+    this.idbBatchPrev.clear();
+    this.idbBatchPrevBytes = 0;
+    this.idbKeptWaiters.length = 0;
+    this.idbRefused.clear();
+    this.idbStaged = null;
+    this.idbStagedChars = 0;
     for (const socket of this.sockets.values()) {
       socket.over = true;
       try {
@@ -4556,21 +4906,14 @@ export class ContainerWorkerSession {
     this.picturePixels = 0;
     this.pictureChars = 0;
     this.forgottenPictures.clear();
+    this.decodeWaiting.length = 0;
     this.mirrorBlobs.clear();
     this.mirrorBlobBytes = 0;
     this.turnsWaiting.length = 0;
-    if (this.engine) {
-      try {
-        this.engine.dispose();
-      } catch {
-        // Ignore
-      }
-      try {
-        this.engine.free?.();
-      } catch {
-        // Ignore
-      }
-      this.engine = null;
-    }
+    this.moduleSources.clear();
+    this.scriptSources.clear();
+    this.sourceMap.clear();
+    releaseEngine(this.engine);
+    this.engine = null;
   }
 }

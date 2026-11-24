@@ -196,8 +196,8 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "zipp-numparse"
-version = "0.0.38"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.38#8cb8399f4f63fa3bebb3298da6f25cda0ecf5395"
+version = "0.0.40"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "zipp-regress"
 version = "0.11.1"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.38#8cb8399f4f63fa3bebb3298da6f25cda0ecf5395"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
 dependencies = [
  "hashbrown",
  "memchr",
@@ -214,8 +214,8 @@ dependencies = [
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.38"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.38#8cb8399f4f63fa3bebb3298da6f25cda0ecf5395"
+version = "0.0.40"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
 dependencies = [
  "memchr",
  "num-bigint",

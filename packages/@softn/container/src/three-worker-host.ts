@@ -76,6 +76,8 @@ const SHADER_RECOMPILE_KEYS = new Set([
   'polygonOffset', 'dithering', 'lights', 'clipping',
 ]);
 
+const MAX_THREE_CUMULATIVE_BYTES = 256 * 1024 * 1024;
+
 interface NativeThreeRendererEntry {
   rendererId: number;
   canvasId: number;
@@ -85,17 +87,50 @@ interface NativeThreeRendererEntry {
   geometries: Map<number, import('three').BufferGeometry>;
   materials: Map<number, import('three').Material>;
   textures: Map<number, import('three').Texture>;
+  allocatedBytes: number;
   dirty: boolean;
   disposed?: boolean;
   lastRender?: { sceneId: number; cameraId: number };
 }
 
+function isObjectAncestor(candidate: import('three').Object3D, node: import('three').Object3D): boolean {
+  let cur: import('three').Object3D | null = node;
+  for (let depth = 0; cur && depth < MAX_OBJECTS; depth++) {
+    if (cur === candidate) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+function disposeObjectTree(root: import('three').Object3D): void {
+  root.traverse((node) => {
+    const m = node as {
+      geometry?: { dispose?: () => void };
+      material?: { dispose?: () => void } | Array<{ dispose?: () => void }>;
+    };
+    try { m.geometry?.dispose?.(); } catch { /* ignore */ }
+    if (Array.isArray(m.material)) {
+      for (const mat of m.material) {
+        try { mat?.dispose?.(); } catch { /* ignore */ }
+      }
+    } else {
+      try { m.material?.dispose?.(); } catch { /* ignore */ }
+    }
+  });
+}
+
 function decodeTypedArray(typeCode: string, b64: string): Float32Array | Uint16Array | Uint32Array | Int32Array | Int16Array | Int8Array | Uint8Array | Uint8ClampedArray {
+  if (Math.ceil((b64.length * 3) / 4) > MAX_UPLOAD_BYTES + 4) {
+    throw new RangeError('Three.js buffer upload exceeds size limit');
+  }
   const bytes = base64ToBytes(b64);
   if (bytes.byteLength > MAX_UPLOAD_BYTES) {
     throw new RangeError('Three.js buffer upload exceeds size limit');
   }
-  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const buf =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? bytes.buffer
+      : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   switch (typeCode) {
     case 'f32': return new Float32Array(buf);
     case 'u16': return new Uint16Array(buf);
@@ -291,7 +326,11 @@ export class ThreeWorkerHost {
       });
       if (this.gltfTemplateCache.size >= MAX_GLTF_TEMPLATES) {
         const oldestKey = this.gltfTemplateCache.keys().next().value;
-        if (oldestKey !== undefined) this.gltfTemplateCache.delete(oldestKey);
+        if (oldestKey !== undefined) {
+          const evicted = this.gltfTemplateCache.get(oldestKey);
+          this.gltfTemplateCache.delete(oldestKey);
+          void evicted?.then((tpl) => { if (tpl) disposeObjectTree(tpl); }).catch(() => undefined);
+        }
       }
       this.gltfTemplateCache.set(cleanSrc, templatePromise);
     }
@@ -364,6 +403,7 @@ export class ThreeWorkerHost {
       geometries: new Map(),
       materials: new Map(),
       textures: new Map(),
+      allocatedBytes: 0,
       dirty: false,
     };
     this.renderers.set(rendererId, entry);
@@ -414,9 +454,10 @@ export class ThreeWorkerHost {
             break;
           }
           case 'rs': {
-            const w = Math.max(1, Math.min(4096, canvasSide(Number(op[1])) || 1));
-            const h = Math.max(1, Math.min(4096, canvasSide(Number(op[2])) || 1));
             const dpr = Math.max(0.5, Math.min(2, Number(op[3]) || 1));
+            const maxCssSide = Math.floor(4096 / dpr);
+            const w = Math.max(1, Math.min(maxCssSide, canvasSide(Number(op[1])) || 1));
+            const h = Math.max(1, Math.min(maxCssSide, canvasSide(Number(op[2])) || 1));
             entry.renderer.setPixelRatio(dpr);
             entry.renderer.setSize(w, h, false);
             break;
@@ -513,7 +554,8 @@ export class ThreeWorkerHost {
               const wantedSet = new Set<import('three').Object3D>();
               for (let c = 0; c < childIds.length; c++) {
                 const ch = entry.objects.get(childIds[c]);
-                if (ch && ch !== parent) {
+                // Prevent duplicates and scene-graph cycles (`A -> B -> A`) that would hang `raycast()` / `render()`.
+                if (ch && ch !== parent && !wantedSet.has(ch) && !isObjectAncestor(ch, parent)) {
                   wanted.push(ch);
                   wantedSet.add(ch);
                 }
@@ -702,10 +744,13 @@ export class ThreeWorkerHost {
     } else if (kind === 'data') {
       const w = Math.max(1, Math.min(MAX_THREE_TEXTURE_SIDE, Math.floor(Number(spec.w) || 1)));
       const h = Math.max(1, Math.min(MAX_THREE_TEXTURE_SIDE, Math.floor(Number(spec.h) || 1)));
-      if (w * h * 4 > MAX_THREE_TEXTURE_BYTES) return;
+      const allocSize = w * h * 4;
+      if (allocSize > MAX_THREE_TEXTURE_BYTES) return;
+      if (entry.allocatedBytes + allocSize > MAX_THREE_CUMULATIVE_BYTES) return;
       if (typeof spec.b64 === 'string' && Math.ceil((spec.b64.length * 3) / 4) > MAX_THREE_TEXTURE_BYTES) return;
-      const data = typeof spec.b64 === 'string' ? decodeTypedArray(String(spec.tc || 'u8'), spec.b64) : new Uint8Array(w * h * 4);
-      if (data.byteLength > MAX_THREE_TEXTURE_BYTES) return;
+      const data = typeof spec.b64 === 'string' ? decodeTypedArray(String(spec.tc || 'u8'), spec.b64) : new Uint8Array(allocSize);
+      if (data.byteLength > MAX_THREE_TEXTURE_BYTES || entry.allocatedBytes + data.byteLength > MAX_THREE_CUMULATIVE_BYTES) return;
+      entry.allocatedBytes += data.byteLength;
       const fmt = typeof spec.format === 'number' ? (spec.format as import('three').PixelFormat) : THREE.RGBAFormat;
       const typ = typeof spec.type === 'number' ? (spec.type as import('three').TextureDataType) : THREE.UnsignedByteType;
       tex?.dispose();
@@ -959,6 +1004,9 @@ export class ThreeWorkerHost {
           const geo = entry.geometries.get(Number(spec.geo));
           const mat = this.resolveMaterial(entry, spec.mat);
           const cap = Math.max(1, Math.min(MAX_INSTANCED_MESH_CAP, Math.floor(Number(spec.cap) || Number(spec.count) || 1)));
+          const matrixBytes = cap * 64;
+          if (entry.allocatedBytes + matrixBytes > MAX_THREE_CUMULATIVE_BYTES) return;
+          entry.allocatedBytes += matrixBytes;
           obj = new THREE.InstancedMesh(geo, mat, cap);
           break;
         }
@@ -1143,11 +1191,15 @@ export class ThreeWorkerHost {
       }
     }
 
-    // Ensure root world matrices are current before intersecting
+    // Ensure root world matrices are current before intersecting (bounded against cyclic graphs).
     const roots = new Set<import('three').Object3D>();
     for (const t of targets) {
       let cur = t;
-      while (cur.parent) cur = cur.parent;
+      const seen = new Set<import('three').Object3D>([cur]);
+      while (cur.parent && !seen.has(cur.parent) && seen.size < MAX_OBJECTS) {
+        cur = cur.parent;
+        seen.add(cur);
+      }
       roots.add(cur);
     }
     for (const r of roots) r.updateMatrixWorld();
@@ -1220,6 +1272,9 @@ export class ThreeWorkerHost {
       this.releaseEntry(entry);
     }
     this.renderers.clear();
+    for (const tplPromise of this.gltfTemplateCache.values()) {
+      void tplPromise.then((tpl) => { if (tpl) disposeObjectTree(tpl); }).catch(() => undefined);
+    }
     this.gltfTemplateCache.clear();
   }
 

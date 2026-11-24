@@ -9,15 +9,16 @@
  *   on-demand `<softn-*>` Custom Elements, and multi-page HTML navigation!
  */
 
-import type { Capability } from '@softn/bundle-format/capabilities';
+import { inspectDeclaration, type Capability } from '@softn/bundle-format/capabilities';
 import { base64ToBytes, bytesToBase64, ContainerArchive, VIRTUAL_ORIGIN } from './archive';
 import { buildBackendRoutingConfig, matchBackendTarget, RemoteBackendTransport } from './backend-transport';
 import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar';
+import { createWebDeviceBridge, dispatchDeviceBridgeCall } from './device-bridge';
 import { HostDomPatcher } from './dom-patcher';
 import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
 import { hostFileName, hostLabel, slotsAreContained, type FontScopeContext } from './host-policy';
 import { LocalBackendTransport } from './local-backend-transport';
-import { loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
+import { isSafeVirtualRoute, loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
 import { extractSanitizedFontFaces, prepareHtmlDocument } from './sanitize';
 import { FRAME_BASE_CSS, PAGE_BASE_CSS } from './ui-css';
 import { ensureUiExtension } from './ui-extensions/registry';
@@ -104,11 +105,20 @@ interface WorkerTransport {
 const shadowRootRegistry = new WeakMap<HTMLElement, ShadowRoot>();
 let fontScopeSeq = 0;
 const MAX_BACKEND_SOCKETS = 8;
-const MAX_SESSION_URL_LENGTH = 4096;
 const MAX_BACKEND_FETCH_BODY_B64 = 64 * 1024 * 1024;
+const MAX_BACKEND_WS_TEXT_CHARS = 16 * 1024 * 1024;
+const MAX_BACKEND_WS_B64_CHARS = Math.ceil((16 * 1024 * 1024 * 4) / 3) + 4;
 const BLOCKED_SESSION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-function sessionStorageBytes(map: Record<string, string>): number {
+function safeStorageAppId(id: string): string {
+  // Preserve canonical `sha256:<64-hex>` keys while escaping `%` and `:` in arbitrary
+  // host/URL appIds so an appId containing `:ls:` / `:db` / `:idb:` can never collide
+  // with another app's `softn-v2:<appId>:` storage prefix.
+  if (/^sha256:[0-9a-f]{64}$/.test(id)) return id;
+  return id.replace(/%/g, '%25').replace(/:/g, '%3A');
+}
+
+function recordBytes(map: Record<string, string>): number {
   let total = 0;
   for (const [k, v] of Object.entries(map)) {
     total += (k.length + v.length) * 2;
@@ -228,7 +238,9 @@ function getSharedCompiledEngine(url: string): Promise<WebAssembly.Module> {
       const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim();
       if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
         try {
-          return await WebAssembly.compileStreaming(resp.clone());
+          const compiled = await WebAssembly.compileStreaming(resp.clone());
+          void resp.body?.cancel().catch(() => undefined);
+          return compiled;
         } catch {
           // Fallback to arrayBuffer compile
         }
@@ -549,7 +561,7 @@ export async function mountSoftNContainer(
   const rawStorageBase =
     typeof options.storagePrefix === 'string' && options.storagePrefix.length > 0
       ? options.storagePrefix
-      : `softn-v2:${appId}:`;
+      : `softn-v2:${safeStorageAppId(appId)}:`;
   const storageBase = rawStorageBase.endsWith(':') || rawStorageBase.endsWith('/') ? rawStorageBase : `${rawStorageBase}:`;
   // Said once: the page's storage refused (it is full, or a private window keeps none).
   let storageRefused = false;
@@ -559,13 +571,20 @@ export async function mountSoftNContainer(
     options.onError?.(new Error('This app’s data could not be kept: the browser’s storage for this page is full or unavailable.'));
   };
   const permissions = options.permissionsOverride ?? archive.permissions;
-  const requestedCaps = archive.requestedCapabilities;
+  const requestedCaps = options.permissionsOverride
+    ? inspectDeclaration(permissions).requested
+    : archive.requestedCapabilities;
+  const allowedCaps = new Set<Capability>(requestedCaps);
+  const deviceBridge = options.deviceBridge ?? createWebDeviceBridge();
 
-  // What is granted before the first script runs: everything the archive asks for when the
-  // deployment preapproved it, else what the host says the person already allowed.
+  // What is granted before the first script runs: everything the archive (or host override)
+  // permits when preapproved, else only declared capabilities from initialGrantedCapabilities.
   let grantedCaps = new Set<Capability>(
-    options.permissionMode === 'preapproved' ? requestedCaps : (options.initialGrantedCapabilities ?? [])
+    options.permissionMode === 'preapproved'
+      ? requestedCaps
+      : (options.initialGrantedCapabilities ?? []).filter((cap) => allowedCaps.has(cap))
   );
+  let consentDenied = false;
 
   // Legacy v1 `.ui` fallback path (0 bytes loaded unless `.ui` entry detected)
   if (archive.manifest.mode === 'legacy-ui') {
@@ -639,8 +658,13 @@ export async function mountSoftNContainer(
     }
     if (rest.startsWith('ls:')) {
       const k = rest.slice(3);
+      const prevVal = Object.prototype.hasOwnProperty.call(liveSession.localStorage, k) ? liveSession.localStorage[k] : null;
+      if (prevVal !== null) liveLocalStorageBytes -= (k.length + prevVal.length) * 2;
       if (value === null) delete liveSession.localStorage[k];
-      else liveSession.localStorage[k] = value;
+      else {
+        liveSession.localStorage[k] = value;
+        liveLocalStorageBytes += (k.length + value.length) * 2;
+      }
       currentTransport?.post({ type: 'storage-changed', area: 'ls', key: k, value });
     } else if (rest.startsWith('idb:')) {
       currentTransport?.post({ type: 'storage-changed', area: 'idb', key: rest.slice(4), value });
@@ -666,20 +690,28 @@ export async function mountSoftNContainer(
   let idbBacking: IdbBacking | null = null;
   /** What is kept of them, as this page last read or wrote it. */
   const idbParts = new Map<string, string>();
+  /** Incremental UTF-16 byte count of `idbParts` so quota checks stay O(changes.size). */
+  let idbPartsBytes = 0;
   /** How often each part was written here or read again: a part told by another tab is not taken in over a newer one of this tab's. */
   const idbPartTurns = new Map<string, number>();
   const turnOfPart = (name: string) => idbPartTurns.get(name) ?? 0;
   const setIdbPart = (name: string, value: string | null) => {
+    const prev = idbParts.get(name);
+    if (prev !== undefined) idbPartsBytes -= partBytes(name, prev);
     if (value === null) idbParts.delete(name);
-    else idbParts.set(name, value);
+    else {
+      idbParts.set(name, value);
+      idbPartsBytes += partBytes(name, value);
+    }
     idbPartTurns.set(name, turnOfPart(name) + 1);
   };
   /** The databases this tab holds for the app's side (a lock across the site's tabs), each let go of by its function. */
   const idbHolds = new Map<string, () => void>();
   /** Those held by a lease (no locks in this browser): what a write under it checks is still this tab's. */
   const idbFences = new Map<string, LeaseFence>();
-  /** Holds asked for and not given yet: with those given, held to a number a session may ask for. */
+  /** Holds asked for and not given yet (scoped per page session via `idbHoldEpoch`). */
   let idbHoldsAsked = 0;
+  let idbHoldEpoch = 0;
   /** What is being kept, in order: a database is let go of once what was written while it was held is kept. */
   let idbWriting: Promise<unknown> = Promise.resolve();
   /** Tells the same app in other tabs, and elsewhere in this page, which parts were kept. */
@@ -733,9 +765,12 @@ export async function mountSoftNContainer(
     // Held to the app's IndexedDB quota as a whole, and kept together (a transaction whole or
     // not at all), after what is being kept before it.
     const done = idbWriting.then(async () => {
-      let bytes = 0;
-      for (const [name, value] of idbParts) if (!changes.has(name)) bytes += partBytes(name, value);
-      for (const [name, value] of changes) if (value !== null) bytes += partBytes(name, value);
+      let bytes = idbPartsBytes;
+      for (const [name, value] of changes) {
+        const prev = idbParts.get(name);
+        if (prev !== undefined) bytes -= partBytes(name, prev);
+        if (value !== null) bytes += partBytes(name, value);
+      }
       if (bytes > limits.idbQuotaBytes) return false;
       const previous = new Map<string, string | null>();
       for (const name of changes.keys()) previous.set(name, idbParts.get(name) ?? null);
@@ -789,12 +824,21 @@ export async function mountSoftNContainer(
       void give();
       return;
     }
+    const holdEpoch = idbHoldEpoch;
     idbHoldsAsked++;
     let asking = true;
     const answered = () => {
       if (!asking) return;
       asking = false;
-      idbHoldsAsked--;
+      if (idbHoldEpoch === holdEpoch && idbHoldsAsked > 0) idbHoldsAsked--;
+    };
+    const registerHold = (release: () => void) => {
+      const existing = idbHolds.get(name);
+      if (existing && existing !== release) {
+        idbHolds.delete(name);
+        void idbWriting.then(existing, existing);
+      }
+      idbHolds.set(name, release);
     };
     if (!locks || typeof locks.request !== 'function') {
       // No locks in this browser: a lease in the page's IndexedDB holds it instead.
@@ -806,7 +850,7 @@ export async function mountSoftNContainer(
             if (idbFences.get(name) === lease.fence) idbFences.delete(name);
             lease.release();
           };
-          idbHolds.set(name, release);
+          registerHold(release);
           idbFences.set(name, lease.fence);
           return give().then((told) => {
             if (!told && idbHolds.get(name) === release) releaseIdb(name);
@@ -830,7 +874,7 @@ export async function mountSoftNContainer(
               release();
               return;
             }
-            idbHolds.set(name, release);
+            registerHold(release);
             void give().then((told) => {
               // Asked for by a session that is gone: let go of at once.
               if (!told && idbHolds.get(name) === release) releaseIdb(name);
@@ -855,21 +899,31 @@ export async function mountSoftNContainer(
   const idbToldElsewhere = (names: unknown) => {
     const backing = idbBacking;
     if (!backing || disposed || !Array.isArray(names)) return;
-    const asked = names.filter((n): n is string => typeof n === 'string' && n.length <= 1024 && !idbHolds.has(databaseOfPart(n) ?? '')).slice(0, 4096);
-    if (asked.length === 0) return;
-    const turns = new Map(asked.map((n) => [n, turnOfPart(n)]));
+    const overCap = names.length > 4096;
+    const asked = overCap
+      ? []
+      : names.filter((n): n is string => typeof n === 'string' && n.length <= 1024 && !idbHolds.has(databaseOfPart(n) ?? ''));
+    if (!overCap && asked.length === 0) return;
+    const turns = overCap
+      ? new Map(Array.from(idbParts.keys(), (n) => [n, turnOfPart(n)]))
+      : new Map(asked.map((n) => [n, turnOfPart(n)]));
     // After what this page is writing: read before, a part it wrote would be read as it was.
     void idbWriting
       .catch(() => undefined)
-      .then(() => backing.read(asked))
+      .then(() => (overCap ? backing.loadAll() : backing.read(asked)))
       .then((fresh) => {
+        if (disposed) return;
         // Told together, taken in together: a commit of the other tab's is never seen half done
         // (one part a turn, a read between two of them read a page with a list of pages before it).
         const parts: Record<string, string | null> = {};
         let any = false;
-        for (const name of asked) {
+        const keysToCheck = overCap
+          ? new Set<string>([...idbParts.keys(), ...fresh.keys()])
+          : asked;
+        for (const name of keysToCheck) {
           // Written or read again here since it was asked for: what is here is newer.
-          if (turnOfPart(name) !== turns.get(name) || idbHolds.has(databaseOfPart(name) ?? '')) continue;
+          const expectedTurn = turns.get(name) ?? 0;
+          if (turnOfPart(name) !== expectedTurn || idbHolds.has(databaseOfPart(name) ?? '')) continue;
           const value = fresh.get(name) ?? null;
           if ((idbParts.get(name) ?? null) === value) continue;
           setIdbPart(name, value);
@@ -906,12 +960,29 @@ export async function mountSoftNContainer(
   let activeTier: ZippEngineTier = 'lite';
   let turnSeq = 1;
   const pendingWatchdogs = new Map<number, ReturnType<typeof setTimeout>>();
+  let rafWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let initWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let onSessionStopped: ((reason: string) => void) | null = null;
   /** What waits for the script's answer to an event it was handed, by the event's turn. */
   const pendingAnswers = new Map<number, (eventBits: number) => void>();
+
+  const clearRafWatchdog = () => {
+    if (rafWatchdog !== null) {
+      clearTimeout(rafWatchdog);
+      rafWatchdog = null;
+    }
+  };
+  const clearInitWatchdog = () => {
+    if (initWatchdog !== null) {
+      clearTimeout(initWatchdog);
+      initWatchdog = null;
+    }
+  };
 
   const clearRaf = () => {
     rafInFlight = false;
     rafWantedWhileInFlight = false;
+    clearRafWatchdog();
     if (rafHandle !== null) {
       if (typeof cancelAnimationFrame === 'function' && typeof rafHandle === 'number') {
         cancelAnimationFrame(rafHandle);
@@ -943,6 +1014,19 @@ export async function mountSoftNContainer(
       if (!disposed) {
         rafInFlight = true;
         rafWantedWhileInFlight = false;
+        clearRafWatchdog();
+        if (useWorkerIsolation) {
+          rafWatchdog = setTimeout(() => {
+            rafWatchdog = null;
+            currentTransport?.terminate();
+            options.onError?.(
+              new Error(`Container terminated: animation frame exceeded ${limits.turnTimeoutMs}ms time limit`)
+            );
+            onSessionStopped?.(
+              `its script took more than ${Math.round(limits.turnTimeoutMs / 1000)} seconds to finish an animation frame.`
+            );
+          }, limits.turnTimeoutMs);
+        }
         currentTransport?.post({ type: 'raf', timestamp: ts });
       }
     };
@@ -960,7 +1044,11 @@ export async function mountSoftNContainer(
 
   const teardownPage = () => {
     clearRaf();
+    clearInitWatchdog();
+    onSessionStopped = null;
     // Databases the session held are let go of, once what it wrote is kept: started again, it holds none.
+    idbHoldEpoch++;
+    idbHoldsAsked = 0;
     for (const release of idbHolds.values()) void idbWriting.then(release, release);
     idbHolds.clear();
     for (const wd of pendingWatchdogs.values()) clearTimeout(wd);
@@ -1070,8 +1158,13 @@ export async function mountSoftNContainer(
         onConsole: options.onConsole,
         onStatus: emitStatus,
       });
-      await transport.ready;
-      if (disposed) {
+      try {
+        await transport.ready;
+      } catch (err) {
+        transport.dispose();
+        throw err;
+      }
+      if (disposed || !owns()) {
         transport.dispose();
         throw new Error('Container disposed while initializing SQLite');
       }
@@ -1086,64 +1179,96 @@ export async function mountSoftNContainer(
     }
   };
 
-  if (!backendTransport && (archive.manifest.backend || effectiveDatabases.length > 0)) {
-    const backendVfs = archive.exportBackendVfs();
-    let backendEngineSource: ZippEngineSource | undefined;
-    if (archive.manifest.backend) {
-      const bRt = archive.manifest.backend.runtime;
-      const bTier: ZippEngineTier =
-        bRt === 'rust' ? 'rust' : bRt === 'php' ? 'php' : bRt === 'typescript' ? 'typescript' : bRt === 'python' ? 'python' : 'javascript';
-      const suppliedBackend = options.engineWasm?.[bTier];
-      const resolvedBackend = typeof suppliedBackend === 'function' ? await suppliedBackend() : suppliedBackend;
-      if (resolvedBackend instanceof WebAssembly.Module) {
-        backendEngineSource = resolvedBackend;
-      } else if (typeof resolvedBackend === 'string') {
-        backendEngineSource = useWorkerIsolation ? await getSharedCompiledEngine(resolvedBackend) : resolvedBackend;
-      } else if (resolvedBackend) {
-        backendEngineSource =
-          resolvedBackend instanceof ArrayBuffer
-            ? new Uint8Array(resolvedBackend)
-            : new Uint8Array(resolvedBackend.buffer, resolvedBackend.byteOffset, resolvedBackend.byteLength);
-      } else if (useWorkerIsolation) {
-        backendEngineSource = await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[bTier]}`);
-      }
+  let cleanupSessionListeners: (() => void) | null = null;
+  const cleanupBootFailure = () => {
+    if (disposed) return;
+    disposed = true;
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', onStorage);
     }
+    cleanupSessionListeners?.();
+    const mounted = mountedByStorage.get(storageBase);
+    if (mounted) {
+      mounted.delete(heard);
+      if (mounted.size === 0) mountedByStorage.delete(storageBase);
+    }
+    for (const release of idbHolds.values()) void idbWriting.then(release, release);
+    idbHolds.clear();
+    idbChannel?.close();
+    idbChannel = null;
+    teardownPage();
+    localBackendTransport?.dispose();
+    localBackendTransport = null;
+    ownedRemoteTransport?.dispose();
+    ownedRemoteTransport = null;
+    archive.dispose();
+    pageRoot.replaceChildren();
+    if (owns()) shadowRoot.replaceChildren();
+  };
 
-    const xdbSource = await resolveXdbSource();
+  try {
+    if (!backendTransport && (archive.manifest.backend || effectiveDatabases.length > 0)) {
+      const backendVfs = archive.exportBackendVfs();
+      let backendEngineSource: ZippEngineSource | undefined;
+      if (archive.manifest.backend) {
+        const bRt = archive.manifest.backend.runtime;
+        const bTier: ZippEngineTier =
+          bRt === 'rust' ? 'rust' : bRt === 'php' ? 'php' : bRt === 'typescript' ? 'typescript' : bRt === 'python' ? 'python' : 'javascript';
+        const suppliedBackend = options.engineWasm?.[bTier];
+        const resolvedBackend = typeof suppliedBackend === 'function' ? await suppliedBackend() : suppliedBackend;
+        if (resolvedBackend instanceof WebAssembly.Module) {
+          backendEngineSource = resolvedBackend;
+        } else if (typeof resolvedBackend === 'string') {
+          backendEngineSource = useWorkerIsolation ? await getSharedCompiledEngine(resolvedBackend) : resolvedBackend;
+        } else if (resolvedBackend) {
+          backendEngineSource =
+            resolvedBackend instanceof ArrayBuffer
+              ? new Uint8Array(resolvedBackend)
+              : new Uint8Array(resolvedBackend.buffer, resolvedBackend.byteOffset, resolvedBackend.byteLength);
+        } else if (useWorkerIsolation) {
+          backendEngineSource = await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[bTier]}`);
+        }
+      }
 
-    localBackendTransport = new LocalBackendTransport({
-      appId,
-      storagePrefix: storageBase,
-      persistStorage,
-      storage: options.storage,
-      backend: archive.manifest.backend,
-      databases: effectiveDatabases,
-      textFiles: backendVfs.textFiles,
-      binaryFiles: backendVfs.binaryFiles,
-      runtimeUrl,
-      isolation: useWorkerIsolation ? 'worker' : 'inline',
-      engineModule: backendEngineSource,
-      xdbModule: xdbSource,
-      xdbGlueUrl: options.xdbGlueUrl,
-      instructionBudget: limits.instructionsPerTurn,
-      maxTotalSqliteBytes: limits.idbQuotaBytes,
-      onConsole: options.onConsole,
-      onStatus: emitStatus,
-    });
-    backendTransport = localBackendTransport;
-    await backendTransport.ready;
-  } else if (backendTransport) {
-    emitStatus({
-      phase: 'booting-backend',
-      message: 'Connecting to backend…',
-      percent: 60,
-    });
-    await backendTransport.ready;
-    emitStatus({
-      phase: 'backend-ready',
-      message: 'Backend ready',
-      percent: 82,
-    });
+      const xdbSource = await resolveXdbSource();
+
+      localBackendTransport = new LocalBackendTransport({
+        appId,
+        storagePrefix: storageBase,
+        persistStorage,
+        storage: options.storage,
+        backend: archive.manifest.backend,
+        databases: effectiveDatabases,
+        textFiles: backendVfs.textFiles,
+        binaryFiles: backendVfs.binaryFiles,
+        runtimeUrl,
+        isolation: useWorkerIsolation ? 'worker' : 'inline',
+        engineModule: backendEngineSource,
+        xdbModule: xdbSource,
+        xdbGlueUrl: options.xdbGlueUrl,
+        instructionBudget: limits.instructionsPerTurn,
+        maxTotalSqliteBytes: limits.idbQuotaBytes,
+        onConsole: options.onConsole,
+        onStatus: emitStatus,
+      });
+      backendTransport = localBackendTransport;
+      await backendTransport.ready;
+    } else if (backendTransport) {
+      emitStatus({
+        phase: 'booting-backend',
+        message: 'Connecting to backend…',
+        percent: 60,
+      });
+      await backendTransport.ready;
+      emitStatus({
+        phase: 'backend-ready',
+        message: 'Backend ready',
+        percent: 82,
+      });
+    }
+  } catch (err) {
+    cleanupBootFailure();
+    throw err;
   }
 
   let currentUrlPath = options.initialPath ?? (archive.manifest.ssrEntry ? '/' : `/${archive.manifest.main}`);
@@ -1163,6 +1288,8 @@ export async function mountSoftNContainer(
     ),
     updatedAt: Date.now(),
   };
+  let liveSessionStorageBytes = recordBytes(liveSession.sessionStorage);
+  let liveLocalStorageBytes = recordBytes(liveSession.localStorage);
   let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let sessionDirty = false;
   const flushSessionNow = () => {
@@ -1201,6 +1328,15 @@ export async function mountSoftNContainer(
       document.addEventListener('visibilitychange', onVisibilityFlush);
     }
   }
+  cleanupSessionListeners = () => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', onPageHideFlush);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityFlush);
+    }
+    flushSessionNow();
+  };
   const navHistory: string[] = [];
   let navHistoryIndex = -1;
   let navEl: HTMLElement | null = null;
@@ -1435,8 +1571,23 @@ export async function mountSoftNContainer(
       // The session is over: what it held across tabs is let go of (once what it wrote is
       // kept), and what comes for it goes nowhere. (A stopped app kept its databases held, and
       // the same app in every other tab waited for them for good.)
+      clearRaf();
+      clearInitWatchdog();
+      idbHoldEpoch++;
+      idbHoldsAsked = 0;
       for (const release of idbHolds.values()) void idbWriting.then(release, release);
       idbHolds.clear();
+      for (const wd of pendingWatchdogs.values()) clearTimeout(wd);
+      pendingWatchdogs.clear();
+      pendingAnswers.clear();
+      inFlightCoalesced.clear();
+      pendingCoalesced.clear();
+      wheelInFlightTurnId = null;
+      pendingWheel = null;
+      for (const ws of backendSockets.values()) {
+        try { ws.close(1001, 'container stopped'); } catch { /* ignore */ }
+      }
+      backendSockets.clear();
       currentTransport?.terminate();
       currentTransport = null;
       if (disposed || !owns() || Array.from(frameEl.children).some((el) => el.hasAttribute('data-softn-container-stopped'))) return;
@@ -1454,6 +1605,7 @@ export async function mountSoftNContainer(
       );
       frameEl.insertBefore(holder, boxEl);
     };
+    onSessionStopped = showStopped;
 
     const fontScope: FontScopeContext = {
       prefix: `softn-f-${++fontScopeSeq}-`,
@@ -1493,7 +1645,7 @@ export async function mountSoftNContainer(
     // Non-blocking consent bar when capabilities are requested in `'prompt'` mode. It is
     // above the app's box, in the frame's root and in a shadow root of its own.
     const permissionMode = options.permissionMode ?? 'prompt';
-    if (permissionMode === 'prompt' && requestedCaps.length > 0 && grantedCaps.size === 0) {
+    if (permissionMode === 'prompt' && !consentDenied && requestedCaps.some((cap) => !grantedCaps.has(cap))) {
       const bar = renderConsentBar(requestedCaps, hostLabel(archive.manifest.name) || 'This app', (allowed) => {
         if (allowed) {
           grantedCaps = new Set(requestedCaps);
@@ -1502,6 +1654,8 @@ export async function mountSoftNContainer(
             type: 'permissions-updated',
             grantedCapabilities: [...grantedCaps],
           });
+        } else {
+          consentDenied = true;
         }
       }, (permissions.permissions?.net?.allowed_hosts ?? []).filter((host): host is string => typeof host === 'string'));
       const consentEl = document.createElement('div');
@@ -1810,6 +1964,7 @@ export async function mountSoftNContainer(
         }
         switch (msg.type) {
           case 'ready':
+            clearInitWatchdog();
             if (!settledReady) {
               settledReady = true;
               pendingPage = undefined;
@@ -1825,6 +1980,7 @@ export async function mountSoftNContainer(
           case 'ops':
             if (msg.rafReply) {
               rafInFlight = false;
+              clearRafWatchdog();
             }
             if (msg.turnId !== undefined) {
               const wd = pendingWatchdogs.get(msg.turnId);
@@ -1912,7 +2068,7 @@ export async function mountSoftNContainer(
             break;
 
           case 'session-route':
-            if (typeof msg.urlPath === 'string' && msg.urlPath.startsWith('/') && msg.urlPath.length <= MAX_SESSION_URL_LENGTH) {
+            if (isSafeVirtualRoute(msg.urlPath)) {
               currentUrlPath = msg.urlPath;
               updateNavUi();
               liveSession.urlPath = msg.urlPath;
@@ -1927,16 +2083,24 @@ export async function mountSoftNContainer(
                 ? liveSession.sessionStorage[msg.key]
                 : null;
               const replaced = oldVal !== null ? (msg.key.length + oldVal.length) * 2 : 0;
-              const nextTotal = sessionStorageBytes(liveSession.sessionStorage) - replaced + (msg.key.length + msg.value.length) * 2;
+              const nextTotal = liveSessionStorageBytes - replaced + (msg.key.length + msg.value.length) * 2;
               if (nextTotal <= limits.storageQuotaBytes) {
                 liveSession.sessionStorage[msg.key] = msg.value;
+                liveSessionStorageBytes = nextTotal;
                 persistSessionSoon();
               }
             } else if (msg.op === 'remove' && typeof msg.key === 'string' && !BLOCKED_SESSION_KEYS.has(msg.key)) {
+              const oldVal = Object.prototype.hasOwnProperty.call(liveSession.sessionStorage, msg.key)
+                ? liveSession.sessionStorage[msg.key]
+                : null;
+              if (oldVal !== null) {
+                liveSessionStorageBytes = Math.max(0, liveSessionStorageBytes - (msg.key.length + oldVal.length) * 2);
+              }
               delete liveSession.sessionStorage[msg.key];
               persistSessionSoon();
             } else if (msg.op === 'clear') {
               liveSession.sessionStorage = Object.create(null) as Record<string, string>;
+              liveSessionStorageBytes = 0;
               persistSessionSoon();
             }
             break;
@@ -1964,22 +2128,28 @@ export async function mountSoftNContainer(
               storageKept(kept);
               if (kept || !storage) {
                 if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
-                  if (msg.key === '__proto__' || msg.key === 'constructor' || msg.key === 'prototype') break;
-                  if (!storage) {
-                    let liveBytes = (msg.key.length + msg.value.length) * 2;
-                    for (const [k, v] of Object.entries(liveSession.localStorage)) {
-                      if (k !== msg.key) liveBytes += (k.length + v.length) * 2;
-                    }
-                    if (liveBytes > limits.storageQuotaBytes) break;
-                  }
+                  const oldVal = Object.prototype.hasOwnProperty.call(liveSession.localStorage, msg.key)
+                    ? liveSession.localStorage[msg.key]
+                    : null;
+                  const replaced = oldVal !== null ? (msg.key.length + oldVal.length) * 2 : 0;
+                  const nextLiveBytes = liveLocalStorageBytes - replaced + (msg.key.length + msg.value.length) * 2;
+                  if (!storage && nextLiveBytes > limits.storageQuotaBytes) break;
+                  // liveSession.localStorage uses Object.create(null), so keys like '__proto__' are safe data properties.
                   liveSession.localStorage[msg.key] = msg.value;
+                  liveLocalStorageBytes = nextLiveBytes;
                   persistSessionSoon();
                 } else if (msg.op === 'remove' && typeof msg.key === 'string') {
-                  if (msg.key === '__proto__' || msg.key === 'constructor' || msg.key === 'prototype') break;
+                  const oldVal = Object.prototype.hasOwnProperty.call(liveSession.localStorage, msg.key)
+                    ? liveSession.localStorage[msg.key]
+                    : null;
+                  if (oldVal !== null) {
+                    liveLocalStorageBytes = Math.max(0, liveLocalStorageBytes - (msg.key.length + oldVal.length) * 2);
+                  }
                   delete liveSession.localStorage[msg.key];
                   persistSessionSoon();
                 } else if (msg.op === 'clear') {
                   liveSession.localStorage = Object.create(null) as Record<string, string>;
+                  liveLocalStorageBytes = 0;
                   persistSessionSoon();
                 }
               }
@@ -2034,10 +2204,16 @@ export async function mountSoftNContainer(
                 reply(false, undefined, 'Backend request body exceeds maximum size limit');
                 break;
               }
-              const bodyBytes =
-                typeof payload.bodyBase64 === 'string' && payload.bodyBase64.length > 0
-                  ? base64ToBytes(payload.bodyBase64)
-                  : undefined;
+              let bodyBytes: Uint8Array | undefined;
+              try {
+                bodyBytes =
+                  typeof payload.bodyBase64 === 'string' && payload.bodyBase64.length > 0
+                    ? base64ToBytes(payload.bodyBase64)
+                    : undefined;
+              } catch {
+                reply(false, undefined, 'Invalid base64 request body');
+                break;
+              }
               const rawHeaders: Record<string, string> = {};
               if (payload.headers && typeof payload.headers === 'object') {
                 for (const [k, v] of Object.entries(payload.headers as Record<string, unknown>)) {
@@ -2080,24 +2256,43 @@ export async function mountSoftNContainer(
               const protocols = Array.isArray(msg.payload?.protocols)
                 ? (msg.payload.protocols as unknown[]).map((p) => String(p))
                 : [];
-              if (!id || (!backendSockets.has(id) && backendSockets.size >= MAX_BACKEND_SOCKETS)) {
+              if (!id || backendSockets.has(id) || backendSockets.size >= MAX_BACKEND_SOCKETS) {
+                const errMsg = !id
+                  ? 'Missing WebSocket id'
+                  : backendSockets.has(id)
+                    ? 'Duplicate backend WebSocket id'
+                    : 'Too many open backend WebSockets';
                 if (!disposed && sender && currentTransport === sender) {
-                  sender.post({ type: 'ws-event', id, event: { type: 'error', message: 'Too many open backend WebSockets' } });
-                  sender.post({ type: 'ws-event', id, event: { type: 'close', code: 1008, reason: 'WebSocket limit exceeded', wasClean: false } });
+                  sender.post({ type: 'ws-event', id, event: { type: 'error', message: errMsg } });
+                  sender.post({ type: 'ws-event', id, event: { type: 'close', code: 1008, reason: errMsg, wasClean: false } });
                 }
-                reply(false, undefined, 'Too many open backend WebSockets');
+                reply(false, undefined, errMsg);
                 break;
               }
               if (backendTransport?.openWebSocket) {
-                const handle = backendTransport.openWebSocket(wsPath, protocols, (event) => {
-                  if (event.type === 'close') {
-                    backendSockets.delete(id);
+                let closedSync = false;
+                try {
+                  const handle = backendTransport.openWebSocket(wsPath, protocols, (event) => {
+                    if (event.type === 'close') {
+                      closedSync = true;
+                      backendSockets.delete(id);
+                    }
+                    if (!disposed && sender && currentTransport === sender) {
+                      sender.post({ type: 'ws-event', id, event });
+                    }
+                  });
+                  if (!closedSync) {
+                    backendSockets.set(id, handle);
                   }
+                } catch (err) {
+                  const errMsg = err instanceof Error ? err.message : String(err);
                   if (!disposed && sender && currentTransport === sender) {
-                    sender.post({ type: 'ws-event', id, event });
+                    sender.post({ type: 'ws-event', id, event: { type: 'error', message: errMsg } });
+                    sender.post({ type: 'ws-event', id, event: { type: 'close', code: 1006, reason: errMsg, wasClean: false } });
                   }
-                });
-                backendSockets.set(id, handle);
+                  reply(false, undefined, errMsg);
+                  break;
+                }
               } else if (!disposed && sender && currentTransport === sender) {
                 sender.post({ type: 'ws-event', id, event: { type: 'error', message: 'Backend transport does not support WebSockets' } });
                 sender.post({ type: 'ws-event', id, event: { type: 'close', code: 1006, reason: 'WebSockets unsupported by backend transport', wasClean: false } });
@@ -2111,7 +2306,17 @@ export async function mountSoftNContainer(
               if (handle) {
                 const isBin = Boolean(msg.payload?.binary);
                 const data = String(msg.payload?.data ?? '');
-                handle.send(isBin ? base64ToBytes(data) : data);
+                const maxLen = isBin ? MAX_BACKEND_WS_B64_CHARS : MAX_BACKEND_WS_TEXT_CHARS;
+                if (data.length > maxLen) {
+                  reply(false, undefined, 'WebSocket message exceeds maximum size limit');
+                  break;
+                }
+                try {
+                  handle.send(isBin ? base64ToBytes(data) : data);
+                } catch (err) {
+                  reply(false, undefined, err instanceof Error ? err.message : String(err));
+                  break;
+                }
               }
               reply(true, { ok: true });
               break;
@@ -2121,10 +2326,14 @@ export async function mountSoftNContainer(
               const handle = backendSockets.get(id);
               if (handle) {
                 backendSockets.delete(id);
-                handle.close(
-                  typeof msg.payload?.code === 'number' ? msg.payload.code : 1000,
-                  typeof msg.payload?.reason === 'string' ? msg.payload.reason : ''
-                );
+                try {
+                  handle.close(
+                    typeof msg.payload?.code === 'number' ? msg.payload.code : 1000,
+                    typeof msg.payload?.reason === 'string' ? msg.payload.reason : ''
+                  );
+                } catch {
+                  // Ignore close error on already-closed transport
+                }
               }
               reply(true, { ok: true });
               break;
@@ -2145,6 +2354,19 @@ export async function mountSoftNContainer(
                   (res) => reply(true, res),
                   (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
                 );
+              break;
+            }
+            if (msg.kind === 'device.call') {
+              const namespace = String(msg.payload?.namespace ?? '');
+              const method = String(msg.payload?.method ?? '');
+              const params =
+                msg.payload?.params && typeof msg.payload.params === 'object' && !Array.isArray(msg.payload.params)
+                  ? (msg.payload.params as Record<string, unknown>)
+                  : {};
+              void dispatchDeviceBridgeCall(deviceBridge, namespace, method, params, grantedCaps, permissions).then(
+                (res) => reply(true, res),
+                (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+              );
               break;
             }
             reply(false, undefined, `Unknown host-request kind: ${msg.kind}`);
@@ -2185,10 +2407,12 @@ export async function mountSoftNContainer(
             }
             options.onError?.(err);
             if (!settledReady && msg.fatal) {
+              clearInitWatchdog();
               settledReady = true;
               pendingPage = undefined;
               rejectReady(err);
             } else if (msg.fatal) {
+              clearInitWatchdog();
               // Stopped after it started: the host's own error page is for an app that never did.
               showStopped(msg.message);
             }
@@ -2232,6 +2456,7 @@ export async function mountSoftNContainer(
           try {
             const kept = await idbBacking.loadAll();
             idbParts.clear();
+            idbPartsBytes = 0;
             for (const [name, value] of kept) setIdbPart(name, value);
             initialIdb = Object.fromEntries(kept);
           } catch {
@@ -2303,6 +2528,19 @@ export async function mountSoftNContainer(
               worker.terminate();
             },
           };
+          clearInitWatchdog();
+          const initTimeoutMs = Math.max(limits.turnTimeoutMs * 2, 15_000);
+          initWatchdog = setTimeout(() => {
+            initWatchdog = null;
+            if (settledReady || disposed || !owns() || currentPatcher !== patcher) return;
+            const err = new Error(`Container terminated: initialization exceeded ${initTimeoutMs}ms time limit`);
+            currentTransport?.terminate();
+            currentTransport = null;
+            options.onError?.(err);
+            settledReady = true;
+            pendingPage = undefined;
+            rejectReady(err);
+          }, initTimeoutMs);
           worker.postMessage(initMsg);
           // A page the app moved to while it was not on screen starts as the last one was left.
           if (paused) worker.postMessage({ type: 'pause' } satisfies HostToWorkerMsg);
@@ -2341,58 +2579,89 @@ export async function mountSoftNContainer(
       ? initialPage
       : undefined;
   const restoredUrlPath =
-    !options.initialPath && !resolvedInitialPage && persistStorage && savedSession?.urlPath && savedSession.urlPath.startsWith('/')
+    !options.initialPath && !resolvedInitialPage && persistStorage && isSafeVirtualRoute(savedSession?.urlPath)
       ? savedSession.urlPath
       : undefined;
 
-  if (options.initialPath) {
-    await navigateTo(options.initialPath, true);
-  } else if (resolvedInitialPage) {
-    const initialFrontendPath = archive.toFrontendVfsPath(resolvedInitialPage);
-    const initialUrl = /(^|\/)index\.html?$/i.test(initialFrontendPath)
-      ? '/' + initialFrontendPath.replace(/(^|\/)index\.html?$/i, '$1')
-      : `/${initialFrontendPath}`;
-    recordHistory(initialUrl, true);
-    await mountPage(resolvedInitialPage);
-  } else if (restoredUrlPath) {
-    const restoredPathname = new URL(restoredUrlPath, `${VIRTUAL_ORIGIN}/`).pathname;
-    const resolvedHtml = archive.resolveFrontendPath(restoredPathname, archive.manifest.main);
-    const hasExactStaticHtml = Boolean(
-      resolvedHtml &&
-        /\.html?$/i.test(resolvedHtml) &&
-        archive.has(resolvedHtml) &&
-        resolvedHtml !== archive.manifest.main
-    );
-    const wantsBackendRestore =
-      Boolean(backendTransport) &&
-      (Boolean(archive.manifest.ssrEntry) ||
-        /\.(?:php|phtml)$/i.test(restoredPathname) ||
-        (!hasExactStaticHtml &&
-          Boolean(
-            matchBackendTarget(`${VIRTUAL_ORIGIN}${restoredUrlPath}`, backendRouting, {
-              baseUrl: `${VIRTUAL_ORIGIN}/`,
-              method: 'GET',
-              isStaticVfsFile: (p) => archive.has(p),
-            })
-          )));
-    if (wantsBackendRestore || hasExactStaticHtml) {
-      await navigateTo(restoredUrlPath, true).catch(async () => {
-        recordHistory(restoredUrlPath, true);
-        await mountPage(archive.manifest.main, undefined, restoredUrlPath);
-      });
+  const disposeContainer = () => {
+    if (disposed) return;
+    pendingPage?.();
+    pendingPage = undefined;
+    navController = null;
+    navEl = null;
+    cleanupBootFailure();
+  };
+
+  try {
+    if (options.initialPath) {
+      await navigateTo(options.initialPath, true);
+    } else if (resolvedInitialPage) {
+      const initialFrontendPath = archive.toFrontendVfsPath(resolvedInitialPage);
+      const initialUrl = /(^|\/)index\.html?$/i.test(initialFrontendPath)
+        ? '/' + initialFrontendPath.replace(/(^|\/)index\.html?$/i, '$1')
+        : `/${initialFrontendPath}`;
+      recordHistory(initialUrl, true);
+      await mountPage(resolvedInitialPage);
+    } else if (restoredUrlPath) {
+      let restoredPathname: string | null = null;
+      try {
+        const parsedRestored = new URL(restoredUrlPath, `${VIRTUAL_ORIGIN}/`);
+        if (parsedRestored.origin === VIRTUAL_ORIGIN) {
+          restoredPathname = parsedRestored.pathname;
+        }
+      } catch {
+        restoredPathname = null;
+      }
+      if (!restoredPathname) {
+        const initialFrontendPath = archive.toFrontendVfsPath(archive.manifest.main);
+        const initialUrl = /(^|\/)index\.html?$/i.test(initialFrontendPath)
+          ? '/' + initialFrontendPath.replace(/(^|\/)index\.html?$/i, '$1')
+          : `/${initialFrontendPath}`;
+        recordHistory(initialUrl, true);
+        await mountPage(archive.manifest.main);
+      } else {
+        const resolvedHtml = archive.resolveFrontendPath(restoredPathname, archive.manifest.main);
+        const hasExactStaticHtml = Boolean(
+          resolvedHtml &&
+            /\.html?$/i.test(resolvedHtml) &&
+            archive.has(resolvedHtml) &&
+            resolvedHtml !== archive.manifest.main
+        );
+        const wantsBackendRestore =
+          Boolean(backendTransport) &&
+          (Boolean(archive.manifest.ssrEntry) ||
+            /\.(?:php|phtml)$/i.test(restoredPathname) ||
+            (!hasExactStaticHtml &&
+              Boolean(
+                matchBackendTarget(`${VIRTUAL_ORIGIN}${restoredUrlPath}`, backendRouting, {
+                  baseUrl: `${VIRTUAL_ORIGIN}/`,
+                  method: 'GET',
+                  isStaticVfsFile: (p) => archive.has(p),
+                })
+              )));
+        if (wantsBackendRestore || hasExactStaticHtml) {
+          await navigateTo(restoredUrlPath, true).catch(async () => {
+            recordHistory(restoredUrlPath, true);
+            await mountPage(archive.manifest.main, undefined, restoredUrlPath);
+          });
+        } else {
+          recordHistory(restoredUrlPath, true);
+          await mountPage(archive.manifest.main, undefined, restoredUrlPath);
+        }
+      }
+    } else if (archive.manifest.ssrEntry && backendTransport) {
+      await navigateTo('/', true);
     } else {
-      recordHistory(restoredUrlPath, true);
-      await mountPage(archive.manifest.main, undefined, restoredUrlPath);
+      const initialFrontendPath = archive.toFrontendVfsPath(archive.manifest.main);
+      const initialUrl = /(^|\/)index\.html?$/i.test(initialFrontendPath)
+        ? '/' + initialFrontendPath.replace(/(^|\/)index\.html?$/i, '$1')
+        : `/${initialFrontendPath}`;
+      recordHistory(initialUrl, true);
+      await mountPage(archive.manifest.main);
     }
-  } else if (archive.manifest.ssrEntry && backendTransport) {
-    await navigateTo('/', true);
-  } else {
-    const initialFrontendPath = archive.toFrontendVfsPath(archive.manifest.main);
-    const initialUrl = /(^|\/)index\.html?$/i.test(initialFrontendPath)
-      ? '/' + initialFrontendPath.replace(/(^|\/)index\.html?$/i, '$1')
-      : `/${initialFrontendPath}`;
-    recordHistory(initialUrl, true);
-    await mountPage(archive.manifest.main);
+  } catch (err) {
+    disposeContainer();
+    throw err;
   }
 
   if (owns()) {
@@ -2432,7 +2701,10 @@ export async function mountSoftNContainer(
       return localBackendTransport.exportDatabase(dbName);
     },
     setGrantedCapabilities(caps: Capability[]) {
-      grantedCaps = new Set(caps);
+      grantedCaps = new Set(caps.filter((cap) => allowedCaps.has(cap)));
+      for (const bar of Array.from(frameEl.children)) {
+        if (bar.hasAttribute('data-softn-container-consent')) bar.remove();
+      }
       currentPatcher?.updatePermissions(permissions, grantedCaps.has('net'), grantedCaps.has('files'));
       currentTransport?.post({
         type: 'permissions-updated',
@@ -2455,41 +2727,7 @@ export async function mountSoftNContainer(
         }
       }
     },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      pendingPage?.();
-      pendingPage = undefined;
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('storage', onStorage);
-        window.removeEventListener('pagehide', onPageHideFlush);
-      }
-      if (typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', onVisibilityFlush);
-      }
-      flushSessionNow();
-      const mounted = mountedByStorage.get(storageBase);
-      if (mounted) {
-        mounted.delete(heard);
-        if (mounted.size === 0) mountedByStorage.delete(storageBase);
-      }
-      // Databases this tab held are let go of once what was written is kept.
-      for (const release of idbHolds.values()) void idbWriting.then(release, release);
-      idbHolds.clear();
-      idbChannel?.close();
-      idbChannel = null;
-      teardownPage();
-      localBackendTransport?.dispose();
-      localBackendTransport = null;
-      ownedRemoteTransport?.dispose();
-      ownedRemoteTransport = null;
-      navController = null;
-      navEl = null;
-      archive.dispose();
-      // Only what this mount drew: a newer mount into the same element owns the root now.
-      pageRoot.replaceChildren();
-      if (owns()) shadowRoot.replaceChildren();
-    },
+    dispose: disposeContainer,
   };
 }
 

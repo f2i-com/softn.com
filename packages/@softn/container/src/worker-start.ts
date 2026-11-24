@@ -26,13 +26,15 @@ const BOOTSTRAP_KEPT_MS = 60_000;
 
 export function startModuleWorker(url: string, options: WorkerOptions = {}): Worker {
   const settings: WorkerOptions = { ...options, type: 'module' };
-  let href: string;
+  let parsed: URL;
   try {
-    href = new URL(url, typeof location !== 'undefined' ? location.href : undefined).href;
+    parsed = new URL(url, typeof location !== 'undefined' ? location.href : undefined);
   } catch {
     return new Worker(url, settings);
   }
-  if (globalThis.origin === 'null' && typeof URL.createObjectURL === 'function') {
+  const href = parsed.href;
+  const httpScheme = parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  if (globalThis.origin === 'null' && httpScheme && typeof URL.createObjectURL === 'function') {
     // Chromium refuses a module worker's initial blob:null module fetch. A classic
     // blob worker inherits the frame's policy and imports the exact same ESM entry.
     // Hold the init message until that module has registered its listener.
@@ -52,7 +54,16 @@ export function startModuleWorker(url: string, options: WorkerOptions = {}): Wor
       setTimeout(() => URL.revokeObjectURL(entry), BOOTSTRAP_KEPT_MS);
     }
   }
-  if (!outsideServiceWorkerScope(href) || typeof URL.createObjectURL !== 'function') return new Worker(url, settings);
+  // Only wrap in a same-origin blob bootstrap when `href` is strictly same-origin HTTP(S) so
+  // an active ServiceWorker can never bypass `new Worker()`'s Same-Origin Policy for remote/data URLs.
+  const sameOriginHttp =
+    httpScheme &&
+    typeof globalThis.origin === 'string' &&
+    globalThis.origin !== 'null' &&
+    parsed.origin === globalThis.origin;
+  if (!sameOriginHttp || !outsideServiceWorkerScope(href) || typeof URL.createObjectURL !== 'function') {
+    return new Worker(url, settings);
+  }
   const bootstrap = URL.createObjectURL(new Blob([`import ${JSON.stringify(href)};`], { type: 'text/javascript' }));
   try {
     return new Worker(bootstrap, settings);

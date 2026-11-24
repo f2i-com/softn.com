@@ -142,11 +142,15 @@ function replayOne(ctx: DrawingContext, cmd: Canvas2DCmd, imageFor: (ref: string
         else ctx.strokeText(cmd[1], cmd[2], cmd[3]);
         break;
       case 'putImageData': {
-        const raw = base64ToBytes(cmd[1]);
+        const b64 = cmd[1];
         const w = cmd[2];
         const h = cmd[3];
-        if (typeof ImageData === 'function' && raw.byteLength === w * h * 4) {
-          const imgData = new ImageData(new Uint8ClampedArray(raw), w, h);
+        if (typeof b64 !== 'string' || !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) break;
+        const expected = w * h * 4;
+        if (expected > 32 * 1024 * 1024 || Math.ceil((b64.length * 3) / 4) > 32 * 1024 * 1024 + 4) break;
+        const raw = base64ToBytes(b64);
+        if (typeof ImageData === 'function' && raw.byteLength === expected) {
+          const imgData = new ImageData(new Uint8ClampedArray(raw.buffer as ArrayBuffer, raw.byteOffset, raw.byteLength), w, h);
           ctx.putImageData(imgData, cmd[4], cmd[5]);
         }
         break;
@@ -232,6 +236,19 @@ const LENGTH_INDEX = (() => {
   return index;
 })();
 
+/** Precomputed 5-bit reversed distance codes (0..31) for hot-loop LZ77 emission. */
+const REVERSED_5 = (() => {
+  const table = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) table[i] = reversed(i, 5);
+  return table;
+})();
+
+/** Reusable single-threaded LZ77 scratch buffers (avoids 256 KB allocation per `deflateFixed` call). */
+const DEFLATE_WINDOW = 32768;
+const DEFLATE_HASH_SIZE = 1 << 15;
+let scratchHead: Int32Array | null = null;
+let scratchPrev: Int32Array | null = null;
+
 function distanceIndex(distance: number): number {
   let lo = 0;
   let hi = DISTANCE_BASES.length - 1;
@@ -252,8 +269,8 @@ function distanceIndex(distance: number): number {
 export function deflateFixed(data: Uint8Array): Uint8Array;
 export function deflateFixed(data: Uint8Array, limit: number): Uint8Array | null;
 export function deflateFixed(data: Uint8Array, limit = Infinity): Uint8Array | null {
-  const WINDOW = 32768;
-  const HASH_SIZE = 1 << 15;
+  const WINDOW = DEFLATE_WINDOW;
+  const HASH_SIZE = DEFLATE_HASH_SIZE;
   const MAX_CHAIN = 16;
   const n = data.length;
   // Never more than 9 bits a byte, and a few for the block's head and end; and never more
@@ -275,8 +292,20 @@ export function deflateFixed(data: Uint8Array, limit = Infinity): Uint8Array | n
   // The last block, of the fixed codes.
   put(1, 1);
   put(1, 2);
-  const head = new Int32Array(HASH_SIZE).fill(-1);
-  const prev = new Int32Array(WINDOW);
+  if (n < 64) {
+    for (let i = 0; i < n; i++) {
+      symbol(data[i]);
+      if (at > limit) return null;
+    }
+    symbol(256);
+    if (count > 0) out[at++] = bits & 0xff;
+    return out.subarray(0, at);
+  }
+  if (!scratchHead) scratchHead = new Int32Array(HASH_SIZE);
+  if (!scratchPrev) scratchPrev = new Int32Array(WINDOW);
+  const head = scratchHead;
+  const prev = scratchPrev;
+  head.fill(-1);
   const hashAt = (i: number) => ((data[i] << 10) ^ (data[i + 1] << 5) ^ data[i + 2]) & (HASH_SIZE - 1);
   const insert = (i: number) => {
     const h = hashAt(i);
@@ -313,7 +342,7 @@ export function deflateFixed(data: Uint8Array, limit = Infinity): Uint8Array | n
       symbol(257 + li);
       if (LENGTH_EXTRA[li] > 0) put(bestLength - LENGTH_BASES[li], LENGTH_EXTRA[li]);
       const di = distanceIndex(bestDistance);
-      put(reversed(di, 5), 5);
+      put(REVERSED_5[di], 5);
       if (DISTANCE_EXTRA[di] > 0) put(bestDistance - DISTANCE_BASES[di], DISTANCE_EXTRA[di]);
       for (let k = 1; k < bestLength; k++) if (i + k + 3 <= n) insert(i + k);
       i += bestLength;

@@ -74,7 +74,9 @@
     "pretypecheck": "node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure",
     "typecheck": "tsc --noEmit",
     "clean": "node scripts/dev/clean.mjs",
-    "package:single:backend": "npm run package:single -- --with-backend"
+    "package:single:backend": "npm run package:single -- --with-backend",
+    "android:pack": "node apps/softn-android/scripts/pack-apk.mjs",
+    "android:player": "node apps/softn-android/scripts/pack-apk.mjs --player"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

@@ -129,7 +129,11 @@ final class Pages
         if ($useServerBackend) {
             $bUrl = (string) $hosting['backendUrl'];
             $siteOrigin = self::origin();
-            if (str_starts_with($bUrl, '/') || ($siteOrigin !== null && str_starts_with(strtolower($bUrl), strtolower($siteOrigin) . '/'))) {
+            $ownBackendPrefix = "/api/apps/$slug/backend";
+            $isOwnHosted = $bUrl === $ownBackendPrefix;
+            $isTrustedCustom = $hosting['customBackendUrl'] !== null && Apps::isTrusted($row);
+            $sameOrigin = str_starts_with($bUrl, '/') || ($siteOrigin !== null && str_starts_with(strtolower($bUrl), strtolower($siteOrigin) . '/'));
+            if ($isOwnHosted || ($sameOrigin && ($isTrustedCustom || !preg_match('#^/api/(?:admin|apps/(?!' . preg_quote($slug, '#') . '/backend(?:/|$)))#i', $bUrl)))) {
                 $config['backendUrl'] = $bUrl;
             }
         }

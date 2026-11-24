@@ -272,4 +272,23 @@ test('PortBackendTransport strips spoofed Cookie/X-Forwarded headers, rejects ba
   assert.equal(isSafeClientPath('Cargo.toml', manifest), false);
   assert.equal(isSafeClientPath('script.py', manifest), false);
   assert.equal(isSafeClientPath('public/app.js', manifest), true);
+
+  // buildContainerSource applies parsed manifest.json to drop custom backend files when host-backed
+  const hostedFiles = new Map([
+    ['manifest.json', JSON.stringify({ engine: 2, main: 'public/index.html', backend: { root: 'custom_srv', entry: 'custom_srv/main.js' } })],
+    ['public/index.html', '<h1>Hi</h1>'],
+    ['custom_srv/main.js', 'secret'],
+    ['custom_srv/helper.js', 'secret2'],
+  ]);
+  const hostedVfs = buildContainerSource(hostedFiles, { 'custom_srv/data.bin': new Uint8Array([1]) });
+  assert.equal(hostedVfs['public/index.html'], '<h1>Hi</h1>');
+  assert.equal(hostedVfs['custom_srv/main.js'], undefined);
+  assert.equal(hostedVfs['custom_srv/helper.js'], undefined);
+  assert.equal(hostedVfs['custom_srv/data.bin'], undefined);
+
+  // PortBackendTransport rejects query/fragment/double-encoding/oversized paths
+  assert.equal((await transport.fetch({ method: 'GET', path: '/api/ping?a=1' })).status, 400);
+  assert.equal((await transport.fetch({ method: 'GET', path: '/api/ping#frag' })).status, 400);
+  assert.equal((await transport.fetch({ method: 'GET', path: '/api/%252e%252e/secret' })).status, 400);
+  assert.equal((await transport.fetch({ method: 'GET', path: `/api/${'a'.repeat(2100)}` })).status, 400);
 });

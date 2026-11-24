@@ -33,12 +33,14 @@ fn keyed(key: &[u8], text: &[u8]) -> [u8; 32] {
 /// crypto.mjs: the operator's key, kept on this side.
 pub struct Crypto {
     hmac_key: [u8; 32],
-    seal_key: [u8; 32],
+    seal_cipher: Aes256Gcm,
 }
 
 impl Crypto {
     pub fn new(key: &[u8; 32], hmac_domain: &str, seal_domain: &str) -> Self {
-        Self { hmac_key: keyed(key, hmac_domain.as_bytes()), seal_key: keyed(key, seal_domain.as_bytes()) }
+        let seal_key = keyed(key, seal_domain.as_bytes());
+        let seal_cipher = Aes256Gcm::new_from_slice(&seal_key).expect("32-byte AES-256-GCM key");
+        Self { hmac_key: keyed(key, hmac_domain.as_bytes()), seal_cipher }
     }
 
     /// A bound or a count a script gave: a whole number, or text that spells one.
@@ -74,8 +76,7 @@ impl Crypto {
             "seal" => {
                 let mut iv = [0u8; 12];
                 OsRng.try_fill_bytes(&mut iv).map_err(HostError::library)?;
-                let cipher = Aes256Gcm::new_from_slice(&self.seal_key).map_err(HostError::library)?;
-                let sealed = cipher.encrypt(Nonce::from_slice(&iv), js::string_of(arg(0)).as_bytes()).map_err(HostError::library)?;
+                let sealed = self.seal_cipher.encrypt(Nonce::from_slice(&iv), js::string_of(arg(0)).as_bytes()).map_err(HostError::library)?;
                 // iv | tag | ciphertext, base64, as Node's createCipheriv writes it.
                 let tag_at = sealed.len() - 16;
                 let mut envelope = iv.to_vec();
@@ -262,24 +263,29 @@ impl Host {
                     }
                     let mut call_state = calls.borrow_mut();
                     call_state.calls += 1;
-                    let args: Option<Vec<Value>> = serde_json::from_str::<Value>(&js::replace_lone_surrogates(args_json)).ok().and_then(|v| match v {
-                        Value::Array(items) => Some(items),
-                        _ => None,
-                    });
                     let (family, name) = op.split_once('.').unwrap_or((op, ""));
                     let known = matches!(op, "sql.query" | "sql.first" | "sql.execute")
                         || matches!(op, "crypto.sha256" | "crypto.hmac" | "crypto.randomHex" | "crypto.randomInt" | "crypto.equal" | "crypto.seal")
                         || matches!(op, "time.now" | "time.parseZoned" | "time.format" | "time.age");
                     let denied = || HostError::own(format!("Host capability denied: {}", js::slice_units(op, 40)));
-                    let Some(args) = args.filter(|a| call_state.calls <= 512 && known && capabilities.iter().any(|c| c == family) && a.len() <= 4) else {
+                    // Enforce call-count, capability, and byte bounds BEFORE allocating/parsing JSON
+                    // so a guest cannot burn host CPU/memory on denied or oversized calls.
+                    if call_state.calls > 512 || !known || !capabilities.iter().any(|c| c == family) {
                         return Err(denied());
-                    };
+                    }
                     if args_json.len() > MAX_CALL_BYTES {
                         return Err(HostError::own(format!("Host call arguments exceed {MAX_CALL_BYTES} bytes: {}", js::slice_units(op, 40))));
                     }
                     if !writable && op == "sql.execute" {
                         return Err(HostError::own("Read-only transaction"));
                     }
+                    let args: Option<Vec<Value>> = serde_json::from_str::<Value>(&js::replace_lone_surrogates(args_json)).ok().and_then(|v| match v {
+                        Value::Array(items) if items.len() <= 4 => Some(items),
+                        _ => None,
+                    });
+                    let Some(args) = args else {
+                        return Err(denied());
+                    };
                     drop(call_state);
                     let value = match family {
                         "sql" => sql.call(&mut db.borrow_mut(), name, args.first(), args.get(1), writable),

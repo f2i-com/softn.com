@@ -506,3 +506,9 @@ test('decoy non-interactive <label>, orphan <summary>, and disabled <input> insi
     ]
   );
 });
+
+test('trailing-dot FQDN links to ownHost are still kept as same-site', () => {
+  assert.equal(click('https://site.example./admin', { ownHost: 'site.example' }).kind, 'keep');
+  assert.equal(click('https://SITE.EXAMPLE../api/key', { ownHost: 'site.example.' }).kind, 'keep');
+  assert.equal(click('https://other.example./page', { ownHost: 'site.example' }).kind, 'hand-on');
+});

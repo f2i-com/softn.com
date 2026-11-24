@@ -1,4 +1,5 @@
 use super::{HttpBridge, HttpResponse};
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
@@ -15,11 +16,13 @@ const TIMEOUT_GLOBAL: Duration = Duration::from_secs(20);
 const TIMEOUT_CONNECT: Duration = Duration::from_secs(10);
 const TIMEOUT_READ: Duration = Duration::from_secs(15);
 
-/// Maximum response body size (5MB). Prevents memory exhaustion from scripts
-/// fetching attacker-controlled endpoints that return massive payloads.
-/// ureq defaults to 10MB; we tighten it since scripts rarely need large responses.
+/// Maximum response body size (5MB), enforced on BOTH compressed wire bytes
+/// and decompressed output bytes to defeat gzip decompression bombs.
 const MAX_RESPONSE_BODY: u64 = 5 * 1024 * 1024;
+/// Maximum outbound request body size (5MB) for POST/PUT.
+const MAX_REQUEST_BODY: usize = 5 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct NativeHttpBridge {
     agent: ureq::Agent,
 }
@@ -63,11 +66,26 @@ impl NativeHttpBridge {
 fn to_http_response(resp: ureq::http::Response<ureq::Body>) -> Result<HttpResponse, String> {
     let status = resp.status().as_u16();
     let mut body = resp.into_body();
-    let text = body
+    // Enforce MAX_RESPONSE_BODY on both wire bytes (via `.limit()`) AND
+    // post-decompression output bytes (via `.take(MAX_RESPONSE_BODY + 1)`) so a
+    // gzip decompression bomb cannot expand a 5 MiB wire body into gigabytes.
+    let mut reader = body
         .with_config()
         .limit(MAX_RESPONSE_BODY)
-        .read_to_string()
+        .reader()
+        .take(MAX_RESPONSE_BODY + 1);
+    let mut buf = Vec::new();
+    reader
+        .read_to_end(&mut buf)
         .map_err(|e| format!("Read body error: {}", e))?;
+    if (buf.len() as u64) > MAX_RESPONSE_BODY {
+        return Err(format!(
+            "Read body error: response exceeded {} byte limit",
+            MAX_RESPONSE_BODY
+        ));
+    }
+    let text = String::from_utf8(buf)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     Ok(HttpResponse {
         status,
         body: text,
@@ -142,6 +160,9 @@ fn validate_url(url: &str) -> Result<(), String> {
     let authority = uri
         .authority()
         .ok_or_else(|| "Empty host in URL".to_string())?;
+    if authority.as_str().contains('@') {
+        return Err("URLs with embedded credentials are not allowed".into());
+    }
     let host_raw = authority.host();
     if host_raw.is_empty() {
         return Err("Empty host in URL".into());
@@ -187,18 +208,25 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
             let bits = u128::from(v6);
             // fc00::/7 unique-local (AWS's IPv6 metadata service is
             // fd00:ec2::254), fe80::/10 link-local, fec0::/10 site-local,
-            // 100::/64 discard-only, 2001:0000::/32 Teredo.
+            // 100::/64 discard-only, 2001:0000::/32 Teredo, 2001:2::/48
+            // benchmarking, 2001:10::/28 & 2001:20::/28 ORCHID, 5f00::/16 SRv6,
+            // and 64:ff9b:1::/48 (RFC 8215 local-use NAT64 prefix).
             if (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
                 || (segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0)
                 || (segments[0] == 0x2001 && segments[1] == 0x0000)
+                || (segments[0] == 0x2001 && segments[1] == 0x0002 && segments[2] == 0)
+                || (segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0010)
+                || (segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0020)
+                || segments[0] == 0x5f00
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
             {
                 return true;
             }
             // Addresses that carry an IPv4 address a gateway or the stack
             // will reach: ::ffff:a.b.c.d (mapped), ::ffff:0:a.b.c.d (IPv4-translated),
-            // ::a.b.c.d (compatible, deprecated), 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64)
+            // ::a.b.c.d (compatible, deprecated), 64:ff9b::/96 (well-known NAT64)
             // with the IPv4 address in the low 32 bits, 2002::/16 (6to4) with it in
             // bits 16-47.
             let low32 = Ipv4Addr::from(bits as u32);
@@ -208,8 +236,7 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
             if segments[0..4] == [0, 0, 0, 0] && segments[4] == 0xffff && segments[5] == 0 {
                 return is_blocked_ipv4(&low32);
             }
-            let nat64 = segments[0] == 0x64 && segments[1] == 0xff9b;
-            if nat64 && (segments[2..6] == [0, 0, 0, 0] || segments[2] == 1) {
+            if segments[0] == 0x64 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
                 return is_blocked_ipv4(&low32);
             }
             if segments[0] == 0x2002 {
@@ -244,6 +271,9 @@ impl HttpBridge for NativeHttpBridge {
 
     fn post(&self, url: &str, body: &str, content_type: &str) -> Result<HttpResponse, String> {
         validate_url(url)?;
+        if body.len() > MAX_REQUEST_BODY {
+            return Err(format!("HTTP POST body exceeds {} byte limit", MAX_REQUEST_BODY));
+        }
         let resp = self.agent
             .post(url)
             .header("Content-Type", content_type)
@@ -254,6 +284,9 @@ impl HttpBridge for NativeHttpBridge {
 
     fn put(&self, url: &str, body: &str, content_type: &str) -> Result<HttpResponse, String> {
         validate_url(url)?;
+        if body.len() > MAX_REQUEST_BODY {
+            return Err(format!("HTTP PUT body exceeds {} byte limit", MAX_REQUEST_BODY));
+        }
         let resp = self.agent
             .put(url)
             .header("Content-Type", content_type)

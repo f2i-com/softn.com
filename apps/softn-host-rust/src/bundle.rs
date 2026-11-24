@@ -565,8 +565,11 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
         return Err("Expected a directory. Use extract_softn_zip() first for .softn files.".into());
     };
 
-    let manifest_meta = fs::metadata(&manifest_path)
+    let manifest_meta = fs::symlink_metadata(&manifest_path)
         .map_err(|e| format!("Failed to inspect manifest: {}", e))?;
+    if manifest_meta.file_type().is_symlink() {
+        return Err("Refusing symlinked manifest.json".into());
+    }
     if manifest_meta.len() > MAX_MANIFEST_BYTES {
         return Err(format!("Manifest exceeds maximum size ({} bytes)", MAX_MANIFEST_BYTES));
     }

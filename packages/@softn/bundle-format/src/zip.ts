@@ -51,7 +51,7 @@ export const MAX_ZIP_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
  * whatever their size (measured at about twice the time for data that does
  * not compress). That is why a stream that fits in one slice is not sliced.
  */
-const INFLATE_SLICE_BYTES = 64 * 1024;
+const INFLATE_SLICE_BYTES = 4096;
 
 /**
  * A slice that produces nothing is the stream waiting for the rest of a
@@ -90,16 +90,20 @@ interface DeclaredEntry {
   compressedSize: number;
   uncompressedSize: number;
   dataOffset: number;
+  /** Local header metadata when data-descriptor bit 3 is clear, cross-checked on read. */
+  localMeta?: { crc32: number; compressedSize: number; uncompressedSize: number };
   /** The name as the archive spells it, when that is with backslashes. */
   writtenAs?: string;
   /** The name's bytes are not UTF-8 text; `name` holds them read with replacement characters. */
   notUtf8?: boolean;
 }
 
+const FATAL_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 /** Whether `bytes` are UTF-8 text. The reader's own decoder reads anything, with replacement characters. */
 function isUtf8(bytes: Uint8Array): boolean {
   try {
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    FATAL_UTF8_DECODER.decode(bytes);
     return true;
   } catch {
     return false;
@@ -233,6 +237,11 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   // forces them to agree. Different readers pick different ones, so an archive
   // whose fields disagree is one that does not have a single meaning — reject
   // it rather than choose.
+  const diskNumber = view.getUint16(eocdOffset + 4, true);
+  const centralDirDisk = view.getUint16(eocdOffset + 6, true);
+  if (diskNumber !== 0 || centralDirDisk !== 0) {
+    throw new Error('Multi-disk ZIP bundles are not supported');
+  }
   const entriesThisDisk = view.getUint16(eocdOffset + 8, true);
   const entriesTotal = view.getUint16(eocdOffset + 10, true);
   if (entriesThisDisk !== entriesTotal) {
@@ -337,7 +346,7 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
       throw new Error('Bundle contents too large');
     }
 
-    if (localHeaderOffset + 30 > data.byteLength) {
+    if (localHeaderOffset + 30 > centralDirOffset) {
       throw new Error('Corrupt ZIP: local header out of bounds');
     }
     if (view.getUint32(localHeaderOffset, true) !== LFH_SIGNATURE) {
@@ -351,17 +360,25 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     if (localMethod !== method) {
       throw new Error('Corrupt ZIP: local and central compression methods disagree');
     }
+    const localMeta =
+      (localFlags & 8) === 0 && (flags & 8) === 0
+        ? {
+            crc32: view.getUint32(localHeaderOffset + 14, true),
+            compressedSize: view.getUint32(localHeaderOffset + 18, true),
+            uncompressedSize: view.getUint32(localHeaderOffset + 22, true),
+          }
+        : undefined;
 
     // The name and extra field of the *local* header may differ in length from
     // the central directory's copy, so the payload can only be located here.
     const localNameLength = view.getUint16(localHeaderOffset + 26, true);
     const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
     const dataOffset = localHeaderOffset + 30 + localNameLength + localExtraLength;
-    if (dataOffset + compressedSize > data.byteLength) {
+    if (dataOffset + compressedSize > centralDirOffset) {
       throw new Error('Corrupt ZIP: entry data out of bounds');
     }
 
-    const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
+    const nameBytes = data.subarray(offset + 46, offset + 46 + fileNameLength);
     if (localNameLength !== fileNameLength) {
       throw new Error('Corrupt ZIP: local and central entry names disagree');
     }
@@ -386,6 +403,11 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     if (unicodeName !== null && unicodeName !== name) {
       throw new Error(`Corrupt ZIP: an entry is named both ${name} and ${unicodeName}`);
     }
+    const localExtraStart = localNameStart + localNameLength;
+    const localUnicodeName = unicodePathName(data, view, localExtraStart, localExtraStart + localExtraLength, nameBytes, decoder);
+    if (localUnicodeName !== null && localUnicodeName !== name) {
+      throw new Error(`Corrupt ZIP: an entry is named both ${name} and ${localUnicodeName}`);
+    }
 
     // Two records under one name mean the archive has no single meaning. Names
     // take part in no checksum, so both records pass every integrity check, and
@@ -405,6 +427,7 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
       compressedSize,
       uncompressedSize,
       dataOffset,
+      ...(localMeta ? { localMeta } : {}),
       ...(written === name ? {} : { writtenAs: written }),
       ...(notUtf8 ? { notUtf8 } : {}),
     });
@@ -453,7 +476,7 @@ class EntryOverrun extends Error {
  */
 function inflateEntry(raw: Uint8Array, entry: DeclaredEntry): Uint8Array {
   const size = entry.uncompressedSize;
-  if (raw.length <= INFLATE_SLICE_BYTES) {
+  if (raw.length <= INFLATE_SLICE_BYTES && raw.length <= size + INFLATE_SLICE_BYTES) {
     const produced = inflateSync(raw, { out: new Uint8Array(size + 1) });
     if (produced.length > size) throw new EntryOverrun(entry.name);
     // A copy of exactly what was produced: a worker transfers the buffer
@@ -513,6 +536,14 @@ function verifyEntry(content: Uint8Array, entry: DeclaredEntry): Uint8Array {
   }
   if (crc32(content) !== entry.crc32) {
     throw new Error(`Corrupt bundle: checksum mismatch for ${entry.name}`);
+  }
+  if (
+    entry.localMeta &&
+    (entry.localMeta.crc32 !== entry.crc32 ||
+      entry.localMeta.compressedSize !== entry.compressedSize ||
+      entry.localMeta.uncompressedSize !== entry.uncompressedSize)
+  ) {
+    throw new Error(`Corrupt bundle: local and central metadata mismatch for ${entry.name}`);
   }
   return content;
 }

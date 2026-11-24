@@ -31,10 +31,18 @@ function resolveContainerBackendPath() {
   );
 }
 
+const MAX_STDIN_BYTES = 24 * 1024 * 1024;
+
 async function readStdinUtf8() {
   const chunks = [];
+  let total = 0;
   for await (const chunk of process.stdin) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk);
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+    total += buf.byteLength;
+    if (total > MAX_STDIN_BYTES) {
+      throw new Error('Hosted backend request payload exceeded maximum size');
+    }
+    chunks.push(buf);
   }
   return Buffer.concat(chunks).toString('utf8');
 }

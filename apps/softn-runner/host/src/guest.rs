@@ -80,9 +80,10 @@ impl wasmtime::CustomCodeMemory for InPlace {
 #[cfg(unix)]
 const IN_PLACE_PAGE: usize = 4096;
 
-/// What one message from the guest may be: a host call's 32 MiB of
-/// arguments, as the engine bounds them, and its operation's name.
-const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024 + 4096;
+/// Tight per-message-kind limits for guest `ask()` calls so a compromised guest
+/// cannot force arbitrary 32 MiB host allocations before host_calls bounds run.
+const MAX_CALL_MESSAGE_BYTES: usize = 2 * 1024 * 1024 + 24_576;
+const MAX_OUTCOME_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// A `db.query` call: the operation and its arguments as JSON, answered with JSON.
 pub type CallHandler = Box<dyn FnMut(&str, &str) -> String>;
@@ -250,13 +251,22 @@ impl Guest {
 
 /// The guest's `ask`: read its message, answer it, and say how long the answer is.
 fn ask(caller: &mut Caller<'_, State>, kind: i32, ptr: i32, len: i32) -> Option<i32> {
-    let len = usize::try_from(len).ok().filter(|n| *n <= MAX_MESSAGE_BYTES)?;
-    let memory = caller.get_export("memory").and_then(|e| e.into_memory())?;
-    let mut message = vec![0u8; len];
-    memory.read(&*caller, ptr as u32 as usize, &mut message).ok()?;
+    let max_len = match kind {
+        0 => 0,
+        1 => MAX_CALL_MESSAGE_BYTES,
+        2 => MAX_OUTCOME_MESSAGE_BYTES,
+        _ => return None,
+    };
+    let len = usize::try_from(len).ok().filter(|n| *n <= max_len)?;
+    let mut message = Vec::new();
+    if len > 0 {
+        let memory = caller.get_export("memory").and_then(|e| e.into_memory())?;
+        message.resize(len, 0u8);
+        memory.read(&*caller, ptr as u32 as usize, &mut message).ok()?;
+    }
     let state = caller.data_mut();
     let answer = match kind {
-        0 => state.job.clone(),
+        0 => std::mem::take(&mut state.job),
         1 => {
             let split = message.iter().position(|b| *b == 0)?;
             let op = std::str::from_utf8(&message[..split]).ok()?;

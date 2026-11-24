@@ -6,7 +6,7 @@
  * `<softn-app>`'s closed `ShadowRoot`.
  */
 
-import { ContainerArchive, bytesToBase64, piecesToBytes } from './archive';
+import { ContainerArchive, bytesToBase64, piecesSize, piecesToBytes } from './archive';
 import { blobWithin } from './capped-body';
 import { replayCanvasCommands } from './canvas-replay';
 import {
@@ -215,6 +215,10 @@ export class HostDomPatcher {
    * host has (sanitizeContainerCss), on every change to it.
    */
   private readonly styleSheets = new Map<Element, number[]>();
+  /** Reverse index from text-node id to its owning `<style>` element for O(1) `sheetOf()` lookups. */
+  private readonly styleTextOwner = new Map<number, Element>();
+  /** Bounded cache for pure inline `style` values (no `url`/`src`/`image`/`softn-blob:`/escapes). */
+  private readonly inlineStyleCache = new Map<string, string>();
   /**
    * `<link>` elements the app made. Each is a `<style>` in the page: a stylesheet of the
    * app's is read from the archive and put there by the host's rule, and any other `rel`
@@ -242,7 +246,10 @@ export class HostDomPatcher {
   /** CSS custom properties (`--*`) set by guest script on `document.documentElement.style`. */
   private readonly guestRootCustomProps = new Set<string>();
   private readonly readableUrls = new Map<HTMLImageElement, string>();
-  private readonly readableSizes = new Map<string, number>();
+  private readonly readableSizes = new Map<HTMLImageElement, number>();
+  private readonly readableAborts = new Map<HTMLImageElement, AbortController>();
+  private readonly lastMeasuredBoxes = new Map<number, MeasuredBoxTuple>();
+  private animationStartCount = 0;
   /** Bytes of such pictures being read now, held with those kept to their total. */
   private readableLoading = 0;
   /** An image of the page's being loaded as readable: the address it was asked for, and which asking is the last. */
@@ -330,6 +337,7 @@ export class HostDomPatcher {
     this.permissions = permissions;
     this.netGranted = netGranted;
     this.filesGranted = filesGranted;
+    this.inlineStyleCache.clear();
   }
 
   /** Apply a batch of `ShellOp` operations produced by a Worker VM turn. */
@@ -343,6 +351,7 @@ export class HostDomPatcher {
     // in one turn showed the first), and a field was focused before it was on the page.
     const afterTree: Array<[number, string, unknown]> = [];
     let treeChanged = false;
+    let layoutAffected = false;
     const started: Array<[string, number, unknown, unknown]> = [];
     const controlled: Array<[string, string]> = [];
 
@@ -352,6 +361,7 @@ export class HostDomPatcher {
       if (op[0] !== 'blob') continue;
       const [, id, type, given] = op;
       if (typeof id !== 'string') continue;
+      if (piecesSize(given) > 64 * 1024 * 1024) continue;
       try {
         const bytes = piecesToBytes(given);
         if (bytes) this.archive.putRuntimeBlob(id, typeof type === 'string' ? type : '', bytes);
@@ -360,389 +370,387 @@ export class HostDomPatcher {
       }
     }
 
-    for (const op of ops) {
-      switch (op[0]) {
-        case 'blob':
-          break;
+    try {
+      for (const op of ops) {
+        switch (op[0]) {
+          case 'blob':
+            break;
 
-        case 'sr': {
-          const [, hostId, rootId] = op;
-          if (!Number.isInteger(hostId) || !Number.isInteger(rootId) || hostId <= 1 || rootId <= 1) break;
-          // On an element the app made, never on the page's own (its root, its body).
-          const hostEl = this.nodes.get(hostId);
-          if (!(hostEl instanceof Element) || typeof hostEl.attachShadow !== 'function') break;
-          let root = hostEl.shadowRoot && this.shadowRoots.has(hostEl.shadowRoot) ? hostEl.shadowRoot : null;
-          if (!root) {
-            // As many as a page has a use for, and counted with its nodes.
-            if (this.shadowRoots.size >= MAX_SHADOW_ROOTS || (!this.nodes.has(rootId) && this.nodes.size >= MAX_HOST_NODES)) break;
-            try {
-              // Open, on the page: what is inside is the app's, and the page reads it as it
-              // reads the rest of the app (to find the element an event happened on).
-              root = hostEl.attachShadow({ mode: 'open' });
-            } catch {
-              // An element the browser attaches none to.
+          case 'sr': {
+            const [, hostId, rootId] = op;
+            if (!Number.isInteger(hostId) || !Number.isInteger(rootId) || hostId <= 1 || rootId <= 1) break;
+            // On an element the app made, never on the page's own (its root, its body).
+            const hostEl = this.nodes.get(hostId);
+            if (!(hostEl instanceof Element) || typeof hostEl.attachShadow !== 'function') break;
+            let root = hostEl.shadowRoot && this.shadowRoots.has(hostEl.shadowRoot) ? hostEl.shadowRoot : null;
+            if (!root) {
+              // As many as a page has a use for, and counted with its nodes.
+              if (this.shadowRoots.size >= MAX_SHADOW_ROOTS || (!this.nodes.has(rootId) && this.nodes.size >= MAX_HOST_NODES)) break;
+              try {
+                // Open, on the page: what is inside is the app's, and the page reads it as it
+                // reads the rest of the app (to find the element an event happened on).
+                root = hostEl.attachShadow({ mode: 'open' });
+              } catch {
+                // An element the browser attaches none to.
+                break;
+              }
+              this.shadowRoots.add(root);
+              // What does not leave a shadow tree is listened for inside it; what does is heard on the page.
+              for (const { type, fn, capture } of this.listening) {
+                if (!COMPOSED_EVENTS.has(type)) {
+                  root.addEventListener(type, fn, PASSIVE_EVENTS.has(type) ? { capture, passive: true } : capture);
+                }
+              }
+            }
+            const prevRoot = this.nodes.get(rootId);
+            if (prevRoot && prevRoot !== root) this.releaseNodeResources(prevRoot);
+            this.rootIds.set(root, rootId);
+            this.nodes.set(rootId, root);
+            layoutAffected = true;
+            break;
+          }
+
+          case 'unblob':
+            if (typeof op[1] === 'string') this.archive.dropRuntimeBlob(op[1]);
+            break;
+
+          case 'img':
+            if (typeof op[1] === 'string' && typeof op[2] === 'string') this.preloadImage(op[1], op[2], op[3] === 'anonymous');
+            break;
+
+          case 'anim':
+            // After the tree: the element it animates may have been made in this same turn.
+            if (typeof op[1] === 'string' && typeof op[2] === 'number') started.push([op[1], op[2], op[3], op[4]]);
+            break;
+
+          case 'anim-ctl':
+            if (typeof op[1] === 'string' && typeof op[2] === 'string') controlled.push([op[1], op[2]]);
+            break;
+
+          case 'canvas-blob': {
+            const [, token, id, type, quality] = op;
+            if (typeof token !== 'string') break;
+            const answer = (bytes: Uint8Array | null, kind = '') => {
+              if (!this.disposed) this.callbacks.onEvent(-1, 'softn:canvas', bytes ? { token, base64: bytesToBase64(bytes), kind } : { token }, []);
+            };
+            const canvas = this.nodes.get(id);
+            // A picture of what the app drew from its own files and its own bytes. Not of a
+            // canvas a picture from the network went into: the browser fetched that one with
+            // the person's cookies for its site, and from the embedding page's own site it
+            // would be read back whole (the browser's own rule stops only other sites'). And a
+            // few at a time: each is a picture encoded on the page's thread.
+            if (!(canvas instanceof HTMLCanvasElement) || typeof canvas.toBlob !== 'function' || this.unreadable.has(canvas) || this.encoding >= MAX_CANVAS_ENCODES) {
+              answer(null);
               break;
             }
-            this.shadowRoots.add(root);
-            // What does not leave a shadow tree is listened for inside it; what does is heard on the page.
-            for (const { type, fn, capture } of this.listening) {
-              if (!COMPOSED_EVENTS.has(type)) {
-                root.addEventListener(type, fn, PASSIVE_EVENTS.has(type) ? { capture, passive: true } : capture);
+            const kind = type === 'image/jpeg' || type === 'image/webp' ? type : 'image/png';
+            this.encoding++;
+            let told = false;
+            const tell = (bytes: Uint8Array | null, was = '') => {
+              if (told) return;
+              told = true;
+              this.encoding--;
+              answer(bytes, was);
+            };
+            try {
+              canvas.toBlob(
+                (blob) => {
+                  if (!blob || blob.size > MAX_CANVAS_FILE_BYTES) tell(null);
+                  else void readFile(blob as File).then((bytes) => tell(bytes, blob.type), () => tell(null));
+                },
+                kind,
+                typeof quality === 'number' && quality >= 0 && quality <= 1 ? quality : undefined
+              );
+            } catch {
+              // A canvas with a picture drawn into it that is not the app's to read back.
+              tell(null);
+            }
+            break;
+          }
+
+          case 'save': {
+            // Only just after a click or a key of the person's in the app, and one file for
+            // each: an app saves nothing by itself, and not a stream of files for one click.
+            if (typeof op[1] !== 'string' || performance.now() - this.lastActivation > ACTIVATION_MS) break;
+            const blob = this.archive.getRuntimeBlob(op[1]);
+            if (!blob) break;
+            this.lastActivation = Number.NEGATIVE_INFINITY;
+            // The press that asked is spent with it: its key going up, the click its pointer
+            // going down ends in, are not a second word for a second file.
+            this.quietUntil = performance.now() + SAME_PRESS_MS;
+            this.callbacks.onSaveRequest?.({ name: typeof op[2] === 'string' ? op[2] : '', type: blob.type, bytes: blob.bytes });
+            break;
+          }
+
+          case 'e': {
+            const [, id, rawTag, attrs, rawNs] = op;
+            if (!Number.isInteger(id) || id <= 1 || typeof rawTag !== 'string') break;
+            // The page is the embedding page's to lay out and paint: past a size no app's page
+            // has a use for, it is not grown.
+            if (!this.nodes.has(id) && this.nodes.size >= MAX_HOST_NODES) break;
+            layoutAffected = true;
+            const ns = rawNs === 'svg' || rawNs === 'math' ? rawNs : undefined;
+            // The element's own name, by the host's rule (host-policy.ts): none for what the
+            // page does not get, whatever prefix or case the operation spelled it with.
+            const name = hostElementName(rawTag, ns);
+            if (name === null) {
+              const prevBlocked = this.nodes.get(id);
+              if (prevBlocked) this.releaseNodeResources(prevBlocked);
+              this.nodes.set(id, document.createComment('blocked'));
+              break;
+            }
+            const lower = name.toLowerCase();
+            // A canvas told again (moved, or put on the page after it was drawn on off it) keeps
+            // what is drawn on it, as a canvas that moves does: made again, it was blank.
+            const told = this.nodes.get(id);
+            if (!ns && lower === 'canvas' && told instanceof HTMLCanvasElement) {
+              this.offPage2d.delete(id);
+              const given = attrs && typeof attrs === 'object' ? (attrs as Record<string, unknown>) : {};
+              for (const attr of Array.from(told.attributes)) {
+                if (!attr.name.startsWith('data-softn-') && !(attr.name in given)) told.removeAttribute(attr.name);
+              }
+              for (const [k, v] of Object.entries(given)) {
+                const value = typeof v === 'string' ? v : null;
+                // Its size set again to what it is would clear it. Compared with the size it has:
+                // at the default size (300 by 150) it has no such attribute.
+                if ((k === 'width' || k === 'height') && value !== null && String(k === 'width' ? told.width : told.height) === value.trim()) continue;
+                this.applySafeAttribute(told, lower, k, value);
+              }
+              if (!this.measuredIds.has(id)) {
+                this.measuredIds.add(id);
+                this.resizeObserver?.observe(told);
+              }
+              this.scheduleBoxMeasure();
+              break;
+            }
+            // A `<link>` is a `<style>` here, filled by the host when it names a stylesheet of
+            // the app's; the page never fetches what a link names.
+            const isLink = !ns && lower === 'link';
+            const el = isLink ? document.createElement('style') : createHostElement(name, ns);
+            if (isLink) this.links.set(el, { rel: '', href: '' });
+            else if (lower === 'style') this.styleSheets.set(el, []);
+            if (!ns && lower.startsWith('softn-')) {
+              this.callbacks.onCustomTag?.(lower);
+            }
+            if (attrs && typeof attrs === 'object') {
+              for (const [k, v] of Object.entries(attrs)) {
+                this.applySafeAttribute(el, lower, k, typeof v === 'string' ? v : null);
               }
             }
-          }
-          this.rootIds.set(root, rootId);
-          this.nodes.set(rootId, root);
-          break;
-        }
-
-        case 'unblob':
-          if (typeof op[1] === 'string') this.archive.dropRuntimeBlob(op[1]);
-          break;
-
-        case 'img':
-          if (typeof op[1] === 'string' && typeof op[2] === 'string') this.preloadImage(op[1], op[2], op[3] === 'anonymous');
-          break;
-
-        case 'anim':
-          // After the tree: the element it animates may have been made in this same turn.
-          if (typeof op[1] === 'string' && typeof op[2] === 'number') started.push([op[1], op[2], op[3], op[4]]);
-          break;
-
-        case 'anim-ctl':
-          if (typeof op[1] === 'string' && typeof op[2] === 'string') controlled.push([op[1], op[2]]);
-          break;
-
-        case 'canvas-blob': {
-          const [, token, id, type, quality] = op;
-          if (typeof token !== 'string') break;
-          const answer = (bytes: Uint8Array | null, kind = '') => {
-            if (!this.disposed) this.callbacks.onEvent(-1, 'softn:canvas', bytes ? { token, base64: bytesToBase64(bytes), kind } : { token }, []);
-          };
-          const canvas = this.nodes.get(id);
-          // A picture of what the app drew from its own files and its own bytes. Not of a
-          // canvas a picture from the network went into: the browser fetched that one with
-          // the person's cookies for its site, and from the embedding page's own site it
-          // would be read back whole (the browser's own rule stops only other sites'). And a
-          // few at a time: each is a picture encoded on the page's thread.
-          if (!(canvas instanceof HTMLCanvasElement) || typeof canvas.toBlob !== 'function' || this.unreadable.has(canvas) || this.encoding >= MAX_CANVAS_ENCODES) {
-            answer(null);
-            break;
-          }
-          const kind = type === 'image/jpeg' || type === 'image/webp' ? type : 'image/png';
-          this.encoding++;
-          let told = false;
-          const tell = (bytes: Uint8Array | null, was = '') => {
-            if (told) return;
-            told = true;
-            this.encoding--;
-            answer(bytes, was);
-          };
-          try {
-            canvas.toBlob(
-              (blob) => {
-                if (!blob || blob.size > MAX_CANVAS_FILE_BYTES) tell(null);
-                else void readFile(blob as File).then((bytes) => tell(bytes, blob.type), () => tell(null));
-              },
-              kind,
-              typeof quality === 'number' && quality >= 0 && quality <= 1 ? quality : undefined
-            );
-          } catch {
-            // A canvas with a picture drawn into it that is not the app's to read back.
-            tell(null);
-          }
-          break;
-        }
-
-        case 'save': {
-          // Only just after a click or a key of the person's in the app, and one file for
-          // each: an app saves nothing by itself, and not a stream of files for one click.
-          if (typeof op[1] !== 'string' || performance.now() - this.lastActivation > ACTIVATION_MS) break;
-          const blob = this.archive.getRuntimeBlob(op[1]);
-          if (!blob) break;
-          this.lastActivation = Number.NEGATIVE_INFINITY;
-          // The press that asked is spent with it: its key going up, the click its pointer
-          // going down ends in, are not a second word for a second file.
-          this.quietUntil = performance.now() + SAME_PRESS_MS;
-          this.callbacks.onSaveRequest?.({ name: typeof op[2] === 'string' ? op[2] : '', type: blob.type, bytes: blob.bytes });
-          break;
-        }
-
-        case 'e': {
-          const [, id, rawTag, attrs, rawNs] = op;
-          if (!Number.isInteger(id) || id <= 1 || typeof rawTag !== 'string') break;
-          // The page is the embedding page's to lay out and paint: past a size no app's page
-          // has a use for, it is not grown.
-          if (!this.nodes.has(id) && this.nodes.size >= MAX_HOST_NODES) break;
-          const ns = rawNs === 'svg' || rawNs === 'math' ? rawNs : undefined;
-          // The element's own name, by the host's rule (host-policy.ts): none for what the
-          // page does not get, whatever prefix or case the operation spelled it with.
-          const name = hostElementName(rawTag, ns);
-          if (name === null) {
-            this.nodes.set(id, document.createComment('blocked'));
-            break;
-          }
-          const lower = name.toLowerCase();
-          // A canvas told again (moved, or put on the page after it was drawn on off it) keeps
-          // what is drawn on it, as a canvas that moves does: made again, it was blank.
-          const told = this.nodes.get(id);
-          if (!ns && lower === 'canvas' && told instanceof HTMLCanvasElement) {
-            this.offPage2d.delete(id);
-            const given = attrs && typeof attrs === 'object' ? (attrs as Record<string, unknown>) : {};
-            for (const attr of Array.from(told.attributes)) {
-              if (!attr.name.startsWith('data-softn-') && !(attr.name in given)) told.removeAttribute(attr.name);
-            }
-            for (const [k, v] of Object.entries(given)) {
-              const value = typeof v === 'string' ? v : null;
-              // Its size set again to what it is would clear it. Compared with the size it has:
-              // at the default size (300 by 150) it has no such attribute.
-              if ((k === 'width' || k === 'height') && value !== null && String(k === 'width' ? told.width : told.height) === value.trim()) continue;
-              this.applySafeAttribute(told, lower, k, value);
-            }
-            if (!this.measuredIds.has(id)) {
+            el.setAttribute(NODE_ID_ATTR, String(id));
+            // An element told again (it was moved) is made again: release resources of the prior node.
+            const before = this.nodes.get(id);
+            if (before) this.releaseNodeResources(before, id);
+            this.nodes.set(id, el);
+            // Measured before: the element it is now is observed and measured (the one before was).
+            if (el instanceof HTMLCanvasElement || this.measuredIds.has(id) || this.sweptMeasured.delete(id)) {
+              if (before instanceof Element) this.resizeObserver?.unobserve(before);
               this.measuredIds.add(id);
-              this.resizeObserver?.observe(told);
+              this.resizeObserver?.observe(el);
+              this.scheduleBoxMeasure();
             }
-            this.scheduleBoxMeasure();
             break;
           }
-          // A `<link>` is a `<style>` here, filled by the host when it names a stylesheet of
-          // the app's; the page never fetches what a link names.
-          const isLink = !ns && lower === 'link';
-          const el = isLink ? document.createElement('style') : createHostElement(name, ns);
-          if (isLink) this.links.set(el, { rel: '', href: '' });
-          else if (lower === 'style') this.styleSheets.set(el, []);
-          if (!ns && lower.startsWith('softn-')) {
-            this.callbacks.onCustomTag?.(lower);
-          }
-          if (attrs && typeof attrs === 'object') {
-            for (const [k, v] of Object.entries(attrs)) {
-              this.applySafeAttribute(el, lower, k, typeof v === 'string' ? v : null);
+
+          case 'x': {
+            const [, id, rawText] = op;
+            if (!Number.isInteger(id) || id <= 1) break;
+            layoutAffected = true;
+            const text = typeof rawText === 'string' ? rawText : String(rawText ?? '');
+            const existing = this.nodes.get(id);
+            if (existing && existing.nodeType === Node.TEXT_NODE) {
+              existing.nodeValue = text;
+              // A text node of a `<style>` is kept out of the page: its sheet is written again.
+              const sheet = this.sheetOf(id);
+              if (sheet) this.writeStyleSheet(sheet);
+            } else if (existing || this.nodes.size < MAX_HOST_NODES) {
+              const tn = document.createTextNode(text);
+              if (existing) {
+                this.releaseNodeResources(existing, id);
+                if (existing.parentNode) existing.parentNode.replaceChild(tn, existing);
+              }
+              this.nodes.set(id, tn);
             }
+            break;
           }
-          el.setAttribute(NODE_ID_ATTR, String(id));
-          // An element told again (it was moved) is made again: the one before, and the
-          // shadow tree it had, are let go.
-          const before = this.nodes.get(id);
-          if (before instanceof Element && before.shadowRoot && this.shadowRoots.has(before.shadowRoot)) this.dropShadowRoot(before.shadowRoot);
-          this.nodes.set(id, el);
-          // Measured before: the element it is now is observed and measured (the one before was).
-          if (el instanceof HTMLCanvasElement || this.measuredIds.has(id) || this.sweptMeasured.delete(id)) {
-            if (before instanceof Element) this.resizeObserver?.unobserve(before);
-            this.measuredIds.add(id);
-            this.resizeObserver?.observe(el);
-            this.scheduleBoxMeasure();
-          }
-          break;
-        }
 
-        case 'x': {
-          const [, id, rawText] = op;
-          if (!Number.isInteger(id) || id <= 1) break;
-          const text = typeof rawText === 'string' ? rawText : String(rawText ?? '');
-          const existing = this.nodes.get(id);
-          if (existing && existing.nodeType === Node.TEXT_NODE) {
-            existing.nodeValue = text;
-            // A text node of a `<style>` is kept out of the page: its sheet is written again.
-            const sheet = this.sheetOf(id);
-            if (sheet) this.writeStyleSheet(sheet);
-          } else if (existing || this.nodes.size < MAX_HOST_NODES) {
-            const tn = document.createTextNode(text);
-            if (existing?.parentNode) existing.parentNode.replaceChild(tn, existing);
-            this.nodes.set(id, tn);
+          case 'm': {
+            const [, id] = op;
+            if (Number.isInteger(id) && id > 1 && !this.nodes.has(id) && this.nodes.size < MAX_HOST_NODES) {
+              this.nodes.set(id, document.createComment(''));
+            }
+            break;
           }
-          break;
-        }
 
-        case 'm': {
-          const [, id] = op;
-          if (Number.isInteger(id) && id > 1 && !this.nodes.has(id) && this.nodes.size < MAX_HOST_NODES) {
-            this.nodes.set(id, document.createComment(''));
-          }
-          break;
-        }
-
-        case 'a': {
-          const [, id, name, val] = op;
-          if (typeof name !== 'string') break;
-          const value = typeof val === 'string' ? val : null;
-          // The head is the host's own element, kept out of sight: nothing of it is the app's to set.
-          if (id === GUEST_HEAD_ID) break;
-          if (id === 0 || id === GUEST_HTML_ID || id === 1) {
-            // The document's root and its body are the host's own elements: the app names
-            // their classes and the like, and the body's style, and nothing else of them.
-            // (The root is told by the id the app's document gives its <html>. It was looked
-            // for under 0, which nothing sends: a class or a data-theme the script set on
-            // document.documentElement, as a dark mode does, never arrived.)
-            const root = id === 1 ? this.viewportEl : this.docRootEl;
-            const lowerName = name.toLowerCase();
-            if (ROOT_ATTRIBUTE.test(lowerName)) {
-              if (value === null) root.removeAttribute(lowerName);
-              else root.setAttribute(lowerName, value);
-            } else if (id === 1 && lowerName === 'style') {
-              if (value === null) root.removeAttribute('style');
-              else root.setAttribute('style', sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope));
-            } else if ((id === 0 || id === GUEST_HTML_ID) && lowerName === 'style') {
-              // Allow CSS custom properties (`--*`) on `document.documentElement` so theme
-              // variables work without letting guest CSS override container box layout.
-              const nextProps = new Map<string, string>();
-              if (value) {
-                const sanitized = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
-                for (const decl of sanitized.split(';')) {
-                  const colon = decl.indexOf(':');
-                  if (colon <= 0) continue;
-                  const prop = decl.slice(0, colon).trim();
-                  const propVal = decl.slice(colon + 1).trim();
-                  if (/^--[A-Za-z0-9_-]+$/.test(prop) && !prop.startsWith('--softn-') && propVal) {
-                    nextProps.set(prop, propVal);
+          case 'a': {
+            const [, id, name, val] = op;
+            if (typeof name !== 'string') break;
+            layoutAffected = true;
+            const value = typeof val === 'string' ? val : null;
+            // The head is the host's own element, kept out of sight: nothing of it is the app's to set.
+            if (id === GUEST_HEAD_ID) break;
+            if (id === 0 || id === GUEST_HTML_ID || id === 1) {
+              const root = id === 1 ? this.viewportEl : this.docRootEl;
+              const lowerName = name.toLowerCase();
+              if (lowerName.startsWith('data-softn-')) break;
+              if (ROOT_ATTRIBUTE.test(lowerName)) {
+                if (value === null) root.removeAttribute(lowerName);
+                else root.setAttribute(lowerName, value);
+              } else if (id === 1 && lowerName === 'style') {
+                if (value === null) root.removeAttribute('style');
+                else root.setAttribute('style', this.sanitizeInlineStyleCached(value));
+              } else if ((id === 0 || id === GUEST_HTML_ID) && lowerName === 'style') {
+                // Allow CSS custom properties (`--*`) on `document.documentElement` so theme
+                // variables work without letting guest CSS override container box layout.
+                const nextProps = new Map<string, string>();
+                if (value) {
+                  const sanitized = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
+                  for (const decl of sanitized.split(';')) {
+                    const colon = decl.indexOf(':');
+                    if (colon <= 0) continue;
+                    const prop = decl.slice(0, colon).trim();
+                    const propVal = decl.slice(colon + 1).trim();
+                    if (/^--[A-Za-z0-9_-]+$/.test(prop) && !prop.startsWith('--softn-') && propVal) {
+                      nextProps.set(prop, propVal);
+                    }
                   }
                 }
-              }
-              for (const oldProp of this.guestRootCustomProps) {
-                if (!nextProps.has(oldProp)) {
-                  this.docRootEl.style.removeProperty(oldProp);
-                  this.guestRootCustomProps.delete(oldProp);
+                for (const oldProp of this.guestRootCustomProps) {
+                  if (!nextProps.has(oldProp)) {
+                    this.docRootEl.style.removeProperty(oldProp);
+                    this.guestRootCustomProps.delete(oldProp);
+                  }
+                }
+                for (const [prop, propVal] of nextProps) {
+                  this.docRootEl.style.setProperty(prop, propVal);
+                  this.guestRootCustomProps.add(prop);
                 }
               }
-              for (const [prop, propVal] of nextProps) {
-                this.docRootEl.style.setProperty(prop, propVal);
-                this.guestRootCustomProps.add(prop);
-              }
+              break;
+            }
+            const target = this.nodes.get(id);
+            if (target && target.nodeType === Node.ELEMENT_NODE) {
+              const el = target as Element;
+              this.applySafeAttribute(el, this.links.has(el) ? 'link' : el.localName.toLowerCase(), name, value);
             }
             break;
           }
-          const target = this.nodes.get(id);
-          if (target && target.nodeType === Node.ELEMENT_NODE) {
-            const el = target as Element;
-            this.applySafeAttribute(el, this.links.has(el) ? 'link' : el.localName.toLowerCase(), name, value);
-          }
-          break;
-        }
 
-        case 'c': {
-          const [, parentId, childIds] = op;
-          if (!Array.isArray(childIds)) break;
-          // The children of the app's body, of its head, of an element or a shadow root it
-          // made. Not of the page's scroller (the document's root, under either id it has
-          // gone by): that holds the head and the body, and what was put beside them was
-          // outside everything the app's page is held by.
-          if (parentId === 0 || parentId === GUEST_HTML_ID) break;
-          treeChanged = true;
-          const parent = parentId === 1 ? this.viewportEl : this.nodes.get(parentId);
-          if (!parent || (parent.nodeType !== Node.ELEMENT_NODE && parent.nodeType !== Node.DOCUMENT_FRAGMENT_NODE)) {
+          case 'c': {
+            const [, parentId, childIds] = op;
+            if (!Array.isArray(childIds)) break;
+            if (parentId === 0 || parentId === GUEST_HTML_ID) break;
+            treeChanged = true;
+            layoutAffected = true;
+            const parent = parentId === 1 ? this.viewportEl : this.nodes.get(parentId);
+            if (!parent || (parent.nodeType !== Node.ELEMENT_NODE && parent.nodeType !== Node.DOCUMENT_FRAGMENT_NODE)) {
+              break;
+            }
+            if (this.links.has(parent as Element)) break;
+            if (this.styleSheets.has(parent as Element)) {
+              this.setStyleSheetTextIds(parent as Element, childIds.filter((cid) => Number.isInteger(cid)));
+              this.writeStyleSheet(parent as Element);
+              break;
+            }
+            this.reconcileChildren(parent as Element, childIds);
             break;
           }
-          // A `<link>` has no children. A `<style>`'s are its text, which the host writes.
-          if (this.links.has(parent as Element)) break;
-          if (this.styleSheets.has(parent as Element)) {
-            this.styleSheets.set(parent as Element, childIds.filter((cid) => Number.isInteger(cid)));
-            this.writeStyleSheet(parent as Element);
+
+          case 'p': {
+            const [, id, prop, val] = op;
+            if (prop === 'measure' || prop === 'scrollTop' || prop === 'scrollLeft' || prop === 'scroll') {
+              layoutAffected = true;
+            }
+            if (TREE_PROPERTIES.has(prop)) afterTree.push([id, prop, val]);
+            else this.applyProperty(id, prop, val);
             break;
           }
-          this.reconcileChildren(parent as Element, childIds);
-          break;
-        }
 
-        case 'p': {
-          const [, id, prop, val] = op;
-          if (TREE_PROPERTIES.has(prop)) afterTree.push([id, prop, val]);
-          else this.applyProperty(id, prop, val);
-          break;
-        }
-
-        case 'l': {
-          const [, eventType] = op;
-          this.ensureEventListener(eventType);
-          break;
-        }
-
-        case 't': {
-          // The app's word for itself, which a host may show in its own chrome or the
-          // browser's tab: one line of text and no longer than a title is. It was passed on
-          // as it came, whatever it was and however long.
-          this.callbacks.onTitleChange?.(hostTitle(op[1]));
-          break;
-        }
-
-        case 'n': {
-          this.callbacks.onNavigate?.(op[1]);
-          break;
-        }
-
-        case 'k2d': {
-          const [, canvasId, width, height, cmds] = op;
-          this.drawnWith(canvasId, cmds);
-          const node = this.nodes.get(canvasId) ?? this.offPageCanvas(canvasId);
-          if (node && node instanceof HTMLCanvasElement) {
-            const area = node.width * node.height;
-            this.replayCanvas2D(node, width, height, cmds);
-            this.keepOffPage(canvasId, node, area);
+          case 'l': {
+            const [, eventType] = op;
+            this.ensureEventListener(eventType);
+            break;
           }
-          break;
-        }
 
-        case 'k2dgone': {
-          // The app let go of a canvas: one on no page is let go of here too.
-          const node = this.nodes.get(op[1]);
-          if (node instanceof HTMLCanvasElement && !node.isConnected) this.releaseCanvas(op[1], node);
-          break;
-        }
-
-        case 'k2dreset': {
-          // Set even when it is the size the canvas has: setting it is what clears a canvas.
-          this.drawnWith(op[1], []);
-          const node = this.nodes.get(op[1]) ?? this.offPageCanvas(op[1]);
-          if (node && node instanceof HTMLCanvasElement) {
-            const area = node.width * node.height;
-            const w = canvasSide(op[2]);
-            const h = canvasSide(op[3]);
-            if (w > 0) node.width = w;
-            if (h > 0) node.height = h;
-            this.keepOffPage(op[1], node, area);
+          case 't': {
+            this.callbacks.onTitleChange?.(hostTitle(op[1]));
+            break;
           }
-          break;
-        }
 
-        case '3d': {
-          const [, canvasId, threeOps] = op;
-          const node = this.nodes.get(canvasId);
-          if (node && node instanceof HTMLCanvasElement) {
-            // A scene's textures are fetched where the scene is drawn: its picture is not read back.
-            this.unreadable.add(node);
-            this.callbacks.onThreeOps?.(node, canvasId, threeOps);
+          case 'n': {
+            this.callbacks.onNavigate?.(op[1]);
+            break;
           }
-          break;
+
+          case 'k2d': {
+            const [, canvasId, width, height, cmds] = op;
+            this.drawnWith(canvasId, cmds);
+            const node = this.nodes.get(canvasId) ?? this.offPageCanvas(canvasId);
+            if (node && node instanceof HTMLCanvasElement) {
+              const area = node.width * node.height;
+              this.replayCanvas2D(node, width, height, cmds);
+              this.keepOffPage(canvasId, node, area);
+            }
+            break;
+          }
+
+          case 'k2dgone': {
+            const node = this.nodes.get(op[1]);
+            if (node instanceof HTMLCanvasElement && !node.isConnected) this.releaseCanvas(op[1], node);
+            break;
+          }
+
+          case 'k2dreset': {
+            this.drawnWith(op[1], []);
+            const node = this.nodes.get(op[1]) ?? this.offPageCanvas(op[1]);
+            if (node && node instanceof HTMLCanvasElement) {
+              const area = node.width * node.height;
+              const w = canvasSide(op[2]);
+              const h = canvasSide(op[3]);
+              if (w > 0) node.width = w;
+              if (h > 0) node.height = h;
+              this.keepOffPage(op[1], node, area);
+            }
+            break;
+          }
+
+          case '3d': {
+            const [, canvasId, threeOps] = op;
+            const node = this.nodes.get(canvasId);
+            if (node && node instanceof HTMLCanvasElement) {
+              this.unreadable.add(node);
+              this.callbacks.onThreeOps?.(node, canvasId, threeOps);
+            }
+            break;
+          }
         }
       }
-    }
-
-    // A stylesheet is written as its text arrives, which is before the turn's tree is in
-    // place: one that ended up in a shadow tree is written again as that tree's own.
-    if (this.writtenSheets.size > 0) {
-      const written = [...this.writtenSheets];
-      this.writtenSheets.clear();
-      for (const sheet of written) {
-        if (this.cssScope(sheet) !== 'shadow') continue;
-        const link = this.links.get(sheet);
-        if (link) this.writeLinkedSheet(sheet, link);
-        else if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
+    } finally {
+      // Always re-sanitize written & shadow stylesheets even if an op threw mid-batch so a
+      // `:host` rule from a guest shadow root can never survive inside `pageRoot`.
+      if (this.writtenSheets.size > 0) {
+        const written = [...this.writtenSheets];
+        this.writtenSheets.clear();
+        for (const sheet of written) {
+          if (this.cssScope(sheet) !== 'shadow') continue;
+          const link = this.links.get(sheet);
+          if (link) this.writeLinkedSheet(sheet, link);
+          else if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
+        }
+        this.writtenSheets.clear();
       }
-      this.writtenSheets.clear();
-    }
-    if (treeChanged) {
-      // And the other way: a sheet written as a shadow tree's own that is no longer in one
-      // (the app's document makes an element again when it moves; an operation written by
-      // hand need not) is read again as the page's, where `:host` is not the app's.
-      for (const sheet of [...this.shadowSheets]) {
-        if (this.cssScope(sheet) === 'shadow') continue;
-        this.shadowSheets.delete(sheet);
-        const link = this.links.get(sheet);
-        if (link) this.writeLinkedSheet(sheet, link);
-        else if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
-        else sheet.textContent = '';
+      if (treeChanged) {
+        for (const sheet of [...this.shadowSheets]) {
+          if (this.cssScope(sheet) === 'shadow') continue;
+          this.shadowSheets.delete(sheet);
+          const link = this.links.get(sheet);
+          if (link) this.writeLinkedSheet(sheet, link);
+          else if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
+          else sheet.textContent = '';
+        }
+        this.writtenSheets.clear();
+        if (this.shadowRoots.size >= this.rootsAtSweep + SWEEP_ROOTS_EVERY) this.sweepShadowRoots();
       }
-      this.writtenSheets.clear();
-      if (this.shadowRoots.size >= this.rootsAtSweep + SWEEP_ROOTS_EVERY) this.sweepShadowRoots();
     }
     if (this.nodes.size >= this.nodesAtSweep + this.sweepNodesEvery) this.sweepNodes();
     this.limitOffPageCanvases();
@@ -751,9 +759,6 @@ export class HostDomPatcher {
     for (const [key, id, frames, timing] of started) this.startAnimation(key, id, frames, timing);
     for (const [key, action] of controlled) this.controlAnimation(key, action);
 
-    // A stylesheet link whose sheet is in, or could not be read: the script that added it is
-    // told, as a browser tells it. A bundler's loader waits for exactly this before it runs
-    // the part of the app the stylesheet belongs to (Vite, for a chunk loaded on demand).
     if (this.linkNews.size > 0) {
       const news = [...this.linkNews];
       this.linkNews.clear();
@@ -763,7 +768,7 @@ export class HostDomPatcher {
       }
     }
 
-    if (this.measuredIds.size > 0) {
+    if (layoutAffected && this.measuredIds.size > 0) {
       this.scheduleBoxMeasure();
     }
   }
@@ -798,19 +803,27 @@ export class HostDomPatcher {
       if (lowerTag === 'img' && el instanceof HTMLImageElement && (lowerName === 'crossorigin' || lowerName === 'src')) {
         const wanted = this.wantedSrc.get(el);
         this.cancelReadable(el);
-        if (lowerName === 'crossorigin' && wanted) el.setAttribute('src', wanted);
+        if (lowerName === 'crossorigin' && wanted) {
+          // Re-check against current permissions in case `net` was revoked after `src` was set.
+          const safe = sanitizeHostAssetUrl('src', wanted, 'img', this.entryPath, this.archive, this.permissions, this.netGranted);
+          if (safe !== null) el.setAttribute('src', safe);
+          else el.removeAttribute('src');
+        }
       }
       return;
     }
 
-    const clean = hostAttributeValue(lowerTag, name, val, {
-      entryPath: this.entryPath,
-      archive: this.archive,
-      permissions: this.permissions,
-      netGranted: this.netGranted,
-      ns: el.namespaceURI === MATH_NS ? 'math' : el.namespaceURI === SVG_NS ? 'svg' : undefined,
-      fontScope: this.fontScope,
-    });
+    const clean =
+      lowerName === 'style'
+        ? this.sanitizeInlineStyleCached(val)
+        : hostAttributeValue(lowerTag, name, val, {
+            entryPath: this.entryPath,
+            archive: this.archive,
+            permissions: this.permissions,
+            netGranted: this.netGranted,
+            ns: el.namespaceURI === MATH_NS ? 'math' : el.namespaceURI === SVG_NS ? 'svg' : undefined,
+            fontScope: this.fontScope,
+          });
     // An image on the page asked for with CORS: fetched by the page and shown from a blob of
     // what came (loadReadable), so that a canvas it is drawn into is read back, toBlob too.
     // Shown from its own address, where a redirect took it was not the page's to know.
@@ -866,6 +879,11 @@ export class HostDomPatcher {
 
   /** An image's readable load, if one is under way, is no longer wanted. */
   private cancelReadable(img: HTMLImageElement): void {
+    const controller = this.readableAborts.get(img);
+    if (controller) {
+      this.readableAborts.delete(img);
+      controller.abort();
+    }
     if (!this.wantedSrc.has(img)) return;
     this.wantedSrc.delete(img);
     this.readableTokens.set(img, (this.readableTokens.get(img) ?? 0) + 1);
@@ -882,12 +900,67 @@ export class HostDomPatcher {
     }
   }
 
-  /** The `<style>` whose text node `id` is, if it is one's. */
-  private sheetOf(id: number): Element | null {
-    for (const [sheet, ids] of this.styleSheets) {
-      if (ids.includes(id)) return sheet;
+  /** Sanitize an inline `style` value with a bounded O(1) cache for pure (URL-free) declarations. */
+  private sanitizeInlineStyleCached(value: string): string {
+    if (value.length <= 512 && !/url|src|image|softn-blob:|\\/i.test(value)) {
+      const cached = this.inlineStyleCache.get(value);
+      if (cached !== undefined) return cached;
+      const clean = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
+      if (this.inlineStyleCache.size >= 512) {
+        const oldest = this.inlineStyleCache.keys().next().value;
+        if (oldest !== undefined) this.inlineStyleCache.delete(oldest);
+      }
+      this.inlineStyleCache.set(value, clean);
+      return clean;
     }
-    return null;
+    return sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
+  }
+
+  private setStyleSheetTextIds(sheet: Element, ids: number[]): void {
+    const prev = this.styleSheets.get(sheet);
+    if (prev) {
+      for (const oldId of prev) {
+        if (this.styleTextOwner.get(oldId) === sheet) this.styleTextOwner.delete(oldId);
+      }
+    }
+    this.styleSheets.set(sheet, ids);
+    for (const id of ids) {
+      this.styleTextOwner.set(id, sheet);
+    }
+  }
+
+  private deleteStyleSheet(sheet: Element): boolean {
+    const prev = this.styleSheets.get(sheet);
+    if (!prev) return false;
+    for (const oldId of prev) {
+      if (this.styleTextOwner.get(oldId) === sheet) this.styleTextOwner.delete(oldId);
+    }
+    return this.styleSheets.delete(sheet);
+  }
+
+  /** The `<style>` whose text node `id` is, if it is one's — O(1) via reverse map. */
+  private sheetOf(id: number): Element | null {
+    return this.styleTextOwner.get(id) ?? null;
+  }
+
+  /** Release host resources owned by a replaced or swept node (blobs, stylesheets, shadow roots, off-page canvases). */
+  private releaseNodeResources(node: Node, id?: number): void {
+    if (node instanceof Element) this.resizeObserver?.unobserve(node);
+    if (node instanceof HTMLImageElement) this.cancelReadable(node);
+    if (id !== undefined) {
+      this.offPage2d.delete(id);
+      this.lastMeasuredBoxes.delete(id);
+    }
+    if (node instanceof ShadowRoot) {
+      if (this.shadowRoots.has(node)) this.dropShadowRoot(node);
+    } else if (node instanceof Element) {
+      if (this.deleteStyleSheet(node) || this.links.delete(node)) this.callbacks.onStyleFonts?.(node, '');
+      this.linkNews.delete(node);
+      this.pendingProperties.delete(node);
+      this.shadowSheets.delete(node);
+      this.writtenSheets.delete(node);
+      if (node.shadowRoot && this.shadowRoots.has(node.shadowRoot)) this.dropShadowRoot(node.shadowRoot);
+    }
   }
 
   /** Write a `<style>` the app made: its text nodes' text, read by the host first. */
@@ -898,7 +971,11 @@ export class HostDomPatcher {
       if (node && node.nodeType === Node.TEXT_NODE) css += node.nodeValue ?? '';
     }
     const scope = this.cssScope(sheet);
+    const familiesBefore = this.fontScope?.families.size ?? 0;
     const sanitized = sanitizeContainerCss(css, this.entryPath, this.archive, this.permissions, this.netGranted, scope, this.fontScope);
+    if ((this.fontScope?.families.size ?? 0) !== familiesBefore) {
+      this.inlineStyleCache.clear();
+    }
     sheet.textContent = sanitized;
     this.callbacks.onStyleFonts?.(sheet, extractSanitizedFontFaces(sanitized, this.fontScope?.prefix));
     this.writtenSheets.add(sheet);
@@ -1052,18 +1129,7 @@ export class HostDomPatcher {
         if (this.sweptMeasured.size > MAX_SWEPT_MEASURED) this.sweptMeasured.delete(this.sweptMeasured.values().next().value as number);
       }
       // The browser's observer holds what it observes: let go of here, let go of there too.
-      if (node instanceof Element) this.resizeObserver?.unobserve(node);
-      if (node instanceof HTMLImageElement) this.letGoOfReadable(node);
-      if (node instanceof ShadowRoot) {
-        if (this.shadowRoots.has(node)) this.dropShadowRoot(node);
-      } else if (node instanceof Element) {
-        if (this.styleSheets.delete(node) || this.links.delete(node)) this.callbacks.onStyleFonts?.(node, '');
-        this.links.delete(node);
-        this.linkNews.delete(node);
-        this.pendingProperties.delete(node);
-        this.shadowSheets.delete(node);
-        if (node.shadowRoot && this.shadowRoots.has(node.shadowRoot)) this.dropShadowRoot(node.shadowRoot);
-      }
+      this.releaseNodeResources(node, id);
     }
     this.offPage = found;
     this.nodesAtSweep = this.nodes.size;
@@ -1106,9 +1172,20 @@ export class HostDomPatcher {
       queueMicrotask(failed);
       return;
     }
+    const prevAbort = this.readableAborts.get(img);
+    if (prevAbort) prevAbort.abort();
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    if (controller) this.readableAborts.set(img, controller);
     // Never from the browser's copy: one the embedding page loaded with the person's cookies
     // (a site of its own it shares cookies with) would come back as if fetched without them.
-    void fetch(address, { mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' })
+    void fetch(address, {
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      ...(controller ? { signal: controller.signal } : {}),
+    })
       .then(async (response) => {
         if (!response.ok || (response.redirected && !readable(response.url))) throw new Error('not readable');
         // Read a part at a time and held to its size as it comes, and with the others being
@@ -1141,6 +1218,8 @@ export class HostDomPatcher {
         let url: string;
         if (rawType === 'image/svg+xml') {
           const buf = new Uint8Array(await blob.arrayBuffer());
+          // Re-check after async arrayBuffer() yield so disposed/superseded loads never leak.
+          if (this.disposed || !current()) return;
           url = `data:image/svg+xml;base64,${buf.byteLength > 0 ? bytesToBase64(buf) : 'IA=='}`;
         } else {
           const safeType =
@@ -1157,11 +1236,15 @@ export class HostDomPatcher {
           const safeBlob = safeType === blob.type ? blob : new Blob([blob], { type: safeType });
           url = URL.createObjectURL(safeBlob);
         }
+        if (this.readableAborts.get(img) === controller) this.readableAborts.delete(img);
         this.readableUrls.set(img, url);
-        this.readableSizes.set(url, blob.size);
+        this.readableSizes.set(img, blob.size);
         img.src = url;
       })
-      .catch(failed);
+      .catch(() => {
+        if (this.readableAborts.get(img) === controller) this.readableAborts.delete(img);
+        failed();
+      });
   }
 
   /** The blob an image was shown from, given back. */
@@ -1169,7 +1252,7 @@ export class HostDomPatcher {
     const url = this.readableUrls.get(img);
     if (url === undefined) return;
     this.readableUrls.delete(img);
-    this.readableSizes.delete(url);
+    this.readableSizes.delete(img);
     if (url.startsWith('blob:')) URL.revokeObjectURL(url);
   }
 
@@ -1228,7 +1311,11 @@ export class HostDomPatcher {
       const path = this.archive.resolveFrontendExistingPath(link.href, this.entryPath);
       const text = path ? this.archive.readText(path) : null;
       const scope = this.cssScope(el);
+      const familiesBefore = this.fontScope?.families.size ?? 0;
       if (path && text !== null) css = sanitizeContainerCss(text, path, this.archive, this.permissions, this.netGranted, scope, this.fontScope);
+      if ((this.fontScope?.families.size ?? 0) !== familiesBefore) {
+        this.inlineStyleCache.clear();
+      }
       this.writtenSheets.add(el);
       if (scope === 'shadow') this.shadowSheets.add(el);
       else this.shadowSheets.delete(el);
@@ -1268,18 +1355,34 @@ export class HostDomPatcher {
     while (cur) {
       const next = cur.nextSibling;
       if (!desiredSet.has(cur)) {
-        parent.removeChild(cur);
+        try {
+          parent.removeChild(cur);
+        } catch {
+          // Ignore stale/detached child
+        }
       }
       cur = next;
     }
 
-    // Insert/move into exact order
+    // Insert/move into exact order. Guard ancestor cycles and strip `:host` before a shadow
+    // stylesheet can ever enter `pageRoot`, preventing mid-batch exceptions from escaping sandbox.
+    const parentInShadow = this.cssScope(parent) === 'shadow';
     let cursor: Node | null = parent.firstChild;
     for (const target of desiredNodes) {
+      if (target === parent || target.contains(parent)) continue;
       if (cursor === target) {
         cursor = cursor.nextSibling;
       } else {
-        parent.insertBefore(target, cursor);
+        if (!parentInShadow && target instanceof Element && this.shadowSheets.has(target)) {
+          target.textContent = '';
+          this.shadowSheets.delete(target);
+          this.writtenSheets.add(target);
+        }
+        try {
+          parent.insertBefore(target, cursor);
+        } catch {
+          // Ignore DOM hierarchy errors on untrusted op streams
+        }
       }
     }
   }
@@ -1617,20 +1720,23 @@ export class HostDomPatcher {
     const ended = (state: 'finished' | 'cancelled') => {
       if (!this.disposed) this.callbacks.onEvent(-1, 'softn:animation', { id: key, state }, []);
     };
-    // Prune animations whose elements left the page or whose playback already finished/idled
-    // so short-lived UI animations never exhaust MAX_ANIMATIONS.
-    for (const [other, kept] of this.animations) {
-      if (!kept.el.isConnected || kept.animation.playState === 'finished' || kept.animation.playState === 'idle') {
-        this.animations.delete(other);
+    // Prune finished/detached animations periodically or when approaching the cap (avoids O(N^2) per batch).
+    this.animationStartCount++;
+    if (this.animations.size >= MAX_ANIMATIONS || (this.animations.size > 0 && (this.animationStartCount & 63) === 0)) {
+      for (const [other, kept] of this.animations) {
+        if (!kept.el.isConnected || kept.animation.playState === 'finished' || kept.animation.playState === 'idle') {
+          this.animations.delete(other);
+        }
       }
     }
-    const node = id === 1 ? this.viewportEl : this.nodes.get(id);
+    // Never target host-owned `docRootEl` (id <= 0) or `headEl` (id === -3).
+    const node = id === 1 ? this.viewportEl : id > 1 ? this.nodes.get(id) : undefined;
     if (!(node instanceof Element) || typeof node.animate !== 'function' || this.animations.has(key) || this.animations.size >= MAX_ANIMATIONS) {
       // Nothing to run it on (or no more room): it ends at once, so whatever waits on it goes on.
       queueMicrotask(() => ended('finished'));
       return;
     }
-    const css = (value: string) => sanitizeContainerCss(value.slice(0, 2000), this.entryPath, this.archive, this.permissions, this.netGranted, 'inline');
+    const css = (value: string) => sanitizeContainerCss(value.slice(0, 2000), this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
     const value = (raw: unknown): string | number | null => (typeof raw === 'number' && Number.isFinite(raw) ? raw : typeof raw === 'string' ? css(raw) : null);
     const frame = (raw: unknown): Keyframe | null => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -2226,7 +2332,7 @@ export class HostDomPatcher {
           const rect = node.getBoundingClientRect();
           // With how much it holds, for scrollHeight: a box and what scrolls inside it differ.
           const htmlEl = node as HTMLElement;
-          boxes.push([
+          const tuple: MeasuredBoxTuple = [
             id,
             rect.left - origin.left,
             rect.top - origin.top,
@@ -2236,7 +2342,22 @@ export class HostDomPatcher {
             node.scrollHeight,
             typeof htmlEl.offsetLeft === 'number' ? htmlEl.offsetLeft : 0,
             typeof htmlEl.offsetTop === 'number' ? htmlEl.offsetTop : 0,
-          ]);
+          ];
+          const prev = this.lastMeasuredBoxes.get(id);
+          if (
+            !prev ||
+            prev[1] !== tuple[1] ||
+            prev[2] !== tuple[2] ||
+            prev[3] !== tuple[3] ||
+            prev[4] !== tuple[4] ||
+            prev[5] !== tuple[5] ||
+            prev[6] !== tuple[6] ||
+            prev[7] !== tuple[7] ||
+            prev[8] !== tuple[8]
+          ) {
+            this.lastMeasuredBoxes.set(id, tuple);
+            boxes.push(tuple);
+          }
         }
       }
       if (boxes.length > 0) {
@@ -2265,18 +2386,37 @@ export class HostDomPatcher {
       try { kept.animation.cancel(); } catch { /* ignore */ }
     }
     this.animations.clear();
+    for (const controller of this.readableAborts.values()) {
+      controller.abort();
+    }
+    this.readableAborts.clear();
     for (const url of this.readableUrls.values()) {
       if (url.startsWith('blob:')) URL.revokeObjectURL(url);
     }
     this.readableUrls.clear();
     this.readableSizes.clear();
+    for (const canvas of this.offPage2d.values()) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
     this.offPage2d.clear();
     this.drawnLately.clear();
     this.shadowRoots.clear();
     this.guestRootCustomProps.clear();
     this.styleSheets.clear();
+    this.styleTextOwner.clear();
+    this.inlineStyleCache.clear();
+    this.writtenSheets.clear();
     this.links.clear();
+    this.linkNews.clear();
     this.pendingProperties.clear();
+    this.measuredIds.clear();
+    this.sweptMeasured.clear();
+    this.lastMeasuredBoxes.clear();
+    this.listenedEvents.clear();
+    this.offPage.clear();
+    this.clickFocus = null;
+    this.clickFocusDeep = null;
   }
 }
 

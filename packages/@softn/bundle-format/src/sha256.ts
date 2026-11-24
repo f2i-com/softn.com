@@ -23,16 +23,8 @@ const K = /* @__PURE__ */ new Uint32Array([
 export function sha256(bytes: Uint8Array): Uint8Array {
   const state = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
   const w = new Uint32Array(64);
-  // The message, a one bit, zeros, and the message's length in bits as a
-  // 64-bit number: a whole number of 64-byte blocks.
-  const padded = new Uint8Array(Math.ceil((bytes.length + 9) / 64) * 64);
-  padded.set(bytes);
-  padded[bytes.length] = 0x80;
-  const view = new DataView(padded.buffer);
-  view.setUint32(padded.length - 8, Math.floor(bytes.length / 0x20000000));
-  view.setUint32(padded.length - 4, (bytes.length << 3) >>> 0);
-  for (let block = 0; block < padded.length; block += 64) {
-    for (let i = 0; i < 16; i++) w[i] = view.getUint32(block + i * 4);
+  const compress = (view: DataView, offset: number) => {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4);
     for (let i = 16; i < 64; i++) {
       const x = w[i - 15];
       const y = w[i - 2];
@@ -64,7 +56,28 @@ export function sha256(bytes: Uint8Array): Uint8Array {
     state[5] += f;
     state[6] += g;
     state[7] += h;
+  };
+
+  // Stream full 64-byte blocks directly from `bytes` without copying the full input buffer,
+  // and finalize in a 64- or 128-byte tail buffer.
+  const fullLen = bytes.length & ~63;
+  if (fullLen > 0) {
+    const srcView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let block = 0; block < fullLen; block += 64) {
+      compress(srcView, block);
+    }
   }
+  const rem = bytes.length - fullLen;
+  const tailLen = rem + 9 <= 64 ? 64 : 128;
+  const tail = new Uint8Array(tailLen);
+  if (rem > 0) tail.set(bytes.subarray(fullLen));
+  tail[rem] = 0x80;
+  const tailView = new DataView(tail.buffer);
+  tailView.setUint32(tailLen - 8, Math.floor(bytes.length / 0x20000000));
+  tailView.setUint32(tailLen - 4, (bytes.length << 3) >>> 0);
+  compress(tailView, 0);
+  if (tailLen === 128) compress(tailView, 64);
+
   const digest = new Uint8Array(32);
   const out = new DataView(digest.buffer);
   for (let i = 0; i < 8; i++) out.setUint32(i * 4, state[i]);

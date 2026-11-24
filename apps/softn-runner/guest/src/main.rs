@@ -328,11 +328,18 @@ fn invoke(state: &mut ScriptState, handler: &str, request: serde_json::Value) ->
         _ => None,
     };
     let body = field("body");
-    let whole = stringify(&result).map_or(0, |text| text.len());
-    let valid = status.is_some() && body.is_some() && whole <= MAX_RESPONSE_BYTES;
     let rollback = field("rollback").is_some_and(truthy);
-    let body = body.and_then(stringify).unwrap_or_else(|| "null".into());
-    Ok(serde_json::json!({ "ok": true, "valid": valid, "status": status, "rollback": rollback, "body": if valid { Some(body) } else { None } }))
+    let (valid, body_json) = if status.is_some() && body.is_some() {
+        let whole = stringify(&result).map_or(0, |text| text.len());
+        if whole <= MAX_RESPONSE_BYTES {
+            (true, Some(body.and_then(stringify).unwrap_or_else(|| "null".into())))
+        } else {
+            (false, None)
+        }
+    } else {
+        (false, None)
+    };
+    Ok(serde_json::json!({ "ok": true, "valid": valid, "status": status, "rollback": rollback, "body": body_json }))
 }
 
 /// JavaScript's `ToBoolean` of what `callFunction` hands the Node runner.

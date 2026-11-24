@@ -169,6 +169,7 @@ function pruneExpired(store: IDBObjectStore, now: number): Promise<void> {
  * in flight: the same id gets the same answer, so a bundle claimed once is
  * not reported missing the second time the same page asks.
  */
+const MAX_HANDOFF_CLAIMS = 64;
 const claims = new Map<string, Promise<HandoffResult>>();
 
 /**
@@ -180,6 +181,10 @@ export function takeBundleHandoff(id: string | null, to: HandoffDestination, now
   const key = `${to}:${id}`;
   const existing = claims.get(key);
   if (existing) return existing;
+  if (claims.size >= MAX_HANDOFF_CLAIMS) {
+    const oldest = claims.keys().next().value;
+    if (oldest !== undefined) claims.delete(oldest);
+  }
   const claim = claimHandoff(id, to, now);
   claims.set(key, claim);
   return claim;
@@ -278,7 +283,16 @@ export function handoffIdFrom(search: string, to: HandoffDestination): { opened:
  */
 export function sameOriginTarget(target: string, origin: string = typeof location !== 'undefined' ? location.origin : ''): boolean {
   try {
-    return new URL(target, origin || 'http://localhost').origin === (origin || 'http://localhost');
+    const base = origin || 'http://localhost';
+    const parsedBase = new URL(base);
+    if ((parsedBase.protocol !== 'http:' && parsedBase.protocol !== 'https:') || parsedBase.origin === 'null') {
+      return false;
+    }
+    const parsedTarget = new URL(target, parsedBase.origin);
+    if (parsedTarget.protocol !== 'http:' && parsedTarget.protocol !== 'https:') {
+      return false;
+    }
+    return parsedTarget.origin === parsedBase.origin;
   } catch {
     return false;
   }

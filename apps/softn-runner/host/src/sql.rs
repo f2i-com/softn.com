@@ -83,6 +83,9 @@ pub fn open(path: &Path) -> Result<Connection, HostError> {
     conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 100).map_err(HostError::sqlite)?;
     conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, VDBE_OP_LIMIT).map_err(HostError::sqlite)?;
     conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT).map_err(HostError::sqlite)?;
+    conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, 8 * 1024 * 1024).map_err(HostError::sqlite)?;
+    conn.set_limit(Limit::SQLITE_LIMIT_EXPR_DEPTH, 100).map_err(HostError::sqlite)?;
+    conn.set_limit(Limit::SQLITE_LIMIT_COLUMN, 200).map_err(HostError::sqlite)?;
     // Lock waits first, then the rest (request-worker.mjs). Temporary tables
     // and sorts stay in memory, as on the Rust host, where a statement that
     // spilled to temporary files could fill the disk every app shares before
@@ -403,7 +406,15 @@ impl Sql {
         let deadline = crate::soft_deadline();
         let result = (|| {
             self.install(conn, writes, &wrote)?;
-            conn.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline)).map_err(HostError::sqlite)?;
+            let mut ticks: u64 = 0;
+            conn.progress_handler(
+                1000,
+                Some(move || {
+                    ticks += 1;
+                    ticks > 10_000 || std::time::Instant::now() >= deadline
+                }),
+            )
+            .map_err(HostError::sqlite)?;
             let mut statement = conn.prepare(text).map_err(HostError::sqlite)?;
             if kind == "execute" {
                 if !wrote.load(Ordering::Relaxed) || statement.column_count() != 0 {
@@ -527,7 +538,7 @@ impl Sql {
                 return Err(HostError::own("Query result limit"));
             }
             let row = Value::Object(object);
-            bytes += crate::js::stringify(&row).len();
+            bytes += json_byte_len(&row);
             if bytes > RESULT_LIMIT || output.len() >= 1000 {
                 return Err(HostError::own("Query result limit"));
             }
@@ -538,6 +549,23 @@ impl Sql {
         }
         Ok(if kind == "first" { Value::Null } else { Value::Array(output) })
     }
+}
+
+/// Count the UTF-8 byte length of `value` serialized as JSON without allocating a buffer.
+fn json_byte_len(value: &Value) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
 }
 
 #[cfg(test)]

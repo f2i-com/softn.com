@@ -140,9 +140,13 @@ impl AppContext {
             let db_for_factory = db.clone();
             let stream_for_factory = stream.clone();
             let fs_root = data_dir.join("files");
+            if std::fs::symlink_metadata(&fs_root).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err("Refusing symlinked files directory".into());
+            }
             std::fs::create_dir_all(&fs_root)
                 .map_err(|e| format!("Failed to create files dir: {}", e))?;
             let fs_root_for_factory = fs_root.clone();
+            let fs_quota = crate::bridges::fs::FsQuota::new();
 
             // bridge_factory is Fn (not FnOnce) — called once per worker thread.
             // Each worker gets its own bridge instances but shares the same DB (Arc).
@@ -194,10 +198,12 @@ impl AppContext {
             );
 
             let app_config = bundle::app_config(&manifest);
+            // Share one HTTP agent (connection pool + TLS roots) and one FS quota guard across workers of this app.
+            let shared_http = if allow_http { Some(NativeHttpBridge::new()) } else { None };
             let rt = ServerRuntime::new(move || BridgeSet {
                 db: Some(Box::new(NativeDbBridge::with_stream(db_for_factory.clone(), stream_for_factory.clone()))),
-                http: if allow_http { Some(Box::new(NativeHttpBridge::new())) } else { None },
-                fs: if allow_fs { Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))) } else { None },
+                http: shared_http.clone().map(|h| Box::new(h) as Box<dyn crate::bridges::HttpBridge>),
+                fs: if allow_fs { Some(Box::new(NativeFsBridge::with_quota(fs_root_for_factory.clone(), fs_quota.clone()))) } else { None },
                 // env is always enabled (provides console.log via env.log)
                 env: Some(Box::new(NativeEnvBridge)),
                 sql: private_backend.sql(),

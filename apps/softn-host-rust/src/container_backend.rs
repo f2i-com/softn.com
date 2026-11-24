@@ -17,13 +17,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::limits::Limit;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params_from_iter, Connection};
 use serde_json::{json, Value};
-use zipp_vm::embed::{HostValue, HostValueBudget, JsValue, ScriptGoal, ScriptState};
+use zipp_vm::embed::{HostValue, HostValueBudget, ScriptGoal, ScriptState};
 use zipp_vm::frontend::{
     compile_php_program, compile_rust_program, compile_source, Frontend, PhpProgramConfig,
     PhpVfsOverlay, PythonMode, RustProgramConfig,
@@ -43,6 +43,17 @@ const MAX_OVERLAY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SQL_RESULT_ROWS: usize = 10_000;
 const MAX_SQL_RESULT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONTAINER_DATABASES: usize = 8;
+const MAX_HTACCESS_BYTES: usize = 64 * 1024;
+const MAX_HTACCESS_RULES: usize = 256;
+const MAX_HTACCESS_CONDS: usize = 64;
+const MAX_HTACCESS_DENY: usize = 64;
+const MAX_HTACCESS_PASSES: usize = 4;
+const MAX_RESPONSE_HEADERS: usize = 128;
+const MAX_RESPONSE_HEADER_BYTES: usize = 8192;
+const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SEED_TABLES: usize = 64;
+const MAX_SEED_COLS: usize = 128;
+const MAX_SEED_ROWS: usize = 50_000;
 const MAX_OPEN_DB_HANDLES: usize = 32;
 
 const JS_BACKEND_PRELUDE: &str = r#"
@@ -367,6 +378,51 @@ fn normalize_vfs_key(raw: &str) -> String {
     parts.join("/")
 }
 
+/// Percent-decode and canonicalize an HTTP request path at ingress.
+/// Rejects NUL bytes and encoded path separators (`%2f` / `%5c` / `%00`) so
+/// URL-encoded segments cannot bypass `.htaccess` or private-path checks.
+pub fn decode_http_path(raw: &str) -> Result<String, u16> {
+    if raw.contains('\0') || raw.contains('\\') {
+        return Err(400);
+    }
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(400);
+            }
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    if b == 0 || b == b'/' || b == b'\\' {
+                        return Err(400);
+                    }
+                    decoded.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+            return Err(400);
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    let text = String::from_utf8(decoded).map_err(|_| 400u16)?;
+    if text.split('/').any(|seg| seg == "..") {
+        return Err(400);
+    }
+    let trailing_slash = text.len() > 1 && text.ends_with('/');
+    let norm = normalize_vfs_key(&text);
+    if norm.is_empty() {
+        Ok("/".to_owned())
+    } else if trailing_slash {
+        Ok(format!("/{norm}/"))
+    } else {
+        Ok(format!("/{norm}"))
+    }
+}
+
 /// Check whether a path is a private/backend file that must NEVER be downloaded statically.
 pub fn is_private_static_path(rel_path: &str) -> bool {
     let clean = normalize_vfs_key(rel_path);
@@ -374,14 +430,20 @@ pub fn is_private_static_path(rel_path: &str) -> bool {
     if lower.is_empty() {
         return false;
     }
+    if lower
+        .split('/')
+        .any(|seg| seg.starts_with('.') && seg != ".well-known")
+    {
+        return true;
+    }
     if lower == "manifest.json"
         || lower == "permission.json"
-        || lower == ".git"
-        || lower.starts_with(".git/")
         || lower.starts_with("server/")
         || lower.starts_with("backend/")
         || lower.starts_with("private/")
-        || lower.contains("/.git/")
+        || lower.starts_with("db/")
+        || lower.starts_with("database/")
+        || lower.starts_with("migrations/")
     {
         return true;
     }
@@ -399,8 +461,11 @@ pub fn is_private_static_path(rel_path: &str) -> bool {
         return true;
     }
     for ext in [
-        ".php", ".phtml", ".inc", ".tpl", ".rs", ".db", ".db-wal", ".db-shm", ".db-journal",
-        ".sqlite", ".sqlite3", ".sql", ".ini", ".bak", ".log", ".sh", ".logic",
+        ".php", ".phtml", ".php5", ".php7", ".php8", ".pht", ".phps", ".inc", ".phar", ".tpl",
+        ".py", ".rs", ".toml", ".db", ".db-wal", ".db-shm", ".db-journal", ".sqlite",
+        ".sqlite-wal", ".sqlite-shm", ".sqlite-journal", ".sqlite3", ".sqlite3-wal",
+        ".sqlite3-shm", ".sqlite3-journal", ".sql", ".pem", ".key", ".secret", ".ini", ".bak",
+        ".log", ".sh", ".logic",
     ] {
         if lower.ends_with(ext) {
             return true;
@@ -450,6 +515,7 @@ pub fn mime_type_for(path: &str) -> &'static str {
 struct HtaccessCond {
     test_string: String,
     pattern: String,
+    compiled_regex: Option<Regex>,
     negated: bool,
     nocase: bool,
     or_next: bool,
@@ -467,6 +533,13 @@ struct HtaccessRule {
     redirect_status: Option<u16>,
 }
 
+#[derive(Clone)]
+struct RedirectMatchRule {
+    status: u16,
+    regex: Regex,
+    target: Option<String>,
+}
+
 #[derive(Clone, Default)]
 struct ParsedHtaccess {
     dir_prefix: String,
@@ -474,6 +547,7 @@ struct ParsedHtaccess {
     rewrite_base: Option<String>,
     directory_index: Vec<String>,
     deny_files: Vec<Regex>,
+    redirect_matches: Vec<RedirectMatchRule>,
     rules: Vec<HtaccessRule>,
 }
 
@@ -521,12 +595,19 @@ fn tokenize_apache_line(line: &str) -> Vec<String> {
 }
 
 fn compile_apache_regex(pattern: &str, nocase: bool) -> Option<Regex> {
+    if pattern.len() > 1024 {
+        return None;
+    }
     let spec = if nocase {
         format!("(?i){pattern}")
     } else {
         pattern.to_owned()
     };
-    Regex::new(&spec).ok()
+    RegexBuilder::new(&spec)
+        .size_limit(256 * 1024)
+        .dfa_size_limit(256 * 1024)
+        .build()
+        .ok()
 }
 
 fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
@@ -534,11 +615,20 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
         dir_prefix: normalize_vfs_key(dir_prefix),
         ..Default::default()
     };
+    let bounded_src = if source.len() > MAX_HTACCESS_BYTES {
+        let mut end = MAX_HTACCESS_BYTES;
+        while end > 0 && !source.is_char_boundary(end) {
+            end -= 1;
+        }
+        &source[..end]
+    } else {
+        source
+    };
     let mut pending_conds: Vec<HtaccessCond> = Vec::new();
     let mut in_files_match: Option<Regex> = None;
     let mut files_match_denied = false;
 
-    for raw_line in source.lines() {
+    for raw_line in bounded_src.lines() {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -554,7 +644,7 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
         }
         if lower == "</filesmatch>" {
             if let Some(rx) = in_files_match.take() {
-                if files_match_denied {
+                if files_match_denied && out.deny_files.len() < MAX_HTACCESS_DENY {
                     out.deny_files.push(rx);
                 }
             }
@@ -591,7 +681,25 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
             "directoryindex" if tokens.len() >= 2 => {
                 out.directory_index = tokens[1..].to_vec();
             }
-            "rewritecond" if tokens.len() >= 3 => {
+            "redirectmatch" if tokens.len() >= 2 && out.redirect_matches.len() < MAX_HTACCESS_RULES => {
+                let (status, pat_idx) = match tokens[1].to_ascii_lowercase().as_str() {
+                    "permanent" => (301u16, 2),
+                    "temp" => (302u16, 2),
+                    "seeother" => (303u16, 2),
+                    "gone" => (410u16, 2),
+                    s => match s.parse::<u16>() {
+                        Ok(code) if (300..=599).contains(&code) => (code, 2),
+                        _ => (302u16, 1),
+                    },
+                };
+                if let Some(pat) = tokens.get(pat_idx) {
+                    if let Some(rx) = compile_apache_regex(pat, false) {
+                        let target = tokens.get(pat_idx + 1).cloned();
+                        out.redirect_matches.push(RedirectMatchRule { status, regex: rx, target });
+                    }
+                }
+            }
+            "rewritecond" if tokens.len() >= 3 && pending_conds.len() < MAX_HTACCESS_CONDS => {
                 let test_string = tokens[1].clone();
                 let mut pattern = tokens[2].clone();
                 let mut negated = false;
@@ -611,15 +719,23 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
                         or_next = true;
                     }
                 }
+                let compiled_regex = if matches!(pattern.as_str(), "-f" | "-F" | "-s" | "-d" | "-l" | "-L")
+                    || pattern.starts_with('=')
+                {
+                    None
+                } else {
+                    compile_apache_regex(&pattern, nocase)
+                };
                 pending_conds.push(HtaccessCond {
                     test_string,
                     pattern,
+                    compiled_regex,
                     negated,
                     nocase,
                     or_next,
                 });
             }
-            "rewriterule" if tokens.len() >= 3 => {
+            "rewriterule" if tokens.len() >= 3 && out.rules.len() < MAX_HTACCESS_RULES => {
                 let pat = &tokens[1];
                 let substitution = tokens[2].clone();
                 let flags = tokens.get(3).map(String::as_str).unwrap_or("");
@@ -677,17 +793,31 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
     out
 }
 
+fn build_vfs_dir_index(vfs: &HashMap<String, Vec<u8>>) -> HashSet<String> {
+    let mut dirs = HashSet::new();
+    for key in vfs.keys() {
+        let mut pos = 0;
+        while let Some(rel) = key[pos..].find('/') {
+            let idx = pos + rel;
+            if idx > 0 {
+                dirs.insert(key[..idx].to_owned());
+            }
+            pos = idx + 1;
+        }
+    }
+    dirs
+}
+
 fn vfs_has_file(vfs: &HashMap<String, Vec<u8>>, rel: &str) -> bool {
     vfs.contains_key(&normalize_vfs_key(rel))
 }
 
-fn vfs_has_dir(vfs: &HashMap<String, Vec<u8>>, rel: &str) -> bool {
+fn vfs_has_dir(vfs_dirs: &HashSet<String>, rel: &str) -> bool {
     let clean = normalize_vfs_key(rel);
     if clean.is_empty() {
         return true;
     }
-    let prefix = format!("{clean}/");
-    vfs.keys().any(|k| k.starts_with(&prefix))
+    vfs_dirs.contains(&clean)
 }
 
 fn expand_apache_vars(
@@ -764,6 +894,7 @@ fn evaluate_htaccess_chain(
     https: bool,
     headers: &HashMap<String, String>,
     vfs: &HashMap<String, Vec<u8>>,
+    vfs_dirs: &HashSet<String>,
 ) -> HtaccessEval {
     let trailing_slash = pathname.len() > 1 && pathname.ends_with('/');
     let norm_rel = normalize_vfs_key(pathname);
@@ -774,82 +905,201 @@ fn evaluate_htaccess_chain(
     } else {
         format!("/{norm_rel}")
     };
-    let mut prefixes = vec![String::new()];
-    let mut acc = String::new();
-    for seg in clean.trim_start_matches('/').split('/').filter(|s| !s.is_empty()) {
-        if !acc.is_empty() {
-            acc.push('/');
-        }
-        acc.push_str(seg);
-        if htaccess_map.contains_key(&acc) {
-            prefixes.push(acc.clone());
-        }
-    }
-
     let mut cur_path = clean;
     let mut cur_query = query.to_owned();
 
-    for prefix in prefixes {
-        let Some(ht) = htaccess_map.get(&prefix) else {
-            continue;
-        };
-        if !ht.deny_files.is_empty() {
-            let trimmed = cur_path.trim_matches('/');
-            let segs: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
-            if let Some(&last_seg) = segs.last() {
-                if ht.deny_files.iter().any(|rx| rx.is_match(last_seg)) {
-                    return HtaccessEval::Deny(403);
-                }
+    let check_access = |path_to_check: &str| -> Option<HtaccessEval> {
+        let mut active_prefixes = vec![String::new()];
+        let mut acc = String::new();
+        for seg in path_to_check.trim_start_matches('/').split('/').filter(|s| !s.is_empty()) {
+            if !acc.is_empty() {
+                acc.push('/');
             }
-            let mut probe = String::new();
-            for &seg in segs.iter().take(segs.len().saturating_sub(1)) {
-                if !probe.is_empty() {
-                    probe.push('/');
-                }
-                probe.push_str(seg);
-                if vfs.contains_key(&probe) && ht.deny_files.iter().any(|rx| rx.is_match(seg)) {
-                    return HtaccessEval::Deny(403);
-                }
+            acc.push_str(seg);
+            if htaccess_map.contains_key(&acc) {
+                active_prefixes.push(acc.clone());
             }
         }
-        if !ht.rewrite_engine || ht.rules.is_empty() {
-            continue;
-        }
-        let prefix_slashes = if ht.dir_prefix.is_empty() {
-            "/".to_owned()
-        } else {
-            format!("/{}/", ht.dir_prefix)
-        };
-        let mut local_path = if ht.dir_prefix.is_empty() {
-            cur_path.trim_start_matches('/').to_owned()
-        } else if cur_path == format!("/{}", ht.dir_prefix) {
-            String::new()
-        } else if let Some(rest) = cur_path.strip_prefix(&prefix_slashes) {
-            rest.to_owned()
-        } else {
-            continue;
-        };
-
-        for rule in &ht.rules {
-            let Some(caps) = rule.regex.captures(&local_path) else {
+        let trimmed = path_to_check.trim_matches('/');
+        let segs: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+        for prefix in &active_prefixes {
+            let Some(ht) = htaccess_map.get(prefix) else {
                 continue;
             };
-            let rel_probe = if ht.dir_prefix.is_empty() {
-                local_path.clone()
-            } else if local_path.is_empty() {
-                ht.dir_prefix.clone()
+            if !ht.deny_files.is_empty() {
+                if let Some(&last_seg) = segs.last() {
+                    if ht.deny_files.iter().any(|rx| rx.is_match(last_seg)) {
+                        return Some(HtaccessEval::Deny(403));
+                    }
+                }
+                let mut probe = String::new();
+                for &seg in segs.iter().take(segs.len().saturating_sub(1)) {
+                    if !probe.is_empty() {
+                        probe.push('/');
+                    }
+                    probe.push_str(seg);
+                    if vfs.contains_key(&probe) && ht.deny_files.iter().any(|rx| rx.is_match(seg)) {
+                        return Some(HtaccessEval::Deny(403));
+                    }
+                }
+            }
+            for rm in &ht.redirect_matches {
+                if let Some(caps) = rm.regex.captures(path_to_check) {
+                    if rm.status >= 400 {
+                        return Some(HtaccessEval::Deny(rm.status));
+                    }
+                    if let Some(ref target) = rm.target {
+                        let groups: Vec<String> = (1..caps.len())
+                            .map(|idx| caps.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default())
+                            .collect();
+                        let loc = apply_backrefs(target, &groups, &[]);
+                        return Some(HtaccessEval::Redirect(rm.status, loc));
+                    }
+                }
+            }
+        }
+        None
+    };
+
+    if let Some(blocked) = check_access(&cur_path) {
+        return blocked;
+    }
+
+    for _pass in 0..MAX_HTACCESS_PASSES {
+        let mut prefixes = vec![String::new()];
+        let mut acc = String::new();
+        for seg in cur_path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()) {
+            if !acc.is_empty() {
+                acc.push('/');
+            }
+            acc.push_str(seg);
+            if htaccess_map.contains_key(&acc) {
+                prefixes.push(acc.clone());
+            }
+        }
+        let path_before_pass = cur_path.clone();
+        let mut rewrote_any = false;
+
+        for prefix in prefixes {
+            let Some(ht) = htaccess_map.get(&prefix) else {
+                continue;
+            };
+            if !ht.rewrite_engine || ht.rules.is_empty() {
+                continue;
+            }
+            let prefix_slashes = if ht.dir_prefix.is_empty() {
+                "/".to_owned()
             } else {
-                format!("{}/{}", ht.dir_prefix, local_path)
+                format!("/{}/", ht.dir_prefix)
+            };
+            let mut local_path = if ht.dir_prefix.is_empty() {
+                cur_path.trim_start_matches('/').to_owned()
+            } else if cur_path == format!("/{}", ht.dir_prefix) {
+                String::new()
+            } else if let Some(rest) = cur_path.strip_prefix(&prefix_slashes) {
+                rest.to_owned()
+            } else {
+                continue;
             };
 
-            let mut conds_ok = true;
-            let mut last_cond_groups: Vec<String> = Vec::new();
-            let mut in_or = false;
-            let mut or_acc = false;
+            for rule in &ht.rules {
+                let Some(caps) = rule.regex.captures(&local_path) else {
+                    continue;
+                };
+                let rel_probe = if ht.dir_prefix.is_empty() {
+                    local_path.clone()
+                } else if local_path.is_empty() {
+                    ht.dir_prefix.clone()
+                } else {
+                    format!("{}/{}", ht.dir_prefix, local_path)
+                };
 
-            for cond in &rule.conds {
-                let test_val = expand_apache_vars(
-                    &cond.test_string,
+                let mut conds_ok = true;
+                let mut last_cond_groups: Vec<String> = Vec::new();
+                let mut in_or = false;
+                let mut or_acc = false;
+
+                for cond in &rule.conds {
+                    let test_val = expand_apache_vars(
+                        &cond.test_string,
+                        &rel_probe,
+                        &cur_path,
+                        &cur_query,
+                        method,
+                        host,
+                        https,
+                        headers,
+                    );
+                    let mut groups = Vec::new();
+                    let raw_match = match cond.pattern.as_str() {
+                        "-f" | "-F" | "-s" => vfs_has_file(vfs, &test_val),
+                        "-d" => vfs_has_dir(vfs_dirs, &test_val),
+                        "-l" | "-L" => false,
+                        pat if pat.starts_with('=') => {
+                            let rhs = &pat[1..];
+                            if cond.nocase {
+                                test_val.eq_ignore_ascii_case(rhs)
+                            } else {
+                                test_val == rhs
+                            }
+                        }
+                        _ => {
+                            if let Some(ref rx) = cond.compiled_regex {
+                                if let Some(cm) = rx.captures(&test_val) {
+                                    for idx in 1..cm.len() {
+                                        groups.push(cm.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default());
+                                    }
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                    };
+                    let matched = if cond.negated { !raw_match } else { raw_match };
+                    if matched && !groups.is_empty() {
+                        last_cond_groups = groups;
+                    }
+                    if cond.or_next {
+                        or_acc = if in_or { or_acc || matched } else { matched };
+                        in_or = true;
+                    } else {
+                        let term = if in_or { or_acc || matched } else { matched };
+                        in_or = false;
+                        or_acc = false;
+                        if !term {
+                            conds_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if in_or && !or_acc {
+                    conds_ok = false;
+                }
+                if !conds_ok {
+                    continue;
+                }
+                if rule.forbidden {
+                    return HtaccessEval::Deny(403);
+                }
+                if rule.gone {
+                    return HtaccessEval::Deny(410);
+                }
+                if rule.substitution == "-" {
+                    if rule.last {
+                        break;
+                    }
+                    continue;
+                }
+                let rule_groups: Vec<String> = (1..caps.len())
+                    .map(|idx| caps.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default())
+                    .collect();
+                // Expand Apache server variables BEFORE substituting attacker-controlled regex
+                // backreferences so a captured URL segment containing `%{HTTP:Cookie}` is never evaluated.
+                let expanded_vars = expand_apache_vars(
+                    &rule.substitution,
                     &rel_probe,
                     &cur_path,
                     &cur_query,
@@ -858,131 +1108,71 @@ fn evaluate_htaccess_chain(
                     https,
                     headers,
                 );
-                let mut groups = Vec::new();
-                let raw_match = match cond.pattern.as_str() {
-                    "-f" | "-F" | "-s" => vfs_has_file(vfs, &test_val),
-                    "-d" => vfs_has_dir(vfs, &test_val),
-                    "-l" | "-L" => false,
-                    pat if pat.starts_with('=') => {
-                        let rhs = &pat[1..];
-                        if cond.nocase {
-                            test_val.eq_ignore_ascii_case(rhs)
-                        } else {
-                            test_val == rhs
-                        }
-                    }
-                    pat => {
-                        if let Some(rx) = compile_apache_regex(pat, cond.nocase) {
-                            if let Some(cm) = rx.captures(&test_val) {
-                                for idx in 1..cm.len() {
-                                    groups.push(cm.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default());
-                                }
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    }
+                let expanded = apply_backrefs(&expanded_vars, &rule_groups, &last_cond_groups);
+                let (sub_path, sub_query) = match expanded.split_once('?') {
+                    Some((p, q)) => (p, Some(q)),
+                    None => (expanded.as_str(), None),
                 };
-                let matched = if cond.negated { !raw_match } else { raw_match };
-                if matched && !groups.is_empty() {
-                    last_cond_groups = groups;
-                }
-                if cond.or_next {
-                    or_acc = if in_or { or_acc || matched } else { matched };
-                    in_or = true;
-                } else {
-                    let term = if in_or { or_acc || matched } else { matched };
-                    in_or = false;
-                    or_acc = false;
-                    if !term {
-                        conds_ok = false;
-                        break;
+                let next_query = match sub_query {
+                    Some(sq) if rule.qsa && !cur_query.is_empty() => {
+                        if sq.is_empty() {
+                            cur_query.clone()
+                        } else {
+                            format!("{sq}&{cur_query}")
+                        }
                     }
+                    Some(sq) => sq.to_owned(),
+                    None => cur_query.clone(),
+                };
+                if let Some(code) = rule.redirect_status {
+                    let loc = if next_query.is_empty() {
+                        sub_path.to_owned()
+                    } else {
+                        format!("{sub_path}?{next_query}")
+                    };
+                    return HtaccessEval::Redirect(code, loc);
                 }
-            }
-            if in_or && !or_acc {
-                conds_ok = false;
-            }
-            if !conds_ok {
-                continue;
-            }
-            if rule.forbidden {
-                return HtaccessEval::Deny(403);
-            }
-            if rule.gone {
-                return HtaccessEval::Deny(410);
-            }
-            if rule.substitution == "-" {
+                let raw_next = if sub_path.starts_with('/') {
+                    sub_path.to_owned()
+                } else if let Some(base) = &ht.rewrite_base {
+                    let b = base.trim_end_matches('/');
+                    format!("{b}/{sub_path}")
+                } else {
+                    format!("{prefix_slashes}{sub_path}")
+                };
+                // Canonicalize rewritten path with `normalize_vfs_key` to eliminate `..`, `///`, etc.
+                let trailing = raw_next.len() > 1 && raw_next.ends_with('/');
+                let norm_next = normalize_vfs_key(&raw_next);
+                let next_full = if norm_next.is_empty() {
+                    "/".to_owned()
+                } else if trailing {
+                    format!("/{norm_next}/")
+                } else {
+                    format!("/{norm_next}")
+                };
+
+                if let Some(blocked) = check_access(&next_full) {
+                    return blocked;
+                }
+
+                local_path = if !ht.dir_prefix.is_empty() {
+                    next_full
+                        .strip_prefix(&prefix_slashes)
+                        .unwrap_or_else(|| next_full.trim_start_matches('/'))
+                        .to_owned()
+                } else {
+                    next_full.trim_start_matches('/').to_owned()
+                };
+                cur_path = next_full;
+                cur_query = next_query;
+                rewrote_any = true;
                 if rule.last {
                     break;
                 }
-                continue;
             }
-            let rule_groups: Vec<String> = (1..caps.len())
-                .map(|idx| caps.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default())
-                .collect();
-            // Expand Apache server variables BEFORE substituting attacker-controlled regex
-            // backreferences so a captured URL segment containing `%{HTTP:Cookie}` is never evaluated.
-            let expanded_vars = expand_apache_vars(
-                &rule.substitution,
-                &rel_probe,
-                &cur_path,
-                &cur_query,
-                method,
-                host,
-                https,
-                headers,
-            );
-            let expanded = apply_backrefs(&expanded_vars, &rule_groups, &last_cond_groups);
-            let (sub_path, sub_query) = match expanded.split_once('?') {
-                Some((p, q)) => (p, Some(q)),
-                None => (expanded.as_str(), None),
-            };
-            let next_query = match sub_query {
-                Some(sq) if rule.qsa && !cur_query.is_empty() => {
-                    if sq.is_empty() {
-                        cur_query.clone()
-                    } else {
-                        format!("{sq}&{cur_query}")
-                    }
-                }
-                Some(sq) => sq.to_owned(),
-                None => cur_query.clone(),
-            };
-            if let Some(code) = rule.redirect_status {
-                let loc = if next_query.is_empty() {
-                    sub_path.to_owned()
-                } else {
-                    format!("{sub_path}?{next_query}")
-                };
-                return HtaccessEval::Redirect(code, loc);
-            }
-            let next_full = if sub_path.starts_with('/') {
-                sub_path.to_owned()
-            } else if let Some(base) = &ht.rewrite_base {
-                let b = base.trim_end_matches('/');
-                format!("{b}/{sub_path}")
-            } else {
-                format!("{prefix_slashes}{sub_path}")
-            }
-            .replace("//", "/");
-
-            local_path = if !ht.dir_prefix.is_empty() {
-                next_full
-                    .strip_prefix(&prefix_slashes)
-                    .unwrap_or_else(|| next_full.trim_start_matches('/'))
-                    .to_owned()
-            } else {
-                next_full.trim_start_matches('/').to_owned()
-            };
-            cur_path = next_full;
-            cur_query = next_query;
-            if rule.last {
-                break;
-            }
+        }
+        if !rewrote_any || cur_path == path_before_pass {
+            break;
         }
     }
 
@@ -998,6 +1188,7 @@ fn evaluate_htaccess_chain(
 struct SqlStorageConfig {
     db_dir: PathBuf,
     databases: Vec<ContainerDatabaseConfig>,
+    db_fs_lock: Arc<Mutex<()>>,
 }
 
 impl SqlStorageConfig {
@@ -1249,7 +1440,16 @@ impl SqlStorageConfig {
                     }
                 }
             }
-            let conn = Self::open_configured_connection(Some(&path))?;
+            let mut conn = Self::open_configured_connection(Some(&path))?;
+            let seed_deadline = Instant::now() + Duration::from_secs(30);
+            let mut seed_steps = 0u64;
+            let _ = conn.progress_handler(
+                1000,
+                Some(move || {
+                    seed_steps += 1000;
+                    seed_steps > 50_000_000 || Instant::now() >= seed_deadline
+                }),
+            );
             if let Some(seed_sql) = &cfg.seed_sql {
                 let norm = normalize_vfs_key(seed_sql);
                 let sql_text = vfs
@@ -1257,8 +1457,16 @@ impl SqlStorageConfig {
                     .map(|b| String::from_utf8_lossy(b).into_owned())
                     .unwrap_or_else(|| seed_sql.clone());
                 if !sql_text.trim().is_empty() {
+                    let reserved_before = reserved_sqlite_objects(&conn);
                     conn.execute_batch(&sql_text)
                         .map_err(|e| format!("Failed to run seedSql for DB '{}': {e}", cfg.name))?;
+                    let reserved_after = reserved_sqlite_objects(&conn);
+                    if reserved_after.iter().any(|n| !reserved_before.contains(n)) {
+                        return Err(format!(
+                            "seedSql for DB '{}' attempted to create or rename a host-reserved _-prefixed object",
+                            cfg.name
+                        ));
+                    }
                 }
             }
             if let Some(seed_json) = &cfg.seed_json {
@@ -1272,7 +1480,7 @@ impl SqlStorageConfig {
                     other => other.to_string(),
                 };
                 if !payload.trim().is_empty() {
-                    let _ = apply_seed_json(&conn, &payload)?;
+                    let _ = apply_seed_json(&conn, &payload, None)?;
                 }
             }
             let _ = fs::write(&marker, b"1");
@@ -1369,7 +1577,90 @@ fn sanitize_ident(name: &str) -> Result<String, String> {
     Ok(format!("\"{name}\""))
 }
 
-fn apply_seed_json(conn: &Connection, payload: &str) -> Result<Value, String> {
+fn reserved_sqlite_objects(conn: &Connection) -> HashSet<String> {
+    let mut set = HashSet::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'")
+    {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for name in rows.flatten() {
+                set.insert(name);
+            }
+        }
+    }
+    set
+}
+
+fn has_multiple_statements(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut saw_semi = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                    i += 2;
+                    continue;
+                }
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if b == b'\'' {
+            in_single = true;
+            if saw_semi {
+                return true;
+            }
+        } else if b == b'"' {
+            in_double = true;
+            if saw_semi {
+                return true;
+            }
+        } else if b == b';' {
+            saw_semi = true;
+        } else if !b.is_ascii_whitespace() && saw_semi {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn apply_seed_json(
+    conn: &Connection,
+    payload: &str,
+    abort: Option<&AtomicBool>,
+) -> Result<Value, String> {
     let parsed: Value = serde_json::from_str(payload)
         .map_err(|e| format!("Invalid seedJson payload: {e}"))?;
     let mut tables_created = 0usize;
@@ -1389,77 +1680,120 @@ fn apply_seed_json(conn: &Connection, payload: &str) -> Result<Value, String> {
             "statementsExecuted": 0
         }));
     };
+    if tables.len() > MAX_SEED_TABLES {
+        return Err(format!("seedJson exceeds max table limit ({MAX_SEED_TABLES})"));
+    }
 
-    for (table_name, rows_val) in tables {
-        let Some(rows) = rows_val.as_array() else {
-            continue;
-        };
-        if rows.is_empty() {
-            continue;
-        }
-        let quoted_table = sanitize_ident(table_name)?;
-        let mut col_names: Vec<String> = Vec::new();
-        for row in rows {
-            if let Some(obj) = row.as_object() {
-                for k in obj.keys() {
-                    if !col_names.contains(k) {
-                        col_names.push(k.clone());
+    let in_tx = !conn.is_autocommit();
+    if !in_tx {
+        conn.execute_batch("BEGIN")
+            .map_err(|e| format!("seedJson BEGIN failed: {e}"))?;
+    }
+
+    let run = (|| -> Result<Value, String> {
+        let mut total_rows_seen = 0usize;
+        for (table_name, rows_val) in tables {
+            if abort.is_some_and(|a| a.load(Ordering::Relaxed)) {
+                return Err("seedJson aborted: request deadline exceeded".into());
+            }
+            if table_name.starts_with('_') {
+                return Err("seedJson cannot target host-reserved _-prefixed table".into());
+            }
+            let Some(rows) = rows_val.as_array() else {
+                continue;
+            };
+            if rows.is_empty() {
+                continue;
+            }
+            total_rows_seen = total_rows_seen.saturating_add(rows.len());
+            if total_rows_seen > MAX_SEED_ROWS {
+                return Err(format!("seedJson exceeds max row limit ({MAX_SEED_ROWS})"));
+            }
+            let quoted_table = sanitize_ident(table_name)?;
+            let mut col_names: Vec<String> = Vec::new();
+            let mut col_seen: HashSet<&str> = HashSet::new();
+            for row in rows {
+                if let Some(obj) = row.as_object() {
+                    for k in obj.keys() {
+                        if col_seen.insert(k.as_str()) {
+                            if col_names.len() >= MAX_SEED_COLS {
+                                return Err(format!(
+                                    "seedJson table '{table_name}' exceeds max column limit ({MAX_SEED_COLS})"
+                                ));
+                            }
+                            col_names.push(k.clone());
+                        }
                     }
                 }
             }
-        }
-        if col_names.is_empty() {
-            continue;
-        }
-        let col_defs: Result<Vec<String>, String> = col_names
-            .iter()
-            .map(|c| Ok(format!("{} TEXT", sanitize_ident(c)?)))
-            .collect();
-        let create_sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} ({})",
-            quoted_table,
-            col_defs?.join(", ")
-        );
-        conn.execute(&create_sql, [])
-            .map_err(|e| format!("seedJson CREATE TABLE failed: {e}"))?;
-        tables_created += 1;
-        statements += 1;
-
-        let quoted_cols: Result<Vec<String>, String> =
-            col_names.iter().map(|c| sanitize_ident(c)).collect();
-        let placeholders = vec!["?"; col_names.len()].join(", ");
-        let insert_sql = format!(
-            "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
-            quoted_table,
-            quoted_cols?.join(", "),
-            placeholders
-        );
-        let mut stmt = conn
-            .prepare(&insert_sql)
-            .map_err(|e| format!("seedJson INSERT prepare failed: {e}"))?;
-        tables_seeded += 1;
-        for row in rows {
-            let Some(obj) = row.as_object() else {
+            if col_names.is_empty() {
                 continue;
-            };
-            let vals: Vec<SqlValue> = col_names
+            }
+            let col_defs: Result<Vec<String>, String> = col_names
                 .iter()
-                .map(|c| obj.get(c).map(json_to_sql_value).unwrap_or(SqlValue::Null))
+                .map(|c| Ok(format!("{} TEXT", sanitize_ident(c)?)))
                 .collect();
-            let n = stmt
-                .execute(params_from_iter(vals))
-                .map_err(|e| format!("seedJson INSERT failed: {e}"))?;
-            rows_inserted += n;
+            let create_sql = format!(
+                "CREATE TABLE IF NOT EXISTS {} ({})",
+                quoted_table,
+                col_defs?.join(", ")
+            );
+            conn.execute(&create_sql, [])
+                .map_err(|e| format!("seedJson CREATE TABLE failed: {e}"))?;
+            tables_created += 1;
             statements += 1;
+
+            let quoted_cols: Result<Vec<String>, String> =
+                col_names.iter().map(|c| sanitize_ident(c)).collect();
+            let placeholders = vec!["?"; col_names.len()].join(", ");
+            let insert_sql = format!(
+                "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
+                quoted_table,
+                quoted_cols?.join(", "),
+                placeholders
+            );
+            let mut stmt = conn
+                .prepare(&insert_sql)
+                .map_err(|e| format!("seedJson INSERT prepare failed: {e}"))?;
+            tables_seeded += 1;
+            for row in rows {
+                if abort.is_some_and(|a| a.load(Ordering::Relaxed)) {
+                    return Err("seedJson aborted: request deadline exceeded".into());
+                }
+                let Some(obj) = row.as_object() else {
+                    continue;
+                };
+                let vals: Vec<SqlValue> = col_names
+                    .iter()
+                    .map(|c| obj.get(c).map(json_to_sql_value).unwrap_or(SqlValue::Null))
+                    .collect();
+                let n = stmt
+                    .execute(params_from_iter(vals))
+                    .map_err(|e| format!("seedJson INSERT failed: {e}"))?;
+                rows_inserted += n;
+                statements += 1;
+            }
+        }
+        Ok(json!({
+            "tablesCreated": tables_created,
+            "tablesSeeded": tables_seeded,
+            "rowsInserted": rows_inserted,
+            "statementsExecuted": statements
+        }))
+    })();
+
+    if !in_tx {
+        match &run {
+            Ok(_) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|e| format!("seedJson COMMIT failed: {e}"))?;
+            }
+            Err(_) => {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
         }
     }
-
-    Ok(json!({
-        "tablesCreated": tables_created,
-        "tablesSeeded": tables_seeded,
-        "rowsInserted": rows_inserted,
-        "statementsExecuted": statements
-    }))
+    run
 }
 
 struct RequestSqlBridge {
@@ -1518,6 +1852,7 @@ impl RequestSqlBridge {
                 if Self::is_sidecar_name(arg(0)) {
                     return json!({ "error": "cannot open SQLite sidecar file directly", "code": 1, "unique": false }).to_string();
                 }
+                let _fs_guard = self.config.db_fs_lock.lock().unwrap_or_else(|e| e.into_inner());
                 match self.config.resolve_db_path(arg(0)) {
                     Ok(path) => {
                         if let Some(ref p) = path {
@@ -1573,7 +1908,7 @@ impl RequestSqlBridge {
                 let Some(conn) = self.handles.get(&id) else {
                     return json!({ "error": format!("invalid sqlite connection handle {id}"), "code": 21, "unique": false }).to_string();
                 };
-                match apply_seed_json(conn, payload) {
+                match apply_seed_json(conn, payload, Some(&self.abort)) {
                     Ok(v) => v.to_string(),
                     Err(e) => classify_sqlite_error(&e).to_string(),
                 }
@@ -1584,6 +1919,7 @@ impl RequestSqlBridge {
                 if Self::is_sidecar_name(to) {
                     return json!({ "error": "cannot copy to SQLite sidecar file", "code": 1, "unique": false }).to_string();
                 }
+                let _fs_guard = self.config.db_fs_lock.lock().unwrap_or_else(|e| e.into_inner());
                 match (self.config.resolve_db_path(from), self.config.resolve_exact_db_path(to)) {
                     (Ok(Some(src)), Ok(Some(dst))) => {
                         if self.config.is_configured_db_path(&dst) {
@@ -1596,8 +1932,18 @@ impl RequestSqlBridge {
                             let bytes = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
                             return json!({ "bytes": bytes }).to_string();
                         }
+                        // Flush WAL journal on source DB before copying.
+                        if let Ok(ckpt) = Connection::open(&src) {
+                            let _ = ckpt.execute_batch("PRAGMA busy_timeout=3000; PRAGMA wal_checkpoint(TRUNCATE);");
+                        }
                         match fs::copy(&src, &dst) {
-                            Ok(bytes) => json!({ "bytes": bytes }).to_string(),
+                            Ok(bytes) => {
+                                let dst_str = dst.to_string_lossy();
+                                for suffix in ["-wal", "-shm", "-journal"] {
+                                    let _ = fs::remove_file(format!("{dst_str}{suffix}"));
+                                }
+                                json!({ "bytes": bytes }).to_string()
+                            }
                             Err(e) => classify_sqlite_error(&e.to_string()).to_string(),
                         }
                     }
@@ -1618,17 +1964,22 @@ impl RequestSqlBridge {
                 {
                     return json!({ "ok": true, "removed": true }).to_string();
                 }
+                let _fs_guard = self.config.db_fs_lock.lock().unwrap_or_else(|e| e.into_inner());
                 match self.config.resolve_exact_db_path(target) {
                     Ok(Some(path)) => {
                         if self.config.is_configured_db_path(&path) {
                             return json!({ "error": "cannot remove configured primary database", "code": 1, "unique": false }).to_string();
                         }
-                        if path.exists() {
-                            let removed = fs::remove_file(&path).is_ok();
-                            json!({ "ok": true, "removed": removed }).to_string()
+                        let removed = if path.exists() {
+                            fs::remove_file(&path).is_ok()
                         } else {
-                            json!({ "ok": true, "removed": false }).to_string()
+                            false
+                        };
+                        let p_str = path.to_string_lossy();
+                        for suffix in ["-wal", "-shm", "-journal"] {
+                            let _ = fs::remove_file(format!("{p_str}{suffix}"));
                         }
+                        json!({ "ok": true, "removed": removed }).to_string()
                     }
                     _ => json!({ "ok": true, "removed": false }).to_string(),
                 }
@@ -1681,77 +2032,67 @@ impl RequestSqlBridge {
         }
     }
 
-    fn targets_reserved_rename(sql: &str) -> bool {
-        // Strip SQL comments so `ALTER TABLE x RENAME /*c*/ TO "_host"` cannot evade detection.
-        let mut stripped = String::with_capacity(sql.len());
-        let bytes = sql.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
-                i += 2;
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-                stripped.push(' ');
-            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                i = (i + 2).min(bytes.len());
-                stripped.push(' ');
-            } else {
-                let ch = sql[i..].chars().next().unwrap();
-                stripped.push(ch);
-                i += ch.len_utf8();
-            }
-        }
-        let lower = stripped.to_ascii_lowercase();
-        let mut pos = 0;
-        while let Some(rel) = lower[pos..].find("rename") {
-            let after_rename = &lower[pos + rel + 6..];
-            let trimmed = after_rename.trim_start();
-            if let Some(after_to) = trimmed.strip_prefix("to") {
-                if after_to.starts_with(|c: char| c.is_ascii_whitespace() || matches!(c, '"' | '\'' | '`' | '[')) {
-                    let target = after_to.trim_start().trim_start_matches(['"', '\'', '`', '[']);
-                    if target.starts_with('_') {
-                        return true;
-                    }
-                }
-            }
-            pos += rel + 6;
-        }
-        false
-    }
-
     fn run_execute(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
-        if Self::targets_reserved_rename(sql) {
-            return Err("Renaming a table to a host-reserved underscore-prefixed name is not allowed".into());
-        }
+        let lower = sql.to_ascii_lowercase();
+        let may_mutate_schema = lower.contains("alter") || lower.contains("create") || lower.contains("rename");
+        let reserved_before = if may_mutate_schema {
+            Some(reserved_sqlite_objects(conn))
+        } else {
+            None
+        };
+        let use_sp = may_mutate_schema && conn.execute_batch("SAVEPOINT softn_ddl_chk").is_ok();
+
         let no_params = params_raw.is_empty() || params_raw == "[]" || params_raw == "{}" || params_raw == "null";
-        if no_params {
-            // Check if multi-statement batch (e.g. PHP PDO::exec running DDL migrations)
-            if sql.matches(';').count() > 1 {
-                conn.execute_batch(sql).map_err(|e| e.to_string())?;
-                return Ok(json!({
-                    "rows_affected": conn.changes(),
-                    "last_insert_rowid": conn.last_insert_rowid(),
-                }));
+        let exec_res: Result<Value, String> = if no_params && has_multiple_statements(sql) {
+            conn.execute_batch(sql)
+                .map_err(|e| e.to_string())
+                .map(|()| {
+                    json!({
+                        "rows_affected": conn.changes(),
+                        "last_insert_rowid": conn.last_insert_rowid(),
+                    })
+                })
+        } else {
+            match conn.prepare(sql) {
+                Ok(mut stmt) => match Self::bind_params(&mut stmt, params_raw) {
+                    Ok(_) => stmt.raw_execute().map_err(|e| e.to_string()).map(|rows_affected| {
+                        json!({
+                            "rows_affected": rows_affected,
+                            "last_insert_rowid": conn.last_insert_rowid(),
+                        })
+                    }),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e.to_string()),
+            }
+        };
+
+        if let Some(before) = reserved_before {
+            let created_reserved = exec_res.is_ok()
+                && reserved_sqlite_objects(conn)
+                    .iter()
+                    .any(|n| !before.contains(n));
+            if created_reserved {
+                if use_sp {
+                    let _ = conn.execute_batch("ROLLBACK TO softn_ddl_chk; RELEASE softn_ddl_chk");
+                }
+                return Err(
+                    "Creating or renaming a table into the host-reserved underscore-prefixed namespace is not allowed"
+                        .into(),
+                );
             }
         }
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        Self::bind_params(&mut stmt, params_raw)?;
-        let rows_affected = stmt.raw_execute().map_err(|e| e.to_string())?;
-        Ok(json!({
-            "rows_affected": rows_affected,
-            "last_insert_rowid": conn.last_insert_rowid(),
-        }))
+        if use_sp {
+            if exec_res.is_ok() {
+                let _ = conn.execute_batch("RELEASE softn_ddl_chk");
+            } else {
+                let _ = conn.execute_batch("ROLLBACK TO softn_ddl_chk; RELEASE softn_ddl_chk");
+            }
+        }
+        exec_res
     }
 
     fn run_query(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
-        if Self::targets_reserved_rename(sql) {
-            return Err("Renaming a table to a host-reserved underscore-prefixed name is not allowed".into());
-        }
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let columns: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         Self::bind_params(&mut stmt, params_raw)?;
@@ -1846,21 +2187,125 @@ fn is_protected_php_overlay_path(key: &str, backend_entry: &str) -> bool {
     }
     let lower = norm.to_ascii_lowercase();
     let base = lower.rsplit('/').next().unwrap_or("");
-    if lower.ends_with(".php")
-        || lower.ends_with(".phtml")
-        || lower.ends_with(".inc")
-        || lower.ends_with(".phar")
-        || base == ".htaccess"
+    if base == ".htaccess"
         || base == ".htpasswd"
         || base == ".env"
         || base.starts_with(".env.")
         || base == "manifest.json"
         || base == "permission.json"
+        || base == "seed.json"
     {
         return true;
     }
+    for ext in [
+        ".php", ".phtml", ".php5", ".php7", ".php8", ".pht", ".phps", ".inc", ".phar", ".tpl",
+        ".sql", ".ini", ".db", ".db-wal", ".db-shm", ".db-journal", ".sqlite", ".sqlite-wal",
+        ".sqlite-shm", ".sqlite-journal", ".sqlite3", ".sqlite3-wal", ".sqlite3-shm",
+        ".sqlite3-journal",
+    ] {
+        if lower.ends_with(ext) {
+            return true;
+        }
+    }
     let entry_lower = normalize_vfs_key(backend_entry).to_ascii_lowercase();
     !entry_lower.is_empty() && lower == entry_lower
+}
+
+fn clone_php_overlay(src: &PhpVfsOverlay) -> PhpVfsOverlay {
+    PhpVfsOverlay {
+        writes: src.writes.clone(),
+        deleted: src.deleted.clone(),
+        dirs: src.dirs.clone(),
+        total_bytes: src.total_bytes,
+    }
+}
+
+fn sanitize_php_overlay(ov: &mut PhpVfsOverlay, backend_entry: &str) {
+    let mut clean_writes = HashMap::with_capacity(ov.writes.len());
+    let mut total = 0usize;
+    let mut keys: Vec<String> = ov.writes.keys().cloned().collect();
+    keys.sort();
+    for k in keys {
+        if let Some(bytes) = ov.writes.remove(&k) {
+            let norm = normalize_vfs_key(&k);
+            if is_protected_php_overlay_path(&norm, backend_entry) {
+                continue;
+            }
+            if total.saturating_add(bytes.len()) <= MAX_OVERLAY_BYTES {
+                total += bytes.len();
+                clean_writes.insert(norm, bytes);
+            }
+        }
+    }
+    ov.writes = clean_writes;
+    ov.total_bytes = total;
+    ov.deleted = ov
+        .deleted
+        .drain()
+        .map(|k| normalize_vfs_key(&k))
+        .filter(|k| !is_protected_php_overlay_path(k, backend_entry))
+        .collect();
+    ov.dirs = ov
+        .dirs
+        .drain()
+        .map(|k| normalize_vfs_key(&k))
+        .filter(|k| !is_protected_php_overlay_path(k, backend_entry))
+        .collect();
+}
+
+fn merge_and_save_php_overlay(
+    path: &Path,
+    shared_overlay: &Mutex<PhpVfsOverlay>,
+    initial: &PhpVfsOverlay,
+    mut final_req: PhpVfsOverlay,
+    backend_entry: &str,
+    last_saved: &Mutex<Vec<u8>>,
+) {
+    sanitize_php_overlay(&mut final_req, backend_entry);
+    // Fast path: if this request made no sanitized overlay changes, skip locking/encoding/disk I/O.
+    if final_req.writes == initial.writes
+        && final_req.deleted == initial.deleted
+        && final_req.dirs == initial.dirs
+    {
+        return;
+    }
+    let Ok(mut shared) = shared_overlay.lock() else {
+        return;
+    };
+    for (k, v) in &final_req.writes {
+        if initial.writes.get(k) != Some(v) {
+            shared.writes.insert(k.clone(), v.clone());
+            shared.deleted.remove(k);
+        }
+    }
+    for k in initial.writes.keys() {
+        if !final_req.writes.contains_key(k) {
+            shared.writes.remove(k);
+        }
+    }
+    for d in &final_req.deleted {
+        if !initial.deleted.contains(d) {
+            shared.deleted.insert(d.clone());
+            shared.writes.remove(d);
+        }
+    }
+    for d in &initial.deleted {
+        if !final_req.deleted.contains(d) && !final_req.writes.contains_key(d) {
+            shared.deleted.remove(d);
+        }
+    }
+    for d in &final_req.dirs {
+        if !initial.dirs.contains(d) {
+            shared.dirs.insert(d.clone());
+        }
+    }
+    for d in &initial.dirs {
+        if !final_req.dirs.contains(d) {
+            shared.dirs.remove(d);
+        }
+    }
+    sanitize_php_overlay(&mut shared, backend_entry);
+    save_php_overlay(path, &mut shared, backend_entry, last_saved);
 }
 
 fn load_php_overlay(path: &Path, backend_entry: &str) -> PhpVfsOverlay {
@@ -1910,28 +2355,51 @@ fn load_php_overlay(path: &Path, backend_entry: &str) -> PhpVfsOverlay {
     ov
 }
 
-fn save_php_overlay(path: &Path, overlay: &mut PhpVfsOverlay, backend_entry: &str) {
-    overlay.writes.retain(|k, _| !is_protected_php_overlay_path(k, backend_entry));
-    overlay.deleted.retain(|k| !is_protected_php_overlay_path(k, backend_entry));
+fn save_php_overlay(
+    path: &Path,
+    overlay: &mut PhpVfsOverlay,
+    backend_entry: &str,
+    last_saved: &Mutex<Vec<u8>>,
+) {
+    sanitize_php_overlay(overlay, backend_entry);
     if overlay.writes.is_empty() && overlay.deleted.is_empty() && overlay.dirs.is_empty() {
+        if let Ok(mut prev) = last_saved.lock() {
+            if !prev.is_empty() || path.exists() {
+                let _ = fs::remove_file(path);
+                prev.clear();
+            }
+        }
         return;
     }
+    let mut keys: Vec<&String> = overlay.writes.keys().collect();
+    keys.sort();
     let mut writes = serde_json::Map::new();
-    for (k, bytes) in &overlay.writes {
-        writes.insert(
-            k.clone(),
-            Value::String(base64::engine::general_purpose::STANDARD.encode(bytes)),
-        );
+    for k in keys {
+        if let Some(bytes) = overlay.writes.get(k) {
+            writes.insert(
+                k.clone(),
+                Value::String(base64::engine::general_purpose::STANDARD.encode(bytes)),
+            );
+        }
     }
+    let mut deleted: Vec<&String> = overlay.deleted.iter().collect();
+    deleted.sort();
+    let mut dirs: Vec<&String> = overlay.dirs.iter().collect();
+    dirs.sort();
     let payload = json!({
         "writes": writes,
-        "deleted": overlay.deleted.iter().collect::<Vec<_>>(),
-        "dirs": overlay.dirs.iter().collect::<Vec<_>>(),
+        "deleted": deleted,
+        "dirs": dirs,
     });
     if let Ok(bytes) = serde_json::to_vec(&payload) {
-        let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, &bytes).is_ok() {
-            let _ = fs::rename(&tmp, path);
+        if let Ok(mut prev) = last_saved.lock() {
+            if *prev == bytes {
+                return;
+            }
+            let tmp = path.with_extension("json.tmp");
+            if fs::write(&tmp, &bytes).is_ok() && fs::rename(&tmp, path).is_ok() {
+                *prev = bytes;
+            }
         }
     }
 }
@@ -1999,32 +2467,66 @@ fn percent_decode(s: &str) -> String {
 
 fn parse_headers_json(val: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
+    let push_pair = |out: &mut Vec<(String, String)>, k: &str, v: &str| {
+        if out.len() >= MAX_RESPONSE_HEADERS {
+            return;
+        }
+        if k.is_empty() || k.len() > 256 || v.len() > MAX_RESPONSE_HEADER_BYTES {
+            return;
+        }
+        if k.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b':')
+            || v.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+        {
+            return;
+        }
+        out.push((k.to_owned(), v.to_owned()));
+    };
     if let Some(arr) = val.as_array() {
         for item in arr {
+            if out.len() >= MAX_RESPONSE_HEADERS {
+                break;
+            }
             if let Some(pair) = item.as_array() {
                 if pair.len() >= 2 {
                     if let (Some(k), Some(v)) = (pair[0].as_str(), pair[1].as_str()) {
-                        out.push((k.to_owned(), v.to_owned()));
+                        push_pair(&mut out, k, v);
                     }
                 }
             }
         }
     } else if let Some(obj) = val.as_object() {
         for (k, v) in obj {
+            if out.len() >= MAX_RESPONSE_HEADERS {
+                break;
+            }
             if let Some(s) = v.as_str() {
-                out.push((k.clone(), s.to_owned()));
+                push_pair(&mut out, k, s);
             }
         }
     }
     out
 }
 
+fn clamp_response_body(body: Vec<u8>) -> Result<Vec<u8>, ContainerHttpResponse> {
+    if body.len() > MAX_RESPONSE_BODY_BYTES {
+        return Err(ContainerHttpResponse {
+            status: 502,
+            headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+            body: b"Backend response exceeded maximum allowed size".to_vec(),
+        });
+    }
+    Ok(body)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_php_request(
     req: &ContainerHttpRequest,
     backend: &ContainerBackendConfig,
     vfs: &Arc<HashMap<String, Vec<u8>>>,
+    vfs_dirs: &HashSet<String>,
     overlay: &Arc<Mutex<PhpVfsOverlay>>,
     htaccess_map: &HashMap<String, ParsedHtaccess>,
+    private_dir_prefixes: &[String],
     sql_cfg: &SqlStorageConfig,
     abort: Arc<AtomicBool>,
 ) -> ContainerHttpResponse {
@@ -2055,6 +2557,7 @@ fn execute_php_request(
             req.https,
             &lower_headers,
             vfs,
+            vfs_dirs,
         ) {
             HtaccessEval::Deny(status) => {
                 return ContainerHttpResponse {
@@ -2082,14 +2585,17 @@ fn execute_php_request(
 
     let rel = normalize_vfs_key(&target_path);
     let rel_lower = rel.to_ascii_lowercase();
-    let is_private_dir = rel_lower.starts_with("server/")
-        || rel_lower.starts_with("backend/")
-        || rel_lower.starts_with("private/")
-        || rel_lower.starts_with("db/")
-        || rel_lower.starts_with("database/")
-        || rel_lower.starts_with("migrations/")
-        || rel_lower.split('/').any(|seg| seg.starts_with('.'));
     let entry_key = normalize_vfs_key(&backend.entry);
+    let entry_lower = entry_key.to_ascii_lowercase();
+    let is_private_dir = rel_lower != entry_lower
+        && (rel_lower.starts_with("server/")
+            || rel_lower.starts_with("backend/")
+            || rel_lower.starts_with("private/")
+            || rel_lower.starts_with("db/")
+            || rel_lower.starts_with("database/")
+            || rel_lower.starts_with("migrations/")
+            || rel_lower.split('/').any(|seg| seg.starts_with('.'))
+            || private_dir_prefixes.iter().any(|p| rel_lower.starts_with(p)));
     let script_key: Option<String> = if !rel.is_empty()
         && !is_private_dir
         && vfs.contains_key(&rel)
@@ -2280,6 +2786,10 @@ fn execute_php_request(
             .as_bytes()
             .to_vec()
     };
+    let body = match clamp_response_body(body) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
 
     ContainerHttpResponse {
         status,
@@ -2421,7 +2931,24 @@ fn execute_script_backend_request(
             }
         }
     } else {
-        let call_res = st.call_global(dispatch_fn, &[JsValue::String(req_json)]);
+        let Some(dispatch_slot) = st
+            .symbols()
+            .into_iter()
+            .find(|s| s.name == dispatch_fn)
+            .map(|s| s.index)
+        else {
+            return ContainerHttpResponse {
+                status: 500,
+                headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                body: b"Script backend missing dispatch hook".to_vec(),
+            };
+        };
+        let mut budget = HostValueBudget::new(65_536, 16 * 1024 * 1024);
+        let call_res = st.call_slot_bounded(
+            dispatch_slot,
+            &[HostValue::String(req_json)],
+            &mut budget,
+        );
         if let Some(limit) = st.resource_limit_error() {
             tracing::warn!("Script backend sandbox limit triggered: {limit}");
             return ContainerHttpResponse {
@@ -2431,7 +2958,7 @@ fn execute_script_backend_request(
             };
         }
         match call_res {
-            Ok(JsValue::String(s)) => s,
+            Ok(HostValue::String(s)) => s,
             Ok(_) => {
                 return ContainerHttpResponse {
                     status: 500,
@@ -2440,7 +2967,7 @@ fn execute_script_backend_request(
                 };
             }
             Err(err) => {
-                tracing::error!("Script backend error: {err}");
+                tracing::error!("Script backend error: {err:?}");
                 return ContainerHttpResponse {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
@@ -2467,6 +2994,10 @@ fn execute_script_backend_request(
         .unwrap_or("")
         .as_bytes()
         .to_vec();
+    let body = match clamp_response_body(body) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
 
     ContainerHttpResponse {
         status,
@@ -2517,8 +3048,10 @@ impl WarmRustWorker {
             if !strip_prefix.is_empty() {
                 if let Some(stripped) = k.strip_prefix(&strip_prefix) {
                     rust_vfs.insert(stripped.to_owned(), v.clone());
-                    continue;
+                } else if lower == "manifest.json" {
+                    rust_vfs.insert(k.clone(), v.clone());
                 }
+                continue;
             }
             rust_vfs.insert(k.clone(), v.clone());
         }
@@ -2544,7 +3077,9 @@ impl WarmRustWorker {
             argv: Vec::new(),
             env: env_pairs,
             vfs: Some(rust_vfs),
-            allow_vfs_write: true,
+            // Keep VFS read-only in multi-user warm workers so one user's request cannot
+            // mutate in-memory files seen by another user on the same worker.
+            allow_vfs_write: false,
             allow_native_fs: false,
             allow_net: false,
             stream_stdout: false,
@@ -2579,10 +3114,25 @@ impl WarmRustWorker {
         })
     }
 
-    fn dispatch(&mut self, req: &ContainerHttpRequest, abort: Arc<AtomicBool>) -> ContainerHttpResponse {
-        if let Ok(mut guard) = self.sql_bridge.lock() {
-            guard.abort = Arc::clone(&abort);
-            guard.handles.clear();
+    /// Dispatch a request on the warm worker, returning `(response, needs_rebuild)`.
+    /// Whenever a resource limit, internal VM error, or poisoned SQL bridge lock occurs,
+    /// `needs_rebuild = true` instructs the worker thread to tear down and re-boot cleanly.
+    fn dispatch(&mut self, req: &ContainerHttpRequest, abort: Arc<AtomicBool>) -> (ContainerHttpResponse, bool) {
+        match self.sql_bridge.lock() {
+            Ok(mut guard) => {
+                guard.abort = Arc::clone(&abort);
+                guard.handles.clear();
+            }
+            Err(_) => {
+                return (
+                    ContainerHttpResponse {
+                        status: 500,
+                        headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                        body: b"Internal backend error".to_vec(),
+                    },
+                    true,
+                );
+            }
         }
         harden_script_state(&mut self.state, REQUEST_STEP_BUDGET, abort);
         let uri = if req.query.is_empty() {
@@ -2608,33 +3158,46 @@ impl WarmRustWorker {
             &[HostValue::String(req_json)],
             &mut budget,
         );
-        if let Ok(mut guard) = self.sql_bridge.lock() {
-            guard.handles.clear();
-        }
+        let poisoned = match self.sql_bridge.lock() {
+            Ok(mut guard) => {
+                guard.handles.clear();
+                false
+            }
+            Err(_) => true,
+        };
         if let Some(limit) = self.state.resource_limit_error() {
             tracing::warn!("Rust worker sandbox limit triggered: {limit}");
-            return ContainerHttpResponse {
-                status: 503,
-                headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                body: b"Sandbox limit exceeded".to_vec(),
-            };
+            return (
+                ContainerHttpResponse {
+                    status: 503,
+                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                    body: b"Sandbox limit exceeded".to_vec(),
+                },
+                true,
+            );
         }
         let raw = match res {
             Ok(HostValue::String(s)) => s,
             Ok(_) => {
-                return ContainerHttpResponse {
-                    status: 500,
-                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: b"Internal backend error".to_vec(),
-                };
+                return (
+                    ContainerHttpResponse {
+                        status: 500,
+                        headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                        body: b"Internal backend error".to_vec(),
+                    },
+                    true,
+                );
             }
             Err(err) => {
                 tracing::error!("Rust backend error: {err:?}");
-                return ContainerHttpResponse {
-                    status: 500,
-                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: b"Internal backend error".to_vec(),
-                };
+                return (
+                    ContainerHttpResponse {
+                        status: 500,
+                        headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                        body: b"Internal backend error".to_vec(),
+                    },
+                    true,
+                );
             }
         };
         let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({ "status": 500, "body": raw }));
@@ -2654,15 +3217,30 @@ impl WarmRustWorker {
             .unwrap_or("")
             .as_bytes()
             .to_vec();
-        ContainerHttpResponse {
-            status,
-            headers,
-            body,
-        }
+        let body = match clamp_response_body(body) {
+            Ok(b) => b,
+            Err(resp) => return (resp, poisoned),
+        };
+        (
+            ContainerHttpResponse {
+                status,
+                headers,
+                body,
+            },
+            poisoned,
+        )
     }
 }
 
 // ── Public Multi-User Container Backend Runtime ──
+
+pub enum StaticOrBackend {
+    Static { mime: &'static str, bytes: Vec<u8> },
+    Deny(u16),
+    Redirect(u16, String),
+    NotFound,
+    Backend,
+}
 
 pub struct ContainerBackendRuntime {
     #[allow(dead_code)]
@@ -2672,7 +3250,11 @@ pub struct ContainerBackendRuntime {
     pub frontend_root: Option<String>,
     pub main_file: Option<String>,
     pub ssr_entry: bool,
+    private_exact_paths: HashSet<String>,
+    private_dir_prefixes: Vec<String>,
     vfs: Arc<HashMap<String, Vec<u8>>>,
+    vfs_dirs: Arc<HashSet<String>>,
+    htaccess_map: Arc<HashMap<String, ParsedHtaccess>>,
     tx: crossbeam_channel::Sender<WorkerJob>,
     stop_watchdog: Arc<AtomicBool>,
 }
@@ -2689,6 +3271,7 @@ impl ContainerBackendRuntime {
         };
         let runtime_kind = BackendRuntimeKind::parse(&backend.runtime)?;
         let vfs = Arc::new(load_bundle_vfs(bundle_path)?);
+        let vfs_dirs = Arc::new(build_vfs_dir_index(&vfs));
         let entry_key = normalize_vfs_key(&backend.entry);
         if !vfs.contains_key(&entry_key) {
             return Err(format!(
@@ -2697,9 +3280,72 @@ impl ContainerBackendRuntime {
             ));
         }
 
+        let frontend_root = manifest
+            .frontend_root
+            .as_deref()
+            .map(normalize_vfs_key)
+            .filter(|s| !s.is_empty());
+
+        // Dynamically mark declared backend entry/root (and parent directory of backend.entry
+        // when non-root and distinct from frontendRoot) and database files as private so
+        // non-standard paths (e.g. `api/auth.js` or `custom_data.bin`) are never served statically.
+        let mut private_exact_paths = HashSet::new();
+        let mut private_dir_prefixes = Vec::new();
+        let fe_lower = frontend_root.as_deref().unwrap_or("").to_ascii_lowercase();
+        if !entry_key.is_empty() {
+            let entry_lower = entry_key.to_ascii_lowercase();
+            private_exact_paths.insert(entry_lower.clone());
+            if backend.root.is_none() {
+                if let Some((parent, _)) = entry_lower.rsplit_once('/') {
+                    if !parent.is_empty()
+                        && parent != fe_lower
+                        && !matches!(parent, "public" | "assets" | "static" | "js" | "css")
+                    {
+                        let pref = format!("{parent}/");
+                        if !private_dir_prefixes.contains(&pref) {
+                            private_dir_prefixes.push(pref);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(ref raw_root) = backend.root {
+            let norm_root = normalize_vfs_key(raw_root).to_ascii_lowercase();
+            if !norm_root.is_empty() && norm_root != fe_lower {
+                private_exact_paths.insert(norm_root.clone());
+                let pref = format!("{norm_root}/");
+                if !private_dir_prefixes.contains(&pref) {
+                    private_dir_prefixes.push(pref);
+                }
+            }
+        }
+        if let Some(ref dbs) = manifest.databases {
+            for db in dbs {
+                if let Some(ref f) = db.file {
+                    let nf = normalize_vfs_key(f).to_ascii_lowercase();
+                    if !nf.is_empty() {
+                        private_exact_paths.insert(nf);
+                    }
+                }
+                if let Some(ref s) = db.seed_sql {
+                    let ns = normalize_vfs_key(s).to_ascii_lowercase();
+                    if !ns.is_empty() {
+                        private_exact_paths.insert(ns);
+                    }
+                }
+                if let Some(Value::String(ref s)) = db.seed_json {
+                    let ns = normalize_vfs_key(s).to_ascii_lowercase();
+                    if !ns.is_empty() {
+                        private_exact_paths.insert(ns);
+                    }
+                }
+            }
+        }
+
         let sql_cfg = SqlStorageConfig {
             db_dir: data_dir.join("databases"),
             databases: manifest.databases.clone().unwrap_or_default(),
+            db_fs_lock: Arc::new(Mutex::new(())),
         };
         sql_cfg.preseed_all(&vfs)?;
 
@@ -2720,6 +3366,9 @@ impl ContainerBackendRuntime {
 
         let overlay_path = data_dir.join("php-overlay.json");
         let php_overlay = Arc::new(Mutex::new(load_php_overlay(&overlay_path, &entry_key)));
+        let last_saved_overlay = Arc::new(Mutex::new(
+            fs::read(&overlay_path).unwrap_or_default(),
+        ));
 
         let mode = backend
             .mode
@@ -2752,136 +3401,10 @@ impl ContainerBackendRuntime {
         let entry_source_arc = Arc::new(
             String::from_utf8_lossy(vfs.get(&entry_key).unwrap()).into_owned(),
         );
+        let private_dir_prefixes_arc = Arc::new(private_dir_prefixes.clone());
 
-        // Pre-validate Rust backend on startup (first worker boots eagerly; fail fast if broken)
-        let mut startup_err: Option<String> = None;
-        for idx in 0..worker_count {
-            let rx = rx.clone();
-            let vfs = Arc::clone(&vfs);
-            let backend_cfg = backend.clone();
-            let htaccess_arc = Arc::clone(&htaccess_arc);
-            let php_overlay = Arc::clone(&php_overlay);
-            let overlay_path = overlay_path.clone();
-            let sql_cfg = sql_cfg.clone();
-            let entry_source = Arc::clone(&entry_source_arc);
-
-            let abort = Arc::new(AtomicBool::new(false));
-            let deadline_ms = Arc::new(AtomicU64::new(0));
-            watches.lock().unwrap().push(WorkerWatch {
-                abort: Arc::clone(&abort),
-                deadline_ms: Arc::clone(&deadline_ms),
-            });
-
-            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
-            let spawn_res = thread::Builder::new()
-                .name(format!("zipp-container-{}-{idx}", runtime_kind.as_str()))
-                .stack_size(16 * 1024 * 1024)
-                .spawn(move || {
-                    let mut rust_worker: Option<WarmRustWorker> = if runtime_kind == BackendRuntimeKind::Rust {
-                        match WarmRustWorker::boot(&backend_cfg, &vfs, &sql_cfg, Arc::clone(&abort)) {
-                            Ok(w) => {
-                                let _ = ready_tx.send(Ok(()));
-                                Some(w)
-                            }
-                            Err(e) => {
-                                let _ = ready_tx.send(Err(e));
-                                return;
-                            }
-                        }
-                    } else {
-                        let _ = ready_tx.send(Ok(()));
-                        None
-                    };
-
-                    while let Ok(job) = rx.recv() {
-                        abort.store(false, Ordering::SeqCst);
-                        deadline_ms.store(mono_ms() + WALL_TIME_MS, Ordering::SeqCst);
-
-                        let dispatch_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            match runtime_kind {
-                                BackendRuntimeKind::Php => {
-                                    let before_sig = php_overlay
-                                        .lock()
-                                        .map(|ov| (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes))
-                                        .unwrap_or((0, 0, 0, 0));
-                                    let out = execute_php_request(
-                                        &job.req,
-                                        &backend_cfg,
-                                        &vfs,
-                                        &php_overlay,
-                                        &htaccess_arc,
-                                        &sql_cfg,
-                                        Arc::clone(&abort),
-                                    );
-                                    if let Ok(mut ov) = php_overlay.lock() {
-                                        let after_sig = (ov.writes.len(), ov.deleted.len(), ov.dirs.len(), ov.total_bytes);
-                                        if after_sig != before_sig || (!job.req.method.eq_ignore_ascii_case("GET") && !job.req.method.eq_ignore_ascii_case("HEAD")) {
-                                            save_php_overlay(&overlay_path, &mut ov, &backend_cfg.entry);
-                                        }
-                                    }
-                                    out
-                                }
-                                BackendRuntimeKind::JavaScript
-                                | BackendRuntimeKind::TypeScript
-                                | BackendRuntimeKind::Python => execute_script_backend_request(
-                                    runtime_kind,
-                                    &job.req,
-                                    &entry_source,
-                                    &sql_cfg,
-                                    Arc::clone(&abort),
-                                ),
-                                BackendRuntimeKind::Rust => {
-                                    if let Some(w) = rust_worker.as_mut() {
-                                        w.dispatch(&job.req, Arc::clone(&abort))
-                                    } else {
-                                        ContainerHttpResponse {
-                                            status: 500,
-                                            headers: vec![("Content-Type".into(), "text/plain".into())],
-                                            body: b"Rust worker unavailable".to_vec(),
-                                        }
-                                    }
-                                }
-                            }
-                        }));
-
-                        let resp = match dispatch_res {
-                            Ok(r) => r,
-                            Err(_) => {
-                                tracing::error!("Container backend worker recovered from a panic during request dispatch");
-                                ContainerHttpResponse {
-                                    status: 500,
-                                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                                    body: b"Internal backend error".to_vec(),
-                                }
-                            }
-                        };
-
-                        deadline_ms.store(0, Ordering::SeqCst);
-                        let _ = job.reply.send(resp);
-                    }
-                });
-            if let Err(e) = spawn_res {
-                startup_err = Some(format!("Failed to spawn container backend worker: {e}"));
-                break;
-            }
-            match ready_rx.recv() {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    startup_err = Some(e);
-                    break;
-                }
-                Err(_) => {
-                    startup_err = Some("Container backend worker exited during startup".into());
-                    break;
-                }
-            }
-        }
-
-        if let Some(err) = startup_err {
-            return Err(err);
-        }
-
-        // Cooperative wall-time watchdog for all ZIPP sandbox workers
+        // Spawn the cooperative wall-time watchdog BEFORE booting workers so a slow/infinite
+        // Rust `main()` during boot is bounded by WALL_TIME_MS too.
         let watches_bg = Arc::clone(&watches);
         let stop_bg = Arc::clone(&stop_watchdog);
         let _ = thread::Builder::new()
@@ -2901,6 +3424,183 @@ impl ContainerBackendRuntime {
                 }
             });
 
+        // Pre-validate Rust backend on startup (first worker boots eagerly; fail fast if broken)
+        let mut startup_err: Option<String> = None;
+        let boot_deadline = Instant::now() + Duration::from_secs(30);
+        for idx in 0..worker_count {
+            let rx = rx.clone();
+            let vfs = Arc::clone(&vfs);
+            let vfs_dirs = Arc::clone(&vfs_dirs);
+            let backend_cfg = backend.clone();
+            let htaccess_arc = Arc::clone(&htaccess_arc);
+            let private_dirs_bg = Arc::clone(&private_dir_prefixes_arc);
+            let php_overlay = Arc::clone(&php_overlay);
+            let last_saved_overlay = Arc::clone(&last_saved_overlay);
+            let overlay_path = overlay_path.clone();
+            let sql_cfg = sql_cfg.clone();
+            let entry_source = Arc::clone(&entry_source_arc);
+
+            let abort = Arc::new(AtomicBool::new(false));
+            let deadline_ms = Arc::new(AtomicU64::new(0));
+            watches.lock().unwrap().push(WorkerWatch {
+                abort: Arc::clone(&abort),
+                deadline_ms: Arc::clone(&deadline_ms),
+            });
+
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+            let spawn_res = thread::Builder::new()
+                .name(format!("zipp-container-{}-{idx}", runtime_kind.as_str()))
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    let mut rust_worker: Option<WarmRustWorker> = if runtime_kind == BackendRuntimeKind::Rust {
+                        abort.store(false, Ordering::SeqCst);
+                        deadline_ms.store(mono_ms() + WALL_TIME_MS, Ordering::SeqCst);
+                        let booted = WarmRustWorker::boot(&backend_cfg, &vfs, &sql_cfg, Arc::clone(&abort));
+                        deadline_ms.store(0, Ordering::SeqCst);
+                        match booted {
+                            Ok(w) => {
+                                let _ = ready_tx.send(Ok(()));
+                                Some(w)
+                            }
+                            Err(e) => {
+                                let _ = ready_tx.send(Err(e));
+                                return;
+                            }
+                        }
+                    } else {
+                        let _ = ready_tx.send(Ok(()));
+                        None
+                    };
+
+                    while let Ok(job) = rx.recv() {
+                        // Skip requests whose caller already timed out (504) or disconnected so
+                        // stale mutations never run or commit after the response was abandoned.
+                        if job.reply.is_closed() {
+                            continue;
+                        }
+                        abort.store(false, Ordering::SeqCst);
+                        deadline_ms.store(mono_ms() + WALL_TIME_MS, Ordering::SeqCst);
+
+                        let mut rust_needs_rebuild = false;
+                        let dispatch_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            match runtime_kind {
+                                BackendRuntimeKind::Php => {
+                                    // Snapshot an isolated per-request overlay so concurrent requests
+                                    // never observe uncommitted or protected writes mid-execution.
+                                    let initial_ov = php_overlay
+                                        .lock()
+                                        .map(|ov| clone_php_overlay(&ov))
+                                        .unwrap_or_default();
+                                    let req_ov = Arc::new(Mutex::new(clone_php_overlay(&initial_ov)));
+                                    let out = execute_php_request(
+                                        &job.req,
+                                        &backend_cfg,
+                                        &vfs,
+                                        &vfs_dirs,
+                                        &req_ov,
+                                        &htaccess_arc,
+                                        &private_dirs_bg,
+                                        &sql_cfg,
+                                        Arc::clone(&abort),
+                                    );
+                                    if let Ok(mut guard) = req_ov.lock() {
+                                        let final_ov = std::mem::take(&mut *guard);
+                                        drop(guard);
+                                        merge_and_save_php_overlay(
+                                            &overlay_path,
+                                            &php_overlay,
+                                            &initial_ov,
+                                            final_ov,
+                                            &backend_cfg.entry,
+                                            &last_saved_overlay,
+                                        );
+                                    }
+                                    out
+                                }
+                                BackendRuntimeKind::JavaScript
+                                | BackendRuntimeKind::TypeScript
+                                | BackendRuntimeKind::Python => execute_script_backend_request(
+                                    runtime_kind,
+                                    &job.req,
+                                    &entry_source,
+                                    &sql_cfg,
+                                    Arc::clone(&abort),
+                                ),
+                                BackendRuntimeKind::Rust => {
+                                    if let Some(w) = rust_worker.as_mut() {
+                                        let (resp, rebuild) = w.dispatch(&job.req, Arc::clone(&abort));
+                                        rust_needs_rebuild = rebuild;
+                                        resp
+                                    } else {
+                                        rust_needs_rebuild = true;
+                                        ContainerHttpResponse {
+                                            status: 500,
+                                            headers: vec![("Content-Type".into(), "text/plain".into())],
+                                            body: b"Rust worker unavailable".to_vec(),
+                                        }
+                                    }
+                                }
+                            }
+                        }));
+
+                        let resp = match dispatch_res {
+                            Ok(r) => r,
+                            Err(_) => {
+                                if runtime_kind == BackendRuntimeKind::Rust {
+                                    rust_needs_rebuild = true;
+                                }
+                                tracing::error!("Container backend worker recovered from a panic during request dispatch");
+                                ContainerHttpResponse {
+                                    status: 500,
+                                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                                    body: b"Internal backend error".to_vec(),
+                                }
+                            }
+                        };
+
+                        deadline_ms.store(0, Ordering::SeqCst);
+                        let _ = job.reply.send(resp);
+
+                        if runtime_kind == BackendRuntimeKind::Rust && rust_needs_rebuild {
+                            rust_worker = None;
+                            abort.store(false, Ordering::SeqCst);
+                            deadline_ms.store(mono_ms() + WALL_TIME_MS, Ordering::SeqCst);
+                            match WarmRustWorker::boot(&backend_cfg, &vfs, &sql_cfg, Arc::clone(&abort)) {
+                                Ok(w) => {
+                                    rust_worker = Some(w);
+                                    tracing::info!("Rebuilt warm Rust container worker after error/limit");
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to rebuild warm Rust container worker: {e}");
+                                }
+                            }
+                            deadline_ms.store(0, Ordering::SeqCst);
+                        }
+                    }
+                });
+            if let Err(e) = spawn_res {
+                startup_err = Some(format!("Failed to spawn container backend worker: {e}"));
+                break;
+            }
+            let remaining = boot_deadline.saturating_duration_since(Instant::now());
+            match ready_rx.recv_timeout(remaining) {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    startup_err = Some(e);
+                    break;
+                }
+                Err(_) => {
+                    startup_err = Some("Container backend worker timed out or exited during startup".into());
+                    break;
+                }
+            }
+        }
+
+        if let Some(err) = startup_err {
+            stop_watchdog.store(true, Ordering::Relaxed);
+            return Err(err);
+        }
+
         tracing::info!(
             "Started ZIPP safe-sandbox container backend (runtime={}, mode={}, workers={}, routes={:?})",
             runtime_kind.as_str(),
@@ -2913,19 +3613,36 @@ impl ContainerBackendRuntime {
             runtime_kind,
             mode,
             routes,
-            frontend_root: manifest.frontend_root.as_deref().map(normalize_vfs_key).filter(|s| !s.is_empty()),
+            frontend_root,
             main_file: manifest.main.as_deref().map(normalize_vfs_key).filter(|s| !s.is_empty()),
             ssr_entry: manifest.ssr_entry.unwrap_or(false),
+            private_exact_paths,
+            private_dir_prefixes,
             vfs,
+            vfs_dirs,
+            htaccess_map: htaccess_arc,
             tx,
             stop_watchdog,
         })))
     }
 
+    fn is_private_path(&self, rel: &str) -> bool {
+        if is_private_static_path(rel) {
+            return true;
+        }
+        let lower = normalize_vfs_key(rel).to_ascii_lowercase();
+        if self.private_exact_paths.contains(&lower) {
+            return true;
+        }
+        self.private_dir_prefixes
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+    }
+
     /// Resolve a public static asset path inside `frontendRoot` (or bundle root), refusing private files.
     pub fn resolve_static_asset(&self, req_path: &str) -> Result<Option<(&'static str, Vec<u8>)>, u16> {
         let rel = normalize_vfs_key(req_path);
-        if !rel.is_empty() && is_private_static_path(&rel) {
+        if !rel.is_empty() && self.is_private_path(&rel) {
             return Err(403);
         }
 
@@ -2934,7 +3651,7 @@ impl ContainerBackendRuntime {
             if rel.is_empty() {
                 candidates.push(format!("{root}/index.html"));
                 if let Some(main) = &self.main_file {
-                    if !is_private_static_path(main) {
+                    if !self.is_private_path(main) {
                         candidates.push(main.clone());
                     }
                 }
@@ -2948,7 +3665,7 @@ impl ContainerBackendRuntime {
             }
         } else if rel.is_empty() {
             if let Some(main) = &self.main_file {
-                if !is_private_static_path(main) {
+                if !self.is_private_path(main) {
                     candidates.push(main.clone());
                 }
             }
@@ -2962,7 +3679,7 @@ impl ContainerBackendRuntime {
             if !seen.insert(cand.clone()) {
                 continue;
             }
-            if is_private_static_path(&cand) {
+            if self.is_private_path(&cand) {
                 return Err(403);
             }
             if let Some(bytes) = self.vfs.get(&cand) {
@@ -2977,7 +3694,7 @@ impl ContainerBackendRuntime {
                 let fallback = self
                     .main_file
                     .as_deref()
-                    .filter(|m| !is_private_static_path(m) && (m.ends_with(".html") || m.ends_with(".htm")))
+                    .filter(|m| !self.is_private_path(m) && (m.ends_with(".html") || m.ends_with(".htm")))
                     .map(str::to_owned)
                     .or_else(|| {
                         self.frontend_root
@@ -2997,7 +3714,92 @@ impl ContainerBackendRuntime {
         Ok(None)
     }
 
+    /// Single-pass ingress resolver: decodes URL escapes, evaluates `.htaccess` deny/redirect rules
+    /// BEFORE static asset serving, and resolves static assets in ONE lookup (avoiding double buffer clones).
+    pub fn resolve_ingress(
+        &self,
+        method: &str,
+        raw_path: &str,
+        query: &str,
+        host: &str,
+        https: bool,
+        lower_headers: &HashMap<String, String>,
+    ) -> StaticOrBackend {
+        let pathname = match decode_http_path(raw_path) {
+            Ok(p) => p,
+            Err(code) => return StaticOrBackend::Deny(code),
+        };
+        let mut effective_path = pathname;
+        if !self.htaccess_map.is_empty() {
+            match evaluate_htaccess_chain(
+                &self.htaccess_map,
+                &effective_path,
+                query,
+                method,
+                host,
+                https,
+                lower_headers,
+                &self.vfs,
+                &self.vfs_dirs,
+            ) {
+                HtaccessEval::Deny(code) => return StaticOrBackend::Deny(code),
+                HtaccessEval::Redirect(code, loc) => return StaticOrBackend::Redirect(code, loc),
+                HtaccessEval::Rewrite { pathname: next, .. } => {
+                    effective_path = next;
+                }
+            }
+        }
+        let lower = effective_path.to_ascii_lowercase();
+        if lower.starts_with("/server/")
+            || lower.starts_with("/backend/")
+            || lower.starts_with("/private/")
+            || lower == "/server"
+            || lower == "/backend"
+            || lower == "/private"
+        {
+            return StaticOrBackend::Deny(403);
+        }
+        if lower.ends_with(".php") || lower.ends_with(".phtml") {
+            return StaticOrBackend::Backend;
+        }
+        let upper_method = method.to_ascii_uppercase();
+        if upper_method != "GET" && upper_method != "HEAD" {
+            return StaticOrBackend::Backend;
+        }
+        for prefix in &self.routes {
+            if prefix == "/" || prefix == "/*" {
+                let rel = normalize_vfs_key(&effective_path);
+                if !rel.is_empty() && !rel.ends_with(".html") && !rel.ends_with(".htm") {
+                    return match self.resolve_static_asset(&effective_path) {
+                        Ok(Some((mime, bytes))) => StaticOrBackend::Static { mime, bytes },
+                        Ok(None) => StaticOrBackend::Backend,
+                        Err(code) => StaticOrBackend::Deny(code),
+                    };
+                }
+                return StaticOrBackend::Backend;
+            }
+            let clean = if prefix.starts_with('/') {
+                prefix.clone()
+            } else {
+                format!("/{prefix}")
+            };
+            let bare = clean.trim_end_matches('/');
+            if effective_path == bare
+                || effective_path.starts_with(&clean)
+                || effective_path.starts_with(&format!("{bare}/"))
+            {
+                return StaticOrBackend::Backend;
+            }
+        }
+        match self.resolve_static_asset(&effective_path) {
+            Ok(Some((mime, bytes))) => StaticOrBackend::Static { mime, bytes },
+            Ok(None) => StaticOrBackend::NotFound,
+            Err(code) => StaticOrBackend::Deny(code),
+        }
+    }
+
     /// Decide whether an HTTP request routes to the ZIPP-sandboxed backend or static frontend assets.
+    #[allow(dead_code)]
     pub fn should_route_to_backend(&self, method: &str, req_path: &str) -> bool {
         let norm_rel = normalize_vfs_key(req_path);
         let pathname = if norm_rel.is_empty() {
@@ -3373,6 +4175,7 @@ def handle_request(req):
         let mut headers = HashMap::new();
         headers.insert("cookie".into(), "secret=topsecret".into());
         let empty_vfs = HashMap::new();
+        let empty_dirs = HashSet::new();
         match evaluate_htaccess_chain(
             &htmap,
             "/p/%{HTTP:Cookie}",
@@ -3382,6 +4185,7 @@ def handle_request(req):
             true,
             &headers,
             &empty_vfs,
+            &empty_dirs,
         ) {
             HtaccessEval::Rewrite { pathname, .. } => {
                 assert_eq!(pathname, "/out/%{HTTP:Cookie}", "must not expand user-supplied %{{HTTP:Cookie}}");
@@ -3390,15 +4194,101 @@ def handle_request(req):
             _ => panic!("expected Rewrite result"),
         }
 
-        // 2. SQLite authorizer & guard must block ALTER TABLE ... RENAME TO _host_table.
-        assert!(RequestSqlBridge::targets_reserved_rename("ALTER TABLE items RENAME TO _host_secret"));
-        assert!(RequestSqlBridge::targets_reserved_rename("ALTER TABLE items RENAME TO \"_host_secret\""));
-        assert!(!RequestSqlBridge::targets_reserved_rename("ALTER TABLE items RENAME TO items_v2"));
+        // 1b. Precomputed O(1) vfs_dirs index + precompiled RewriteCond regex
+        let mut dir_vfs = HashMap::new();
+        dir_vfs.insert("assets/img/logo.png".into(), b"png".to_vec());
+        let dir_index = build_vfs_dir_index(&dir_vfs);
+        assert!(vfs_has_dir(&dir_index, "assets"));
+        assert!(vfs_has_dir(&dir_index, "assets/img"));
+        assert!(!vfs_has_dir(&dir_index, "assets/missing"));
+        let mut cond_map = HashMap::new();
+        cond_map.insert(
+            String::new(),
+            parse_htaccess(
+                "RewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteCond %{HTTP_HOST} ^api\\. [NC]\nRewriteRule ^v1/(.*)$ /handler.php?r=$1 [L]\n",
+                "",
+            ),
+        );
+        match evaluate_htaccess_chain(
+            &cond_map,
+            "/v1/items",
+            "",
+            "GET",
+            "API.example.com",
+            true,
+            &headers,
+            &dir_vfs,
+            &dir_index,
+        ) {
+            HtaccessEval::Rewrite { pathname, query } => {
+                assert_eq!(pathname, "/handler.php");
+                assert_eq!(query, "r=items");
+            }
+            _ => panic!("expected Rewrite for precompiled RewriteCond"),
+        }
+
+        // 1c. Hardened private static asset path blocking (dotfiles, secrets, db dirs, python)
+        for forbidden in [
+            ".pit.secret",
+            "sub/.env",
+            "keys/tls.pem",
+            "db/app.json",
+            "migrations/001.txt",
+            "worker.py",
+        ] {
+            assert!(is_private_static_path(forbidden), "expected private: {forbidden}");
+        }
+        assert!(!is_private_static_path(".well-known/assetlinks.json"));
+        assert!(!is_private_static_path("assets/app.js"));
+
+        // 2. SQLite authorizer & SAVEPOINT post-DDL guard must block ALTER TABLE ... RENAME TO _host_table.
         let conn = SqlStorageConfig::open_configured_connection(None).unwrap();
         conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)", []).unwrap();
+        assert!(conn.execute("CREATE TABLE _secret (id INTEGER PRIMARY KEY)", []).is_err());
         // Writable busy_timeout must be denied (read-only allowed)
         assert!(conn.execute("PRAGMA busy_timeout = 999999", []).is_err());
         assert!(conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, i64>(0)).is_ok());
+
+        let tmp_dir = crate::test_dirs::temp_path("softn-sql-guard", "");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let sql_cfg = SqlStorageConfig {
+            db_dir: tmp_dir.clone(),
+            databases: vec![],
+            db_fs_lock: Arc::new(Mutex::new(())),
+        };
+        let mut bridge = RequestSqlBridge::new(sql_cfg, Arc::new(AtomicBool::new(false)));
+        let open_res: Value = serde_json::from_str(&bridge.call("open", &[":memory:".into()])).unwrap();
+        let h = open_res["id"].as_u64().unwrap().to_string();
+        let create_res: Value = serde_json::from_str(&bridge.call("execute", &[h.clone(), "CREATE TABLE items (id INT)".into(), "[]".into()])).unwrap();
+        assert!(create_res.get("error").is_none(), "create failed: {create_res}");
+        let rename_bad1: Value = serde_json::from_str(&bridge.call("execute", &[h.clone(), "ALTER TABLE items RENAME TO _host_secret".into(), "[]".into()])).unwrap();
+        assert!(rename_bad1.get("error").is_some(), "expected reserved rename block: {rename_bad1}");
+        let rename_bad2: Value = serde_json::from_str(&bridge.call("execute", &[h.clone(), "ALTER TABLE items RENAME TO \"_host_secret\"".into(), "[]".into()])).unwrap();
+        assert!(rename_bad2.get("error").is_some(), "expected quoted reserved rename block: {rename_bad2}");
+        let rename_ok: Value = serde_json::from_str(&bridge.call("execute", &[h.clone(), "ALTER TABLE items RENAME TO items_v2".into(), "[]".into()])).unwrap();
+        assert!(rename_ok.get("error").is_none(), "valid rename failed: {rename_ok}");
+        // Multi-statement queries with string-literal semicolons are allowed, while actual second statements are rejected.
+        assert!(!has_multiple_statements("SELECT ';' FROM items_v2;"));
+        assert!(has_multiple_statements("SELECT 1; DROP TABLE items_v2"));
+        // URL-encoded path decoding blocks %00 and traversal, and decodes %73erver so private blocks apply.
+        assert!(decode_http_path("/foo%00bar").is_err());
+        assert!(decode_http_path("/a/%2e%2e/server/secret.php").is_err());
+        assert_eq!(decode_http_path("/%73erver/secret.php").unwrap(), "/server/secret.php");
+        // RedirectMatch 403 and 301 work in .htaccess parsing.
+        let ht = parse_htaccess("RedirectMatch 403 ^/secret/.*\nRedirectMatch 301 ^/old/(.*)$ /new/$1\n", "");
+        let mut hmap = HashMap::new();
+        hmap.insert(String::new(), ht);
+        let empty_vfs = HashMap::new();
+        let empty_dirs = HashSet::new();
+        let empty_hdrs = HashMap::new();
+        assert!(matches!(
+            evaluate_htaccess_chain(&hmap, "/secret/key", "", "GET", "localhost", false, &empty_hdrs, &empty_vfs, &empty_dirs),
+            HtaccessEval::Deny(403)
+        ));
+        assert!(matches!(
+            evaluate_htaccess_chain(&hmap, "/old/page", "", "GET", "localhost", false, &empty_hdrs, &empty_vfs, &empty_dirs),
+            HtaccessEval::Redirect(301, ref loc) if loc == "/new/page"
+        ));
 
         // 3. Protected PHP overlay paths must be stripped.
         assert!(is_protected_php_overlay_path("index.php", "index.php"));

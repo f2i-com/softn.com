@@ -1,17 +1,17 @@
 use super::FsBridge;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-/// Strip the Windows UNC `\\?\` prefix from canonicalized paths.
-/// `std::fs::canonicalize` on Windows returns extended-length paths like
-/// `\\?\C:\Users\...`. If the incremental path builder in `reject_symlinks_in_path`
-/// doesn't include the `\\?\` prefix, `starts_with` comparisons against the
-/// canonical root will fail, causing false rejections. Stripping the prefix
-/// normalizes both sides to regular `C:\...` paths for reliable comparison.
-/// On non-Windows platforms this is a no-op.
+/// Strip the Windows UNC `\\?\` prefix from canonicalized paths while
+/// preserving `\\?\UNC\server\share` as `\\server\share`.
 fn strip_unc_prefix(path: PathBuf) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let s = path.to_string_lossy();
+        if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
         if let Some(stripped) = s.strip_prefix(r"\\?\") {
             return PathBuf::from(stripped);
         }
@@ -19,43 +19,158 @@ fn strip_unc_prefix(path: PathBuf) -> PathBuf {
     path
 }
 
+fn is_windows_reserved_name(segment: &str) -> bool {
+    let trimmed = segment.trim_end_matches([' ', '.']);
+    let stem = trimmed.split('.').next().unwrap_or("");
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
 const MAX_SANDBOX_FILE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SANDBOX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SANDBOX_ENTRIES: usize = 4096;
+const MAX_LIST_DIR_ENTRIES: usize = 10_000;
+const MAX_PATH_BYTES: usize = 1024;
+const MAX_PATH_DEPTH: usize = 32;
+
+/// Per-app filesystem write serialization & disk-quota guard shared across all
+/// worker threads of an app/tenant.
+#[derive(Default)]
+pub struct FsQuota {
+    lock: Mutex<()>,
+}
+
+impl FsQuota {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+fn dir_usage(root: &Path) -> Result<(u64, usize), String> {
+    let mut total_bytes: u64 = 0;
+    let mut entries: usize = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("Quota scan error: {}", e)),
+        };
+        for item in rd.flatten() {
+            let path = item.path();
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            entries += 1;
+            if entries > MAX_SANDBOX_ENTRIES {
+                return Ok((total_bytes, entries));
+            }
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                total_bytes = total_bytes.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok((total_bytes, entries))
+}
 
 pub struct NativeFsBridge {
     root_dir: PathBuf,
+    canonical_root: Option<PathBuf>,
+    quota: Arc<FsQuota>,
 }
 
 impl NativeFsBridge {
+    #[allow(dead_code)]
     pub fn new(root_dir: PathBuf) -> Self {
-        Self { root_dir }
+        Self::with_quota(root_dir, FsQuota::new())
+    }
+
+    pub fn with_quota(root_dir: PathBuf, quota: Arc<FsQuota>) -> Self {
+        let canonical_root = std::fs::canonicalize(&root_dir).ok().map(strip_unc_prefix);
+        Self {
+            root_dir,
+            canonical_root,
+            quota,
+        }
+    }
+
+    fn canonical_root(&self) -> Result<PathBuf, String> {
+        if let Some(ref c) = self.canonical_root {
+            return Ok(c.clone());
+        }
+        std::fs::canonicalize(&self.root_dir)
+            .map(strip_unc_prefix)
+            .map_err(|e| format!("Root resolve error: {}", e))
     }
 
     /// Resolve a path relative to root, rejecting traversal, absolute paths,
-    /// Windows Alternate Data Streams (`:`), NUL bytes, and symlinks (including
-    /// dangling symlinks).
+    /// Windows Alternate Data Streams (`:`), Windows reserved device names,
+    /// NUL bytes, excessive depth/length, and symlinks (including dangling).
     fn resolve(&self, path: &str) -> Result<PathBuf, String> {
+        if path.len() > MAX_PATH_BYTES {
+            return Err("Path exceeds maximum length".into());
+        }
         if path.contains('\0') {
             return Err("NUL byte in path rejected".into());
         }
         {
             use std::path::Component;
             let requested = std::path::Path::new(path);
-            if requested.is_absolute()
-                || requested.components().any(|c| match c {
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_) => true,
-                    Component::Normal(s) => s.to_string_lossy().contains(':'),
-                    Component::CurDir => false,
-                })
-            {
+            if requested.is_absolute() {
                 return Err("Path traversal or absolute path rejected".into());
+            }
+            let mut depth = 0usize;
+            for c in requested.components() {
+                match c {
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                        return Err("Path traversal or absolute path rejected".into());
+                    }
+                    Component::Normal(s) => {
+                        depth += 1;
+                        if depth > MAX_PATH_DEPTH {
+                            return Err("Path exceeds maximum directory depth".into());
+                        }
+                        let seg = s.to_string_lossy();
+                        if seg.contains(':') || is_windows_reserved_name(&seg) {
+                            return Err("Reserved or invalid path segment rejected".into());
+                        }
+                    }
+                    Component::CurDir => {}
+                }
             }
         }
 
         // Canonicalize root first and join onto it so component counts always match.
-        let canonical_root = strip_unc_prefix(
-            std::fs::canonicalize(&self.root_dir)
-                .map_err(|e| format!("Root resolve error: {}", e))?,
-        );
+        let canonical_root = self.canonical_root()?;
         let joined = canonical_root.join(path);
 
         // Always walk every component under canonical_root with symlink_metadata
@@ -133,24 +248,103 @@ impl NativeFsBridge {
     }
 }
 
+#[cfg(unix)]
+pub(crate) const fn unix_o_nofollow() -> i32 {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    {
+        0x0100
+    }
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "arm", target_arch = "powerpc", target_arch = "powerpc64")
+    ))]
+    {
+        0o100000
+    }
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "aarch64", target_arch = "arm", target_arch = "powerpc", target_arch = "powerpc64"))
+    ))]
+    {
+        0o400000
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )))]
+    {
+        0
+    }
+}
+
+fn open_nofollow(opts: &mut std::fs::OpenOptions, path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flag = unix_o_nofollow();
+        if flag != 0 {
+            opts.custom_flags(flag);
+        }
+    }
+    opts.open(path)
+}
+
 impl FsBridge for NativeFsBridge {
     fn read_file(&self, path: &str) -> Result<String, String> {
         let resolved = self.resolve(path)?;
-        let meta = std::fs::metadata(&resolved).map_err(|e| format!("Read error: {}", e))?;
-        if meta.len() > MAX_SANDBOX_FILE_BYTES as u64 {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true);
+        let file = open_nofollow(&mut opts, &resolved)
+            .map_err(|e| format!("Read error: {}", e))?;
+        let mut buf = Vec::new();
+        file.take(MAX_SANDBOX_FILE_BYTES as u64 + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("Read error: {}", e))?;
+        if buf.len() > MAX_SANDBOX_FILE_BYTES {
             return Err("File exceeds sandbox size limit".into());
         }
-        std::fs::read_to_string(&resolved)
-            .map_err(|e| format!("Read error: {}", e))
+        String::from_utf8(buf).map_err(|e| format!("Read error: {}", e))
     }
 
     fn write_file(&mut self, path: &str, content: &str) -> Result<(), String> {
+        use std::io::Write;
         if content.len() > MAX_SANDBOX_FILE_BYTES {
             return Err("File content exceeds sandbox size limit".into());
         }
+        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
+        let canonical_root = self.canonical_root()?;
+        let (used_bytes, used_entries) = dir_usage(&canonical_root)?;
+        let existing_meta = std::fs::symlink_metadata(&resolved).ok();
+        let existing_len = existing_meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let new_entries = if existing_meta.is_some() { 0 } else { 1 };
+        if used_entries.saturating_add(new_entries) > MAX_SANDBOX_ENTRIES {
+            return Err("Sandbox file count quota exceeded".into());
+        }
+        let next_total = used_bytes
+            .saturating_sub(existing_len)
+            .saturating_add(content.len() as u64);
+        if next_total > MAX_SANDBOX_TOTAL_BYTES {
+            return Err("Sandbox total storage quota exceeded".into());
+        }
         self.ensure_parent(&resolved)?;
-        std::fs::write(&resolved, content)
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        let mut file = open_nofollow(&mut opts, &resolved)
+            .map_err(|e| format!("Write error: {}", e))?;
+        file.write_all(content.as_bytes())
             .map_err(|e| format!("Write error: {}", e))
     }
 
@@ -159,16 +353,26 @@ impl FsBridge for NativeFsBridge {
         if content.len() > MAX_SANDBOX_FILE_BYTES {
             return Err("File content exceeds sandbox size limit".into());
         }
+        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
-        let existing_len = std::fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
+        let canonical_root = self.canonical_root()?;
+        let (used_bytes, used_entries) = dir_usage(&canonical_root)?;
+        let existing_meta = std::fs::symlink_metadata(&resolved).ok();
+        let existing_len = existing_meta.as_ref().map(|m| m.len()).unwrap_or(0);
         if existing_len.saturating_add(content.len() as u64) > MAX_SANDBOX_FILE_BYTES as u64 {
             return Err("File would exceed sandbox size limit".into());
         }
+        let new_entries = if existing_meta.is_some() { 0 } else { 1 };
+        if used_entries.saturating_add(new_entries) > MAX_SANDBOX_ENTRIES {
+            return Err("Sandbox file count quota exceeded".into());
+        }
+        if used_bytes.saturating_add(content.len() as u64) > MAX_SANDBOX_TOTAL_BYTES {
+            return Err("Sandbox total storage quota exceeded".into());
+        }
         self.ensure_parent(&resolved)?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&resolved)
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).append(true);
+        let mut file = open_nofollow(&mut opts, &resolved)
             .map_err(|e| format!("Append error: {}", e))?;
         file.write_all(content.as_bytes())
             .map_err(|e| format!("Write error: {}", e))
@@ -184,19 +388,32 @@ impl FsBridge for NativeFsBridge {
             .map_err(|e| format!("List error: {}", e))?;
         let mut names = Vec::new();
         for e in entries.flatten() {
+            if names.len() >= MAX_LIST_DIR_ENTRIES {
+                return Err(format!(
+                    "Directory exceeds maximum listing limit ({})",
+                    MAX_LIST_DIR_ENTRIES
+                ));
+            }
             names.push(e.file_name().to_string_lossy().to_string());
         }
         Ok(names)
     }
 
     fn delete_file(&mut self, path: &str) -> Result<(), String> {
+        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
         std::fs::remove_file(&resolved)
             .map_err(|e| format!("Delete error: {}", e))
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), String> {
+        let _guard = self.quota.lock.lock().unwrap_or_else(|e| e.into_inner());
         let resolved = self.resolve(path)?;
+        let canonical_root = self.canonical_root()?;
+        let (_used_bytes, used_entries) = dir_usage(&canonical_root)?;
+        if used_entries >= MAX_SANDBOX_ENTRIES {
+            return Err("Sandbox file count quota exceeded".into());
+        }
         std::fs::create_dir_all(&resolved)
             .map_err(|e| format!("Mkdir error: {}", e))
     }

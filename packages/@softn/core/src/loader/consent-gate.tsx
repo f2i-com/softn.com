@@ -46,7 +46,11 @@ export type CapabilityName =
   | 'gpu'
   | 'sync'
   | 'storage'
-  | 'accel';
+  | 'accel'
+  | 'bluetooth'
+  | 'location'
+  | 'haptics'
+  | 'notifications';
 
 /**
  * What a component learns about one capability.

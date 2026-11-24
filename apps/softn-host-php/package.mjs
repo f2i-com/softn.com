@@ -27,6 +27,52 @@ export function deploymentConfig(manifest,clientBytes,permissionMode='prompt') {
 // WebSocket bridge.
 export const RUNNER_BINARY='softn-runner-linux-x86_64';
 export const RUNNER_NOTICES='SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt';
+function capWasmMemory(original, maxPages = 4096) {
+  let offset = 8;
+  const parts = [original.subarray(0, 8)];
+  let changed = false;
+  const leb = n => {
+    const bytes = [];
+    do {
+      let b = n & 127;
+      n >>>= 7;
+      if (n) b |= 128;
+      bytes.push(b);
+    } while (n);
+    return Buffer.from(bytes);
+  };
+  const read = () => {
+    let n = 0, shift = 0, b;
+    do {
+      b = original[offset++];
+      n += (b & 127) * 2 ** shift;
+      shift += 7;
+    } while (b & 128);
+    return n;
+  };
+  while (offset < original.length) {
+    const start = offset, id = original[offset++], length = read(), end = offset + length;
+    if (id === 5) {
+      const count = read(), flags = read(), min = read();
+      const hasMax = (flags & 1) !== 0;
+      const max = hasMax ? read() : null;
+      if (count !== 1 || (flags !== 0 && flags !== 1) || offset !== end || min > maxPages) {
+        throw new Error('Unexpected WASM memory layout');
+      }
+      const nextMax = hasMax ? Math.min(max, maxPages) : maxPages;
+      const payload = Buffer.concat([leb(1), leb(1), leb(min), leb(nextMax)]);
+      parts.push(Buffer.concat([Buffer.from([5]), leb(payload.length), payload]));
+      changed = true;
+    } else {
+      parts.push(original.subarray(start, end));
+    }
+    offset = end;
+  }
+  if (!changed) throw new Error('WASM memory cap not applied');
+  const capped = Buffer.concat(parts);
+  new WebAssembly.Module(capped);
+  return capped;
+}
 export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEnginesDir,notices,out,operator,readme,template=false,templateClient=false,permissionMode='prompt',websocketDir,htaccess,privateDir,startHere,serveGuide,explainer,runnerDir}) {
   if(privateDir&&(!template||!templateClient||!htaccess||!startHere||!serveGuide))throw new Error('The private variant is a template with its own htaccess and guides');
   const entries={};
@@ -81,21 +127,14 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
   }
   add('backend/wasm/zipp_wasm.mjs',join(wasmDir,'zipp_wasm.js'));
   const original=readFileSync(join(wasmDir,'zipp_wasm_bg.wasm'));
-  let offset=8;const parts=[original.subarray(0,8)];let changed=false;
-  const leb=n=>{const bytes=[];do{let b=n&127;n>>>=7;if(n)b|=128;bytes.push(b);}while(n);return Buffer.from(bytes);};
-  const read=()=>{let n=0,shift=0,b;do{b=original[offset++];n+=(b&127)*2**shift;shift+=7;}while(b&128);return n;};
-  while(offset<original.length){const start=offset,id=original[offset++],length=read(),end=offset+length;
-    if(id===5){const count=read(),flags=read(),min=read(),max=read();if(count!==1||flags!==1||max!==16384||offset!==end||min>4096)throw new Error('Unexpected WASM memory layout');const payload=Buffer.concat([leb(1),leb(1),leb(min),leb(4096)]);parts.push(Buffer.concat([Buffer.from([5]),leb(payload.length),payload]));changed=true;}
-    else parts.push(original.subarray(start,end));offset=end;
-  }
-  if(!changed)throw new Error('WASM memory cap not applied');
-  entries['backend/wasm/zipp_wasm_bg.wasm']=Buffer.concat(parts);new WebAssembly.Module(entries['backend/wasm/zipp_wasm_bg.wasm']);
+  entries['backend/wasm/zipp_wasm_bg.wasm']=capWasmMemory(original,4096);
   if(containerEnginesDir) {
     for(const engineBase of ['zipp-php','zipp-typescript','zipp-rust']) {
       for(const ext of ['.wasm','.glue.js']) {
         const src=join(containerEnginesDir,engineBase+ext);
         try {
-          entries['backend/wasm/container/'+engineBase+ext]=readFileSync(src);
+          const bytes=readFileSync(src);
+          entries['backend/wasm/container/'+engineBase+ext]=ext==='.wasm'?capWasmMemory(bytes,4096):bytes;
         } catch(e) {
           if(e.code!=='ENOENT')throw e;
         }

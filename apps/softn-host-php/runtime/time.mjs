@@ -16,28 +16,50 @@ function formatter(zone) {
   }
   return formats.get(zone);
 }
+function wallParts(fmt, ms) {
+  let year = '', month = '', day = '', hour = '', minute = '';
+  for (const part of fmt.formatToParts(ms)) {
+    switch (part.type) {
+      case 'year': year = part.value; break;
+      case 'month': month = part.value; break;
+      case 'day': day = part.value; break;
+      case 'hour': hour = part.value; break;
+      case 'minute': minute = part.value; break;
+    }
+  }
+  return { year, month, day, hour, minute };
+}
 export function parseZoned(date, time, zone) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) throw new Error('Choose a valid date and time');
   const intended = date + 'T' + time;
   const approximate = Date.parse(intended + ':00Z');
   if (!Number.isFinite(approximate) || new Date(approximate).toISOString().slice(0,16) !== intended) throw new Error('Invalid calendar date or time');
-  const fmt = formatter(zone), matches = [];
-  // Match wall-clock fields and reject DST folds/gaps; minute-resolution offsets.
-  const search = (from, to) => {
-    for (let minutes = from; minutes <= to; minutes++) {
-      const candidate = approximate + minutes * 60000;
-      const p = Object.fromEntries(fmt.formatToParts(candidate).map(v => [v.type, v.value]));
-      if (`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}` === intended) matches.push(candidate);
-    }
+  const fmt = formatter(zone);
+  const matches = new Set();
+  const checked = new Set();
+  const testCandidate = candidate => {
+    if (checked.has(candidate)) return;
+    checked.add(candidate);
+    const p = wallParts(fmt, candidate);
+    if (`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}` === intended) matches.add(candidate);
   };
-  // Every zone's offset today is within 14 hours. A fixed offset may be up to
-  // 23:59 (the Rust host reads "+15:00" too), and a zone's old local mean
-  // time was past 14 hours in places, so with nothing nearer the rest of
-  // the day either side is searched as well.
-  search(-14 * 60, 14 * 60);
-  if (!matches.length) { search(-24 * 60, -14 * 60 - 1); search(14 * 60 + 1, 24 * 60); }
-  if (matches.length !== 1) throw new Error(matches.length ? 'That local time occurs twice during daylight saving. Choose another time.' : 'That local time does not exist during daylight saving. Choose another time.');
-  return Math.floor(matches[0] / 1000);
+  // Probe offsets across ±24 hours to capture both sides of any DST transition
+  // and fixed offsets up to ±23:59 in O(1) Intl calls instead of scanning 2,881 minutes.
+  const probes = [-24 * 3600000, -12 * 3600000, 0, 12 * 3600000, 24 * 3600000];
+  for (const delta of probes) {
+    const probe = approximate + delta;
+    const p = wallParts(fmt, probe);
+    const wallUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute));
+    const offsetMs = wallUtc - probe;
+    const base = Math.round((approximate - offsetMs) / 60000) * 60000;
+    testCandidate(base);
+    if (offsetMs % 60000 !== 0) {
+      testCandidate(base - 60000);
+      testCandidate(base + 60000);
+    }
+  }
+  if (matches.size !== 1) throw new Error(matches.size ? 'That local time occurs twice during daylight saving. Choose another time.' : 'That local time does not exist during daylight saving. Choose another time.');
+  return Math.floor(matches.values().next().value / 1000);
 }
 // The words format() writes. They used to come from the en-AU locale of
 // whichever Node ran this, and these are what it gave (June and July in full,
@@ -50,7 +72,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'June', 'July', 'Aug', 'Sept'
 export function formatZoned(seconds, zone) {
   // The whole second a fractional timestamp falls in.
   const at = Math.floor(seconds) * 1000;
-  const p = Object.fromEntries(formatter(zone).formatToParts(at).map(v => [v.type, v.value]));
+  const p = wallParts(formatter(zone), at);
   // The weekday of the date the zone's wall clock shows. A year before 1 is
   // printed without its era, which shows as a date nowhere near the instant.
   const wall = new Date(0);

@@ -104,10 +104,23 @@ fn realpath(path: &Path) -> Result<PathBuf, HostError> {
     std::fs::canonicalize(path).map_err(|e| fs_error("realpath", path, e))
 }
 
+/// Maximum size of a bundle/config/migration file read into memory (16 MiB).
+const MAX_BUNDLE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// A file's text as Node's `readFileSync(path, 'utf8')` reads it: bytes that
-/// are not UTF-8 are U+FFFD, not a refusal.
+/// are not UTF-8 are U+FFFD, not a refusal. Bounded to `MAX_BUNDLE_FILE_BYTES`
+/// so an oversized bundle/config file cannot exhaust runner memory.
 fn read_text(path: &Path) -> Result<String, HostError> {
-    std::fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).map_err(|e| fs_error("open", path, e))
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| fs_error("open", path, e))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_BUNDLE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| fs_error("read", path, e))?;
+    if bytes.len() as u64 > MAX_BUNDLE_FILE_BYTES {
+        return Err(HostError::own("Bundle file exceeds size limit"));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// The backend root: the operator selects it, never a request or a bundle.
@@ -425,7 +438,11 @@ fn handle(
         }
 
         *stage = "request_limits";
-        db.execute_batch("CREATE TABLE IF NOT EXISTS _request_limits(ip TEXT PRIMARY KEY, minute INTEGER NOT NULL, count INTEGER NOT NULL) STRICT").map_err(HostError::sqlite)?;
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS _request_limits(ip TEXT PRIMARY KEY, minute INTEGER NOT NULL, count INTEGER NOT NULL) STRICT; \
+             CREATE INDEX IF NOT EXISTS idx_request_limits_minute ON _request_limits(minute);",
+        )
+        .map_err(HostError::sqlite)?;
         let rate_key = match request.get("rate_key") {
             Some(Value::String(k)) if !k.is_empty() => k.clone(),
             _ => request["client_ip"].as_str().unwrap_or("").to_string(),
@@ -552,7 +569,13 @@ fn truthy(value: &Value) -> bool {
 /// bucket, earlier minutes removed.
 fn mark_limited(root: &Path, minute: i64, bucket: &str) {
     let all = root.join("private/limited");
+    if symlink(&all) {
+        return;
+    }
     let now = all.join(minute.to_string());
+    if symlink(&now) {
+        return;
+    }
     if std::fs::create_dir_all(&now).is_err() {
         return;
     }

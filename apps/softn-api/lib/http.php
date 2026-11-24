@@ -212,17 +212,22 @@ final class Cors
     {
         $origin = rtrim($origin, '/');
         if ($origin === '' || $origin === 'null') return false;
-        if ($requestOrigin !== null && strcasecmp($origin, rtrim($requestOrigin, '/')) === 0) return true;
+        $hasSiteOrigin = false;
         try {
             $site = Config::get('siteOrigin');
-            if (is_string($site) && strcasecmp($origin, rtrim($site, '/')) === 0) return true;
+            if (is_string($site) && trim($site) !== '') {
+                $hasSiteOrigin = true;
+                if (strcasecmp($origin, rtrim($site, '/')) === 0) return true;
+            }
             $listed = Config::get('allowedOrigins', []);
             foreach (is_array($listed) ? $listed : [] as $o) {
                 if (is_string($o) && strcasecmp($origin, rtrim($o, '/')) === 0) return true;
             }
         } catch (Throwable) {
-            // The configuration is the 503 the request is about to send.
+            // The configuration is the 503 the request is about to send: fall back to requestOrigin.
+            $hasSiteOrigin = false;
         }
+        if (!$hasSiteOrigin && $requestOrigin !== null && strcasecmp($origin, rtrim($requestOrigin, '/')) === 0) return true;
         return false;
     }
 
@@ -231,8 +236,7 @@ final class Cors
     {
         $host = $_SERVER['HTTP_HOST'] ?? null;
         if (!is_string($host) || $host === '' || !preg_match('/^[A-Za-z0-9.\-\[\]:]+$/', $host)) return null;
-        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
-        return ($https ? 'https' : 'http') . '://' . strtolower($host);
+        return (Request::isHttps() ? 'https' : 'http') . '://' . strtolower($host);
     }
 }
 
@@ -398,6 +402,30 @@ final class Request
             $leftmost = $ip;
         }
         return $leftmost ?? $peer;
+    }
+
+    /**
+     * Whether this request arrived over HTTPS, honoring X-Forwarded-Proto ONLY when the
+     * immediate connecting peer is configured in `trustedProxies` or legacy `trustProxy`.
+     */
+    public static function isHttps(): bool
+    {
+        if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') return true;
+        $proto = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? null;
+        if (!is_string($proto) || trim($proto) === '') return false;
+        try {
+            $peer = Net::normalize((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+            if ($peer === null) return false;
+            $trusted = Config::get('trustedProxies', []);
+            $trustPeer = Config::get('trustProxy', false) === true;
+            if (!$trustPeer && !Net::inRanges($peer, Net::ranges(is_array($trusted) ? $trusted : []))) {
+                return false;
+            }
+        } catch (Throwable) {
+            return false;
+        }
+        $parts = array_values(array_filter(array_map('trim', explode(',', $proto)), static fn(string $v): bool => $v !== ''));
+        return $parts !== [] && strcasecmp($parts[count($parts) - 1], 'https') === 0;
     }
 
     public function header(string $name): ?string
@@ -987,9 +1015,9 @@ final class Response
         $r = new self($status, [], $body);
         foreach ($headerPairs as $pair) {
             if (!is_array($pair) || count($pair) < 2) continue;
-            $name = trim((string) $pair[0]);
-            $value = str_replace(["\r", "\n"], '', (string) $pair[1]);
-            if ($name === '' || preg_match('/[\r\n:]/', $name)) continue;
+            $name = trim(str_replace("\0", '', (string) $pair[0]));
+            $value = str_replace(["\r", "\n", "\0"], '', (string) $pair[1]);
+            if ($name === '' || !preg_match('/^[A-Za-z0-9!#$%&\'*+\-.^_`|~]+$/', $name)) continue;
             $r->rawHeaders[] = [$name, $value];
         }
         return $r;
@@ -1060,7 +1088,10 @@ final class Response
     {
         http_response_code($this->status);
         foreach ($this->headers as $k => $v) header("$k: $v");
-        foreach ($this->rawHeaders as [$k, $v]) header("$k: $v", false);
+        foreach ($this->rawHeaders as [$k, $v]) {
+            $multi = in_array(strtolower($k), ['set-cookie', 'link', 'vary', 'www-authenticate'], true);
+            header("$k: $v", !$multi);
+        }
         if ($this->status === 304) return;
         // HEAD is GET without the content: the same status and headers,
         // Content-Length included, since the length is what HEAD is usually

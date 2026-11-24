@@ -120,31 +120,73 @@ function tokenizeDirective(line: string): string[] {
 }
 
 const MAX_HTACCESS_REGEX_INPUT_LEN = 2048;
+const MAX_HTACCESS_UNBOUNDED_QUANTIFIERS = 6;
 
-function isQuantifierChar(ch: string | undefined): boolean {
-  return ch === '*' || ch === '+' || ch === '{';
+/** Parse a `{m}` / `{m,}` / `{m,n}` quantifier starting at `i`. Returns null if literal `{`. */
+function parseBraceQuantifier(
+  pattern: string,
+  i: number
+): { end: number; repeatsMoreThanOnce: boolean; unbounded: boolean } | null {
+  if (pattern[i] !== '{') return null;
+  const close = pattern.indexOf('}', i + 1);
+  if (close <= i + 1) return null;
+  const spec = pattern.slice(i + 1, close);
+  const m = /^(\d+)(?:,(\d*))?$/.exec(spec);
+  if (!m) return null;
+  const min = Number(m[1]);
+  const hasComma = spec.includes(',');
+  const maxStr = m[2];
+  if (!hasComma) {
+    return { end: close, repeatsMoreThanOnce: min > 1, unbounded: min > 16 };
+  }
+  if (!maxStr) {
+    return { end: close, repeatsMoreThanOnce: true, unbounded: true };
+  }
+  const max = Number(maxStr);
+  return { end: close, repeatsMoreThanOnce: max > 1, unbounded: max > 16 };
 }
 
 /**
  * Rejects ReDoS-prone regexes: overly long patterns, nested quantifiers across arbitrary group
- * nesting (including `{m,n}`), quantified alternations (`(a|a)+`), and backreferences (`\1`–`\9`).
+ * nesting (including `?` and `{m,n}`), quantified alternations (`(a|a)+`), backreferences
+ * (`\1`–`\9`, `\k`), quantifiers inside lookarounds, excessive unbounded quantifiers, and
+ * adjacent unbounded wildcards (`.*.*`).
  */
 function hasUnsafeRegexStructure(pattern: string): boolean {
   if (pattern.length > 512) return true;
+  // Reject adjacent unbounded dot/wildcard quantifiers like `.*.*`, `.+.+`, `.*.+`.
+  if (/(?:^|[^\\])\.[*+]\??\.[*+]/.test(pattern)) return true;
+
   interface GroupFrame {
     hasQuantifier: boolean;
     hasAlternation: boolean;
+    isLookaround: boolean;
   }
   const stack: GroupFrame[] = [];
   let inCharClass = false;
   let escaped = false;
+  let prevWasQuantifier = false;
+  let unboundedCount = 0;
+
+  const markQuantifier = (unbounded: boolean): boolean => {
+    if (unbounded) {
+      unboundedCount++;
+      if (unboundedCount > MAX_HTACCESS_UNBOUNDED_QUANTIFIERS) return true;
+    }
+    for (let k = stack.length - 1; k >= 0; k--) {
+      if (stack[k].isLookaround) return true;
+    }
+    if (stack.length > 0) stack[stack.length - 1].hasQuantifier = true;
+    return false;
+  };
 
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i];
     if (escaped) {
-      // Backreferences inside regexes can trigger exponential backtracking in JS engines.
-      if (!inCharClass && ch >= '1' && ch <= '9') return true;
+      // Backreferences (numbered or named) can trigger exponential backtracking in JS engines.
+      if (!inCharClass && ((ch >= '1' && ch <= '9') || ch === 'k')) return true;
       escaped = false;
+      prevWasQuantifier = false;
       continue;
     }
     if (ch === '\\') {
@@ -152,51 +194,104 @@ function hasUnsafeRegexStructure(pattern: string): boolean {
       continue;
     }
     if (inCharClass) {
-      if (ch === ']') inCharClass = false;
+      if (ch === ']') {
+        inCharClass = false;
+        prevWasQuantifier = false;
+      }
       continue;
     }
     if (ch === '[') {
       inCharClass = true;
+      prevWasQuantifier = false;
       continue;
     }
     if (ch === '(') {
-      stack.push({ hasQuantifier: false, hasAlternation: false });
+      let isLookaround = false;
+      if (pattern[i + 1] === '?') {
+        const next2 = pattern[i + 2];
+        const next3 = pattern[i + 3];
+        if (next2 === '=' || next2 === '!') {
+          isLookaround = true;
+          i += 2;
+        } else if (next2 === '<' && (next3 === '=' || next3 === '!')) {
+          isLookaround = true;
+          i += 3;
+        } else if (next2 === ':') {
+          i += 2;
+        } else if (next2 === '<') {
+          const nameEnd = pattern.indexOf('>', i + 3);
+          if (nameEnd > i + 2) i = nameEnd;
+          else i += 1;
+        } else {
+          i += 1;
+        }
+      }
+      stack.push({ hasQuantifier: false, hasAlternation: false, isLookaround });
+      prevWasQuantifier = false;
       continue;
     }
     if (ch === ')') {
       const frame = stack.pop();
-      if (!frame) continue;
+      if (!frame) {
+        prevWasQuantifier = false;
+        continue;
+      }
       const next = pattern[i + 1];
-      const quantified = isQuantifierChar(next);
-      if (quantified) {
-        if (frame.hasQuantifier || frame.hasAlternation) return true;
-        if (stack.length > 0) stack[stack.length - 1].hasQuantifier = true;
-      } else if (stack.length > 0) {
-        if (frame.hasQuantifier) stack[stack.length - 1].hasQuantifier = true;
-        if (frame.hasAlternation) stack[stack.length - 1].hasAlternation = true;
+      const brace = next === '{' ? parseBraceQuantifier(pattern, i + 1) : null;
+      const repeats = next === '*' || next === '+' || Boolean(brace?.repeatsMoreThanOnce);
+      const optional = next === '?' || (brace !== null && !brace.repeatsMoreThanOnce);
+      if (repeats) {
+        if (frame.hasQuantifier || frame.hasAlternation || frame.isLookaround) return true;
+        if (markQuantifier(next === '*' || next === '+' || Boolean(brace?.unbounded))) return true;
+        if (brace) i = brace.end;
+        else i += 1;
+        prevWasQuantifier = true;
+      } else if (optional) {
+        if (frame.isLookaround) return true;
+        if (markQuantifier(false)) return true;
+        if (stack.length > 0 && frame.hasAlternation) stack[stack.length - 1].hasAlternation = true;
+        if (brace) i = brace.end;
+        else i += 1;
+        prevWasQuantifier = true;
+      } else {
+        if (stack.length > 0) {
+          if (frame.hasQuantifier) stack[stack.length - 1].hasQuantifier = true;
+          if (frame.hasAlternation) stack[stack.length - 1].hasAlternation = true;
+        }
+        prevWasQuantifier = false;
       }
       continue;
     }
     if (ch === '|' && stack.length > 0) {
       stack[stack.length - 1].hasAlternation = true;
+      prevWasQuantifier = false;
       continue;
     }
-    if ((ch === '+' || ch === '*') && stack.length > 0) {
-      stack[stack.length - 1].hasQuantifier = true;
+    if (ch === '+' || ch === '*') {
+      if (markQuantifier(true)) return true;
+      prevWasQuantifier = true;
+      continue;
+    }
+    if (ch === '?') {
+      if (prevWasQuantifier) {
+        // Lazy modifier (`*?`, `+?`, `??`, `{m,n}?`) — not a new quantifier.
+        prevWasQuantifier = false;
+      } else {
+        if (markQuantifier(false)) return true;
+        prevWasQuantifier = true;
+      }
       continue;
     }
     if (ch === '{') {
-      // Check for repetition quantifier `{m}` / `{m,}` / `{m,n}`
-      const close = pattern.indexOf('}', i + 1);
-      if (close > i + 1) {
-        const spec = pattern.slice(i + 1, close);
-        if (/^\d+(?:,\d*)?$/.test(spec)) {
-          if (stack.length > 0) stack[stack.length - 1].hasQuantifier = true;
-          i = close;
-          continue;
-        }
+      const brace = parseBraceQuantifier(pattern, i);
+      if (brace) {
+        if (markQuantifier(brace.unbounded)) return true;
+        i = brace.end;
+        prevWasQuantifier = true;
+        continue;
       }
     }
+    prevWasQuantifier = false;
   }
   return false;
 }
@@ -548,22 +643,11 @@ function applyBackrefs(
   });
 }
 
-/**
- * Evaluate a parsed `.htaccess` ruleset against an incoming HTTP request.
- */
-export function evaluateHtaccess(
+function evaluateHtaccessAccessGuards(
   htaccess: ParsedHtaccess,
-  input: HtaccessEvalInput,
+  cleanPathname: string,
   vfs: HtaccessVfsProbe
-): HtaccessEvalResult {
-  const cleanPathname = normalizeHtaccessPathname(input.pathname);
-  const lowerHeaders: Record<string, string> = Object.create(null);
-  if (input.headers) {
-    for (const [k, v] of Object.entries(input.headers)) {
-      lowerHeaders[k.toLowerCase()] = v;
-    }
-  }
-
+): HtaccessEvalResult | null {
   // 1. <FilesMatch> security blocks (strip trailing slashes AND check PATH_INFO file segments)
   if (htaccess.denyFilesPatterns.length > 0) {
     const segs = cleanPathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
@@ -598,6 +682,27 @@ export function evaluateHtaccess(
       }
     }
   }
+  return null;
+}
+
+/**
+ * Evaluate a parsed `.htaccess` ruleset against an incoming HTTP request.
+ */
+export function evaluateHtaccess(
+  htaccess: ParsedHtaccess,
+  input: HtaccessEvalInput,
+  vfs: HtaccessVfsProbe
+): HtaccessEvalResult {
+  const cleanPathname = normalizeHtaccessPathname(input.pathname);
+  const lowerHeaders: Record<string, string> = Object.create(null);
+  if (input.headers) {
+    for (const [k, v] of Object.entries(input.headers)) {
+      lowerHeaders[k.toLowerCase()] = v;
+    }
+  }
+
+  const initialGuard = evaluateHtaccessAccessGuards(htaccess, cleanPathname, vfs);
+  if (initialGuard) return initialGuard;
 
   if (!htaccess.rewriteEngine || htaccess.rules.length === 0) {
     return { action: 'rewrite', pathname: cleanPathname, query: input.query, rewritten: false };
@@ -722,15 +827,15 @@ export function evaluateHtaccess(
         return { action: 'redirect', status: rule.redirectStatus ?? 302, location };
       }
 
-      // Internal rewrite
+      // Internal rewrite — always normalize dot segments and slashes so rewrites cannot smuggle traversal
       let nextFullPath: string;
       if (subPath.startsWith('/')) {
-        nextFullPath = subPath;
+        nextFullPath = normalizeHtaccessPathname(subPath);
       } else if (htaccess.rewriteBase) {
         const base = htaccess.rewriteBase.replace(/\/?$/, '/');
-        nextFullPath = `${base}${subPath}`.replace(/\/+/g, '/');
+        nextFullPath = normalizeHtaccessPathname(`${base}${subPath}`);
       } else {
-        nextFullPath = `${prefixWithSlashes}${subPath}`.replace(/\/+/g, '/');
+        nextFullPath = normalizeHtaccessPathname(`${prefixWithSlashes}${subPath}`);
       }
 
       localPath = htaccess.dirPrefix && nextFullPath.startsWith(prefixWithSlashes)
@@ -750,6 +855,13 @@ export function evaluateHtaccess(
     if (stopAll || !passChanged) break;
   }
 
+  // Re-evaluate <FilesMatch> and RedirectMatch on the post-rewrite path so an internal
+  // RewriteRule cannot bypass security guards by rewriting a public path to a denied file.
+  if (rewritten && currentFullPath !== cleanPathname) {
+    const postGuard = evaluateHtaccessAccessGuards(htaccess, currentFullPath, vfs);
+    if (postGuard) return postGuard;
+  }
+
   return {
     action: 'rewrite',
     pathname: currentFullPath,
@@ -760,42 +872,65 @@ export function evaluateHtaccess(
 
 /**
  * Evaluate a chain of `.htaccess` files (root first, then any deeper directory `.htaccess`
- * along the request path) and merge their directory index / error document settings.
+ * along the request path). If an internal rewrite changes directories, re-evaluate newly
+ * applicable `.htaccess` rulesets (bounded to prevent cycles).
  */
 export function evaluateHtaccessChain(
   htaccessFiles: ReadonlyMap<string, ParsedHtaccess>,
   input: HtaccessEvalInput,
   vfs: HtaccessVfsProbe
 ): HtaccessEvalResult {
-  const cleanPath = normalizeHtaccessPathname(input.pathname);
-  const segments = cleanPath.replace(/^\/+/, '').split('/').filter(Boolean);
-
-  // Build list of applicable directory prefixes from root down to the request's folder
-  const prefixes: string[] = [''];
-  let acc = '';
-  for (let i = 0; i < segments.length; i++) {
-    acc = acc ? `${acc}/${segments[i]}` : segments[i];
-    if (htaccessFiles.has(acc)) prefixes.push(acc);
-  }
-
-  let curPath = cleanPath;
+  let curPath = normalizeHtaccessPathname(input.pathname);
   let curQuery = input.query;
   let anyRewritten = false;
+  const visitedPaths = new Set<string>([curPath]);
+  const MAX_CHAIN_HOPS = 6;
 
-  for (const prefix of prefixes) {
+  for (let hop = 0; hop < MAX_CHAIN_HOPS; hop++) {
+    const segments = curPath.replace(/^\/+/, '').split('/').filter(Boolean);
+    const prefixes: string[] = [''];
+    let acc = '';
+    for (let i = 0; i < segments.length; i++) {
+      acc = acc ? `${acc}/${segments[i]}` : segments[i];
+      if (htaccessFiles.has(acc)) prefixes.push(acc);
+    }
+
+    let pathChangedInHop = false;
+    for (const prefix of prefixes) {
+      const ruleset = htaccessFiles.get(prefix);
+      if (!ruleset) continue;
+      const res = evaluateHtaccess(
+        ruleset,
+        { ...input, pathname: curPath, query: curQuery },
+        vfs
+      );
+      if (res.action === 'deny' || res.action === 'redirect') return res;
+      if (res.rewritten) {
+        const nextNorm = normalizeHtaccessPathname(res.pathname);
+        if (nextNorm !== curPath) pathChangedInHop = true;
+        curPath = nextNorm;
+        curQuery = res.query;
+        anyRewritten = true;
+      }
+    }
+
+    if (!pathChangedInHop || visitedPaths.has(curPath)) break;
+    visitedPaths.add(curPath);
+  }
+
+  // Final access-guard sweep across all applicable .htaccess files for the final path
+  const finalSegments = curPath.replace(/^\/+/, '').split('/').filter(Boolean);
+  const finalPrefixes: string[] = [''];
+  let finalAcc = '';
+  for (let i = 0; i < finalSegments.length; i++) {
+    finalAcc = finalAcc ? `${finalAcc}/${finalSegments[i]}` : finalSegments[i];
+    if (htaccessFiles.has(finalAcc)) finalPrefixes.push(finalAcc);
+  }
+  for (const prefix of finalPrefixes) {
     const ruleset = htaccessFiles.get(prefix);
     if (!ruleset) continue;
-    const res = evaluateHtaccess(
-      ruleset,
-      { ...input, pathname: curPath, query: curQuery },
-      vfs
-    );
-    if (res.action === 'deny' || res.action === 'redirect') return res;
-    if (res.rewritten) {
-      curPath = res.pathname;
-      curQuery = res.query;
-      anyRewritten = true;
-    }
+    const guard = evaluateHtaccessAccessGuards(ruleset, curPath, vfs);
+    if (guard) return guard;
   }
 
   return { action: 'rewrite', pathname: curPath, query: curQuery, rewritten: anyRewritten };

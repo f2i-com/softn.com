@@ -13,17 +13,67 @@ import type { HostGate } from './permissions';
 
 /** The most a response may be before it is refused. */
 const MAX_NET_RESPONSE_BYTES = 10 * 1024 * 1024;
+/** Maximum bundled asset blob size for `readBlob` (models, WASM modules, etc.). */
+const MAX_BUNDLE_BLOB_BYTES = 64 * 1024 * 1024;
+const FORBIDDEN_NET_HEADERS = new Set([
+  'cookie', 'host', 'origin', 'referer', 'content-length',
+  'transfer-encoding', 'connection', 'upgrade', 'te', 'trailer', 'keep-alive',
+]);
+
+function filterNetHeaders(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  let any = false;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const lower = k.toLowerCase();
+    const val = String(v);
+    if (
+      !k ||
+      FORBIDDEN_NET_HEADERS.has(lower) ||
+      lower.startsWith('sec-') ||
+      lower.startsWith('proxy-') ||
+      /[\r\n\0]/.test(k) ||
+      /[\r\n\0]/.test(val)
+    ) {
+      continue;
+    }
+    out[k] = val;
+    any = true;
+  }
+  return any ? out : undefined;
+}
+
+/**
+ * Validate a relative bundle path before handing it to `assetResolver` or `bundleFileProvider`.
+ * Rejects control characters, traversal segments (`..`), backslashes, leading slashes, and URL schemes.
+ */
+function sanitizeBundlePath(raw: string): string | null {
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
+  const trimmed = raw.trim().replace(/[?#].*$/, '').replace(/^\.\//, '');
+  if (!trimmed || trimmed.startsWith('/') || trimmed.includes('\\') || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    return null;
+  }
+  const segs = trimmed.split('/');
+  for (const seg of segs) {
+    if (!seg || seg === '.' || seg === '..') return null;
+  }
+  return trimmed;
+}
 
 /**
  * Whether an address the asset resolver gave for one of the app's files is
  * read without the network rules: a `blob:` (a bundle's file), a `data:` (a
  * file the host holds as text, as Studio's preview gives every one), or a
- * path on the page's own site. Any other scheme, or `//host`, would be a
- * fetch past `net`. `data:` was refused with the rest, so in Studio's preview
- * a page's `fetch('data.json')` was not found, and a model it ships too.
+ * path on the page's own site. Any other scheme, control characters, or `//host`
+ * (including whitespace/tab/newline-smuggled forms per WHATWG URL parsing) is rejected.
  */
 function isOwnFileUrl(url: string): boolean {
-  return /^(?:blob|data):/i.test(url) || !/^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(url);
+  if (/[\u0000-\u001f\u007f]/.test(url)) return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (/^(?:blob|data):/i.test(trimmed)) return true;
+  const compact = trimmed.replace(/\s+/g, '');
+  return !/^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(compact);
 }
 
 export interface AppNetworkOptions {
@@ -59,7 +109,17 @@ export class AppNetwork {
     this.gate.checkPermission('net');
     const [url, optionsJson] = call.args;
     this.gate.checkNetHost(url);
-    const options = optionsJson ? JSON.parse(optionsJson) : {};
+    let options: Record<string, unknown> = {};
+    if (optionsJson) {
+      try {
+        const parsed = JSON.parse(optionsJson) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          options = parsed as Record<string, unknown>;
+        }
+      } catch {
+        throw new Error('Invalid network fetch options JSON');
+      }
+    }
 
     // Disable redirects to prevent allowlist bypass: a redirect from an
     // allowed host to an internal/disallowed host would skip checkNetHost.
@@ -73,8 +133,8 @@ export class AppNetwork {
 
     try {
       const resp = await fetch(url, {
-        method: options.method || 'GET',
-        headers: options.headers,
+        method: typeof options.method === 'string' && options.method ? options.method : 'GET',
+        headers: filterNetHeaders(options.headers),
         // The bridge serialises the whole options object once, so a string
         // body arrives here as the string the script wrote; encoding it again
         // sent `"a=1"` as `"\"a=1\""` and no form or text endpoint could read
@@ -145,12 +205,17 @@ export class AppNetwork {
         body = new TextDecoder().decode(bytes);
       }
 
+      const outHeaders: Record<string, string> = {};
+      resp.headers.forEach((v, k) => {
+        if (k.toLowerCase() === 'set-cookie') return;
+        outHeaders[k] = v;
+      });
       return {
         ok: resp.ok,
         status: resp.status,
         statusText: resp.statusText,
         body,
-        headers: Object.fromEntries(resp.headers),
+        headers: outHeaders,
       };
     } finally {
       clearTimeout(timeout);
@@ -167,14 +232,18 @@ export class AppNetwork {
    */
   async readFile(call: PendingHostCall): Promise<unknown> {
     const notFound = { ok: false, status: 404, statusText: 'Not Found', body: '', headers: {} };
-    const path = String(call.args[0] ?? '').replace(/[?#].*$/, '').replace(/^\.\//, '');
+    const path = sanitizeBundlePath(String(call.args[0] ?? ''));
     const url = path && this.assetResolver ? this.assetResolver(path) : '';
     if (!url || !isOwnFileUrl(url)) return notFound;
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 15_000);
+    this.controllers.add(abortController);
     try {
       const resp = await fetch(url, {
         redirect: 'error',
         credentials: 'omit',
         referrerPolicy: 'no-referrer',
+        signal: abortController.signal,
       });
       if (!resp.ok) return { ...notFound, status: resp.status, statusText: resp.statusText };
       const declaredHeader = resp.headers.get('content-length');
@@ -224,6 +293,9 @@ export class AppNetwork {
       return { ok: true, status: 200, statusText: 'OK', body, headers: type ? { 'content-type': type } : {} };
     } catch (error) {
       return { error: error instanceof Error ? error.message : 'The file could not be read' };
+    } finally {
+      clearTimeout(timeout);
+      this.controllers.delete(abortController);
     }
   }
 
@@ -233,19 +305,69 @@ export class AppNetwork {
    * it (the `fetch('data.json')` rule above). Null when it has no such file.
    */
   async readBlob(path: string): Promise<Blob | null> {
-    const clean = path.replace(/^\.\//, '');
+    const clean = sanitizeBundlePath(path);
+    if (!clean) return null;
     if (this.bundleFileProvider) {
       const data = await this.bundleFileProvider.readFile(clean);
-      return data ? new Blob([data]) : null;
+      if (!data) return null;
+      if (data.byteLength > MAX_BUNDLE_BLOB_BYTES) {
+        throw new Error('The bundled file is too large');
+      }
+      return new Blob([data]);
     }
     const url = this.assetResolver ? this.assetResolver(clean) : '';
     if (!url || !isOwnFileUrl(url)) return null;
-    const isLocalBlob = /^(?:blob|data):/i.test(url);
-    const resp = await fetch(
-      url,
-      isLocalBlob ? { redirect: 'error' } : { redirect: 'error', referrerPolicy: 'no-referrer', credentials: 'omit' }
-    );
-    return resp.ok ? resp.blob() : null;
+    const isLocalBlob = /^(?:blob|data):/i.test(url.trim());
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 30_000);
+    this.controllers.add(abortController);
+    try {
+      const resp = await fetch(
+        url,
+        isLocalBlob
+          ? { redirect: 'error', signal: abortController.signal }
+          : { redirect: 'error', referrerPolicy: 'no-referrer', credentials: 'omit', signal: abortController.signal }
+      );
+      if (!resp.ok) return null;
+      const declaredHeader = resp.headers.get('content-length');
+      const declaredLength = declaredHeader === null ? NaN : Number(declaredHeader);
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_BUNDLE_BLOB_BYTES) {
+        try { await resp.body?.cancel(); } catch { /* ignore */ }
+        throw new Error('The bundled file is too large');
+      }
+      if (resp.body) {
+        const reader = resp.body.getReader();
+        const chunks: Uint8Array<ArrayBuffer>[] = [];
+        let total = 0;
+        try {
+          let next = await reader.read();
+          while (!next.done) {
+            if (next.value) {
+              total += next.value.byteLength;
+              if (total > MAX_BUNDLE_BLOB_BYTES) {
+                try { await reader.cancel(); } catch { /* ignore */ }
+                throw new Error('The bundled file is too large');
+              }
+              const copy = new Uint8Array(new ArrayBuffer(next.value.byteLength));
+              copy.set(next.value);
+              chunks.push(copy);
+            }
+            next = await reader.read();
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        return new Blob(chunks, { type: resp.headers.get('content-type') || undefined });
+      }
+      const bytes = await resp.arrayBuffer();
+      if (bytes.byteLength > MAX_BUNDLE_BLOB_BYTES) {
+        throw new Error('The bundled file is too large');
+      }
+      return new Blob([bytes], { type: resp.headers.get('content-type') || undefined });
+    } finally {
+      clearTimeout(timeout);
+      this.controllers.delete(abortController);
+    }
   }
 
   // ── Server storage (softn.storage.*) ──
@@ -290,8 +412,45 @@ export class AppNetwork {
         body: JSON.stringify({ op, ...args }),
         signal: abortController.signal,
         credentials: 'same-origin',
+        redirect: 'error',
       });
-      const text = await resp.text();
+      const declaredHeader = resp.headers.get('content-length');
+      const declaredLength = declaredHeader === null ? NaN : Number(declaredHeader);
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_NET_RESPONSE_BYTES) {
+        try { await resp.body?.cancel(); } catch { /* ignore */ }
+        return { error: 'Storage response is too large.' };
+      }
+      let text: string;
+      if (resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        const chunks: string[] = [];
+        let total = 0;
+        try {
+          let next = await reader.read();
+          while (!next.done) {
+            if (next.value) {
+              total += next.value.byteLength;
+              if (total > MAX_NET_RESPONSE_BYTES) {
+                try { await reader.cancel(); } catch { /* ignore */ }
+                return { error: 'Storage response is too large.' };
+              }
+              chunks.push(decoder.decode(next.value, { stream: true }));
+            }
+            next = await reader.read();
+          }
+          chunks.push(decoder.decode());
+        } finally {
+          reader.releaseLock();
+        }
+        text = chunks.join('');
+      } else {
+        const buf = await resp.arrayBuffer();
+        if (buf.byteLength > MAX_NET_RESPONSE_BYTES) {
+          return { error: 'Storage response is too large.' };
+        }
+        text = new TextDecoder().decode(buf);
+      }
       let json: { ok?: boolean; result?: unknown; error?: string; retryAfter?: number } | null = null;
       try {
         json = JSON.parse(text);

@@ -228,13 +228,19 @@ export function localStorageBacking(base: string, storage?: Storage): IdbBacking
  * Answers the function that lets go of it, or null when `gone()` says the asker went away.
  */
 export async function holdByLease(base: string, name: string, gone: () => boolean): Promise<{ release: () => void; fence: LeaseFence } | null> {
-  const db = await backingDb();
+  await backingDb();
   // A key no part's can be: parts are [base, name], and this begins with a number.
   const key: IDBValidKey = [0, base, name];
   const owner = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(`softn-lease:${JSON.stringify(base)}`) : null;
-  const leaseTx = (change: (held: { owner?: unknown; until?: unknown } | undefined, store: IDBObjectStore) => boolean): Promise<boolean> =>
-    new Promise<boolean>((resolve) => {
+  const leaseTx = async (change: (held: { owner?: unknown; until?: unknown } | undefined, store: IDBObjectStore) => boolean): Promise<boolean> => {
+    let db: IDBDatabase;
+    try {
+      db = await backingDb();
+    } catch {
+      return false;
+    }
+    return new Promise<boolean>((resolve) => {
       let answer = false;
       try {
         const tx = db.transaction(BACKING_STORE, 'readwrite');
@@ -251,6 +257,7 @@ export async function holdByLease(base: string, name: string, gone: () => boolea
         resolve(false);
       }
     });
+  };
   const take = () =>
     leaseTx((held, store) => {
       const now = Date.now();
@@ -271,7 +278,26 @@ export async function holdByLease(base: string, name: string, gone: () => boolea
         return;
       }
       if (!(await take())) {
+        if (gone()) {
+          done = true;
+          channel?.close();
+          resolve(null);
+          return;
+        }
         retry = setTimeout(() => void attempt(), LEASE_RETRY_MS);
+        return;
+      }
+      if (gone()) {
+        done = true;
+        void leaseTx((held, store) => {
+          if (!held || held.owner !== owner) return false;
+          store.delete(key);
+          return true;
+        }).then(() => {
+          channel?.postMessage({ released: name });
+          channel?.close();
+        });
+        resolve(null);
         return;
       }
       done = true;

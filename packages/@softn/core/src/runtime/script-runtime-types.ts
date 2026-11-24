@@ -366,6 +366,10 @@ export interface PermissionConfig {
      * reachable from it.
      */
     accel?: { enabled?: boolean };
+    bluetooth?: { enabled?: boolean; services?: string[] };
+    location?: { enabled?: boolean; precision?: 'coarse' | 'fine' };
+    haptics?: { enabled?: boolean };
+    notifications?: { enabled?: boolean };
   };
   /**
    * The bundle declared capabilities and the user has not answered yet.

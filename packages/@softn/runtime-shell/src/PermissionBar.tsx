@@ -112,6 +112,10 @@ export const CAPABILITY_PHRASE: Record<Capability, string> = {
   sync: 'your other devices',
   storage: 'its own database on this site',
   accel: "your browser's engine for the code it generates",
+  bluetooth: 'nearby Bluetooth devices',
+  location: 'your approximate or GPS location',
+  haptics: 'device vibration feedback',
+  notifications: 'local notifications',
 };
 
 /** The desktop loader's words: no browser, no site. */

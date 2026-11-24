@@ -134,6 +134,9 @@ const DROPPED_ATTRIBUTES = new Set([
   'commandfor',
   'interestfor',
   'interesttarget',
+  'attributionsrc',
+  'browsingtopics',
+  'data-softn-readable',
 ]);
 
 /** Safe CSS color syntax allowed for `<softn-chart color="...">` (no `url(...)` / `var(...)` / injection). */
@@ -270,6 +273,11 @@ export function hostAttributeValue(tag: string, name: string, value: string, con
     return SAFE_CHART_COLOR_RE.test(trimmedColor) ? trimmedColor : null;
   }
 
+  if (tag === 'canvas' && !context.ns && (lower === 'width' || lower === 'height')) {
+    const parsed = Number.parseFloat(value.trim());
+    return String(canvasSide(parsed));
+  }
+
   if (lower === 'style' || (PAINT_ATTRIBUTES.has(lower) && /\(|\\/.test(value))) {
     return sanitizeContainerCss(value, context.entryPath, context.archive, context.permissions, context.netGranted, 'inline', context.fontScope);
   }
@@ -358,7 +366,10 @@ export function canvasSide(value: unknown): number {
 export const isLinkElement = (tag: string): boolean => tag === 'a' || tag === 'area';
 
 /** Whether `href` leaves the app for the web. */
-export const isExternalHref = (href: string): boolean => /^https?:/i.test(href.trim());
+export const isExternalHref = (href: string): boolean => {
+  // eslint-disable-next-line no-control-regex -- strip C0 controls/spaces identically to WHATWG URL parser
+  return /^https?:/i.test(href.replace(/[\u0000-\u0020\u007f]+/g, ''));
+};
 
 /**
  * The properties of a 2D canvas context an app's drawing may set, each to a string, a number

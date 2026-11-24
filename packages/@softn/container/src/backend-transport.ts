@@ -9,6 +9,7 @@
  */
 
 import { VIRTUAL_ORIGIN } from './archive';
+import { bytesWithin } from './capped-body';
 import type {
   BackendConfig,
   BackendHttpRequest,
@@ -31,9 +32,24 @@ export interface StoredCookie {
 const MAX_JAR_COOKIES = 256;
 const MAX_JAR_COOKIE_BYTES = 4096;
 const MAX_JAR_TOTAL_BYTES = 64 * 1024;
+const BLOCKED_COOKIE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function cookieByteLength(c: Pick<StoredCookie, 'name' | 'value' | 'path'>): number {
   return (c.name.length + c.value.length + c.path.length) * 2;
+}
+
+function normalizeCookiePath(raw: string): string {
+  const withSlash = raw.startsWith('/') ? raw : `/${raw}`;
+  const out: string[] = [];
+  for (const seg of withSlash.replace(/\\/g, '/').split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') {
+      if (out.length > 0) out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return '/' + out.join('/');
 }
 
 /**
@@ -48,14 +64,18 @@ export class VirtualCookieJar {
     return `${path}\0${name}`;
   }
 
-  private removeKey(k: string): void {
+  private removeKey(k: string): boolean {
     const existing = this.cookies.get(k);
-    if (!existing) return;
+    if (!existing) return false;
     this.totalBytes = Math.max(0, this.totalBytes - cookieByteLength(existing));
     this.cookies.delete(k);
+    return true;
   }
 
   private putCookie(cookie: StoredCookie): boolean {
+    if (/[\u0000-\u001f\u007f;]/.test(cookie.name) || /[\u0000-\u001f\u007f;]/.test(cookie.value) || /[\u0000-\u001f\u007f]/.test(cookie.path)) {
+      return false;
+    }
     const size = cookieByteLength(cookie);
     if (size > MAX_JAR_COOKIE_BYTES) return false;
     const k = this.key(cookie.name, cookie.path);
@@ -70,6 +90,16 @@ export class VirtualCookieJar {
         }
       }
     }
+    // Evict oldest non-HttpOnly cookies first if still over cap (preserving HttpOnly session cookies).
+    if ((!existing && this.cookies.size >= MAX_JAR_COOKIES) || this.totalBytes - prevSize + size > MAX_JAR_TOTAL_BYTES) {
+      for (const [ek, ec] of this.cookies) {
+        if (ek === k || ec.httpOnly) continue;
+        this.removeKey(ek);
+        if ((existing || this.cookies.size < MAX_JAR_COOKIES) && this.totalBytes - prevSize + size <= MAX_JAR_TOTAL_BYTES) {
+          break;
+        }
+      }
+    }
     if (!existing && this.cookies.size >= MAX_JAR_COOKIES) return false;
     if (this.totalBytes - prevSize + size > MAX_JAR_TOTAL_BYTES) return false;
     if (existing) this.cookies.delete(k);
@@ -78,27 +108,27 @@ export class VirtualCookieJar {
     return true;
   }
 
-  /** Ingest all `Set-Cookie` headers from a backend response. Returns `true` when any cookie header was present. */
+  /** Ingest all `Set-Cookie` headers from a backend response. Returns `true` when jar state changed. */
   ingestResponseHeaders(headers: ReadonlyArray<[string, string]>): boolean {
     let changed = false;
     for (const [k, v] of headers) {
       if (k.toLowerCase() === 'set-cookie') {
-        this.setCookieHeader(v);
-        changed = true;
+        if (this.setCookieHeader(v)) changed = true;
       }
     }
     return changed;
   }
 
-  /** Parse and store a single `Set-Cookie` header value. */
-  setCookieHeader(headerValue: string): void {
-    if (headerValue.length > MAX_JAR_COOKIE_BYTES * 2) return;
+  /** Parse and store a single `Set-Cookie` header value. Returns `true` if jar state changed. */
+  setCookieHeader(headerValue: string): boolean {
+    if (headerValue.length > MAX_JAR_COOKIE_BYTES * 2) return false;
     const parts = headerValue.split(';').map((p) => p.trim()).filter(Boolean);
-    if (parts.length === 0) return;
+    if (parts.length === 0) return false;
     const eq = parts[0].indexOf('=');
-    if (eq <= 0) return;
+    if (eq <= 0) return false;
     const name = parts[0].slice(0, eq).trim();
     const value = parts[0].slice(eq + 1).trim();
+    if (!name || BLOCKED_COOKIE_KEYS.has(name)) return false;
 
     let path = '/';
     let httpOnly = false;
@@ -113,7 +143,7 @@ export class VirtualCookieJar {
       const attrVal = aEq >= 0 ? attr.slice(aEq + 1).trim() : '';
 
       if (attrName === 'path' && attrVal) {
-        path = attrVal.startsWith('/') ? attrVal : `/${attrVal}`;
+        path = normalizeCookiePath(attrVal);
       } else if (attrName === 'httponly') {
         httpOnly = true;
       } else if (attrName === 'secure') {
@@ -135,16 +165,15 @@ export class VirtualCookieJar {
 
     const k = this.key(name, path);
     if (expiresAt !== undefined && expiresAt <= Date.now()) {
-      this.removeKey(k);
-      return;
+      return this.removeKey(k);
     }
-    this.putCookie({ name, value, path, httpOnly, secure, sameSite, expiresAt });
+    return this.putCookie({ name, value, path, httpOnly, secure, sameSite, expiresAt });
   }
 
   /** Build the `Cookie` request header for `pathname` (includes `HttpOnly` cookies for backend requests). */
   getCookieHeader(pathname: string, includeHttpOnly = true): string {
     const now = Date.now();
-    const cleanPath = pathname.startsWith('/') ? pathname : `/${pathname}`;
+    const cleanPath = normalizeCookiePath(pathname);
     const matched: StoredCookie[] = [];
 
     for (const [k, c] of this.cookies) {
@@ -197,9 +226,9 @@ export class VirtualCookieJar {
       for (const item of parsed) {
         if (!item || typeof item !== 'object') continue;
         const c = item as Partial<StoredCookie>;
-        if (typeof c.name !== 'string' || typeof c.value !== 'string') continue;
+        if (typeof c.name !== 'string' || typeof c.value !== 'string' || BLOCKED_COOKIE_KEYS.has(c.name)) continue;
         if (typeof c.expiresAt === 'number' && c.expiresAt <= now) continue;
-        const path = typeof c.path === 'string' && c.path.startsWith('/') ? c.path : '/';
+        const path = typeof c.path === 'string' && c.path.startsWith('/') ? normalizeCookiePath(c.path) : '/';
         this.putCookie({
           name: c.name,
           value: c.value,
@@ -222,14 +251,14 @@ export class VirtualCookieJar {
 }
 
 export function parseCookieHeader(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
   if (!header) return out;
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
     if (eq <= 0) continue;
     const k = part.slice(0, eq).trim();
     const v = part.slice(eq + 1).trim();
-    if (!k) continue;
+    if (!k || BLOCKED_COOKIE_KEYS.has(k)) continue;
     try {
       out[k] = decodeURIComponent(v.replace(/\+/g, ' '));
     } catch {
@@ -321,14 +350,14 @@ export function matchBackendTarget(
     return null;
   }
 
-  // Explicit `.php` / `.phtml` scripts always route to backend
-  if (/\.(?:php|phtml)$/i.test(pathname)) {
+  // Explicit `.php` / `.phtml` scripts always route to backend in SSR mode
+  if (routing.mode === 'ssr' && /\.(?:php|phtml)$/i.test(pathname)) {
     return { path: pathname, query, origin: VIRTUAL_ORIGIN };
   }
 
-  // Non-GET/HEAD requests on virtual origin always target the backend (e.g. form POSTs, API mutations)
+  // In SSR mode, non-GET/HEAD requests on virtual origin target the backend (e.g. form POSTs)
   const method = (options?.method ?? 'GET').toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD') {
+  if (routing.mode === 'ssr' && method !== 'GET' && method !== 'HEAD') {
     return { path: pathname, query, origin: VIRTUAL_ORIGIN };
   }
 
@@ -382,7 +411,7 @@ export function statusTextFor(status: number): string {
   return STATUS_TEXTS[status] ?? 'OK';
 }
 
-const FORBIDDEN_FETCH_REQUEST_HEADERS = new Set([
+export const FORBIDDEN_FETCH_REQUEST_HEADERS = new Set([
   'host',
   'origin',
   'referer',
@@ -403,7 +432,18 @@ const FORBIDDEN_FETCH_REQUEST_HEADERS = new Set([
   'x-rewrite-url',
 ]);
 
+export const ALLOWED_BACKEND_METHODS = new Set([
+  'GET',
+  'HEAD',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'OPTIONS',
+]);
+
 const DEFAULT_REMOTE_TIMEOUT_MS = 30_000;
+const MAX_REMOTE_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 function validateRemoteBackendPath(baseUrl: string, rawInputPath: string): { cleanPath: string; targetUrl: string } {
   const cleanPath = rawInputPath.startsWith('/') ? rawInputPath : `/${rawInputPath}`;
@@ -411,8 +451,11 @@ function validateRemoteBackendPath(baseUrl: string, rawInputPath: string): { cle
     cleanPath.startsWith('//') ||
     cleanPath.includes('\\') ||
     cleanPath.includes('\0') ||
+    cleanPath.includes('?') ||
+    cleanPath.includes('#') ||
+    /[\u0000-\u001f\u007f]/.test(cleanPath) ||
     /(?:^|\/)\.\.(?:\/|$)/.test(cleanPath) ||
-    /%(?:2e|2f|5c|00)/i.test(cleanPath)
+    /%(?:2e|2f|5c|00|25)/i.test(cleanPath)
   ) {
     throw new Error(`Invalid backend request path: ${rawInputPath}`);
   }
@@ -461,8 +504,16 @@ export class RemoteBackendTransport implements BackendTransport {
     if (this.disposed) {
       throw new Error('RemoteBackendTransport is disposed');
     }
+    const method = (req.method || 'GET').toUpperCase();
+    if (!ALLOWED_BACKEND_METHODS.has(method)) {
+      throw new Error(`Disallowed HTTP method: ${method}`);
+    }
     const { targetUrl } = validateRemoteBackendPath(this.baseUrl, req.path);
-    const url = req.query ? `${targetUrl}?${req.query}` : targetUrl;
+    const query = req.query ? String(req.query) : '';
+    if (query && (query.includes('#') || /[\u0000-\u001f\u007f]/.test(query))) {
+      throw new Error('Invalid backend request query');
+    }
+    const url = query ? `${targetUrl}?${query}` : targetUrl;
     const headers: Record<string, string> = {};
     // Apply guest-supplied headers first (filtering forbidden & host identity headers),
     // then apply trusted host `extraHeaders` last so guest headers can never overwrite them.
@@ -474,7 +525,8 @@ export class RemoteBackendTransport implements BackendTransport {
         lower.startsWith('sec-') ||
         lower.startsWith('proxy-') ||
         lower.startsWith('x-forwarded-') ||
-        lower.startsWith('x-formlogic')
+        lower.startsWith('x-formlogic') ||
+        /[\r\n\0]/.test(v)
       ) {
         continue;
       }
@@ -487,7 +539,6 @@ export class RemoteBackendTransport implements BackendTransport {
       }
       headers[lower] = v;
     }
-    const method = (req.method || 'GET').toUpperCase();
     let body: BodyInit | undefined;
     if (method !== 'GET' && method !== 'HEAD' && req.body !== undefined) {
       if (typeof req.body === 'string') {
@@ -502,6 +553,7 @@ export class RemoteBackendTransport implements BackendTransport {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : null;
     let resp: Response;
+    let buf: Uint8Array;
     try {
       resp = await fetch(url, {
         method,
@@ -511,12 +563,12 @@ export class RemoteBackendTransport implements BackendTransport {
         redirect: 'manual',
         ...(controller ? { signal: controller.signal } : {}),
       });
+      buf = await bytesWithin(resp, MAX_REMOTE_RESPONSE_BYTES);
     } finally {
       if (timer !== null) clearTimeout(timer);
     }
     const outHeaders: Array<[string, string]> = [];
     resp.headers.forEach((v, k) => outHeaders.push([k, v]));
-    const buf = new Uint8Array(await resp.arrayBuffer());
     return {
       status: resp.status,
       statusText: resp.statusText || statusTextFor(resp.status),
@@ -530,9 +582,19 @@ export class RemoteBackendTransport implements BackendTransport {
     protocols: string[],
     onEvent: (event: BackendWsEvent) => void
   ): BackendWsHandle {
-    const { cleanPath } = validateRemoteBackendPath(this.baseUrl, path);
+    if (this.disposed) {
+      throw new Error('RemoteBackendTransport is disposed');
+    }
+    const qIdx = path.indexOf('?');
+    const pathPart = qIdx >= 0 ? path.slice(0, qIdx) : path;
+    const queryPart = qIdx >= 0 ? path.slice(qIdx + 1) : '';
+    if (queryPart && (queryPart.includes('#') || /[\u0000-\u001f\u007f]/.test(queryPart))) {
+      throw new Error('Invalid backend WebSocket query');
+    }
+    const { cleanPath } = validateRemoteBackendPath(this.baseUrl, pathPart);
     const wsBase = this.baseUrl.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:');
-    const ws = protocols.length > 0 ? new WebSocket(`${wsBase}${cleanPath}`, protocols) : new WebSocket(`${wsBase}${cleanPath}`);
+    const wsUrl = queryPart ? `${wsBase}${cleanPath}?${queryPart}` : `${wsBase}${cleanPath}`;
+    const ws = protocols.length > 0 ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     this.sockets.add(ws);
     ws.onopen = () => onEvent({ type: 'open', protocol: ws.protocol });

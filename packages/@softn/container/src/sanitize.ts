@@ -28,6 +28,144 @@ import type {
 
 export const NODE_ID_ATTR = 'data-softn-id';
 
+function parseIpv4Octets(host: string): [number, number, number, number] | null {
+  const parts = host.split('.');
+  if (parts.length !== 4) return null;
+  const out: number[] = [];
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const n = Number(part);
+    if (n < 0 || n > 255) return null;
+    out.push(n);
+  }
+  return [out[0], out[1], out[2], out[3]];
+}
+
+function parseIpv6Groups(host: string): number[] | null {
+  let inner = host;
+  if (inner.startsWith('[') && inner.endsWith(']')) {
+    inner = inner.slice(1, -1);
+  }
+  if (!inner.includes(':')) return null;
+  const zoneIdx = inner.indexOf('%');
+  if (zoneIdx >= 0) inner = inner.slice(0, zoneIdx);
+
+  // Convert trailing dotted-quad IPv4 (e.g. ::ffff:127.0.0.1) into two 16-bit groups.
+  const lastColon = inner.lastIndexOf(':');
+  const tail = inner.slice(lastColon + 1);
+  if (tail.includes('.')) {
+    const v4 = parseIpv4Octets(tail);
+    if (!v4) return null;
+    const hi = ((v4[0] << 8) | v4[1]).toString(16);
+    const lo = ((v4[2] << 8) | v4[3]).toString(16);
+    inner = `${inner.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+
+  const halves = inner.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const parsePart = (p: string): number => (/^[0-9a-f]{1,4}$/i.test(p) ? parseInt(p, 16) : -1);
+  const leftNums = left.map(parsePart);
+  const rightNums = right.map(parsePart);
+  if (leftNums.some((n) => n < 0) || rightNums.some((n) => n < 0)) return null;
+
+  if (halves.length === 1) {
+    return leftNums.length === 8 ? leftNums : null;
+  }
+  const missing = 8 - (leftNums.length + rightNums.length);
+  if (missing < 1) return null;
+  return [...leftNums, ...new Array<number>(missing).fill(0), ...rightNums];
+}
+
+function embeddedIpv4FromIpv6(g: number[]): [number, number, number, number] | null {
+  const isV4Mapped = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff;
+  const isV4Compat = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0 && (g[6] !== 0 || g[7] > 1);
+  const isNat64WellKnown = g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0;
+  if (isV4Mapped || isV4Compat || isNat64WellKnown) {
+    return [(g[6] >> 8) & 0xff, g[6] & 0xff, (g[7] >> 8) & 0xff, g[7] & 0xff];
+  }
+  return null;
+}
+
+function isMetadataOrUnspecifiedIpv4(v4: [number, number, number, number]): boolean {
+  const [a, b] = v4;
+  return a === 0 || (a === 169 && b === 254);
+}
+
+function isMetadataOrUnspecifiedHost(hostname: string): boolean {
+  if (
+    hostname === 'metadata.google.internal' ||
+    hostname === 'metadata.goog' ||
+    hostname === 'instance-data'
+  ) {
+    return true;
+  }
+  const v4 = parseIpv4Octets(hostname);
+  if (v4) return isMetadataOrUnspecifiedIpv4(v4);
+  const v6 = parseIpv6Groups(hostname);
+  if (!v6) return false;
+  if (v6.every((n) => n === 0)) return true; // ::
+  if ((v6[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  // AWS IPv6 IMDS fd00:ec2::254
+  if (v6[0] === 0xfd00 && v6[1] === 0x0ec2 && v6[2] === 0 && v6[3] === 0 && v6[4] === 0 && v6[5] === 0 && v6[6] === 0 && v6[7] === 0x0254) {
+    return true;
+  }
+  const embedded = embeddedIpv4FromIpv6(v6);
+  return embedded ? isMetadataOrUnspecifiedIpv4(embedded) : false;
+}
+
+function isPrivateOrLocalIpv4(v4: [number, number, number, number]): boolean {
+  const [a, b, c] = v4;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64.0.0/10
+    (a === 169 && b === 254) || // link-local
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0 && c === 0) ||
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224
+  );
+}
+
+function isPrivateOrLocalHost(hostname: string): boolean {
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.home.arpa') ||
+    hostname.endsWith('.localdomain')
+  ) {
+    return true;
+  }
+  const v4 = parseIpv4Octets(hostname);
+  if (v4) return isPrivateOrLocalIpv4(v4);
+  if (hostname.startsWith('[') && hostname.includes('%')) return true;
+  const v6 = parseIpv6Groups(hostname);
+  if (!v6) return false;
+  if (v6.every((n) => n === 0)) return true; // ::
+  if (v6[0] === 0 && v6[1] === 0 && v6[2] === 0 && v6[3] === 0 && v6[4] === 0 && v6[5] === 0 && v6[6] === 0 && v6[7] === 1) {
+    return true; // ::1
+  }
+  if ((v6[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+  if ((v6[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((v6[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  if (v6[0] === 0x0064 && v6[1] === 0xff9b && (v6[2] === 0 || v6[2] === 1)) return true; // NAT64 64:ff9b::/96 & 64:ff9b:1::/48
+  if (v6[0] === 0x2001 && v6[1] === 0x0db8) return true; // documentation
+  if (v6[0] === 0x2001 && v6[1] === 0x0002 && v6[2] === 0) return true; // benchmarking 2001:2::/48
+  if (v6[0] === 0x2001 && ((v6[1] & 0xfff0) === 0x0010 || (v6[1] & 0xfff0) === 0x0020)) return true; // ORCHID / ORCHIDv2
+  if (v6[0] === 0x5f00) return true; // SRv6 5f00::/16
+  const embedded = embeddedIpv4FromIpv6(v6);
+  return embedded ? isPrivateOrLocalIpv4(embedded) : false;
+}
+
 /** Check whether an external URL is allowed under `permission.json`'s `net` capability. */
 export function isExternalUrlAllowed(
   rawUrl: string,
@@ -45,13 +183,35 @@ export function isExternalUrlAllowed(
   } catch {
     return false;
   }
+  // Reject URLs with embedded credentials (`https://allowed.com@evil.com`) to prevent host confusion.
+  if (parsed.username || parsed.password) return false;
   if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && netPerm.allow_http)) {
     return false;
   }
+  const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, '');
+  if (!hostname) return false;
+  // Never permit cloud metadata, link-local, or unspecified addresses from a container.
+  if (isMetadataOrUnspecifiedHost(hostname)) return false;
+
   const hosts = netPerm.allowed_hosts;
-  if (!hosts || hosts.length === 0) return true;
-  const hostname = parsed.hostname.toLowerCase();
-  return hosts.some((h) => h.toLowerCase() === hostname);
+  const isPrivate = isPrivateOrLocalHost(hostname);
+  if (!hosts || hosts.length === 0) {
+    // Broad `net` without an explicit host allowlist may reach public hosts, never private/loopback/LAN hosts.
+    return !isPrivate;
+  }
+  return hosts.some((rule) => {
+    const cleanRule = rule.trim().toLowerCase().replace(/\.+$/, '');
+    if (!cleanRule) return false;
+    if (cleanRule === '*') {
+      return !isPrivate;
+    }
+    if (cleanRule.startsWith('*.')) {
+      if (isPrivate) return false;
+      const suffix = cleanRule.slice(2);
+      return hostname === suffix || hostname.endsWith(`.${suffix}`);
+    }
+    return cleanRule === hostname;
+  });
 }
 
 /** A host written as an address of numbers. */
@@ -144,7 +304,8 @@ export function sanitizeHostAssetUrl(
     (tagName === 'form' && attrName === 'action') ||
     ((tagName === 'button' || tagName === 'input') && attrName === 'formaction');
   if (isLink && /^https?:/i.test(trimmed)) {
-    return originalTrimmed;
+    // eslint-disable-next-line no-control-regex -- strip embedded ASCII controls so downstream isExternalHref matches WHATWG URL parsing
+    return originalTrimmed.replace(/[\u0000-\u001f\u007f]+/g, '');
   }
 
   // When an embedded backend is active, allow same-virtual-origin links & form actions
@@ -487,7 +648,12 @@ export function prepareHtmlDocument(
   // element's own name whatever prefix it was written with (host-policy.ts), and a
   // `<meta http-equiv>`, which is a navigation.
   for (const el of Array.from(parsed.body.querySelectorAll('*'))) {
-    if (hostElementName(el.localName, undefined) === null) {
+    const resolvedName = hostElementName(el.localName, undefined);
+    const resolvedLower = resolvedName?.toLowerCase();
+    // Namespace-prefixed `<x:style>` / `<x:link>` are missed by `querySelectorAll('link, style, script')`
+    // above, yet `hostElementName` strips the prefix to `'style'`/`'link'`. Drop them unconditionally
+    // so raw unsanitized stylesheets or links can never enter `pageRoot`.
+    if (resolvedName === null || resolvedLower === 'style' || resolvedLower === 'link') {
       afterRemoved.set(el, el.nextSibling);
       el.remove();
       continue;
@@ -576,6 +742,9 @@ export function prepareHtmlDocument(
     const tag = hostElementName(el.localName, ns);
     if (tag === null) return { seed: null, bp: null };
     const lowerTag = tag.toLowerCase();
+    // All legitimate initial `<style>` and `<link>` elements were already extracted and sanitized
+    // above; reject any remaining (including namespace-prefixed `<x:style>`/`<svg:style>`/`<x:link>`).
+    if (lowerTag === 'style' || lowerTag === 'link') return { seed: null, bp: null };
 
     const id = nextId++;
     seedIds.set(domNode, id);
@@ -723,10 +892,14 @@ export function prepareHtmlDocument(
     nodeMap.set(1, viewportEl);
 
     for (const [k, v] of Object.entries(htmlAttrs)) {
+      const lowerK = k.toLowerCase();
+      if (lowerK.startsWith('data-softn-')) continue;
       if (k === 'class') docRootEl.classList.add(...v.split(/\s+/).filter(Boolean));
       else if (k.startsWith('data-') || k === 'lang' || k === 'dir') docRootEl.setAttribute(k, v);
     }
     for (const [k, v] of Object.entries(bodyAttrs)) {
+      const lowerK = k.toLowerCase();
+      if (lowerK.startsWith('data-softn-')) continue;
       if (k === 'class') viewportEl.classList.add(...v.split(/\s+/).filter(Boolean));
       else if (k === 'style') viewportEl.setAttribute('style', v);
       else if (k.startsWith('data-') || k.startsWith('aria-') || k === 'role') viewportEl.setAttribute(k, v);

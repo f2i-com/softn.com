@@ -322,6 +322,10 @@ impl NativeSql {
         if cancellation.load(Ordering::Relaxed) {
             return Err("Request cancelled".into());
         }
+        if self.connection.as_ref().is_some_and(|c| !c.is_autocommit()) {
+            // A prior failed ROLLBACK left a dangling transaction; drop and reopen cleanly.
+            self.connection = None;
+        }
         if self.connection.is_none() {
             self.connection = Some(open_connection(&self.path)?);
         }
@@ -379,8 +383,12 @@ impl NativeSql {
         if result.is_err() {
             let _ = conn.execute_batch("ROLLBACK");
         }
+        let still_in_tx = !conn.is_autocommit();
+        if still_in_tx {
+            self.connection = None;
+        }
         self.active = false;
-        if result.is_err() || commit && (aborted || lost) {
+        if result.is_err() || still_in_tx || commit && (aborted || lost) {
             return Err("Private SQL transaction was rolled back".into());
         }
         Ok(())
@@ -479,13 +487,8 @@ impl NativeSql {
             // twice, some 800 MB in the worker, before the limit refused it.
             let mut raw = output_bytes;
             for (i, name) in columns.iter().enumerate() {
-                if let ValueRef::Text(v) = row.get_ref(i).map_err(|_| "SQL result conversion failed")? {
-                    raw += v.len();
-                    if raw > MAX_RESULT_BYTES {
-                        return Err("SQL result exceeds byte limit".into());
-                    }
-                }
-                let value = match row.get_ref(i).map_err(|_| "SQL result conversion failed")? {
+                let cell = row.get_ref(i).map_err(|_| "SQL result conversion failed")?;
+                let value = match cell {
                     ValueRef::Null => Value::Null,
                     ValueRef::Integer(v) => {
                         if v.unsigned_abs() > 9_007_199_254_740_991 {
@@ -496,18 +499,32 @@ impl NativeSql {
                     ValueRef::Real(v) => serde_json::Number::from_f64(v)
                         .ok_or("Non-finite SQL result")?
                         .into(),
-                    ValueRef::Text(v) => std::str::from_utf8(v)
-                        .map_err(|_| "Invalid UTF-8 SQL text")?
-                        .into(),
+                    ValueRef::Text(v) => {
+                        raw += v.len();
+                        if raw > MAX_RESULT_BYTES {
+                            return Err("SQL result exceeds byte limit".into());
+                        }
+                        std::str::from_utf8(v)
+                            .map_err(|_| "Invalid UTF-8 SQL text")?
+                            .into()
+                    }
                     ValueRef::Blob(_) => return Err("Binary SQL values are not supported".into()),
                 };
                 obj.insert(name.clone(), value);
             }
             let value = Value::Object(obj);
-            output_bytes += serde_json::to_vec(&value)
-                .map_err(|_| "SQL result conversion failed")?
-                .len()
-                + 1;
+            struct ByteCount(usize);
+            impl std::io::Write for ByteCount {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    self.0 = self.0.saturating_add(buf.len());
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            }
+            let mut counter = ByteCount(0);
+            serde_json::to_writer(&mut counter, &value)
+                .map_err(|_| "SQL result conversion failed")?;
+            output_bytes += counter.0 + 1;
             if output_bytes > MAX_RESULT_BYTES {
                 return Err("SQL result exceeds byte limit".into());
             }

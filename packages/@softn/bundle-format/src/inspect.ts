@@ -15,7 +15,7 @@
  * by {@link inspectDeclaration}, which is also what the runtime enforces.
  */
 
-import { openBundleArchive } from './zip';
+import { isUnsafeEntryName, openBundleArchive } from './zip';
 import { inspectDeclaration, CAPABILITIES, STORAGE_POLICIES } from './capabilities';
 
 export interface BundleReportLine {
@@ -115,7 +115,9 @@ function fmt(n: number): string {
 
 function toBase64(bytes: Uint8Array): string {
   let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
   return btoa(bin);
 }
 
@@ -289,7 +291,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   if (rawPaths.length > MAX_ENTRIES) error(`The bundle has ${rawPaths.length} files; the directory takes at most ${MAX_ENTRIES}.`);
   if (total > MAX_UNCOMPRESSED) error(unpackedTooLarge(total));
   for (const p of rawPaths) {
-    if (p.startsWith('/') || p.includes('\\') || /(^|\/)\.\.(\/|$)/.test(p)) error(`The bundle has a file with an unsafe path: ${p}`);
+    if (p.includes('\\') || isUnsafeEntryName(p)) error(`The bundle has a file with an unsafe path: ${p}`);
   }
 
   const resolved = unwrapSingleContainerRoot(entries);

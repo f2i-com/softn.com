@@ -973,10 +973,14 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   var origDocTake = g.__softnDocTake;
   // Hydrate and persist guest sessionStorage across reloads via IndexedDB session store.
   if (g.sessionStorage) {
-    if (g.__softnInitSessionStorage && typeof g.__softnInitSessionStorage === 'object') {
-      var ssInitKeys = Object.keys(g.__softnInitSessionStorage);
+    var ssInit = g.__softnInitSessionStorage;
+    if (!ssInit && typeof host !== 'undefined' && typeof host.callSync === 'function') {
+      try { ssInit = host.callSync('session', 'init'); } catch (_) { ssInit = null; }
+    }
+    if (ssInit && typeof ssInit === 'object') {
+      var ssInitKeys = Object.keys(ssInit);
       for (var ski = 0; ski < ssInitKeys.length; ski++) {
-        try { g.sessionStorage.setItem(ssInitKeys[ski], String(g.__softnInitSessionStorage[ssInitKeys[ski]])); } catch (_) {}
+        try { g.sessionStorage.setItem(ssInitKeys[ski], String(ssInit[ssInitKeys[ski]])); } catch (_) {}
       }
       try { delete g.__softnInitSessionStorage; } catch (_) { g.__softnInitSessionStorage = undefined; }
     }
@@ -1357,6 +1361,119 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
       var api = { open: open };
       __exports.open = open;
       __exports.default = api;
+    });
+
+    // Cross-platform Device & Hardware Bridges ('softn:device', 'softn:camera',
+    // 'softn:bluetooth', 'softn:location', 'softn:haptics', 'softn:notifications')
+    function deviceRpc(namespace, method, params) {
+      return new Promise(function (resolve, reject) {
+        host.call('device.call', [String(namespace), String(method), JSON.stringify(params || {})], function (reply) {
+          if (!reply || reply.error) {
+            reject(new Error(reply && reply.error ? String(reply.error) : (namespace + '.' + method + ' failed')));
+          } else {
+            resolve(reply.result);
+          }
+        });
+      });
+    }
+
+    var softnDevice = {
+      getInfo: function () { return deviceRpc('device', 'getInfo', {}); },
+      share: function (opts) { return deviceRpc('device', 'share', opts || {}); },
+      clipboardWrite: function (text) { return deviceRpc('device', 'clipboardWrite', { text: String(text == null ? '' : text) }); },
+    };
+    var softnCamera = {
+      isAvailable: function () { return deviceRpc('camera', 'isAvailable', {}); },
+      takePhoto: function (opts) { return deviceRpc('camera', 'takePhoto', opts || {}); },
+    };
+    var softnBluetooth = {
+      isAvailable: function () { return deviceRpc('bluetooth', 'isAvailable', {}); },
+      scan: function (opts) { return deviceRpc('bluetooth', 'scan', opts || {}); },
+      connect: function (deviceId) { return deviceRpc('bluetooth', 'connect', { deviceId: String(deviceId || '') }); },
+      disconnect: function (deviceId) { return deviceRpc('bluetooth', 'disconnect', { deviceId: String(deviceId || '') }); },
+      read: function (deviceId, serviceUuid, characteristicUuid) {
+        return deviceRpc('bluetooth', 'read', {
+          deviceId: String(deviceId || ''),
+          serviceUuid: String(serviceUuid || ''),
+          characteristicUuid: String(characteristicUuid || ''),
+        });
+      },
+      write: function (deviceId, serviceUuid, characteristicUuid, base64, withoutResponse) {
+        return deviceRpc('bluetooth', 'write', {
+          deviceId: String(deviceId || ''),
+          serviceUuid: String(serviceUuid || ''),
+          characteristicUuid: String(characteristicUuid || ''),
+          base64: String(base64 || ''),
+          withoutResponse: Boolean(withoutResponse),
+        });
+      },
+    };
+    var softnLocation = {
+      isAvailable: function () { return deviceRpc('location', 'isAvailable', {}); },
+      getCurrentPosition: function (opts) { return deviceRpc('location', 'getCurrentPosition', opts || {}); },
+    };
+    var softnHaptics = {
+      isAvailable: function () { return deviceRpc('haptics', 'isAvailable', {}); },
+      impact: function (style) { return deviceRpc('haptics', 'impact', { style: style || 'medium' }); },
+      vibrate: function (durationMs) { return deviceRpc('haptics', 'vibrate', { durationMs: Number(durationMs) || 40 }); },
+    };
+    var softnNotifications = {
+      isAvailable: function () { return deviceRpc('notifications', 'isAvailable', {}); },
+      notify: function (opts) {
+        var payload = typeof opts === 'string' ? { title: opts } : (opts || {});
+        return deviceRpc('notifications', 'notify', payload);
+      },
+    };
+
+    g.softn.device = softnDevice;
+    g.softn.camera = softnCamera;
+    g.softn.bluetooth = softnBluetooth;
+    g.softn.location = softnLocation;
+    g.softn.haptics = softnHaptics;
+    g.softn.notifications = softnNotifications;
+
+    __softnModules.define('softn:device', async function (__exports) {
+      __exports.device = softnDevice;
+      __exports.getInfo = softnDevice.getInfo;
+      __exports.share = softnDevice.share;
+      __exports.clipboardWrite = softnDevice.clipboardWrite;
+      __exports.default = softnDevice;
+    });
+    __softnModules.define('softn:camera', async function (__exports) {
+      __exports.camera = softnCamera;
+      __exports.isAvailable = softnCamera.isAvailable;
+      __exports.takePhoto = softnCamera.takePhoto;
+      __exports.default = softnCamera;
+    });
+    __softnModules.define('softn:bluetooth', async function (__exports) {
+      __exports.bluetooth = softnBluetooth;
+      __exports.ble = softnBluetooth;
+      __exports.isAvailable = softnBluetooth.isAvailable;
+      __exports.scan = softnBluetooth.scan;
+      __exports.connect = softnBluetooth.connect;
+      __exports.disconnect = softnBluetooth.disconnect;
+      __exports.read = softnBluetooth.read;
+      __exports.write = softnBluetooth.write;
+      __exports.default = softnBluetooth;
+    });
+    __softnModules.define('softn:location', async function (__exports) {
+      __exports.location = softnLocation;
+      __exports.isAvailable = softnLocation.isAvailable;
+      __exports.getCurrentPosition = softnLocation.getCurrentPosition;
+      __exports.default = softnLocation;
+    });
+    __softnModules.define('softn:haptics', async function (__exports) {
+      __exports.haptics = softnHaptics;
+      __exports.isAvailable = softnHaptics.isAvailable;
+      __exports.impact = softnHaptics.impact;
+      __exports.vibrate = softnHaptics.vibrate;
+      __exports.default = softnHaptics;
+    });
+    __softnModules.define('softn:notifications', async function (__exports) {
+      __exports.notifications = softnNotifications;
+      __exports.isAvailable = softnNotifications.isAvailable;
+      __exports.notify = softnNotifications.notify;
+      __exports.default = softnNotifications;
     });
 
     // 'softn-vendor:react', 'softn-vendor:react-dom', 'softn-vendor:react-dom/client',

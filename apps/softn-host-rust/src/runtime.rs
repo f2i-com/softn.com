@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -420,6 +420,9 @@ pub struct ServerRuntime {
     /// Replacement workers the watchdog started. Counted against the global
     /// thread cap like any other worker, and returned to it on drop.
     abandonment: Arc<Abandonment>,
+    /// Workers that exited abnormally (failed init / failed post-panic re-init)
+    /// and already released their slot in `GLOBAL_WORKER_COUNT`.
+    exited_early: Arc<AtomicUsize>,
     /// `EACH_SLICE` in milliseconds. A test sets it to make a run of calls
     /// one stretch, or a stretch a call.
     pub(crate) each_slice_ms: AtomicU64,
@@ -479,9 +482,10 @@ impl ServerRuntime {
         let mut init_txs = Vec::with_capacity(worker_count);
         let mut guards = Vec::with_capacity(worker_count);
         let abandonment = Arc::new(Abandonment::default());
+        let exited_early = Arc::new(AtomicUsize::new(0));
 
         for i in 0..worker_count {
-            match Self::spawn_worker(format!("softn-worker-{}", i), factory.clone(), work_rx.clone(), abandonment.clone()) {
+            match Self::spawn_worker(format!("softn-worker-{}", i), factory.clone(), work_rx.clone(), abandonment.clone(), exited_early.clone()) {
                 Ok((init_tx, guard)) => {
                     init_txs.push(init_tx);
                     guards.push(guard);
@@ -504,6 +508,7 @@ impl ServerRuntime {
         let wd_work_rx = work_rx.clone();
         let wd_source = init_source.clone();
         let wd_abandonment = abandonment.clone();
+        let wd_exited_early = exited_early.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("softn-vm-watchdog".to_string())
             .spawn(move || {
@@ -544,6 +549,7 @@ impl ServerRuntime {
                                 wd_factory.clone(),
                                 wd_work_rx.clone(),
                                 wd_abandonment.clone(),
+                                wd_exited_early.clone(),
                             )
                             .map_err(|e| format!("a thread could not be started: {e}"))?;
                             // The replacement initialises itself off the same
@@ -558,6 +564,8 @@ impl ServerRuntime {
                             next_id += 1;
                         }
                     }
+                    // Prune abandoned guards so the vec stays bounded over long uptimes.
+                    guards.retain(|g| !g.abandoned.load(Ordering::Relaxed));
                     guards.extend(replacements);
                 }
             })
@@ -577,6 +585,7 @@ impl ServerRuntime {
             watchdog_stop,
             init_source,
             abandonment,
+            exited_early,
             each_slice_ms: AtomicU64::new(EACH_SLICE.as_millis() as u64),
         }))
     }
@@ -588,6 +597,7 @@ impl ServerRuntime {
         factory: Arc<F>,
         work_rx: crossbeam_channel::Receiver<ScriptRequest>,
         abandonment: Arc<Abandonment>,
+        exited_early: Arc<AtomicUsize>,
     ) -> Result<(crossbeam_channel::Sender<ScriptRequest>, Arc<CallGuard>), std::io::Error>
     where
         F: Fn() -> BridgeSet + Send + Sync + 'static,
@@ -596,7 +606,7 @@ impl ServerRuntime {
         let guard = Arc::new(CallGuard::new(abandonment));
         let guard_clone = guard.clone();
         std::thread::Builder::new().name(name).spawn(move || {
-            Self::script_thread(init_rx, work_rx, &*factory, &guard_clone);
+            Self::script_thread(init_rx, work_rx, &*factory, &guard_clone, &exited_early);
         })?;
         Ok((init_tx, guard))
     }
@@ -606,6 +616,7 @@ impl ServerRuntime {
         work_rx: crossbeam_channel::Receiver<ScriptRequest>,
         bridge_factory: &F,
         guard: &CallGuard,
+        exited_early: &AtomicUsize,
     )
     where
         F: Fn() -> BridgeSet,
@@ -641,6 +652,8 @@ impl ServerRuntime {
         // silently and forever.
         if worker.is_none() {
             tracing::error!("Worker failed to initialise — exiting instead of joining the pool");
+            exited_early.fetch_add(1, Ordering::AcqRel);
+            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
             return;
         }
 
@@ -728,6 +741,8 @@ impl ServerRuntime {
                             tracing::error!("Worker failed to re-init after panic, exiting: {}", e);
                             // Exit the loop — a permanently broken worker draining
                             // requests and failing them all is worse than a reduced pool.
+                            exited_early.fetch_add(1, Ordering::AcqRel);
+                            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
                             break;
                         }
                     }
@@ -1016,9 +1031,10 @@ impl ServerRuntime {
         }
 
         let mut errors = Vec::new();
-        let init_timeout = Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(30);
         for (i, reply_rx) in reply_rxs.iter().enumerate() {
-            match reply_rx.recv_timeout(init_timeout) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match reply_rx.recv_timeout(remaining) {
                 Ok(Ok(globals)) => {
                     // Every worker runs the same script; the first to answer names it.
                     let _ = self.known_globals.set(globals.into_iter().collect());
@@ -1209,7 +1225,9 @@ impl Drop for ServerRuntime {
     fn drop(&mut self) {
         self.watchdog_stop.store(true, Ordering::Relaxed);
         let extra = self.abandonment.close();
-        GLOBAL_WORKER_COUNT.fetch_sub(self.worker_count + extra, Ordering::Relaxed);
+        let already_released = self.exited_early.load(Ordering::Acquire);
+        let to_release = (self.worker_count + extra).saturating_sub(already_released);
+        GLOBAL_WORKER_COUNT.fetch_sub(to_release, Ordering::AcqRel);
     }
 }
 

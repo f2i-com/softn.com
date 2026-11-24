@@ -303,9 +303,18 @@ test(
     assert.equal(created.status, 201, created.text);
     assert.equal(created.json.ok, true);
     assert.equal(created.json.title, 'Flat White');
+    assert.ok(created.headers.get('content-security-policy')?.includes('sandbox'), 'hosted backend response carries sandbox CSP');
+    assert.equal(created.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(created.headers.get('x-frame-options'), 'DENY');
     const cookies = created.headers.getSetCookie?.() ?? [];
-    assert.ok(cookies.some((c) => c.includes('session_a=alpha')), `Expected session_a cookie, got ${JSON.stringify(cookies)}`);
-    assert.ok(cookies.some((c) => c.includes('session_b=beta')), `Expected session_b cookie, got ${JSON.stringify(cookies)}`);
+    assert.ok(
+      cookies.some((c) => c.includes('session_a=alpha') && c.includes(`Path=/api/apps/${slug}/backend`) && c.includes('SameSite=Lax')),
+      `Expected path-scoped session_a cookie, got ${JSON.stringify(cookies)}`
+    );
+    assert.ok(
+      cookies.some((c) => c.includes('session_b=beta') && c.includes(`Path=/api/apps/${slug}/backend`)),
+      `Expected path-scoped session_b cookie, got ${JSON.stringify(cookies)}`
+    );
 
     // Subsequent GET sees persisted SQLite row
     const afterPost = await api('GET', `/api/apps/${slug}/backend/api/items`);
@@ -418,4 +427,7 @@ test('source endpoint exposes PHP, Rust, SQL, and streams images/audio/video saf
   // Path traversal rejected
   const bad = await fetch(`${base}/api/apps/${slug}/source/file?path=${encodeURIComponent('../config.json')}`);
   assert.equal(bad.status, 400);
+  // Backslash traversal also rejected via Bundle::unsafeName
+  const badSlash = await fetch(`${base}/api/apps/${slug}/source/file?path=${encodeURIComponent('assets\\..\\config.json')}`);
+  assert.equal(badSlash.status, 400);
 });

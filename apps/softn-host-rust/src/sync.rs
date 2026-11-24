@@ -16,6 +16,7 @@ use tokio::sync::broadcast;
 struct AuthTicket {
     /// Pre-authenticated client ID
     client_id: String,
+    visitor: std::net::IpAddr,
     expires_at: std::time::Instant,
 }
 
@@ -23,6 +24,30 @@ struct AuthTicket {
 const TICKET_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
 /// Maximum outstanding tickets before we start rejecting (prevents memory exhaustion).
 const MAX_PENDING_TICKETS: usize = 1000;
+/// Maximum unredeemed tickets held concurrently per visitor (IP / IPv6 `/64`).
+/// Evicting the visitor's oldest unredeemed ticket prevents ~30 clients from
+/// filling the global 1,000-slot table and returning 503 to legitimate users.
+const MAX_TICKETS_PER_VISITOR: usize = 8;
+
+/// Zero-allocation exact JSON serialized byte length counter.
+fn json_byte_len<T: Serialize>(value: &T) -> usize {
+    struct ByteCounter(usize);
+    impl std::io::Write for ByteCounter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = ByteCounter(0);
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        counter.0
+    } else {
+        0
+    }
+}
 
 /// Ticket requests one client address may make at once, and how fast that
 /// allowance comes back. A client asks for one ticket per connection; the
@@ -439,10 +464,15 @@ impl Audience {
     }
 }
 
+/// One item on the sync broadcast stream: its audience, the parsed message
+/// (for subscription filtering), and its pre-serialized JSON text so hundreds
+/// of connected WebSocket writers do not re-serialize the same payload O(N) times.
+pub type BroadcastItem = (Audience, Arc<ServerMessage>, Option<Arc<str>>);
+
 /// The sync stream: what every connection reads, in the order the store
 /// wrote it. Made before the script runtime, whose `db` bridge writes into
 /// it, and handed to the [`SyncManager`].
-pub type SyncStream = broadcast::Sender<(Audience, Arc<ServerMessage>)>;
+pub type SyncStream = broadcast::Sender<BroadcastItem>;
 
 /// A new, empty sync stream. A connection that falls this many messages
 /// behind is closed to re-sync. Every push puts its acknowledgement in the
@@ -463,7 +493,7 @@ pub fn delta_pieces(ops: Vec<SyncOp>) -> Vec<ServerMessage> {
     let mut piece: Vec<SyncOp> = Vec::new();
     let mut bytes = 0usize;
     for op in ops {
-        let size = serde_json::to_vec(&op).map(|b| b.len() + 1).unwrap_or(0);
+        let size = json_byte_len(&op) + 1;
         if !piece.is_empty() && bytes + size > SYNC_PULL_CHUNK_BYTES {
             pieces.push(ServerMessage::SyncDelta { ops: std::mem::take(&mut piece) });
             bytes = 0;
@@ -480,7 +510,8 @@ pub fn delta_pieces(ops: Vec<SyncOp>) -> Vec<ServerMessage> {
 /// Send each of `messages` to `audience` on the stream, in order.
 pub fn send_all(stream: &SyncStream, audience: &Audience, messages: Vec<ServerMessage>) {
     for message in messages {
-        let _ = stream.send((audience.clone(), Arc::new(message)));
+        let pre_json = serde_json::to_string(&message).ok().map(Arc::<str>::from);
+        let _ = stream.send((audience.clone(), Arc::new(message), pre_json));
     }
 }
 
@@ -804,7 +835,7 @@ impl SyncManager {
         self.max_connections_per_visitor
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<(Audience, Arc<ServerMessage>)> {
+    pub fn subscribe(&self) -> broadcast::Receiver<BroadcastItem> {
         self.broadcast_tx.subscribe()
     }
 
@@ -852,11 +883,25 @@ impl SyncManager {
         self.ticket_limiter.check(client_ip).map_err(TicketError::RateLimited)?;
         let client_id = self.handle_auth(token).map_err(|_| TicketError::Unauthorized)?;
 
+        let visitor = limiter_key(client_ip);
         let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
 
         // Evict expired tickets opportunistically to bound memory usage.
         let now = std::time::Instant::now();
         tickets.retain(|_, t| t.expires_at > now);
+
+        // Enforce per-visitor ticket cap by evicting this visitor's oldest unredeemed ticket.
+        let visitor_count = tickets.values().filter(|t| t.visitor == visitor).count();
+        if visitor_count >= MAX_TICKETS_PER_VISITOR {
+            if let Some(oldest_key) = tickets
+                .iter()
+                .filter(|(_, t)| t.visitor == visitor)
+                .min_by_key(|(_, t)| t.expires_at)
+                .map(|(k, _)| k.clone())
+            {
+                tickets.remove(&oldest_key);
+            }
+        }
 
         if tickets.len() >= MAX_PENDING_TICKETS {
             return Err(TicketError::Busy);
@@ -865,6 +910,7 @@ impl SyncManager {
         let ticket_id = uuid::Uuid::new_v4().to_string();
         tickets.insert(ticket_id.clone(), AuthTicket {
             client_id,
+            visitor,
             expires_at: now + TICKET_LIFETIME,
         });
         Ok(ticket_id)
@@ -1046,7 +1092,7 @@ impl SyncManager {
                     pull.read += 1;
                     pull.position = Some((record.server_received_at.clone(), record.id.clone()));
                     let record = pull_record(record);
-                    let size = serde_json::to_vec(&record).map(|b| b.len() + 1).unwrap_or(0);
+                    let size = json_byte_len(&record) + 1;
                     // Send in chunks to prevent oversized WebSocket frames and RAM spikes.
                     let full_chunk = !pull.chunk.is_empty()
                         && (pull.chunk.len() >= SYNC_PULL_CHUNK_SIZE || pull.chunk_bytes + size > SYNC_PULL_CHUNK_BYTES);
@@ -1116,7 +1162,7 @@ impl SyncManager {
         let mine = Audience::Only(client_id.to_string());
         loop {
             match stream.try_recv() {
-                Ok((audience, message)) if audience == mine => responses.push((*message).clone()),
+                Ok((audience, message, _)) if audience == mine => responses.push((*message).clone()),
                 Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
                 Err(_) => break,
             }
@@ -1288,7 +1334,7 @@ impl SyncManager {
             // Reject oversized data payloads before any further processing
             // (MAX_OP_DATA_BYTES says why).
             if let Some(ref data) = op.data {
-                let data_size = data.to_string().len();
+                let data_size = json_byte_len(data);
                 if data_size > MAX_OP_DATA_BYTES {
                     responses.push(ServerMessage::SyncReject {
                         op_id: op.id.clone(),
@@ -1479,6 +1525,7 @@ impl SyncManager {
                 // an overtaken delete of it): their pusher is sent them as
                 // they stand.
                 let mut batch_overtaken: Vec<(String, String)> = Vec::new();
+                let mut batch_overtaken_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
                 // Ops stored as a before-hook changed them, by record: their
                 // pusher is sent the record as stored.
                 let mut batch_hooked: Vec<(String, String)> = Vec::new();
@@ -1525,8 +1572,10 @@ impl SyncManager {
                     // was refused and it went.
                     if exists && op.operation == "create" {
                         if let Some(record) = &existing {
-                            if batch_overtaken.iter().all(|(id, _)| *id != record.id) {
+                            if !batch_overtaken_idx.contains_key(&record.id) {
+                                let idx = batch_overtaken.len();
                                 batch_overtaken.push((record.id.clone(), op.id.clone()));
+                                batch_overtaken_idx.insert(record.id.clone(), idx);
                             }
                         }
                         batch_replayed.push(op.id.clone());
@@ -1550,13 +1599,17 @@ impl SyncManager {
                         let was_overtaken = weighed && overtaken(&op.timestamp, &record.updated_at);
                         let deleted_already = op.operation == "update" && record.deleted;
                         if was_overtaken || deleted_already {
-                            match batch_overtaken.iter_mut().find(|(id, _)| *id == record.id) {
-                                None => batch_overtaken.push((record.id.clone(), op.id.clone())),
+                            match batch_overtaken_idx.get(&record.id).copied() {
+                                None => {
+                                    let idx = batch_overtaken.len();
+                                    batch_overtaken.push((record.id.clone(), op.id.clone()));
+                                    batch_overtaken_idx.insert(record.id.clone(), idx);
+                                }
                                 // An overtaken delete is the op the record
                                 // answers: its pusher hides the record until
                                 // that delete is answered, and knows the
                                 // answer by its id.
-                                Some(entry) if op.operation == "delete" => entry.1 = op.id.clone(),
+                                Some(idx) if op.operation == "delete" => batch_overtaken[idx].1 = op.id.clone(),
                                 Some(_) => {}
                             }
                         }
@@ -1580,7 +1633,7 @@ impl SyncManager {
                     let result: Result<(), xdb::DbError> = match op.operation.as_str() {
                         "create" => {
                             let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                            let size = data.to_string().len();
+                            let size = json_byte_len(&data);
                             if written_bytes > 0 && written_bytes + size > MAX_BATCH_DATA_BYTES {
                                 batch_retry.push(op.id.clone());
                                 continue;
@@ -1610,14 +1663,14 @@ impl SyncManager {
                                 // one without end, and the keys a hook keeps
                                 // are added to what was checked. One already
                                 // past it, from before, may still be made smaller.
-                                let before = record.data.to_string().len();
+                                let before = json_byte_len(&record.data);
                                 let taken_out = hook_changed.get(&op.id).map(Vec::as_slice).unwrap_or(&[]);
                                 // An update with no data changes its stamp alone.
                                 let data = match op.data.clone() {
                                     Some(incoming) => replaced(record.data, incoming, taken_out),
                                     None => record.data,
                                 };
-                                let after = data.to_string().len();
+                                let after = json_byte_len(&data);
                                 if after > MAX_OP_DATA_BYTES && after > before {
                                     batch_rejected.push((op.id.clone(), format!(
                                         "Record too large after this update ({} bytes, max {})",
@@ -1772,7 +1825,9 @@ impl SyncManager {
             if let Some((acked, current)) = to_pusher {
                 let pusher = Audience::Only(client_id.to_string());
                 if !acked.is_empty() {
-                    let _ = self.broadcast_tx.send((pusher.clone(), Arc::new(ServerMessage::SyncAck { op_ids: acked })));
+                    let msg = ServerMessage::SyncAck { op_ids: acked };
+                    let pre_json = serde_json::to_string(&msg).ok().map(Arc::<str>::from);
+                    let _ = self.broadcast_tx.send((pusher.clone(), Arc::new(msg), pre_json));
                 }
                 send_all(&self.broadcast_tx, &pusher, delta_pieces(current));
             }
@@ -1861,10 +1916,19 @@ impl SyncManager {
         // rejected nothing and let every op through: for a hook that is there
         // to keep some out, the wrong way to fail.
         let op_ids: std::collections::HashSet<&str> = ops.iter().map(|op| op.id.as_str()).collect();
+        // Pre-index record_id -> op_ids where op.record_id != op.id for O(N) ambiguity checks.
+        let mut by_record: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        let mut ambiguous_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for op in &ops {
+            by_record.entry(op.record_id.as_str()).or_default().push(op.id.as_str());
+            if op.record_id != op.id {
+                ambiguous_ids.insert(op.record_id.as_str());
+            }
+        }
         // A string that is an op's id and also another op's record id may name
         // either: a client choosing its op ids can make one so, and a hook that
         // answered with record ids then named the wrong op.
-        let ambiguous = |id: &str| ops.iter().any(|op| op.record_id == id && op.id != id);
+        let ambiguous = |id: &str| ambiguous_ids.contains(id);
         // An op of this push, named by its id alone.
         let names_op = |id: &str| op_ids.contains(id) && !ambiguous(id);
         // A rejection naming such a string rejects every op it may name, the op
@@ -1878,7 +1942,9 @@ impl SyncManager {
                     serde_json::Value::String(id) if op_ids.contains(id.as_str()) => {
                         ids.insert(id.clone());
                         if ambiguous(id) {
-                            ids.extend(ops.iter().filter(|op| op.record_id == *id).map(|op| op.id.clone()));
+                            if let Some(rec_ops) = by_record.get(id.as_str()) {
+                                ids.extend(rec_ops.iter().map(|s| (*s).to_string()));
+                            }
                         }
                     }
                     _ => return None,

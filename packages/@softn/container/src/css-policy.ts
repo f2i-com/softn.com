@@ -24,10 +24,26 @@
 /** Functions whose bare strings are addresses. */
 const IMAGE_FUNCTIONS = new Set(['image-set', '-webkit-image-set', 'image', 'cross-fade', '-webkit-cross-fade']);
 
-const isHex = (c: string): boolean => /^[0-9a-fA-F]$/.test(c);
+const isHex = (c: string): boolean => {
+  const code = c.charCodeAt(0);
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
+};
 const isSpace = (c: string): boolean => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
-const isNameStart = (c: string): boolean => /^[A-Za-z_]$/.test(c) || c > '\u007f';
-const isNameChar = (c: string): boolean => /^[A-Za-z0-9_-]$/.test(c) || c > '\u007f';
+const isNameStart = (c: string): boolean => {
+  const code = c.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95 || code > 127;
+};
+const isNameChar = (c: string): boolean => {
+  const code = c.charCodeAt(0);
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    code === 95 ||
+    code === 45 ||
+    code > 127
+  );
+};
 
 /** The character a backslash at `at` stands for, and where reading goes on. */
 function readEscape(css: string, at: number): { char: string; end: number } {
@@ -143,9 +159,30 @@ function skipBalanced(css: string, at: number): number {
  * Rewrite `css`. `mapUrl` is given each address as CSS resolved it and answers the address to
  * put in its place, or null for one the app may not load.
  */
+/** Characters / constructs that require token-level CSS rewriting in `rewriteCss`. */
+const REWRITE_TRIGGER_RE = /\/\*|["'@\\]/;
+const REWRITE_FUNC_RE = /(?:url|src|image|image-set|cross-fade|expression)\s*\(/i;
+const HOST_PSEUDO_RE = /host/i;
+const MAX_CSS_NESTING_DEPTH = 64;
+
 export function rewriteCss(css: string, mapUrl: (address: string) => string | null, options: { keepHost?: boolean } = {}): string {
   // CSS Syntax Level 3 input stream preprocessing: normalize CR/CRLF/FF and replace NUL.
-  css = css.replace(/\r\n?|\f/g, '\n').replace(/\0/g, '\uFFFD');
+  if (css.indexOf('\r') >= 0 || css.indexOf('\f') >= 0) {
+    css = css.replace(/\r\n?|\f/g, '\n');
+  }
+  if (css.indexOf('\0') >= 0) {
+    css = css.replace(/\0/g, '\uFFFD');
+  }
+  // Fast exit: if the CSS contains no comments, strings, `@`, `\`, `:host`, or URL/image/expression
+  // functions, every branch in the tokenizer below would copy the input verbatim (covering hot
+  // animated inline styles such as `transform: translate3d(...)` and `color: rgba(...)`).
+  if (
+    !REWRITE_TRIGGER_RE.test(css) &&
+    (css.indexOf('(') < 0 || !REWRITE_FUNC_RE.test(css)) &&
+    (css.indexOf(':') < 0 || !HOST_PSEUDO_RE.test(css))
+  ) {
+    return css;
+  }
   const address = (raw: string): string => cssString(mapUrl(raw.trim()) ?? 'about:blank');
   let out = '';
   let i = 0;
@@ -614,8 +651,11 @@ function transformCssBlock(
   start: number,
   end: number,
   mode: 'rules' | 'declarations' | 'keyframes',
-  opts: { scopeSelectors: boolean; rewriteViewportUnits: boolean }
+  opts: { scopeSelectors: boolean; rewriteViewportUnits: boolean },
+  depth = 0
 ): string {
+  // Guard against deeply nested CSS blocks (`a{a{a{...`) causing host stack overflow or O(N^2) scans.
+  if (depth >= MAX_CSS_NESTING_DEPTH) return '';
   let out = '';
   let i = start;
 
@@ -669,7 +709,7 @@ function transformCssBlock(
             : KEYFRAMES_AT_RULES.has(lowerName)
               ? 'keyframes'
               : 'declarations';
-      const inner = transformCssBlock(css, j + 1, closeBrace, childMode, opts);
+      const inner = transformCssBlock(css, j + 1, closeBrace, childMode, opts, depth + 1);
       out += `${prelude}{${inner}${closeBrace < end ? '}' : ''}`;
       i = closeBrace < end ? closeBrace + 1 : end;
       continue;
@@ -699,7 +739,7 @@ function transformCssBlock(
       const closeBrace = findMatchingBrace(css, j, end);
       const rawSelector = css.slice(i, j);
       const selector = mode === 'rules' && opts.scopeSelectors ? rewritePageSelectorList(rawSelector) : rawSelector;
-      const body = transformCssBlock(css, j + 1, closeBrace, 'declarations', opts);
+      const body = transformCssBlock(css, j + 1, closeBrace, 'declarations', opts, depth + 1);
       out += `${selector}{${body}${closeBrace < end ? '}' : ''}`;
       i = closeBrace < end ? closeBrace + 1 : end;
       continue;
@@ -727,7 +767,7 @@ function transformCssBlock(
       const closeBrace = findMatchingBrace(css, j, end);
       const rawNestedSel = css.slice(i, j);
       const nestedSel = opts.scopeSelectors ? rewritePageSelectorList(rawNestedSel) : rawNestedSel;
-      const body = transformCssBlock(css, j + 1, closeBrace, 'declarations', opts);
+      const body = transformCssBlock(css, j + 1, closeBrace, 'declarations', opts, depth + 1);
       out += `${nestedSel}{${body}${closeBrace < end ? '}' : ''}`;
       i = closeBrace < end ? closeBrace + 1 : end;
       continue;
@@ -1129,6 +1169,9 @@ export function namespaceContainerFonts(
   inline = false
 ): string {
   if (!sanitizedCss || !scopePrefix) return sanitizedCss;
+  if (inline && !/font|--|\\/i.test(sanitizedCss)) {
+    return sanitizedCss;
+  }
   for (const fam of collectFontFaceFamilies(sanitizedCss)) {
     declaredFamilies.add(fam);
   }
@@ -1136,7 +1179,8 @@ export function namespaceContainerFonts(
     return sanitizedCss;
   }
 
-  const rewriteBlock = (start: number, end: number, mode: 'rules' | 'declarations' | 'keyframes'): string => {
+  const rewriteBlock = (start: number, end: number, mode: 'rules' | 'declarations' | 'keyframes', depth = 0): string => {
+    if (depth >= MAX_CSS_NESTING_DEPTH) return '';
     let out = '';
     let i = start;
     while (i < end) {
@@ -1191,7 +1235,7 @@ export function namespaceContainerFonts(
                 : KEYFRAMES_AT_RULES.has(lowerName)
                   ? 'keyframes'
                   : 'declarations';
-          out += `${prelude}{${rewriteBlock(j + 1, closeBrace, childMode)}${closeBrace < end ? '}' : ''}`;
+          out += `${prelude}{${rewriteBlock(j + 1, closeBrace, childMode, depth + 1)}${closeBrace < end ? '}' : ''}`;
         }
         i = closeBrace < end ? closeBrace + 1 : end;
         continue;
@@ -1218,7 +1262,7 @@ export function namespaceContainerFonts(
           continue;
         }
         const closeBrace = findMatchingBrace(sanitizedCss, j, end);
-        out += `${sanitizedCss.slice(i, j)}{${rewriteBlock(j + 1, closeBrace, 'declarations')}${closeBrace < end ? '}' : ''}`;
+        out += `${sanitizedCss.slice(i, j)}{${rewriteBlock(j + 1, closeBrace, 'declarations', depth + 1)}${closeBrace < end ? '}' : ''}`;
         i = closeBrace < end ? closeBrace + 1 : end;
         continue;
       }
@@ -1239,7 +1283,7 @@ export function namespaceContainerFonts(
       }
       if (j < end && sanitizedCss[j] === '{') {
         const closeBrace = findMatchingBrace(sanitizedCss, j, end);
-        out += `${sanitizedCss.slice(i, j)}{${rewriteBlock(j + 1, closeBrace, 'declarations')}${closeBrace < end ? '}' : ''}`;
+        out += `${sanitizedCss.slice(i, j)}{${rewriteBlock(j + 1, closeBrace, 'declarations', depth + 1)}${closeBrace < end ? '}' : ''}`;
         i = closeBrace < end ? closeBrace + 1 : end;
         continue;
       }
@@ -1285,7 +1329,8 @@ export function extractFontFaces(sanitizedCss: string, scopePrefix?: string): st
   if (!/@(?:font-face|\\)/i.test(sanitizedCss)) return '';
   const blocks: string[] = [];
 
-  const scan = (start: number, end: number) => {
+  const scan = (start: number, end: number, depth = 0) => {
+    if (depth >= MAX_CSS_NESTING_DEPTH) return;
     let i = start;
     while (i < end) {
       const c = sanitizedCss[i];
@@ -1341,7 +1386,7 @@ export function extractFontFaces(sanitizedCss: string, scopePrefix?: string): st
             }
           }
         } else if (GROUPING_AT_RULES.has(lower)) {
-          scan(j + 1, closeBrace);
+          scan(j + 1, closeBrace, depth + 1);
         }
         i = closeBrace < end ? closeBrace + 1 : end;
         continue;

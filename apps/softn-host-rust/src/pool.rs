@@ -404,7 +404,7 @@ pub fn read_collection_where(
     use rusqlite::types::Value as Sql;
     let mut sql = String::from(
         "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
-         FROM records WHERE collection = ?1 AND deleted = 0",
+         FROM records WHERE collection = ?1 AND +deleted = 0",
     );
     let mut binds: Vec<Sql> = vec![Sql::Text(collection.to_string())];
     for (key, value) in filter {
@@ -433,7 +433,7 @@ pub fn read_collection_where(
         ));
     }
     binds.push(Sql::Integer(limit));
-    sql.push_str(&format!(" ORDER BY COALESCE(server_received_at, '') ASC, id ASC LIMIT ?{}", binds.len()));
+    sql.push_str(&format!(" ORDER BY server_received_at ASC, id ASC LIMIT ?{}", binds.len()));
     let records = conn
         .prepare(&sql)?
         .query_map(rusqlite::params_from_iter(binds), sync_record)?

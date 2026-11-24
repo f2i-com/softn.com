@@ -12,6 +12,7 @@ import {
   writeFileSync,
   readdirSync,
   lstatSync,
+  statSync,
   realpathSync,
   existsSync,
   mkdirSync,
@@ -19,6 +20,8 @@ import {
   copyFileSync,
   rmSync,
   renameSync,
+  openSync,
+  closeSync,
 } from 'node:fs';
 import {join, dirname, relative, isAbsolute, resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -41,7 +44,7 @@ const ZIPP_SQL_CAPABILITIES = [
 ];
 
 const PRIVATE_STATIC_BLOCK =
-  /(?:^|\/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|composer\.json|composer\.lock|manifest\.json|permission\.json)$|\.(?:php|phtml|inc|tpl|rs|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh|logic)$/i;
+  /(?:^|\/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|composer\.json|composer\.lock|manifest\.json|permission\.json)$|\.(?:php|phtml|php5|php7|php8|pht|phps|phar|inc|tpl|rs|py|pem|key|secret|toml|db|db-wal|db-shm|db-journal|sqlite|sqlite-wal|sqlite-shm|sqlite-journal|sqlite3|sqlite3-wal|sqlite3-shm|sqlite3-journal|sql|ini|bak|log|sh|logic)$/i;
 
 const JS_BACKEND_PRELUDE = `
 (function () {
@@ -428,6 +431,7 @@ const CONTAINER_SQL_LIMITS = Object.freeze({...SQL_LIMITS, length: MAX_SQL_RESUL
 const MAX_OVERLAY_BYTES = 16 * 1024 * 1024;
 const MAX_CONTAINER_DATABASES = 8;
 const MAX_OPEN_DB_HANDLES = 32;
+const MAX_MEMORY_DB_HANDLES = 4;
 const MAX_PYTHON_SQL_CACHE_BYTES = 8 * 1024 * 1024;
 const SAFE_PRAGMA_NAMES = new Set([
   'table_info', 'table_xinfo', 'index_list', 'index_info', 'foreign_key_list',
@@ -499,13 +503,21 @@ function isProtectedRustSourcePath(key, relEntry) {
   const norm = normalizeVfsKey(key).toLowerCase();
   if (!norm) return true;
   if (relEntry && norm === normalizeVfsKey(relEntry).toLowerCase()) return true;
-  return (
-    norm.endsWith('.rs') ||
-    norm === 'cargo.toml' ||
-    norm === 'cargo.lock' ||
-    norm.endsWith('/cargo.toml') ||
-    norm.endsWith('/cargo.lock')
-  );
+  const base = norm.includes('/') ? norm.slice(norm.lastIndexOf('/') + 1) : norm;
+  if (
+    base === 'cargo.toml' ||
+    base === 'cargo.lock' ||
+    base === 'manifest.json' ||
+    base === 'permission.json' ||
+    base === '.htaccess' ||
+    base === '.htpasswd' ||
+    base === '.env' ||
+    base.startsWith('.env.') ||
+    base === 'seed.json'
+  ) {
+    return true;
+  }
+  return /\.(?:rs|ini|sql|db|db-wal|db-shm|db-journal|sqlite|sqlite-wal|sqlite-shm|sqlite-journal|sqlite3|sqlite3-wal|sqlite3-shm|sqlite3-journal|sh|bak)$/i.test(base);
 }
 
 function isProtectedPhpOverlayPath(key, backendEntry) {
@@ -519,34 +531,156 @@ function isProtectedPhpOverlayPath(key, backendEntry) {
     base === '.env' ||
     base.startsWith('.env.') ||
     base === 'manifest.json' ||
-    base === 'permission.json'
+    base === 'permission.json' ||
+    base === 'seed.json'
   ) {
     return true;
   }
-  return /\.(?:php|phtml|php5|php8|inc|phar)$/i.test(base);
+  return /\.(?:php|phtml|php5|php7|php8|pht|phps|inc|phar|tpl|sql|ini|db|db-wal|db-shm|db-journal|sqlite|sqlite-wal|sqlite-shm|sqlite-journal|sqlite3|sqlite3-wal|sqlite3-shm|sqlite3-journal)$/i.test(base);
 }
 
-function sanitizePhpOverlayJson(rawJson, backendEntry) {
-  if (!rawJson || typeof rawJson !== 'string') return '';
+function sanitizeOverlayObj(rawJson, isProtected) {
+  const empty = {writes: Object.create(null), deleted: [], dirs: []};
+  if (!rawJson || typeof rawJson !== 'string') return empty;
   try {
     const parsed = JSON.parse(rawJson);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return empty;
     const writes = Object.create(null);
     if (parsed.writes && typeof parsed.writes === 'object' && !Array.isArray(parsed.writes)) {
       for (const [k, v] of Object.entries(parsed.writes)) {
-        if (!isProtectedPhpOverlayPath(k, backendEntry)) writes[k] = v;
+        if (typeof v !== 'string') continue;
+        const norm = normalizeVfsKey(k);
+        if (!norm || isProtected(norm)) continue;
+        writes[norm] = v;
       }
     }
-    const deleted = Array.isArray(parsed.deleted)
-      ? parsed.deleted.filter(d => typeof d === 'string' && !isProtectedPhpOverlayPath(d, backendEntry))
-      : [];
-    const dirs = Array.isArray(parsed.dirs)
-      ? parsed.dirs.filter(d => typeof d === 'string' && !isProtectedPhpOverlayPath(d, backendEntry))
-      : [];
-    return JSON.stringify({writes, deleted, dirs});
+    const deletedSet = new Set();
+    if (Array.isArray(parsed.deleted)) {
+      for (const d of parsed.deleted) {
+        if (typeof d !== 'string') continue;
+        const norm = normalizeVfsKey(d);
+        if (norm && !isProtected(norm)) deletedSet.add(norm);
+      }
+    }
+    const dirsSet = new Set();
+    if (Array.isArray(parsed.dirs)) {
+      for (const d of parsed.dirs) {
+        if (typeof d !== 'string') continue;
+        const norm = normalizeVfsKey(d);
+        if (norm && !isProtected(norm)) dirsSet.add(norm);
+      }
+    }
+    return {writes, deleted: [...deletedSet], dirs: [...dirsSet]};
   } catch {
-    return '';
+    return empty;
   }
+}
+
+function sanitizePhpOverlayJson(rawJson, backendEntry) {
+  const obj = sanitizeOverlayObj(rawJson, k => isProtectedPhpOverlayPath(k, backendEntry));
+  if (Object.keys(obj.writes).length === 0 && obj.deleted.length === 0 && obj.dirs.length === 0) return '';
+  return JSON.stringify(obj);
+}
+
+function sanitizeRustOverlayJson(rawJson, relEntry) {
+  const obj = sanitizeOverlayObj(rawJson, k => isProtectedRustSourcePath(k, relEntry));
+  if (Object.keys(obj.writes).length === 0 && obj.deleted.length === 0 && obj.dirs.length === 0) return '';
+  return JSON.stringify(obj);
+}
+
+const SLEEP_ARRAY = new Int32Array(new SharedArrayBuffer(4));
+
+function withOverlayLock(lockPath, fn) {
+  const deadline = Date.now() + 5000;
+  let fd = -1;
+  while (fd < 0) {
+    try {
+      fd = openSync(lockPath, 'wx', 0o600);
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try {
+        const st = statSync(lockPath);
+        if (Date.now() - st.mtimeMs > 30_000) {
+          rmSync(lockPath, {force: true});
+          continue;
+        }
+      } catch {}
+      if (Date.now() >= deadline) {
+        throw new Error('Timed out acquiring overlay lock');
+      }
+      Atomics.wait(SLEEP_ARRAY, 0, 0, 10);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { closeSync(fd); } catch {}
+    try { rmSync(lockPath, {force: true}); } catch {}
+  }
+}
+
+function mergeAndPersistOverlay(overlayPath, initialJson, exportedJson, isProtected) {
+  const nextSanitized = sanitizeOverlayObj(exportedJson, isProtected);
+  const nextStr =
+    Object.keys(nextSanitized.writes).length === 0 &&
+    nextSanitized.deleted.length === 0 &&
+    nextSanitized.dirs.length === 0
+      ? ''
+      : JSON.stringify(nextSanitized);
+  if (nextStr === initialJson) return;
+  const initObj = sanitizeOverlayObj(initialJson, isProtected);
+  withOverlayLock(`${overlayPath}.lock`, () => {
+    const rawCurrent =
+      existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink()
+        ? readFileSync(overlayPath, 'utf8')
+        : '';
+    const merged = sanitizeOverlayObj(rawCurrent, isProtected);
+    const delSet = new Set(merged.deleted);
+    const dirSet = new Set(merged.dirs);
+    const initDel = new Set(initObj.deleted);
+    const initDirs = new Set(initObj.dirs);
+    const nextDel = new Set(nextSanitized.deleted);
+    const nextDirs = new Set(nextSanitized.dirs);
+
+    for (const [k, v] of Object.entries(nextSanitized.writes)) {
+      if (initObj.writes[k] !== v) {
+        merged.writes[k] = v;
+        delSet.delete(k);
+      }
+    }
+    for (const k of Object.keys(initObj.writes)) {
+      if (!(k in nextSanitized.writes)) {
+        delete merged.writes[k];
+      }
+    }
+    for (const d of nextDel) {
+      if (!initDel.has(d)) {
+        delSet.add(d);
+        delete merged.writes[d];
+      }
+    }
+    for (const d of initDel) {
+      if (!nextDel.has(d) && !(d in nextSanitized.writes)) {
+        delSet.delete(d);
+      }
+    }
+    for (const d of nextDirs) {
+      if (!initDirs.has(d)) dirSet.add(d);
+    }
+    for (const d of initDirs) {
+      if (!nextDirs.has(d)) dirSet.delete(d);
+    }
+
+    const finalObj = {writes: merged.writes, deleted: [...delSet], dirs: [...dirSet]};
+    if (Object.keys(finalObj.writes).length === 0 && finalObj.deleted.length === 0 && finalObj.dirs.length === 0) {
+      try { rmSync(overlayPath, {force: true}); } catch {}
+      return;
+    }
+    const finalJson = JSON.stringify(finalObj);
+    if (Buffer.byteLength(finalJson, 'utf8') <= MAX_OVERLAY_BYTES) {
+      atomicWriteJson(overlayPath, finalJson);
+    }
+  });
 }
 
 function clampContainerStatus(raw) {
@@ -587,6 +721,7 @@ class NodeSqlManager {
     if (this.primaryKey === ':memory:') this.primaryKey = null;
     this.byKey = new Map();
     this.handles = new Map();
+    this.memoryHandles = 0;
     this.nextId = 1;
     mkdirSync(dbDir, {recursive: true, mode: 0o700});
   }
@@ -642,12 +777,14 @@ class NodeSqlManager {
 
   openConfigured(filePath) {
     const db = new DatabaseSync(filePath, {allowExtension: false, limits: CONTAINER_SQL_LIMITS});
-    if (filePath !== ':memory:') {
+    if (filePath === ':memory:') {
+      db.exec('PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=8192;');
+    } else {
       try { chmodSync(filePath, 0o600); } catch {}
+      db.exec(
+        'PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;'
+      );
     }
-    db.exec(
-      'PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF; PRAGMA max_page_count=131072;'
-    );
     if (typeof db.setAuthorizer === 'function') {
       db.setAuthorizer(containerSqlAuthorizer);
     }
@@ -715,7 +852,24 @@ class NodeSqlManager {
           const norm = normalizeVfsKey(cfg.seedSql);
           const bundledSql = this.vfs.get(norm);
           const sqlText = bundledSql ? bundledSql.toString('utf8') : cfg.seedSql;
-          if (sqlText.trim()) db.exec(sqlText);
+          if (sqlText.trim()) {
+            assertSafeSqlStatement(sqlText);
+            const reservedBefore = new Set(
+              db
+                .prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'")
+                .all()
+                .map(r => String(r.name))
+            );
+            db.exec(sqlText);
+            const reservedAfter = db
+              .prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'")
+              .all();
+            for (const row of reservedAfter) {
+              if (!reservedBefore.has(String(row.name))) {
+                throw new Error('Seed SQL cannot create or rename objects in host-reserved _ namespace');
+              }
+            }
+          }
         }
         if (!alreadyPopulated && cfg.seedJson !== undefined && cfg.seedJson !== null) {
           let payload = cfg.seedJson;
@@ -742,9 +896,13 @@ class NodeSqlManager {
       }
       const canonical = this.resolveCanonicalKey(rawUrl);
       if (canonical === ':memory:') {
+        if (this.memoryHandles >= MAX_MEMORY_DB_HANDLES) {
+          return {error: `in-memory SQLite handle limit exceeded (max ${MAX_MEMORY_DB_HANDLES})`, code: 18, unique: false};
+        }
         const db = this.openConfigured(':memory:');
         const id = this.nextId++;
         this.handles.set(id, {key: ':memory:', db, ephemeral: true});
+        this.memoryHandles++;
         return {id};
       }
       const safeName = safeDbFilename(canonical);
@@ -869,12 +1027,27 @@ class NodeSqlManager {
         return {error: `database file limit exceeded (max ${MAX_CONTAINER_DATABASES})`, code: 18, unique: false};
       }
       if (srcPath === dstPath) return {bytes: existsSync(srcPath) ? lstatSync(srcPath).size : 0};
+      // Flush WAL journal on source DB before file copy so the destination sees all committed writes.
+      try {
+        const ckpt = new DatabaseSync(srcPath, {allowExtension: false, limits: CONTAINER_SQL_LIMITS});
+        try {
+          ckpt.exec('PRAGMA busy_timeout=3000; PRAGMA wal_checkpoint(TRUNCATE);');
+        } finally {
+          ckpt.close();
+        }
+      } catch {}
       const existing = this.byKey.get(toNorm.key);
       if (existing) {
         try { existing.db.close(); } catch {}
         this.byKey.delete(toNorm.key);
+        for (const [hid, m] of this.handles.entries()) {
+          if (m === existing) this.handles.delete(hid);
+        }
       }
       copyFileSync(srcPath, dstPath);
+      for (const suffix of ['-wal', '-shm', '-journal']) {
+        try { rmSync(dstPath + suffix, {force: true}); } catch {}
+      }
       try { chmodSync(dstPath, 0o600); } catch {}
       return {bytes: lstatSync(dstPath).size};
     } catch (err) {
@@ -902,14 +1075,21 @@ class NodeSqlManager {
     if (existing) {
       try { existing.db.close(); } catch {}
       this.byKey.delete(key);
+      for (const [hid, m] of this.handles.entries()) {
+        if (m === existing) this.handles.delete(hid);
+      }
     }
+    let removed = false;
     try {
       if (existsSync(file)) {
         rmSync(file, {force: true});
-        return {ok: true, removed: true};
+        removed = true;
       }
     } catch {}
-    return {ok: true, removed: false};
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      try { rmSync(file + suffix, {force: true}); } catch {}
+    }
+    return {ok: true, removed};
   }
 
   close(handleId) {
@@ -917,6 +1097,7 @@ class NodeSqlManager {
     if (!managed) return {ok: true};
     this.handles.delete(handleId);
     if (managed.ephemeral) {
+      this.memoryHandles = Math.max(0, this.memoryHandles - 1);
       try { managed.db.close(); } catch {}
     }
     return {ok: true};
@@ -965,6 +1146,7 @@ class NodeSqlManager {
     }
     this.byKey.clear();
     this.handles.clear();
+    this.memoryHandles = 0;
   }
 }
 
@@ -994,6 +1176,58 @@ function loadBundleVfs(bundleDir) {
 
   walk(canonical);
   return vfs;
+}
+
+/**
+ * Load only specific normalized keys (entry + declared database seed files) from `bundleDir`
+ * without walking up to 64 MiB of frontend assets for JS/TS/Python or `/api/meta` requests.
+ */
+function loadSelectedBundleVfs(bundleDir, rawKeys) {
+  const canonical = realpathSync(bundleDir);
+  const vfs = new Map();
+  let totalBytes = 0;
+  for (const raw of rawKeys) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const key = normalizeVfsKey(raw);
+    if (!key || vfs.has(key)) continue;
+    const full = resolve(canonical, key);
+    if (!contained(canonical, full)) continue;
+    try {
+      // Reject any symlink along path segments inside the bundle.
+      let cur = canonical;
+      let symlinked = false;
+      for (const seg of key.split('/')) {
+        cur = join(cur, seg);
+        if (lstatSync(cur).isSymbolicLink()) {
+          symlinked = true;
+          break;
+        }
+      }
+      if (symlinked) continue;
+      const meta = lstatSync(full);
+      if (!meta.isFile()) continue;
+      const bytes = readFileSync(full);
+      totalBytes += bytes.byteLength;
+      if (totalBytes > MAX_VFS_TOTAL_BYTES) throw new Error('Bundle exceeds max byte limit');
+      vfs.set(key, bytes);
+    } catch (e) {
+      if (e.code === 'ENOENT' || e.code === 'ENOTDIR') continue;
+      throw e;
+    }
+  }
+  return vfs;
+}
+
+function collectSeedKeys(backend, databases) {
+  const keys = [];
+  if (typeof backend?.entry === 'string') keys.push(backend.entry);
+  for (const cfg of Array.isArray(databases) ? databases : []) {
+    if (!cfg || typeof cfg !== 'object') continue;
+    if (typeof cfg.file === 'string') keys.push(cfg.file);
+    if (typeof cfg.seedSql === 'string') keys.push(cfg.seedSql);
+    if (typeof cfg.seedJson === 'string') keys.push(cfg.seedJson);
+  }
+  return keys;
 }
 
 function vfsToZippObject(vfs, stripPrefix = '') {
@@ -1162,23 +1396,28 @@ function checkContainerRateLimit({data, manifest, request, markLimited}) {
   }
 }
 
-function isPrivatePhpDir(rel) {
+function isPrivatePhpDir(rel, backend) {
   const lower = rel.toLowerCase();
-  return (
-    /^(?:server|backend|db|database|migrations)\//.test(lower) ||
+  if (
+    /^(?:server|backend|private|db|database|migrations)\//.test(lower) ||
     /(?:^|\/)\./.test(lower)
-  );
+  ) {
+    return true;
+  }
+  const root = typeof backend?.root === 'string' ? normalizeVfsKey(backend.root).toLowerCase() : '';
+  if (root && (lower === root || lower.startsWith(`${root}/`))) return true;
+  return false;
 }
 
 function resolvePhpScript(vfs, backend, targetPath) {
   const rel = normalizeVfsKey(targetPath);
   const entry = normalizeVfsKey(backend.entry);
   if (rel && vfs.has(rel)) {
-    if (/\.(?:php|phtml)$/i.test(rel) && !isPrivatePhpDir(rel)) {
+    if (/\.(?:php|phtml)$/i.test(rel) && !isPrivatePhpDir(rel, backend)) {
       return rel;
     }
   }
-  if (rel && vfs.has(`${rel}.php`) && !isPrivatePhpDir(`${rel}.php`)) {
+  if (rel && vfs.has(`${rel}.php`) && !isPrivatePhpDir(`${rel}.php`, backend)) {
     return `${rel}.php`;
   }
   if (vfs.has(entry)) return entry;
@@ -1208,7 +1447,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
   // /api/meta answers host diagnostics directly for setup.php and health checks,
   // validating the container backend entry and seeding declared SQLite databases.
   if (request.path === '/api/meta' && request.method === 'GET') {
-    const vfs = loadBundleVfs(bundle);
+    const vfs = loadSelectedBundleVfs(bundle, collectSeedKeys(backend, manifest.databases));
     const entryKey = normalizeVfsKey(backend.entry);
     if (!vfs.has(entryKey)) {
       throw new Error(`Container backend entry not found: ${backend.entry}`);
@@ -1237,7 +1476,10 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     };
   }
 
-  const vfs = loadBundleVfs(bundle);
+  const needsFullVfs = runtime === 'php' || runtime === 'rust';
+  const vfs = needsFullVfs
+    ? loadBundleVfs(bundle)
+    : loadSelectedBundleVfs(bundle, collectSeedKeys(backend, manifest.databases));
   const entryKey = normalizeVfsKey(backend.entry);
   if (!vfs.has(entryKey)) {
     throw new Error(`Container backend entry not found: ${backend.entry}`);
@@ -1389,15 +1631,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
             ? ''
             : raw.bodyBase64 || Buffer.from(String(meta.body ?? ''), 'utf8').toString('base64');
         try {
-          const snap = sanitizePhpOverlayJson(app.exportOverlayJson(), entryKey);
-          if (
-            snap &&
-            snap !== initialOverlay &&
-            snap !== '{"writes":{},"deleted":[],"dirs":[]}' &&
-            Buffer.byteLength(snap, 'utf8') <= MAX_OVERLAY_BYTES
-          ) {
-            atomicWriteJson(overlayPath, snap);
-          }
+          mergeAndPersistOverlay(overlayPath, initialOverlay, app.exportOverlayJson(), k => isProtectedPhpOverlayPath(k, entryKey));
         } catch {}
         return {
           status,
@@ -1445,12 +1679,12 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         engine.initSource(`${PYTHON_BACKEND_PRELUDE}\n${source}`, 'python');
         const dispatch = engine.pythonCall || engine.callFunction;
         const reqPayload = JSON.stringify({method, path, query: queryString, headers, body: bodyText, ...(verifiedContext ? {context: verifiedContext} : {})});
-        const sqlCache = [];
+        const sqlCacheParts = [];
         let sqlCacheBytes = 2;
         let parsed = {};
         for (let step = 0; step <= 512; step++) {
-          const cacheJson = JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v));
-          if (Buffer.byteLength(cacheJson, 'utf8') > MAX_PYTHON_SQL_CACHE_BYTES) {
+          const cacheJson = `[${sqlCacheParts.join(',')}]`;
+          if (sqlCacheBytes > MAX_PYTHON_SQL_CACHE_BYTES) {
             throw new Error('Python backend exceeded SQL cache memory limit');
           }
           const rawResp = dispatch.call(engine, '__softn_backend_dispatch', [
@@ -1464,15 +1698,21 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
             try {
               const rawSql = sqlBridge.call(`sql.${op}`, [a ?? '', b ?? '', c ?? '']);
               const val = typeof rawSql === 'string' ? (rawSql ? JSON.parse(rawSql) : null) : (rawSql ?? null);
-              const entrySize = Buffer.byteLength(JSON.stringify(val, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)) || 'null', 'utf8');
-              sqlCacheBytes += entrySize + 1;
+              const serializedEntry = JSON.stringify(val, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)) || 'null';
+              const entrySize = Buffer.byteLength(serializedEntry, 'utf8');
+              sqlCacheBytes += entrySize + (sqlCacheParts.length > 0 ? 1 : 0);
               if (sqlCacheBytes > MAX_PYTHON_SQL_CACHE_BYTES) {
                 throw new Error('Python backend exceeded SQL cache memory limit');
               }
-              sqlCache.push(val);
+              sqlCacheParts.push(serializedEntry);
             } catch (sqlErr) {
               if (sqlErr instanceof Error && sqlErr.message.includes('SQL cache memory limit')) throw sqlErr;
-              sqlCache.push({__sql_err: sqlErr instanceof Error ? sqlErr.message : String(sqlErr)});
+              const errEntry = JSON.stringify({__sql_err: sqlErr instanceof Error ? sqlErr.message : String(sqlErr)});
+              sqlCacheBytes += Buffer.byteLength(errEntry, 'utf8') + (sqlCacheParts.length > 0 ? 1 : 0);
+              if (sqlCacheBytes > MAX_PYTHON_SQL_CACHE_BYTES) {
+                throw new Error('Python backend exceeded SQL cache memory limit');
+              }
+              sqlCacheParts.push(errEntry);
             }
             continue;
           }
@@ -1494,7 +1734,8 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
       const vfsObj = vfsToZippObject(vfs, rootPrefix);
       const relEntry = rootPrefix && entryKey.startsWith(`${rootPrefix}/`) ? entryKey.slice(rootPrefix.length + 1) : entryKey;
       const overlayPath = join(data, 'rust-overlay.json');
-      const initialOverlay = existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink() ? readFileSync(overlayPath, 'utf8') : '';
+      const rawInitialOverlay = existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink() ? readFileSync(overlayPath, 'utf8') : '';
+      const initialOverlay = sanitizeRustOverlayJson(rawInitialOverlay, relEntry);
       if (initialOverlay) {
         try {
           const ov = JSON.parse(initialOverlay);
@@ -1527,15 +1768,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         const parsed = JSON.parse(String(rawResp || '{}'));
         try {
           if (typeof engine.exportRustOverlayJson === 'function') {
-            const snap = engine.exportRustOverlayJson();
-            if (
-              snap &&
-              snap !== initialOverlay &&
-              snap !== '{"writes":{},"deleted":[],"dirs":[]}' &&
-              Buffer.byteLength(snap, 'utf8') <= MAX_OVERLAY_BYTES
-            ) {
-              atomicWriteJson(overlayPath, snap);
-            }
+            mergeAndPersistOverlay(overlayPath, initialOverlay, engine.exportRustOverlayJson(), k => isProtectedRustSourcePath(k, relEntry));
           }
         } catch {}
         const status = clampContainerStatus(parsed.status);

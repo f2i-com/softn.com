@@ -104,8 +104,9 @@ export class SplitRealmSceneHost {
       }
       if (this.disposed) return;
 
-      for (const [canvasId, entry] of this.pendingQueues) {
+      for (const [canvasId, entry] of [...this.pendingQueues]) {
         const ops = entry.ops.splice(0, entry.ops.length);
+        if (entry.ops.length === 0) this.pendingQueues.delete(canvasId);
         if (ops.length === 0) continue;
         this.applyCanvasOps(THREE, entry.canvas, canvasId, ops);
       }
@@ -123,6 +124,41 @@ export class SplitRealmSceneHost {
     }
   }
 
+  private disposeObjectResources(obj: import('three').Object3D): void {
+    obj.traverse((node) => {
+      const m = node as {
+        geometry?: { dispose?: () => void };
+        material?: { dispose?: () => void } | Array<{ dispose?: () => void }>;
+      };
+      try { m.geometry?.dispose?.(); } catch { /* ignore */ }
+      if (Array.isArray(m.material)) {
+        for (const mat of m.material) {
+          try { mat?.dispose?.(); } catch { /* ignore */ }
+        }
+      } else {
+        try { m.material?.dispose?.(); } catch { /* ignore */ }
+      }
+    });
+  }
+
+  private isAncestor(candidate: import('three').Object3D, node: import('three').Object3D): boolean {
+    let cur: import('three').Object3D | null = node;
+    for (let depth = 0; cur && depth < MAX_SCENE_OBJECTS; depth++) {
+      if (cur === candidate) return true;
+      cur = cur.parent;
+    }
+    return false;
+  }
+
+  private disposeSceneState(state: HostedSceneState): void {
+    for (const obj of state.objects.values()) {
+      this.disposeObjectResources(obj);
+    }
+    state.objects.clear();
+    try { state.renderer.dispose(); } catch { /* ignore */ }
+    try { state.renderer.getContext()?.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* ignore */ }
+  }
+
   private applyCanvasOps(
     THREE: typeof import('three'),
     canvas: HTMLCanvasElement,
@@ -131,12 +167,19 @@ export class SplitRealmSceneHost {
   ): void {
     let state = this.scenes.get(canvasId);
     const putObj = (s: HostedSceneState, id: number, obj: import('three').Object3D): boolean => {
-      if (!s.objects.has(id) && s.objects.size >= MAX_SCENE_OBJECTS) return false;
+      const existing = s.objects.get(id);
+      if (existing === undefined && s.objects.size >= MAX_SCENE_OBJECTS) return false;
+      if (existing && existing !== obj) {
+        existing.parent?.remove(existing);
+        this.disposeObjectResources(existing);
+      }
       s.objects.set(id, obj);
       return true;
     };
 
     for (const op of ops) {
+      if (!Array.isArray(op) || (op as readonly unknown[]).length === 0) continue;
+      try {
       switch (op[0]) {
         case 'init': {
           if (!state) {
@@ -175,8 +218,12 @@ export class SplitRealmSceneHost {
         }
         case 'resize': {
           if (state) {
-            state.renderer.setPixelRatio(Math.min(op[3] || 1, 2));
-            state.renderer.setSize(clampDrawingSize(op[1]), clampDrawingSize(op[2]), false);
+            const dpr = Math.max(0.5, Math.min(2, Number(op[3]) || 1));
+            const maxCssSide = Math.floor(4096 / dpr);
+            const w = Math.min(maxCssSide, clampDrawingSize(op[1]));
+            const h = Math.min(maxCssSide, clampDrawingSize(op[2]));
+            state.renderer.setPixelRatio(dpr);
+            state.renderer.setSize(w, h, false);
           }
           break;
         }
@@ -273,8 +320,15 @@ export class SplitRealmSceneHost {
                 const manager = new THREE.LoadingManager();
                 manager.setURLModifier((url) => {
                   if (url === blobUrl || /^data:/i.test(url)) return url;
-                  const beside = url.startsWith(base) ? this.archive.getBlobUrl(decodeURIComponent(url.slice(base.length)), path) : null;
-                  return beside ?? 'data:,';
+                  if (url.startsWith(base)) {
+                    try {
+                      const beside = this.archive.getBlobUrl(decodeURIComponent(url.slice(base.length)), path);
+                      if (beside) return beside;
+                    } catch {
+                      // Malformed percent-encoding -> block
+                    }
+                  }
+                  return 'data:,';
                 });
                 const loader = new GLTFLoader(manager);
                 loader.load(blobUrl, (gltf) => {
@@ -288,7 +342,9 @@ export class SplitRealmSceneHost {
         case 'add': {
           const parent = state?.objects.get(op[1]);
           const child = state?.objects.get(op[2]);
-          if (parent && child) parent.add(child);
+          if (parent && child && parent !== child && !this.isAncestor(child, parent)) {
+            parent.add(child);
+          }
           break;
         }
         case 'remove': {
@@ -327,14 +383,16 @@ export class SplitRealmSceneHost {
         }
         case 'dispose': {
           if (state) {
-            try { state.renderer.dispose(); } catch { /* ignore */ }
-            state.objects.clear();
+            this.disposeSceneState(state);
             this.scenes.delete(canvasId);
             state = undefined;
           }
           this.pendingQueues.delete(canvasId);
           break;
         }
+      }
+      } catch {
+        // Isolate malformed per-op failures so other scenes/ops in flush() continue cleanly
       }
     }
   }
@@ -343,7 +401,7 @@ export class SplitRealmSceneHost {
     if (this.disposed) return;
     this.disposed = true;
     for (const s of this.scenes.values()) {
-      s.renderer.dispose();
+      this.disposeSceneState(s);
     }
     this.scenes.clear();
     this.pendingQueues.clear();

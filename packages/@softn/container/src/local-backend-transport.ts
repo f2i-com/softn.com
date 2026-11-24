@@ -16,7 +16,12 @@ import {
   type BackendToHostMsg,
   type HostToBackendMsg,
 } from './backend-runtime';
-import { statusTextFor, VirtualCookieJar } from './backend-transport';
+import {
+  ALLOWED_BACKEND_METHODS,
+  FORBIDDEN_FETCH_REQUEST_HEADERS,
+  statusTextFor,
+  VirtualCookieJar,
+} from './backend-transport';
 import { startModuleWorker } from './worker-start';
 import type {
   BackendConfig,
@@ -37,8 +42,15 @@ const SQLITE_IDB_VERSION = 2;
 const MAX_PERSISTED_SQLITE_DBS = 8;
 const MAX_SINGLE_SQLITE_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_PERSISTED_SQLITE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_LOCAL_FETCH_TIMEOUT_MS = 30_000;
+const LOCAL_ENCODER = new TextEncoder();
+const HEX_TABLE: readonly string[] = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
 
-function openSqliteIdb(version = SQLITE_IDB_VERSION, retried = false): Promise<IDBDatabase | null> {
+let cachedSqliteIdbPromise: Promise<IDBDatabase | null> | null = null;
+let cachedSqliteIdbGlobal: IDBFactory | null = null;
+const coalescedBlobWrites = new Map<string, { inFlight: boolean; pending?: Uint8Array | string; explicitStorage?: Storage }>();
+
+function openSqliteIdbFresh(version = SQLITE_IDB_VERSION, retried = false): Promise<IDBDatabase | null> {
   if (typeof indexedDB === 'undefined') return Promise.resolve(null);
   return new Promise((resolve) => {
     try {
@@ -52,13 +64,17 @@ function openSqliteIdb(version = SQLITE_IDB_VERSION, retried = false): Promise<I
       req.onsuccess = () => {
         const db = req.result;
         db.onversionchange = () => {
+          cachedSqliteIdbPromise = null;
           try { db.close(); } catch { /* ignore */ }
+        };
+        db.onclose = () => {
+          cachedSqliteIdbPromise = null;
         };
         if (!db.objectStoreNames.contains(SQLITE_IDB_STORE)) {
           const nextVersion = (typeof db.version === 'number' && db.version >= 1 ? db.version : version) + 1;
           try { db.close(); } catch { /* ignore */ }
           if (!retried) {
-            void openSqliteIdb(nextVersion, true).then(resolve);
+            void openSqliteIdbFresh(nextVersion, true).then(resolve);
             return;
           }
           resolve(null);
@@ -72,6 +88,21 @@ function openSqliteIdb(version = SQLITE_IDB_VERSION, retried = false): Promise<I
       resolve(null);
     }
   });
+}
+
+function openSqliteIdb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (cachedSqliteIdbGlobal !== indexedDB) {
+    cachedSqliteIdbGlobal = indexedDB;
+    cachedSqliteIdbPromise = null;
+  }
+  if (!cachedSqliteIdbPromise) {
+    cachedSqliteIdbPromise = openSqliteIdbFresh().then((db) => {
+      if (!db) cachedSqliteIdbPromise = null;
+      return db;
+    });
+  }
+  return cachedSqliteIdbPromise;
 }
 
 function readFallbackStorage(
@@ -146,40 +177,41 @@ async function loadPersistedBlobs(
 
   const idb = await openSqliteIdb();
   if (idb) {
-    try {
-      await new Promise<void>((resolve) => {
-        try {
-          const tx = idb.transaction(SQLITE_IDB_STORE, 'readonly');
-          const store = tx.objectStore(SQLITE_IDB_STORE);
-          const curReq = store.openCursor();
-          curReq.onsuccess = () => {
-            const cur = curReq.result;
-            if (!cur) return;
-            const k = String(cur.key);
-            if (k.startsWith(sqlPrefix)) {
-              const val = cur.value;
-              if (val instanceof Uint8Array) dbs[k.slice(sqlPrefix.length)] = val;
-              else if (val instanceof ArrayBuffer) dbs[k.slice(sqlPrefix.length)] = new Uint8Array(val);
-            } else if (k === ovKey && typeof cur.value === 'string') {
-              phpOverlay = cur.value;
-            } else if (k === rustOvKey && typeof cur.value === 'string') {
-              rustOverlay = cur.value;
-            } else if (k === cookiesKey && typeof cur.value === 'string') {
-              cookies = cur.value;
-            }
-            cur.continue();
-          };
-          curReq.onerror = () => resolve();
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
-          tx.onabort = () => resolve();
-        } catch {
-          resolve();
-        }
-      });
-    } finally {
-      try { idb.close(); } catch { /* ignore */ }
-    }
+    await new Promise<void>((resolve) => {
+      try {
+        const tx = idb.transaction(SQLITE_IDB_STORE, 'readonly');
+        const store = tx.objectStore(SQLITE_IDB_STORE);
+        const range =
+          typeof IDBKeyRange !== 'undefined' && typeof IDBKeyRange.bound === 'function'
+            ? IDBKeyRange.bound(storagePrefix, `${storagePrefix}\uffff`)
+            : undefined;
+        const curReq = range ? store.openCursor(range) : store.openCursor();
+        curReq.onsuccess = () => {
+          const cur = curReq.result;
+          if (!cur) return;
+          const k = String(cur.key);
+          if (k.startsWith(sqlPrefix)) {
+            const val = cur.value;
+            if (val instanceof Uint8Array) dbs[k.slice(sqlPrefix.length)] = val;
+            else if (val instanceof ArrayBuffer) dbs[k.slice(sqlPrefix.length)] = new Uint8Array(val);
+          } else if (k === ovKey && typeof cur.value === 'string') {
+            phpOverlay = cur.value;
+          } else if (k === rustOvKey && typeof cur.value === 'string') {
+            rustOverlay = cur.value;
+          } else if (k === cookiesKey && typeof cur.value === 'string') {
+            cookies = cur.value;
+          }
+          cur.continue();
+        };
+        curReq.onerror = () => resolve();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+        tx.onabort = () => resolve();
+      } catch {
+        cachedSqliteIdbPromise = null;
+        resolve();
+      }
+    });
     return { dbs, phpOverlay, rustOverlay, cookies };
   }
 
@@ -195,29 +227,30 @@ export async function clearBackendPersistedBlobs(storagePrefix: string, explicit
   if (!explicitStorage) {
     const idb = await openSqliteIdb();
     if (idb) {
-      try {
-        await new Promise<void>((resolve) => {
-          try {
-            const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
-            const store = tx.objectStore(SQLITE_IDB_STORE);
-            const curReq = store.openCursor();
-            curReq.onsuccess = () => {
-              const cur = curReq.result;
-              if (!cur) return;
-              if (String(cur.key).startsWith(storagePrefix)) cur.delete();
-              cur.continue();
-            };
-            curReq.onerror = () => resolve();
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => resolve();
-            tx.onabort = () => resolve();
-          } catch {
-            resolve();
-          }
-        });
-      } finally {
-        try { idb.close(); } catch { /* ignore */ }
-      }
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
+          const store = tx.objectStore(SQLITE_IDB_STORE);
+          const range =
+            typeof IDBKeyRange !== 'undefined' && typeof IDBKeyRange.bound === 'function'
+              ? IDBKeyRange.bound(storagePrefix, `${storagePrefix}\uffff`)
+              : undefined;
+          const curReq = range ? store.openCursor(range) : store.openCursor();
+          curReq.onsuccess = () => {
+            const cur = curReq.result;
+            if (!cur) return;
+            if (String(cur.key).startsWith(storagePrefix)) cur.delete();
+            cur.continue();
+          };
+          curReq.onerror = () => resolve();
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          cachedSqliteIdbPromise = null;
+          resolve();
+        }
+      });
     }
   }
   const store = explicitStorage ?? defaultWebStorage();
@@ -235,25 +268,22 @@ export async function clearBackendPersistedBlobs(storagePrefix: string, explicit
   }
 }
 
-async function savePersistedBlob(key: string, value: Uint8Array | string, explicitStorage?: Storage): Promise<void> {
+async function writePersistedBlobOnce(key: string, value: Uint8Array | string, explicitStorage?: Storage): Promise<void> {
   if (!explicitStorage) {
     const idb = await openSqliteIdb();
     if (idb) {
-      try {
-        await new Promise<void>((resolve) => {
-          try {
-            const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
-            tx.objectStore(SQLITE_IDB_STORE).put(value, key);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => resolve();
-            tx.onabort = () => resolve();
-          } catch {
-            resolve();
-          }
-        });
-      } finally {
-        try { idb.close(); } catch { /* ignore */ }
-      }
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
+          tx.objectStore(SQLITE_IDB_STORE).put(value, key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          cachedSqliteIdbPromise = null;
+          resolve();
+        }
+      });
       return;
     }
   }
@@ -269,6 +299,29 @@ async function savePersistedBlob(key: string, value: Uint8Array | string, explic
       // ignore quota/storage errors
     }
   }
+}
+
+function savePersistedBlob(key: string, value: Uint8Array | string, explicitStorage?: Storage): Promise<void> {
+  let slot = coalescedBlobWrites.get(key);
+  if (slot) {
+    slot.pending = value;
+    slot.explicitStorage = explicitStorage;
+    return Promise.resolve();
+  }
+  slot = { inFlight: true, pending: value, explicitStorage };
+  coalescedBlobWrites.set(key, slot);
+  return (async () => {
+    try {
+      while (slot.pending !== undefined) {
+        const nextVal = slot.pending;
+        const nextStore = slot.explicitStorage;
+        slot.pending = undefined;
+        await writePersistedBlobOnce(key, nextVal, nextStore);
+      }
+    } finally {
+      coalescedBlobWrites.delete(key);
+    }
+  })();
 }
 
 export interface LocalBackendTransportOptions {
@@ -505,13 +558,31 @@ export class LocalBackendTransport implements BackendTransport {
   async fetch(req: BackendHttpRequest): Promise<BackendHttpResponse> {
     await this.ready;
     if (this.disposed) throw new Error('LocalBackendTransport is disposed');
-    const reqId = this.nextReqId++;
+    const method = (req.method || 'GET').toUpperCase();
+    if (!ALLOWED_BACKEND_METHODS.has(method)) {
+      throw new Error(`Disallowed HTTP method: ${method}`);
+    }
     const path = req.path.startsWith('/') ? req.path : `/${req.path}`;
+    if (path.includes('\0') || /[\u0000-\u001f\u007f]/.test(path)) {
+      throw new Error('Invalid local backend request path');
+    }
+    const reqId = this.nextReqId++;
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers ?? {})) {
-      // Never allow untrusted frontend JS to spoof or suppress VirtualCookieJar HttpOnly cookies.
-      if (k.toLowerCase() === 'cookie') continue;
-      headers[k] = v;
+      const lower = k.toLowerCase();
+      // Filter forbidden/spoofed headers matching RemoteBackendTransport parity.
+      if (
+        !/^[a-z0-9-]+$/.test(lower) ||
+        FORBIDDEN_FETCH_REQUEST_HEADERS.has(lower) ||
+        lower.startsWith('sec-') ||
+        lower.startsWith('proxy-') ||
+        lower.startsWith('x-forwarded-') ||
+        lower.startsWith('x-formlogic') ||
+        /[\r\n\0]/.test(v)
+      ) {
+        continue;
+      }
+      headers[lower] = v;
     }
 
     // Attach container-scoped cookies strictly from VirtualCookieJar
@@ -524,15 +595,29 @@ export class LocalBackendTransport implements BackendTransport {
       req.body === undefined
         ? undefined
         : typeof req.body === 'string'
-          ? new TextEncoder().encode(req.body)
+          ? LOCAL_ENCODER.encode(req.body)
           : req.body;
 
     return new Promise<BackendHttpResponse>((resolve, reject) => {
-      this.pendingFetch.set(reqId, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pendingFetch.delete(reqId)) {
+          reject(new Error(`Local backend request timed out after ${DEFAULT_LOCAL_FETCH_TIMEOUT_MS}ms`));
+        }
+      }, DEFAULT_LOCAL_FETCH_TIMEOUT_MS);
+      this.pendingFetch.set(reqId, {
+        resolve: (resp) => {
+          clearTimeout(timer);
+          resolve(resp);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
       this.post({
         type: 'fetch',
         reqId,
-        method: (req.method || 'GET').toUpperCase(),
+        method,
         path,
         query: req.query ?? '',
         headers,
@@ -630,11 +715,11 @@ export class LocalBackendTransport implements BackendTransport {
         if (typeof data === 'string') {
           this.post({ type: 'ws-send', wsId, data, binary: false });
         } else {
-          let hex = '';
+          const hexParts = new Array<string>(data.byteLength);
           for (let i = 0; i < data.byteLength; i++) {
-            hex += data[i].toString(16).padStart(2, '0');
+            hexParts[i] = HEX_TABLE[data[i]];
           }
-          this.post({ type: 'ws-send', wsId, data: hex, binary: true });
+          this.post({ type: 'ws-send', wsId, data: hexParts.join(''), binary: true });
         }
       },
       close: (code?: number, reason?: string) => {

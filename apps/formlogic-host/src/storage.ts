@@ -44,10 +44,37 @@ export function storageLimits(offered: unknown): StorageLimits {
   return limits;
 }
 
+/** Exact UTF-16 length of `JSON.stringify(text)` without allocating a serialized string. */
+function jsonStringLength(text: string): number {
+  const len = text.length;
+  let total = len + 2;
+  for (let i = 0; i < len; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x22 || c === 0x5c) {
+      total += 1;
+    } else if (c < 0x20) {
+      total += (c === 0x08 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d) ? 1 : 5;
+    } else if (c >= 0xd800 && c <= 0xdfff) {
+      if (c <= 0xdbff && i + 1 < len) {
+        const next = text.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          i++;
+          continue;
+        }
+      }
+      total += 5;
+    }
+  }
+  return total;
+}
+
 /** What one entry adds to `JSON.stringify` of the whole store: its key and value as JSON, and the colon. */
-const entryCost = (key: string, value: string) => JSON.stringify(key).length + 1 + JSON.stringify(value).length;
+const entryCost = (key: string, value: string) => jsonStringLength(key) + 1 + jsonStringLength(value);
 /** `JSON.stringify` of a store's length, from its entries' costs: the braces, the entries and the commas between them. */
 const storeLength = (count: number, costs: number) => 2 + costs + Math.max(0, count - 1);
+const MAX_JOINED_RECEIPTS = 4096;
+const MAX_COALESCED_DEADLINE_MULTIPLIER = 4;
+const MAX_LEGACY_OUTSTANDING = 4096;
 let mountSequence = 0;
 
 interface Operation {
@@ -62,6 +89,7 @@ interface Operation {
   joined: { resolve: () => void; reject: (reason: Error) => void }[];
   /** Protocol 1's admission deadline; protocol 0 has none. */
   timer?: ReturnType<typeof setTimeout>;
+  createdAt: number;
   deadlineAt: number;
   dispatched: boolean;
 }
@@ -82,6 +110,7 @@ export function installAppStorage(
   const limits: StorageLimits = options.limits ?? { ...STORAGE_LIMITS };
   const generation = `host-storage-${++mountSequence}`;
   const entries = new Map(Object.entries(snapshot));
+  let cachedKeys: string[] | null = null;
   const confirmed = new Map(entries);
   // Each entry's share of the store's JSON length, kept as the store changes: the whole store,
   // which may now be tens of megabytes, was serialised again on every save to be measured.
@@ -89,7 +118,7 @@ export function installAppStorage(
   let costTotal = 0;
   for (const [key, value] of entries) { const cost = entryCost(key, value); costs.set(key, cost); costTotal += cost; }
   /** The store's size after `input`: its entry count and their costs, and each touched key's new cost (null: gone). */
-  const measure = (input: Record<string, unknown>) => {
+  const measure = (input: Record<string, unknown>, precomputedSetCost?: number, precomputedBatchCosts?: number[]) => {
     if (input.operation === 'clear') return { count: 0, total: 0, touched: null as Map<string, number | null> | null };
     const touched = new Map<string, number | null>();
     let count = entries.size, total = costTotal;
@@ -101,8 +130,11 @@ export function installAppStorage(
       touched.set(key, cost);
     };
     if (input.operation === 'remove') put(input.key as string, null);
-    else if (input.operation === 'set') put(input.key as string, entryCost(input.key as string, input.value as string));
-    else for (const item of input.replacements as { key: string; value: string }[]) put(item.key, entryCost(item.key, item.value));
+    else if (input.operation === 'set') put(input.key as string, precomputedSetCost ?? entryCost(input.key as string, input.value as string));
+    else {
+      const items = input.replacements as { key: string; value: string }[];
+      for (let i = 0; i < items.length; i++) put(items[i].key, precomputedBatchCosts ? precomputedBatchCosts[i] : entryCost(items[i].key, items[i].value));
+    }
     return { count, total, touched };
   };
   const commitCosts = (measured: ReturnType<typeof measure>) => {
@@ -137,11 +169,23 @@ export function installAppStorage(
       : 'Saving app data. Keep this page open until saving completes.';
   };
   const failure = (state: 'failed' | 'unknown', reason: string) => Object.assign(new Error(reason), { state });
-  const apply = (map: Map<string, string>, input: Record<string, unknown>) => {
-    if (input.operation === 'clear') map.clear();
-    else if (input.operation === 'remove') map.delete(input.key as string);
-    else if (input.operation === 'set') map.set(input.key as string, input.value as string);
-    else for (const replacement of input.replacements as { key: string; value: string }[]) map.set(replacement.key, replacement.value);
+  const apply = (map: Map<string, string>, input: Record<string, unknown>, trackKeys = false) => {
+    if (input.operation === 'clear') {
+      if (trackKeys && map.size > 0) cachedKeys = null;
+      map.clear();
+    } else if (input.operation === 'remove') {
+      const deleted = map.delete(input.key as string);
+      if (trackKeys && deleted) cachedKeys = null;
+    } else if (input.operation === 'set') {
+      const key = input.key as string;
+      if (trackKeys && !map.has(key)) cachedKeys = null;
+      map.set(key, input.value as string);
+    } else {
+      for (const replacement of input.replacements as { key: string; value: string }[]) {
+        if (trackKeys && !map.has(replacement.key)) cachedKeys = null;
+        map.set(replacement.key, replacement.value);
+      }
+    }
   };
   const saved = (reply: unknown) => {
     if (!reply || typeof reply !== 'object' || Array.isArray(reply)) return false;
@@ -231,35 +275,72 @@ export function installAppStorage(
   function admit(input: Record<string, unknown>): StorageWriteReceipt {
     if (disposed) throw new DOMException('App storage is disposed', 'InvalidStateError');
     if (unknown) throw new DOMException('An earlier app save has an unknown outcome', 'InvalidStateError');
-    // Freeze the exact bounded wire input once. No caller can change a queued
-    // batch after admission, and accounting uses the parent's UTF-16 units.
-    const serialized = JSON.stringify(input);
-    if (protocol === 1 && serialized.length > limits.input) throw quota();
-    const frozen = JSON.parse(serialized) as Record<string, unknown>;
-    if (Array.isArray(frozen.replacements)) { for (const item of frozen.replacements) Object.freeze(item); Object.freeze(frozen.replacements); }
-    Object.freeze(frozen);
-    const measured = measure(frozen);
-    // Protocol 0 holds a set to the cache's limits, and nothing else, as it always did.
+    // Freeze the exact bounded wire input once without allocating multi-megabyte JSON strings.
+    let serializedLength: number;
+    let frozen: Record<string, unknown>;
+    let setCost: number | undefined;
+    let batchCosts: number[] | undefined;
+    if (input.operation === 'clear') {
+      serializedLength = 21;
+      frozen = Object.freeze({ operation: 'clear' });
+    } else if (input.operation === 'remove') {
+      const key = input.key as string;
+      serializedLength = 29 + jsonStringLength(key);
+      frozen = Object.freeze({ operation: 'remove', key });
+    } else if (input.operation === 'set') {
+      const key = input.key as string;
+      const value = input.value as string;
+      setCost = entryCost(key, value);
+      serializedLength = 34 + setCost;
+      frozen = Object.freeze({ operation: 'set', key, value });
+    } else {
+      const items = input.replacements as { key: string; value: string }[];
+      const frozenItems: { key: string; value: string }[] = new Array(items.length);
+      batchCosts = new Array(items.length);
+      let sum = 39 + Math.max(0, items.length - 1);
+      for (let i = 0; i < items.length; i++) {
+        const key = items[i].key;
+        const value = items[i].value;
+        const cost = entryCost(key, value);
+        batchCosts[i] = cost;
+        sum += 16 + cost;
+        frozenItems[i] = Object.freeze({ key, value });
+      }
+      serializedLength = sum;
+      frozen = Object.freeze({ operation: 'batch', replacements: Object.freeze(frozenItems) });
+    }
+    if (protocol === 1 && serializedLength > limits.input) throw quota();
+    const measured = measure(frozen, setCost, batchCosts);
+    // Protocol 0 holds a set to the cache's limits, and nothing else, as it always did,
+    // subject only to a high safety ceiling so runaway loops cannot exhaust host memory.
     if ((protocol === 1 || frozen.operation === 'set') && (measured.count > limits.entries || storeLength(measured.count, measured.total) > limits.map)) throw quota();
     const earlier = unsentSetOf(frozen);
-    if (protocol === 1 && ((!earlier && waiting.length + (active ? 1 : 0) >= STORAGE_LIMITS.outstanding) || units - (earlier?.units ?? 0) + serialized.length > limits.queued)) throw quota();
-    apply(entries, frozen); commitCosts(measured);
+    const canCoalesce = earlier !== undefined && earlier.joined.length < MAX_JOINED_RECEIPTS;
+    if (protocol === 1) {
+      if ((!canCoalesce && waiting.length + (active ? 1 : 0) >= STORAGE_LIMITS.outstanding) || units - (canCoalesce ? earlier.units : 0) + serializedLength > limits.queued) throw quota();
+    } else if (waiting.length + (active ? 1 : 0) >= MAX_LEGACY_OUTSTANDING || units + serializedLength > STORAGE_MAXIMA.queued) {
+      throw quota();
+    }
+    apply(entries, frozen, true); commitCosts(measured);
     let resolve!: () => void; let reject!: (reason: Error) => void;
     const completion = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     // Sync WebStorage callers may ignore receipts; failures stay observable
     // without an unhandled rejection. This does not change the returned promise.
     void completion.catch(() => {});
-    const deadlineAt = Date.now() + (options.deadlineMs ?? STORAGE_LIMITS.deadline);
-    if (earlier) {
-      // It keeps its place and takes the newest value, with that value's deadline: it had the time
-      // of the oldest, and died with it. Both receipts say what became of it.
-      units += serialized.length - earlier.units;
-      earlier.units = serialized.length; earlier.input = frozen; earlier.joined.push({ resolve, reject });
-      earlier.deadlineAt = deadlineAt; expireAtDeadline(earlier);
+    const now = Date.now();
+    const baseDeadlineMs = options.deadlineMs ?? STORAGE_LIMITS.deadline;
+    const deadlineAt = now + baseDeadlineMs;
+    if (canCoalesce) {
+      // It keeps its place and takes the newest value, with that value's deadline capped
+      // to a bounded multiple of the admission window so rapid bursts cannot starve expiry forever.
+      units += serializedLength - earlier.units;
+      earlier.units = serializedLength; earlier.input = frozen; earlier.joined.push({ resolve, reject });
+      earlier.deadlineAt = Math.min(deadlineAt, earlier.createdAt + baseDeadlineMs * MAX_COALESCED_DEADLINE_MULTIPLIER);
+      expireAtDeadline(earlier);
       notify();
       return Object.freeze({ generation, sequence: ++sequence, completion, get state() { return earlier.state; } });
     }
-    const operation = { input: frozen, units: serialized.length, state: 'pending' as StorageWriteState, resolve, reject, controller: new AbortController(), joined: [] as Operation['joined'], deadlineAt, dispatched: false } as Operation;
+    const operation = { input: frozen, units: serializedLength, state: 'pending' as StorageWriteState, resolve, reject, controller: new AbortController(), joined: [] as Operation['joined'], createdAt: now, deadlineAt, dispatched: false } as Operation;
     operation.receipt = Object.freeze({ generation, sequence: ++sequence, completion, get state() { return operation.state; } });
     if (protocol === 1) expireAtDeadline(operation);
     units += operation.units; waiting.push(operation);
@@ -291,7 +372,11 @@ export function installAppStorage(
     },
   };
   const storage: Storage = {
-    get length() { return entries.size; }, key: index => Array.from(entries.keys())[index] ?? null,
+    get length() { return entries.size; },
+    key: index => {
+      if (cachedKeys === null) cachedKeys = Array.from(entries.keys());
+      return cachedKeys[index] ?? null;
+    },
     getItem: key => entries.get(String(key)) ?? null,
     setItem(key, value) { setItem(key, value); }, removeItem(key) { removeItem(key); }, clear() { admit({ operation: 'clear' }); },
   };

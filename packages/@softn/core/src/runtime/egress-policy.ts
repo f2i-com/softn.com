@@ -68,13 +68,22 @@ export function describeNetDestination(
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     return deny(`Scheme not allowed: ${parsed.protocol}`);
   }
+  if (parsed.username || parsed.password) {
+    return deny('Embedded credentials in URLs are not allowed');
+  }
   if (parsed.protocol === 'http:' && net?.allow_http !== true) {
     return deny(
       `HTTP not allowed (only HTTPS). Set net.allow_http in permission.json to allow: ${url}`
     );
   }
-  const listed = Array.isArray(net?.allowed_hosts) && net.allowed_hosts.includes(parsed.hostname);
-  if (Array.isArray(net?.allowed_hosts) && net.allowed_hosts.length > 0 && !listed) {
+  const hostLower = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  const allowedLower = Array.isArray(net?.allowed_hosts)
+    ? net.allowed_hosts
+        .filter((h): h is string => typeof h === 'string')
+        .map((h) => h.trim().toLowerCase().replace(/\.$/, ''))
+    : [];
+  const listed = allowedLower.includes(hostLower);
+  if (allowedLower.length > 0 && !listed) {
     return deny(`Host not allowed: ${parsed.hostname}`);
   }
   // `net` with no host list is the internet, not the person's own machine or
@@ -87,6 +96,54 @@ export function describeNetDestination(
     );
   }
   return ALLOW;
+}
+
+/** Expand an IPv6 literal (without brackets) to 8 16-bit groups, or null if invalid. */
+function expandIpv6(raw: string): Uint16Array | null {
+  // Strip optional zone id (`%eth0`)
+  const zoneIdx = raw.indexOf('%');
+  let input = zoneIdx >= 0 ? raw.slice(0, zoneIdx) : raw;
+  // Convert trailing dotted-quad IPv4 (`::ffff:127.0.0.1` or `::ffff:0:127.0.0.1`) to two 16-bit hex groups
+  const lastColon = input.lastIndexOf(':');
+  if (lastColon >= 0 && input.slice(lastColon + 1).includes('.')) {
+    const quad = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(input.slice(lastColon + 1));
+    if (!quad) return null;
+    const o = [Number(quad[1]), Number(quad[2]), Number(quad[3]), Number(quad[4])];
+    if (o.some((n) => n < 0 || n > 255)) return null;
+    const hi = ((o[0] << 8) | o[1]).toString(16);
+    const lo = ((o[2] << 8) | o[3]).toString(16);
+    input = `${input.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+  const halves = input.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 0) return null;
+  const out = new Uint16Array(8);
+  let idx = 0;
+  for (const g of left) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    out[idx++] = parseInt(g, 16);
+  }
+  idx += Math.max(0, missing);
+  for (const g of right) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    out[idx++] = parseInt(g, 16);
+  }
+  return out;
+}
+
+function isLocalIpv4Octets(a: number, b: number, c: number): boolean {
+  return (
+    a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113)
+  );
 }
 
 /**
@@ -104,46 +161,41 @@ export function isLocalHostname(hostname: string): boolean {
   if (!name.includes('.') && !name.startsWith('[') && name !== '') return true;
   const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(name);
   if (v4) {
-    const a = Number(v4[1]);
-    const b = Number(v4[2]);
-    const c = Number(v4[3]);
-    return (
-      a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) ||
-      (a === 192 && b === 0 && (c === 0 || c === 2)) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      (a === 198 && b === 51 && c === 100) ||
-      (a === 203 && b === 0 && c === 113)
-    );
+    return isLocalIpv4Octets(Number(v4[1]), Number(v4[2]), Number(v4[3]));
   }
-  if (!name.startsWith('[')) return false;
-  const v6 = name.slice(1, -1);
-  // Loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
-  // old site-local (fec0::/10), multicast (ff00::/8), discard (100::/64),
-  // Teredo (2001:0::/32), benchmarking (2001:2::/48), 6to4 (2002::/16),
-  // and local-use NAT64 prefix (64:ff9b:1::/48).
-  if (
-    v6 === '::1' ||
-    v6 === '::' ||
-    /^f[cd]/i.test(v6) ||
-    /^fe[89a-f]/i.test(v6) ||
-    /^ff/i.test(v6) ||
-    /^100::/i.test(v6) ||
-    /^2001:(?:0?0?0?0:|0?0?0?2:)/i.test(v6) ||
-    /^2002:/i.test(v6) ||
-    /^64:ff9b:1:/i.test(v6)
-  ) return true;
-  // An IPv4 address written as IPv6, in hex (::ffff:7f00:1) or dotted-quad (::ffff:127.0.0.1).
-  const embeddedQuad = /^(?:::ffff:|::|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/i.exec(v6);
-  if (embeddedQuad) {
-    return isLocalHostname(embeddedQuad[1]);
+  if (!name.startsWith('[') || !name.endsWith(']')) return false;
+  const g = expandIpv6(name.slice(1, -1));
+  if (!g) return true; // Malformed IPv6 literal — fail closed
+  const isZeroPrefix = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0;
+  // Unspecified (::), loopback (::1), IPv4-compatible (::/96), IPv4-mapped (::ffff:0:0/96), IPv4-translated (::ffff:0:0:0/96)
+  if (isZeroPrefix) {
+    if (g[4] === 0 && g[5] === 0) {
+      if (g[6] === 0 && (g[7] === 0 || g[7] === 1)) return true;
+      // IPv4-compatible (::a.b.c.d / ::100)
+      return isLocalIpv4Octets(g[6] >> 8, g[6] & 0xff, g[7] >> 8);
+    }
+    if ((g[4] === 0 && g[5] === 0xffff) || (g[4] === 0xffff && g[5] === 0)) {
+      return isLocalIpv4Octets(g[6] >> 8, g[6] & 0xff, g[7] >> 8);
+    }
   }
-  const embedded = /^(?:::ffff:|::|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(v6);
-  if (embedded) {
-    const high = parseInt(embedded[1], 16);
-    const low = parseInt(embedded[2], 16);
-    return isLocalHostname(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+  // NAT64 well-known (64:ff9b::/96) and local-use (64:ff9b:1::/48)
+  if (g[0] === 0x0064 && g[1] === 0xff9b) {
+    if (g[2] === 1) return true;
+    if (g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+      return isLocalIpv4Octets(g[6] >> 8, g[6] & 0xff, g[7] >> 8);
+    }
+  }
+  // Unique-local (fc00::/7), link-local (fe80::/10), site-local (fec0::/10), multicast (ff00::/8)
+  if ((g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0 || (g[0] & 0xff00) === 0xff00) {
+    return true;
+  }
+  // Discard (100::/64)
+  if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true;
+  // Teredo (2001:0::/32), benchmarking (2001:2::/48), 6to4 (2002::/16)
+  if (g[0] === 0x2001 && (g[1] === 0 || (g[1] === 2 && g[2] === 0))) return true;
+  if (g[0] === 0x2002) {
+    // 6to4 embeds an IPv4 address in g[1..2]; treat all 6to4 as local/disallowed
+    return true;
   }
   return false;
 }
@@ -177,7 +229,11 @@ export function describeHostAllowlist(url: string, net: NetPermission | undefine
   } catch {
     return deny(`Invalid URL: ${url}`);
   }
-  if (!net.allowed_hosts.includes(parsed.hostname)) {
+  const hostLower = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  const allowedLower = net.allowed_hosts
+    .filter((h): h is string => typeof h === 'string')
+    .map((h) => h.trim().toLowerCase().replace(/\.$/, ''));
+  if (!allowedLower.includes(hostLower)) {
     return deny(`Host not allowed: ${parsed.hostname}`);
   }
   return ALLOW;

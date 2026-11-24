@@ -321,7 +321,7 @@ pub async fn handle_ws(
 async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
     sink: S,
     mut out_rx: mpsc::Receiver<Outbound>,
-    mut broadcast_rx: broadcast::Receiver<(Audience, Arc<ServerMessage>)>,
+    mut broadcast_rx: broadcast::Receiver<crate::sync::BroadcastItem>,
     cid: String,
     mut shutdown_rx: watch::Receiver<bool>,
     close_reason_rx: watch::Receiver<Option<CloseReason>>,
@@ -369,10 +369,17 @@ async fn writer_task<S: futures_util::Sink<Message> + Unpin>(
             // collections the client asked for (Subscription).
             result = broadcast_rx.recv() => {
                 match result {
-                    Ok((audience, msg)) => {
+                    Ok((audience, msg, pre_json)) => {
                         // A push is not echoed back to its sender.
-                        if let Some(msg) = audience.reaches(&cid).then(|| subscription.admit(&audience, &msg)).flatten() {
-                            if let Ok(json) = serde_json::to_string(&*msg) {
+                        if let Some(admitted) = audience.reaches(&cid).then(|| subscription.admit(&audience, &msg)).flatten() {
+                            let json = if Arc::ptr_eq(&admitted, &msg) {
+                                pre_json
+                                    .map(|s| s.to_string())
+                                    .or_else(|| serde_json::to_string(&*admitted).ok())
+                            } else {
+                                serde_json::to_string(&*admitted).ok()
+                            };
+                            if let Some(json) = json {
                                 if ws_tx.send(Message::Text(json.into())).await.is_err() {
                                     break;
                                 }
@@ -454,7 +461,7 @@ async fn reader_task(
         match msg {
             Some(Ok(Message::Text(text))) => {
                 // Depth-bounded parse to prevent stack overflow from deeply nested payloads
-                let parsed: serde_json::Value = match util::parse_json_bounded(&text, util::MAX_JSON_DEPTH) {
+                let mut parsed: serde_json::Value = match util::parse_json_bounded(&text, util::MAX_JSON_DEPTH) {
                     Ok(v) => v,
                     Err(_) => {
                         if !send_response(out_tx, close_reason_tx, ServerMessage::error("Invalid JSON")).await {
@@ -464,13 +471,17 @@ async fn reader_task(
                     }
                 };
 
-                let msg_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                let msg_type = parsed
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
-                match msg_type {
+                match msg_type.as_str() {
                     "sync_pull" => {
                         let collections: Vec<String> = parsed
-                            .get("collections")
-                            .and_then(|c| serde_json::from_value(c.clone()).ok())
+                            .get_mut("collections")
+                            .and_then(|c| serde_json::from_value(c.take()).ok())
                             .unwrap_or_default();
                         // Optional point for incremental sync: only records the
                         // host received after it are returned, deleted ones
@@ -588,8 +599,8 @@ async fn reader_task(
                         }
                     }
                     "sync_push" => {
-                        let ops: Vec<SyncOp> = match parsed.get("ops") {
-                            Some(o) => serde_json::from_value(o.clone()).unwrap_or_else(|e| {
+                        let ops: Vec<SyncOp> = match parsed.get_mut("ops") {
+                            Some(o) => serde_json::from_value(o.take()).unwrap_or_else(|e| {
                                 tracing::warn!("Failed to parse sync_push ops: {}", e);
                                 Vec::new()
                             }),
@@ -746,7 +757,7 @@ mod writer_tests {
     async fn the_writer_gives_up_on_a_peer_that_takes_nothing() {
         let closes = Arc::new(AtomicUsize::new(0));
         let (out_tx, out_rx) = mpsc::channel::<Outbound>(4);
-        let (_broadcast_tx, broadcast_rx) = broadcast::channel::<(Audience, Arc<ServerMessage>)>(4);
+        let (_broadcast_tx, broadcast_rx) = broadcast::channel::<crate::sync::BroadcastItem>(4);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_reason_tx, reason_rx) = watch::channel::<Option<CloseReason>>(None);
         let writer = tokio::spawn(writer_task(
@@ -791,7 +802,7 @@ mod writer_tests {
         for (cid, expected) in [("a", vec!["for a", "from b"]), ("b", vec!["from a"])] {
             let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
             let (out_tx, out_rx) = mpsc::channel::<Outbound>(4);
-            let (stream, broadcast_rx) = broadcast::channel::<(Audience, Arc<ServerMessage>)>(8);
+            let (stream, broadcast_rx) = broadcast::channel::<crate::sync::BroadcastItem>(8);
             let (_shutdown_tx, shutdown_rx) = watch::channel(false);
             let (_reason_tx, reason_rx) = watch::channel::<Option<CloseReason>>(None);
             let writer = tokio::spawn(writer_task(
@@ -803,10 +814,10 @@ mod writer_tests {
                 (Audience::Only("a".into()), "for a"),
                 (Audience::Others("b".into()), "from b"),
             ] {
-                stream.send((audience, Arc::new(ServerMessage::error(text)))).unwrap();
+                stream.send((audience, Arc::new(ServerMessage::error(text)), None)).unwrap();
             }
             // The last item is for both: once it is through, the rest are too.
-            stream.send((Audience::Others("c".into()), Arc::new(ServerMessage::error("end")))).unwrap();
+            stream.send((Audience::Others("c".into()), Arc::new(ServerMessage::error("end")), None)).unwrap();
             let waited = tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 while !sent.lock().unwrap().iter().any(|text| text.contains("\"end\"")) {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;

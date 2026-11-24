@@ -347,10 +347,10 @@ fn the_pusher_of_an_overtaken_edit_is_sent_the_record_as_it_stands() {
 }
 
 /// Everything the sync stream holds now.
-fn drained(stream: &mut broadcast::Receiver<(Audience, Arc<ServerMessage>)>) -> Vec<(Audience, Arc<ServerMessage>)> {
+fn drained(stream: &mut broadcast::Receiver<BroadcastItem>) -> Vec<(Audience, Arc<ServerMessage>)> {
     let mut out = Vec::new();
-    while let Ok(item) = stream.try_recv() {
-        out.push(item);
+    while let Ok((audience, message, _)) = stream.try_recv() {
+        out.push((audience, message));
     }
     out
 }
@@ -1121,7 +1121,7 @@ fn pushes_reach_other_clients_in_the_order_they_were_stored() {
         let mut sent = Vec::new();
         loop {
             match deltas.blocking_recv() {
-                Ok((_, message)) if matches!(*message, ServerMessage::SyncDelta { .. }) => {
+                Ok((_, message, _)) if matches!(*message, ServerMessage::SyncDelta { .. }) => {
                     let ServerMessage::SyncDelta { ops } = &*message else { unreachable!() };
                     for op in ops {
                         if op.record_id == "end" {

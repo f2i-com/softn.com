@@ -33,7 +33,8 @@ pub struct DbRecord {
 }
 
 impl DbRecord {
-    /// The shape `db.*` hands back to the script.
+    /// The shape `db.*` hands back to the script (borrowing).
+    #[allow(dead_code)]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "id": self.id,
@@ -42,6 +43,17 @@ impl DbRecord {
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         })
+    }
+
+    /// Consuming conversion to JSON that avoids cloning `data` and string fields.
+    pub fn into_json(self) -> serde_json::Value {
+        let mut map = serde_json::Map::with_capacity(5);
+        map.insert("id".into(), serde_json::Value::String(self.id));
+        map.insert("collection".into(), serde_json::Value::String(self.collection));
+        map.insert("data".into(), self.data);
+        map.insert("created_at".into(), serde_json::Value::String(self.created_at));
+        map.insert("updated_at".into(), serde_json::Value::String(self.updated_at));
+        serde_json::Value::Object(map)
     }
 }
 

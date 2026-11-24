@@ -158,18 +158,32 @@ function bytesToHexStr(bytes: Uint8Array): string {
 }
 void bytesToHexStr;
 
-const PRIVATE_STATIC_BLOCK = /(?:^|\/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|manifest\.json|permission\.json|seed\.json)$|\.(?:php|phtml|inc|phar|tpl|rs|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh)$/i;
+const PRIVATE_STATIC_BLOCK = /(?:^|\/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|manifest\.json|permission\.json|seed\.json|database\.seed\.json)$|\.(?:php|phtml|php5|php7|php8|pht|phps|inc|phar|tpl|rs|db|db-wal|db-shm|db-journal|sqlite|sqlite-wal|sqlite-shm|sqlite-journal|sqlite3|sqlite3-wal|sqlite3-shm|sqlite3-journal|sql|ini|bak|log|sh)$/i;
 
-const PROTECTED_PHP_OVERLAY_EXT_RE = /\.(?:php|phtml|inc|phar)$/i;
-const PROTECTED_PHP_OVERLAY_BASE_RE = /^(?:\.htaccess|\.htpasswd|\.env(?:\..*)?|manifest\.json|permission\.json)$/i;
+const PROTECTED_PHP_OVERLAY_EXT_RE = /\.(?:php|phtml|php5|php7|php8|pht|phps|inc|phar|tpl|ini|sql|db|db-wal|db-shm|db-journal|sqlite|sqlite-wal|sqlite-shm|sqlite-journal|sqlite3|sqlite3-wal|sqlite3-shm|sqlite3-journal|sh)$/i;
+const PROTECTED_PHP_OVERLAY_BASE_RE = /^(?:\.htaccess|\.htpasswd|\.env(?:\..*)?|manifest\.json|permission\.json|seed\.json|database\.seed\.json)$/i;
+const OVERLAY_RESERVED_SEGS = new Set(['', '.', '..', '__proto__', 'constructor', 'prototype']);
+const MAX_OVERLAY_ENTRIES = 4096;
+const MAX_OVERLAY_TOTAL_BYTES = 16 * 1024 * 1024;
+
+function normalizeSafeOverlayPath(rawPath: string): string | null {
+  if (typeof rawPath !== 'string' || !rawPath || rawPath.includes('\0') || rawPath.includes('\\') || /[\u0000-\u001f\u007f]/.test(rawPath)) {
+    return null;
+  }
+  const clean = rawPath.replace(/^\/+/, '');
+  if (!clean || clean.endsWith('/') || clean.endsWith('.')) return null;
+  const segs = clean.split('/');
+  for (const s of segs) {
+    if (OVERLAY_RESERVED_SEGS.has(s) || s.endsWith('.')) return null;
+  }
+  return clean;
+}
 
 function isProtectedPhpOverlayPath(rawPath: string, backendEntry?: string): boolean {
-  const norm = String(rawPath ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
-  if (!norm || norm.includes('\0')) return true;
-  const segs = norm.split('/');
-  if (segs.some((s) => s === '..' || s === '.')) return true;
+  const norm = normalizeSafeOverlayPath(rawPath);
+  if (!norm) return true;
   const lower = norm.toLowerCase();
-  const base = segs[segs.length - 1].toLowerCase();
+  const base = lower.slice(lower.lastIndexOf('/') + 1);
   if (PROTECTED_PHP_OVERLAY_EXT_RE.test(lower) || PROTECTED_PHP_OVERLAY_BASE_RE.test(base)) {
     return true;
   }
@@ -182,6 +196,9 @@ function isProtectedPhpOverlayPath(rawPath: string, backendEntry?: string): bool
 
 function sanitizePhpOverlayJson(rawJson: string, backendEntry?: string): string {
   try {
+    if (rawJson.length > MAX_OVERLAY_TOTAL_BYTES) {
+      return '{"writes":{},"deleted":[],"dirs":[]}';
+    }
     const parsed = JSON.parse(rawJson) as {
       writes?: Record<string, unknown>;
       deleted?: unknown[];
@@ -191,19 +208,38 @@ function sanitizePhpOverlayJson(rawJson: string, backendEntry?: string): string 
       return '{"writes":{},"deleted":[],"dirs":[]}';
     }
     const cleanWrites: Record<string, unknown> = Object.create(null);
+    let writeCount = 0;
+    let totalBytes = 0;
     if (parsed.writes && typeof parsed.writes === 'object' && !Array.isArray(parsed.writes)) {
       for (const [k, v] of Object.entries(parsed.writes)) {
-        if (!isProtectedPhpOverlayPath(k, backendEntry)) {
-          cleanWrites[k] = v;
-        }
+        if (writeCount >= MAX_OVERLAY_ENTRIES) break;
+        const norm = normalizeSafeOverlayPath(k);
+        if (!norm || isProtectedPhpOverlayPath(norm, backendEntry)) continue;
+        const valSize = typeof v === 'string' ? v.length : JSON.stringify(v).length;
+        if (totalBytes + norm.length + valSize > MAX_OVERLAY_TOTAL_BYTES) continue;
+        cleanWrites[norm] = v;
+        writeCount++;
+        totalBytes += norm.length + valSize;
       }
     }
-    const cleanDeleted = Array.isArray(parsed.deleted)
-      ? parsed.deleted.filter((p): p is string => typeof p === 'string' && !isProtectedPhpOverlayPath(p, backendEntry))
-      : [];
-    const cleanDirs = Array.isArray(parsed.dirs)
-      ? parsed.dirs.filter((p): p is string => typeof p === 'string' && !p.includes('..') && !p.includes('\0'))
-      : [];
+    const cleanDeleted: string[] = [];
+    if (Array.isArray(parsed.deleted)) {
+      for (const p of parsed.deleted) {
+        if (cleanDeleted.length >= MAX_OVERLAY_ENTRIES) break;
+        if (typeof p !== 'string') continue;
+        const norm = normalizeSafeOverlayPath(p);
+        if (norm && !isProtectedPhpOverlayPath(norm, backendEntry)) cleanDeleted.push(norm);
+      }
+    }
+    const cleanDirs: string[] = [];
+    if (Array.isArray(parsed.dirs)) {
+      for (const p of parsed.dirs) {
+        if (cleanDirs.length >= MAX_OVERLAY_ENTRIES) break;
+        if (typeof p !== 'string') continue;
+        const norm = normalizeSafeOverlayPath(p);
+        if (norm && !isProtectedPhpOverlayPath(norm, backendEntry)) cleanDirs.push(norm);
+      }
+    }
     return JSON.stringify({ writes: cleanWrites, deleted: cleanDeleted, dirs: cleanDirs });
   } catch {
     return '{"writes":{},"deleted":[],"dirs":[]}';
@@ -425,30 +461,53 @@ def __softn_backend_dispatch(req_json, sql_cache_json="[]"):
     return _softn_json.dumps({"status": 200, "headers": [["Content-Type", "text/plain"]], "body": ""})
 `;
 
+const UTF8_DECODER = new TextDecoder();
+const UTF8_ENCODER = new TextEncoder();
+
 function decodeBodyText(bytes: Uint8Array | undefined): string {
   if (!bytes || bytes.byteLength === 0) return '';
-  return new TextDecoder().decode(bytes);
+  return UTF8_DECODER.decode(bytes);
 }
 
 function encodeUtf8(text: string): Uint8Array {
-  return new TextEncoder().encode(text);
+  return UTF8_ENCODER.encode(text);
 }
 
 function parseUrlEncodedBody(raw: string): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
   if (!raw) return out;
   for (const part of raw.split('&')) {
     if (!part) continue;
     const eq = part.indexOf('=');
     const k = eq >= 0 ? part.slice(0, eq) : part;
     const v = eq >= 0 ? part.slice(eq + 1) : '';
+    let key: string;
+    let val: string;
     try {
-      out[decodeURIComponent(k.replace(/\+/g, ' '))] = decodeURIComponent(v.replace(/\+/g, ' '));
+      key = decodeURIComponent(k.replace(/\+/g, ' '));
+      val = decodeURIComponent(v.replace(/\+/g, ' '));
     } catch {
-      out[k] = v;
+      key = k;
+      val = v;
     }
+    if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    out[key] = val;
   }
   return out;
+}
+
+function normalizeBackendRequestPath(rawPath: string): string {
+  const withSlash = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+  const out: string[] = [];
+  for (const seg of withSlash.replace(/\\/g, '/').split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') {
+      if (out.length > 0) out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return '/' + out.join('/');
 }
 
 export class BackendWorkerSession {
@@ -456,6 +515,7 @@ export class BackendWorkerSession {
   private backend?: BackendConfig;
   private textFiles: Record<string, string> = Object.create(null);
   private binaryFiles: Record<string, Uint8Array> = Object.create(null);
+  private vfsDirs = new Set<string>();
   private htaccessFiles = new Map<string, ParsedHtaccess>();
   private sqlManager: XdbSqlManager | null = null;
   private sqlBridge: { call: (kind: string, args: string[]) => unknown } | null = null;
@@ -543,6 +603,18 @@ export class BackendWorkerSession {
       this.backend = msg.backend;
       this.textFiles = Object.assign(Object.create(null) as Record<string, string>, msg.textFiles ?? {});
       this.binaryFiles = Object.assign(Object.create(null) as Record<string, Uint8Array>, msg.binaryFiles ?? {});
+      // Precompute ancestor directory prefixes once so `.htaccess` `-d` probes run in O(1)
+      // instead of scanning all VFS keys on every HTTP request.
+      this.vfsDirs.clear();
+      const indexDirs = (key: string) => {
+        let slash = key.indexOf('/');
+        while (slash > 0) {
+          this.vfsDirs.add(key.slice(0, slash));
+          slash = key.indexOf('/', slash + 1);
+        }
+      };
+      for (const k of Object.keys(this.textFiles)) indexDirs(k);
+      for (const k of Object.keys(this.binaryFiles)) indexDirs(k);
       if (msg.instructionBudget && msg.instructionBudget > 0) {
         this.instructionBudget = msg.instructionBudget;
       }
@@ -696,14 +768,18 @@ export class BackendWorkerSession {
   }
 
   private isProtectedRustOverlayPath(rawPath: string): boolean {
-    if (!rawPath || typeof rawPath !== 'string' || rawPath.includes('\0') || rawPath.includes('\\')) return true;
-    const clean = rawPath.replace(/^\/+/, '');
-    if (!clean || clean.split('/').some((seg) => seg === '' || seg === '.' || seg === '..' || seg === '__proto__')) {
-      return true;
-    }
+    const clean = normalizeSafeOverlayPath(rawPath);
+    if (!clean) return true;
     const lower = clean.toLowerCase();
     const base = lower.slice(lower.lastIndexOf('/') + 1);
-    if (lower.endsWith('.rs') || base === 'cargo.toml' || base === 'cargo.lock') return true;
+    if (
+      lower.endsWith('.rs') ||
+      base === 'cargo.toml' ||
+      base === 'cargo.lock' ||
+      PROTECTED_PHP_OVERLAY_BASE_RE.test(base)
+    ) {
+      return true;
+    }
     if (this.backend) {
       const rootPrefix = this.backend.root ? this.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
       const relEntry =
@@ -719,40 +795,49 @@ export class BackendWorkerSession {
     if (!this.rustEngine || typeof this.rustEngine.exportRustOverlayJson !== 'function') return;
     try {
       const raw = this.rustEngine.exportRustOverlayJson();
-      if (!raw || raw === '{"writes":{},"deleted":[],"dirs":[]}') return;
+      if (!raw || raw === '{"writes":{},"deleted":[],"dirs":[]}' || raw.length > MAX_OVERLAY_TOTAL_BYTES) return;
       const delta = JSON.parse(raw) as {
         writes?: Record<string, string>;
         deleted?: string[];
         dirs?: string[];
       };
       let dirty = false;
+      let writeCount = Object.keys(this.rustOverlayWrites).length;
       if (delta.writes && typeof delta.writes === 'object') {
         for (const [k, b64] of Object.entries(delta.writes)) {
-          if (typeof b64 !== 'string' || this.isProtectedRustOverlayPath(k)) continue;
-          if (this.rustOverlayWrites[k] !== b64 || this.rustOverlayDeleted.has(k)) {
-            this.rustOverlayWrites[k] = b64;
-            this.rustOverlayDeleted.delete(k);
+          if (typeof b64 !== 'string') continue;
+          const norm = normalizeSafeOverlayPath(k);
+          if (!norm || this.isProtectedRustOverlayPath(norm)) continue;
+          if (!(norm in this.rustOverlayWrites) && writeCount >= MAX_OVERLAY_ENTRIES) continue;
+          if (this.rustOverlayWrites[norm] !== b64 || this.rustOverlayDeleted.has(norm)) {
+            if (!(norm in this.rustOverlayWrites)) writeCount++;
+            this.rustOverlayWrites[norm] = b64;
+            this.rustOverlayDeleted.delete(norm);
             dirty = true;
           }
         }
       }
       if (Array.isArray(delta.deleted)) {
         for (const d of delta.deleted) {
-          if (typeof d !== 'string' || this.isProtectedRustOverlayPath(d)) continue;
-          if (d in this.rustOverlayWrites) {
-            delete this.rustOverlayWrites[d];
+          if (typeof d !== 'string') continue;
+          const norm = normalizeSafeOverlayPath(d);
+          if (!norm || this.isProtectedRustOverlayPath(norm)) continue;
+          if (norm in this.rustOverlayWrites) {
+            delete this.rustOverlayWrites[norm];
             dirty = true;
           }
-          if (!this.rustOverlayDeleted.has(d)) {
-            this.rustOverlayDeleted.add(d);
+          if (!this.rustOverlayDeleted.has(norm) && this.rustOverlayDeleted.size < MAX_OVERLAY_ENTRIES) {
+            this.rustOverlayDeleted.add(norm);
             dirty = true;
           }
         }
       }
       if (Array.isArray(delta.dirs)) {
         for (const dir of delta.dirs) {
-          if (typeof dir === 'string' && !this.rustOverlayDirs.has(dir)) {
-            this.rustOverlayDirs.add(dir);
+          if (typeof dir !== 'string') continue;
+          const norm = normalizeSafeOverlayPath(dir);
+          if (norm && !this.isProtectedRustOverlayPath(norm) && !this.rustOverlayDirs.has(norm) && this.rustOverlayDirs.size < MAX_OVERLAY_ENTRIES) {
+            this.rustOverlayDirs.add(norm);
             dirty = true;
           }
         }
@@ -763,7 +848,7 @@ export class BackendWorkerSession {
         deleted: [...this.rustOverlayDeleted].sort(),
         dirs: [...this.rustOverlayDirs].sort(),
       });
-      if (merged !== this.lastRustOverlaySnapshot) {
+      if (merged.length <= MAX_OVERLAY_TOTAL_BYTES && merged !== this.lastRustOverlaySnapshot) {
         this.lastRustOverlaySnapshot = merged;
         this.postToHost({ type: 'rust-overlay-persist', overlayJson: merged });
       }
@@ -805,23 +890,34 @@ export class BackendWorkerSession {
         };
         if (Array.isArray(parsed.deleted)) {
           for (const d of parsed.deleted) {
-            if (typeof d === 'string' && !this.isProtectedRustOverlayPath(d)) {
-              this.rustOverlayDeleted.add(d);
-              delete vfsObj[d];
+            if (typeof d !== 'string') continue;
+            const norm = normalizeSafeOverlayPath(d);
+            if (norm && !this.isProtectedRustOverlayPath(norm) && this.rustOverlayDeleted.size < MAX_OVERLAY_ENTRIES) {
+              this.rustOverlayDeleted.add(norm);
+              delete vfsObj[norm];
             }
           }
         }
         if (parsed.writes && typeof parsed.writes === 'object') {
+          let count = 0;
           for (const [k, b64] of Object.entries(parsed.writes)) {
-            if (typeof b64 === 'string' && !this.isProtectedRustOverlayPath(k)) {
-              this.rustOverlayWrites[k] = b64;
-              vfsObj[k] = { base64: b64 };
+            if (count >= MAX_OVERLAY_ENTRIES) break;
+            if (typeof b64 !== 'string') continue;
+            const norm = normalizeSafeOverlayPath(k);
+            if (norm && !this.isProtectedRustOverlayPath(norm)) {
+              this.rustOverlayWrites[norm] = b64;
+              vfsObj[norm] = { base64: b64 };
+              count++;
             }
           }
         }
         if (Array.isArray(parsed.dirs)) {
           for (const dir of parsed.dirs) {
-            if (typeof dir === 'string') this.rustOverlayDirs.add(dir);
+            if (typeof dir !== 'string') continue;
+            const norm = normalizeSafeOverlayPath(dir);
+            if (norm && !this.isProtectedRustOverlayPath(norm) && this.rustOverlayDirs.size < MAX_OVERLAY_ENTRIES) {
+              this.rustOverlayDirs.add(norm);
+            }
           }
         }
         this.lastRustOverlaySnapshot = initialOverlay;
@@ -951,6 +1047,7 @@ export class BackendWorkerSession {
   private createVfsProbe(): HtaccessVfsProbe {
     const textFiles = this.textFiles;
     const binaryFiles = this.binaryFiles;
+    const vfsDirs = this.vfsDirs;
     return {
       isFile(relPath: string): boolean {
         const clean = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -959,10 +1056,7 @@ export class BackendWorkerSession {
       isDir(relPath: string): boolean {
         const clean = relPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
         if (!clean) return true;
-        const prefix = `${clean}/`;
-        for (const k of Object.keys(textFiles)) if (k.startsWith(prefix)) return true;
-        for (const k of Object.keys(binaryFiles)) if (k.startsWith(prefix)) return true;
-        return false;
+        return vfsDirs.has(clean);
       },
       fileSize(relPath: string): number {
         const clean = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -1168,7 +1262,7 @@ export class BackendWorkerSession {
     bodyBytes: Uint8Array;
   } {
     const vfsProbe = this.createVfsProbe();
-    let targetPath = msg.path.startsWith('/') ? msg.path : `/${msg.path}`;
+    let targetPath = normalizeBackendRequestPath(msg.path);
     let targetQuery = msg.query ?? '';
     const originalUri = msg.query ? `${targetPath}?${msg.query}` : targetPath;
 
@@ -1240,9 +1334,13 @@ export class BackendWorkerSession {
       const backendRootWithSlash = this.backend?.root
         ? this.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
         : '';
+      const backendEntryLower = this.backend?.entry
+        ? this.backend.entry.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase()
+        : '';
       const isPrivateStatic =
         PRIVATE_STATIC_BLOCK.test(staticFile) ||
-        isBackendPrivatePath(staticFile, true, backendRootWithSlash);
+        isBackendPrivatePath(staticFile, true, backendRootWithSlash) ||
+        (backendEntryLower !== '' && staticFile.toLowerCase() === backendEntryLower);
       if (isPrivateStatic) {
         return {
           status: 403,
@@ -1280,15 +1378,28 @@ export class BackendWorkerSession {
       };
     }
 
-    const lowerHeaders: Record<string, string> = {};
+    const lowerHeaders: Record<string, string> = Object.create(null) as Record<string, string>;
     for (const [k, v] of Object.entries(msg.headers)) {
-      lowerHeaders[k.toLowerCase()] = v;
+      const lower = k.toLowerCase();
+      if (lower === '__proto__' || lower === 'constructor' || lower === 'prototype') continue;
+      lowerHeaders[lower] = v;
     }
     const contentType = lowerHeaders['content-type'] ?? '';
-    const bodyText = decodeBodyText(msg.bodyBytes);
+    // ZIPP PHP strings are Latin-1 packed UTF-8 byte sequences (0x00..0xFF per byte), and
+    // `json_decode()` / `mb_*()` decode via `bytesToUtf8()`. Passing raw body bytes packed
+    // 1:1 into Latin-1 preserves non-ASCII UTF-8 characters (e.g. em-dashes, accents, emojis)
+    // and binary payloads verbatim in `file_get_contents('php://input')`.
+    let bodyPhpBytes = '';
+    if (msg.bodyBytes && msg.bodyBytes.byteLength > 0) {
+      const parts: string[] = [];
+      for (let i = 0; i < msg.bodyBytes.byteLength; i += 8192) {
+        parts.push(String.fromCharCode(...msg.bodyBytes.subarray(i, i + 8192)));
+      }
+      bodyPhpBytes = parts.join('');
+    }
     const cookies = parseCookieHeader(lowerHeaders['cookie']);
     const post = contentType.toLowerCase().includes('application/x-www-form-urlencoded')
-      ? parseUrlEncodedBody(bodyText)
+      ? parseUrlEncodedBody(decodeBodyText(msg.bodyBytes))
       : undefined;
 
     const server: Record<string, string> = {
@@ -1320,7 +1431,7 @@ export class BackendWorkerSession {
       query: targetQuery,
       cookies,
       contentType,
-      body: bodyText,
+      body: bodyPhpBytes,
       post,
     });
 
@@ -1354,19 +1465,37 @@ export class BackendWorkerSession {
       this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: false, error: 'SQLite engine not initialized' });
       return;
     }
-    const res = this.sqlManager.seedJson(msg.dbName, msg.seedJson);
-    this.flushSqlNow();
-    if ('error' in res) {
-      this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: false, error: res.error });
-    } else {
-      this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: true, result: res });
+    try {
+      const res = this.sqlManager.seedJson(msg.dbName, msg.seedJson);
+      this.flushSqlNow();
+      if ('error' in res) {
+        this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: false, error: res.error });
+      } else {
+        this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: true, result: res });
+      }
+    } catch (err) {
+      this.postToHost({
+        type: 'rpc-reply',
+        reqId: msg.reqId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
   private handleExportDb(msg: Extract<HostToBackendMsg, { type: 'export-db' }>): void {
-    this.flushSqlNow();
-    const bytes = this.sqlManager?.exportBytes(msg.dbName) ?? null;
-    this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: true, result: bytes });
+    try {
+      this.flushSqlNow();
+      const bytes = this.sqlManager?.exportBytes(msg.dbName) ?? null;
+      this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: true, result: bytes });
+    } catch (err) {
+      this.postToHost({
+        type: 'rpc-reply',
+        reqId: msg.reqId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private handleSqliteOp(msg: Extract<HostToBackendMsg, { type: 'sqlite-op' }>): void {
@@ -1374,30 +1503,44 @@ export class BackendWorkerSession {
       this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: false, error: 'SQLite engine not initialized' });
       return;
     }
-    let result: unknown;
-    switch (msg.op) {
-      case 'open':
-        result = this.sqlManager.open(String(msg.args[0] ?? 'app.db'));
-        break;
-      case 'execute':
-        result = this.sqlManager.execute(Number(msg.args[0]), String(msg.args[1] ?? ''), msg.args[2] ? String(msg.args[2]) : undefined);
-        this.sqlManager.flushDirty();
-        break;
-      case 'query':
-        result = this.sqlManager.query(Number(msg.args[0]), String(msg.args[1] ?? ''), msg.args[2] ? String(msg.args[2]) : undefined);
-        break;
-      case 'seed_json':
-        result = this.sqlManager.seedJson(
-          typeof msg.args[0] === 'number' ? msg.args[0] : String(msg.args[0] ?? 'app.db'),
-          String(msg.args[1] ?? '{}')
-        );
-        this.sqlManager.flushDirty();
-        break;
-      case 'close':
-        result = this.sqlManager.close(Number(msg.args[0]));
-        break;
+    try {
+      let result: unknown;
+      switch (msg.op) {
+        case 'open':
+          result = this.sqlManager.open(String(msg.args[0] ?? 'app.db'));
+          break;
+        case 'execute':
+          result = this.sqlManager.execute(Number(msg.args[0]), String(msg.args[1] ?? ''), msg.args[2] ? String(msg.args[2]) : undefined);
+          this.scheduleSqlFlush();
+          break;
+        case 'query':
+          result = this.sqlManager.query(Number(msg.args[0]), String(msg.args[1] ?? ''), msg.args[2] ? String(msg.args[2]) : undefined);
+          this.scheduleSqlFlush();
+          break;
+        case 'seed_json':
+          result = this.sqlManager.seedJson(
+            typeof msg.args[0] === 'number' ? msg.args[0] : String(msg.args[0] ?? 'app.db'),
+            String(msg.args[1] ?? '{}')
+          );
+          this.scheduleSqlFlush();
+          break;
+        case 'close':
+          result = this.sqlManager.close(Number(msg.args[0]));
+          this.flushSqlNow();
+          break;
+        default:
+          this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: false, error: `Unknown SQLite op: ${String(msg.op)}` });
+          return;
+      }
+      this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: true, result });
+    } catch (err) {
+      this.postToHost({
+        type: 'rpc-reply',
+        reqId: msg.reqId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: true, result });
   }
 
   private drainRustConsole(): void {

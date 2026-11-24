@@ -179,8 +179,10 @@ final class Apps
         $serverEnabled = Config::get('allowServerHosting', true) === true;
         $serverHosted = $playUrl === null && ($mode === 'server' || $mode === 'hybrid') && ($customUrl !== null || ($hasBackend && $serverEnabled));
         $backendUrl = $serverHosted ? ($customUrl ?? "/api/apps/$slug/backend") : null;
-        $withholdBackend = $playUrl === null && $mode === 'server' && $serverHosted && (bool) ($row['withhold_backend'] ?? false);
-        $browserSupported = $playUrl === null && ($mode === 'browser' || $mode === 'hybrid' || !$serverHosted);
+        // Fail closed: withhold_backend on a server-hosted app stays enforced even if
+        // allowServerHosting is later turned off, so withheld backend source never leaks.
+        $withholdBackend = $playUrl === null && $mode === 'server' && (bool) ($row['withhold_backend'] ?? false);
+        $browserSupported = $playUrl === null && !$withholdBackend && ($mode === 'browser' || $mode === 'hybrid' || !$serverHosted);
         return [
             'mode' => $serverHosted ? $mode : 'browser',
             'serverHosted' => $serverHosted,
@@ -215,7 +217,7 @@ final class Apps
         return $mode;
     }
 
-    private static function parseBackendUrl(mixed $value): ?string
+    private static function parseBackendUrl(mixed $value, bool $byAdmin = false): ?string
     {
         if ($value === null || $value === '') return null;
         if (!is_string($value)) throw new ApiError(400, 'backendUrl must be text.');
@@ -223,6 +225,11 @@ final class Apps
         if ($url === '') return null;
         if (!Catalog::validBackendUrl($url)) {
             throw new ApiError(400, 'backendUrl must be a same-origin path (/...) or an http(s) URL of at most 300 characters.');
+        }
+        // Prevent non-admin publishers from pointing their play page's credentialed
+        // RemoteBackendTransport at another app's backend or directory API routes.
+        if (!$byAdmin && str_starts_with($url, '/')) {
+            throw new ApiError(403, 'Only the site owner may set a custom same-origin backendUrl path.');
         }
         return $url;
     }
@@ -519,7 +526,7 @@ final class Apps
         $primary = self::color($opts['primary'] ?? null) ?? self::color($info['manifest']['config']['theme']['primary'] ?? null);
         $backendRuntime = is_string($info['backendRuntime'] ?? null) && $info['backendRuntime'] !== '' ? $info['backendRuntime'] : null;
         $allowPublicHosting = $byAdmin || $source === 'seed' || Config::get('allowPublicServerHosting', false) === true;
-        $backendUrl = $allowPublicHosting ? self::parseBackendUrl($opts['backendUrl'] ?? $opts['backend_url'] ?? null) : null;
+        $backendUrl = $allowPublicHosting ? self::parseBackendUrl($opts['backendUrl'] ?? $opts['backend_url'] ?? null, $byAdmin || $source === 'seed') : null;
         if (!$allowPublicHosting && (($opts['backendUrl'] ?? $opts['backend_url'] ?? null) !== null && trim((string) ($opts['backendUrl'] ?? $opts['backend_url'])) !== '')) {
             throw new ApiError(403, 'Server-hosted publishing is disabled on this SoftN directory.');
         }
@@ -875,7 +882,7 @@ final class Apps
             if (!$allowPublicHosting && $rawUrl !== null && trim((string) $rawUrl) !== '') {
                 throw new ApiError(403, 'Server-hosted publishing is disabled on this SoftN directory.');
             }
-            $nextBackendUrl = self::parseBackendUrl($rawUrl);
+            $nextBackendUrl = self::parseBackendUrl($rawUrl, $byAdmin);
             $sets[] = 'backend_url = :backend_url';
             $params[':backend_url'] = $nextBackendUrl;
         }

@@ -28,7 +28,9 @@ impl Default for CryptoDomains {
 #[derive(Clone)]
 pub struct NativeCrypto {
     hmac_key: [u8; 32],
+    #[cfg(test)]
     encryption_key: [u8; 32],
+    cipher: Aes256Gcm,
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -61,9 +63,14 @@ impl NativeCrypto {
             .step_by(2)
             .map(|i| u8::from_str_radix(&key[i..i + 2], 16).unwrap())
             .collect();
+        let encryption_key = keyed(&bytes, domains.seal.as_bytes());
+        let cipher = Aes256Gcm::new_from_slice(&encryption_key)
+            .map_err(|_| "Invalid encryption key")?;
         Ok(Self {
             hmac_key: keyed(&bytes, domains.hmac.as_bytes()),
-            encryption_key: keyed(&bytes, domains.seal.as_bytes()),
+            #[cfg(test)]
+            encryption_key,
+            cipher,
         })
     }
 
@@ -100,9 +107,8 @@ impl NativeCrypto {
                 OsRng
                     .try_fill_bytes(&mut nonce)
                     .map_err(|_| "OS random source unavailable")?;
-                let cipher = Aes256Gcm::new_from_slice(&self.encryption_key)
-                    .map_err(|_| "Invalid encryption key")?;
-                let sealed = cipher
+                let sealed = self
+                    .cipher
                     .encrypt(Nonce::from_slice(&nonce), a.as_bytes())
                     .map_err(|_| "Encryption failed")?;
                 // Node reference wire contract: nonce | tag | ciphertext, base64.

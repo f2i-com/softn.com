@@ -53,6 +53,57 @@ fn xdb_to_record(r: xdb::Record) -> DbRecord {
     }
 }
 
+const MAX_BRIDGE_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_COLLECTION_NAME_BYTES: usize = 128;
+const MAX_BRIDGE_QUERY_BYTES: usize = 16 * 1024 * 1024;
+
+fn validate_collection_name(collection: &str) -> Result<(), String> {
+    if collection.is_empty() || collection.len() > MAX_COLLECTION_NAME_BYTES {
+        return Err(format!(
+            "Collection name must be 1..={} bytes",
+            MAX_COLLECTION_NAME_BYTES
+        ));
+    }
+    Ok(())
+}
+
+fn json_byte_size(val: &serde_json::Value) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut c = Counter(0);
+    let _ = serde_json::to_writer(&mut c, val);
+    c.0
+}
+
+fn collect_bounded_records(records: Vec<pool::SyncRecord>) -> Result<Vec<DbRecord>, String> {
+    let mut out = Vec::with_capacity(records.len());
+    let mut total_bytes = 0usize;
+    for r in records {
+        let approx = r.id.len() + r.collection.len() + r.created_at.len() + r.updated_at.len() + json_byte_size(&r.data) + 64;
+        total_bytes = total_bytes.saturating_add(approx);
+        if total_bytes > MAX_BRIDGE_QUERY_BYTES {
+            return Err(format!(
+                "db.query exceeded maximum result size ({} bytes)",
+                MAX_BRIDGE_QUERY_BYTES
+            ));
+        }
+        out.push(DbRecord {
+            id: r.id,
+            collection: r.collection,
+            data: r.data,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        });
+    }
+    Ok(out)
+}
+
 impl DbBridge for NativeDbBridge {
     fn query_where(&self, collection: &str, filter: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<DbRecord>, String> {
         if filter.is_empty() || filter.len() > pool::MAX_FILTER_FIELDS {
@@ -64,13 +115,7 @@ impl DbBridge for NativeDbBridge {
         if records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
             pool::warn_capped("db.query with a filter", collection, pool::MAX_COLLECTION_ROWS);
         }
-        Ok(records.into_iter().map(|r| DbRecord {
-            id: r.id,
-            collection: r.collection,
-            data: r.data,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        }).collect())
+        collect_bounded_records(records)
     }
 
     fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String> {
@@ -81,21 +126,22 @@ impl DbBridge for NativeDbBridge {
         if records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
             pool::warn_capped("db.query", collection, pool::MAX_COLLECTION_ROWS);
         }
-        // Note: the read pool yields `SyncRecord`, not `xdb::Record` — same
-        // field set, different type, so this cannot reuse `xdb_to_record`.
-        Ok(records.into_iter().map(|r| DbRecord {
-            id: r.id,
-            collection: r.collection,
-            data: r.data,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        }).collect())
+        collect_bounded_records(records)
     }
 
     fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String> {
-        let mut db = self.db.write();
+        validate_collection_name(collection)?;
+        if data.len() > MAX_BRIDGE_RECORD_BYTES {
+            return Err(format!(
+                "db.create: record exceeds {} byte limit",
+                MAX_BRIDGE_RECORD_BYTES
+            ));
+        }
+        // Parse JSON BEFORE acquiring the single writer mutex so CPU-bound
+        // parsing never stalls concurrent writers.
         let json: serde_json::Value = serde_json::from_str(data)
             .map_err(|e| format!("db.create: invalid JSON: {}", e))?;
+        let mut db = self.db.write();
         let (record, _update) = db.create_record(collection, json)
             .map_err(|e| format!("db.create failed: {}", e))?;
         self.announce(&db, &record, true);
@@ -103,9 +149,15 @@ impl DbBridge for NativeDbBridge {
     }
 
     fn update(&mut self, id: &str, data: &str) -> Result<Option<DbRecord>, String> {
-        let mut db = self.db.write();
+        if data.len() > MAX_BRIDGE_RECORD_BYTES {
+            return Err(format!(
+                "db.update: record exceeds {} byte limit",
+                MAX_BRIDGE_RECORD_BYTES
+            ));
+        }
         let json: serde_json::Value = serde_json::from_str(data)
             .map_err(|e| format!("db.update: invalid JSON: {}", e))?;
+        let mut db = self.db.write();
         match db.update_record(id, json) {
             Ok((r, _)) => {
                 self.announce(&db, &r, false);
@@ -117,13 +169,19 @@ impl DbBridge for NativeDbBridge {
     }
 
     fn update_if(&mut self, id: &str, data: &str, field: &str, expected: &str) -> Result<DbUpdateIf, String> {
-        // The guard is the store's writer mutex: between reading the field and
-        // writing the record, no other worker can write.
-        let mut db = self.db.write();
+        if data.len() > MAX_BRIDGE_RECORD_BYTES || expected.len() > MAX_BRIDGE_RECORD_BYTES {
+            return Err(format!(
+                "db.updateIf: payload exceeds {} byte limit",
+                MAX_BRIDGE_RECORD_BYTES
+            ));
+        }
         let json: serde_json::Value = serde_json::from_str(data)
             .map_err(|e| format!("db.updateIf: invalid JSON: {}", e))?;
         let expected: serde_json::Value = serde_json::from_str(expected)
             .map_err(|e| format!("db.updateIf: invalid expected value: {}", e))?;
+        // The guard is the store's writer mutex: between reading the field and
+        // writing the record, no other worker can write.
+        let mut db = self.db.write();
         let existing = match db.get_record(id) {
             Ok(r) if !r.deleted => r,
             Ok(_) => return Ok(DbUpdateIf::Missing),
@@ -243,7 +301,7 @@ mod tests {
         assert!(matches!(bridge.update_if(&note.id, r#"{"title":"three"}"#, "title", r#""two""#).unwrap(), DbUpdateIf::Updated(_)));
         bridge.delete(&note.id).unwrap();
         let mut told = Vec::new();
-        while let Ok((audience, message)) = listening.try_recv() {
+        while let Ok((audience, message, _)) = listening.try_recv() {
             assert_eq!(audience, Audience::All);
             let crate::sync::ServerMessage::SyncDelta { ops } = &*message else { panic!("{message:?}") };
             told.extend(ops.iter().map(|op| (op.operation.clone(), op.record_id.clone(), op.data.clone(), op.client_id.clone())));

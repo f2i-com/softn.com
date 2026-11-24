@@ -125,10 +125,15 @@ export function outsideAddress(resolved: string): string | null {
   return null;
 }
 
-/** The host an address names, as the URL parser reads it (lower case, punycode); '' for none (`mailto:`, `tel:`). */
+/** Normalize a hostname for same-site comparison (lower case, stripping FQDN trailing dots). */
+export function normalizeHost(host: string): string {
+  return host.trim().toLowerCase().replace(/\.+$/, '');
+}
+
+/** The host an address names, as the URL parser reads it (lower case, punycode, no trailing dots); '' for none (`mailto:`, `tel:`). */
 function hostOf(address: string): string {
   try {
-    return new URL(address).hostname;
+    return normalizeHost(new URL(address).hostname);
   } catch {
     return '';
   }
@@ -194,7 +199,8 @@ export function decideLink(link: ClickedLink): LinkAction {
     if (!link.byPerson) return { kind: 'keep', warning: `The page's code clicked a link to ${shown(link.written)}; only a link the person clicks goes to another site.` };
     const href = outsideAddress(link.resolved);
     if (href === null) return { kind: 'keep', warning: `A link to ${shown(link.written)} was not opened: it is not an address this app may hand on.` };
-    if (link.ownHost && hostOf(href) === link.ownHost.toLowerCase()) {
+    const own = link.ownHost ? normalizeHost(link.ownHost) : '';
+    if (own && hostOf(href) === own) {
       return { kind: 'keep', warning: `A link to ${shown(link.written)} was not opened: it goes to the site this app is hosted on, not to another site.` };
     }
     return { kind: 'hand-on', href };

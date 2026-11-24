@@ -192,6 +192,31 @@ function isIdentPart(ch: number): boolean {
   return isIdentStart(ch) || (ch >= 48 && ch <= 57);
 }
 
+/** Apply non-overlapping source edits in a single O(N + M) forward pass (dropping any nested edit inside an earlier outer span). */
+function applyEditsLinear(
+  code: string,
+  edits: Array<{ start: number; end: number; replacement: string }>,
+  preserveLines = false
+): string {
+  if (edits.length === 0) return code;
+  edits.sort((a, b) => a.start - b.start || b.end - a.end);
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const edit of edits) {
+    if (edit.start < cursor) continue; // Skip nested/overlapping edit already covered by an outer edit
+    parts.push(code.slice(cursor, edit.start));
+    const rep = preserveLines
+      ? preserveLineCount(code.slice(edit.start, edit.end), edit.replacement)
+      : edit.replacement;
+    parts.push(rep);
+    cursor = edit.end;
+  }
+  parts.push(code.slice(cursor));
+  return parts.join('');
+}
+
+const CONTROL_HEAD_KEYWORDS = new Set(['if', 'while', 'for', 'with']);
+
 /** Tokenize JS/TS code skipping comments, strings, template literals (tokenizing `${...}` expressions), and regex literals accurately. */
 function tokenizeTopLevel(code: string): Token[] {
   const tokens: Token[] = [];
@@ -200,12 +225,19 @@ function tokenizeTopLevel(code: string): Token[] {
   let prevSig: Token | null = null;
   // Stack of brace depths for active template `${...}` expressions so closing `}` resumes template text.
   const templateBraceStack: number[] = [];
+  // Track whether each open `(` belongs to a control-flow head (`if (...)`, `while (...)`, `for (...)`, `with (...)`)
+  // so `if (cond) /pat/.test(s)` recognizes `/` after `)` as a regex literal rather than division.
+  const parenIsControlHead: boolean[] = [];
+  let lastClosedControlHead = false;
   let activeBraceDepth = 0;
 
   const canStartRegex = (): boolean => {
     if (!prevSig) return true;
     if (prevSig.type === 'keyword') return REGEX_PRECEDING_KEYWORDS.has(prevSig.value);
-    if (prevSig.type === 'punct') return REGEX_PRECEDING_PUNCT.has(prevSig.value);
+    if (prevSig.type === 'punct') {
+      if (prevSig.value === ')') return lastClosedControlHead;
+      return REGEX_PRECEDING_PUNCT.has(prevSig.value);
+    }
     return false;
   };
 
@@ -355,10 +387,11 @@ function tokenizeTopLevel(code: string): Token[] {
         word === 'import' || word === 'export' || word === 'from' || word === 'as' ||
         word === 'default' || word === 'function' || word === 'class' || word === 'const' ||
         word === 'let' || word === 'var' || word === 'async' || word === 'type' ||
-        word === 'interface' || word === 'enum' || REGEX_PRECEDING_KEYWORDS.has(word);
+        word === 'interface' || word === 'enum' || CONTROL_HEAD_KEYWORDS.has(word) || REGEX_PRECEDING_KEYWORDS.has(word);
       const tok: Token = { type: isKw ? 'keyword' : 'ident', value: word, start, end: i };
       tokens.push(tok);
       prevSig = tok;
+      lastClosedControlHead = false;
       continue;
     }
     // Numbers
@@ -369,6 +402,7 @@ function tokenizeTopLevel(code: string): Token[] {
       const tok: Token = { type: 'other', value: code.slice(start, i), start, end: i };
       tokens.push(tok);
       prevSig = tok;
+      lastClosedControlHead = false;
       continue;
     }
     // Keep `++` and `--` intact so `a++ / b` parses `/` as division instead of a regex literal.
@@ -379,12 +413,21 @@ function tokenizeTopLevel(code: string): Token[] {
       const tok: Token = { type: 'punct', value: op, start, end: i };
       tokens.push(tok);
       prevSig = tok;
+      lastClosedControlHead = false;
       continue;
     }
     // Punctuation
     const start = i;
     const chStr = code[i];
     i++;
+    if (chStr === '(') {
+      parenIsControlHead.push(prevSig?.type === 'keyword' && CONTROL_HEAD_KEYWORDS.has(prevSig.value));
+      lastClosedControlHead = false;
+    } else if (chStr === ')') {
+      lastClosedControlHead = parenIsControlHead.pop() === true;
+    } else {
+      lastClosedControlHead = false;
+    }
     const tok: Token = { type: 'punct', value: chStr, start, end: i };
     tokens.push(tok);
     prevSig = tok;
@@ -459,10 +502,7 @@ export function classicImportsRewritten(code: string, importerUrl: string): { co
     if (dynamic.named !== null) named.push(dynamic.named);
   }
   if (edits.length === 0) return { code, named };
-  edits.sort((a, b) => b.start - a.start);
-  let body = code;
-  for (const edit of edits) body = body.slice(0, edit.start) + edit.replacement + body.slice(edit.end);
-  return { code: body, named };
+  return { code: applyEditsLinear(code, edits, false), named };
 }
 
 /**
@@ -642,8 +682,14 @@ export function classicScriptAsFunction(code: string, name: string): { source: s
   const all = new Set<string>([...functions, ...names]);
   const globals = trusted ? [...top.plainVars].filter((n) => validGlobalName(n) && !all.has(n)) : [];
   // Each `var` taken out is a `;`: the statement goes on as assignments (`; a = 1, b`).
-  let body = code;
-  if (trusted) for (const tok of [...top.takenVars].reverse()) body = `${body.slice(0, tok.start)};${body.slice(tok.end)}`;
+  const body =
+    trusted && top.takenVars.length > 0
+      ? applyEditsLinear(
+          code,
+          top.takenVars.map((tok) => ({ start: tok.start, end: tok.end, replacement: ';' })),
+          false
+        )
+      : code;
   const prologue = [
     top.strict ? " 'use strict';" : '',
     globals.length > 0 ? ` __softnGlobalVars(${JSON.stringify(globals)});` : '',
@@ -1335,13 +1381,8 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
     }
   }
 
-  // Apply edits in reverse offset order, preserving original line counts for exact source-map line numbers.
-  edits.sort((a, b) => b.start - a.start);
-  let body = code;
-  for (const edit of edits) {
-    const rep = preserveLineCount(body.slice(edit.start, edit.end), edit.replacement);
-    body = body.slice(0, edit.start) + rep + body.slice(edit.end);
-  }
+  // Apply non-overlapping edits in one O(N + M) forward pass, preserving original line counts for exact source-map line numbers.
+  const body = applyEditsLinear(code, edits, true);
 
   const getterLines: string[] = [];
   for (const [exported, local] of exportGetters) {

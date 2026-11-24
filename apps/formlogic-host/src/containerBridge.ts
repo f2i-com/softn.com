@@ -166,10 +166,24 @@ export function isSafeLocalContainerPath(name: string): boolean {
 export function buildContainerSource(
   files: ReadonlyMap<string, string>,
   assets: Record<string, unknown> | undefined,
-  options?: { allowLocalBackend?: boolean }
+  options?: { allowLocalBackend?: boolean; manifest?: Record<string, unknown> | null }
 ): Record<string, string | Uint8Array> {
   const out: Record<string, string | Uint8Array> = Object.create(null);
-  const allow = options?.allowLocalBackend ? isSafeLocalContainerPath : isSafeClientPath;
+  let parsedManifest: Record<string, unknown> | null = options?.manifest ?? null;
+  if (!parsedManifest && !options?.allowLocalBackend) {
+    const rawManifest = files.get('manifest.json');
+    if (typeof rawManifest === 'string') {
+      try {
+        const parsed = JSON.parse(rawManifest);
+        if (isRecord(parsed)) parsedManifest = parsed;
+      } catch {
+        // Malformed manifest falls back to default static deny rules.
+      }
+    }
+  }
+  const allow = options?.allowLocalBackend
+    ? isSafeLocalContainerPath
+    : (path: string) => isSafeClientPath(path, parsedManifest);
 
   for (const [path, text] of files.entries()) {
     if (allow(path) && typeof text === 'string') out[path] = text;
@@ -208,9 +222,11 @@ export function grantedContainerCapabilities(permissions: { permissions?: Record
 }
 
 const MAX_PORT_HTTP_BODY_BYTES = 16 * 1024 * 1024;
+const MAX_PORT_HTTP_PATH_LEN = 2048;
 const MAX_PORT_HEADERS = 64;
 const MAX_PORT_HEADER_VALUE_BYTES = 8192;
 const MAX_PORT_QUERY_BYTES = 8192;
+const textEncoder = new TextEncoder();
 const ALLOWED_PORT_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 const FORBIDDEN_PORT_HEADERS = new Set([
   'host', 'origin', 'referer', 'cookie', 'content-length', 'connection', 'keep-alive',
@@ -223,11 +239,12 @@ function isSafePortHttpPath(rawPath: string): boolean {
   if (!rawPath || typeof rawPath !== 'string') return false;
   const clean = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
   if (
+    clean.length > MAX_PORT_HTTP_PATH_LEN ||
     clean.startsWith('//') ||
     clean.includes('\\') ||
-    clean.includes('\0') ||
+    /[\r\n\0?#]/.test(clean) ||
     /(?:^|\/)\.\.(?:\/|$)/.test(clean) ||
-    /%(?:2e|2f|5c|00)/i.test(clean)
+    /%(?:2e|2f|5c|00|25)/i.test(clean)
   ) {
     return false;
   }
@@ -333,7 +350,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 503,
           statusText: 'Service Unavailable',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: 'Container backend disposed' })),
+          body: textEncoder.encode(JSON.stringify({ error: 'Container backend disposed' })),
         };
       }
       const reqPath = req.path.startsWith('/') ? req.path : `/${req.path}`;
@@ -342,12 +359,12 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 400,
           statusText: 'Bad Request',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: 'Invalid backend request path' })),
+          body: textEncoder.encode(JSON.stringify({ error: 'Invalid backend request path' })),
         };
       }
       const bodyBytes =
         typeof req.body === 'string'
-          ? new TextEncoder().encode(req.body)
+          ? textEncoder.encode(req.body)
           : req.body instanceof Uint8Array
             ? req.body
             : null;
@@ -356,7 +373,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 413,
           statusText: 'Payload Too Large',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: 'Request body too large' })),
+          body: textEncoder.encode(JSON.stringify({ error: 'Request body too large' })),
         };
       }
       const method = String(req.method || 'GET').toUpperCase();
@@ -365,7 +382,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 405,
           statusText: 'Method Not Allowed',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: 'Unsupported HTTP method' })),
+          body: textEncoder.encode(JSON.stringify({ error: 'Unsupported HTTP method' })),
         };
       }
       const query = typeof req.query === 'string' ? req.query : '';
@@ -374,7 +391,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 400,
           statusText: 'Bad Request',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: 'Invalid backend query string' })),
+          body: textEncoder.encode(JSON.stringify({ error: 'Invalid backend query string' })),
         };
       }
       const safeHeaders: Record<string, string> = {};
@@ -413,7 +430,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 502,
           statusText: 'Bad Gateway',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: 'Invalid backend response' })),
+          body: textEncoder.encode(JSON.stringify({ error: 'Invalid backend response' })),
         };
       }
       if (typeof envelope.error === 'string' && envelope.status === undefined && !isRecord(envelope.result)) {
@@ -421,7 +438,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 502,
           statusText: 'Bad Gateway',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: envelope.error })),
+          body: textEncoder.encode(JSON.stringify({ error: envelope.error })),
         };
       }
       const raw = isRecord(envelope.result) ? envelope.result : envelope;
@@ -430,7 +447,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           status: 502,
           statusText: 'Bad Gateway',
           headers: [['content-type', 'application/json']],
-          body: new TextEncoder().encode(JSON.stringify({ error: raw.error })),
+          body: textEncoder.encode(JSON.stringify({ error: raw.error })),
         };
       }
       const status = typeof raw.status === 'number' && Number.isFinite(raw.status) ? raw.status : 200;
@@ -463,11 +480,11 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
             status: 502,
             statusText: 'Bad Gateway',
             headers: [['content-type', 'application/json']],
-            body: new TextEncoder().encode(JSON.stringify({ error: 'Malformed base64 response body' })),
+            body: textEncoder.encode(JSON.stringify({ error: 'Malformed base64 response body' })),
           };
         }
       } else if (typeof raw.body === 'string') {
-        body = new TextEncoder().encode(raw.body);
+        body = textEncoder.encode(raw.body);
       } else {
         body = new Uint8Array(0);
       }

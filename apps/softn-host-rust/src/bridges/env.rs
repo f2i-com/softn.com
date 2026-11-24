@@ -26,7 +26,7 @@ impl EnvBridge for NativeEnvBridge {
         // Truncate on a char boundary: slicing at a raw byte offset panics when
         // a multi-byte character straddles it, and every `console.*` call in a
         // script reaches this method.
-        let msg = if message.len() > MAX_LOG_LEN {
+        let slice = if message.len() > MAX_LOG_LEN {
             let mut end = MAX_LOG_LEN;
             while end > 0 && !message.is_char_boundary(end) {
                 end -= 1;
@@ -35,10 +35,20 @@ impl EnvBridge for NativeEnvBridge {
         } else {
             message
         };
+        // Strip ASCII control characters (including \r, \n, and \x1b ANSI
+        // escapes) so guest console.log output cannot forge host log lines or
+        // emit terminal control sequences.
+        let sanitized: String = slice
+            .chars()
+            .map(|c| {
+                let code = c as u32;
+                if code < 0x20 || code == 0x7f { ' ' } else { c }
+            })
+            .collect();
         match level {
-            "WARN" => tracing::warn!(target: "softn_script", "{}", msg),
-            "ERROR" => tracing::error!(target: "softn_script", "{}", msg),
-            _ => tracing::info!(target: "softn_script", "{}", msg),
+            "WARN" => tracing::warn!(target: "softn_script", "{}", sanitized),
+            "ERROR" => tracing::error!(target: "softn_script", "{}", sanitized),
+            _ => tracing::info!(target: "softn_script", "{}", sanitized),
         }
     }
 }

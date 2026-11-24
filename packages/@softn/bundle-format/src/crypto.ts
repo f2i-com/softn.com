@@ -28,8 +28,10 @@ export function randomUUID(): string {
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) return toHex((await import('./sha256')).sha256(bytes));
-  // A copy into a plain buffer: a view over a larger buffer would hash the whole buffer.
-  return toHex(new Uint8Array(await subtle.digest('SHA-256', new Uint8Array(bytes))));
+  // WebCrypto hashes `[byteOffset, byteOffset + byteLength)` directly; only copy if backed by SharedArrayBuffer.
+  const isShared = typeof SharedArrayBuffer !== 'undefined' && bytes.buffer instanceof SharedArrayBuffer;
+  const input = isShared ? new Uint8Array(bytes) : (bytes as Uint8Array<ArrayBuffer>);
+  return toHex(new Uint8Array(await subtle.digest('SHA-256', input)));
 }
 
 function toHex(bytes: Uint8Array): string {

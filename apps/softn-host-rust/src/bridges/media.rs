@@ -14,6 +14,19 @@ use std::io::Cursor;
 pub const MAX_PHOTO_BYTES: usize = 4_000_000;
 pub const MAX_PHOTO_PIXELS: u64 = 16_000_000;
 
+/// Global concurrent photo-decode semaphore shared by HTTP upload endpoints
+/// and `softn.media.sanitizePhoto` host calls so untrusted workers cannot
+/// launch 200 simultaneous 64–128 MiB image decodes.
+pub fn photo_decode_permits() -> &'static tokio::sync::Semaphore {
+    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        tokio::sync::Semaphore::new(cores.clamp(2, 8))
+    })
+}
+
 fn limits() -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(8192);
@@ -61,13 +74,11 @@ fn on_white(image: DynamicImage) -> DynamicImage {
     DynamicImage::ImageRgba8(pixels)
 }
 
-fn jpeg(image: &DynamicImage, side: u32, max_bytes: usize) -> Result<String, String> {
-    let resized = image
-        .thumbnail(side.min(image.width()), side.min(image.height()))
-        .to_rgb8();
+fn encode_jpeg(resized: &DynamicImage, max_bytes: usize) -> Result<String, String> {
+    let rgb = resized.to_rgb8();
     let mut bytes = Vec::new();
     JpegEncoder::new_with_quality(&mut bytes, 82)
-        .encode_image(&resized)
+        .encode_image(&rgb)
         .map_err(|_| "Photo encoding failed")?;
     if bytes.len() > max_bytes {
         return Err("Photo is too complex; resize it before uploading".into());
@@ -119,9 +130,15 @@ pub fn sanitize_photo(data_url: &str) -> Result<serde_json::Value, String> {
         }
         _ => return Err("Use a still JPEG, PNG or WebP photo".into()),
     };
-    Ok(serde_json::json!({"sanitized":true,
-        "image":jpeg(&image, 960, 400_000)?,
-        "thumbnail":jpeg(&image, 240, 60_000)?}))
+    // Downscale once to 960px and derive the 240px thumbnail from that
+    // intermediate instead of resampling the full up-to-16-MP image twice.
+    let main_img = image.thumbnail(960.min(image.width()), 960.min(image.height()));
+    let thumb_img = main_img.thumbnail(240.min(main_img.width()), 240.min(main_img.height()));
+    Ok(serde_json::json!({
+        "sanitized": true,
+        "image": encode_jpeg(&main_img, 400_000)?,
+        "thumbnail": encode_jpeg(&thumb_img, 60_000)?,
+    }))
 }
 
 #[cfg(test)]

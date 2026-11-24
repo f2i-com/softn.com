@@ -407,3 +407,65 @@ echo json_encode(['userId' => $userId, 'spoof' => $spoof, 'roleId' => $ctx['role
   // Verify primary DB landed at private/data/application.sqlite for FormLogic Data manager & backups!
   assert.equal(existsSync(join(root, 'private/data/application.sqlite')), true);
 });
+
+test('caps :memory: SQLite handles and blocks private script/key/WAL static assets', {skip: !hasCoreWasm && 'ZIPP WASM engines not built'}, t => {
+  const root = makeBackendFixture(t, {
+    'manifest.json': JSON.stringify({
+      engine: 2,
+      id: 'mem-cap-app',
+      name: 'Mem Cap App',
+      version: '1.0.0',
+      main: 'public/index.html',
+      frontendRoot: 'public',
+      backend: {runtime: 'javascript', entry: 'backend/api.js', mode: 'api', routes: ['/api/']},
+    }),
+    'public/index.html': '<!doctype html><h1>ok</h1>',
+    'public/secret.pem': '-----BEGIN PRIVATE KEY-----',
+    'public/app.sqlite-wal': 'wal-bytes',
+    'public/alt.php8': '<?php echo "nope";',
+    'backend/api.js': `
+function handleRequest(req) {
+  if (req.path === '/api/memcap') {
+    var opened = [];
+    var err = null;
+    for (var i = 0; i < 8; i++) {
+      try {
+        opened.push(sqlite.open(':memory:'));
+      } catch (e) {
+        err = String(e.message || e);
+        break;
+      }
+    }
+    for (var j = 0; j < opened.length; j++) opened[j].close();
+    return { status: 200, headers: [['Content-Type', 'application/json']], body: JSON.stringify({ opened: opened.length, err: err }) };
+  }
+  return { status: 404, body: 'not found' };
+}
+`,
+  }, 'mem-cap-app');
+
+  const cap = runRunner(root, {
+    path: '/api/memcap',
+    method: 'GET',
+    queryString: '',
+    headers: {},
+    bodyBase64: '',
+    client_ip: '127.0.0.1',
+  });
+  assert.equal(cap.status, 200, cap.bodyText);
+  const data = JSON.parse(cap.bodyText);
+  assert.equal(data.opened, 4);
+  assert.match(String(data.err), /in-memory SQLite handle limit exceeded/i);
+
+  for (const blockedPath of ['/secret.pem', '/app.sqlite-wal', '/alt.php8']) {
+    const r = runRunner(root, {
+      path: blockedPath,
+      method: 'GET',
+      queryString: '',
+      headers: {},
+      bodyBase64: '',
+      client_ip: '127.0.0.1',
+    });
+    assert.equal(r.status, 404, `expected 404 for ${blockedPath}, got ${r.status}`);
+  }
+});

@@ -63,7 +63,7 @@ impl Status {
 /// Lock this process down to `root`, the backend folder. Call it before any
 /// thread is started: Landlock restricts the calling thread and those it
 /// starts later, not ones already running.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(target_os = "linux")]
 pub fn apply(root: &Path) -> Status {
     let mut status = Status { landlock: "none", ..Status::default() };
     // SAFETY: plain system calls on this process; a failure leaves it as it was.
@@ -82,19 +82,22 @@ pub fn apply(root: &Path) -> Status {
         }
         Err(e) => status.errors.push(format!("landlock: {e}")),
     }
+    #[cfg(target_arch = "x86_64")]
     match seccomp_filters() {
         Ok(()) => status.seccomp = true,
         Err(e) => status.errors.push(format!("seccomp: {e}")),
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    status.errors.push("seccomp: x86_64 filter only; Landlock and no_new_privs remain active".into());
     status
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(target_os = "linux"))]
 pub fn apply(_root: &Path) -> Status {
     Status { landlock: "unsupported", ..Status::default() }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(target_os = "linux")]
 fn landlock_rules(root: &Path) -> Result<(i32, &'static str), String> {
     use landlock::{
         make_bitflags, path_beneath_rules, Access, AccessFs, AccessNet, LandlockStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
@@ -113,6 +116,9 @@ fn landlock_rules(root: &Path) -> Result<(i32, &'static str), String> {
     // The notes' folder is made on the first refusal; a rule needs the folder
     // to be there, so it is made now, private, as mark_limited makes it.
     let limited = root.join("private/limited");
+    if std::fs::symlink_metadata(&limited).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("private/limited is a symbolic link".into());
+    }
     if std::fs::create_dir(&limited).is_ok() {
         let _ = crate::private_mode(&limited, 0o700);
     }
@@ -171,6 +177,23 @@ const REFUSED: &[i64] = &[
     libc::SYS_ioprio_set,
     libc::SYS_migrate_pages,
     libc::SYS_move_pages,
+    // System V IPC and POSIX message queues (shared-UID lateral channels not gated by Landlock).
+    libc::SYS_shmget,
+    libc::SYS_shmat,
+    libc::SYS_shmctl,
+    libc::SYS_msgget,
+    libc::SYS_msgsnd,
+    libc::SYS_msgrcv,
+    libc::SYS_msgctl,
+    libc::SYS_semget,
+    libc::SYS_semop,
+    libc::SYS_semtimedop,
+    libc::SYS_semctl,
+    libc::SYS_mq_open,
+    libc::SYS_mq_timedsend,
+    libc::SYS_mq_timedreceive,
+    libc::SYS_mq_unlink,
+    libc::SYS_mq_notify,
     // The network, and sockets of any kind.
     libc::SYS_socket,
     libc::SYS_socketpair,

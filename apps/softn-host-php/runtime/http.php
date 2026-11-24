@@ -273,15 +273,32 @@ if(isset($result['bodyRaw'])) {
             if($k===''||isset($blockedResponseHeaders[$lk])||str_starts_with($lk,'x-accel-')||str_starts_with($lk,'x-litespeed-')||str_starts_with($lk,'x-sendfile')||str_starts_with($lk,'x-lighttpd-'))continue;
             if(!preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/',$k))continue;
             if($lk==='set-cookie') {
-                // Prevent cross-subdomain cookie tossing (`Domain=...`) and ensure SameSite default.
+                // Prevent cross-subdomain cookie tossing (`Domain=...`), oversized/malformed cookies,
+                // invalid RFC 6265bis prefixes (`__Host-`/`__Secure-`), and insecure `SameSite=None`.
+                if(strlen($v)>4096)continue;
                 $cookieParts=explode(';',$v);
-                $hasDomain=false;$hasSameSite=false;
+                $nv=trim($cookieParts[0]);
+                $eq=strpos($nv,'=');
+                if($eq===false||$eq===0)continue;
+                $cookieName=trim(substr($nv,0,$eq));
+                if($cookieName===''||!preg_match('/^[!#$%&\'*+\-.^_`|~0-9A-Za-z]+$/',$cookieName))continue;
+                $hasDomain=false;$hasSameSite=false;$sameSiteNone=false;$hasSecure=false;$hasRootPath=false;
                 for($ci=1,$cn=count($cookieParts);$ci<$cn;$ci++) {
-                    $attrName=strtolower(trim(explode('=',$cookieParts[$ci],2)[0]));
+                    $attrRaw=trim($cookieParts[$ci]);
+                    if($attrRaw==='')continue;
+                    $attrPair=explode('=',$attrRaw,2);
+                    $attrName=strtolower(trim($attrPair[0]));
+                    $attrVal=isset($attrPair[1])?trim($attrPair[1]):'';
                     if($attrName==='domain'){$hasDomain=true;break;}
-                    if($attrName==='samesite')$hasSameSite=true;
+                    if($attrName==='secure')$hasSecure=true;
+                    if($attrName==='path'&&$attrVal==='/')$hasRootPath=true;
+                    if($attrName==='samesite'){$hasSameSite=true;if(strtolower($attrVal)==='none')$sameSiteNone=true;}
                 }
                 if($hasDomain)continue;
+                $isHttps=(!empty($_SERVER['HTTPS'])&&strtolower((string)$_SERVER['HTTPS'])!=='off')||((int)($_SERVER['SERVER_PORT']??0)===443);
+                if(stripos($cookieName,'__Host-')===0&&(!$hasSecure||!$isHttps||!$hasRootPath))continue;
+                if(stripos($cookieName,'__Secure-')===0&&(!$hasSecure||!$isHttps))continue;
+                if($sameSiteNone&&!$hasSecure)continue;
                 if(!$hasSameSite)$v.='; SameSite=Lax';
             }
             if($lk==='content-type'&&!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}

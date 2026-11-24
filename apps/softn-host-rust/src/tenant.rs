@@ -182,6 +182,19 @@ impl TenantManager {
                 if tenants.keys().any(|k: &String| tenant_key(k) == tenant_key(id)) {
                     return Some(format!("Duplicate tenant ID '{}'", id));
                 }
+                // Per-tenant auth/sync tokens normalize '.', '-', '_' to '_';
+                // reject colliding normalized env keys so one tenant cannot
+                // inherit another tenant's SOFTN_AUTH_TOKEN_* or SOFTN_SYNC_TOKEN_*.
+                let norm_env = id.to_ascii_uppercase().replace(['.', '-'], "_");
+                if tenants
+                    .keys()
+                    .any(|k: &String| k.to_ascii_uppercase().replace(['.', '-'], "_") == norm_env)
+                {
+                    return Some(format!(
+                        "Tenant ID '{}' collides with an existing tenant's token environment variable name (SOFTN_*_TOKEN_{})",
+                        id, norm_env
+                    ));
+                }
                 // Defense-in-depth: even if `peek_tenant_id` could not inspect the archive before
                 // extraction, never allow a rival bundle to open a tenant data directory whose
                 // recorded OWNER_FILE points to another bundle still present in `candidates`.
@@ -522,9 +535,13 @@ fn load_tenant(
         let db_for_factory = db.clone();
         let stream_for_factory = stream.clone();
         let fs_root = data_dir.join("files");
+        if std::fs::symlink_metadata(&fs_root).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(format!("[{}] Refusing symlinked files directory", tenant_id));
+        }
         std::fs::create_dir_all(&fs_root)
             .map_err(|e| format!("Failed to create files dir: {}", e))?;
         let fs_root_for_factory = fs_root.clone();
+        let fs_quota = crate::bridges::fs::FsQuota::new();
 
         // Worker count: prefer explicit per-tenant, then manifest, then auto-size.
         // Multi-tenant default: 4 workers (vs single-tenant default of 16-50).
@@ -560,10 +577,11 @@ fn load_tenant(
         };
 
         let app_config = bundle::app_config(&manifest);
+        let shared_http = if allow_http { Some(NativeHttpBridge::new()) } else { None };
         let rt = ServerRuntime::new(move || BridgeSet {
             db: Some(Box::new(NativeDbBridge::with_stream(db_for_factory.clone(), stream_for_factory.clone()))),
-            http: if allow_http { Some(Box::new(NativeHttpBridge::new())) } else { None },
-            fs: if allow_fs { Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))) } else { None },
+            http: shared_http.clone().map(|h| Box::new(h) as Box<dyn crate::bridges::HttpBridge>),
+            fs: if allow_fs { Some(Box::new(NativeFsBridge::with_quota(fs_root_for_factory.clone(), fs_quota.clone()))) } else { None },
             env: Some(Box::new(NativeEnvBridge)),
             sql: private_backend.sql(),
             crypto: private_backend.crypto.clone(),

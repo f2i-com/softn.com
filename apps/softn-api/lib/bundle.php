@@ -34,8 +34,8 @@ final class Bundle
      * months, so an app asking for host acceleration was listed as asking for
      * nothing of the kind.
      */
-    public const CAPABILITY_SCHEMA_VERSION = 3;
-    public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'];
+    public const CAPABILITY_SCHEMA_VERSION = 4;
+    public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel', 'bluetooth', 'location', 'haptics', 'notifications'];
     /**
      * A storage collection name, or `*` for every collection not named. `D`
      * because `$` alone also matches before a final line break: "scores\n"
@@ -356,14 +356,20 @@ final class Bundle
      * Whether a bundle path belongs to the server-side backend or database and
      * must be omitted from a client-only bundle when an operator withholds the
      * backend source on a server-hosted app.
+     *
+     * @param array<string, true> $exactPrivate
      */
-    private static function isBackendPrivatePath(string $name, string $backendRoot = ''): bool
+    private static function isBackendPrivatePath(string $name, string $backendRoot = '', array $exactPrivate = []): bool
     {
         $clean = ltrim(str_replace('\\', '/', $name), '/');
         if ($clean === '') return true;
-        if ($backendRoot !== '' && ($clean === $backendRoot || str_starts_with($clean, $backendRoot . '/'))) return true;
-        if (str_starts_with($clean, 'server/') || str_starts_with($clean, 'backend/')) return true;
-        return preg_match('#(?:^|/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|composer\.json|composer\.lock|seed\.json)$|\.(?:php|phtml|inc|tpl|rs|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh)$#i', $clean) === 1;
+        $lower = strtolower($clean);
+        if (isset($exactPrivate[$lower])) return true;
+        $rootLower = strtolower($backendRoot);
+        if ($rootLower !== '' && ($lower === $rootLower || str_starts_with($lower, $rootLower . '/'))) return true;
+        if (preg_match('#^(?:__softn_generated__/)?(?:server|backend|private|db|database|migrations)/#', $lower) === 1) return true;
+        if (preg_match('#(?:^|/)\.git(?:/|$)#', $lower) === 1) return true;
+        return preg_match('#(?:^|/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|composer\.json|composer\.lock|seed\.json)$|\.(?:php|phtml|php5|php7|php8|pht|phps|phar|inc|tpl|rs|py|logic|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh)$#i', $clean) === 1;
     }
 
     /**
@@ -391,6 +397,8 @@ final class Bundle
             }
         }
         $backendRoot = '';
+        $exactPrivate = [];
+        $normRel = static fn(mixed $v): string => is_string($v) ? strtolower(trim(str_replace('\\', '/', $v), '/')) : '';
         if (is_array($manifest['backend'] ?? null)) {
             if (is_string($manifest['backend']['root'] ?? null)) {
                 $backendRoot = trim(str_replace('\\', '/', $manifest['backend']['root']), '/');
@@ -399,6 +407,30 @@ final class Bundle
                 if ($entryDir !== '' && $entryDir !== 'assets' && $entryDir !== 'css' && $entryDir !== 'js') {
                     $backendRoot = $entryDir;
                 }
+            }
+            $entryRel = $normRel($manifest['backend']['entry'] ?? null);
+            if ($entryRel !== '') $exactPrivate[$entryRel] = true;
+        }
+        if (is_array($manifest['server'] ?? null)) {
+            $srvEntry = $normRel($manifest['server']['entry'] ?? null);
+            if ($srvEntry !== '') $exactPrivate[$srvEntry] = true;
+        }
+        $ssrEntry = $normRel($manifest['ssrEntry'] ?? null);
+        if ($ssrEntry !== '') $exactPrivate[$ssrEntry] = true;
+        if (is_array($manifest['databases'] ?? null)) {
+            foreach ($manifest['databases'] as $dbCfg) {
+                if (!is_array($dbCfg)) continue;
+                $dbFile = $normRel($dbCfg['file'] ?? null);
+                if ($dbFile !== '') {
+                    $exactPrivate[$dbFile] = true;
+                    $exactPrivate[$dbFile . '-wal'] = true;
+                    $exactPrivate[$dbFile . '-shm'] = true;
+                    $exactPrivate[$dbFile . '-journal'] = true;
+                }
+                $seedSql = $normRel($dbCfg['seedSql'] ?? null);
+                if ($seedSql !== '') $exactPrivate[$seedSql] = true;
+                $seedJson = $normRel($dbCfg['seedJson'] ?? null);
+                if ($seedJson !== '') $exactPrivate[$seedJson] = true;
             }
         }
         $dir = dirname($cachePath);
@@ -420,13 +452,13 @@ final class Bundle
                 $rel = $prefix !== '' && str_starts_with($name, $prefix) ? substr($name, strlen($prefix)) : $name;
                 if ($manifestEntry !== null && $name === $manifestEntry) {
                     $cleanManifest = is_array($manifest) ? $manifest : [];
-                    unset($cleanManifest['backend'], $cleanManifest['databases'], $cleanManifest['ssrEntry']);
+                    unset($cleanManifest['backend'], $cleanManifest['server'], $cleanManifest['databases'], $cleanManifest['ssrEntry']);
                     $cleanManifest['engine'] = 2;
                     $dst->addFromString($rel, json_encode($cleanManifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
                     $written++;
                     continue;
                 }
-                if (self::isBackendPrivatePath($rel, $backendRoot)) continue;
+                if (self::isBackendPrivatePath($rel, $backendRoot, $exactPrivate)) continue;
                 $bytes = $src->getFromIndex($i);
                 if (!is_string($bytes)) continue;
                 $dst->addFromString($rel, $bytes);
@@ -525,6 +557,9 @@ final class Bundle
             throw new ApiError(400, 'The bundle carries a ZIP64 end record, which the runtime does not read, and readers that do take their directory from it. Zip it without ZIP64.');
         }
         $record = self::bytesAt($handle, $end, 22);
+        if (self::u16($record, 4) !== 0 || self::u16($record, 6) !== 0) {
+            throw new ApiError(400, 'The bundle is a multi-disk ZIP archive, which the runtime does not read.');
+        }
         $count = self::u16($record, 8);
         if ($count !== self::u16($record, 10)) throw new ApiError(400, 'The bundle\'s end record gives two different counts of its entries.');
         $dirOffset = self::u32($record, 16);
@@ -538,6 +573,7 @@ final class Bundle
         $countAndSize = 'The bundle\'s central directory does not hold the number of entries its end record gives.';
         $entries = [];
         $localHeaders = [];
+        $spans = [];
         $names = [];
         $totalCompressed = 0;
         $totalSize = 0;
@@ -567,26 +603,57 @@ final class Bundle
             if ($totalCompressed > $fileSize) throw new ApiError(400, 'The bundle\'s entries claim more data than the file holds.');
             $totalSize += $declared;
             if ($totalSize > self::RUNTIME_MAX_TOTAL) throw new ApiError(400, 'The bundle expands to more than 500 MB, which the runtime does not open.');
-            if ($local + 30 > $fileSize) throw new ApiError(400, "The bundle's entry $written has no local header.");
+            if ($local + 30 > $dirOffset) throw new ApiError(400, "The bundle's entry $written has no local header.");
             $header = self::bytesAt($handle, $local, 30);
             if (substr($header, 0, 4) !== "PK\x03\x04") throw new ApiError(400, "The bundle's entry $written has no local header.");
-            if (self::u16($header, 6) & 1) throw new ApiError(400, 'The bundle has an encrypted entry.');
-            $data = $local + 30 + self::u16($header, 26) + self::u16($header, 28);
-            if ($data + $compressed > $fileSize) throw new ApiError(400, "The bundle's entry $written runs past the end of the file.");
+            $localFlags = self::u16($header, 6);
+            if ($localFlags & 1) throw new ApiError(400, 'The bundle has an encrypted entry.');
+            $localMethod = self::u16($header, 8);
+            if ($localMethod !== $method) throw new ApiError(400, "The bundle's entry $written disagrees between its central and local compression methods.");
+            $localNameLen = self::u16($header, 26);
+            $localExtraLen = self::u16($header, 28);
+            $data = $local + 30 + $localNameLen + $localExtraLen;
+            if ($data + $compressed > $dirOffset) throw new ApiError(400, "The bundle's entry $written runs past the end of the file.");
+            $localName = $localNameLen > 0 ? self::bytesAt($handle, $local + 30, $localNameLen) : '';
+            if ($localName !== $written) throw new ApiError(400, "The bundle's entry $written disagrees with its local header name.");
+            if (($localFlags & 8) === 0) {
+                $localCrc = self::u32($header, 14);
+                $localCompressed = self::u32($header, 18);
+                $localSize = self::u32($header, 22);
+                if ($localCrc !== $crc || $localCompressed !== $compressed || $localSize !== $declared) {
+                    throw new ApiError(400, "The bundle's entry $written disagrees between its central and local headers.");
+                }
+            }
             $name = str_replace('\\', '/', $written);
             $unicode = self::unicodePath(substr($dir, $at + 46 + $nameLength, $extraLength), $written);
             if ($unicode !== null && $unicode !== $name) {
                 throw new ApiError(400, "The bundle's entry $name is also named $unicode, in an Info-ZIP Unicode Path field, and ZIP readers differ on which name it has.");
+            }
+            if ($localExtraLen > 0) {
+                $localExtra = self::bytesAt($handle, $local + 30 + $localNameLen, $localExtraLen);
+                $localUnicode = self::unicodePath($localExtra, $localName);
+                if ($localUnicode !== null && $localUnicode !== $name) {
+                    throw new ApiError(400, "The bundle's entry $name is also named $localUnicode, in an Info-ZIP Unicode Path field, and ZIP readers differ on which name it has.");
+                }
             }
             // Two records under one name are two answers to "what is in this
             // file": readers differ on which they take. The runtime refuses
             // such an archive, and so does this.
             if (isset($names[$name])) throw new ApiError(400, "The bundle has more than one entry named $name.");
             $names[$name] = true;
+            $spans[] = [$local, $data + $compressed];
             $entries[] = ['name' => $written, 'crc' => $crc, 'method' => $method, 'compressed' => $compressed, 'size' => $declared, 'offset' => $data];
             $at = $recordEnd;
         }
         if ($at !== $length) throw new ApiError(400, $countAndSize);
+        if (count($spans) > 1) {
+            usort($spans, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
+            for ($i = 0; $i < count($spans) - 1; $i++) {
+                if ($spans[$i][1] > $spans[$i + 1][0]) {
+                    throw new ApiError(400, 'Two of the bundle\'s entries overlap in the archive.');
+                }
+            }
+        }
         return $entries;
     }
 
@@ -604,8 +671,9 @@ final class Bundle
             $size = self::u16($extra, $at + 2);
             if ($at + 4 + $size > $length) return null;
             if ($id === 0x7075 && $size >= 5) {
-                if (ord($extra[$at + 4]) !== 1 || self::u32($extra, $at + 5) !== crc32($headerName)) return null;
-                return str_replace('\\', '/', substr($extra, $at + 9, $size - 5));
+                if (ord($extra[$at + 4]) === 1 && self::u32($extra, $at + 5) === crc32($headerName)) {
+                    return str_replace('\\', '/', substr($extra, $at + 9, $size - 5));
+                }
             }
             $at += 4 + $size;
         }
@@ -615,16 +683,16 @@ final class Bundle
     /**
      * A name that cannot be a file inside a bundle, by the runtime's rules:
      * absolute, climbing (`..` anywhere in it), cut short by a NUL, on a
-     * drive, or, for a file, with an empty or `.` segment. The runtime drops
-     * such an entry and runs the rest; the directory refuses the bundle.
-     * A folder entry is held to the first four only.
+     * drive, or, for a file, with an empty, `.`, or `__proto__` segment.
+     * The runtime drops such an entry and runs the rest; the directory refuses
+     * the bundle. A folder entry is held to the first four only.
      */
     public static function unsafeName(string $name): bool
     {
-        $escapes = str_starts_with($name, '/') || str_contains($name, '..') || str_contains($name, "\0") || preg_match('/^[a-zA-Z]:/', $name) === 1;
+        $escapes = str_starts_with($name, '/') || str_contains($name, '\\') || str_contains($name, '..') || str_contains($name, "\0") || preg_match('/^[a-zA-Z]:/', $name) === 1;
         if ($escapes || str_ends_with($name, '/')) return $escapes;
         foreach (explode('/', $name) as $segment) {
-            if ($segment === '' || $segment === '.') return true;
+            if ($segment === '' || $segment === '.' || $segment === '__proto__') return true;
         }
         return false;
     }

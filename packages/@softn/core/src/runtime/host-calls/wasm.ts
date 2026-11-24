@@ -19,8 +19,13 @@ import type { HostGate } from './permissions';
 
 /** The largest module, as the host's limit (64 MB): checked before a file is read whole. */
 const MAX_MODULE_BYTES = 64 << 20;
+/** Maximum cumulative size and count of WASI virtual files supplied to a module. */
+const MAX_WASI_FILES = 256;
+const MAX_WASI_TOTAL_BYTES = 64 << 20;
 /** How long a module's download may take. */
 const FETCH_TIMEOUT_MS = 60_000;
+const WASM_ENCODER = new TextEncoder();
+const WASM_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 const RETURNS: readonly WasmReturns[] = ['number', 'text', 'json', 'bytes', 'cstring', 'none'];
 const NUMBER_KINDS = ['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'f32', 'f64'] as const;
@@ -37,12 +42,19 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function fromBase64(text: string): Uint8Array {
+function fromBase64(text: string, maxBytes = MAX_MODULE_BYTES): Uint8Array {
+  const cleaned = text.replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
+  if (cleaned.length > Math.ceil((maxBytes * 4) / 3) + 4) {
+    throw new Error(`Base64 payload exceeds maximum size (${Math.round(maxBytes / (1024 * 1024))} MB)`);
+  }
   let binary: string;
   try {
-    binary = atob(text.replace(/^data:[^,]*,/, '').replace(/\s+/g, ''));
+    binary = atob(cleaned);
   } catch {
     throw new Error('A base64 value is not valid base64');
+  }
+  if (binary.length > maxBytes) {
+    throw new Error(`Base64 payload exceeds maximum size (${Math.round(maxBytes / (1024 * 1024))} MB)`);
   }
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
@@ -73,18 +85,44 @@ function baseName(path: string): string {
   return clean.slice(clean.lastIndexOf('/') + 1) || 'module.wasm';
 }
 
+function validateBundleSourcePath(raw: string): string {
+  if (/[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new Error('Module path contains invalid control characters');
+  }
+  const clean = raw.trim().replace(/^\.\//, '');
+  if (!clean || clean.startsWith('/') || clean.includes('\\') || /^[a-z][a-z0-9+.-]*:/i.test(clean) || clean.startsWith('//')) {
+    throw new Error(`"${raw}" is not a valid bundle path`);
+  }
+  for (const seg of clean.split('/')) {
+    if (!seg || seg === '.' || seg === '..') {
+      throw new Error(`"${raw}" is not a valid bundle path`);
+    }
+  }
+  return clean;
+}
+
 /**
  * Where a module comes from, as the app wrote it: a path in its bundle
  * (`"assets/physics.wasm"`), an address (`"https://…"`, which needs `net`), a
  * `data:` URL, or `{ bundle }`, `{ url }`, `{ base64, name? }`.
  */
 function sourceOf(written: string): Source {
-  const text = String(written ?? '').trim();
+  const raw = String(written ?? '');
+  if (/[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new Error('Module source contains invalid control characters');
+  }
+  const text = raw.trim();
   if (text.startsWith('{')) {
     const spec = parseJson(text, 'module source');
     if (isRecord(spec)) {
-      if (typeof spec.bundle === 'string') return { bundle: spec.bundle };
-      if (typeof spec.url === 'string') return { url: spec.url };
+      if (typeof spec.bundle === 'string') return { bundle: validateBundleSourcePath(spec.bundle) };
+      if (typeof spec.url === 'string') {
+        const u = spec.url.trim();
+        if (/[\u0000-\u001f\u007f]/.test(u) || !/^https?:/i.test(u)) {
+          throw new Error(`A module URL must use http: or https:`);
+        }
+        return { url: u };
+      }
       if (typeof spec.base64 === 'string') return { bytes: fromBase64(spec.base64), name: typeof spec.name === 'string' ? spec.name : 'module.wasm' };
     }
     throw new Error('A module source object names { bundle }, { url } or { base64 }');
@@ -96,7 +134,7 @@ function sourceOf(written: string): Source {
   }
   if (/^https?:/i.test(text) || text.startsWith('//')) return { url: text.startsWith('//') ? `https:${text}` : text };
   if (/^[a-z][a-z0-9+.-]*:/i.test(text)) throw new Error(`A module is read from the app's files, an https address or a data: URL, not "${text.split(':')[0]}:"`);
-  return { bundle: text };
+  return { bundle: validateBundleSourcePath(text) };
 }
 
 /** The args a call gives, as the host takes them: numbers as they are, text and bytes to be copied in. */
@@ -161,17 +199,27 @@ function envOf(value: unknown): Record<string, string> {
 }
 
 /** Text, `{ base64 }` or `{ text }`: bytes. */
-function bytesOfValue(value: unknown, what: string): Uint8Array {
-  if (typeof value === 'string') return new TextEncoder().encode(value);
-  if (isRecord(value) && typeof value.base64 === 'string') return fromBase64(value.base64);
-  if (isRecord(value) && typeof value.text === 'string') return new TextEncoder().encode(value.text);
+function bytesOfValue(value: unknown, what: string, maxBytes = MAX_MODULE_BYTES): Uint8Array {
+  if (typeof value === 'string') {
+    if (value.length > maxBytes) throw new Error(`${what} exceeds maximum allowed size`);
+    const enc = WASM_ENCODER.encode(value);
+    if (enc.byteLength > maxBytes) throw new Error(`${what} exceeds maximum allowed size`);
+    return enc;
+  }
+  if (isRecord(value) && typeof value.base64 === 'string') return fromBase64(value.base64, maxBytes);
+  if (isRecord(value) && typeof value.text === 'string') {
+    if (value.text.length > maxBytes) throw new Error(`${what} exceeds maximum allowed size`);
+    const enc = WASM_ENCODER.encode(value.text);
+    if (enc.byteLength > maxBytes) throw new Error(`${what} exceeds maximum allowed size`);
+    return enc;
+  }
   throw new Error(`${what} is a text, or { base64 }`);
 }
 
 /** A file handed back by a run: text where its bytes are UTF-8, base64 where they are not. */
 function fileForLogic(bytes: Uint8Array): { text: string } | { base64: string } {
   try {
-    return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+    return { text: WASM_FATAL_DECODER.decode(bytes) };
   } catch {
     return { base64: toBase64(bytes) };
   }
@@ -272,7 +320,13 @@ export class AppWasm {
       const declared = Number(response.headers.get('content-length'));
       if (Number.isFinite(declared) && declared > MAX_MODULE_BYTES) throw new Error(`${source.url} is larger than the 64 MB a module may be`);
       const reader = response.body?.getReader();
-      if (!reader) return { bytes: new Uint8Array(await response.arrayBuffer()), name: baseName(new URL(source.url).pathname) };
+      if (!reader) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength > MAX_MODULE_BYTES) {
+          throw new Error(`${source.url} is larger than the 64 MB a module may be`);
+        }
+        return { bytes, name: baseName(new URL(source.url).pathname) };
+      }
       const chunks: Uint8Array[] = [];
       let size = 0;
       for (;;) {
@@ -302,15 +356,38 @@ export class AppWasm {
   private async filesOf(value: unknown): Promise<WasmFile[]> {
     if (value === undefined || value === null) return [];
     if (!isRecord(value)) throw new Error('files is an object of paths and contents');
+    const entries = Object.entries(value);
+    if (entries.length > MAX_WASI_FILES) {
+      throw new Error(`At most ${MAX_WASI_FILES} files may be passed to a WASM module`);
+    }
     const files: WasmFile[] = [];
-    for (const [path, content] of Object.entries(value)) {
-      if (path.split('/').includes('..') || path.startsWith('/')) throw new Error(`"${path}" is not a path inside the module's files`);
+    let totalBytes = 0;
+    for (const [path, content] of entries) {
+      if (
+        !path ||
+        path.startsWith('/') ||
+        path.includes('\\') ||
+        path.includes('\0') ||
+        /^[a-zA-Z]:/.test(path) ||
+        path.split('/').some((seg) => !seg || seg === '.' || seg === '..')
+      ) {
+        throw new Error(`"${path}" is not a path inside the module's files`);
+      }
+      const remaining = MAX_WASI_TOTAL_BYTES - totalBytes;
       if (isRecord(content) && typeof content.bundle === 'string') {
-        const blob = await this.readBundleFile(content.bundle.replace(/^\.\//, ''));
+        const bundlePath = validateBundleSourcePath(content.bundle);
+        const blob = await this.readBundleFile(bundlePath);
         if (!blob) throw new Error(`This app has no file "${content.bundle}" to give the module as "${path}"`);
-        files.push({ path, bytes: new Uint8Array(await blob.arrayBuffer()) });
+        if (blob.size > remaining) {
+          throw new Error(`Total files passed to WASM module exceed ${MAX_WASI_TOTAL_BYTES / (1024 * 1024)} MB`);
+        }
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        totalBytes += bytes.byteLength;
+        files.push({ path, bytes });
       } else {
-        files.push({ path, bytes: bytesOfValue(content, `The file "${path}"`) });
+        const bytes = bytesOfValue(content, `The file "${path}"`, remaining);
+        totalBytes += bytes.byteLength;
+        files.push({ path, bytes });
       }
     }
     return files;

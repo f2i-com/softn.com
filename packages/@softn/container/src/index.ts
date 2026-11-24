@@ -56,5 +56,16 @@ export {
 } from './xdb-sql-bridge';
 export { renderVirtualNavBar, type VirtualNavBarController } from './virtual-nav-bar';
 export { SourceMapRegistry, findInlineScriptStartLines, formatCodeFrame } from './source-map';
+export {
+  createWebDeviceBridge,
+  dispatchDeviceBridgeCall,
+  type ContainerDeviceBridge,
+  type DeviceInfoResult,
+  type CameraPhotoOptions,
+  type CameraPhotoResult,
+  type BleDeviceInfo,
+  type BleScanOptions,
+  type LocationPositionResult,
+} from './device-bridge';
 export { SoftNContainerError } from './types';
 export type * from './types';

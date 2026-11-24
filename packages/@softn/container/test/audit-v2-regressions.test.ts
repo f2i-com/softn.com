@@ -13,14 +13,17 @@ import {
   mountSoftNContainer,
 } from '../src/index';
 import { extractFontFaces, namespaceContainerFonts, rewriteCss } from '../src/css-policy';
+import { isExternalUrlAllowed, prepareHtmlDocument } from '../src/sanitize';
 import { hostAttributeValue, hostElementName, isDeclaredElementProperty } from '../src/host-policy';
 import { evaluateHtaccessChain, parseHtaccess } from '../src/htaccess';
 import { isAllowedExternalVendorModule, resolveModuleSpecifier, transformEsModule } from '../src/esm-linker';
 import { VirtualCookieJar } from '../src/backend-transport';
+import { dispatchDeviceBridgeCall, type ContainerDeviceBridge } from '../src/device-bridge';
+import { isSafeVirtualRoute } from '../src/session-store';
 import { transformJsx } from '../src/jsx-transform';
 import { SourceMapRegistry, findInlineScriptStartLines } from '../src/source-map';
 import { containerRuntimeNeeds } from '../src/runtime-needs';
-import { mimeTypeFor } from '../src/archive';
+import { mimeTypeFor, resolveVfsPath } from '../src/archive';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -829,5 +832,189 @@ describe('SoftN v2 Round-2 Security Audit Regressions', () => {
     const inst = new FakeEl() as unknown as Element;
     expect(isDeclaredElementProperty(inst, 'rows')).toBe(true);
     expect(isDeclaredElementProperty(inst, 'render')).toBe(false);
+  });
+
+  it('rejects embedded URL credentials, normalizes trailing dots, supports wildcard hosts, and preserves rewriteCss fast-path parity', () => {
+    const netPerm = { enabled: true, allow_http: false, allowed_hosts: ['api.example.com', '*.trusted.org'] };
+    expect(isExternalUrlAllowed('https://api.example.com/v1', netPerm, true)).toBe(true);
+    expect(isExternalUrlAllowed('https://api.example.com./v1', netPerm, true)).toBe(true);
+    expect(isExternalUrlAllowed('https://sub.trusted.org/data', netPerm, true)).toBe(true);
+    expect(isExternalUrlAllowed('https://trusted.org/data', netPerm, true)).toBe(true);
+    expect(isExternalUrlAllowed('https://api.example.com@evil.com/steal', netPerm, true)).toBe(false);
+    expect(isExternalUrlAllowed('https://user:pass@api.example.com/v1', netPerm, true)).toBe(false);
+    expect(isExternalUrlAllowed('http://api.example.com/v1', netPerm, true)).toBe(false);
+    expect(isExternalUrlAllowed('https://evil.com/v1', netPerm, true)).toBe(false);
+
+    // Fast-path inline style without url/host/comments/strings/escapes passes through unchanged,
+    // while :host, escaped \75rl(), and comments still run full tokenization.
+    expect(rewriteCss('display: flex; color: #fff; gap: 8px', () => null)).toBe('display: flex; color: #fff; gap: 8px');
+    expect(rewriteCss(':host { color: red }', () => null)).toContain(':not(*)');
+    expect(rewriteCss('background: \\75rl(https://evil.example/a.png)', () => null)).toContain('about:blank');
+  });
+
+  it('blocks namespace-prefixed <x:style>/<x:link> static HTML bypasses and clamps canvas/egress attributes', async () => {
+    const archive = await ContainerArchive.open({
+      'index.html': `<!DOCTYPE html><html><body data-softn-viewport="spoof">
+        <x:style>:host { background: url(https://evil.example/leak.png); }</x:style>
+        <x:link rel="stylesheet" href="https://evil.example/a.css" />
+        <canvas width="999999" height="999999"></canvas>
+      </body></html>`,
+    });
+    const prepared = prepareHtmlDocument(archive.readText('index.html')!, 'index.html', archive, {}, false);
+    const viewport = document.createElement('div');
+    const docRoot = document.createElement('div');
+    prepared.mountInitialDom(viewport, new Map(), docRoot);
+    expect(viewport.querySelector('style')).toBeNull();
+    expect(viewport.querySelector('link')).toBeNull();
+    expect(viewport.getAttribute('data-softn-viewport')).toBeNull();
+    expect(prepared.styles.join('\n')).not.toContain('evil.example');
+
+    const attrCtx = {
+      archive,
+      entryPath: 'index.html',
+      permissions: {},
+      netGranted: false,
+    };
+    expect(hostAttributeValue('a', 'attributionsrc', 'https://evil.example', attrCtx)).toBeNull();
+    expect(hostAttributeValue('img', 'browsingtopics', '', attrCtx)).toBeNull();
+    expect(hostAttributeValue('img', 'data-softn-readable', '1', attrCtx)).toBeNull();
+    expect(hostAttributeValue('canvas', 'width', '999999', attrCtx)).toBe('8192');
+    expect(hostAttributeValue('canvas', 'height', '999999', attrCtx)).toBe('8192');
+    archive.dispose();
+  });
+
+  it('guards CSS nesting depth, .htaccess ReDoS/post-rewrite <FilesMatch>, and %2e%2e VFS traversal', async () => {
+    const deepCss = '@media screen { '.repeat(300) + 'a { color: red; }' + ' }'.repeat(300);
+    expect(() => rewriteCss(deepCss, () => null)).not.toThrow();
+    expect(() => namespaceContainerFonts(deepCss, 'p-', new Set(['MyFont']))).not.toThrow();
+    expect(() => extractFontFaces(deepCss)).not.toThrow();
+
+    // `.htaccess`: reject `(a?a?)+!`, named backrefs `\k<g>`, and `.*.*`, and enforce <FilesMatch> post-rewrite
+    const ht = parseHtaccess([
+      '<FilesMatch "\\.env$">',
+      'Deny from all',
+      '</FilesMatch>',
+      'RewriteEngine On',
+      'RewriteRule ^(a?a?)+$ /bad1.php [L]',
+      'RewriteRule ^(?<g>a)\\k<g>$ /bad2.php [L]',
+      'RewriteRule ^.*.*$ /bad3.php [L]',
+      'RewriteRule ^public/leak$ /.env [L]',
+    ].join('\n'));
+    expect(ht.rules.length).toBe(1);
+    const denied = evaluateHtaccessChain(
+      new Map([['', ht]]),
+      { pathname: '/public/leak', query: '', method: 'GET', host: 'app.softn.local', headers: {}, https: true },
+      { isFile: () => false, isDir: () => false }
+    );
+    expect(denied).toEqual({ action: 'deny', status: 403 });
+
+    // `resolveVfsPath` decodes `%2e%2e` and rejects `%2f` before segment checks
+    expect(resolveVfsPath('%2e%2e/secret.txt', 'index.html')).toBeNull();
+    expect(resolveVfsPath('sub/%2e%2e/%2e%2e/secret.txt', 'index.html')).toBeNull();
+    expect(resolveVfsPath('sub%2f..%2fsecret.txt', 'index.html')).toBeNull();
+    expect(resolveVfsPath('assets/icon%201.png', 'index.html')).toBe('assets/icon 1.png');
+
+    // `isSafeVirtualRoute` rejects protocol-relative URLs and control characters
+    expect(isSafeVirtualRoute('/dashboard?tab=1#top')).toBe(true);
+    expect(isSafeVirtualRoute('//evil.example/phish')).toBe(false);
+    expect(isSafeVirtualRoute('/ok\nSet-Cookie: a=1')).toBe(false);
+  });
+
+  it('enforces bluetooth.scan service allowlists, share URL schemes, and permissionsOverride caps', async () => {
+    const scanMock = vi.fn(async () => ({ devices: [] }));
+    const shareMock = vi.fn(async () => ({ shared: true }));
+    const fakeBridge: ContainerDeviceBridge = {
+      platform: 'web',
+      share: shareMock,
+      bluetooth: {
+        isAvailable: () => true,
+        scan: scanMock,
+        connect: async () => ({ connected: true, deviceId: 'd1', services: [] }),
+        disconnect: async () => ({ disconnected: true, deviceId: 'd1' }),
+        read: async () => ({ base64: '' }),
+        write: async () => ({ ok: true }),
+      },
+    };
+    const perms = {
+      permissions: {
+        bluetooth: { enabled: true, services: ['heart_rate'] },
+      },
+    };
+    // Empty `services: []` must NOT bypass configured `allowedBleServices`
+    await dispatchDeviceBridgeCall(fakeBridge, 'bluetooth', 'scan', { services: [] }, new Set(['bluetooth']), perms);
+    expect(scanMock).toHaveBeenCalledWith(expect.objectContaining({ services: ['heart_rate'] }));
+
+    // `share` strips non-http(s) URL schemes like `javascript:`
+    await dispatchDeviceBridgeCall(fakeBridge, 'device', 'share', { url: 'javascript:alert(1)' }, new Set(), {});
+    expect(shareMock).toHaveBeenCalledWith({ title: undefined, text: undefined, url: undefined });
+
+    // `permissionsOverride` restricts grantable capabilities even if manifest declared `net`
+    const handle = await mountSoftNContainer(document.createElement('div'), {
+      source: {
+        'manifest.json': JSON.stringify({ name: 'Perm Test', main: 'index.html' }),
+        'permission.json': JSON.stringify({ permissions: { net: { enabled: true } } }),
+        'index.html': '<!DOCTYPE html><html><body><p>ok</p></body></html>',
+      },
+      isolation: 'inline',
+      persistStorage: false,
+      engineWasm: { lite: LITE_WASM },
+      permissionsOverride: { permissions: {} },
+      permissionMode: 'prompt',
+      initialGrantedCapabilities: ['net'],
+    });
+    // Override declared no capabilities, so `setGrantedCapabilities(['net'])` must not grant undeclared caps
+    handle.setGrantedCapabilities(['net']);
+    expect(handle.frameRoot.querySelector('[data-softn-container-consent]')).toBeNull();
+    handle.dispose();
+  });
+
+  it('blocks cloud metadata, loopback, RFC1918, NAT64, and IPv4-mapped IPv6 SSRF hosts under broad or wildcard net policies', () => {
+    const broadHttp = { enabled: true, allow_http: true };
+    const wildcardHttp = { enabled: true, allow_http: true, allowed_hosts: ['*', '*.local', '*.localhost'] };
+    const explicitMetadata = {
+      enabled: true,
+      allow_http: true,
+      allowed_hosts: ['169.254.169.254', 'metadata.google.internal', '[fe80::1]', '[::ffff:169.254.169.254]', '0.0.0.0'],
+    };
+
+    // Public hosts still allowed under broad/wildcard policies
+    expect(isExternalUrlAllowed('https://api.example.com/v1', broadHttp, true)).toBe(true);
+    expect(isExternalUrlAllowed('https://api.example.com/v1', wildcardHttp, true)).toBe(true);
+
+    // Private/loopback/LAN/NAT64/IPv4-mapped-IPv6 blocked under broad & wildcard policies
+    for (const url of [
+      'http://127.0.0.1:8080/admin',
+      'http://localhost:3000/secret',
+      'http://foo.localhost/secret',
+      'http://printer.local/status',
+      'http://svc.internal/metrics',
+      'http://10.0.0.1/api',
+      'http://172.16.0.5/api',
+      'http://192.168.1.1/router',
+      'http://100.64.0.1/cgnat',
+      'http://[::1]:8080/secret',
+      'http://[::ffff:127.0.0.1]/secret',
+      'http://[64:ff9b::10.0.0.1]/nat64',
+      'http://[fc00::1]/ula',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://metadata.google.internal/computeMetadata/v1/',
+    ]) {
+      expect(isExternalUrlAllowed(url, broadHttp, true), `broad should block ${url}`).toBe(false);
+      expect(isExternalUrlAllowed(url, wildcardHttp, true), `wildcard should block ${url}`).toBe(false);
+    }
+
+    // Cloud metadata & unspecified addresses stay blocked even if explicitly listed in allowed_hosts
+    for (const url of [
+      'http://169.254.169.254/latest/meta-data/',
+      'http://metadata.google.internal/computeMetadata/v1/',
+      'http://[fe80::1]/',
+      'http://[::ffff:169.254.169.254]/',
+      'http://0.0.0.0/',
+    ]) {
+      expect(isExternalUrlAllowed(url, explicitMetadata, true), `explicit should still block metadata ${url}`).toBe(false);
+    }
+
+    // Exact non-metadata local host allowlist (used by same-origin/local dev tests) still works
+    expect(isExternalUrlAllowed('http://localhost:5173/api', { enabled: true, allow_http: true, allowed_hosts: ['localhost'] }, true)).toBe(true);
   });
 });

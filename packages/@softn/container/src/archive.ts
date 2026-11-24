@@ -102,6 +102,10 @@ export function readRunnableModule(path: string, read: (file: string) => string 
   return generated?.startsWith(GENERATED_SOURCE_HEADER) ? generated : original;
 }
 
+const ARCHIVE_DECODER = new TextDecoder();
+const ARCHIVE_ENCODER = new TextEncoder();
+const UNSAFE_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+
 /** Normalize a relative or virtual-origin URL to a clean VFS path (`assets/app.js`), or `null` if external/escaped. */
 export function resolveVfsPath(input: string, basePath = 'index.html'): string | null {
   const raw = String(input ?? '').trim();
@@ -134,18 +138,23 @@ export function resolveVfsPath(input: string, basePath = 'index.html'): string |
 
   const segments = combined.split('/');
   const resolved: string[] = [];
-  for (const seg of segments) {
-    if (!seg || seg === '.') continue;
-    if (seg === '..') {
+  for (const rawSeg of segments) {
+    if (!rawSeg) continue;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(rawSeg);
+    } catch {
+      return null;
+    }
+    if (!decoded || decoded === '.') continue;
+    // Reject decoded path separators or NUL bytes (`%2f`, `%5c`, `%00`) that could smuggle traversal.
+    if (decoded.includes('/') || decoded.includes('\\') || decoded.includes('\0')) return null;
+    if (decoded === '..') {
       if (resolved.length === 0) return null; // Escapes container root
       resolved.pop();
       continue;
     }
-    try {
-      resolved.push(decodeURIComponent(seg));
-    } catch {
-      resolved.push(seg);
-    }
+    resolved.push(decoded);
   }
   return resolved.length > 0 ? resolved.join('/') : null;
 }
@@ -185,12 +194,31 @@ export function piecesToBytes(given: unknown): Uint8Array | null {
   for (const piece of given as unknown[]) {
     if (!piece || typeof piece !== 'object' || typeof (piece as BlobPiece).base64 !== 'string') return null;
     const { base64, skip, take } = piece as BlobPiece;
-    const bytes = base64ToBytes(base64);
-    const from = typeof skip === 'number' && skip > 0 ? Math.floor(skip) : 0;
-    const length = typeof take === 'number' && take >= 0 ? Math.floor(take) : bytes.length - from;
-    const part = bytes.subarray(from, from + length);
-    parts.push(part);
-    size += part.length;
+    const from = typeof skip === 'number' && Number.isFinite(skip) && skip > 0 ? Math.floor(skip) : 0;
+    const hasTake = typeof take === 'number' && Number.isFinite(take) && take >= 0;
+    const wantedLen = hasTake ? Math.floor(take) : -1;
+    if (wantedLen === 0) continue;
+    // When slicing a clean standard base64 string without whitespace, decode only the 4-char
+    // aligned window covering `[from, from + wantedLen)` instead of allocating the full file.
+    if ((from > 0 || wantedLen >= 0) && base64.length > 0 && base64.length % 4 === 0 && !/\s/.test(base64)) {
+      const startQuad = Math.floor(from / 3);
+      const startChar = startQuad * 4;
+      if (startChar >= base64.length) continue;
+      const offsetInWindow = from - startQuad * 3;
+      const endByte = wantedLen >= 0 ? from + wantedLen : Math.ceil((base64.length * 3) / 4);
+      const endChar = Math.min(base64.length, Math.ceil(endByte / 3) * 4);
+      const bytes = base64ToBytes(base64.slice(startChar, endChar));
+      const sliceEnd = wantedLen >= 0 ? Math.min(bytes.length, offsetInWindow + wantedLen) : bytes.length;
+      const part = bytes.subarray(offsetInWindow, Math.max(offsetInWindow, sliceEnd));
+      parts.push(part);
+      size += part.length;
+    } else {
+      const bytes = base64ToBytes(base64);
+      const length = wantedLen >= 0 ? wantedLen : bytes.length - from;
+      const part = bytes.subarray(from, from + Math.max(0, length));
+      parts.push(part);
+      size += part.length;
+    }
   }
   const out = new Uint8Array(size);
   let at = 0;
@@ -374,21 +402,26 @@ export class ContainerArchive {
     }
 
     // Unpacked file map — apply the same path-safety checks as ZIP entries.
-    const isUnsafeMapKey = (key: string): boolean =>
-      !key || key.includes('..') || key.includes('\0') || /^[a-zA-Z]:/.test(key) || key.endsWith('/');
+    const isUnsafeMapKey = (key: string): boolean => {
+      if (!key || key.includes('\0') || /^[a-zA-Z]:/.test(key) || key.startsWith('/') || key.endsWith('/')) return true;
+      const segs = key.split('/');
+      for (const s of segs) {
+        if (!s || s === '.' || s === '..' || UNSAFE_PATH_SEGMENTS.has(s)) return true;
+      }
+      return false;
+    };
     const rawKeys = Object.keys(input)
       .map((k) => k.replace(/\\/g, '/').replace(/^\/+/, ''))
       .filter((k) => !isUnsafeMapKey(k));
     const rawPrefix = detectSingleRootPrefix(rawKeys);
     const normalizedList = rawKeys.map((k) => (rawPrefix && k.startsWith(rawPrefix) ? k.slice(rawPrefix.length) : k)).filter(Boolean);
-    const decoder = new TextDecoder();
     let peekManifestText: string | null = null;
     for (const [origKey, val] of Object.entries(input)) {
       const cleanKey = origKey.replace(/\\/g, '/').replace(/^\/+/, '');
       if (isUnsafeMapKey(cleanKey)) continue;
       const norm = rawPrefix && cleanKey.startsWith(rawPrefix) ? cleanKey.slice(rawPrefix.length) : cleanKey;
       if (norm === 'manifest.json') {
-        peekManifestText = typeof val === 'string' ? val : decoder.decode(val);
+        peekManifestText = typeof val === 'string' ? val : ARCHIVE_DECODER.decode(val);
         break;
       }
     }
@@ -397,13 +430,12 @@ export class ContainerArchive {
     const initialText = new Map<string, string>();
     const initialBinary = new Map<string, Uint8Array>();
     const hashParts: string[] = [];
-    const encoder = new TextEncoder();
 
     for (const [origKey, val] of Object.entries(input)) {
       const cleanKey = origKey.replace(/\\/g, '/').replace(/^\/+/, '');
       if (isUnsafeMapKey(cleanKey)) continue;
       const norm = rawPrefix && cleanKey.startsWith(rawPrefix) ? cleanKey.slice(rawPrefix.length) : cleanKey;
-      if (!norm) continue;
+      if (!norm || normalizedNames.has(norm)) continue;
       // Preserve the identity used for storage when the author includes server files.
       hashParts.push(`${norm}:${typeof val === 'string' ? val.length : val.byteLength}`);
       if (isServerFile(norm, keepBackend)) continue;
@@ -412,14 +444,14 @@ export class ContainerArchive {
         initialText.set(norm, val);
       } else {
         if (isTextPath(norm)) {
-          initialText.set(norm, decoder.decode(val));
+          initialText.set(norm, ARCHIVE_DECODER.decode(val));
         } else {
           initialBinary.set(norm, val);
         }
       }
     }
 
-    const digest = await sha256Hex(encoder.encode(hashParts.sort().join('|')));
+    const digest = await sha256Hex(ARCHIVE_ENCODER.encode(hashParts.sort().join('|')));
     await checkSourceModules(initialText);
     const { manifest, permissions, requestedCapabilities } = buildContainerMeta(
       normalizedNames,
@@ -501,13 +533,66 @@ export class ContainerArchive {
     return resolved;
   }
 
+  /** Paths explicitly declared as backend entry or database files/seeds in `manifest.json`. */
+  private isManifestPrivatePath(archivePath: string): boolean {
+    const norm = archivePath.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+    const entry = this.manifest.backend?.entry?.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+    if (entry && norm === entry) return true;
+    const dbs = this.manifest.databases;
+    if (Array.isArray(dbs)) {
+      for (const db of dbs) {
+        const candidates = [db.file, db.seedSql, typeof db.seedJson === 'string' ? db.seedJson : undefined];
+        for (const c of candidates) {
+          if (typeof c === 'string' && c.length > 0 && !c.trimStart().startsWith('{') && !c.trimStart().startsWith('[')) {
+            const cn = c.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+            if (cn && (norm === cn || norm === `${cn}-wal` || norm === `${cn}-shm` || norm === `${cn}-journal`)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Redact backend secrets (`backend.env`, inline database seeds) from `manifest.json` before exposing to frontend. */
+  private redactManifestForFrontend(rawText: string): string {
+    try {
+      const parsed = JSON.parse(rawText) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return rawText;
+      let changed = false;
+      if (parsed.backend && typeof parsed.backend === 'object' && !Array.isArray(parsed.backend)) {
+        const safeBackend = { ...(parsed.backend as Record<string, unknown>) };
+        if ('env' in safeBackend) {
+          delete safeBackend.env;
+          parsed.backend = safeBackend;
+          changed = true;
+        }
+      }
+      if (Array.isArray(parsed.databases)) {
+        parsed.databases = parsed.databases.map((entry) => {
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+          const safeDb = { ...(entry as Record<string, unknown>) };
+          if ('seedSql' in safeDb) { delete safeDb.seedSql; changed = true; }
+          if ('seedJson' in safeDb) { delete safeDb.seedJson; changed = true; }
+          return safeDb;
+        });
+      }
+      return changed ? JSON.stringify(parsed) : rawText;
+    } catch {
+      return rawText;
+    }
+  }
+
   /** Whether an archive path belongs to the untrusted frontend (excluding backend/private files). */
   isFrontendPath(archivePath: string): boolean {
     const hasBackend = Boolean(this.manifest.backend);
     const backendRoot = this.manifest.backend?.root
       ? this.manifest.backend.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
       : '';
-    if (isBackendPrivatePath(archivePath, hasBackend, backendRoot)) return false;
+    if (isBackendPrivatePath(archivePath, hasBackend, backendRoot) || this.isManifestPrivatePath(archivePath)) {
+      return false;
+    }
     const feRoot = this.manifest.frontendRoot
       ? this.manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/'
       : '';
@@ -530,7 +615,7 @@ export class ContainerArchive {
     if (cached !== undefined) return cached;
     const bytes = this.readBytes(resolved);
     if (!bytes) return null;
-    const decoded = new TextDecoder().decode(bytes);
+    const decoded = ARCHIVE_DECODER.decode(bytes);
     this.textCache.set(resolved, decoded);
     return decoded;
   }
@@ -542,7 +627,7 @@ export class ContainerArchive {
     const cachedBin = this.binaryCache.get(resolved);
     if (cachedBin) return cachedBin;
     const cachedText = this.textCache.get(resolved);
-    if (cachedText !== undefined) return new TextEncoder().encode(cachedText);
+    if (cachedText !== undefined) return ARCHIVE_ENCODER.encode(cachedText);
     if (!this.zipArchive) return null;
     const rawName = this.rawPrefix + resolved;
     const inflated = this.zipArchive.read(rawName);
@@ -573,7 +658,13 @@ export class ContainerArchive {
     if (!resolved) return null;
     const existing = this.blobUrls.get(resolved);
     if (existing) return existing;
-    const bytes = this.readBytes(resolved);
+    let bytes: Uint8Array | null;
+    if (resolved === 'manifest.json' && (this.manifest.backend || (this.manifest.databases?.length ?? 0) > 0)) {
+      const text = this.readText(resolved);
+      bytes = text !== null ? ARCHIVE_ENCODER.encode(this.redactManifestForFrontend(text)) : null;
+    } else {
+      bytes = this.readBytes(resolved);
+    }
     if (!bytes) return null;
     const url = this.mintUrl(bytes, mimeTypeFor(resolved));
     this.blobUrls.set(resolved, url);
@@ -729,7 +820,7 @@ export class ContainerArchive {
       : '';
 
     for (const name of this.normalizedNames) {
-      if (isBackendPrivatePath(name, hasBackend, backendRoot)) continue;
+      if (isBackendPrivatePath(name, hasBackend, backendRoot) || this.isManifestPrivatePath(name)) continue;
       if (feRoot) {
         if (!name.startsWith(feRoot)) continue;
         const mapped = name.slice(feRoot.length);
@@ -743,18 +834,8 @@ export class ContainerArchive {
       } else {
         if (this.textCache.has(name)) {
           let text = this.textCache.get(name)!;
-          if (hasBackend && name === 'manifest.json') {
-            try {
-              const parsed = JSON.parse(text) as Record<string, unknown>;
-              if (parsed && typeof parsed === 'object' && parsed.backend && typeof parsed.backend === 'object' && !Array.isArray(parsed.backend)) {
-                const safeBackend = { ...(parsed.backend as Record<string, unknown>) };
-                delete safeBackend.env;
-                parsed.backend = safeBackend;
-                text = JSON.stringify(parsed);
-              }
-            } catch {
-              // Keep original if unparseable
-            }
+          if (name === 'manifest.json' && (hasBackend || (this.manifest.databases?.length ?? 0) > 0)) {
+            text = this.redactManifestForFrontend(text);
           }
           textFiles[name] = text;
         } else {
@@ -918,7 +999,8 @@ export function isLegacySoftNMarkup(source: string): boolean {
 }
 
 const BACKEND_PRIVATE_EXTENSIONS = new Set([
-  'php', 'phtml', 'inc', 'tpl', 'rs', 'sql', 'db', 'sqlite', 'sqlite3',
+  'php', 'phtml', 'phar', 'php5', 'php7', 'php8', 'pht', 'phps',
+  'inc', 'tpl', 'rs', 'sql', 'db', 'sqlite', 'sqlite3',
   'htaccess', 'htpasswd', 'env', 'ini', 'bak', 'log', 'sh',
 ]);
 
@@ -932,9 +1014,8 @@ export function isBackendPrivatePath(path: string, hasBackend: boolean, backendR
     base.startsWith('.env.') ||
     base === 'cargo.toml' ||
     base === 'cargo.lock' ||
-    base.endsWith('.db-wal') ||
-    base.endsWith('.db-shm') ||
-    base.endsWith('.db-journal')
+    base === 'database.seed.json' ||
+    /\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$/.test(base)
   ) {
     return true;
   }

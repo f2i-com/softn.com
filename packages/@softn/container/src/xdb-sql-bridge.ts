@@ -68,7 +68,20 @@ export interface XdbSqlManagerOptions {
   maxPageReads?: bigint;
   /** Called whenever a database is modified and ready to persist. */
   onPersist?: (dbKey: string, bytes: Uint8Array) => void;
+  /** Called whenever a sandboxed database is removed via `remove()`. */
+  onRemove?: (dbKey: string) => void;
 }
+
+const XDB_ENCODER = new TextEncoder();
+const XDB_DECODER = new TextDecoder();
+const MAX_SQL_RESULT_JSON_CHARS = 16 * 1024 * 1024;
+const MAX_SQL_RESULT_ROWS = 50_000;
+const MAX_EPHEMERAL_DBS = 4;
+const EPHEMERAL_MAX_MEMORY_BYTES = BigInt(32 * 1024 * 1024);
+const DEFAULT_MAX_STEPS_PER_CONN = 2_000_000_000n;
+const DEFAULT_MAX_PAGE_READS = 50_000_000n;
+const EPHEMERAL_MAX_STEPS = 50_000_000n;
+const EPHEMERAL_MAX_PAGE_READS = 500_000n;
 
 const cachedXdbPromise: Map<string, Promise<LoadedXdbBindings>> = new Map();
 
@@ -125,7 +138,9 @@ async function compileWasm(source: ZippEngineSource): Promise<WebAssembly.Module
     const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim();
     if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
       try {
-        return await WebAssembly.compileStreaming(resp.clone());
+        const compiled = await WebAssembly.compileStreaming(resp.clone());
+        void resp.body?.cancel().catch(() => undefined);
+        return compiled;
       } catch {
         // fallback below
       }
@@ -287,12 +302,44 @@ export function normalizeDbKey(rawUrl: string): { key: string; inMemory: boolean
 }
 
 function isWriteStatement(sql: string): boolean {
-  const head = sql
-    .replace(/^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*/g, '')
-    .trimStart()
-    .slice(0, 24)
-    .toUpperCase();
-  if (!head) return false;
+  // Strip leading whitespace and SQL comments (including `--...` without trailing newline).
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql.charCodeAt(i);
+    if (ch <= 32) { i++; continue; }
+    if (ch === 45 && sql.charCodeAt(i + 1) === 45) {
+      const nl = sql.indexOf('\n', i + 2);
+      i = nl >= 0 ? nl + 1 : n;
+      continue;
+    }
+    if (ch === 47 && sql.charCodeAt(i + 1) === 42) {
+      const end = sql.indexOf('*/', i + 2);
+      i = end >= 0 ? end + 2 : n;
+      continue;
+    }
+    break;
+  }
+  const rest = sql.slice(i);
+  if (!rest) return false;
+  // Multi-statement batches containing `;` outside quotes may include writes after a SELECT.
+  let inSingle = false;
+  let inDouble = false;
+  for (let k = 0; k < rest.length; k++) {
+    const c = rest[k];
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+    } else if (inDouble) {
+      if (c === '"') inDouble = false;
+    } else if (c === "'") {
+      inSingle = true;
+    } else if (c === '"') {
+      inDouble = true;
+    } else if (c === ';' && rest.slice(k + 1).trim().length > 0) {
+      return true;
+    }
+  }
+  const head = rest.slice(0, 24).toUpperCase();
   if (
     head.startsWith('SELECT') ||
     head.startsWith('EXPLAIN') ||
@@ -301,7 +348,7 @@ function isWriteStatement(sql: string): boolean {
     return false;
   }
   if (head.startsWith('PRAGMA')) {
-    return sql.includes('=');
+    return rest.includes('=');
   }
   return true;
 }
@@ -346,11 +393,13 @@ export class XdbSqlManager {
   private readonly maxMemory: bigint;
   private readonly maxPageReads: bigint;
   private readonly onPersist?: (dbKey: string, bytes: Uint8Array) => void;
+  private readonly onRemove?: (dbKey: string) => void;
 
   /** Shared live persistent databases keyed by normalized `dbKey`. */
   private readonly byKey = new Map<string, ManagedDb>();
   /** Handle table (`connId -> ManagedDb`) exposed to ZIPP guests. */
   private readonly handles = new Map<number, ManagedDb>();
+  private ephemeralCount = 0;
   private nextHandleId = 1;
   private disposed = false;
 
@@ -360,10 +409,11 @@ export class XdbSqlManager {
     this.textFiles = options.textFiles ?? {};
     this.binaryFiles = options.binaryFiles ?? {};
     this.initialPersistedDbs = options.initialPersistedDbs ?? {};
-    this.maxSteps = options.maxStepsPerConnection ?? 0n;
+    this.maxSteps = options.maxStepsPerConnection ?? DEFAULT_MAX_STEPS_PER_CONN;
     this.maxMemory = options.maxMemoryBytes ?? BigInt(128 * 1024 * 1024);
-    this.maxPageReads = options.maxPageReads ?? 0n;
+    this.maxPageReads = options.maxPageReads ?? DEFAULT_MAX_PAGE_READS;
     this.onPersist = options.onPersist;
+    this.onRemove = options.onRemove;
   }
 
   private findConfigForKey(dbKey: string): DatabaseConfig | undefined {
@@ -396,7 +446,7 @@ export class XdbSqlManager {
     const clean = path.replace(/\\/g, '/').replace(/^\/+/, '');
     if (Object.hasOwn(this.binaryFiles, clean) && this.binaryFiles[clean]) return this.binaryFiles[clean];
     if (Object.hasOwn(this.textFiles, clean) && this.textFiles[clean] !== undefined) {
-      return new TextEncoder().encode(this.textFiles[clean]);
+      return XDB_ENCODER.encode(this.textFiles[clean]);
     }
     return null;
   }
@@ -405,12 +455,15 @@ export class XdbSqlManager {
     const clean = path.replace(/\\/g, '/').replace(/^\/+/, '');
     if (Object.hasOwn(this.textFiles, clean) && this.textFiles[clean] !== undefined) return this.textFiles[clean];
     if (Object.hasOwn(this.binaryFiles, clean) && this.binaryFiles[clean]) {
-      return new TextDecoder().decode(this.binaryFiles[clean]);
+      return XDB_DECODER.decode(this.binaryFiles[clean]);
     }
     return null;
   }
 
   private createConnection(dbKey: string, ephemeral: boolean): ManagedDb {
+    if (ephemeral && this.ephemeralCount >= MAX_EPHEMERAL_DBS) {
+      throw new Error(`Too many ephemeral in-memory SQLite databases open (max ${MAX_EPHEMERAL_DBS})`);
+    }
     if (!ephemeral && !this.byKey.has(dbKey) && this.byKey.size >= MAX_OPEN_DBS) {
       throw new Error(`Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`);
     }
@@ -439,14 +492,17 @@ export class XdbSqlManager {
       }
     }
 
+    const connSteps = ephemeral ? EPHEMERAL_MAX_STEPS : this.maxSteps;
+    const connMem = ephemeral ? (this.maxMemory < EPHEMERAL_MAX_MEMORY_BYTES ? this.maxMemory : EPHEMERAL_MAX_MEMORY_BYTES) : this.maxMemory;
+    const connPageReads = ephemeral ? EPHEMERAL_MAX_PAGE_READS : this.maxPageReads;
     const conn = new this.bindings.WasmConnection(
       initialBytes,
       walBytes,
       journalBytes,
       4096,
-      this.maxSteps,
-      this.maxMemory,
-      this.maxPageReads
+      connSteps,
+      connMem,
+      connPageReads
     );
 
     let seeded = false;
@@ -484,7 +540,9 @@ export class XdbSqlManager {
       ephemeral,
     };
 
-    if (!ephemeral) {
+    if (ephemeral) {
+      this.ephemeralCount++;
+    } else {
       this.byKey.set(dbKey, managed);
     }
     return managed;
@@ -545,12 +603,16 @@ export class XdbSqlManager {
   ): { rows_affected: number; last_insert_rowid: number } | { error: string; code: number; unique: boolean } {
     const managed = this.handles.get(handleId);
     if (!managed) return { error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false };
-    const before = readMeterSteps(managed.conn);
+    const before = hooks?.hostChargeSteps ? readMeterSteps(managed.conn) : 0;
+    const changesBefore = Number(managed.conn.total_changes());
     try {
       const raw = managed.conn.execute_json(sql, paramsJson && paramsJson.trim() ? paramsJson : null);
       this.chargeDelta(managed.conn, before, hooks);
+      if (raw.length > MAX_SQL_RESULT_JSON_CHARS) {
+        return { error: 'SQLite result exceeds maximum serialized size limit', code: 18, unique: false };
+      }
       const parsed = JSON.parse(raw) as { changes?: number; lastInsertRowid?: number };
-      if (isWriteStatement(sql)) {
+      if (isWriteStatement(sql) || Number(managed.conn.total_changes()) !== changesBefore) {
         managed.dirty = true;
       }
       return {
@@ -572,17 +634,25 @@ export class XdbSqlManager {
   ): { columns: string[]; rows: unknown[][] } | { error: string; code: number; unique: boolean } {
     const managed = this.handles.get(handleId);
     if (!managed) return { error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false };
-    const before = readMeterSteps(managed.conn);
+    const before = hooks?.hostChargeSteps ? readMeterSteps(managed.conn) : 0;
+    const changesBefore = Number(managed.conn.total_changes());
     try {
       const raw = managed.conn.execute_json(sql, paramsJson && paramsJson.trim() ? paramsJson : null);
       this.chargeDelta(managed.conn, before, hooks);
+      if (raw.length > MAX_SQL_RESULT_JSON_CHARS) {
+        return { error: 'SQLite query result exceeds maximum serialized size limit', code: 18, unique: false };
+      }
       const parsed = JSON.parse(raw) as { columns?: string[]; rows?: unknown[][] };
-      if (isWriteStatement(sql)) {
+      const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+      if (rows.length > MAX_SQL_RESULT_ROWS) {
+        return { error: `SQLite query returned more than ${MAX_SQL_RESULT_ROWS} rows`, code: 18, unique: false };
+      }
+      if (isWriteStatement(sql) || Number(managed.conn.total_changes()) !== changesBefore) {
         managed.dirty = true;
       }
       return {
         columns: parsed.columns ?? [],
-        rows: parsed.rows ?? [],
+        rows,
       };
     } catch (err) {
       this.chargeDelta(managed.conn, before, hooks);
@@ -612,7 +682,7 @@ export class XdbSqlManager {
     }
     if (!managed) return { error: `database '${handleOrKey}' not found`, code: 21, unique: false };
     const payload = typeof seedJson === 'string' ? seedJson : JSON.stringify(seedJson);
-    const before = readMeterSteps(managed.conn);
+    const before = hooks?.hostChargeSteps ? readMeterSteps(managed.conn) : 0;
     try {
       const raw = managed.conn.seed_json(payload);
       this.chargeDelta(managed.conn, before, hooks);
@@ -635,6 +705,7 @@ export class XdbSqlManager {
     if (!managed) return { ok: true };
     this.handles.delete(handleId);
     if (managed.ephemeral) {
+      this.ephemeralCount = Math.max(0, this.ephemeralCount - 1);
       try {
         managed.conn.close();
       } catch {
@@ -683,6 +754,7 @@ export class XdbSqlManager {
     try {
       const fromNorm = normalizeDbKey(fromUrl);
       const toNorm = normalizeDbKey(toUrl);
+      if (fromNorm.inMemory) return { error: 'cannot copy from :memory:', code: 1, unique: false };
       if (toNorm.inMemory) return { error: 'cannot copy to :memory:', code: 1, unique: false };
 
       const srcKey = this.resolveCanonicalKey(fromNorm.key);
@@ -752,6 +824,7 @@ export class XdbSqlManager {
     this.byKey.delete(key);
     try { existing.conn.close(); } catch { /* ignore */ }
     try { existing.conn.free(); } catch { /* ignore */ }
+    this.onRemove?.(key);
     return { ok: true, removed: true };
   }
 
@@ -830,6 +903,7 @@ export class XdbSqlManager {
     }
     this.byKey.clear();
     this.handles.clear();
+    this.ephemeralCount = 0;
   }
 }
 

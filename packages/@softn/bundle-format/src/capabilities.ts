@@ -27,11 +27,27 @@
  * 1: the ten names.
  * 2: `storage.collections`, a policy per collection (see STORAGE_POLICIES).
  * 3: `sync.roomCollections`, the collections a peer-to-peer room carries.
+ * 4: mobile & device hardware capabilities (`bluetooth`, `location`, `haptics`, `notifications`).
  */
-export const CAPABILITY_SCHEMA_VERSION = 3;
+export const CAPABILITY_SCHEMA_VERSION = 4;
 
 /** Every capability, in the order the consent bar and the app page list them. */
-export const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'] as const;
+export const CAPABILITIES = [
+  'net',
+  'camera',
+  'mic',
+  'files',
+  'qr',
+  'ai',
+  'gpu',
+  'sync',
+  'storage',
+  'accel',
+  'bluetooth',
+  'location',
+  'haptics',
+  'notifications',
+] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -68,6 +84,26 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
   accel: {
     label: 'Host acceleration',
     summary: "runs the numeric code it generates on your browser's own engine, bound to its own data",
+    sensitive: false,
+  },
+  bluetooth: {
+    label: 'Bluetooth',
+    summary: 'scans and connects to nearby Bluetooth Low Energy devices, with your permission',
+    sensitive: true,
+  },
+  location: {
+    label: 'Location',
+    summary: 'reads your device GPS or approximate location, with your permission',
+    sensitive: true,
+  },
+  haptics: {
+    label: 'Haptics',
+    summary: 'triggers device vibration and tactile feedback',
+    sensitive: false,
+  },
+  notifications: {
+    label: 'Notifications',
+    summary: 'displays local notifications on your device',
     sensitive: false,
   },
 };

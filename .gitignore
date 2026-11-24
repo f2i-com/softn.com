@@ -77,6 +77,7 @@ apps/softn-single/public/app.softn
 /packages/@softn/core/.cache/
 /.zipp-release/
 /.xdb-release/
+/.zipp-browser-release/
 
 # Python bytecode from the verification scripts
 __pycache__/

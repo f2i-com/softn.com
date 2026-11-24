@@ -51,6 +51,9 @@ fn dispatch_inner(bridges: &mut BridgeSet, kind: &str, args: &[String]) -> Resul
         "server.config" => enc(&serde_json::json!({"apiVersion":1,"development":bridges.development,"photos":bridges.allow_photos,"app":bridges.app_config})),
         "media.sanitizePhoto" => {
             if !bridges.allow_photos { return Err(capability_denied("photos.sanitizePhoto")); }
+            let _permit = crate::bridges::media::photo_decode_permits()
+                .try_acquire()
+                .map_err(|_| "Photo processing is busy; retry shortly".to_string())?;
             enc(&crate::bridges::media::sanitize_photo(arg(0))?)
         }
         "sql.query" | "sql.first" | "sql.execute" => {
@@ -73,31 +76,31 @@ fn dispatch_inner(bridges: &mut BridgeSet, kind: &str, args: &[String]) -> Resul
                 Some(filter) => db.query_where(arg(0), filter)?,
                 None => db.query(arg(0))?,
             };
-            let json: Vec<_> = rows.iter().map(|r| r.to_json()).collect();
+            let json: Vec<_> = rows.into_iter().map(crate::bridges::DbRecord::into_json).collect();
             enc(&serde_json::Value::Array(json))
         }
         "db.get" => {
             let db = need(bridges.db.as_deref(), kind)?;
             match db.get(arg(0), arg(1))? {
-                Some(r) => enc(&r.to_json()),
+                Some(r) => enc(&r.into_json()),
                 None => Ok("null".into()),
             }
         }
         "db.create" => {
             let db = need_mut(bridges.db.as_deref_mut(), kind)?;
-            enc(&db.create(arg(0), arg(1))?.to_json())
+            enc(&db.create(arg(0), arg(1))?.into_json())
         }
         "db.update" => {
             let db = need_mut(bridges.db.as_deref_mut(), kind)?;
             match db.update(arg(0), arg(1))? {
-                Some(r) => enc(&r.to_json()),
+                Some(r) => enc(&r.into_json()),
                 None => Ok("null".into()),
             }
         }
         "db.updateIf" => {
             let db = need_mut(bridges.db.as_deref_mut(), kind)?;
             match db.update_if(arg(0), arg(1), arg(2), arg(3))? {
-                DbUpdateIf::Updated(r) => enc(&serde_json::json!({ "updated": true, "record": r.to_json() })),
+                DbUpdateIf::Updated(r) => enc(&serde_json::json!({ "updated": true, "record": r.into_json() })),
                 DbUpdateIf::Conflict => enc(&serde_json::json!({ "updated": false, "reason": "conflict" })),
                 DbUpdateIf::Missing => enc(&serde_json::json!({ "updated": false, "reason": "missing" })),
             }

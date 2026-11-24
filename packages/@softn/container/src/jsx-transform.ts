@@ -115,8 +115,14 @@ function isWs(ch: number): boolean {
 function decodeHtmlEntities(text: string): string {
   if (!text.includes('&')) return text;
   return text.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|(amp|lt|gt|quot|apos|nbsp));/g, (m, hex, dec, named) => {
-    if (hex) return String.fromCodePoint(parseInt(hex, 16));
-    if (dec) return String.fromCodePoint(parseInt(dec, 10));
+    if (hex) {
+      const cp = parseInt(hex, 16);
+      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    }
+    if (dec) {
+      const cp = parseInt(dec, 10);
+      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    }
     switch (named) {
       case 'amp': return '&';
       case 'lt': return '<';
@@ -373,9 +379,20 @@ class JsxScanner {
         let q = p + 1;
         while (q < len && isWs(this.src.charCodeAt(q))) q++;
         if (q < len && this.src.charCodeAt(q) === 40) {
-          // Check for exact closing `</TagName>` (word boundary, so `</P` never matches `</Panel>`).
-          const escapedTag = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          if (!new RegExp(`</${escapedTag}(?=[\\s>])`).test(this.src.slice(q))) return false;
+          // Check for exact closing `</TagName>` (word boundary, zero slice/regex allocation).
+          const needle = `</${tagName}`;
+          let found = false;
+          let at = this.src.indexOf(needle, q);
+          while (at >= 0) {
+            const afterIdx = at + needle.length;
+            const afterCh = afterIdx < len ? this.src.charCodeAt(afterIdx) : -1;
+            if (afterCh === 62 || (afterCh >= 0 && isWs(afterCh))) {
+              found = true;
+              break;
+            }
+            at = this.src.indexOf(needle, at + 2);
+          }
+          if (!found) return false;
         }
       }
       return true;

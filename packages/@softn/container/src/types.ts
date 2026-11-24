@@ -1,4 +1,5 @@
 import type { Capability } from '@softn/bundle-format/capabilities';
+import type { ContainerDeviceBridge } from './device-bridge';
 
 /** How the container executes the bundle. */
 export type ContainerMode = 'web' | 'legacy-ui';
@@ -178,7 +179,11 @@ export interface ContainerPermissions {
     sync?: { enabled?: boolean; roomCollections?: string[] };
     storage?: { enabled?: boolean; collections?: Record<string, string> };
     accel?: { enabled?: boolean };
-    [key: string]: { enabled?: boolean } | undefined;
+    bluetooth?: { enabled?: boolean; services?: string[] };
+    location?: { enabled?: boolean; precision?: 'coarse' | 'fine' };
+    haptics?: { enabled?: boolean };
+    notifications?: { enabled?: boolean };
+    [key: string]: { enabled?: boolean } | object | undefined;
   };
 }
 
@@ -485,6 +490,13 @@ export interface SoftNContainerOptions {
   storage?: Storage;
   /** Dispatch a named action to this app's backend. The host authorizes each action. */
   backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * Optional cross-platform hardware & device bridge (`softn:camera`, `softn:bluetooth`,
+   * `softn:location`, `softn:haptics`, `softn:notifications`, `softn:device`).
+   * Defaults to `createWebDeviceBridge()` in browser environments; mobile/desktop hosts
+   * inject native adapters here.
+   */
+  deviceBridge?: ContainerDeviceBridge;
   /** Theme preference (`'light' | 'dark' | 'auto'`). */
   theme?: 'light' | 'dark' | 'auto';
   /** Execution mode: `'worker'` (default in browser) or `'inline'` (used in Node/JSDOM tests where Web Workers are unavailable). */

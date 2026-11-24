@@ -58,8 +58,20 @@ impl AddressLimiter {
                 self.refill(b, now);
                 b.tokens < self.burst
             });
+            // Never lock out unrelated new visitors globally when the map is full:
+            // evict the oldest-updated buckets (bounded LRU eviction) so an attacker
+            // rotating IPv6 /64s cannot DoS all legitimate traffic.
             if buckets.len() >= MAX_LIMITER_KEYS {
-                return Err(std::time::Duration::from_secs(60));
+                let target_evict = (MAX_LIMITER_KEYS / 16).max(1);
+                let mut by_age: Vec<(std::net::IpAddr, std::time::Instant)> = buckets
+                    .iter()
+                    .map(|(&k, b)| (k, b.updated))
+                    .collect();
+                let nth = target_evict.min(by_age.len().saturating_sub(1));
+                by_age.select_nth_unstable_by_key(nth, |&(_, ts)| ts);
+                for (evict_key, _) in by_age.into_iter().take(target_evict) {
+                    buckets.remove(&evict_key);
+                }
             }
         }
         let bucket = buckets.entry(key).or_insert(Bucket { tokens: self.burst, updated: now });

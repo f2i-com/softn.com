@@ -80,7 +80,7 @@ export function requirePermission(config: PermissionConfig | null, capability: s
   // spelt "enabled": "true" or 1 is what inspectDeclaration reports as
   // malformed and the consent bar requests nothing for, so a truthiness
   // check here ran the app with a capability nobody was asked about.
-  const perms = config.permissions;
+  const perms = config.permissions ?? {};
   switch (capability) {
     case 'net':
       if (perms.net?.enabled !== true)
@@ -122,6 +122,22 @@ export function requirePermission(config: PermissionConfig | null, capability: s
       if (perms.accel?.enabled !== true)
         throw new Error('Host acceleration not permitted. Add accel.enabled to permission.json');
       break;
+    case 'bluetooth':
+      if (perms.bluetooth?.enabled !== true)
+        throw new Error('Bluetooth access not permitted. Add bluetooth.enabled to permission.json');
+      break;
+    case 'location':
+      if (perms.location?.enabled !== true)
+        throw new Error('Location access not permitted. Add location.enabled to permission.json');
+      break;
+    case 'haptics':
+      if (perms.haptics?.enabled !== true)
+        throw new Error('Haptics access not permitted. Add haptics.enabled to permission.json');
+      break;
+    case 'notifications':
+      if (perms.notifications?.enabled !== true)
+        throw new Error('Notifications not permitted. Add notifications.enabled to permission.json');
+      break;
     default:
       throw new Error(`Unknown capability: ${capability}. Add it to permission.json`);
   }
@@ -134,6 +150,6 @@ export function requirePermission(config: PermissionConfig | null, capability: s
  * only by `softn.net.fetch`.
  */
 export function requireNetHost(config: PermissionConfig | null, url: string): void {
-  const verdict = describeNetDestination(url, config?.permissions.net);
+  const verdict = describeNetDestination(url, config?.permissions?.net);
   if (!verdict.allowed) throw new Error(verdict.reason);
 }

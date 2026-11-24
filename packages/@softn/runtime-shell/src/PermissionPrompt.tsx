@@ -166,6 +166,45 @@ export const PERMISSION_INFO: Record<string, { label: string; description: strin
       </>,
     ),
   },
+  bluetooth: {
+    label: 'Bluetooth',
+    description: 'Discover and communicate with nearby Bluetooth Low Energy peripherals.',
+    icon: svg(
+      <>
+        <polyline points="6.5 6.5 17.5 17.5 12 23 12 1 17.5 6.5 6.5 17.5" />
+      </>,
+    ),
+  },
+  location: {
+    label: 'Location',
+    description: 'Read your device GPS or network location.',
+    icon: svg(
+      <>
+        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+        <circle cx="12" cy="10" r="3" />
+      </>,
+    ),
+  },
+  haptics: {
+    label: 'Haptics',
+    description: 'Trigger tactile feedback and vibration on your device.',
+    icon: svg(
+      <>
+        <rect x="7" y="4" width="10" height="16" rx="2" />
+        <path d="M3 8v8M21 8v8" />
+      </>,
+    ),
+  },
+  notifications: {
+    label: 'Notifications',
+    description: 'Show local notifications on your device.',
+    icon: svg(
+      <>
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+      </>,
+    ),
+  },
 };
 
 /** The sentence under the list when a bundle asks for the camera or microphone, in a browser. */

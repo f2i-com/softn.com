@@ -12,7 +12,7 @@ import {
   type ContainerBackendTransport,
 } from './containerBridge';
 import { bytesOf } from './media';
-import { outsideAddress } from './links';
+import { normalizeHost, outsideAddress } from './links';
 import { readPlace, writePlace } from './place';
 import { grantedPermissions } from './permissions';
 import { installAppStorage, STORAGE_LIMITS, STORAGE_PROTOCOL, storageLimits } from './storage';
@@ -118,12 +118,15 @@ window.addEventListener('message', async event => {
       { acknowledged: data.storageProtocol === STORAGE_PROTOCOL, limits: storageLimits(data.storageLimits) });
     const runtimeUrl = containerRuntimeUrl();
     let ownHost = '';
-    try { ownHost = new URL(runtimeUrl).hostname; } catch { ownHost = ''; }
+    try { ownHost = normalizeHost(new URL(runtimeUrl).hostname); } catch { ownHost = ''; }
     let full: Promise<WebAssembly.Module> | undefined;
     const fullEngine = () => full ??= calls.call('containerEngine', { sha256: zippSource.sha256 }).then(async answer => {
       const reply = answer as { result?: ArrayBuffer; error?: string };
       if (!(reply?.result instanceof ArrayBuffer)) throw new Error(String(reply?.error || 'The full app engine is unavailable.'));
       return WebAssembly.compile(reply.result);
+    }).catch(err => {
+      full = undefined;
+      throw err;
     });
     const pythonEngine = () => {
       if (data.python !== true) throw new Error('Python is unavailable under the host’s selected engine.');
@@ -181,7 +184,7 @@ window.addEventListener('message', async event => {
         const clean = outsideAddress(href);
         if (!clean) return;
         try {
-          if (ownHost && new URL(clean).hostname === ownHost) return;
+          if (ownHost && normalizeHost(new URL(clean).hostname) === ownHost) return;
         } catch {
           return;
         }

@@ -17,12 +17,31 @@ import type { HostGate } from './permissions';
  * search or library, a disk image that mounts and shows its programs).
  */
 const RUNS_WHEN_OPENED =
-  /\.(?:exe|com|bat|cmd|msi|msix|msixbundle|appx|appxbundle|appinstaller|msp|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ws|wsc|ps1|ps2|psm1|psd1|ps1xml|reg|cpl|msc|chm|diagcab|library-ms|search-ms|settingcontent-ms|xll|xbap|jnlp|iso|img|vhd|vhdx|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|bash|zsh|csh|fish|py|pyw|rb|pl|php|phtml|dll|ocx|sys|drv|scf|inf|gadget|application|appref-ms)$/i;
+  /\.(?:exe|com|bat|cmd|msi|msix|msixbundle|appx|appxbundle|appinstaller|msp|scr|pif|lnk|url|hta|js|jse|mjs|cjs|vbs|vbe|wsf|wsh|ws|wsc|sct|ps1|ps2|psm1|psd1|ps1xml|reg|cpl|msc|chm|diagcab|library-ms|search-ms|settingcontent-ms|xll|xbap|jnlp|iso|img|vhd|vhdx|jar|app|dmg|pkg|command|desktop|appimage|deb|rpm|apk|sh|bash|zsh|csh|fish|py|pyw|rb|pl|php|phtml|dll|ocx|sys|drv|scf|inf|gadget|application|appref-ms|cab|xlsm|xlsb|docm|dotm|pptm|ppsm|workflow|applescript|scpt|terminal|webloc|mobileconfig|inetloc|fileloc|action)$/i;
 
 const MAX_FILE_READ_BYTES = 50 * 1024 * 1024;
 const MAX_FILE_SAVE_BYTES = 50 * 1024 * 1024;
-const ACTIVE_SAVE_MIME_RE =
-  /^(?:text\/html|application\/xhtml\+xml|image\/svg\+xml|text\/xml|application\/xml|text\/javascript|application\/javascript|application\/x-javascript)/i;
+const FILES_ENCODER = new TextEncoder();
+const INERT_SAVE_MIME_TYPES = new Set([
+  'text/plain',
+  'text/csv',
+  'text/css',
+  'text/markdown',
+  'application/json',
+  'application/octet-stream',
+  'application/pdf',
+  'application/zip',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'audio/mpeg',
+  'audio/wav',
+  'audio/ogg',
+  'video/mp4',
+  'video/webm',
+]);
 
 /**
  * The name a file an app saves is offered under. A leaf, never a path, so an
@@ -86,7 +105,7 @@ export async function pickFile(gate: HostGate, call: PendingHostCall): Promise<u
 export async function readText(gate: HostGate, call: PendingHostCall): Promise<unknown> {
   gate.checkPermission('files');
   const [fileRef] = call.args;
-  const file = getFileByRef(fileRef);
+  const file = getFileByRef(fileRef, gate);
   if (!file) throw new Error(`File not found: ${fileRef}`);
   if (file.size > MAX_FILE_READ_BYTES) {
     throw new Error(`File exceeds maximum read size (${MAX_FILE_READ_BYTES / (1024 * 1024)} MB)`);
@@ -97,7 +116,7 @@ export async function readText(gate: HostGate, call: PendingHostCall): Promise<u
 export async function readBase64(gate: HostGate, call: PendingHostCall): Promise<unknown> {
   gate.checkPermission('files');
   const [fileRef] = call.args;
-  const file = getFileByRef(fileRef);
+  const file = getFileByRef(fileRef, gate);
   if (!file) throw new Error(`File not found: ${fileRef}`);
   if (file.size > MAX_FILE_READ_BYTES) {
     throw new Error(`File exceeds maximum read size (${MAX_FILE_READ_BYTES / (1024 * 1024)} MB)`);
@@ -137,15 +156,16 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
     return { error: 'A file is saved when the person asks for it: call files.saveFile from a click or a key press in the app.' };
   }
   const name = downloadName(rawName);
-  // Neutralize active document MIME types so an object URL created on the host
-  // origin can never execute HTML/SVG/JS if navigated to directly.
+  // Only allow explicitly inert MIME types so an object URL created on the host
+  // origin can never execute HTML/SVG/XML/MathML/JS if navigated to directly.
   const requestedMime =
     typeof options.mime === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;\s*charset=[\w-]+)?$/.test(options.mime)
       ? options.mime
       : options.base64
         ? 'application/octet-stream'
         : 'text/plain;charset=utf-8';
-  const mime = ACTIVE_SAVE_MIME_RE.test(requestedMime) ? 'application/octet-stream' : requestedMime;
+  const baseMime = requestedMime.split(';')[0].trim().toLowerCase();
+  const mime = INERT_SAVE_MIME_TYPES.has(baseMime) ? requestedMime : 'application/octet-stream';
   let blob: Blob;
   if (options.base64) {
     const rawB64 = String(content || '').replace(/^data:[^,]*,/, '');
@@ -170,7 +190,11 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
     if (text.length > MAX_FILE_SAVE_BYTES) {
       return { error: 'The file exceeds the maximum save size.' };
     }
-    blob = new Blob([text], { type: mime });
+    const encoded = FILES_ENCODER.encode(text);
+    if (encoded.byteLength > MAX_FILE_SAVE_BYTES) {
+      return { error: 'The file exceeds the maximum save size.' };
+    }
+    blob = new Blob([encoded], { type: mime });
   }
   if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
     return { error: 'Saving files is not available here.' };
@@ -180,6 +204,7 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
     const a = document.createElement('a');
     a.href = url;
     a.download = name;
+    a.rel = 'noopener';
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
@@ -194,7 +219,7 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
 /** The text files in a ZIP the person chose, with the archive's SHA-256. */
 export async function readZipText(gate: HostGate, call: PendingHostCall): Promise<unknown> {
   gate.checkPermission('files');
-  const file = getFileByRef(call.args[0]);
+  const file = getFileByRef(call.args[0], gate);
   if (!file || file.size > 262144) throw Error('Choose a ZIP smaller than 256 KiB');
   const bytes = new Uint8Array(await file.arrayBuffer());
   const files = readZipEntries(bytes);
