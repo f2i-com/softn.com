@@ -22,7 +22,7 @@ svgtypes = "0.16"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 
 # Own ZIPP VM (native x86-64/ARM64 JIT + step/heap limits + TypeScript, PHP 8, Python, Rust backends)
-zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.40", default-features = false, features = ["jit", "php", "python", "rust", "typescript"] }
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.41", default-features = false, features = ["jit", "php", "python", "rust", "typescript"] }
 
 # AST-based ES Module linker (matches zipp-browser)
 oxc_allocator = "0.126.0"

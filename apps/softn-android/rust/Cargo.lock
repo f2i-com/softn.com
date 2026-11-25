@@ -3418,8 +3418,8 @@ dependencies = [
 
 [[package]]
 name = "zipp-numparse"
-version = "0.0.40"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
+version = "0.0.41"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
 dependencies = [
  "num-bigint 0.5.1",
  "num-traits",
@@ -3427,16 +3427,16 @@ dependencies = [
 
 [[package]]
 name = "zipp-phpparse"
-version = "0.0.40"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
+version = "0.0.41"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
 dependencies = [
  "zipp-numparse",
 ]
 
 [[package]]
 name = "zipp-pyparse"
-version = "0.0.40"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
+version = "0.0.41"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
 dependencies = [
  "bumpalo",
  "rustc-hash",
@@ -3448,7 +3448,7 @@ dependencies = [
 [[package]]
 name = "zipp-regress"
 version = "0.11.1"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
 dependencies = [
  "dynasm",
  "dynasmrt",
@@ -3479,16 +3479,16 @@ dependencies = [
 
 [[package]]
 name = "zipp-rsparse"
-version = "0.0.40"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
+version = "0.0.41"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
 dependencies = [
  "zipp-numparse",
 ]
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.40"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.40#0cd3eab8bec16d9ac5ea3d1204cd287640143c0b"
+version = "0.0.41"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
 dependencies = [
  "dynasm",
  "dynasmrt",

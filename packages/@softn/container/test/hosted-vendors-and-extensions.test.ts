@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mountSoftNContainer } from '../src/index';
@@ -137,16 +137,17 @@ describe('Hosted /runtime/vendor/ Libraries, Zero-Build TypeScript, softn:db & <
       },
     });
 
-    await flushAsync(60);
-
-    expect(customElements.get('softn-chart')).toBeDefined();
-    expect(customElements.get('softn-datagrid')).toBeDefined();
-
-    const gridEl = handle.shadowRoot.querySelector('#my-grid') as HTMLElement & { shadowRoot: ShadowRoot };
-    expect(gridEl.shadowRoot.querySelectorAll('tbody tr').length).toBe(2);
-
-    const chartEl = handle.shadowRoot.querySelector('#my-chart') as HTMLElement & { shadowRoot: ShadowRoot };
-    expect(chartEl.shadowRoot.querySelectorAll('svg rect').length).toBe(3);
+    await vi.waitFor(
+      () => {
+        expect(customElements.get('softn-chart')).toBeDefined();
+        expect(customElements.get('softn-datagrid')).toBeDefined();
+        const gridEl = handle.shadowRoot.querySelector('#my-grid') as HTMLElement & { shadowRoot: ShadowRoot | null };
+        expect(gridEl.shadowRoot?.querySelectorAll('tbody tr').length).toBe(2);
+        const chartEl = handle.shadowRoot.querySelector('#my-chart') as HTMLElement & { shadowRoot: ShadowRoot | null };
+        expect(chartEl.shadowRoot?.querySelectorAll('svg rect').length).toBe(3);
+      },
+      { timeout: 5000 }
+    );
 
     handle.dispose();
   });

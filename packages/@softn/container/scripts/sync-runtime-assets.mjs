@@ -286,9 +286,9 @@ if (stagedRust) await extractGlueForWasm(stagedRust, null);
 // Fetch SHA256SUMS-verified release assets from f2i-com/xdb.org (cached in .xdb-release/<tag>/),
 // with optional local override via XDB_WASM_DIR or sibling xdb-rs checkout fallback.
 const XDB_REPOSITORY = 'https://github.com/f2i-com/xdb.org';
-const XDB_RELEASE_TAG = process.env.XDB_RELEASE || 'v0.1.0';
+const XDB_RELEASE_TAG = process.env.XDB_RELEASE || 'v0.1.2';
 const XDB_VERSION = XDB_RELEASE_TAG.replace(/^v/, '');
-const XDB_SUMS_SHA256 = process.env.XDB_SUMS_SHA256 || '3074389101142825e56f07a4653c388d78f27b099145d14538c155b0c2206393';
+const XDB_SUMS_SHA256 = process.env.XDB_SUMS_SHA256 || '81c286503a05fdc8b2d68c915727afe9bba05d5eabd2b338f48f1b4241c87919';
 const xdbCacheDir = path.join(REPO_ROOT, '.xdb-release', XDB_RELEASE_TAG);
 
 async function fetchXdbReleaseAssets() {
