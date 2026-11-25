@@ -167,6 +167,7 @@ const MAX_OVERLAY_ENTRIES = 4096;
 const MAX_OVERLAY_TOTAL_BYTES = 16 * 1024 * 1024;
 
 function normalizeSafeOverlayPath(rawPath: string): string | null {
+  // eslint-disable-next-line no-control-regex
   if (typeof rawPath !== 'string' || !rawPath || rawPath.includes('\0') || rawPath.includes('\\') || /[\u0000-\u001f\u007f]/.test(rawPath)) {
     return null;
   }

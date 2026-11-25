@@ -167,8 +167,16 @@ if (landing !== null && runtime !== null && landing === runtime) failures.push('
 // A nested route inside each app must reach that app's shell, not the
 // landing page's: a generic static server sends index.html for everything,
 // which looks fine at the HTTP layer and boots the wrong React app.
-await check('directory page route', '/apps', { type: 'text/html', body: (t) => (t === landing ? true : 'not the landing shell') });
-await check('directory page route with a query', '/apps?category=games', { type: 'text/html', body: (t) => (t === landing ? true : 'not the landing shell') });
+const landingScript = landing ? builtFile(landing, 'js') : null;
+const isSiteShell = (t) => {
+  if (t === landing) return true;
+  if (!t.includes('id="root"')) return 'no #root in directory page';
+  if (landingScript && !t.includes(landingScript)) return 'not the site shell';
+  if (!t.includes('data-softn-ssr="directory"')) return 'missing directory SSR markup';
+  return true;
+};
+await check('directory page route', '/apps', { type: 'text/html', body: isSiteShell });
+await check('directory page route with a query', '/apps?category=games', { type: 'text/html', body: isSiteShell });
 await check('runtime nested route', '/web/app/Notes', { type: 'text/html', isolated: true, body: (t) => (t === runtime ? true : 'not the runtime shell') });
 await check('runtime deeper route', '/web/app/Notes/page/settings', { type: 'text/html', isolated: true, body: (t) => (t === runtime ? true : 'not the runtime shell') });
 await check('runtime route with a dot in it', '/web/app/~Notes%20v1.2', { type: 'text/html', isolated: true, body: (t) => (t === runtime ? true : 'not the runtime shell') });

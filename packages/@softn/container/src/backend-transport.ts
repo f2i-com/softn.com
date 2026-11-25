@@ -73,6 +73,7 @@ export class VirtualCookieJar {
   }
 
   private putCookie(cookie: StoredCookie): boolean {
+    // eslint-disable-next-line no-control-regex
     if (/[\u0000-\u001f\u007f;]/.test(cookie.name) || /[\u0000-\u001f\u007f;]/.test(cookie.value) || /[\u0000-\u001f\u007f]/.test(cookie.path)) {
       return false;
     }
@@ -453,6 +454,7 @@ function validateRemoteBackendPath(baseUrl: string, rawInputPath: string): { cle
     cleanPath.includes('\0') ||
     cleanPath.includes('?') ||
     cleanPath.includes('#') ||
+    // eslint-disable-next-line no-control-regex
     /[\u0000-\u001f\u007f]/.test(cleanPath) ||
     /(?:^|\/)\.\.(?:\/|$)/.test(cleanPath) ||
     /%(?:2e|2f|5c|00|25)/i.test(cleanPath)
@@ -510,6 +512,7 @@ export class RemoteBackendTransport implements BackendTransport {
     }
     const { targetUrl } = validateRemoteBackendPath(this.baseUrl, req.path);
     const query = req.query ? String(req.query) : '';
+    // eslint-disable-next-line no-control-regex
     if (query && (query.includes('#') || /[\u0000-\u001f\u007f]/.test(query))) {
       throw new Error('Invalid backend request query');
     }
@@ -588,6 +591,7 @@ export class RemoteBackendTransport implements BackendTransport {
     const qIdx = path.indexOf('?');
     const pathPart = qIdx >= 0 ? path.slice(0, qIdx) : path;
     const queryPart = qIdx >= 0 ? path.slice(qIdx + 1) : '';
+    // eslint-disable-next-line no-control-regex
     if (queryPart && (queryPart.includes('#') || /[\u0000-\u001f\u007f]/.test(queryPart))) {
       throw new Error('Invalid backend WebSocket query');
     }

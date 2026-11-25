@@ -48,6 +48,7 @@ function filterNetHeaders(raw: unknown): Record<string, string> | undefined {
  * Rejects control characters, traversal segments (`..`), backslashes, leading slashes, and URL schemes.
  */
 function sanitizeBundlePath(raw: string): string | null {
+  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
   const trimmed = raw.trim().replace(/[?#].*$/, '').replace(/^\.\//, '');
   if (!trimmed || trimmed.startsWith('/') || trimmed.includes('\\') || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
@@ -68,6 +69,7 @@ function sanitizeBundlePath(raw: string): string | null {
  * (including whitespace/tab/newline-smuggled forms per WHATWG URL parsing) is rejected.
  */
 function isOwnFileUrl(url: string): boolean {
+  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(url)) return false;
   const trimmed = url.trim();
   if (!trimmed) return false;

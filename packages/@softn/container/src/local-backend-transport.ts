@@ -577,6 +577,7 @@ export class LocalBackendTransport implements BackendTransport {
       throw new Error(`Disallowed HTTP method: ${method}`);
     }
     const path = req.path.startsWith('/') ? req.path : `/${req.path}`;
+    // eslint-disable-next-line no-control-regex
     if (path.includes('\0') || /[\u0000-\u001f\u007f]/.test(path)) {
       throw new Error('Invalid local backend request path');
     }

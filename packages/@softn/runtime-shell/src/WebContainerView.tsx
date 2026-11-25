@@ -193,7 +193,7 @@ export function WebContainerView({
       handleRef.current?.dispose();
       handleRef.current = null;
     };
-  }, [source, runtimeUrl, appId, storagePrefix, backendUrl, theme, persistStorage, declaredPermissions, initialPage]);
+  }, [source, runtimeUrl, appId, storagePrefix, backendUrl, theme, persistStorage, declaredPermissions, initialPage, precomputedDigest]);
 
   // Dynamically upgrade/revoke capabilities in-place when user clicks Allow on host PermissionBar
   useEffect(() => {

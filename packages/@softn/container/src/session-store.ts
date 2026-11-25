@@ -32,6 +32,7 @@ export function isSafeVirtualRoute(raw: unknown): raw is string {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 4096 || !raw.startsWith('/') || raw.startsWith('//')) {
     return false;
   }
+  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(raw)) return false;
   try {
     return new URL(raw, `${VIRTUAL_ORIGIN}/`).origin === VIRTUAL_ORIGIN;

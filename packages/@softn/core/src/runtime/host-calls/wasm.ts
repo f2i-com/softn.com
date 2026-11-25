@@ -86,6 +86,7 @@ function baseName(path: string): string {
 }
 
 function validateBundleSourcePath(raw: string): string {
+  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(raw)) {
     throw new Error('Module path contains invalid control characters');
   }
@@ -108,6 +109,7 @@ function validateBundleSourcePath(raw: string): string {
  */
 function sourceOf(written: string): Source {
   const raw = String(written ?? '');
+  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(raw)) {
     throw new Error('Module source contains invalid control characters');
   }
@@ -118,6 +120,7 @@ function sourceOf(written: string): Source {
       if (typeof spec.bundle === 'string') return { bundle: validateBundleSourcePath(spec.bundle) };
       if (typeof spec.url === 'string') {
         const u = spec.url.trim();
+        // eslint-disable-next-line no-control-regex
         if (/[\u0000-\u001f\u007f]/.test(u) || !/^https?:/i.test(u)) {
           throw new Error(`A module URL must use http: or https:`);
         }

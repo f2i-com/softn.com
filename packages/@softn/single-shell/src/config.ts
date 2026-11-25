@@ -147,6 +147,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
       c.basePath.length > 256 ||
       !c.basePath.startsWith('/') ||
       c.basePath.startsWith('//') ||
+      // eslint-disable-next-line no-control-regex
       /[\\?#\x00-\x1f\x7f]/.test(c.basePath) ||
       /(?:^|\/)\.\.?(?:\/|$)/.test(c.basePath)
     ) {
@@ -162,6 +163,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
       c.initialPath.length > 512 ||
       !c.initialPath.startsWith('/') ||
       c.initialPath.startsWith('//') ||
+      // eslint-disable-next-line no-control-regex
       /[\\\x00-\x1f\x7f]/.test(c.initialPath) ||
       /(?:^|\/)\.\.(?:\/|$)/.test(c.initialPath.split(/[?#]/)[0])
     ) {
