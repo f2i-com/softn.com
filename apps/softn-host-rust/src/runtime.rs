@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -112,6 +112,9 @@ struct AbandonmentState {
     /// Threads this pool has beyond the ones it started with: one for each
     /// replacement whose original has not exited yet.
     extra_threads: usize,
+    /// Workers that exited abnormally (failed init / failed post-panic re-init)
+    /// and already released their slot in `GLOBAL_WORKER_COUNT` before drop.
+    exited_early: usize,
     /// The runtime is gone and has given its whole thread budget back.
     closed: bool,
 }
@@ -121,10 +124,10 @@ impl Abandonment {
         self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Take a place for one more abandoned thread. False at the limit.
+    /// Take a place for one more abandoned thread. False at the limit or after close.
     fn reserve(&self) -> bool {
         let mut state = self.state();
-        if state.live >= MAX_ABANDONED_WORKERS {
+        if state.closed || state.live >= MAX_ABANDONED_WORKERS {
             return false;
         }
         state.live += 1;
@@ -137,9 +140,16 @@ impl Abandonment {
         state.live = state.live.saturating_sub(1);
     }
 
-    /// A replacement now runs beside the thread it replaces.
-    fn replaced(&self) {
-        self.state().extra_threads += 1;
+    /// A replacement now runs beside the thread it replaces. Returns false if the
+    /// runtime closed concurrently, in which case the caller must return the new
+    /// thread's global slot immediately.
+    fn replaced(&self) -> bool {
+        let mut state = self.state();
+        if state.closed {
+            return false;
+        }
+        state.extra_threads += 1;
+        true
     }
 
     /// An abandoned thread's call returned and the thread is going. Its place
@@ -156,11 +166,33 @@ impl Abandonment {
         true
     }
 
+    /// A worker exited early (failed init or failed post-panic re-init). Returns
+    /// true when its slot in `GLOBAL_WORKER_COUNT` is the caller's to release
+    /// (false once `Drop for ServerRuntime` has already released the whole pool).
+    fn worker_exited_early(&self) -> bool {
+        let mut state = self.state();
+        if state.closed {
+            return false;
+        }
+        state.exited_early += 1;
+        true
+    }
+
     /// The runtime is dropped: how many threads beyond its own it still holds.
+    #[cfg(test)]
     fn close(&self) -> usize {
         let mut state = self.state();
         state.closed = true;
-        state.extra_threads
+        std::mem::take(&mut state.extra_threads)
+    }
+
+    /// The runtime is dropped: total global worker slots still held by this pool.
+    fn close_runtime(&self, initial_workers: usize) -> usize {
+        let mut state = self.state();
+        state.closed = true;
+        let extra = std::mem::take(&mut state.extra_threads);
+        let early = std::mem::take(&mut state.exited_early);
+        (initial_workers + extra).saturating_sub(early)
     }
 
     fn live(&self) -> usize {
@@ -202,7 +234,10 @@ fn replace_wedged(
     match start() {
         Ok(replacement) => {
             guard.abandoned.store(true, Ordering::Relaxed);
-            abandonment.replaced();
+            if !abandonment.replaced() {
+                GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+                return None;
+            }
             tracing::error!(
                 abandoned = abandonment.live(),
                 "Worker wedged in a native call — abandoned it and started a replacement. \
@@ -427,12 +462,10 @@ pub struct ServerRuntime {
     /// The script every worker runs, kept so the watchdog can initialise a
     /// replacement for a wedged one.
     init_source: Arc<std::sync::Mutex<Option<String>>>,
-    /// Replacement workers the watchdog started. Counted against the global
-    /// thread cap like any other worker, and returned to it on drop.
+    /// Replacement workers the watchdog started and early-exit tracking,
+    /// coordinated under one mutex so `Drop` and exiting threads can never
+    /// double-decrement `GLOBAL_WORKER_COUNT`.
     abandonment: Arc<Abandonment>,
-    /// Workers that exited abnormally (failed init / failed post-panic re-init)
-    /// and already released their slot in `GLOBAL_WORKER_COUNT`.
-    exited_early: Arc<AtomicUsize>,
     /// `EACH_SLICE` in milliseconds. A test sets it to make a run of calls
     /// one stretch, or a stretch a call.
     pub(crate) each_slice_ms: AtomicU64,
@@ -492,10 +525,9 @@ impl ServerRuntime {
         let mut init_txs = Vec::with_capacity(worker_count);
         let mut guards = Vec::with_capacity(worker_count);
         let abandonment = Arc::new(Abandonment::default());
-        let exited_early = Arc::new(AtomicUsize::new(0));
 
         for i in 0..worker_count {
-            match Self::spawn_worker(format!("softn-worker-{}", i), factory.clone(), work_rx.clone(), abandonment.clone(), exited_early.clone()) {
+            match Self::spawn_worker(format!("softn-worker-{}", i), factory.clone(), work_rx.clone(), abandonment.clone()) {
                 Ok((init_tx, guard)) => {
                     init_txs.push(init_tx);
                     guards.push(guard);
@@ -503,7 +535,8 @@ impl ServerRuntime {
                 Err(e) => {
                     // Dropping the senders ends the workers already started.
                     drop(init_txs);
-                    GLOBAL_WORKER_COUNT.fetch_sub(worker_count, Ordering::AcqRel);
+                    let to_release = abandonment.close_runtime(worker_count);
+                    GLOBAL_WORKER_COUNT.fetch_sub(to_release, Ordering::AcqRel);
                     return Err(format!("Cannot start a script runtime: failed to spawn worker thread {i}: {e}"));
                 }
             }
@@ -518,7 +551,6 @@ impl ServerRuntime {
         let wd_work_rx = work_rx.clone();
         let wd_source = init_source.clone();
         let wd_abandonment = abandonment.clone();
-        let wd_exited_early = exited_early.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("softn-vm-watchdog".to_string())
             .spawn(move || {
@@ -559,7 +591,6 @@ impl ServerRuntime {
                                 wd_factory.clone(),
                                 wd_work_rx.clone(),
                                 wd_abandonment.clone(),
-                                wd_exited_early.clone(),
                             )
                             .map_err(|e| format!("a thread could not be started: {e}"))?;
                             // The replacement initialises itself off the same
@@ -595,7 +626,6 @@ impl ServerRuntime {
             watchdog_stop,
             init_source,
             abandonment,
-            exited_early,
             each_slice_ms: AtomicU64::new(EACH_SLICE.as_millis() as u64),
         }))
     }
@@ -607,7 +637,6 @@ impl ServerRuntime {
         factory: Arc<F>,
         work_rx: crossbeam_channel::Receiver<ScriptRequest>,
         abandonment: Arc<Abandonment>,
-        exited_early: Arc<AtomicUsize>,
     ) -> Result<(crossbeam_channel::Sender<ScriptRequest>, Arc<CallGuard>), std::io::Error>
     where
         F: Fn() -> BridgeSet + Send + Sync + 'static,
@@ -616,7 +645,7 @@ impl ServerRuntime {
         let guard = Arc::new(CallGuard::new(abandonment));
         let guard_clone = guard.clone();
         std::thread::Builder::new().name(name).spawn(move || {
-            Self::script_thread(init_rx, work_rx, &*factory, &guard_clone, &exited_early);
+            Self::script_thread(init_rx, work_rx, &*factory, &guard_clone);
         })?;
         Ok((init_tx, guard))
     }
@@ -626,7 +655,6 @@ impl ServerRuntime {
         work_rx: crossbeam_channel::Receiver<ScriptRequest>,
         bridge_factory: &F,
         guard: &CallGuard,
-        exited_early: &AtomicUsize,
     )
     where
         F: Fn() -> BridgeSet,
@@ -662,8 +690,9 @@ impl ServerRuntime {
         // silently and forever.
         if worker.is_none() {
             tracing::error!("Worker failed to initialise — exiting instead of joining the pool");
-            exited_early.fetch_add(1, Ordering::AcqRel);
-            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+            if guard.abandonment.worker_exited_early() {
+                GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+            }
             return;
         }
 
@@ -751,8 +780,9 @@ impl ServerRuntime {
                             tracing::error!("Worker failed to re-init after panic, exiting: {}", e);
                             // Exit the loop — a permanently broken worker draining
                             // requests and failing them all is worse than a reduced pool.
-                            exited_early.fetch_add(1, Ordering::AcqRel);
-                            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+                            if guard.abandonment.worker_exited_early() {
+                                GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+                            }
                             break;
                         }
                     }
@@ -1232,9 +1262,7 @@ impl ServerRuntime {
 impl Drop for ServerRuntime {
     fn drop(&mut self) {
         self.watchdog_stop.store(true, Ordering::Relaxed);
-        let extra = self.abandonment.close();
-        let already_released = self.exited_early.load(Ordering::Acquire);
-        let to_release = (self.worker_count + extra).saturating_sub(already_released);
+        let to_release = self.abandonment.close_runtime(self.worker_count);
         GLOBAL_WORKER_COUNT.fetch_sub(to_release, Ordering::AcqRel);
     }
 }
@@ -1637,6 +1665,19 @@ mod abandonment_tests {
         assert_eq!(abandonment.close(), 1, "one replacement's original is still running");
         assert!(!abandonment.exited(), "the runtime already gave that thread's share back");
         assert_eq!(abandonment.live(), 0);
+    }
+
+    /// A worker whose init failed and exits after `Drop for ServerRuntime` must not
+    /// decrement `GLOBAL_WORKER_COUNT` a second time (which would underflow to usize::MAX).
+    #[test]
+    fn an_early_exit_after_drop_does_not_double_release_the_global_count() {
+        let before_drop = Abandonment::default();
+        assert!(before_drop.worker_exited_early());
+        assert_eq!(before_drop.close_runtime(2), 1);
+
+        let after_drop = Abandonment::default();
+        assert_eq!(after_drop.close_runtime(1), 1);
+        assert!(!after_drop.worker_exited_early(), "drop already returned every slot");
     }
 
     /// A wedged worker is only given up on when its replacement has started.

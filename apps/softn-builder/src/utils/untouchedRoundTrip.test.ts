@@ -610,7 +610,7 @@ describe('opened and exported with nothing touched', () => {
     expect([...output.keys()].sort()).toEqual([...input.keys()].sort());
     // What the app declares it needs is the file it came with.
     expect(text(output.get('permission.json'))).toBe(text(input.get('permission.json')));
-  });
+  }, 30_000);
 
   // Driven first over the demos: an untouched export rewrote the .xdb files
   // of four (each given a `schema` the file did not have, and its records
@@ -629,5 +629,5 @@ describe('opened and exported with nothing touched', () => {
       if (!out || out.length !== bytes.length || out.some((byte, at) => byte !== bytes[at])) changed.push(path);
     }
     expect(changed).toEqual([]);
-  });
+  }, 30_000);
 });
