@@ -341,7 +341,7 @@ function softn_config(string $private): array
     $raw = require $file;
     if (!is_array($raw)) softn_fail(503, 'serve.config.php must return an array.');
     $known = ['id', 'title', 'description', 'lang', 'bundle', 'theme', 'loadingText', 'permissionMode', 'permissions', 'sha256',
-        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot', 'pwa', 'frameAncestors', 'backendUrl'];
+        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot', 'pwa', 'frameAncestors', 'backendUrl', 'prerender'];
     foreach (array_keys($raw) as $key) {
         if (!in_array($key, $known, true)) softn_fail(503, 'Unknown setting in serve.config.php: ' . $key);
     }
@@ -402,12 +402,14 @@ function softn_config(string $private): array
             softn_fail(503, 'backendUrl must be a same-origin path (such as / or ./backend).');
         }
     }
+    $prerender = $raw['prerender'] ?? false;
+    if (!is_bool($prerender)) softn_fail(503, 'prerender must be true or false.');
     return [
         'id' => $id, 'title' => $title, 'description' => $description, 'lang' => $lang, 'bundle' => $bundle, 'theme' => $theme,
         'loadingText' => $loadingText, 'permissionMode' => $permissionMode, 'permissions' => $permissions, 'sha256' => $sha256,
         'viewerToken' => $viewerToken, 'tokenLifetime' => $tokenLifetime, 'secret' => $secret, 'withhold' => array_values($withhold),
         'cacheSeconds' => $cacheSeconds, 'allowPrivateInWebroot' => $allowPrivateInWebroot, 'pwa' => $pwa,
-        'frameAncestors' => array_values($frameAncestors), 'backendUrl' => $backendUrl,
+        'frameAncestors' => array_values($frameAncestors), 'backendUrl' => $backendUrl, 'prerender' => $prerender,
     ];
 }
 
@@ -964,6 +966,262 @@ function softn_icon_entry(ZipArchive $zip, array $manifest): ?array
     return ['name' => $icon, 'mime' => softn_classify($icon)[0]];
 }
 
+/**
+ * Pure-PHP static HTML/UI sanitizer for opt-in SEO & View-Source pre-rendering.
+ * Runs with only PHP core + PCRE + ZipArchive + JSON (no mbstring/DOM/ctype)
+ * and strictly honors `softn_withheld_for_bundle()`.
+ */
+function softn_prerender_preview(ZipArchive $zip, array $manifest, array $config): string
+{
+    if (!($config['prerender'] ?? false)) return '';
+    $main = is_string($manifest['main'] ?? null) ? ltrim(str_replace('\\', '/', $manifest['main']), '/') : '';
+    $frontendRoot = is_string($manifest['frontendRoot'] ?? null) ? trim(str_replace('\\', '/', $manifest['frontendRoot']), '/') : '';
+    $candidates = [];
+    if ($main !== '') {
+        $candidates[] = $main;
+        if ($frontendRoot !== '' && !str_starts_with($main, $frontendRoot . '/')) {
+            $candidates[] = $frontendRoot . '/' . $main;
+        }
+    }
+    if ($frontendRoot !== '') $candidates[] = $frontendRoot . '/index.html';
+    $candidates[] = 'index.html';
+    $candidates[] = 'ui/main.ui';
+
+    $backendUrl = $config['backendUrl'] ?? null;
+    $entry = null;
+    foreach ($candidates as $cand) {
+        if (!softn_entry_ok($cand)) continue;
+        if (softn_withheld_for_bundle($cand, $config['withhold'], $manifest, $backendUrl)) continue;
+        $ext = strtolower((string)pathinfo($cand, PATHINFO_EXTENSION));
+        if (!in_array($ext, ['ui', 'html', 'htm'], true)) continue;
+        if ($zip->locateName($cand) !== false) { $entry = $cand; break; }
+    }
+    if ($entry === null) return '';
+    $stat = $zip->statName($entry);
+    if ($stat === false || (int)$stat['size'] === 0 || (int)$stat['size'] > 262144) return '';
+    $raw = $zip->getFromName($entry, 262144);
+    if (!is_string($raw) || trim($raw) === '') return '';
+    $ext = strtolower((string)pathinfo($entry, PATHINFO_EXTENSION));
+    return $ext === 'ui' ? softn_prerender_ui($raw) : softn_prerender_html($raw);
+}
+
+function softn_prerender_clean_text(string $raw): string
+{
+    $decoded = html_entity_decode($raw, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $clean = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $decoded) ?? '';
+    $clean = preg_replace('/\s+/', ' ', $clean) ?? '';
+    return trim($clean);
+}
+
+function softn_prerender_safe_href(string $attrs): ?string
+{
+    if (preg_match('/\bhref\s*=\s*(?:"([^"]*)"|\'([^\']*)\')/i', $attrs, $m) !== 1) return null;
+    $val = $m[1] !== '' ? $m[1] : ($m[2] ?? '');
+    $decoded = trim(html_entity_decode($val, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    if ($decoded === '' || strlen($decoded) > 512 || preg_match('/[\x00-\x20\x7F"\'<>]/', $decoded) === 1) return null;
+    return preg_match('#^https?://[A-Za-z0-9.\-\[\]:]+(?:/.*)?$#i', $decoded) === 1 ? $decoded : null;
+}
+
+function softn_prerender_html(string $raw): string
+{
+    if (preg_match('/<body\b[^>]*>([\s\S]*?)<\/body>/i', $raw, $m) === 1) $raw = $m[1];
+    else $raw = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head>/i', '', $raw) ?? $raw;
+    $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
+    $raw = preg_replace('/<!DOCTYPE[^>]*>/i', '', $raw) ?? $raw;
+    $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1>/i', '', $raw) ?? $raw;
+    $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|input|meta|link|base|canvas|audio|video)\b[^>]*\/?>/i', '', $raw) ?? $raw;
+    $allowed = ['h1'=>1,'h2'=>1,'h3'=>1,'h4'=>1,'h5'=>1,'h6'=>1,'p'=>1,'ul'=>1,'ol'=>1,'li'=>1,'section'=>1,'article'=>1,'header'=>1,'main'=>1,'footer'=>1,'nav'=>1,'aside'=>1,'div'=>1,'span'=>1,'a'=>1,'strong'=>1,'b'=>1,'em'=>1,'i'=>1,'code'=>1,'pre'=>1,'blockquote'=>1,'table'=>1,'thead'=>1,'tbody'=>1,'tr'=>1,'th'=>1,'td'=>1,'dl'=>1,'dt'=>1,'dd'=>1,'figure'=>1,'figcaption'=>1,'hr'=>1,'br'=>1,'label'=>1,'button'=>1];
+    $voids = ['br'=>1,'hr'=>1];
+    $esc = static fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+    $root = ['tag' => '#root', 'attrs' => '', 'children' => []];
+    $stack = [&$root];
+    $nodes = 0;
+    $tokens = preg_split('/(<\/?[a-zA-Z][a-zA-Z0-9:-]*(?:\s[^<>]*?)?\/?>)/', $raw, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
+    if (!is_array($tokens)) return '';
+    foreach ($tokens as $tok) {
+        if ($nodes >= 200) break;
+        if ($tok[0] === '<' && str_ends_with($tok, '>')) {
+            if (preg_match('/^<\/([a-zA-Z][a-zA-Z0-9:-]*)\s*>$/', $tok, $cm) === 1) {
+                $t = strtolower($cm[1]);
+                if (!isset($allowed[$t]) || isset($voids[$t])) continue;
+                for ($idx = count($stack) - 1; $idx >= 1; $idx--) {
+                    if (($stack[$idx]['orig'] ?? $stack[$idx]['tag']) === $t) { while (count($stack) > $idx) array_pop($stack); break; }
+                }
+                continue;
+            }
+            if (preg_match('/^<([a-zA-Z][a-zA-Z0-9:-]*)(\s[^<>]*?)?(\/?)>$/', $tok, $om) === 1) {
+                $orig = strtolower($om[1]);
+                $t = $orig;
+                if (!isset($allowed[$t]) || count($stack) - 1 >= 32) continue;
+                $self = ($om[3] ?? '') === '/' || isset($voids[$t]);
+                if ($t === 'h1') $t = 'h2';
+                $attrs = '';
+                if ($t === 'a') {
+                    $href = softn_prerender_safe_href($om[2] ?? '');
+                    if ($href !== null) $attrs = ' href="' . $esc($href) . '" rel="noopener noreferrer"';
+                    else $t = 'span';
+                } elseif ($t === 'button') {
+                    $attrs = ' type="button"';
+                }
+                $nodes++;
+                $parent = &$stack[count($stack) - 1];
+                $parent['children'][] = ['tag' => $t, 'orig' => $orig, 'attrs' => $attrs, 'children' => []];
+                if (!$self) { $last = count($parent['children']) - 1; $stack[] = &$parent['children'][$last]; }
+            }
+            continue;
+        }
+        $txt = softn_prerender_clean_text($tok);
+        if ($txt !== '') { $parent = &$stack[count($stack) - 1]; $parent['children'][] = $txt; }
+    }
+    $bytes = 0;
+    return softn_prerender_serialize($root['children'], 0, $bytes);
+}
+
+function softn_prerender_ui(string $raw): string
+{
+    $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
+    $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*>[\s\S]*?<\/\1>/i', '', $raw) ?? $raw;
+    $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*\/?>/i', '', $raw) ?? $raw;
+    $raw = preg_replace('/^\s*[#\/](?:if|else|elseif|elif|each|for|end|slot)\b[^\n]*$/mi', '', $raw) ?? $raw;
+    $map = ['heading'=>'h2','title'=>'h2','h1'=>'h2','h2'=>'h2','h3'=>'h3','h4'=>'h4','h5'=>'h5','h6'=>'h6','text'=>'p','paragraph'=>'p','p'=>'p','subtitle'=>'p','caption'=>'p','section'=>'section','card'=>'section','panel'=>'section','article'=>'article','header'=>'header','footer'=>'footer','nav'=>'nav','main'=>'section','aside'=>'aside','alert'=>'aside','list'=>'ul','ul'=>'ul','ol'=>'ol','listitem'=>'li','li'=>'li','button'=>'button','link'=>'a','a'=>'a','badge'=>'span','tag'=>'span','label'=>'label','span'=>'span','code'=>'code','pre'=>'pre','divider'=>'hr','hr'=>'hr','br'=>'br','app'=>'div','page'=>'div','box'=>'div','stack'=>'div','row'=>'div','col'=>'div','column'=>'div','grid'=>'div','flex'=>'div','container'=>'div','div'=>'div'];
+    $voids = ['br'=>1,'hr'=>1];
+    $esc = static fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+    $root = ['tag' => '#root', 'orig' => '', 'attrs' => '', 'children' => []];
+    $stack = [&$root];
+    $nodes = 0;
+    $len = strlen($raw);
+    $pos = 0;
+    $extractText = static function (string $chunk): string {
+        $out = '';
+        $n = strlen($chunk);
+        $i = 0;
+        while ($i < $n) {
+            $b = strpos($chunk, '{', $i);
+            if ($b === false) { $out .= substr($chunk, $i); break; }
+            $out .= substr($chunk, $i, $b - $i);
+            $d = 1; $q = null; $j = $b + 1;
+            while ($j < $n && $d > 0) {
+                $c = $chunk[$j];
+                if ($q !== null) { if ($c === '\\' && $j + 1 < $n) { $j += 2; continue; } if ($c === $q) $q = null; }
+                else { if ($c === '"' || $c === "'" || $c === '`') $q = $c; elseif ($c === '{') $d++; elseif ($c === '}') $d--; }
+                $j++;
+            }
+            $expr = trim(substr($chunk, $b + 1, max(0, $j - $b - 2)));
+            if (preg_match('/^(?:"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"|\'([^\'\\\\]*(?:\\\\.[^\'\\\\]*)*)\')$/s', $expr, $sm) === 1) {
+                $out .= stripcslashes($sm[1] !== '' ? $sm[1] : ($sm[2] ?? ''));
+            }
+            $i = $j;
+        }
+        return softn_prerender_clean_text($out);
+    };
+    while ($pos < $len && $nodes < 200) {
+        $lt = strpos($raw, '<', $pos);
+        if ($lt === false) {
+            $t = $extractText(substr($raw, $pos));
+            if ($t !== '') { $p = &$stack[count($stack) - 1]; $p['children'][] = $t; }
+            break;
+        }
+        if ($lt > $pos) {
+            $t = $extractText(substr($raw, $pos, $lt - $pos));
+            if ($t !== '') { $p = &$stack[count($stack) - 1]; $p['children'][] = $t; }
+        }
+        $depth = 0; $q = null; $end = null;
+        for ($i = $lt + 1; $i < $len; $i++) {
+            $c = $raw[$i];
+            if ($q !== null) { if ($c === '\\' && $i + 1 < $len) { $i++; continue; } if ($c === $q) $q = null; continue; }
+            if ($c === '"' || $c === "'" || $c === '`') { $q = $c; continue; }
+            if ($c === '{') { $depth++; continue; }
+            if ($c === '}') { if ($depth > 0) $depth--; continue; }
+            if ($c === '>' && $depth === 0) { $end = $i; break; }
+        }
+        if ($end === null) break;
+        $slice = substr($raw, $lt, $end - $lt + 1);
+        $pos = $end + 1;
+        if (preg_match('/^<\/([A-Za-z][A-Za-z0-9_.:-]*)\s*>$/', $slice, $cm) === 1) {
+            $o = strtolower($cm[1]);
+            for ($idx = count($stack) - 1; $idx >= 1; $idx--) {
+                if (($stack[$idx]['orig'] ?? '') === $o) { while (count($stack) > $idx) array_pop($stack); break; }
+            }
+            continue;
+        }
+        if (preg_match('/^<([A-Za-z][A-Za-z0-9_.:-]*)([\s\S]*?)(\/?)>$/', $slice, $om) === 1) {
+            $o = strtolower($om[1]);
+            if (!isset($map[$o]) || count($stack) - 1 >= 32) continue;
+            $ht = $map[$o];
+            $self = $om[3] === '/' || isset($voids[$ht]);
+            $attrs = '';
+            if ($ht === 'a') {
+                $href = softn_prerender_safe_href($om[2]);
+                if ($href !== null) $attrs = ' href="' . $esc($href) . '" rel="noopener noreferrer"';
+                else $ht = 'span';
+            } elseif ($ht === 'button') {
+                $attrs = ' type="button"';
+            }
+            $children = [];
+            foreach (['title', 'label', 'text'] as $prop) {
+                if (preg_match('/\b' . $prop . '\s*=\s*(?:"([^"]*)"|\'([^\']*)\')/i', $om[2], $pm) === 1) {
+                    $v = softn_prerender_clean_text($pm[1] !== '' ? $pm[1] : ($pm[2] ?? ''));
+                    if ($v !== '') { $children[] = $v; break; }
+                }
+            }
+            $nodes++;
+            $p = &$stack[count($stack) - 1];
+            $p['children'][] = ['tag' => $ht, 'orig' => $o, 'attrs' => $attrs, 'children' => $children];
+            if (!$self) { $last = count($p['children']) - 1; $stack[] = &$p['children'][$last]; }
+        }
+    }
+    $bytes = 0;
+    return softn_prerender_serialize($root['children'], 0, $bytes);
+}
+
+function softn_prerender_serialize(array $children, int $indent, int &$bytes): string
+{
+    $esc = static fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+    $parts = [];
+    foreach ($children as $child) {
+        if ($bytes >= 12288) break;
+        $pad = str_repeat('  ', min($indent, 8));
+        if (is_string($child)) {
+            $e = $esc($child);
+            if ($e !== '') { $bytes += strlen($e); $parts[] = $pad . $e; }
+            continue;
+        }
+        $tag = (string)$child['tag'];
+        $attrs = (string)($child['attrs'] ?? '');
+        if ($tag === 'br' || $tag === 'hr') { $s = $pad . '<' . $tag . ' />'; $bytes += strlen($s); $parts[] = $s; continue; }
+        $rawKids = is_array($child['children'] ?? null) ? $child['children'] : [];
+        if ($tag === 'div' && $attrs === '' && count($rawKids) === 1 && is_array($rawKids[0])) {
+            $s = softn_prerender_serialize([$rawKids[0]], $indent, $bytes);
+            if ($s !== '') $parts[] = $s;
+            continue;
+        }
+        $inner = []; $hasEl = false;
+        foreach ($rawKids as $k) {
+            if ($bytes >= 12288) break;
+            if (is_array($k)) {
+                $s = softn_prerender_serialize([$k], $indent + 1, $bytes);
+                if ($s !== '') { $inner[] = $s; $hasEl = true; }
+            } else {
+                $e = $esc($k);
+                if ($e !== '') { $bytes += strlen($e); $inner[] = $e; }
+            }
+        }
+        if ($inner === []) continue;
+        if (!$hasEl) {
+            $s = $pad . '<' . $tag . $attrs . '>' . implode(' ', $inner) . '</' . $tag . '>';
+            $bytes += strlen($tag) * 2 + strlen($attrs) + 5;
+            $parts[] = $s;
+        } else {
+            $lines = [$pad . '<' . $tag . $attrs . '>'];
+            foreach ($inner as $ln) $lines[] = str_starts_with($ln, '  ') ? $ln : ($pad . '  ' . $ln);
+            $lines[] = $pad . '</' . $tag . '>';
+            $bytes += strlen($tag) * 2 + strlen($attrs) + 7;
+            $parts[] = implode("\n", $lines);
+        }
+    }
+    return implode("\n", $parts);
+}
+
 function softn_shell(array $config, string $private): never
 {
     $template = @file_get_contents($private . '/shell.html');
@@ -971,6 +1229,7 @@ function softn_shell(array $config, string $private): never
     $zip = softn_open($config);
     $manifest = softn_manifest($zip);
     $icon = softn_icon_entry($zip, $manifest);
+    $previewHtml = softn_prerender_preview($zip, $manifest, $config);
     $zip->close();
     $endpoint = softn_endpoint();
     $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
@@ -984,6 +1243,34 @@ function softn_shell(array $config, string $private): never
     $iconTag = $icon === null
         ? '<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\'/%3E">'
         : '<link rel="icon" href="' . $escape($endpoint . '?icon') . '" type="' . $escape($icon['mime']) . '">';
+    $structuredData = '';
+    if ($config['pwa'] !== null) {
+        $ld = [
+            '@context' => 'https://schema.org',
+            '@type' => 'WebApplication',
+            'name' => $config['title'],
+            'operatingSystem' => 'Any',
+            'applicationCategory' => 'UtilitiesApplication',
+        ];
+        if ($description !== null) $ld['description'] = $description;
+        $ldOrigin = softn_pwa_origin($config['pwa'], softn_cookie_path());
+        if ($ldOrigin !== null) $ld['url'] = $ldOrigin;
+        $ldJson = json_encode($ld, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (is_string($ldJson)) $structuredData = '<script type="application/ld+json">' . $ldJson . '</script>';
+    }
+    $ssrContent = '';
+    if ($config['prerender']) {
+        $ssrLines = ['<article class="softn-ssr" data-softn-ssr="single">', '          <h1>' . $escape($config['title']) . '</h1>'];
+        if ($description !== null) $ssrLines[] = '          <p>' . $escape($description) . '</p>';
+        if ($previewHtml !== '') {
+            $indented = implode("\n", array_map(static fn(string $l): string => '            ' . $l, explode("\n", $previewHtml)));
+            $ssrLines[] = '          <section data-softn-preview="rendered" aria-label="Rendered application preview">';
+            $ssrLines[] = $indented;
+            $ssrLines[] = '          </section>';
+        }
+        $ssrLines[] = '        </article>';
+        $ssrContent = implode("\n", $ssrLines);
+    }
     $page = strtr($template, [
         '{{LANG}}' => $escape($config['lang']),
         '{{TITLE}}' => $escape($config['title']),
@@ -991,11 +1278,13 @@ function softn_shell(array $config, string $private): never
         '{{BACKGROUND}}' => softn_ground($side),
         '{{THEME_COLOR}}' => $config['pwa']['themeColor'] ?? softn_ground($side),
         '{{PWA_TAGS}}' => softn_pwa_tags($config, $endpoint, $description, $side),
+        '{{STRUCTURED_DATA}}' => $structuredData,
         '{{FOREGROUND}}' => $side === 'dark' ? '#f5f5f8' : '#171821',
         '{{DESCRIPTION_TAG}}' => $description === null ? '' : '<meta name="description" content="' . $escape($description) . '">',
         '{{ICON_TAG}}' => $iconTag,
         '{{LOADING_TEXT}}' => $escape($config['loadingText']),
         '{{BOOT_JSON}}' => $boot,
+        '{{SSR_CONTENT}}' => $ssrContent,
     ]);
     $https = softn_is_https_request();
     $crossSiteFramed = !empty($config['frameAncestors']) && $https;
@@ -1016,16 +1305,33 @@ function softn_shell(array $config, string $private): never
             $attrs = $sm[1];
             $body = $sm[2];
             if (preg_match('/\bsrc\s*=/i', $attrs)) continue;
-            if (preg_match('/\btype\s*=\s*["\']?\s*application\/json\b/i', $attrs)) continue;
+            if (preg_match('/\btype\s*=\s*["\']?\s*application\/(?:ld\+)?json\b/i', $attrs)) continue;
             if ($body === '') continue;
             $inlineHashes["'sha256-" . base64_encode(hash('sha256', $body, true)) . "'"] = true;
         }
     }
     $scriptSrc = "'self' 'wasm-unsafe-eval'" . ($inlineHashes !== [] ? ' ' . implode(' ', array_keys($inlineHashes)) : '');
     header('Content-Type: text/html; charset=utf-8');
-    header('Cache-Control: no-store');
     header("Content-Security-Policy: base-uri 'self'; object-src 'none'; script-src $scriptSrc; worker-src 'self' blob:; frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
     if (!$config['frameAncestors']) header('X-Frame-Options: SAMEORIGIN');
+    if (!$config['viewerToken']) {
+        $etag = '"' . substr(hash('sha256', $page), 0, 24) . '"';
+        header('Cache-Control: no-cache');
+        header('ETag: ' . $etag);
+        $inm = $_SERVER['HTTP_IF_NONE_MATCH'] ?? null;
+        if (is_string($inm) && $inm !== '') {
+            foreach (explode(',', $inm) as $cand) {
+                $cand = trim($cand);
+                if (str_starts_with($cand, 'W/')) $cand = substr($cand, 2);
+                if ($cand === '*' || $cand === $etag) {
+                    http_response_code(304);
+                    exit;
+                }
+            }
+        }
+    } else {
+        header('Cache-Control: no-store');
+    }
     header('Content-Length: ' . strlen($page));
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') echo $page;
     exit;

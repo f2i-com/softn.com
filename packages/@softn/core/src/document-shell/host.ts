@@ -558,7 +558,16 @@ export class DocumentShell implements DocumentShellView {
             if (!isValidNodeId(child) || ancestors.has(child) || now.has(child)) continue;
             const cNode = this.nodes.get(child);
             if (!cNode) continue;
-            if (this.subtreeHeight(child, maxChildSubtreeDepth + 1) > maxChildSubtreeDepth) continue;
+            // Fast path: text/leaf nodes have height 0, and children already under this parent
+            // already satisfied the depth invariant when originally attached (avoids O(N^2) DFS on list updates).
+            if (
+              cNode.kind === 'element' &&
+              cNode.children.length > 0 &&
+              cNode.parent !== id &&
+              this.subtreeHeight(child, maxChildSubtreeDepth + 1) > maxChildSubtreeDepth
+            ) {
+              continue;
+            }
             now.add(child);
             nextChildren.push(child);
           }

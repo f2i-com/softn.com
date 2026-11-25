@@ -23,6 +23,7 @@ require __DIR__ . '/lib/git.php';
 require __DIR__ . '/lib/social.php';
 require __DIR__ . '/lib/storage.php';
 require __DIR__ . '/lib/seed.php';
+require __DIR__ . '/lib/prerender.php';
 require __DIR__ . '/lib/pages.php';
 require __DIR__ . '/lib/hosted_backend.php';
 
@@ -138,6 +139,7 @@ $routes = [
     ['GET', '#^/admin/stats$#', 'adminStats'],
     ['GET', '#^/page/app/([^/]+)$#', 'page'],
     ['GET', '#^/page/play/([^/]+)$#', 'playPage'],
+    ['GET', '#^/sitemap-apps\.xml$#', 'sitemap'],
 ];
 
 try {
@@ -162,6 +164,11 @@ try {
     if (is_string($pagePath) && preg_match('#^/play/([^/]+)/?$#', rawurldecode($pagePath), $pm)) {
         Seed::ifEmpty();
         Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local')->send();
+        exit;
+    }
+    if (is_string($pagePath) && $pagePath === '/sitemap-apps.xml') {
+        Seed::ifEmpty();
+        Pages::sitemap()->send();
         exit;
     }
 
@@ -565,10 +572,10 @@ function handle(string $handler, array $args, Request $req): Response
             $path = "$appDir/" . $ver['file'];
             if (!is_file($path)) throw new ApiError(404, 'The bundle file is missing.');
             $serveSha = (string) $ver['sha256'];
-            if ($hosting['withholdBackend'] || ($req->query['client'] ?? '') === '1') {
+            if ($hosting['withholdBackend'] || ($hosting['serverHosted'] && ($req->query['client'] ?? '') === '1')) {
                 $cachePath = "$appDir/backend-cache/client-v" . (int) $ver['version'] . '-' . substr($serveSha, 0, 12) . '.softn';
-                $path = Bundle::clientBundlePath($path, $cachePath);
-                $serveSha = hash_file('sha256', $path) ?: $serveSha;
+                $serveSha = Bundle::clientBundleSha256($path, $cachePath, $serveSha);
+                $path = $cachePath;
             }
             // An address with the digest in it is answered with those bytes
             // or not at all, so it never names two contents and a cache may
@@ -892,6 +899,10 @@ function handle(string $handler, array $args, Request $req): Response
         case 'playPage':
             Seed::ifEmpty();
             return Pages::play($args[0], ($req->query['mode'] ?? '') === 'local');
+
+        case 'sitemap':
+            Seed::ifEmpty();
+            return Pages::sitemap();
     }
     throw new ApiError(404, 'No such route.');
 }

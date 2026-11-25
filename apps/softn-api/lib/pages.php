@@ -29,8 +29,13 @@ final class Pages
             $slug = Apps::resolveSlug($slugGiven);
             $row = Apps::row($slug);
         } catch (ApiError $err) {
-            // The site says it has no such app; a directory that cannot say is another matter.
-            return $err->status === 404 ? Response::html($html, 200, ['Cache-Control' => 'no-cache']) : self::problem($err->getMessage(), $err->status);
+            // The site says it has no such app; mark unknown share pages noindex
+            // so crawlers do not index soft-404 URLs while keeping the SPA shell.
+            if ($err->status === 404) {
+                $notFoundHtml = str_replace('</head>', '<meta name="robots" content="noindex" />' . "\n  </head>", $html);
+                return Response::html($notFoundHtml, 200, ['Cache-Control' => 'no-cache']);
+            }
+            return self::problem($err->getMessage(), $err->status);
         }
         $origin = self::origin();
         $name = (string) $row['name'];
@@ -45,6 +50,19 @@ final class Pages
         $image = ($origin ?? '') . "/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
         $url = $origin === null ? null : "$origin/app/$slug";
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        $ver = null;
+        if ($playUrl === null) {
+            try {
+                $ver = Apps::version($slug);
+            } catch (ApiError) {
+                $ver = null;
+            }
+        }
+        $prerender = $ver !== null
+            ? self::prerenderFor($slug, $row, $ver)
+            : ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
+
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
         $replace = [
             'name="description"' => $desc,
@@ -67,8 +85,24 @@ final class Pages
         $html = $url === null
             ? (preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $html, 1) ?? $html)
             : self::replaceOnce('#<link\s+rel="canonical"\s+href="[^"]*"#', fn() => '<link rel="canonical" href="' . $e($url) . '"', $html);
-        $html = str_replace('</head>', '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n  </head>", $html);
-        return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
+
+        $jsonLd = self::webAppJsonLd($row, $ver, $desc, $url, $origin !== null ? $image : null);
+        $extraHead = '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n"
+            . '    <meta name="twitter:title" content="' . $e($title) . '" />' . "\n"
+            . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . '    <meta name="twitter:image" content="' . $e($image) . '" />' . "\n"
+            . '    <meta name="twitter:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
+            . ($jsonLd !== '' ? '    <script type="application/ld+json">' . $jsonLd . '</script>' . "\n" : '')
+            . '  </head>';
+        $html = str_replace('</head>', $extraHead, $html);
+
+        $ssrMain = self::renderAppBody($slug, $row, $ver, $desc, $playUrl, $prerender['previewHtml']);
+        $html = self::replaceOnce(
+            '#<div\s+id="root"\s*>\s*</div>#i',
+            fn() => '<div id="root">' . "\n" . $ssrMain . "\n    </div>",
+            $html
+        );
+        return self::conditionalResponse($html, 'text/html; charset=utf-8', 'no-cache');
     }
 
     /**
@@ -102,8 +136,8 @@ final class Pages
             $appDir = Catalog::path($slug);
             $srcPath = $appDir . '/' . (string) $ver['file'];
             $cachePath = $appDir . '/backend-cache/client-v' . (int) $ver['version'] . '-' . substr($bundleSha, 0, 12) . '.softn';
-            $clientPath = Bundle::clientBundlePath($srcPath, $cachePath);
-            $clientSha = hash_file('sha256', $clientPath) ?: $bundleSha;
+            Bundle::clientBundlePath($srcPath, $cachePath);
+            $clientSha = Bundle::clientBundleSha256($srcPath, $cachePath, $bundleSha);
             $bundleUrl = "/api/apps/$slug/bundle.softn?v=" . (int) $ver['version'] . '&client=1&sha256=' . $clientSha;
             $bundleSha = $clientSha;
         }
@@ -191,25 +225,105 @@ final class Pages
         $config = json_encode(self::playConfig($row, $ver, $forceLocal), JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($config === false) return Response::html('<!doctype html><title>SoftN</title><p>The app could not be described.</p>', 500);
         $name = (string) $row['name'];
+        $desc = (string) ($row['description'] ?? '');
+        if ($desc === '') $desc = "$name — run this SoftN app directly in your browser.";
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($name) . '</title>', $html);
         // JSON_HEX_TAG has turned every < and > into \u003C and \u003E, so
         // nothing in a name or a description can close this element early.
         $origin = self::origin();
+        $prerender = self::prerenderFor($slug, $row, $ver);
+        $image = ($origin ?? '') . "/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
+        $canonicalUrl = $origin === null ? null : "$origin/app/$slug";
+        $playPageUrl = $origin === null ? null : "$origin/play/$slug";
+        $jsonLd = self::webAppJsonLd($row, $ver, $desc, $canonicalUrl, $origin !== null ? $image : null);
         // The shell draws its boot screen dark, the `theme` above. An app
         // whose project declares light is drawn light whatever that theme
         // says, so its boot screen is too, rather than opening dark and
         // turning light; the wheel takes the text colour, as the privately
-        // served page's does. Every other app gets the page it always got.
-        $boot = self::declaredSide($slug, $ver) === 'light'
+        // served page's does. Every other app gets no extra style tag.
+        $boot = $prerender['themeMode'] === 'light'
             ? '    <style>html,body{background:#f5f5f8;color:#171821}.wheel{border-color:color-mix(in srgb,currentColor 20%,transparent);border-top-color:currentColor}</style>' . "\n"
             : '';
         $inject = '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n"
-            . ($origin === null ? '' : '    <link rel="canonical" href="' . $e("$origin/app/$slug") . '" />' . "\n")
+            . '    <meta name="description" content="' . $e($desc) . '" />' . "\n"
+            . '    <meta property="og:type" content="website" />' . "\n"
+            . '    <meta property="og:site_name" content="SoftN" />' . "\n"
+            . '    <meta property="og:title" content="' . $e($name) . '" />' . "\n"
+            . '    <meta property="og:description" content="' . $e($desc) . '" />' . "\n"
+            . '    <meta property="og:image" content="' . $e($image) . '" />' . "\n"
+            . ($playPageUrl === null ? '' : '    <meta property="og:url" content="' . $e($playPageUrl) . '" />' . "\n")
+            . '    <meta name="twitter:card" content="summary_large_image" />' . "\n"
+            . '    <meta name="twitter:title" content="' . $e($name) . '" />' . "\n"
+            . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . ($canonicalUrl === null ? '' : '    <link rel="canonical" href="' . $e($canonicalUrl) . '" />' . "\n")
+            . ($jsonLd !== '' ? '    <script type="application/ld+json">' . $jsonLd . '</script>' . "\n" : '')
             . $boot
             . '    <script type="application/json" id="softn-runtime-config">' . $config . '</script>' . "\n  </head>";
         $html = str_replace('</head>', $inject, $html);
+
+        $ssrPlay = self::renderPlayBody($slug, $row, $desc, $prerender['previewHtml']);
+        if (preg_match('#<div\s+id="boot"\b[^>]*>[\s\S]*?</div>#i', $html) === 1) {
+            $html = self::replaceOnce(
+                '#(<div\s+id="boot"\b[^>]*>[\s\S]*?)(</div>)#i',
+                fn(array $m) => $m[1] . "\n" . $ssrPlay . "\n      " . $m[2],
+                $html
+            );
+        } else {
+            $html = self::replaceOnce(
+                '#<div\s+id="root"\s*>\s*</div>#i',
+                fn() => '<div id="root">' . "\n      <div id=\"boot\" role=\"status\">\n" . $ssrPlay . "\n      </div>\n    </div>",
+                $html
+            );
+        }
         // The page names the latest version, which the next publish moves.
-        return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
+        return self::conditionalResponse($html, 'text/html; charset=utf-8', 'no-cache');
+    }
+
+    /**
+     * Dynamic XML sitemap covering the site root, directory, publish page and
+     * every public app's `/app/<slug>` share page.
+     */
+    public static function sitemap(): Response
+    {
+        $origin = self::origin();
+        if ($origin === null) {
+            return Response::raw(404, [
+                ['Content-Type', 'text/plain; charset=utf-8'],
+                ['Cache-Control', 'no-cache'],
+            ], 'Site origin is not configured.');
+        }
+        $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+        $rows = array_values(array_filter(Catalog::all(), static fn(array $r): bool => empty($r['hidden'])));
+        usort($rows, static fn(array $a, array $b): int => ((int) ($b['updated_at'] ?? 0)) <=> ((int) ($a['updated_at'] ?? 0)));
+
+        $urls = [
+            ['loc' => "$origin/", 'lastmod' => null],
+            ['loc' => "$origin/apps", 'lastmod' => null],
+            ['loc' => "$origin/publish", 'lastmod' => null],
+        ];
+        foreach (array_slice($rows, 0, 49997) as $row) {
+            $slug = (string) ($row['slug'] ?? '');
+            if ($slug === '' || !Catalog::validSlug($slug)) continue;
+            $updated = (int) ($row['updated_at'] ?? 0);
+            $urls[] = [
+                'loc' => "$origin/app/$slug",
+                'lastmod' => $updated > 0 ? gmdate('Y-m-d', $updated) : null,
+            ];
+        }
+
+        $lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        ];
+        foreach ($urls as $u) {
+            $entry = '  <url><loc>' . $e($u['loc']) . '</loc>';
+            if ($u['lastmod'] !== null) $entry .= '<lastmod>' . $u['lastmod'] . '</lastmod>';
+            $entry .= '</url>';
+            $lines[] = $entry;
+        }
+        $lines[] = '</urlset>';
+        $xml = implode("\n", $lines) . "\n";
+        return self::conditionalResponse($xml, 'application/xml; charset=utf-8', 'public, max-age=300');
     }
 
     /**
@@ -244,28 +358,169 @@ final class Pages
      */
     public static function declaredSide(string $slug, array $ver): ?string
     {
-        try {
-            $zip = new ZipArchive();
-            // The path the bundle route serves; Apps::dir() would make a
-            // folder for an app that has none, on a page view.
-            if ($zip->open(Catalog::path($slug) . '/' . (string) $ver['file'], ZipArchive::RDONLY) !== true) return null;
+        $appDir = Catalog::path($slug);
+        $srcPath = $appDir . '/' . (string) ($ver['file'] ?? '');
+        $sha = (string) ($ver['sha256'] ?? '');
+        return Prerender::forBundle($srcPath, $sha, Config::dataDir() . '/page-cache', false)['themeMode'];
+    }
+
+    /**
+     * Load cached pre-render data for a published app version, strictly reading
+     * the backend-stripped client bundle whenever `withholdBackend` is active.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $ver
+     * @return array{themeMode: ?string, previewHtml: string, sourceType: string, entryFile: ?string}
+     */
+    private static function prerenderFor(string $slug, array $row, array $ver): array
+    {
+        $hosting = Apps::hostingInfo($row);
+        $appDir = Catalog::path($slug);
+        $srcPath = $appDir . '/' . (string) ($ver['file'] ?? '');
+        $bundleSha = (string) ($ver['sha256'] ?? '');
+        $withhold = (bool) $hosting['withholdBackend'];
+        $pageCache = Config::dataDir() . '/page-cache';
+        if ($withhold) {
+            $cachePath = $appDir . '/backend-cache/client-v' . (int) ($ver['version'] ?? 0) . '-' . substr($bundleSha, 0, 12) . '.softn';
             try {
-                // Where the bundle keeps it: at the top, or in the folder the bundle was zipped as.
-                $name = Bundle::manifestName($zip);
-                if ($name === null) return null;
-                $stat = $zip->statName($name);
-                if ($stat === false || (int) $stat['size'] > Bundle::MAX_MANIFEST_BYTES) return null;
-                $text = $zip->getFromName($name, Bundle::MAX_MANIFEST_BYTES);
-            } finally {
-                $zip->close();
+                $bundlePath = Bundle::clientBundlePath($srcPath, $cachePath);
+                $sha = Bundle::clientBundleSha256($srcPath, $cachePath, $bundleSha);
+            } catch (Throwable) {
+                return ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
             }
-            $manifest = is_string($text) ? json_decode(Bundle::jsonText($text), true, 32) : null;
-            $theme = is_array($manifest) && is_array($manifest['config'] ?? null) ? ($manifest['config']['theme'] ?? null) : null;
-            $mode = is_array($theme) ? ($theme['mode'] ?? null) : null;
-            return $mode === 'light' || $mode === 'dark' ? $mode : null;
-        } catch (Throwable) {
-            return null;
+            return Prerender::forBundle($bundlePath, $sha, $pageCache, true);
         }
+        return Prerender::forBundle($srcPath, $bundleSha, $pageCache, false);
+    }
+
+    /**
+     * Build a safe JSON-LD WebApplication schema payload for SEO.
+     * Omits absolute URLs when `siteOrigin` is unset.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed>|null $ver
+     */
+    private static function webAppJsonLd(array $row, ?array $ver, string $desc, ?string $url, ?string $image): string
+    {
+        $ld = [
+            '@context' => 'https://schema.org',
+            '@type' => 'WebApplication',
+            'name' => (string) $row['name'],
+            'description' => $desc,
+            'applicationCategory' => (string) ($row['category'] ?: 'UtilitiesApplication'),
+            'operatingSystem' => 'Any',
+            'offers' => ['@type' => 'Offer', 'price' => '0', 'priceCurrency' => 'USD'],
+        ];
+        if ($url !== null) $ld['url'] = $url;
+        if ($image !== null) $ld['image'] = $image;
+        $versionStr = is_array($ver) ? (string) ($ver['version'] ?? '') : '';
+        if ($versionStr !== '') $ld['softwareVersion'] = $versionStr;
+        $author = trim((string) ($row['author'] ?? ''));
+        if ($author !== '') $ld['author'] = ['@type' => 'Person', 'name' => $author];
+        $tags = json_decode((string) ($row['tags'] ?? '[]'), true);
+        if (is_array($tags) && $tags !== []) {
+            $cleanTags = array_values(array_filter($tags, 'is_string'));
+            if ($cleanTags !== []) $ld['keywords'] = implode(', ', $cleanTags);
+        }
+        $encoded = json_encode($ld, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * Semantic View-Source SSR HTML for `/app/<slug>`.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed>|null $ver
+     */
+    private static function renderAppBody(string $slug, array $row, ?array $ver, string $desc, ?string $playUrl, string $previewHtml): string
+    {
+        $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $name = (string) $row['name'];
+        $author = trim((string) ($row['author'] ?? ''));
+        $category = trim((string) ($row['category'] ?? ''));
+        $tags = json_decode((string) ($row['tags'] ?? '[]'), true);
+        $metaParts = [];
+        if ($author !== '') $metaParts[] = 'By ' . $e($author);
+        if ($category !== '') $metaParts[] = 'Category: ' . $e($category);
+        if (is_array($ver) && !empty($ver['version'])) $metaParts[] = 'v' . $e((string) $ver['version']);
+        $playHref = $playUrl ?? "/play/$slug";
+        $lines = [
+            '      <main id="boot" data-softn-ssr="app">',
+            '        <header>',
+            '          <h1>' . $e($name) . '</h1>',
+            '          <p>' . $e($desc) . '</p>',
+        ];
+        if ($metaParts !== []) {
+            $lines[] = '          <p>' . implode(' · ', $metaParts) . '</p>';
+        }
+        if (is_array($tags) && $tags !== []) {
+            $tagHtml = [];
+            foreach ($tags as $t) {
+                if (is_string($t) && $t !== '') $tagHtml[] = '<li>' . $e($t) . '</li>';
+            }
+            if ($tagHtml !== []) $lines[] = '          <ul>' . implode('', $tagHtml) . '</ul>';
+        }
+        $lines[] = '          <nav><a href="' . $e($playHref) . '">Open ' . $e($name) . '</a> · <a href="/apps">Browse SoftN directory</a></nav>';
+        $lines[] = '        </header>';
+        if ($previewHtml !== '') {
+            $indented = implode("\n", array_map(static fn(string $l): string => '          ' . $l, explode("\n", $previewHtml)));
+            $lines[] = '        <section data-softn-preview="rendered" aria-label="Rendered application preview">';
+            $lines[] = $indented;
+            $lines[] = '        </section>';
+        }
+        $lines[] = '      </main>';
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Semantic View-Source SSR HTML for `/play/<slug>`.
+     *
+     * @param array<string, mixed> $row
+     */
+    private static function renderPlayBody(string $slug, array $row, string $desc, string $previewHtml): string
+    {
+        $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $name = (string) $row['name'];
+        $lines = [
+            '        <article class="softn-ssr" data-softn-ssr="play">',
+            '          <h1>' . $e($name) . '</h1>',
+            '          <p>' . $e($desc) . '</p>',
+        ];
+        if ($previewHtml !== '') {
+            $indented = implode("\n", array_map(static fn(string $l): string => '            ' . $l, explode("\n", $previewHtml)));
+            $lines[] = '          <section data-softn-preview="rendered" aria-label="Rendered application preview">';
+            $lines[] = $indented;
+            $lines[] = '          </section>';
+        }
+        $lines[] = '          <p><a href="' . $e("/app/$slug") . '">About ' . $e($name) . '</a></p>';
+        $lines[] = '        </article>';
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Emit an HTTP response with a strong ETag and 304 Not Modified support.
+     */
+    private static function conditionalResponse(string $body, string $contentType, string $cacheControl): Response
+    {
+        $etag = '"' . substr(hash('sha256', $body), 0, 24) . '"';
+        $headers = [
+            'Content-Type' => $contentType,
+            'Cache-Control' => $cacheControl,
+            'ETag' => $etag,
+        ];
+        $inm = $_SERVER['HTTP_IF_NONE_MATCH'] ?? null;
+        if (is_string($inm) && $inm !== '') {
+            foreach (explode(',', $inm) as $cand) {
+                $cand = trim($cand);
+                if (str_starts_with($cand, 'W/')) $cand = substr($cand, 2);
+                if ($cand === '*' || $cand === $etag) {
+                    return Response::notModified($headers);
+                }
+            }
+        }
+        return str_starts_with($contentType, 'text/html')
+            ? Response::html($body, 200, ['Cache-Control' => $cacheControl, 'ETag' => $etag])
+            : Response::bytes($body, $contentType, ['Cache-Control' => $cacheControl, 'ETag' => $etag]);
     }
 
     /**

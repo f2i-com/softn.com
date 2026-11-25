@@ -49,6 +49,7 @@ if (str_contains($path, ':')) {
 // /play/<slug> is a page the API renders — unless it names a real file in
 // the shell's directory, which the shell's own chunks do (/play/GLTFLoader-….js).
 if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/app/[^/]+/?$#', $path)
+    || $path === '/sitemap-apps.xml'
     || (preg_match('#^/play/[^/]+/?$#', $path) && !is_file($root . rtrim($path, '/')))) {
     // The API leaves these to the server (Response::html), and here the server is this file.
     header('Cross-Origin-Opener-Policy: same-origin');

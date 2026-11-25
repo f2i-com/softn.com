@@ -95,12 +95,19 @@ test('bridges container HTTP requests across MessagePort via containerHttp actio
   assert.equal(seen[0].input.query, 'limit=5');
   assert.equal(Buffer.from(seen[0].input.bodyBase64, 'base64').toString('utf8'), '{"name":"Coffee"}');
   assert.equal(res.status, 201);
+  // Set-Cookie headers are ingested into the host cookie jar and stripped from guest-visible headers.
   assert.deepEqual(res.headers, [
     ['content-type', 'application/json'],
-    ['set-cookie', 'a=1'],
-    ['set-cookie', 'b=2'],
   ]);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(res.body)), { created: true });
+  await transport.fetch({
+    method: 'GET',
+    path: '/api/items',
+    query: '',
+    headers: {},
+    body: new Uint8Array(),
+  });
+  assert.equal(seen[1].input.headers.cookie, 'a=1; b=2');
 
   assert.equal(isSafeClientPath('public/logo.png'), true);
   assert.equal(isSafeClientPath('assets/icon.svg'), true);

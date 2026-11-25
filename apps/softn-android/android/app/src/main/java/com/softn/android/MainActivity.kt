@@ -597,7 +597,10 @@ class MainActivity : AppCompatActivity() {
                                     }
                                     if (norm == "manifest.json" && json != null) {
                                         val cleaned = json.optString("name", "")
-                                            .replace(Regex("[\\x00-\\x1f\\x7f]"), " ")
+                                            .filter { ch ->
+                                                val type = Character.getType(ch)
+                                                type != Character.CONTROL.toInt() && type != Character.FORMAT.toInt()
+                                            }
                                             .replace(Regex("\\s+"), " ")
                                             .trim()
                                             .take(80)

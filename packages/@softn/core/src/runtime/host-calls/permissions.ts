@@ -26,6 +26,8 @@ export interface HostGate {
    * start (key-capture.ts `lastPressWasFor`).
    */
   pressedHere(): boolean;
+  /** Single-use press consumption for download/save calls so one click cannot flood multiple saves. */
+  consumePress?(): boolean;
 }
 
 /**

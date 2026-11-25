@@ -73,6 +73,58 @@ function capWasmMemory(original, maxPages = 4096) {
   new WebAssembly.Module(capped);
   return capped;
 }
+const escHtml=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+function sanitizeStaticPreview(raw,isUi) {
+  let text=String(raw).slice(0,262144);
+  if(isUi) {
+    text=text.replace(/<!--[\s\S]*?-->/g,'').replace(/<(logic|script|style|data|import)\b[^>]*>[\s\S]*?<\/\1>/gi,'').replace(/<(logic|script|style|data|import)\b[^>]*\/?>/gi,'').replace(/^\s*[#/][a-z]+\b[^\n]*$/gim,'');
+    const blocks=[];
+    const re=/<(Heading|Title|H[1-6]|Text|Paragraph|P|Button|Label)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+    let m;
+    while((m=re.exec(text))&&blocks.length<80) {
+      const inner=m[2].replace(/<[^>]+>/g,' ').replace(/\{[^}]*\}/g,' ').replace(/\s+/g,' ').trim();
+      if(!inner)continue;
+      const tag=/^(?:heading|title|h[1-6])$/i.test(m[1])?'h2':/^button$/i.test(m[1])?'button':'p';
+      blocks.push(tag==='button'?`<button type="button">${escHtml(inner)}</button>`:`<${tag}>${escHtml(inner)}</${tag}>`);
+    }
+    return blocks.join('\n            ');
+  }
+  const body=text.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  text=(body?body[1]:text.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi,''))
+    .replace(/<!--[\s\S]*?-->/g,'')
+    .replace(/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1>/gi,'')
+    .replace(/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|input|meta|link|base|canvas|audio|video)\b[^>]*\/?>/gi,'');
+  const blocks=[];
+  const re=/<(h[1-6]|p|li|blockquote|pre|figcaption|button)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  let m;
+  while((m=re.exec(text))&&blocks.length<80) {
+    const inner=m[2].replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+    if(!inner)continue;
+    const tag=m[1].toLowerCase()==='h1'?'h2':m[1].toLowerCase();
+    blocks.push(tag==='button'?`<button type="button">${escHtml(inner)}</button>`:`<${tag}>${escHtml(inner)}</${tag}>`);
+  }
+  return blocks.join('\n            ');
+}
+function bakeAppSeoHtml(htmlBuf,manifest,clientFiles) {
+  let html=Buffer.from(htmlBuf).toString('utf8');
+  if(!/<\/head>/i.test(html))return htmlBuf;
+  const title=String(manifest.name||'Application').slice(0,120);
+  const desc=String(manifest.description||`${title} — a SoftN web application.`).slice(0,300);
+  html=html.replace(/<title>[\s\S]*?<\/title>/i,()=>`<title>${escHtml(title)}</title>`);
+  const ld=JSON.stringify({'@context':'https://schema.org','@type':'WebApplication',name:title,description:desc,operatingSystem:'Any',applicationCategory:'UtilitiesApplication',...(manifest.version?{softwareVersion:String(manifest.version)}:{})}).replace(/</g,'\\u003C').replace(/>/g,'\\u003E').replace(/&/g,'\\u0026');
+  const headMeta=`    <meta name="description" content="${escHtml(desc)}" />\n    <meta property="og:type" content="website" />\n    <meta property="og:title" content="${escHtml(title)}" />\n    <meta property="og:description" content="${escHtml(desc)}" />\n    <meta name="twitter:card" content="summary" />\n    <meta name="twitter:title" content="${escHtml(title)}" />\n    <meta name="twitter:description" content="${escHtml(desc)}" />\n    <script type="application/ld+json">${ld}</script>\n  </head>`;
+  html=html.replace(/<\/head>/i,()=>headMeta);
+  const mainEntry=typeof manifest.main==='string'?manifest.main.replace(/^\/+/,''):'';
+  const entryName=[mainEntry,'index.html','ui/main.ui'].find(n=>n&&clientFiles[n]&&/\.(?:ui|html?)$/i.test(n)&&!/^(?:server|backend|private)\//i.test(n));
+  const preview=entryName?sanitizeStaticPreview(Buffer.from(clientFiles[entryName]).toString('utf8'),entryName.toLowerCase().endsWith('.ui')):'';
+  const ssr=`        <article class="softn-ssr" data-softn-ssr="packaged">\n          <h1>${escHtml(title)}</h1>\n          <p>${escHtml(desc)}</p>${preview?`\n          <section data-softn-preview="rendered" aria-label="Rendered application preview">\n            ${preview}\n          </section>`:''}\n        </article>`;
+  if(/<div\s+id="boot"\b[^>]*>[\s\S]*?<\/div>/i.test(html)) {
+    html=html.replace(/(<div\s+id="boot"\b[^>]*>[\s\S]*?)(<\/div>)/i,(_,a,b)=>`${a}\n${ssr}\n      ${b}`);
+  } else if(/<div\s+id="root"\s*>\s*<\/div>/i.test(html)) {
+    html=html.replace(/<div\s+id="root"\s*>\s*<\/div>/i,()=>`<div id="root"><div id="boot" role="status">\n${ssr}\n      </div></div>`);
+  }
+  return Buffer.from(html,'utf8');
+}
 export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEnginesDir,notices,out,operator,readme,template=false,templateClient=false,permissionMode='prompt',websocketDir,htaccess,privateDir,startHere,serveGuide,explainer,runnerDir}) {
   if(privateDir&&(!template||!templateClient||!htaccess||!startHere||!serveGuide))throw new Error('The private variant is a template with its own htaccess and guides');
   const entries={};
@@ -123,6 +175,7 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
     if(publicManifest.id!==manifest.id||publicManifest.server||publicManifest.backend||Object.keys(clientFiles).some(n=>n.startsWith('server/')||n.startsWith('backend/')))throw new Error('Client identity/private-server isolation mismatch');
     tree(bundle,'backend/app/');entries['webroot/app.softn']=clientBytes;
     entries['webroot/runtime.config.json']=Buffer.from(JSON.stringify(deploymentConfig(manifest,clientBytes,permissionMode),null,2));
+    if(entries['webroot/index.html'])entries['webroot/index.html']=bakeAppSeoHtml(entries['webroot/index.html'],publicManifest,clientFiles);
     if(operator)tree(operator,'backend/operator/');
   }
   add('backend/wasm/zipp_wasm.mjs',join(wasmDir,'zipp_wasm.js'));

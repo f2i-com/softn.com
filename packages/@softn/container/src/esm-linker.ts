@@ -583,16 +583,18 @@ function extractDeclaredNames(tokens: Token[], startIdx: number, endIdx: number)
     }
     return k;
   };
-  const binding = (k: number): number => {
+  const MAX_PATTERN_DEPTH = 128;
+  const binding = (k: number, depth = 0): number => {
+    if (depth >= MAX_PATTERN_DEPTH) return endIdx;
     if (nameAt(k)) {
       names.push(at(k)!.value);
       return k + 1;
     }
-    if (punct(k, '{')) return objectPattern(k);
-    if (punct(k, '[')) return arrayPattern(k);
+    if (punct(k, '{')) return objectPattern(k, depth + 1);
+    if (punct(k, '[')) return arrayPattern(k, depth + 1);
     return k + 1;
   };
-  const objectPattern = (k: number): number => {
+  const objectPattern = (k: number, depth: number): number => {
     k++;
     while (k < endIdx && !punct(k, '}')) {
       if (punct(k, ',')) {
@@ -601,19 +603,19 @@ function extractDeclaredNames(tokens: Token[], startIdx: number, endIdx: number)
       }
       if (punct(k, '.')) {
         while (punct(k, '.')) k++;
-        k = binding(k);
+        k = binding(k, depth);
       } else {
         // A property's name (a word, a string, a number, or computed), then its binding or itself.
         const key = k;
         k = punct(k, '[') ? skip(k + 1, [']']) + 1 : k + 1;
-        if (punct(k, ':')) k = binding(k + 1);
+        if (punct(k, ':')) k = binding(k + 1, depth);
         else if (nameAt(key)) names.push(at(key)!.value);
       }
       if (punct(k, '=')) k = skip(k + 1, [',', '}']);
     }
     return k + 1;
   };
-  const arrayPattern = (k: number): number => {
+  const arrayPattern = (k: number, depth: number): number => {
     k++;
     while (k < endIdx && !punct(k, ']')) {
       if (punct(k, ',')) {
@@ -621,7 +623,7 @@ function extractDeclaredNames(tokens: Token[], startIdx: number, endIdx: number)
         continue;
       }
       while (punct(k, '.')) k++;
-      k = binding(k);
+      k = binding(k, depth);
       if (punct(k, '=')) k = skip(k + 1, [',', ']']);
     }
     return k + 1;

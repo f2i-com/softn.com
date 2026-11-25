@@ -54,6 +54,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -458,7 +460,8 @@ class DeviceBridge(
     )
 
     private val activeGatts = ConcurrentHashMap<String, BluetoothGatt>()
-    private val gattAllowedServices = ConcurrentHashMap<String, Set<UUID>>()
+    private val gattAllowedServices: MutableMap<BluetoothGatt, Set<UUID>> =
+        Collections.synchronizedMap(IdentityHashMap())
     private val gattPendingReads = ConcurrentHashMap<String, GattPendingOp>()
     private val gattPendingWrites = ConcurrentHashMap<String, GattPendingOp>()
     private val gattPendingConnects = ConcurrentHashMap<String, GattPendingOp>()
@@ -1155,13 +1158,13 @@ class DeviceBridge(
                 }
                 "disconnect" -> {
                     val devId = params.optString("deviceId")
-                    gattAllowedServices.remove(devId)
                     gattPendingConnects.remove(devId)?.let { op ->
                         mainHandler.removeCallbacks(op.timeout)
                         fail(op.gen, op.reqId, "Bluetooth device disconnected")
                     }
                     failPendingGattOpsForDevice(devId, "Bluetooth device disconnected")
                     activeGatts.remove(devId)?.let {
+                        gattAllowedServices.remove(it)
                         try {
                             it.disconnect()
                             it.close()
@@ -1283,21 +1286,20 @@ class DeviceBridge(
         }
         // Close any existing GATT for this device before reconnecting to avoid leaking BluetoothGatt slots.
         activeGatts.remove(deviceId)?.let { prevGatt ->
+            gattAllowedServices.remove(prevGatt)
             try {
                 prevGatt.disconnect()
                 prevGatt.close()
             } catch (_: Throwable) {}
         }
-        if (allowedServices != null) {
-            gattAllowedServices[deviceId] = allowedServices
-        } else {
-            gattAllowedServices.remove(deviceId)
-        }
         lateinit var connectOp: GattPendingOp
         var gattRef: BluetoothGatt? = null
         val connectTimeout = Runnable {
             if (gattPendingConnects.remove(deviceId, connectOp)) {
-                activeGatts.remove(deviceId, gattRef)
+                gattRef?.let { g ->
+                    activeGatts.remove(deviceId, g)
+                    gattAllowedServices.remove(g)
+                }
                 try {
                     gattRef?.disconnect()
                     gattRef?.close()
@@ -1316,6 +1318,7 @@ class DeviceBridge(
         val gatt = device.connectGatt(activity, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
                 if (closed.get() || activeGeneration.get() != gen) {
+                    gattAllowedServices.remove(g)
                     try {
                         g.disconnect()
                         g.close()
@@ -1323,28 +1326,36 @@ class DeviceBridge(
                     return
                 }
                 if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+                    if (allowedServices != null) {
+                        gattAllowedServices[g] = allowedServices
+                    } else {
+                        gattAllowedServices.remove(g)
+                    }
                     activeGatts[deviceId] = g
                     g.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
-                    activeGatts.remove(deviceId, g)
-                    gattAllowedServices.remove(deviceId)
-                    gattPendingConnects.remove(deviceId)?.let { op ->
-                        mainHandler.removeCallbacks(op.timeout)
-                        fail(op.gen, op.reqId, "Bluetooth device disconnected (status $status)")
+                    val wasActive = activeGatts.remove(deviceId, g)
+                    gattAllowedServices.remove(g)
+                    val wasPending = gattPendingConnects.remove(deviceId, connectOp)
+                    if (wasPending) {
+                        mainHandler.removeCallbacks(connectOp.timeout)
+                        fail(connectOp.gen, connectOp.reqId, "Bluetooth device disconnected (status $status)")
                     }
-                    failPendingGattOpsForDevice(deviceId, "Bluetooth device disconnected (status $status)")
+                    if (wasActive) {
+                        failPendingGattOpsForDevice(deviceId, "Bluetooth device disconnected (status $status)")
+                    }
                     g.close()
                 }
             }
 
             override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-                val op = gattPendingConnects.remove(deviceId) ?: return
-                mainHandler.removeCallbacks(op.timeout)
+                if (!gattPendingConnects.remove(deviceId, connectOp)) return
+                mainHandler.removeCallbacks(connectOp.timeout)
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    fail(op.gen, op.reqId, "GATT service discovery failed (status $status)")
+                    fail(connectOp.gen, connectOp.reqId, "GATT service discovery failed (status $status)")
                     return
                 }
-                val allowed = gattAllowedServices[deviceId]
+                val allowed = allowedServices ?: gattAllowedServices[g]
                 val svcs = JSONArray()
                 g.services.forEach { svc ->
                     if (allowed == null || allowed.contains(svc.uuid)) {
@@ -1352,8 +1363,8 @@ class DeviceBridge(
                     }
                 }
                 succeed(
-                    op.gen,
-                    op.reqId,
+                    connectOp.gen,
+                    connectOp.reqId,
                     JSONObject()
                         .put("connected", true)
                         .put("deviceId", deviceId)
@@ -1419,6 +1430,9 @@ class DeviceBridge(
             }
         })
         gattRef = gatt
+        if (gatt != null && allowedServices != null) {
+            gattAllowedServices[gatt] = allowedServices
+        }
         if (gatt == null) {
             if (gattPendingConnects.remove(deviceId, connectOp)) {
                 mainHandler.removeCallbacks(connectTimeout)
@@ -1466,7 +1480,7 @@ class DeviceBridge(
             fail(gen, id, "GATT service not found: $serviceUuid")
             return
         }
-        val allowed = gattAllowedServices[deviceId]
+        val allowed = gattAllowedServices[gatt]
         if (allowed != null && !allowed.contains(parsedSvc)) {
             fail(gen, id, "GATT service $serviceUuid is not in allowedServices")
             return
@@ -1522,7 +1536,7 @@ class DeviceBridge(
             fail(gen, id, "GATT service not found: $serviceUuid")
             return
         }
-        val allowed = gattAllowedServices[deviceId]
+        val allowed = gattAllowedServices[gatt]
         if (allowed != null && !allowed.contains(parsedSvc)) {
             fail(gen, id, "GATT service $serviceUuid is not in allowedServices")
             return

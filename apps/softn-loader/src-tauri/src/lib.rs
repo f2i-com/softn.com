@@ -276,14 +276,21 @@ fn read_bundle_bytes(
     Ok(bytes)
 }
 
-/// Read what a content URI the person picked names, through the file system plugin.
+/// Read what a content URI the person picked names, through the file system plugin,
+/// streaming under the hard byte cap so oversized files cannot OOM the process.
 #[cfg(mobile)]
 fn read_content_uri(app: &tauri::AppHandle, uri: &str) -> Result<Vec<u8>, String> {
-    use tauri_plugin_fs::FsExt;
+    use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
     let url = url::Url::parse(uri).map_err(|e| format!("Not a file the picker returned: {}", e))?;
-    let bytes = app
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    let file = app
         .fs()
-        .read(tauri_plugin_fs::FilePath::Url(url))
+        .open(FilePath::Url(url), opts)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_BUNDLE_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| format!("Failed to read file: {}", e))?;
     if bytes.len() as u64 > MAX_BUNDLE_BYTES {
         return Err(format!(
@@ -733,9 +740,9 @@ pub fn run() {
                     scoped_xdb::get_network_status,
                     xdb::tauri::get_network_settings,
                     set_network_enabled,
-                    xdb::tauri::resume_sync,
-                    xdb::tauri::recover_restore,
-                    xdb::tauri::reconcile_network,
+                    scoped_xdb::resume_sync,
+                    scoped_xdb::recover_restore,
+                    scoped_xdb::reconcile_network,
                     scoped_xdb::request_sync,
                     scoped_xdb::import_records,
                     scoped_xdb::reset_collection,
@@ -772,9 +779,9 @@ pub fn run() {
                     scoped_xdb::get_network_status,
                     xdb::tauri::get_network_settings,
                     set_network_enabled,
-                    xdb::tauri::resume_sync,
-                    xdb::tauri::recover_restore,
-                    xdb::tauri::reconcile_network,
+                    scoped_xdb::resume_sync,
+                    scoped_xdb::recover_restore,
+                    scoped_xdb::reconcile_network,
                     scoped_xdb::request_sync,
                     scoped_xdb::import_records,
                     scoped_xdb::reset_collection,

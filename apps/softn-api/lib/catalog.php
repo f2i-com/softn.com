@@ -392,8 +392,10 @@ final class Catalog
 
     /** @param array<string, true> $knownMains */
     private static function isCategoryFolder(string $name, string $dir, array $knownMains): bool {
-        if (is_file("$dir/category.json")) return true;
+        // An existing app folder (`app.json`) MUST NEVER be reclassified as a category folder,
+        // even if an orphan/colliding `category.json` exists inside it.
         if (is_file("$dir/app.json")) return false;
+        if (is_file("$dir/category.json")) return true;
         if (self::hasChildDirs($dir)) return true;
         // A legacy flat app folder with v1.softn directly inside stays an app folder even if named after a category.
         foreach (self::looseBundles($dir) as $b) {
@@ -403,8 +405,8 @@ final class Catalog
     }
 
     private static function isSubcategoryFolder(string $cat, string $name, string $dir): bool {
-        if (is_file("$dir/category.json")) return true;
         if (is_file("$dir/app.json")) return false;
+        if (is_file("$dir/category.json")) return true;
         if (self::hasChildDirs($dir)) return true;
         $bundles = self::looseBundles($dir);
         if ($bundles === []) return true;
@@ -569,6 +571,10 @@ final class Catalog
         $sub = ($sub !== null && $sub !== '') ? $sub : null;
         $id = $sub !== null ? "$cat/$sub" : $cat;
         $dir = Config::dataDir() . '/apps/' . ($sub !== null ? "$cat/$sub" : $cat);
+        // Never overwrite or hijack an existing app directory with a category.json.
+        if (is_dir($dir) && (is_file("$dir/app.json") || self::looseBundles($dir) !== [])) {
+            return;
+        }
         if (!is_dir($dir)) {
             if (!self::usesCategorizedLayout($cat, $sub)) return;
             if (!@mkdir($dir, 0775, true) && !is_dir($dir)) return;

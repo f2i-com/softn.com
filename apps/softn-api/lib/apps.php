@@ -233,20 +233,37 @@ final class Apps
             if (str_starts_with($url, '/')) {
                 throw new ApiError(403, 'Only the site owner may set a custom same-origin backendUrl path.');
             }
-            $siteOrigin = Pages::origin();
             $parsedUrl = parse_url($url);
-            if ($siteOrigin !== null && is_array($parsedUrl) && isset($parsedUrl['scheme'], $parsedUrl['host'])) {
-                $parsedSite = parse_url($siteOrigin);
-                if (is_array($parsedSite) && isset($parsedSite['scheme'], $parsedSite['host'])) {
-                    $normOrigin = static function (array $p): string {
-                        $scheme = strtolower((string) $p['scheme']);
-                        $host = strtolower(rtrim((string) $p['host'], '.'));
-                        $port = isset($p['port']) ? (int) $p['port'] : ($scheme === 'https' ? 443 : 80);
-                        return "$scheme://$host:$port";
-                    };
-                    if ($normOrigin($parsedUrl) === $normOrigin($parsedSite)) {
-                        throw new ApiError(403, 'Only the site owner may set a custom same-origin backendUrl.');
-                    }
+            if (!is_array($parsedUrl) || !isset($parsedUrl['scheme'], $parsedUrl['host'])) {
+                throw new ApiError(400, 'backendUrl must be a valid http(s) URL.');
+            }
+            $normOrigin = static function (array $p): string {
+                $scheme = strtolower((string) $p['scheme']);
+                $host = strtolower(rtrim((string) $p['host'], '.'));
+                $port = isset($p['port']) ? (int) $p['port'] : ($scheme === 'https' ? 443 : 80);
+                return "$scheme://$host:$port";
+            };
+            $targetOrigin = $normOrigin($parsedUrl);
+            $selfOrigins = [];
+            $siteOrigin = Pages::origin();
+            if ($siteOrigin !== null) $selfOrigins[] = $siteOrigin;
+            foreach (['HTTP_ORIGIN', 'HTTP_HOST'] as $hdr) {
+                $raw = $_SERVER[$hdr] ?? '';
+                if (!is_string($raw) || trim($raw) === '') continue;
+                if ($hdr === 'HTTP_HOST') {
+                    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                    $selfOrigins[] = $scheme . '://' . trim($raw);
+                } else {
+                    $selfOrigins[] = trim($raw);
+                }
+            }
+            foreach (Config::allowedOrigins() as $allowed) {
+                if (is_string($allowed) && trim($allowed) !== '') $selfOrigins[] = trim($allowed);
+            }
+            foreach ($selfOrigins as $candidate) {
+                $parsedSelf = parse_url($candidate);
+                if (is_array($parsedSelf) && isset($parsedSelf['scheme'], $parsedSelf['host']) && $normOrigin($parsedSelf) === $targetOrigin) {
+                    throw new ApiError(403, 'Only the site owner may set a custom same-origin backendUrl.');
                 }
             }
         }
@@ -1542,9 +1559,15 @@ final class Categories
             'sort' => 500,
             'created_at' => time(),
         ];
+        // Refuse category names that collide with an existing app folder on disk so
+        // an unauthenticated suggestion can never hijack or hide an app directory.
+        $targetDir = Config::dataDir() . '/apps/' . $id;
+        if (is_file("$targetDir/app.json") || (is_dir($targetDir) && (glob("$targetDir/*.softn") ?: []) !== [])) {
+            throw new ApiError(409, 'That category name is already used by an app.');
+        }
         $rows[$id] = $entry;
         Catalog::saveCategories($rows);
-        if (Catalog::usesCategorizedLayout($parentId ?? $slug, $parentId !== null ? $slug : null)) {
+        if (Config::get('folderLayout', 'flat') === 'categorized') {
             Catalog::writeCategoryMeta($parentId ?? $slug, $parentId !== null ? $slug : null, $entry);
         }
         return self::one($id);

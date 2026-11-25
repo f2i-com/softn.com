@@ -32,8 +32,8 @@
 //! after a second question, when it looks like a server on the internet and
 //! leads to the local network, which the first question did not say
 //! (consent.rs). Its owner can point it anywhere, and a router or a printer
-//! answers to anyone who reaches it. Android, which puts neither question,
-//! reaches it as listed.
+//! answers to anyone who reaches it. Both desktop and mobile enforce both
+//! native consent questions.
 //!
 //! A proxy the system or the environment sets (`HTTPS_PROXY`, the system's
 //! proxy settings) is used as the client finds it, and then the proxy looks the

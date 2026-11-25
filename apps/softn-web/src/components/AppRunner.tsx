@@ -329,7 +329,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
     if (webContainer || !hasEmbeddedBackend(uiManifest)) return null;
     return createUiBackendBridge({
       appId: runtimeAppId,
-      storagePrefix: `softn-container:${encodeURIComponent(runtimeAppId)}:`,
+      storagePrefix: containerStoragePrefix(runtimeAppId),
       manifest: uiManifest,
       textFiles: textFiles ? Object.fromEntries(textFiles) : undefined,
       bundleBytes: bundleData,

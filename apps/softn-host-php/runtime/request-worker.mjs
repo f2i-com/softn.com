@@ -148,10 +148,15 @@ try {
   // its owner can read: sql.rs takes one back through a read handle, so a file with no read bit
   // (0000, 0200) is left as it is and refused, by both.
   if(mode!==null&&(mode&0o400))try{chmodSync(file,0o600);}catch(e){if(e.code!=='ENOENT')throw e;}
-  // Its -wal and -shm, left read-only beside it (restored with it, say), open it read-only as
-  // surely: taken back the same way, as sql.rs does. Not a link, which chmod would follow, and a
-  // mode that cannot be changed is left for SQLite to report.
-  for(const companion of [file+'-wal',file+'-shm'])try{const found=lstatSync(companion);if(found.isFile()&&(found.mode&0o400))chmodSync(companion,0o600);}catch{}
+  // Its -wal, -shm, and -journal sidecars must never be symlinks (SQLite opens them directly),
+  // and read-only -wal/-shm restored alongside the DB are reclaimed to 0600 as sql.rs does.
+  for(const companion of [file+'-wal',file+'-shm',file+'-journal']){
+    try{
+      const found=lstatSync(companion);
+      if(found.isSymbolicLink())throw new Error('Invalid database');
+      if(companion!==file+'-journal'&&found.isFile()&&(found.mode&0o400))try{chmodSync(companion,0o600);}catch{}
+    }catch(e){if(e.code!=='ENOENT')throw e;}
+  }
   db=new DatabaseSync(file,{allowExtension:false,limits:SQL_LIMITS});chmodSync(file,0o600);
   // Lock waits are three seconds, as on the Rust host, and the wait is set
   // before anything that can meet a lock: with journal_mode first, a request

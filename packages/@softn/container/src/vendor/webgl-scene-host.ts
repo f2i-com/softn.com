@@ -125,19 +125,29 @@ export class SplitRealmSceneHost {
     }
   }
 
+  private disposeMaterialResources(mat: unknown): void {
+    if (!mat || typeof mat !== 'object') return;
+    for (const val of Object.values(mat as Record<string, unknown>)) {
+      if (val && typeof val === 'object' && (val as { isTexture?: boolean; dispose?: () => void }).isTexture) {
+        try { (val as { dispose?: () => void }).dispose?.(); } catch { /* ignore */ }
+      }
+    }
+    try { (mat as { dispose?: () => void }).dispose?.(); } catch { /* ignore */ }
+  }
+
   private disposeObjectResources(obj: import('three').Object3D): void {
     obj.traverse((node) => {
       const m = node as {
         geometry?: { dispose?: () => void };
-        material?: { dispose?: () => void } | Array<{ dispose?: () => void }>;
+        material?: unknown | unknown[];
       };
       try { m.geometry?.dispose?.(); } catch { /* ignore */ }
       if (Array.isArray(m.material)) {
         for (const mat of m.material) {
-          try { mat?.dispose?.(); } catch { /* ignore */ }
+          this.disposeMaterialResources(mat);
         }
-      } else {
-        try { m.material?.dispose?.(); } catch { /* ignore */ }
+      } else if (m.material) {
+        this.disposeMaterialResources(m.material);
       }
     });
   }
@@ -340,15 +350,7 @@ export class SplitRealmSceneHost {
                     if (!this.disposed && state?.objects.get(id) === holder) {
                       holder.add(gltf.scene);
                     } else {
-                      gltf.scene.traverse((node) => {
-                        const m = node as { geometry?: { dispose?: () => void }; material?: { dispose?: () => void } | Array<{ dispose?: () => void }> };
-                        try { m.geometry?.dispose?.(); } catch { /* ignore */ }
-                        if (Array.isArray(m.material)) {
-                          for (const mat of m.material) { try { mat?.dispose?.(); } catch { /* ignore */ } }
-                        } else {
-                          try { m.material?.dispose?.(); } catch { /* ignore */ }
-                        }
-                      });
+                      this.disposeObjectResources(gltf.scene);
                     }
                   },
                   undefined,

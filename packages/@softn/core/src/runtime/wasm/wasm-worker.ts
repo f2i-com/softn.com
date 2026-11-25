@@ -1172,6 +1172,8 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
 
   // ------------------------------------------------- softn: what a program asks
 
+  let pendingSize: { width: number; height: number } | null = null;
+
   function present(ptr: number, width: number, height: number): void {
     const w = width >>> 0;
     const h = height >>> 0;
@@ -1184,7 +1186,7 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
         canvas.width = w;
         canvas.height = h;
       }
-      post({ type: 'size', width: w, height: h });
+      pendingSize = { width: w, height: h };
     }
     if (canvas) {
       context2d ??= canvas.getContext('2d');
@@ -1198,6 +1200,11 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
   }
 
   function flushPixels(): void {
+    if (pendingSize) {
+      const sz = pendingSize;
+      pendingSize = null;
+      post({ type: 'size', width: sz.width, height: sz.height });
+    }
     if (!pendingPixels) return;
     const frame = pendingPixels;
     pendingPixels = null;
@@ -1441,6 +1448,9 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
       case 'json':
       case 'bytes': {
         const [ptr, length] = located(result, message.returns);
+        if (length > MAX_WASM_RETURN_BYTES) {
+          throw new Error(`${message.name} answered with ${length} bytes, exceeding the ${MAX_WASM_RETURN_BYTES}-byte limit`);
+        }
         const bytes = region(ptr, length).slice();
         freeAnswer(message.free, ptr, length);
         if (message.returns === 'bytes') return bytes;
@@ -1455,9 +1465,11 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
       case 'cstring': {
         const ptr = Number(result) >>> 0;
         const bytes = heap();
+        const limit = Math.min(bytes.length, ptr + MAX_WASM_RETURN_BYTES + 1);
         let end = ptr;
-        while (end < bytes.length && bytes[end] !== 0) end++;
+        while (end < limit && bytes[end] !== 0) end++;
         if (end >= bytes.length) throw new Error(`${message.name} answered with a text that has no end (no 0 byte before the end of memory)`);
+        if (bytes[end] !== 0) throw new Error(`${message.name} answered with a cstring exceeding the ${MAX_WASM_RETURN_BYTES}-byte limit`);
         const text = decoder.decode(bytes.subarray(ptr, end));
         freeAnswer(message.free, ptr, end - ptr + 1);
         return text;
@@ -1467,48 +1479,61 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
     }
   }
 
+  const MAX_WASM_RETURN_BYTES = 16 * 1024 * 1024;
+  const MAX_WASM_READ_ELEMENTS = 262_144;
   const SIZES = table<number>({ u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, f64: 8 });
 
   function read(message: WasmReadMessage): unknown {
     const ptr = message.ptr >>> 0;
     const length = message.length >>> 0;
-    if (message.as === 'bytes') return region(ptr, length).slice();
-    if (message.as === 'text') return readText(ptr, length);
+    if (message.as === 'bytes') {
+      if (length > MAX_WASM_RETURN_BYTES) throw new Error(`read: ${length} bytes exceeds the ${MAX_WASM_RETURN_BYTES}-byte limit`);
+      return region(ptr, length).slice();
+    }
+    if (message.as === 'text') {
+      if (length > MAX_WASM_RETURN_BYTES) throw new Error(`read: ${length} bytes exceeds the ${MAX_WASM_RETURN_BYTES}-byte limit`);
+      return readText(ptr, length);
+    }
     const size = SIZES[message.as];
     if (!size) throw new Error(`read: "${message.as}" is not one of bytes, text, u8, i8, u16, i16, u32, i32, f32, f64`);
+    if (length > MAX_WASM_READ_ELEMENTS) {
+      throw new Error(`read: ${length} elements exceeds the ${MAX_WASM_READ_ELEMENTS}-element limit`);
+    }
     const bytes = region(ptr, length * size);
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
-    const out: number[] = [];
+    const out: Array<number | string> = new Array(length);
     for (let i = 0; i < length; i++) {
       const at = i * size;
+      let val: number;
       switch (message.as) {
         case 'u8':
-          out.push(dv.getUint8(at));
+          val = dv.getUint8(at);
           break;
         case 'i8':
-          out.push(dv.getInt8(at));
+          val = dv.getInt8(at);
           break;
         case 'u16':
-          out.push(dv.getUint16(at, true));
+          val = dv.getUint16(at, true);
           break;
         case 'i16':
-          out.push(dv.getInt16(at, true));
+          val = dv.getInt16(at, true);
           break;
         case 'u32':
-          out.push(dv.getUint32(at, true));
+          val = dv.getUint32(at, true);
           break;
         case 'i32':
-          out.push(dv.getInt32(at, true));
+          val = dv.getInt32(at, true);
           break;
         case 'f32':
-          out.push(dv.getFloat32(at, true));
+          val = dv.getFloat32(at, true);
           break;
         default:
-          out.push(dv.getFloat64(at, true));
+          val = dv.getFloat64(at, true);
       }
+      // NaN and the infinities as text, as a call's answer gives them: JSON would make them null.
+      out[i] = Number.isFinite(val) ? val : String(val);
     }
-    // NaN and the infinities as text, as a call's answer gives them: JSON would make them null.
-    return out.map(asNumber);
+    return out;
   }
 
   // --------------------------------------------------------------- a program
@@ -1650,6 +1675,7 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
       else if (exitedWith === null && mode === 'program' && typeof exportsObj.frame !== 'function') exitedWith = 0;
     }
     endTurn();
+    flushPixels();
     post({ type: 'ready', id: message.id, memoryPages: memoryPages(), missing, exitCode: exitedWith });
   }
 
@@ -1691,7 +1717,7 @@ export function wasmWorkerMain(scope: WasmWorkerScope): void {
       }
       case 'read': {
         const value = read(message);
-        post({ type: 'result', id: message.id, value });
+        post({ type: 'result', id: message.id, value }, value instanceof Uint8Array ? [value.buffer] : []);
         return;
       }
       case 'write': {

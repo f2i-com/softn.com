@@ -153,9 +153,7 @@ impl Consent {
         }
     }
 
-    /// The answer already given that covers `policy`, if the network question has been put.
-    fn net_answer(&self, policy: &NetPolicy) -> Option<Result<(), String>> {
-        let standing = self.standing.lock().ok()?;
+    fn net_answer_locked(standing: &Standing, policy: &NetPolicy) -> Option<Result<(), String>> {
         let (asked, allowed) = standing.net.as_ref()?;
         Some(if asked != policy {
             Err("Network access not permitted: this app already asked for it under other rules, and is not asked twice. Open the app again to be asked afresh.".to_string())
@@ -166,40 +164,52 @@ impl Consent {
         })
     }
 
-    /// The dialog for `policy` (title, text), and which bundle it is being asked about.
-    fn net_question(&self, policy: &NetPolicy) -> (u64, String, String) {
-        let standing = self.standing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn net_prompt_locked(standing: &Standing, policy: &NetPolicy) -> (String, String) {
         (
-            standing.opened,
             "Allow network access?".to_string(),
             format!(
                 "{} is asking to use the network.\n\nIt would be able to reach {}.\n\nAllow this only if you trust where this app came from. Your answer lasts until you open another app or close SoftN.",
-                Self::who(&standing),
+                Self::who(standing),
                 policy.describe()
             ),
         )
     }
 
-    fn record_net(&self, opened: u64, policy: &NetPolicy, allowed: bool) -> Result<(), String> {
-        {
-            let mut standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
-            if standing.opened != opened {
-                return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
-            }
-            standing.net = Some((policy.clone(), allowed));
+    /// Atomically verify `opened`, check for a cached answer, or prepare the prompt text
+    /// under a single `standing` lock so another bundle cannot interleave between checks.
+    fn prepare_net(&self, opened: u64, policy: &NetPolicy) -> Result<Option<(String, String)>, String> {
+        let standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
+        if standing.opened != opened {
+            return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
         }
-        self.net_answer(policy).unwrap_or_else(|| Err("Network access not permitted".to_string()))
+        if let Some(answer) = Self::net_answer_locked(&standing, policy) {
+            return answer.map(|()| None);
+        }
+        Ok(Some(Self::net_prompt_locked(&standing, policy)))
+    }
+
+    /// The dialog for `policy` (title, text), and which bundle it is being asked about.
+    #[cfg(test)]
+    fn net_question(&self, policy: &NetPolicy) -> (u64, String, String) {
+        let standing = self.standing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (title, text) = Self::net_prompt_locked(&standing, policy);
+        (standing.opened, title, text)
+    }
+
+    fn record_net(&self, opened: u64, policy: &NetPolicy, allowed: bool) -> Result<(), String> {
+        let mut standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
+        if standing.opened != opened {
+            return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
+        }
+        standing.net = Some((policy.clone(), allowed));
+        Self::net_answer_locked(&standing, policy).unwrap_or_else(|| Err("Network access not permitted".to_string()))
     }
 
     /// The steps of `require_net` with the dialog replaced by `ask`: what the tests drive.
     #[cfg(test)]
     fn decide_net(&self, policy: &NetPolicy, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
-        if let Some(answer) = self.net_answer(policy) {
-            return answer;
-        }
-        let (opened, title, text) = self.net_question(policy);
-        let allowed = ask(&title, &text);
-        self.record_net(opened, policy, allowed)
+        let opened = self.opened();
+        self.decide_net_under(opened, policy, ask)
     }
 
     /// Which choice of bundle is open now: it moves on each `bundle_opened`.
@@ -207,39 +217,28 @@ impl Consent {
         self.standing.lock().map(|standing| standing.opened).unwrap_or(0)
     }
 
-    /// Refused when another bundle has been chosen since `opened`, the choice a request was
-    /// made under: the app before stays in the page while the next one loads, and a request
-    /// it made then was put to the person in the next one's name, and answered for it.
-    fn refuse_if_replaced(&self, opened: u64) -> Result<(), String> {
-        if self.opened() == opened {
-            Ok(())
-        } else {
-            Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED))
-        }
-    }
-
     /// `decide_net` for a request made under the choice `opened`.
     #[cfg(test)]
     fn decide_net_under(&self, opened: u64, policy: &NetPolicy, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
-        self.refuse_if_replaced(opened)?;
-        self.decide_net(policy, ask)
+        let Some((title, text)) = self.prepare_net(opened, policy)? else {
+            return Ok(());
+        };
+        let allowed = ask(&title, &text);
+        self.record_net(opened, policy, allowed)
     }
 
     /// Whether a request under `policy`, made while the choice `opened` was open, may be
     /// made, putting the question to the person in a native dialog if it has not been put yet.
     pub async fn require_net(&self, app: &tauri::AppHandle, policy: &NetPolicy, opened: u64) -> Result<(), String> {
         let _turn = self.asking.lock().await;
-        self.refuse_if_replaced(opened)?;
-        if let Some(answer) = self.net_answer(policy) {
-            return answer;
-        }
-        let (opened, title, text) = self.net_question(policy);
+        let Some((title, text)) = self.prepare_net(opened, policy)? else {
+            return Ok(());
+        };
         let allowed = ask(app, title, text, "Allow", "Don't allow").await;
         self.record_net(opened, policy, allowed)
     }
 
-    fn local_host_answer(&self, host: &str, address: IpAddr) -> Option<Result<(), String>> {
-        let standing = self.standing.lock().ok()?;
+    fn local_host_answer_locked(standing: &Standing, host: &str, address: IpAddr) -> Option<Result<(), String>> {
         standing.local_hosts.get(&(host.to_string(), address)).map(|allowed| {
             if *allowed {
                 Ok(())
@@ -253,17 +252,13 @@ impl Consent {
         })
     }
 
-    /// The question about a listed name that leads to `address` on this computer or the
-    /// local network, which the network question did not say.
-    fn local_host_question(&self, host: &str, address: IpAddr) -> (u64, String, String) {
-        let standing = self.standing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn local_host_prompt_locked(standing: &Standing, host: &str, address: IpAddr) -> (String, String) {
         let host = printable(host);
         (
-            standing.opened,
             "Allow access to your local network?".to_string(),
             format!(
                 "{} may reach {}, and that name now leads to {}, which is on this computer or your local network.\n\nWhoever runs a name on the internet can point it at a device of yours, such as a router, a printer or a program on this computer, to let an app read it.\n\nAllow this only if {} is your own, or your organisation's. Your answer lasts until you open another app or close SoftN.",
-                Self::who(&standing),
+                Self::who(standing),
                 host,
                 address,
                 host
@@ -271,24 +266,38 @@ impl Consent {
         )
     }
 
-    fn record_local_host(&self, opened: u64, host: &str, address: IpAddr, allowed: bool) -> Result<(), String> {
-        {
-            let mut standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
-            if standing.opened != opened {
-                return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
-            }
-            standing.local_hosts.insert((host.to_string(), address), allowed);
+    fn prepare_local_host(&self, opened: u64, host: &str, address: IpAddr) -> Result<Option<(String, String)>, String> {
+        let standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
+        if standing.opened != opened {
+            return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
         }
-        self.local_host_answer(host, address).unwrap_or_else(|| Err("Network access not permitted".to_string()))
+        if let Some(answer) = Self::local_host_answer_locked(&standing, host, address) {
+            return answer.map(|()| None);
+        }
+        Ok(Some(Self::local_host_prompt_locked(&standing, host, address)))
+    }
+
+    fn record_local_host(&self, opened: u64, host: &str, address: IpAddr, allowed: bool) -> Result<(), String> {
+        let mut standing = self.standing.lock().map_err(|_| "Network access not permitted".to_string())?;
+        if standing.opened != opened {
+            return Err(format!("Network access not permitted: {}", ANOTHER_APP_OPENED));
+        }
+        standing.local_hosts.insert((host.to_string(), address), allowed);
+        Self::local_host_answer_locked(&standing, host, address).unwrap_or_else(|| Err("Network access not permitted".to_string()))
     }
 
     /// The steps of `require_local_host` with the dialog replaced by `ask`.
     #[cfg(test)]
     fn decide_local_host(&self, host: &str, address: IpAddr, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
-        if let Some(answer) = self.local_host_answer(host, address) {
-            return answer;
-        }
-        let (opened, title, text) = self.local_host_question(host, address);
+        let opened = self.opened();
+        self.decide_local_host_under(opened, host, address, ask)
+    }
+
+    #[cfg(test)]
+    fn decide_local_host_under(&self, opened: u64, host: &str, address: IpAddr, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
+        let Some((title, text)) = self.prepare_local_host(opened, host, address)? else {
+            return Ok(());
+        };
         let allowed = ask(&title, &text);
         self.record_local_host(opened, host, address, allowed)
     }
@@ -297,17 +306,14 @@ impl Consent {
     /// computer or the local network, may be made: asked once per `(host, address)` pair.
     pub async fn require_local_host(&self, app: &tauri::AppHandle, host: &str, address: IpAddr, opened: u64) -> Result<(), String> {
         let _turn = self.asking.lock().await;
-        self.refuse_if_replaced(opened)?;
-        if let Some(answer) = self.local_host_answer(host, address) {
-            return answer;
-        }
-        let (opened, title, text) = self.local_host_question(host, address);
+        let Some((title, text)) = self.prepare_local_host(opened, host, address)? else {
+            return Ok(());
+        };
         let allowed = ask(app, title, text, "Allow", "Don't allow").await;
         self.record_local_host(opened, host, address, allowed)
     }
 
-    fn peer_sync_answer(&self) -> Option<Result<(), String>> {
-        let standing = self.standing.lock().ok()?;
+    fn peer_sync_answer_locked(standing: &Standing) -> Option<Result<(), String>> {
         standing.peer_sync.map(|allowed| {
             if allowed {
                 Ok(())
@@ -317,59 +323,66 @@ impl Consent {
         })
     }
 
-    fn peer_sync_question(&self) -> (u64, String, String) {
-        let standing = self.standing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn peer_sync_prompt_locked(standing: &Standing) -> (String, String) {
         (
-            standing.opened,
             "Turn on peer sync?".to_string(),
             format!(
                 "{} is asking to turn on peer sync.\n\nSoftN would announce itself on your local network, accept connections from other devices there, and share app data with them. It stays on after SoftN is closed and opened again.\n\nTurn it on only if you asked for this and trust every device on this network.",
-                Self::who(&standing)
+                Self::who(standing)
             ),
         )
     }
 
-    fn record_peer_sync(&self, opened: u64, allowed: bool) -> Result<(), String> {
-        {
-            let mut standing = self.standing.lock().map_err(|_| "Peer sync was not turned on".to_string())?;
-            if standing.opened != opened {
-                return Err(format!("Peer sync was not turned on: {}", ANOTHER_APP_OPENED));
-            }
-            standing.peer_sync = Some(allowed);
+    fn prepare_peer_sync(&self, opened: u64) -> Result<Option<(String, String)>, String> {
+        let standing = self.standing.lock().map_err(|_| "Peer sync was not turned on".to_string())?;
+        if standing.opened != opened {
+            return Err(format!("Peer sync was not turned on: {}", ANOTHER_APP_OPENED));
         }
-        self.peer_sync_answer().unwrap_or_else(|| Err("Peer sync was not turned on".to_string()))
+        if let Some(answer) = Self::peer_sync_answer_locked(&standing) {
+            return answer.map(|()| None);
+        }
+        Ok(Some(Self::peer_sync_prompt_locked(&standing)))
+    }
+
+    #[cfg(test)]
+    fn peer_sync_question(&self) -> (u64, String, String) {
+        let standing = self.standing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (title, text) = Self::peer_sync_prompt_locked(&standing);
+        (standing.opened, title, text)
+    }
+
+    fn record_peer_sync(&self, opened: u64, allowed: bool) -> Result<(), String> {
+        let mut standing = self.standing.lock().map_err(|_| "Peer sync was not turned on".to_string())?;
+        if standing.opened != opened {
+            return Err(format!("Peer sync was not turned on: {}", ANOTHER_APP_OPENED));
+        }
+        standing.peer_sync = Some(allowed);
+        Self::peer_sync_answer_locked(&standing).unwrap_or_else(|| Err("Peer sync was not turned on".to_string()))
     }
 
     /// The steps of `require_peer_sync` with the dialog replaced by `ask`.
     #[cfg(test)]
     fn decide_peer_sync(&self, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
-        if let Some(answer) = self.peer_sync_answer() {
-            return answer;
-        }
-        let (opened, title, text) = self.peer_sync_question();
-        let allowed = ask(&title, &text);
-        self.record_peer_sync(opened, allowed)
+        let opened = self.opened();
+        self.decide_peer_sync_under(opened, ask)
     }
 
     #[cfg(test)]
     fn decide_peer_sync_under(&self, opened: u64, ask: impl FnOnce(&str, &str) -> bool) -> Result<(), String> {
-        if self.opened() != opened {
-            return Err(format!("Peer sync was not turned on: {}", ANOTHER_APP_OPENED));
-        }
-        self.decide_peer_sync(ask)
+        let Some((title, text)) = self.prepare_peer_sync(opened)? else {
+            return Ok(());
+        };
+        let allowed = ask(&title, &text);
+        self.record_peer_sync(opened, allowed)
     }
 
     /// Whether peer sync may be turned on for the bundle choice `opened`, putting the
     /// question to the person in a native dialog if it has not been put yet.
     pub async fn require_peer_sync(&self, app: &tauri::AppHandle, opened: u64) -> Result<(), String> {
         let _turn = self.asking.lock().await;
-        if self.opened() != opened {
-            return Err(format!("Peer sync was not turned on: {}", ANOTHER_APP_OPENED));
-        }
-        if let Some(answer) = self.peer_sync_answer() {
-            return answer;
-        }
-        let (opened, title, text) = self.peer_sync_question();
+        let Some((title, text)) = self.prepare_peer_sync(opened)? else {
+            return Ok(());
+        };
         let allowed = ask(app, title, text, "Turn on", "Keep off").await;
         self.record_peer_sync(opened, allowed)
     }

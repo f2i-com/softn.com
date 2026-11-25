@@ -143,20 +143,26 @@ function parseBraceQuantifier(
     return { end: close, repeatsMoreThanOnce: true, unbounded: true };
   }
   const max = Number(maxStr);
-  return { end: close, repeatsMoreThanOnce: max > 1, unbounded: max > 16 };
+  return { end: close, repeatsMoreThanOnce: max > 1, unbounded: max > 16 || max > min };
 }
 
 /**
  * Rejects ReDoS-prone regexes: overly long patterns, nested quantifiers across arbitrary group
  * nesting (including `?` and `{m,n}`), quantified alternations (`(a|a)+`), backreferences
- * (`\1`–`\9`, `\k`), quantifiers inside lookarounds, excessive unbounded quantifiers, and
- * adjacent unbounded wildcards (`.*.*`).
+ * (`\1`–`\9`, `\k`), quantifiers inside lookarounds, excessive variable/unbounded quantifiers,
+ * and adjacent quantified atoms (`.*.*`, `(a+)(a+)`, `a+a+`).
  */
 function hasUnsafeRegexStructure(pattern: string): boolean {
   if (pattern.length > 512) return true;
-  // Reject adjacent unbounded quantifiers (`.*.*`, `a+a+`, `\w+\w+`, `[a-z]+[a-z]+`) which cause polynomial ReDoS.
+  // Reject adjacent wildcard/variable quantifiers (`.*.*`, `a+a+`, `\w+\w+`, `(a+)(a+)`) which cause polynomial ReDoS.
   if (/(?:^|[^\\])\.[*+]\??\.[*+]/.test(pattern)) return true;
-  if (/(?:\*|(?<!\\)\+|\{\d+,\})\??(?:\([^)]*\)|\[[^\]]*\]|\\.|[^|()[\]{}*+?])(?:\*|(?<!\\)\+|\{\d+,\})/.test(pattern)) return true;
+  if (/(?:(?<!\\)\*|(?<!\\)\+|\{\d+,\d*\})\??(?:\([^)]*\)|\[[^\]]*\]|\\.|[^|()[\]{}*+?])(?:(?<!\\)\*|(?<!\\)\+|\{\d+,\d*\})/.test(pattern)) {
+    // Allow disjoint character classes such as `[a-z]+[0-9]+` (common in URL slugs/IDs),
+    // while blocking overlapping/identical quantified runs.
+    const m = /(?:\[([^\]]+)\]|([a-zA-Z0-9.])|(\\[dDwWsS]))(?:(?<!\\)\*|(?<!\\)\+|\{\d+,\d*\})\??(?:\[([^\]]+)\]|([a-zA-Z0-9.])|(\\[dDwWsS]))(?:(?<!\\)\*|(?<!\\)\+|\{\d+,\d*\})/.exec(pattern);
+    if (!m || !m[1] || !m[4] || m[1] === m[4]) return true;
+  }
+  if (/\([^)]*(?:(?<!\\)[*+]|\{\d+,\d*\})[^)]*\)\s*\([^)]*(?:(?<!\\)[*+]|\{\d+,\d*\})[^)]*\)/.test(pattern)) return true;
 
   interface GroupFrame {
     hasQuantifier: boolean;

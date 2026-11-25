@@ -45,7 +45,7 @@ import {
   usesDocument,
 } from '../document-shell/names';
 import type { LocalSpeechHost } from './local-speech';
-import { clearCapturedKeys, lastPressWasFor, parseCapturedKeys, setAppElement, setCapturedKeys } from './key-capture';
+import { clearCapturedKeys, consumeLastPressFor, lastPressWasFor, parseCapturedKeys, setAppElement, setCapturedKeys } from './key-capture';
 import { deepEqual } from './vm-state';
 import { droppableRun } from './droppable-calls';
 import { clipboardWriteRefusal } from './clipboard-gate';
@@ -421,6 +421,7 @@ export class SoftNScriptRuntime {
       permissionConfig: () => this.permissionConfig,
       disposed: () => this.disposed,
       pressedHere: () => lastPressWasFor(this),
+      consumePress: () => consumeLastPressFor(this),
     };
     this.gate = gate;
     this.network = new AppNetwork(gate, {

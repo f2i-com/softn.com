@@ -189,6 +189,19 @@ export function lastPressWasFor(owner: object): boolean {
 }
 
 /**
+ * Single-use activation check for sensitive host actions (such as triggering a download):
+ * verifies the last press belonged to `owner` and consumes it so one click cannot spam multiple downloads.
+ */
+export function consumeLastPressFor(owner: object): boolean {
+  if (!lastPressWasFor(owner)) return false;
+  if (appElements.has(owner)) {
+    lastPress = null;
+    lastPressAt = 0;
+  }
+  return true;
+}
+
+/**
  * Whether `target` is an element that holds the app drawn in `element` and is
  * neither a field of the host's nor one of its marked controls: the box a host
  * keeps an app in, where it rests the focus when nothing in the app has it.

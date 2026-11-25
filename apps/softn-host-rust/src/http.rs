@@ -1023,9 +1023,28 @@ fn safe_static_dir_router(dir: std::path::PathBuf) -> Router {
         .with_state(Arc::new(dir))
 }
 
+fn if_none_match_matches(headers: &axum::http::HeaderMap, etag: &str) -> bool {
+    fn strip_weak(s: &str) -> &str {
+        let trimmed = s.trim();
+        trimmed.strip_prefix("W/").or_else(|| trimmed.strip_prefix("w/")).unwrap_or(trimmed)
+    }
+    let target = strip_weak(etag);
+    for val in headers.get_all(axum::http::header::IF_NONE_MATCH) {
+        let Ok(raw) = val.to_str() else { continue };
+        for token in raw.split(',') {
+            let t = token.trim();
+            if t == "*" || strip_weak(t) == target {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 async fn serve_safe_static_file(
     State(base_dir): State<Arc<std::path::PathBuf>>,
     method: axum::http::Method,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(rel): axum::extract::Path<String>,
 ) -> axum::response::Response {
     if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
@@ -1054,7 +1073,12 @@ async fn serve_safe_static_file(
     let base_dir_bg = base_dir.clone();
     let rel_owned = trimmed.to_owned();
     let is_head = method == axum::http::Method::HEAD;
-    let read_res = tokio::task::spawn_blocking(move || -> Result<(String, usize, Vec<u8>), StatusCode> {
+    let if_none_match: Vec<String> = headers
+        .get_all(axum::http::header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_owned))
+        .collect();
+    let read_res = tokio::task::spawn_blocking(move || -> Result<(String, usize, String, bool, Vec<u8>), StatusCode> {
         let base_meta = std::fs::symlink_metadata(&*base_dir_bg).map_err(|_| StatusCode::NOT_FOUND)?;
         if base_meta.file_type().is_symlink() || !base_meta.is_dir() {
             return Err(StatusCode::FORBIDDEN);
@@ -1094,9 +1118,26 @@ async fn serve_safe_static_file(
         if open_meta.len() > MAX_STATIC_FILE_BYTES {
             return Err(StatusCode::PAYLOAD_TOO_LARGE);
         }
+        let mtime_secs = open_meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let etag = format!("\"{:x}-{:x}\"", open_meta.len(), mtime_secs);
         let mime = crate::container_backend::mime_type_for(&rel_owned).to_owned();
+        let not_modified = if_none_match.iter().any(|raw| {
+            raw.split(',').any(|t| {
+                let s = t.trim();
+                let unweak = s.strip_prefix("W/").or_else(|| s.strip_prefix("w/")).unwrap_or(s);
+                s == "*" || unweak == etag
+            })
+        });
+        if not_modified {
+            return Ok((mime, open_meta.len() as usize, etag, true, Vec::new()));
+        }
         if is_head {
-            return Ok((mime, open_meta.len() as usize, Vec::new()));
+            return Ok((mime, open_meta.len() as usize, etag, false, Vec::new()));
         }
         use std::io::Read;
         let mut buf = Vec::with_capacity(open_meta.len().min(MAX_STATIC_FILE_BYTES) as usize);
@@ -1107,16 +1148,24 @@ async fn serve_safe_static_file(
             return Err(StatusCode::PAYLOAD_TOO_LARGE);
         }
         let len = buf.len();
-        Ok((mime, len, buf))
+        Ok((mime, len, etag, false, buf))
     })
     .await;
 
     match read_res {
-        Ok(Ok((mime, len, bytes))) => {
+        Ok(Ok((_mime, _len, etag, true, _))) => axum::http::Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(axum::http::header::ETAG, etag)
+            .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
+            .body(axum::body::Body::empty())
+            .unwrap_or_else(|_| not_found_sync()),
+        Ok(Ok((mime, len, etag, false, bytes))) => {
             let builder = axum::http::Response::builder()
                 .status(StatusCode::OK)
                 .header(axum::http::header::CONTENT_TYPE, mime)
-                .header(axum::http::header::CONTENT_LENGTH, len);
+                .header(axum::http::header::CONTENT_LENGTH, len)
+                .header(axum::http::header::ETAG, etag)
+                .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600");
             let body = if is_head {
                 axum::body::Body::empty()
             } else {
@@ -1163,8 +1212,14 @@ async fn serve_container_request(
     .to_owned();
     let mut lower_headers: HashMap<String, String> = HashMap::new();
     for (k, v) in &headers {
+        let name = k.as_str();
+        if name.eq_ignore_ascii_case("proxy-authorization")
+            || (multi_tenant && name.eq_ignore_ascii_case("cookie"))
+        {
+            continue;
+        }
         if let Ok(vs) = v.to_str() {
-            let lk = k.as_str().to_ascii_lowercase();
+            let lk = name.to_ascii_lowercase();
             let sep = if lk == "cookie" { "; " } else { ", " };
             lower_headers
                 .entry(lk)
@@ -1178,16 +1233,40 @@ async fn serve_container_request(
 
     let (effective_path, effective_query) =
         match backend.resolve_ingress(&method_str, &req_path, &query, &host_hdr, https, &lower_headers) {
-            crate::container_backend::StaticOrBackend::Static { mime, bytes } => {
-                let mut builder = axum::http::Response::builder()
+            crate::container_backend::StaticOrBackend::Static {
+                mime,
+                bytes,
+                etag,
+                immutable,
+            } => {
+                let cache_control = if immutable {
+                    "public, max-age=31536000, immutable"
+                } else {
+                    "no-cache"
+                };
+                if if_none_match_matches(&headers, &etag) {
+                    return axum::http::Response::builder()
+                        .status(StatusCode::NOT_MODIFIED)
+                        .header(axum::http::header::ETAG, etag)
+                        .header(axum::http::header::CACHE_CONTROL, cache_control)
+                        .header("x-content-type-options", "nosniff")
+                        .header("x-frame-options", "SAMEORIGIN")
+                        .header("referrer-policy", "no-referrer")
+                        .header(axum::http::header::CONTENT_SECURITY_POLICY, CONTAINER_DEFAULT_CSP)
+                        .body(axum::body::Body::empty())
+                        .unwrap_or_else(|_| not_found_sync());
+                }
+                let builder = axum::http::Response::builder()
                     .status(StatusCode::OK)
                     .header(axum::http::header::CONTENT_TYPE, mime)
+                    .header(axum::http::header::CONTENT_LENGTH, bytes.len())
+                    .header(axum::http::header::ETAG, etag)
+                    .header(axum::http::header::CACHE_CONTROL, cache_control)
                     .header("x-content-type-options", "nosniff")
                     .header("x-frame-options", "SAMEORIGIN")
                     .header("referrer-policy", "no-referrer")
                     .header(axum::http::header::CONTENT_SECURITY_POLICY, CONTAINER_DEFAULT_CSP);
                 return if method == axum::http::Method::HEAD {
-                    builder = builder.header(axum::http::header::CONTENT_LENGTH, bytes.len());
                     builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
                 } else {
                     builder.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| not_found_sync())
@@ -1277,6 +1356,7 @@ async fn serve_container_request(
             client_ip: client_ip.to_string(),
             host: host_hdr,
             https,
+            htaccess_evaluated: true,
         })
         .await;
 

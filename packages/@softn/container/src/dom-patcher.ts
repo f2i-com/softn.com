@@ -24,6 +24,7 @@ import {
   isLinkElement,
   type FontScopeContext,
 } from './host-policy';
+import { splitTopLevelCss } from './css-policy';
 import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
 import { isAllowedUiExtension } from './ui-extensions/registry';
 import type {
@@ -230,6 +231,9 @@ export class HostDomPatcher {
   /** Structured values for a `<softn-*>` element whose class has not arrived yet. */
   private readonly pendingProperties = new Map<Element, Array<[string, unknown]>>();
   private readonly measuredIds = new Set<number>();
+  private static readonly MAX_MEASURED_IDS = 2000;
+  private cachedOriginBox: { left: number; top: number; at: number } | null = null;
+  private readonly dirtyStyleSheets = new Set<Element>();
   /**
    * Measured elements let go of by the sweep, by id: the app's side asks for an element to be
    * measured once, so one put on the page again (a tab panel kept off it, Vue's KeepAlive) is
@@ -516,7 +520,7 @@ export class HostDomPatcher {
                 if ((k === 'width' || k === 'height') && value !== null && String(k === 'width' ? told.width : told.height) === value.trim()) continue;
                 this.applySafeAttribute(told, lower, k, value);
               }
-              if (!this.measuredIds.has(id)) {
+              if (!this.measuredIds.has(id) && this.measuredIds.size < HostDomPatcher.MAX_MEASURED_IDS) {
                 this.measuredIds.add(id);
                 this.resizeObserver?.observe(told);
               }
@@ -543,7 +547,11 @@ export class HostDomPatcher {
             if (before) this.releaseNodeResources(before, id);
             this.nodes.set(id, el);
             // Measured before: the element it is now is observed and measured (the one before was).
-            if (el instanceof HTMLCanvasElement || this.measuredIds.has(id) || this.sweptMeasured.delete(id)) {
+            if (
+              (el instanceof HTMLCanvasElement && this.measuredIds.size < HostDomPatcher.MAX_MEASURED_IDS) ||
+              this.measuredIds.has(id) ||
+              (this.sweptMeasured.delete(id) && this.measuredIds.size < HostDomPatcher.MAX_MEASURED_IDS)
+            ) {
               if (before instanceof Element) this.resizeObserver?.unobserve(before);
               this.measuredIds.add(id);
               this.resizeObserver?.observe(el);
@@ -560,9 +568,9 @@ export class HostDomPatcher {
             const existing = this.nodes.get(id);
             if (existing && existing.nodeType === Node.TEXT_NODE) {
               existing.nodeValue = text;
-              // A text node of a `<style>` is kept out of the page: its sheet is written again.
+              // Coalesce `<style>` text updates once per batch instead of re-sanitizing per text node.
               const sheet = this.sheetOf(id);
-              if (sheet) this.writeStyleSheet(sheet);
+              if (sheet) this.dirtyStyleSheets.add(sheet);
             } else if (existing || this.nodes.size < MAX_HOST_NODES) {
               const tn = document.createTextNode(text);
               if (existing) {
@@ -605,7 +613,7 @@ export class HostDomPatcher {
                 const nextProps = new Map<string, string>();
                 if (value) {
                   const sanitized = sanitizeContainerCss(value, this.entryPath, this.archive, this.permissions, this.netGranted, 'inline', this.fontScope);
-                  for (const decl of sanitized.split(';')) {
+                  for (const decl of splitTopLevelCss(sanitized, ';')) {
                     const colon = decl.indexOf(':');
                     if (colon <= 0) continue;
                     const prop = decl.slice(0, colon).trim();
@@ -649,7 +657,7 @@ export class HostDomPatcher {
             if (this.links.has(parent as Element)) break;
             if (this.styleSheets.has(parent as Element)) {
               this.setStyleSheetTextIds(parent as Element, childIds.filter((cid) => Number.isInteger(cid)));
-              this.writeStyleSheet(parent as Element);
+              this.dirtyStyleSheets.add(parent as Element);
               break;
             }
             this.reconcileChildren(parent as Element, childIds);
@@ -726,6 +734,14 @@ export class HostDomPatcher {
         }
       }
     } finally {
+      // Flush coalesced `<style>` updates once per batch (after all child text/reconcile ops).
+      if (this.dirtyStyleSheets.size > 0) {
+        const dirty = [...this.dirtyStyleSheets];
+        this.dirtyStyleSheets.clear();
+        for (const sheet of dirty) {
+          if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
+        }
+      }
       // Always re-sanitize written & shadow stylesheets even if an op threw mid-batch so a
       // `:host` rule from a guest shadow root can never survive inside `pageRoot`.
       if (this.writtenSheets.size > 0) {
@@ -751,6 +767,7 @@ export class HostDomPatcher {
         this.writtenSheets.clear();
         if (this.shadowRoots.size >= this.rootsAtSweep + SWEEP_ROOTS_EVERY) this.sweepShadowRoots();
       }
+      if (layoutAffected) this.cachedOriginBox = null;
     }
     if (this.nodes.size >= this.nodesAtSweep + this.sweepNodesEvery) this.sweepNodes();
     this.limitOffPageCanvases();
@@ -967,6 +984,7 @@ export class HostDomPatcher {
       this.pendingProperties.delete(node);
       this.shadowSheets.delete(node);
       this.writtenSheets.delete(node);
+      this.dirtyStyleSheets.delete(node);
       if (node.shadowRoot && this.shadowRoots.has(node.shadowRoot)) this.dropShadowRoot(node.shadowRoot);
     }
   }
@@ -1349,7 +1367,7 @@ export class HostDomPatcher {
         desiredSet.add(child);
         if (child instanceof HTMLCanvasElement && parent instanceof Element) {
           const pid = Number(parent.getAttribute(NODE_ID_ATTR));
-          if (Number.isInteger(pid) && pid > 1 && !this.measuredIds.has(pid)) {
+          if (Number.isInteger(pid) && pid > 1 && !this.measuredIds.has(pid) && this.measuredIds.size < HostDomPatcher.MAX_MEASURED_IDS) {
             this.measuredIds.add(pid);
             this.resizeObserver?.observe(parent);
             this.scheduleBoxMeasure();
@@ -1377,7 +1395,7 @@ export class HostDomPatcher {
     const parentInShadow = this.cssScope(parent) === 'shadow';
     let cursor: Node | null = parent.firstChild;
     for (const target of desiredNodes) {
-      if (target === parent || target.contains(parent)) continue;
+      if (target === parent || (target.nodeType !== Node.TEXT_NODE && target.parentNode !== parent && target.contains(parent))) continue;
       if (cursor === target) {
         cursor = cursor.nextSibling;
       } else {
@@ -1473,9 +1491,11 @@ export class HostDomPatcher {
         }
         break;
       case 'measure':
-        this.measuredIds.add(id);
-        this.resizeObserver?.observe(el);
-        this.scheduleBoxMeasure();
+        if (this.measuredIds.has(id) || this.measuredIds.size < HostDomPatcher.MAX_MEASURED_IDS) {
+          this.measuredIds.add(id);
+          this.resizeObserver?.observe(el);
+          this.scheduleBoxMeasure();
+        }
         break;
       default:
         // A structured value (`data`, `options`, `rows`) for a `<softn-*>` element: only a
@@ -1751,6 +1771,10 @@ export class HostDomPatcher {
       const out: Keyframe = {};
       for (const [name, v] of Object.entries(raw as Record<string, unknown>).slice(0, 64)) {
         if (!/^[A-Za-z][A-Za-z-]{0,63}$/.test(name)) continue;
+        const lowerKey = name.toLowerCase();
+        if (lowerKey === 'appearance' || lowerKey === 'webkitappearance' || lowerKey === 'mozappearance' || lowerKey === '-webkit-appearance' || lowerKey === '-moz-appearance') {
+          continue;
+        }
         if (name === 'offset') {
           if (typeof v === 'number' && v >= 0 && v <= 1) out.offset = v;
         } else if (name === 'easing' || name === 'composite') {
@@ -2250,8 +2274,17 @@ export class HostDomPatcher {
    * the embedding page it had been put.
    */
   private origin(): AppOrigin {
-    const box = typeof this.docRootEl.getBoundingClientRect === 'function' ? this.docRootEl.getBoundingClientRect() : null;
-    return { left: box?.left ?? 0, top: box?.top ?? 0, scrollLeft: this.docRootEl.scrollLeft || 0, scrollTop: this.docRootEl.scrollTop || 0 };
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!this.cachedOriginBox || now - this.cachedOriginBox.at > 120) {
+      const box = typeof this.docRootEl.getBoundingClientRect === 'function' ? this.docRootEl.getBoundingClientRect() : null;
+      this.cachedOriginBox = { left: box?.left ?? 0, top: box?.top ?? 0, at: now };
+    }
+    return {
+      left: this.cachedOriginBox.left,
+      top: this.cachedOriginBox.top,
+      scrollLeft: this.docRootEl.scrollLeft || 0,
+      scrollTop: this.docRootEl.scrollTop || 0,
+    };
   }
 
   /**

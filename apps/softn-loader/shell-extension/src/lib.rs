@@ -42,6 +42,10 @@ const MAX_BUNDLE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
 /// The widest and tallest raster icon decoded.
 const MAX_ICON_SIDE: u32 = 4096;
+/// Maximum embedded raster `<image>` elements allowed per SVG icon.
+const MAX_SVG_EMBEDDED_IMAGES: usize = 8;
+/// Maximum aggregate decoded pixel bytes across all embedded `<image>` elements in an SVG icon.
+const MAX_SVG_EMBEDDED_PIXELS_BYTES: usize = 32 * 1024 * 1024;
 /// The stack an SVG icon is parsed and drawn on.
 const SVG_STACK_BYTES: usize = 64 * 1024 * 1024;
 
@@ -112,14 +116,16 @@ impl SoftNThumbnailProvider {
     }
 }
 
-/// An SVG icon names images only inside itself (`data:` URLs), bounded by the
-/// same size and pixel limits as standalone raster icons. usvg's default string
-/// resolver reads any path an `<image>` names (including `\\host\share\a.png`,
-/// leaking NTLM credentials), and its default data resolver decodes arbitrarily
-/// large embedded PNGs or nested SVGs without dimension caps.
+/// An SVG icon names images only inside itself (`data:` URLs), bounded by per-image
+/// and aggregate count/pixel limits so a single SVG cannot embed hundreds of large
+/// raster images. usvg's default string resolver reads any path an `<image>` names
+/// (including `\\host\share\a.png`, leaking NTLM credentials), and its default data
+/// resolver decodes arbitrarily large embedded PNGs or nested SVGs without caps.
 fn svg_options() -> resvg::usvg::Options<'static> {
     let mut options = resvg::usvg::Options::default();
     let default_data = resvg::usvg::ImageHrefResolver::default_data_resolver();
+    let image_count = std::sync::Arc::new(AtomicUsize::new(0));
+    let total_pixel_bytes = std::sync::Arc::new(AtomicUsize::new(0));
     options.image_href_resolver = resvg::usvg::ImageHrefResolver {
         resolve_data: Box::new(move |mime, data, opts| {
             if data.len() as u64 > MAX_ENTRY_BYTES {
@@ -128,16 +134,25 @@ fn svg_options() -> resvg::usvg::Options<'static> {
             if mime.eq_ignore_ascii_case("image/svg+xml") {
                 return None;
             }
+            let prev_count = image_count.fetch_add(1, Ordering::Relaxed);
+            if prev_count >= MAX_SVG_EMBEDDED_IMAGES {
+                return None;
+            }
             let reader = image::ImageReader::new(std::io::Cursor::new(data.as_slice()))
                 .with_guessed_format()
                 .ok()?;
             let (w, h) = reader.into_dimensions().ok()?;
+            let pixel_bytes = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
             if w == 0
                 || h == 0
                 || w > MAX_ICON_SIDE
                 || h > MAX_ICON_SIDE
-                || (w as u64).saturating_mul(h as u64).saturating_mul(4) > MAX_ENTRY_BYTES * 8
+                || pixel_bytes > MAX_SVG_EMBEDDED_PIXELS_BYTES
             {
+                return None;
+            }
+            let prev_bytes = total_pixel_bytes.fetch_add(pixel_bytes, Ordering::Relaxed);
+            if prev_bytes.saturating_add(pixel_bytes) > MAX_SVG_EMBEDDED_PIXELS_BYTES {
                 return None;
             }
             default_data(mime, data, opts)
@@ -289,14 +304,19 @@ impl SoftNThumbnailProvider {
 
     /// Extract icon and return both data and the file name (for format detection)
     fn extract_icon_with_name(&self) -> Option<(Vec<u8>, String)> {
-        // First try stream data (preferred by Windows)
-        if let Some(data) = self.stream_data.borrow().as_ref() {
-            return self.find_icon_with_name_in_zip(data);
+        // First try stream data (preferred by Windows); use try_borrow so re-entrant
+        // COM calls never panic across the FFI boundary.
+        if let Ok(stream_ref) = self.stream_data.try_borrow() {
+            if let Some(data) = stream_ref.as_ref() {
+                return self.find_icon_with_name_in_zip(data);
+            }
+        } else {
+            return None;
         }
 
         // Fall back to file path
-        let path = self.file_path.borrow();
-        let path = path.as_ref()?;
+        let path_ref = self.file_path.try_borrow().ok()?;
+        let path = path_ref.as_ref()?;
 
         let file = File::open(path).ok()?;
         let mut data = Vec::new();
@@ -354,7 +374,8 @@ impl SoftNThumbnailProvider {
 impl IInitializeWithFile_Impl for SoftNThumbnailProvider_Impl {
     fn Initialize(&self, pszfilepath: &PCWSTR, _grfmode: u32) -> Result<()> {
         let path = unsafe { pszfilepath.to_string()? };
-        *self.file_path.borrow_mut() = Some(PathBuf::from(path));
+        let mut slot = self.file_path.try_borrow_mut().map_err(|_| Error::from(E_UNEXPECTED))?;
+        *slot = Some(PathBuf::from(path));
         Ok(())
     }
 }
@@ -392,7 +413,8 @@ impl IInitializeWithStream_Impl for SoftNThumbnailProvider_Impl {
             }
         }
 
-        *self.stream_data.borrow_mut() = Some(data);
+        let mut slot = self.stream_data.try_borrow_mut().map_err(|_| Error::from(E_UNEXPECTED))?;
+        *slot = Some(data);
         Ok(())
     }
 }
@@ -547,6 +569,13 @@ fn register_server() -> std::io::Result<()> {
             buf_len *= 2;
         };
 
+        fn reg_sz_bytes(s: &str) -> Vec<u8> {
+            s.encode_utf16()
+                .chain(std::iter::once(0u16))
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        }
+
         // Use HKEY_CURRENT_USER for per-user registration (no admin needed)
         let mut raw_key = HKEY::default();
 
@@ -558,8 +587,8 @@ fn register_server() -> std::io::Result<()> {
         }
         {
             let hkey = RegKeyGuard(raw_key);
-            let value = HSTRING::from("SoftN Thumbnail Provider");
-            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(value.as_wide().align_to::<u8>().1)).ok()
+            let value = reg_sz_bytes("SoftN Thumbnail Provider");
+            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(&value)).ok()
                 .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
         }
 
@@ -572,12 +601,12 @@ fn register_server() -> std::io::Result<()> {
         }
         {
             let hkey = RegKeyGuard(raw_key);
-            let dll_path_h = HSTRING::from(&dll_path);
-            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(dll_path_h.as_wide().align_to::<u8>().1)).ok()
+            let dll_path_bytes = reg_sz_bytes(&dll_path);
+            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(&dll_path_bytes)).ok()
                 .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
-            let threading = HSTRING::from("Apartment");
-            RegSetValueExW(hkey.0, &HSTRING::from("ThreadingModel"), 0, REG_SZ, Some(threading.as_wide().align_to::<u8>().1)).ok()
+            let threading = reg_sz_bytes("Apartment");
+            RegSetValueExW(hkey.0, &HSTRING::from("ThreadingModel"), 0, REG_SZ, Some(&threading)).ok()
                 .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
         }
 
@@ -590,8 +619,8 @@ fn register_server() -> std::io::Result<()> {
         }
         {
             let hkey = RegKeyGuard(raw_key);
-            let clsid_h = HSTRING::from(&clsid_str);
-            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(clsid_h.as_wide().align_to::<u8>().1)).ok()
+            let clsid_bytes = reg_sz_bytes(&clsid_str);
+            RegSetValueExW(hkey.0, None, 0, REG_SZ, Some(&clsid_bytes)).ok()
                 .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
         }
     }
@@ -690,5 +719,31 @@ mod tests {
         unsafe {
             let _ = DeleteObject(bitmap);
         }
+    }
+
+    #[test]
+    fn svg_options_caps_embedded_raster_image_count() {
+        fn count_images(group: &resvg::usvg::Group) -> usize {
+            let mut n = 0;
+            for child in group.children() {
+                match child {
+                    resvg::usvg::Node::Image(_) => n += 1,
+                    resvg::usvg::Node::Group(g) => n += count_images(g),
+                    _ => {}
+                }
+            }
+            n
+        }
+        let png_uri = format!("data:image/png;base64,{}", base64(&red_png()));
+        let mut images = String::new();
+        for _ in 0..(MAX_SVG_EMBEDDED_IMAGES + 4) {
+            images.push_str(&format!(r#"<image width="8" height="8" xlink:href="{png_uri}"/>"#));
+        }
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8">{images}</svg>"#
+        );
+        let opts = svg_options();
+        let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &opts).unwrap();
+        assert_eq!(count_images(tree.root()), MAX_SVG_EMBEDDED_IMAGES);
     }
 }

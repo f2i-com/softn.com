@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -52,6 +52,7 @@ const FRONTEND_BOOT_STEP_BUDGET: u64 = 2_000_000_000;
 const FRONTEND_INTERACT_STEP_BUDGET: u64 = 500_000_000;
 const FRONTEND_HEAP_LIMIT_BYTES: usize = 128 * 1024 * 1024;
 const FRONTEND_BOOT_WALL_MS: u64 = 15_000;
+const FRONTEND_INTERACT_WALL_MS: u64 = if cfg!(debug_assertions) { 15_000 } else { 10_000 };
 const MAX_DRAIN_WALL_MS: u64 = 5_000;
 const RUST_TIMER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_DATA_URL_BYTES: usize = 32 * 1024 * 1024;
@@ -128,7 +129,11 @@ function __zippFetchBytes(url, credentials) {
         __zippHostBytes = new Uint8Array(Math.max(len, __zippHostBytes.length * 2));
     }
     __zippHostCall("take_bytes");
-    return __zippHostBytes.slice(0, len).buffer;
+    var buf = __zippHostBytes.slice(0, len).buffer;
+    if (__zippHostBytes.length > 262144) {
+        __zippHostBytes = new Uint8Array(65536);
+    }
+    return buf;
 }
 var env = {
     log: function (level, message) {
@@ -770,6 +775,7 @@ pub struct SoftnMobileEngine {
     last_rust_poll: Instant,
     rust_active_until: Instant,
     open_ws_count: Arc<AtomicUsize>,
+    last_user_gesture_ms: Arc<AtomicU64>,
     layout_dirty: bool,
     full_repaint: bool,
     dirty_canvas_nodes: Vec<usize>,
@@ -806,6 +812,7 @@ impl SoftnMobileEngine {
         let _ = std::fs::create_dir_all(&app_data_dir);
         let databases = bundle.manifest.databases.clone().unwrap_or_default();
         let storage = SqlStorage::new(&app_data_dir, databases)?;
+        storage.preseed_all(&bundle.vfs)?;
         let backend = LocalContainerBackend::new(&bundle, storage.clone())?.map(Arc::new);
         let blobs = Arc::new(BlobStore::new());
         let http_cache = Arc::new(MobileHttpCache::open(&app_data_dir));
@@ -850,6 +857,7 @@ impl SoftnMobileEngine {
         let logical_h = ((height.max(1) as f32) / scale.max(1.0)).round().max(480.0) as u32;
         let js_abort = Arc::new(AtomicBool::new(false));
         let open_ws_count = Arc::new(AtomicUsize::new(0));
+        let last_user_gesture_ms = Arc::new(AtomicU64::new(0));
 
         // Boot frontend JavaScript/TypeScript inside `zipp-vm`
         let js_state = boot_frontend_vm(
@@ -873,6 +881,7 @@ impl SoftnMobileEngine {
             Arc::clone(&logs),
             Arc::clone(&js_abort),
             Arc::clone(&open_ws_count),
+            Arc::clone(&last_user_gesture_ms),
         )?;
 
         let mut engine = Self {
@@ -923,6 +932,7 @@ impl SoftnMobileEngine {
             last_rust_poll: Instant::now() - Duration::from_secs(1),
             rust_active_until: Instant::now() + Duration::from_secs(2),
             open_ws_count,
+            last_user_gesture_ms,
             layout_dirty: true,
             full_repaint: true,
             dirty_canvas_nodes: Vec::new(),
@@ -1154,7 +1164,7 @@ impl SoftnMobileEngine {
         if let Some(ref mut st) = self.js_state {
             let _ = st.renew_step_budget(FRONTEND_INTERACT_STEP_BUDGET);
         }
-        WallDeadlineGuard::arm(Arc::clone(&self.js_abort), MAX_DRAIN_WALL_MS)
+        WallDeadlineGuard::arm(Arc::clone(&self.js_abort), FRONTEND_INTERACT_WALL_MS)
     }
 
     fn has_pending_raf(&mut self) -> bool {
@@ -1220,6 +1230,7 @@ impl SoftnMobileEngine {
 
     /// Handle a tap at physical pixel coordinates `(x, y)` on Android.
     pub fn on_tap(&mut self, phys_x: f32, phys_y: f32) -> InteractionResult {
+        self.last_user_gesture_ms.store(gesture_now_ms(), Ordering::Relaxed);
         let _watchdog = self.renew_frontend_budget();
         if self.backend.as_ref().is_some_and(|b| b.is_rust_backend()) {
             self.rust_active_until = Instant::now() + Duration::from_secs(2);
@@ -1308,11 +1319,14 @@ impl SoftnMobileEngine {
                 } else {
                     self.focused_flid = None;
                     if tag == "input" && itype == "checkbox" {
+                        let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
                         if let Some(ref mut st) = self.js_state {
-                            let _ = st.call_global(
-                                "__softnToggleCheckbox",
-                                &[JsValue::Number(f64::from(flid))],
-                            );
+                            stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                                let _ = st.call_global(
+                                    "__softnToggleCheckbox",
+                                    &[JsValue::Number(f64::from(flid))],
+                                );
+                            });
                         }
                     }
                 }
@@ -1416,6 +1430,7 @@ impl SoftnMobileEngine {
 
     /// Select an option on a `<select>` element chosen from Android's native picker dialog.
     pub fn on_select_option(&mut self, flid: u32, index: i32) -> InteractionResult {
+        self.last_user_gesture_ms.store(gesture_now_ms(), Ordering::Relaxed);
         let _watchdog = self.renew_frontend_budget();
         if self.backend.as_ref().is_some_and(|b| b.is_rust_backend()) {
             self.rust_active_until = Instant::now() + Duration::from_secs(2);
@@ -1423,16 +1438,20 @@ impl SoftnMobileEngine {
         {
             let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
             if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global(
-                    "__softnSetSelectIndex",
-                    &[JsValue::Number(f64::from(flid)), JsValue::Number(f64::from(index))],
-                );
-                drain_js(st);
+                stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                    let _ = st.call_global(
+                        "__softnSetSelectIndex",
+                        &[JsValue::Number(f64::from(flid)), JsValue::Number(f64::from(index))],
+                    );
+                    drain_js(st);
+                });
             }
             if self.has_canvas() || self.has_any_raf_queued() {
                 if let Some(ref mut st) = self.js_state {
-                    let _ = st.call_global("__zippStepRaf", &[]);
-                    drain_js(st);
+                    stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                        let _ = st.call_global("__zippStepRaf", &[]);
+                        drain_js(st);
+                    });
                 }
             }
         }
@@ -1442,8 +1461,10 @@ impl SoftnMobileEngine {
             {
                 let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
                 if let Some(ref mut st) = self.js_state {
-                    let _ = st.call_global("__zippStepRaf", &[]);
-                    drain_js(st);
+                    stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                        let _ = st.call_global("__zippStepRaf", &[]);
+                        drain_js(st);
+                    });
                 }
             }
             self.sync_dom_from_vm();
@@ -1455,6 +1476,7 @@ impl SoftnMobileEngine {
     /// `<canvas>` (such as the 3D Mine Map), capturing subsequent move/up drags to orbit/pan
     /// instead of scrolling the page.
     pub fn on_pointer_down(&mut self, phys_x: f32, phys_y: f32) -> bool {
+        self.last_user_gesture_ms.store(gesture_now_ms(), Ordering::Relaxed);
         self.active_canvas_flid = None;
         self.last_pointer_phys = (phys_x, phys_y);
         if self.canvas_flids.is_empty() {
@@ -1693,15 +1715,17 @@ impl SoftnMobileEngine {
         {
             let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
             if let Some(ref mut st) = self.js_state {
-                let _ = st.call_global(
-                    "__softnResolveDeviceCall",
-                    &[
-                        JsValue::Number(request_id as f64),
-                        JsValue::Bool(ok),
-                        JsValue::String(payload_json.to_string()),
-                    ],
-                );
-                drain_js(st);
+                stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                    let _ = st.call_global(
+                        "__softnResolveDeviceCall",
+                        &[
+                            JsValue::Number(request_id as f64),
+                            JsValue::Bool(ok),
+                            JsValue::String(payload_json.to_string()),
+                        ],
+                    );
+                    drain_js(st);
+                });
             }
         }
         self.sync_dom_from_vm();
@@ -1726,31 +1750,35 @@ impl SoftnMobileEngine {
                         self.rust_active_until = Instant::now() + Duration::from_secs(2);
                         if let Some(ref mut st) = self.js_state {
                             let frames_json = Value::Array(ws_frames).to_string();
-                            let _ = st.call_global(
-                                "__softnDeliverWsFrames",
-                                &[JsValue::String(frames_json)],
-                            );
-                            st.run_microtasks();
+                            stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                                let _ = st.call_global(
+                                    "__softnDeliverWsFrames",
+                                    &[JsValue::String(frames_json)],
+                                );
+                                st.run_microtasks();
+                            });
                             changed = true;
                         }
                     }
                 }
             }
             if let Some(ref mut st) = self.js_state {
-                if let Ok(JsValue::Number(n)) =
-                    st.call_global("__zippDrainQueues", &[JsValue::Number(8.0)])
-                {
-                    if n > 0.0 {
-                        st.run_microtasks();
-                        changed = true;
+                stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+                    if let Ok(JsValue::Number(n)) =
+                        st.call_global("__zippDrainQueues", &[JsValue::Number(8.0)])
+                    {
+                        if n > 0.0 {
+                            st.run_microtasks();
+                            changed = true;
+                        }
                     }
-                }
-                if let Ok(JsValue::Number(r)) = st.call_global("__zippStepRaf", &[]) {
-                    if r > 0.0 {
-                        st.run_microtasks();
-                        changed = true;
+                    if let Ok(JsValue::Number(r)) = st.call_global("__zippStepRaf", &[]) {
+                        if r > 0.0 {
+                            st.run_microtasks();
+                            changed = true;
+                        }
                     }
-                }
+                });
             }
         }
         if changed {
@@ -1818,7 +1846,10 @@ impl SoftnMobileEngine {
         let Some(ref mut st) = self.js_state else {
             return String::new();
         };
-        match st.call_global("__getRenderedHTML", &[]) {
+        let res = stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
+            st.call_global("__getRenderedHTML", &[])
+        });
+        match res {
             Ok(JsValue::String(s)) => s,
             _ => String::new(),
         }
@@ -2271,6 +2302,7 @@ fn boot_frontend_vm(
     logs: Arc<Mutex<Vec<String>>>,
     abort: Arc<AtomicBool>,
     open_ws_count: Arc<AtomicUsize>,
+    last_user_gesture_ms: Arc<AtomicU64>,
 ) -> Result<Option<ScriptState>, String> {
     let (classic_scripts, module_entries) = extract_scripts(raw_html, bundle);
     if classic_scripts.is_empty() && module_entries.is_empty() {
@@ -2410,6 +2442,7 @@ fn boot_frontend_vm(
     let mut pending_bytes: Vec<u8> = Vec::new();
     let mut open_ws_ids: HashSet<String> = HashSet::new();
     let ws_count_hc = Arc::clone(&open_ws_count);
+    let gesture_hc = Arc::clone(&last_user_gesture_ms);
     let sql_abort = Arc::new(AtomicBool::new(false));
     let mut frontend_sql = RequestSqlBridge::new(storage.clone(), Arc::clone(&sql_abort));
 
@@ -2733,6 +2766,7 @@ fn boot_frontend_vm(
                     logical_h,
                     scale,
                     &pending_hc,
+                    &gesture_hc,
                     req_id,
                     namespace,
                     method,
@@ -2954,7 +2988,9 @@ fn probe_image_info(bundle: &SoftnBundle, blobs: &BlobStore, url: &str) -> Strin
                 return json!({ "width": w, "height": h }).to_string();
             }
         }
-        if let Some((w, h)) = zipp_renderer::svg_size(&bytes) {
+        if let Some((w, h)) = canvas2d::sanitize_svg_for_raster(&bytes)
+            .and_then(|clean| zipp_renderer::svg_size(&clean))
+        {
             return json!({ "width": w, "height": h }).to_string();
         }
     }
@@ -3718,6 +3754,11 @@ fn format_fetch_response(
     .to_string()
 }
 
+fn gesture_now_ms() -> u64 {
+    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+    START.elapsed().as_millis().min(u64::MAX as u128) as u64 + 1
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_softn_device(
     bundle: &SoftnBundle,
@@ -3726,6 +3767,7 @@ fn handle_softn_device(
     logical_h: u32,
     scale: f32,
     pending_calls: &Arc<Mutex<Vec<PendingDeviceRequest>>>,
+    last_user_gesture_ms: &Arc<AtomicU64>,
     req_id: u64,
     namespace: &str,
     method: &str,
@@ -3771,6 +3813,21 @@ fn handle_softn_device(
             "result": { "available": available, "permitted": permitted }
         })
         .to_string();
+    }
+
+    // 2b. Native OS Share sheet requires a fresh (<= 5 s) user gesture and consumes it
+    // so an untrusted app cannot spam share dialogs in the background or on load.
+    if namespace == "device" && method == "share" {
+        let prev = last_user_gesture_ms.load(Ordering::Relaxed);
+        let now = gesture_now_ms();
+        if prev == 0 || now.saturating_sub(prev) > 5_000 {
+            return json!({
+                "ok": false,
+                "error": "Share requires a recent user tap or interaction."
+            })
+            .to_string();
+        }
+        last_user_gesture_ms.store(0, Ordering::Relaxed);
     }
 
     // 3. Enforce capability declaration in permission.json + host user consent natively in Rust

@@ -201,10 +201,10 @@ impl XdbDatabase {
     pub fn open(path: PathBuf) -> DbResult<Self> {
         let conn = Connection::open(&path)?;
 
-        // Enable WAL mode for better concurrent read performance.
-        // WAL allows readers to proceed without blocking on writers,
-        // when other connections read the same database.
+        // Enable WAL mode and NORMAL synchronous for better concurrent read and write performance.
+        // In WAL mode, NORMAL guarantees crash consistency without per-commit fsync stalls.
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
 
         Self::initialize_schema(&conn)?;
 
@@ -234,6 +234,7 @@ impl XdbDatabase {
 
             CREATE INDEX IF NOT EXISTS idx_collection ON records(collection);
             CREATE INDEX IF NOT EXISTS idx_deleted ON records(deleted);
+            CREATE INDEX IF NOT EXISTS idx_records_col_del_created ON records(collection, deleted, created_at DESC);
 
             CREATE TABLE IF NOT EXISTS crdt_state (
                 collection TEXT PRIMARY KEY,
@@ -987,7 +988,14 @@ impl XdbDatabase {
             params![serde_json::to_string(&merged_data)?, &now, id],
         )?;
 
-        let record = self.get_record(id)?;
+        let record = Record {
+            id: existing.id,
+            collection: existing.collection,
+            data: merged_data,
+            created_at: existing.created_at,
+            updated_at: now,
+            deleted: existing.deleted,
+        };
         let record_json = serde_json::to_string(&record)?;
 
         // Update CRDT and get update bytes
@@ -1546,9 +1554,11 @@ impl XdbDatabase {
         // Now update SQLite with the extracted records: those of this collection, and not
         // over a record another collection holds under the same id (`upsert_record`).
         let mut written = Vec::with_capacity(updated_records.len());
+        let mut skipped_ids: Vec<String> = Vec::new();
         for record in updated_records {
             if self.held_by_another_collection(&record)? {
                 tracing::warn!("Remote update for {} skips record {}: it is a record of another collection here", collection, record.id);
+                skipped_ids.push(record.id);
                 continue;
             }
             self.conn.execute(
@@ -1563,6 +1573,18 @@ impl XdbDatabase {
                 ],
             )?;
             written.push(record);
+        }
+
+        // Remove any skipped cross-collection ids from this collection's CRDT map so
+        // the persisted Yrs doc stays consistent with SQLite and never re-exports them.
+        if !skipped_ids.is_empty() {
+            if let Some(doc) = self.docs.get_mut(collection) {
+                let mut txn = doc.transact_mut();
+                let map = txn.get_or_insert_map("records");
+                for id in &skipped_ids {
+                    map.remove(&mut txn, id.as_str());
+                }
+            }
         }
 
         // Save CRDT state

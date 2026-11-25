@@ -9,14 +9,17 @@
 use crate::data_identity::DataIdentity;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::LazyLock;
 use tauri::State;
 use xdb::tauri::{
-    CreateRecordPayload, NetworkStatus, SharedDbManager, SharedNetworkControl, SharedNetworkState,
-    UpdateRecordPayload,
+    CreateRecordPayload, NetworkStatus, RecoveryOutcome, SharedDbManager, SharedNetworkControl,
+    SharedNetworkState, UpdateRecordPayload,
 };
 use xdb::{CollectionImport, DbStats, ImportSummary, Record};
 
 static BACKUP_SEQ: AtomicU64 = AtomicU64::new(0);
+static BACKUP_LOCK: LazyLock<tauri::async_runtime::Mutex<()>> =
+    LazyLock::new(|| tauri::async_runtime::Mutex::new(()));
 
 #[tauri::command]
 pub async fn create_record(
@@ -195,6 +198,7 @@ pub async fn backup_database(
     identity: State<'_, DataIdentity>,
     app_id: Option<String>,
 ) -> Result<String, String> {
+    let _backup_guard = BACKUP_LOCK.lock().await;
     let app_id = Some(identity.require(app_id.as_deref())?);
     let db_path = std::path::PathBuf::from(xdb::tauri::get_db_path(db_manager.clone(), app_id.clone())?);
     let directory = db_path
@@ -226,6 +230,35 @@ fn redact_path(path: Option<String>) -> Option<String> {
     })
 }
 
+/// Strip the database base directory (and any embedded pending-restore paths) from
+/// error messages returned to the webview so local filesystem layout stays private.
+fn sanitize_error_paths(mut message: String, base_dir: &Path, control: &SharedNetworkControl) -> String {
+    let base = base_dir.to_string_lossy();
+    if !base.is_empty() {
+        message = message.replace(base.as_ref(), "<data>");
+    }
+    if let Ok(canon) = std::fs::canonicalize(base_dir) {
+        let canon_str = canon.to_string_lossy();
+        if !canon_str.is_empty() {
+            message = message.replace(canon_str.as_ref(), "<data>");
+        }
+    }
+    if let Some(pending) = control.pending_restore() {
+        if let Some(backup) = pending.backup_path.as_deref() {
+            let redacted = redact_path(Some(backup.to_string())).unwrap_or_else(|| "<backup>".to_string());
+            message = message.replace(backup, &redacted);
+        }
+        if let Some(source) = pending.source_path.as_deref() {
+            let redacted = redact_path(Some(source.to_string())).unwrap_or_else(|| "<snapshot>".to_string());
+            message = message.replace(source, &redacted);
+        }
+        if let Some(reason) = pending.unreadable.as_deref() {
+            message = message.replace(reason, "pending-restore record is unreadable");
+        }
+    }
+    message
+}
+
 /// Network status with OS paths inside `pending_restore` redacted to basenames.
 #[tauri::command]
 pub async fn get_network_status(
@@ -236,6 +269,55 @@ pub async fn get_network_status(
     if let Some(pending) = status.pending_restore.as_mut() {
         pending.backup_path = redact_path(pending.backup_path.take());
         pending.source_path = redact_path(pending.source_path.take());
+        if pending.unreadable.is_some() {
+            pending.unreadable = Some("pending-restore record is unreadable".to_string());
+        }
     }
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn resume_sync(
+    db_manager: State<'_, SharedDbManager>,
+    network: State<'_, SharedNetworkState>,
+    control: State<'_, SharedNetworkControl>,
+    identity: State<'_, DataIdentity>,
+) -> Result<bool, String> {
+    if !identity.open_started() {
+        return Err("Refused: no app is open".to_string());
+    }
+    let base_dir = db_manager.base_dir().clone();
+    let control_ref = control.inner().clone();
+    xdb::tauri::resume_sync(network, control)
+        .await
+        .map_err(|err| sanitize_error_paths(err, &base_dir, &control_ref))
+}
+
+#[tauri::command]
+pub async fn recover_restore(
+    db_manager: State<'_, SharedDbManager>,
+    network: State<'_, SharedNetworkState>,
+    control: State<'_, SharedNetworkControl>,
+    identity: State<'_, DataIdentity>,
+    action: String,
+) -> Result<RecoveryOutcome, String> {
+    if !identity.open_started() {
+        return Err("Refused: no app is open".to_string());
+    }
+    let base_dir = db_manager.base_dir().clone();
+    let control_ref = control.inner().clone();
+    xdb::tauri::recover_restore(db_manager, network, control, action)
+        .await
+        .map_err(|err| sanitize_error_paths(err, &base_dir, &control_ref))
+}
+
+#[tauri::command]
+pub async fn reconcile_network(
+    network: State<'_, SharedNetworkState>,
+    identity: State<'_, DataIdentity>,
+) -> Result<bool, String> {
+    if !identity.open_started() {
+        return Err("Refused: no app is open".to_string());
+    }
+    xdb::tauri::reconcile_network(network).await
 }

@@ -93,12 +93,15 @@ function pastUrl(css: string, open: number): number {
   return close < 0 ? css.length : close + 1;
 }
 
-function pastBlock(css: string, i: number): number {
+const MAX_CSS_DEPTH = 64;
+
+function pastBlock(css: string, i: number, depth = 0): number {
+  if (depth >= MAX_CSS_DEPTH) return css.length;
   const close = css[i] === '{' ? '}' : css[i] === '[' ? ']' : ')';
   let j = i + 1;
   while (j < css.length) {
     if (css[j] === close) return j + 1;
-    j = pastValue(css, j);
+    j = pastValue(css, j, depth + 1);
   }
   return css.length;
 }
@@ -108,11 +111,11 @@ function pastBlock(css: string, i: number): number {
  * block with everything in it, a hash or at-keyword, or one character. A
  * closer of the wrong kind is one character, as it is to the browser.
  */
-function pastValue(css: string, i: number): number {
+function pastValue(css: string, i: number, depth = 0): number {
   const c = css[i];
   if (c === '/' && css[i + 1] === '*') return pastComment(css, i);
   if (c === '"' || c === "'") return pastString(css, i);
-  if (c === '{' || c === '(' || c === '[') return pastBlock(css, i);
+  if (c === '{' || c === '(' || c === '[') return pastBlock(css, i, depth);
   if (c === '#' || c === '@') {
     let j = i + 1;
     while (isIdentChar(css[j])) j++;
@@ -231,7 +234,7 @@ class Scoper {
   readonly root: string;
 
   /** `outer`: the stylesheet a group rule's block is in, whose names it shares. */
-  constructor(readonly css: string, readonly app: string, outer?: Scoper) {
+  constructor(readonly css: string, readonly app: string, outer?: Scoper, readonly depth = 0) {
     this.restriction = insideTheApp(app);
     this.root = rootOfTheApp(app);
     this.fonts = outer?.fonts ?? new Map();
@@ -283,8 +286,9 @@ class Scoper {
     if (prelude.startsWith('@')) {
       const name = (/^@([\w-]+)/.exec(prelude)?.[1] ?? '').toLowerCase();
       if (GROUP_RULES.has(name)) {
+        if (this.depth >= MAX_CSS_DEPTH) return '';
         // One stylesheet: a name given inside `@media` is the stylesheet's.
-        return `${prelude} {\n${new Scoper(body, this.app, this).rules(0, body.length)}}\n`;
+        return `${prelude} {\n${new Scoper(body, this.app, this, this.depth + 1).rules(0, body.length)}}\n`;
       }
       if (KEYFRAMES.test(name)) {
         const own = prelude.slice(name.length + 1).trim();

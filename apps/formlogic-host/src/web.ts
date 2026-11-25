@@ -110,8 +110,9 @@ window.addEventListener('message', async event => {
       if (allowPath(path)) source[path] = content;
     }
     for (const [path, content] of Object.entries(data.assets ?? {})) {
+      if (!allowPath(path)) continue;
       const bytes = bytesOf(content);
-      if (bytes && allowPath(path)) source[path] = bytes;
+      if (bytes) source[path] = bytes;
     }
     const lane = data.storageLane === true ? saves : calls;
     store = installAppStorage(data.storage ?? {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle),

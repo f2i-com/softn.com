@@ -375,13 +375,15 @@ final class Bundle
     /**
      * Build (or reuse) a client-only `.softn` bundle stripped of backend code,
      * databases, and server secrets, for a server-hosted app with
-     * `withhold_backend: true`. Cached at `$cachePath`.
+     * `withhold_backend: true`. Cached at `$cachePath` with its SHA-256 cached
+     * at `$cachePath . '.sha256'` so repeated requests avoid re-hashing the ZIP.
      */
     public static function clientBundlePath(string $bundlePath, string $cachePath): string
     {
         if (is_file($cachePath) && @filemtime($cachePath) >= @filemtime($bundlePath)) {
             return $cachePath;
         }
+        Config::requireRoom((int) (@filesize($bundlePath) ?: 0));
         $src = new ZipArchive();
         if ($src->open($bundlePath, ZipArchive::RDONLY) !== true) {
             throw new ApiError(500, 'Could not read bundle to build client package.');
@@ -399,6 +401,12 @@ final class Bundle
         $backendRoot = '';
         $exactPrivate = [];
         $normRel = static fn(mixed $v): string => is_string($v) ? strtolower(trim(str_replace('\\', '/', $v), '/')) : '';
+        $frontendRoot = $normRel($manifest['frontendRoot'] ?? null);
+        $allowedRootFiles = ['permission.json' => true];
+        foreach (['icon', 'thumbnail'] as $metaKey) {
+            $metaVal = $normRel($manifest[$metaKey] ?? null);
+            if ($metaVal !== '') $allowedRootFiles[$metaVal] = true;
+        }
         if (is_array($manifest['backend'] ?? null)) {
             if (is_string($manifest['backend']['root'] ?? null)) {
                 $backendRoot = trim(str_replace('\\', '/', $manifest['backend']['root']), '/');
@@ -460,6 +468,15 @@ final class Bundle
                     continue;
                 }
                 if (self::isBackendPrivatePath($rel, $backendRoot, $exactPrivate)) continue;
+                // When the manifest declares an explicit frontendRoot, allowlist only files
+                // inside frontendRoot plus root metadata/icons so sibling backend JS/TS modules
+                // outside frontendRoot can never leak into a withheld client bundle.
+                if ($frontendRoot !== '') {
+                    $relLower = strtolower(ltrim(str_replace('\\', '/', $rel), '/'));
+                    if (!str_starts_with($relLower, $frontendRoot . '/') && !isset($allowedRootFiles[$relLower])) {
+                        continue;
+                    }
+                }
                 $bytes = $src->getFromIndex($i);
                 if (!is_string($bytes)) continue;
                 $dst->addFromString($rel, $bytes);
@@ -470,9 +487,13 @@ final class Bundle
             }
             $dst->close();
             $src->close();
+            $sha = hash_file('sha256', $tmp);
             if (!@rename($tmp, $cachePath)) {
                 @unlink($tmp);
                 throw new ApiError(503, 'Cannot store client bundle archive.');
+            }
+            if (is_string($sha) && strlen($sha) === 64) {
+                @file_put_contents($cachePath . '.sha256', $sha);
             }
             return $cachePath;
         } catch (Throwable $e) {
@@ -481,6 +502,28 @@ final class Bundle
             if (is_file($tmp)) @unlink($tmp);
             throw $e;
         }
+    }
+
+    /**
+     * Return cached SHA-256 of a client-only bundle (avoiding repeated 32 MiB `hash_file`
+     * calls on every play page / bundle GET request).
+     */
+    public static function clientBundleSha256(string $bundlePath, string $cachePath, string $fallbackSha = ''): string
+    {
+        $path = self::clientBundlePath($bundlePath, $cachePath);
+        $shaFile = $path . '.sha256';
+        if (is_file($shaFile) && @filemtime($shaFile) >= @filemtime($path)) {
+            $cached = trim((string) @file_get_contents($shaFile));
+            if (preg_match('/^[a-f0-9]{64}$/', $cached) === 1) {
+                return $cached;
+            }
+        }
+        $sha = hash_file('sha256', $path);
+        if (is_string($sha) && strlen($sha) === 64) {
+            @file_put_contents($shaFile, $sha);
+            return $sha;
+        }
+        return $fallbackSha;
     }
 
     /**

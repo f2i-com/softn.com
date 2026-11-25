@@ -99,10 +99,27 @@ export function describeNetDestination(
     typeof globalThis.location?.origin === 'string' && globalThis.location.origin !== 'null'
       ? globalThis.location.origin
       : null;
-  if (!listed && hostOrigin && parsed.origin === hostOrigin) {
-    return deny(
-      `Host not allowed: ${parsed.hostname} is the host origin. Name it in net.allowed_hosts to reach it.`
-    );
+  if (!listed && hostOrigin) {
+    let matchesHostOrigin = parsed.origin === hostOrigin;
+    if (!matchesHostOrigin) {
+      try {
+        const hostParsed = new URL(hostOrigin);
+        const hostNameNorm = hostParsed.hostname.toLowerCase().replace(/\.+$/, '');
+        const parsedPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+        const hostPort = hostParsed.port || (hostParsed.protocol === 'https:' ? '443' : '80');
+        matchesHostOrigin =
+          parsed.protocol === hostParsed.protocol &&
+          hostLower === hostNameNorm &&
+          parsedPort === hostPort;
+      } catch {
+        // Ignore unparseable host origin
+      }
+    }
+    if (matchesHostOrigin) {
+      return deny(
+        `Host not allowed: ${parsed.hostname} is the host origin. Name it in net.allowed_hosts to reach it.`
+      );
+    }
   }
   return ALLOW;
 }

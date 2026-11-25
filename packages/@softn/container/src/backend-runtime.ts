@@ -526,6 +526,7 @@ export class BackendWorkerSession {
   private jsEngine: ZippEngineInstance | null = null;
   private pythonEngine: ZippEngineInstance | null = null;
   private lastPhpOverlaySnapshot = '';
+  private lastRawPhpOverlay = '';
   private lastRustOverlaySnapshot = '';
   private rustOverlayWrites: Record<string, string> = Object.create(null);
   private rustOverlayDeleted = new Set<string>();
@@ -797,9 +798,15 @@ export class BackendWorkerSession {
       const raw = this.rustEngine.exportRustOverlayJson();
       if (!raw || raw.length > MAX_OVERLAY_TOTAL_BYTES) return;
       if (raw === '{"writes":{},"deleted":[],"dirs":[]}') {
-        if (Object.keys(this.rustOverlayWrites).length > 0 || this.rustOverlayDeleted.size > 0) {
-          this.rustOverlayWrites = {};
+        if (
+          Object.keys(this.rustOverlayWrites).length > 0 ||
+          this.rustOverlayDeleted.size > 0 ||
+          this.rustOverlayDirs.size > 0
+        ) {
+          this.rustOverlayWrites = Object.create(null);
           this.rustOverlayDeleted.clear();
+          this.rustOverlayDirs.clear();
+          this.lastRustOverlaySnapshot = raw;
           this.postToHost({ type: 'rust-overlay-persist', overlayJson: raw });
         }
         return;
@@ -816,9 +823,10 @@ export class BackendWorkerSession {
           if (typeof b64 !== 'string') continue;
           const norm = normalizeSafeOverlayPath(k);
           if (!norm || this.isProtectedRustOverlayPath(norm)) continue;
-          if (!(norm in this.rustOverlayWrites) && writeCount >= MAX_OVERLAY_ENTRIES) continue;
+          const hasKey = Object.prototype.hasOwnProperty.call(this.rustOverlayWrites, norm);
+          if (!hasKey && writeCount >= MAX_OVERLAY_ENTRIES) continue;
           if (this.rustOverlayWrites[norm] !== b64 || this.rustOverlayDeleted.has(norm)) {
-            if (!(norm in this.rustOverlayWrites)) writeCount++;
+            if (!hasKey) writeCount++;
             this.rustOverlayWrites[norm] = b64;
             this.rustOverlayDeleted.delete(norm);
             dirty = true;
@@ -830,7 +838,7 @@ export class BackendWorkerSession {
           if (typeof d !== 'string') continue;
           const norm = normalizeSafeOverlayPath(d);
           if (!norm || this.isProtectedRustOverlayPath(norm)) continue;
-          if (norm in this.rustOverlayWrites) {
+          if (Object.prototype.hasOwnProperty.call(this.rustOverlayWrites, norm)) {
             delete this.rustOverlayWrites[norm];
             dirty = true;
           }
@@ -1225,11 +1233,15 @@ export class BackendWorkerSession {
       }
       if (this.phpApp) {
         try {
-          const snap = sanitizePhpOverlayJson(this.phpApp.exportOverlayJson(), this.backend?.entry);
-          const isEmptySnap = snap === '{"writes":{},"deleted":[],"dirs":[]}';
-          if (snap !== this.lastPhpOverlaySnapshot && (!isEmptySnap || this.lastPhpOverlaySnapshot !== '')) {
-            this.lastPhpOverlaySnapshot = snap;
-            this.postToHost({ type: 'php-overlay-persist', overlayJson: snap });
+          const rawOverlay = this.phpApp.exportOverlayJson();
+          if (rawOverlay !== this.lastRawPhpOverlay) {
+            this.lastRawPhpOverlay = rawOverlay;
+            const snap = sanitizePhpOverlayJson(rawOverlay, this.backend?.entry);
+            const isEmptySnap = snap === '{"writes":{},"deleted":[],"dirs":[]}';
+            if (snap !== this.lastPhpOverlaySnapshot && (!isEmptySnap || this.lastPhpOverlaySnapshot !== '')) {
+              this.lastPhpOverlaySnapshot = snap;
+              this.postToHost({ type: 'php-overlay-persist', overlayJson: snap });
+            }
           }
         } catch {
           // ignore
@@ -1398,7 +1410,7 @@ export class BackendWorkerSession {
         return {
           status: 200,
           headers: [['Content-Type', mimeTypeFor(staticFile)]],
-          bodyBytes: methodUpper === 'HEAD' ? new Uint8Array(0) : bytes,
+          bodyBytes: methodUpper === 'HEAD' ? new Uint8Array(0) : bytes.slice(),
         };
       }
     }

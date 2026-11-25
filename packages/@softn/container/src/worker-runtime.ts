@@ -3243,8 +3243,13 @@ export class ContainerWorkerSession {
         if (kind === 'bytes.decode') {
           // Bytes from base64 for the app's side, as numbers, which it reads at once: made there
           // a byte at a time, a few megabytes took more than a turn has, and stopped the app.
+          // Cap decoded output at 16 MiB so untrusted base64 input cannot OOM the Worker.
+          const rawB64 = String(args[0] ?? '');
+          if (rawB64.length > 22_400_000) return null;
           try {
-            return Array.from(base64ToBytes(String(args[0] ?? '')));
+            const decoded = base64ToBytes(rawB64);
+            if (decoded.byteLength > 16 * 1024 * 1024) return null;
+            return Array.from(decoded);
           } catch {
             return null;
           }

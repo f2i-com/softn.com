@@ -218,6 +218,16 @@ impl SyncGate {
     }
 }
 
+/// Sends `NetworkCommand::Shutdown` when the last `NetworkNode` handle is dropped,
+/// ensuring the spawned event loop cannot leak even though it holds its own `redial_tx`.
+struct ShutdownGuard(mpsc::Sender<NetworkCommand>);
+
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        let _ = self.0.try_send(NetworkCommand::Shutdown);
+    }
+}
+
 #[derive(Clone)]
 pub struct NetworkNode {
     local_peer_id: PeerId,
@@ -226,6 +236,7 @@ pub struct NetworkNode {
     options: NetworkOptions,
     stats: Arc<StdMutex<SyncStats>>,
     gate: Arc<SyncGate>,
+    _shutdown_guard: Arc<ShutdownGuard>,
 }
 
 #[derive(Debug, Clone)]
@@ -482,6 +493,7 @@ impl NetworkNode {
             .await;
         });
 
+        let shutdown_guard = Arc::new(ShutdownGuard(command_tx.clone()));
         Ok(Self {
             local_peer_id,
             command_tx,
@@ -489,6 +501,7 @@ impl NetworkNode {
             options,
             stats,
             gate,
+            _shutdown_guard: shutdown_guard,
         })
     }
 
@@ -1242,6 +1255,7 @@ mod tests {
     #[tokio::test]
     async fn closed_network_task_reports_stopped_and_rejects_new_work() {
         let (command_tx, command_rx) = mpsc::channel(1);
+        let shutdown_guard = Arc::new(ShutdownGuard(command_tx.clone()));
         let node = NetworkNode {
             local_peer_id: PeerId::random(),
             command_tx,
@@ -1249,6 +1263,7 @@ mod tests {
             options: NetworkOptions::default(),
             stats: Arc::new(StdMutex::new(SyncStats::default())),
             gate: SyncGate::new(),
+            _shutdown_guard: shutdown_guard,
         };
         assert!(node.is_running());
         drop(command_rx);

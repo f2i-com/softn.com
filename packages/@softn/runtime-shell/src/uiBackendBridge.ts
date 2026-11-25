@@ -164,12 +164,16 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
       const binaryFiles: Record<string, Uint8Array> = Object.create(null);
       if (options.bundleBytes && options.bundleBytes.byteLength > 0) {
         const archive = await container.ContainerArchive.open(options.bundleBytes);
-        const exported = archive.exportBackendVfs();
-        for (const [k, v] of Object.entries(exported.textFiles)) {
-          if (!BLOCKED_OBJECT_KEYS.has(k)) textFiles[k] = v;
-        }
-        for (const [k, v] of Object.entries(exported.binaryFiles)) {
-          if (!BLOCKED_OBJECT_KEYS.has(k)) binaryFiles[k] = v;
+        try {
+          const exported = archive.exportBackendVfs();
+          for (const [k, v] of Object.entries(exported.textFiles)) {
+            if (!BLOCKED_OBJECT_KEYS.has(k)) textFiles[k] = v;
+          }
+          for (const [k, v] of Object.entries(exported.binaryFiles)) {
+            if (!BLOCKED_OBJECT_KEYS.has(k)) binaryFiles[k] = v;
+          }
+        } finally {
+          archive.dispose();
         }
       }
       if (options.textFiles) {
@@ -279,7 +283,7 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
     const respHeaders: Record<string, string> = Object.create(null);
     for (const [k, v] of resp.headers) {
       const lower = k.toLowerCase();
-      if (BLOCKED_OBJECT_KEYS.has(lower)) continue;
+      if (BLOCKED_OBJECT_KEYS.has(lower) || lower === 'set-cookie' || lower === 'set-cookie2') continue;
       respHeaders[lower] = respHeaders[lower] ? `${respHeaders[lower]}, ${v}` : v;
     }
 

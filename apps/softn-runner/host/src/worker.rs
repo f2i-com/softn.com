@@ -372,7 +372,11 @@ fn handle(
 
     *stage = "database_open";
     let file = data.join("application.sqlite");
-    if symlink(&file) {
+    if symlink(&file)
+        || ["-wal", "-shm", "-journal"]
+            .iter()
+            .any(|suffix| symlink(&PathBuf::from(format!("{}{suffix}", file.display()))))
+    {
         return Err(HostError::own("Invalid database"));
     }
     let mut db = sql::open(&file)?;

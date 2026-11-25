@@ -476,8 +476,11 @@ function isHostReservedTable(name) {
   return typeof name === 'string' && name.startsWith('_');
 }
 
-function containerSqlAuthorizer(action, a, b, database) {
+function containerSqlAuthorizer(action, a, b, database, state) {
   const C = SQLITE_CONST;
+  if (state && state.inHostSavepoint && (action === C.SQLITE_TRANSACTION || action === C.SQLITE_SAVEPOINT)) {
+    return C.SQLITE_DENY;
+  }
   if (action === C.SQLITE_ATTACH || action === C.SQLITE_DETACH) return C.SQLITE_DENY;
   if (action === C.SQLITE_CREATE_VTABLE || action === C.SQLITE_DROP_VTABLE) return C.SQLITE_DENY;
   if (action === C.SQLITE_ALTER_TABLE) {
@@ -723,10 +726,85 @@ function clampContainerStatus(raw) {
   return Number.isInteger(raw) && raw >= 200 && raw <= 599 ? raw : 500;
 }
 
+/**
+ * Strip SQL comments (`-- ...` and `/* ... *\/`) outside quoted strings/identifiers,
+ * and blank single-quoted string literal contents (`'...'` -> `''`) so strings cannot
+ * mask comment tokens or trigger false positives while quoted identifiers stay intact.
+ */
+function stripSqlCommentsPreservingQuotes(sql) {
+  const src = String(sql ?? '');
+  let out = '';
+  let i = 0;
+  const len = src.length;
+  while (i < len) {
+    const ch = src[i];
+    if (ch === "'") {
+      out += "''";
+      i++;
+      while (i < len) {
+        if (src[i] === "'") {
+          if (i + 1 < len && src[i + 1] === "'") {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '`') {
+      const q = ch;
+      out += q;
+      i++;
+      while (i < len) {
+        const c = src[i];
+        out += c;
+        i++;
+        if (c === q) {
+          if (i < len && src[i] === q) {
+            out += q;
+            i++;
+            continue;
+          }
+          break;
+        }
+      }
+      continue;
+    }
+    if (ch === '[') {
+      out += '[';
+      i++;
+      while (i < len) {
+        const c = src[i];
+        out += c;
+        i++;
+        if (c === ']') break;
+      }
+      continue;
+    }
+    if (ch === '-' && i + 1 < len && src[i + 1] === '-') {
+      out += ' ';
+      i += 2;
+      while (i < len && src[i] !== '\n' && src[i] !== '\r') i++;
+      continue;
+    }
+    if (ch === '/' && i + 1 < len && src[i + 1] === '*') {
+      out += ' ';
+      i += 2;
+      while (i + 1 < len && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i = i + 1 < len ? i + 2 : len;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 function assertSafeSqlStatement(sql) {
-  const stripped = String(sql ?? '')
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/--[^\r\n]*/g, ' ');
+  const stripped = stripSqlCommentsPreservingQuotes(sql);
   if (/\b(?:ATTACH|DETACH)\b/i.test(stripped)) {
     throw new Error('SQLite ATTACH/DETACH is not permitted in sandboxed container');
   }
@@ -741,6 +819,17 @@ function assertSafeSqlStatement(sql) {
   while ((m = pragmaRe.exec(stripped)) !== null) {
     if (!SAFE_PRAGMA_NAMES.has(m[1].toLowerCase())) {
       throw new Error(`SQLite PRAGMA ${m[1]} is not permitted in sandboxed container`);
+    }
+  }
+}
+
+function assertNoSymlinkWithSidecars(filePath) {
+  for (const target of [filePath, `${filePath}-wal`, `${filePath}-shm`, `${filePath}-journal`]) {
+    try {
+      const st = lstatSync(target);
+      if (st.isSymbolicLink()) throw new Error('Database symlink refused');
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
     }
   }
 }
@@ -790,24 +879,14 @@ class NodeSqlManager {
   dbPathFor(key) {
     if (this.primaryDbFile && (!this.primaryKey || key === this.primaryKey)) {
       if (!this.primaryKey) this.primaryKey = key;
-      try {
-        const st = lstatSync(this.primaryDbFile);
-        if (st.isSymbolicLink()) throw new Error('Database symlink refused');
-      } catch (e) {
-        if (e.code !== 'ENOENT') throw e;
-      }
+      assertNoSymlinkWithSidecars(this.primaryDbFile);
       return this.primaryDbFile;
     }
     const file = join(this.dbDir, safeDbFilename(key));
     if (!contained(realpathSync(this.dbDir), resolve(file))) {
       throw new Error('Database path escaped');
     }
-    try {
-      const st = lstatSync(file);
-      if (st.isSymbolicLink()) throw new Error('Database symlink refused');
-    } catch (e) {
-      if (e.code !== 'ENOENT') throw e;
-    }
+    assertNoSymlinkWithSidecars(file);
     return file;
   }
 
@@ -825,7 +904,9 @@ class NodeSqlManager {
       try { db.close(); } catch {}
       throw new Error('Node sqlite setAuthorizer is required for sandboxed container SQL');
     }
-    db.setAuthorizer(containerSqlAuthorizer);
+    const authState = {inHostSavepoint: false};
+    db.setAuthorizer((action, a, b, database) => containerSqlAuthorizer(action, a, b, database, authState));
+    db.__softnAuthState = authState;
     return db;
   }
 
@@ -901,20 +982,41 @@ class NodeSqlManager {
           const sqlText = bundledSql ? bundledSql.toString('utf8') : cfg.seedSql;
           if (sqlText.trim()) {
             assertSafeSqlStatement(sqlText);
+            const strippedLower = stripSqlCommentsPreservingQuotes(sqlText).toLowerCase();
+            const hasRename = /\brename\b/.test(strippedLower);
+            const hasExplicitTx = /\b(?:begin|commit|rollback|savepoint|release|end)\b/.test(strippedLower);
+            if (hasRename && hasExplicitTx) {
+              throw new Error('Seed SQL cannot mix transaction/savepoint control with RENAME');
+            }
             const reservedBefore = new Set(
               db
                 .prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'")
                 .all()
                 .map(r => String(r.name))
             );
-            db.exec(sqlText);
-            const reservedAfter = db
-              .prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'")
-              .all();
-            for (const row of reservedAfter) {
-              if (!reservedBefore.has(String(row.name))) {
-                throw new Error('Seed SQL cannot create or rename objects in host-reserved _ namespace');
+            const useSp = hasRename || !hasExplicitTx;
+            if (useSp) db.exec('SAVEPOINT softn_seed_guard');
+            try {
+              if (useSp && db.__softnAuthState) db.__softnAuthState.inHostSavepoint = true;
+              try {
+                db.exec(sqlText);
+              } finally {
+                if (db.__softnAuthState) db.__softnAuthState.inHostSavepoint = false;
               }
+              const reservedAfter = db
+                .prepare("SELECT name FROM sqlite_master WHERE name LIKE '\\_%' ESCAPE '\\'")
+                .all();
+              for (const row of reservedAfter) {
+                if (!reservedBefore.has(String(row.name))) {
+                  throw new Error('Seed SQL cannot create or rename objects in host-reserved _ namespace');
+                }
+              }
+              if (useSp) db.exec('RELEASE softn_seed_guard');
+            } catch (seedErr) {
+              if (useSp) {
+                try { db.exec('ROLLBACK TO softn_seed_guard; RELEASE softn_seed_guard'); } catch {}
+              }
+              throw seedErr;
             }
           }
         }
@@ -998,7 +1100,7 @@ class NodeSqlManager {
       const reservedBefore = mayMutateSchema ? this.reservedObjects(managed.db) : null;
       const params = parseSqlParams(paramsJson);
       const multi = params.kind === 'none' && isMultiStatementOrControl(sql);
-      if (mayMutateSchema && multi && /\b(?:savepoint|release|commit|rollback|begin)\b/i.test(lower)) {
+      if (mayMutateSchema && multi && /\b(?:savepoint|release|commit|rollback|begin|end)\b/i.test(lower)) {
         return {error: 'Cannot mix transaction/savepoint control with multi-statement DDL', code: 23, unique: false};
       }
       const spName = mayMutateSchema ? `softn_ddl_${Math.random().toString(16).slice(2, 10)}` : null;
@@ -1011,22 +1113,27 @@ class NodeSqlManager {
       }
       let out;
       try {
-        if (multi) {
-          managed.db.exec(sql);
-          out = {rows_affected: 0, last_insert_rowid: 0};
-        } else {
-          const stmt = managed.db.prepare(sql);
-          if (typeof stmt.setAllowBareNamedParameters === 'function') stmt.setAllowBareNamedParameters(true);
-          const info =
-            params.kind === 'array'
-              ? stmt.run(...params.values)
-              : params.kind === 'object'
-                ? stmt.run(params.values)
-                : stmt.run();
-          out = {
-            rows_affected: Number(info?.changes ?? 0),
-            last_insert_rowid: Number(info?.lastInsertRowid ?? 0),
-          };
+        if (spOpen && managed.db.__softnAuthState) managed.db.__softnAuthState.inHostSavepoint = true;
+        try {
+          if (multi) {
+            managed.db.exec(sql);
+            out = {rows_affected: 0, last_insert_rowid: 0};
+          } else {
+            const stmt = managed.db.prepare(sql);
+            if (typeof stmt.setAllowBareNamedParameters === 'function') stmt.setAllowBareNamedParameters(true);
+            const info =
+              params.kind === 'array'
+                ? stmt.run(...params.values)
+                : params.kind === 'object'
+                  ? stmt.run(params.values)
+                  : stmt.run();
+            out = {
+              rows_affected: Number(info?.changes ?? 0),
+              last_insert_rowid: Number(info?.lastInsertRowid ?? 0),
+            };
+          }
+        } finally {
+          if (managed.db.__softnAuthState) managed.db.__softnAuthState.inHostSavepoint = false;
         }
         if (reservedBefore) {
           for (const name of this.reservedObjects(managed.db)) {
@@ -1457,12 +1564,7 @@ function checkContainerRateLimit({data, manifest, request, markLimited}) {
   const perMinute = Number.isInteger(declaredLimit) && declaredLimit >= 0 ? declaredLimit : 120;
   if (perMinute === 0) return false;
   const rateFile = join(data, 'container-rate.sqlite');
-  try {
-    const st = lstatSync(rateFile);
-    if (st.isSymbolicLink()) throw new Error('Rate-limit database symlink refused');
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
+  assertNoSymlinkWithSidecars(rateFile);
   const db = new DatabaseSync(rateFile, {allowExtension: false, limits: SQL_LIMITS});
   try {
     try { chmodSync(rateFile, 0o600); } catch {}
@@ -1505,6 +1607,76 @@ function isPrivatePhpDir(rel, backend) {
   const root = typeof backend?.root === 'string' ? normalizeVfsKey(backend.root).toLowerCase() : '';
   if (root && (lower === root || lower.startsWith(`${root}/`))) return true;
   return false;
+}
+
+function htaccessGlobToRegExp(glob) {
+  const escaped = String(glob).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp(`^${escaped}$`, 'i');
+}
+
+function isDeniedByHtaccess(vfs, targetPath) {
+  const rel = normalizeVfsKey(targetPath);
+  if (!rel) return false;
+  const segs = rel.split('/');
+  const base = segs[segs.length - 1] || '';
+  const dirs = [''];
+  for (let i = 0; i < segs.length - 1; i++) {
+    dirs.push(segs.slice(0, i + 1).join('/'));
+  }
+  for (const dir of dirs) {
+    const key = dir ? `${dir}/.htaccess` : '.htaccess';
+    const rawBuf = vfs.get(key);
+    if (!rawBuf) continue;
+    const text = rawBuf.toString('utf8');
+    if (text.length > 64 * 1024) continue;
+    const lines = text.split(/\r?\n/);
+    let blockMatchers = null;
+    let blockDenied = false;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const openMatch = /^<(FilesMatch|Files)\s+["']?([^"'>]+)["']?\s*>$/i.exec(line);
+      if (openMatch) {
+        const tag = openMatch[1].toLowerCase();
+        const pat = openMatch[2].trim();
+        blockDenied = false;
+        blockMatchers = null;
+        if (pat.length <= 256) {
+          if (tag === 'files') {
+            blockMatchers = htaccessGlobToRegExp(pat);
+          } else if (!/\((?:[^()\\]*[*+?{][^()\\]*)\)[*+?{]/.test(pat)) {
+            try {
+              blockMatchers = new RegExp(pat, 'i');
+            } catch {}
+          }
+        }
+        continue;
+      }
+      if (/^<\/(?:FilesMatch|Files)\s*>$/i.test(line)) {
+        if (blockDenied && blockMatchers && blockMatchers.test(base)) {
+          return true;
+        }
+        blockMatchers = null;
+        blockDenied = false;
+        continue;
+      }
+      if (blockMatchers && /^(?:Require\s+all\s+denied|Deny\s+from\s+all)\b/i.test(line)) {
+        blockDenied = true;
+      }
+    }
+  }
+  return false;
+}
+
+function parseServerHostName(host) {
+  const h = String(host || 'localhost').trim();
+  if (!h) return 'localhost';
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    return end > 0 ? h.slice(0, end + 1) : 'localhost';
+  }
+  const idx = h.indexOf(':');
+  return (idx >= 0 ? h.slice(0, idx) : h) || 'localhost';
 }
 
 function resolvePhpScript(vfs, backend, targetPath) {
@@ -1660,6 +1832,13 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     const bodyText = bodyBytes.toString('utf8');
 
     if (runtime === 'php') {
+      if (isDeniedByHtaccess(vfs, path)) {
+        return {
+          status: 403,
+          headers: [['Content-Type', 'application/json; charset=utf-8']],
+          bodyBase64: Buffer.from(JSON.stringify({error: 'Forbidden.', code: 'forbidden'})).toString('base64'),
+        };
+      }
       const scriptToRun = resolvePhpScript(vfs, backend, path);
       if (!scriptToRun) {
         return {
@@ -1686,7 +1865,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         SCRIPT_FILENAME: `/${scriptToRun}`,
         DOCUMENT_ROOT: '/',
         SERVER_PROTOCOL: 'HTTP/1.1',
-        SERVER_NAME: host.split(':')[0] || 'localhost',
+        SERVER_NAME: parseServerHostName(host),
         HTTP_HOST: host,
         SERVER_PORT: https ? '443' : '80',
         HTTPS: https ? 'on' : '',
@@ -1696,6 +1875,7 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         CONTENT_LENGTH: String(bodyBytes.byteLength),
       };
       for (const [k, v] of Object.entries(headers)) {
+        if (k === 'host') continue;
         server[`HTTP_${k.toUpperCase().replace(/-/g, '_')}`] = v;
       }
       const sapiReqJson = JSON.stringify({
@@ -1728,9 +1908,11 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
           method === 'HEAD' || status === 204 || status === 304
             ? ''
             : raw.bodyBase64 || Buffer.from(String(meta.body ?? ''), 'utf8').toString('base64');
-        try {
-          mergeAndPersistOverlay(overlayPath, initialOverlay, app.exportOverlayJson(), k => isProtectedPhpOverlayPath(k, entryKey));
-        } catch {}
+        if (status < 500) {
+          try {
+            mergeAndPersistOverlay(overlayPath, initialOverlay, app.exportOverlayJson(), k => isProtectedPhpOverlayPath(k, entryKey));
+          } catch {}
+        }
         return {
           status,
           headers: outHeaders,
@@ -1864,12 +2046,14 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         const uri = queryString ? `${path}?${queryString}` : path;
         const rawResp = engine.rustDispatchRequest(JSON.stringify({method, uri, headers, body: bodyText}));
         const parsed = JSON.parse(String(rawResp || '{}'));
-        try {
-          if (typeof engine.exportRustOverlayJson === 'function') {
-            mergeAndPersistOverlay(overlayPath, initialOverlay, engine.exportRustOverlayJson(), k => isProtectedRustSourcePath(k, relEntry));
-          }
-        } catch {}
         const status = clampContainerStatus(parsed.status);
+        if (status < 500) {
+          try {
+            if (typeof engine.exportRustOverlayJson === 'function') {
+              mergeAndPersistOverlay(overlayPath, initialOverlay, engine.exportRustOverlayJson(), k => isProtectedRustSourcePath(k, relEntry));
+            }
+          } catch {}
+        }
         return {
           status,
           headers: Array.isArray(parsed.headers) ? parsed.headers : [['Content-Type', 'application/json; charset=utf-8']],

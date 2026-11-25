@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use base64::Engine as _;
 use regex::{Regex, RegexBuilder};
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -23,6 +24,7 @@ use rusqlite::limits::Limit;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params_from_iter, Connection};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use zipp_vm::embed::{HostValue, HostValueBudget, ScriptGoal, ScriptState};
 use zipp_vm::frontend::{
     compile_php_program, compile_rust_program, compile_source, Frontend, PhpProgramConfig,
@@ -336,6 +338,7 @@ pub struct ContainerHttpRequest {
     pub client_ip: String,
     pub host: String,
     pub https: bool,
+    pub htaccess_evaluated: bool,
 }
 
 /// Outgoing HTTP response returned from the ZIPP-sandboxed backend pool.
@@ -846,8 +849,10 @@ fn expand_apache_vars(
                     "HTTPS" => out.push_str(if https { "on" } else { "off" }),
                     _ if up.starts_with("HTTP:") => {
                         let key = var[5..].to_ascii_lowercase();
-                        if let Some(v) = headers.get(&key) {
-                            out.push_str(v);
+                        if !matches!(key.as_str(), "cookie" | "authorization" | "proxy-authorization") {
+                            if let Some(v) = headers.get(&key) {
+                                out.push_str(v);
+                            }
                         }
                     }
                     _ => {}
@@ -1308,7 +1313,7 @@ impl SqlStorageConfig {
         Ok(Some(path))
     }
 
-    fn open_configured_connection(path: Option<&Path>) -> Result<Connection, String> {
+    fn open_configured_connection(path: Option<&Path>) -> Result<(Connection, Arc<AtomicBool>), String> {
         let mut conn = match path {
             Some(p) => Connection::open(p).map_err(|e| format!("Cannot open SQLite DB: {e}"))?,
             None => Connection::open_in_memory().map_err(|e| format!("Cannot open memory SQLite DB: {e}"))?,
@@ -1331,15 +1336,23 @@ impl SqlStorageConfig {
         let _ = conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, 250_000);
         let _ = conn.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0);
         let _ = conn.set_limit(Limit::SQLITE_LIMIT_LIKE_PATTERN_LENGTH, LIKE_PATTERN_LIMIT);
+        let in_host_savepoint = Arc::new(AtomicBool::new(false));
+        let in_sp = Arc::clone(&in_host_savepoint);
         // Install SQLite semantic authorizer blocking host-filesystem ATTACH/DETACH,
-        // extension loading, virtual tables, host-reserved `_*` objects, and unsafe PRAGMAs.
-        conn.authorizer(Some(|ctx: AuthContext<'_>| {
+        // extension loading, virtual tables, host-reserved `_*` objects, unsafe PRAGMAs,
+        // and transaction/savepoint tampering while a host DDL savepoint guard is active.
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
             if let Some(db_name) = ctx.database_name {
                 if db_name != "main" && db_name != "temp" {
                     return Authorization::Deny;
                 }
             }
             match ctx.action {
+                AuthAction::Transaction { .. } | AuthAction::Savepoint { .. }
+                    if in_sp.load(Ordering::Acquire) =>
+                {
+                    Authorization::Deny
+                }
                 AuthAction::Attach { .. }
                 | AuthAction::Detach { .. }
                 | AuthAction::CreateVtable { .. }
@@ -1425,7 +1438,7 @@ impl SqlStorageConfig {
             }
         }))
         .map_err(|e| format!("Cannot install SQLite authorizer: {e}"))?;
-        Ok(conn)
+        Ok((conn, in_host_savepoint))
     }
 
     fn preseed_all(&self, vfs: &HashMap<String, Vec<u8>>) -> Result<(), String> {
@@ -1440,8 +1453,9 @@ impl SqlStorageConfig {
             if marker.exists() {
                 continue;
             }
+            let db_existed_before = path.exists();
             // Copy bundled `.db` file if present and DB file doesn't exist yet
-            if !path.exists() {
+            if !db_existed_before {
                 if let Some(file_key) = cfg.file.as_deref() {
                     let norm = normalize_vfs_key(file_key);
                     if let Some(bytes) = vfs.get(&norm) {
@@ -1450,7 +1464,7 @@ impl SqlStorageConfig {
                     }
                 }
             }
-            let mut conn = Self::open_configured_connection(Some(&path))?;
+            let (mut conn, in_host_savepoint) = Self::open_configured_connection(Some(&path))?;
             let seed_deadline = Instant::now() + Duration::from_secs(30);
             let mut seed_steps = 0u64;
             let _ = conn.progress_handler(
@@ -1467,15 +1481,77 @@ impl SqlStorageConfig {
                     .map(|b| String::from_utf8_lossy(b).into_owned())
                     .unwrap_or_else(|| seed_sql.clone());
                 if !sql_text.trim().is_empty() {
+                    let sql_lower = sql_text.to_ascii_lowercase();
+                    let has_rename = sql_lower.contains("rename");
+                    let has_explicit_tx = sql_lower.contains("begin")
+                        || sql_lower.contains("commit")
+                        || sql_lower.contains("rollback")
+                        || sql_lower.contains("savepoint")
+                        || sql_lower.contains("end");
+                    if has_rename && has_explicit_tx {
+                        drop(conn);
+                        if !db_existed_before {
+                            let _ = fs::remove_file(&path);
+                        }
+                        return Err(format!(
+                            "seedSql for DB '{}' cannot mix transaction/savepoint control with RENAME",
+                            cfg.name
+                        ));
+                    }
                     let reserved_before = reserved_sqlite_objects(&conn);
-                    conn.execute_batch(&sql_text)
-                        .map_err(|e| format!("Failed to run seedSql for DB '{}': {e}", cfg.name))?;
+                    let use_sp = (has_rename || !has_explicit_tx)
+                        && conn.execute_batch("SAVEPOINT softn_seed_guard").is_ok();
+                    let exec_res = {
+                        let _guard = if use_sp {
+                            in_host_savepoint.store(true, Ordering::Release);
+                            Some(SavepointFlagReset(&in_host_savepoint))
+                        } else {
+                            None
+                        };
+                        conn.execute_batch(&sql_text)
+                    };
+                    if let Err(e) = exec_res {
+                        if use_sp {
+                            let _ = conn.execute_batch(
+                                "ROLLBACK TO softn_seed_guard; RELEASE softn_seed_guard",
+                            );
+                        }
+                        drop(conn);
+                        if !db_existed_before {
+                            let _ = fs::remove_file(&path);
+                        }
+                        return Err(format!("Failed to run seedSql for DB '{}': {e}", cfg.name));
+                    }
                     let reserved_after = reserved_sqlite_objects(&conn);
                     if reserved_after.iter().any(|n| !reserved_before.contains(n)) {
+                        if use_sp {
+                            let _ = conn.execute_batch(
+                                "ROLLBACK TO softn_seed_guard; RELEASE softn_seed_guard",
+                            );
+                        }
+                        drop(conn);
+                        if !db_existed_before {
+                            let _ = fs::remove_file(&path);
+                        }
                         return Err(format!(
                             "seedSql for DB '{}' attempted to create or rename a host-reserved _-prefixed object",
                             cfg.name
                         ));
+                    }
+                    if use_sp {
+                        if let Err(e) = conn.execute_batch("RELEASE softn_seed_guard") {
+                            let _ = conn.execute_batch(
+                                "ROLLBACK TO softn_seed_guard; RELEASE softn_seed_guard",
+                            );
+                            drop(conn);
+                            if !db_existed_before {
+                                let _ = fs::remove_file(&path);
+                            }
+                            return Err(format!(
+                                "Failed to commit seedSql savepoint for DB '{}': {e}",
+                                cfg.name
+                            ));
+                        }
                     }
                 }
             }
@@ -1496,6 +1572,14 @@ impl SqlStorageConfig {
             let _ = fs::write(&marker, b"1");
         }
         Ok(())
+    }
+}
+
+struct SavepointFlagReset<'a>(&'a AtomicBool);
+
+impl Drop for SavepointFlagReset<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -1809,7 +1893,7 @@ fn apply_seed_json(
 
 struct RequestSqlBridge {
     config: SqlStorageConfig,
-    handles: HashMap<u64, Connection>,
+    handles: HashMap<u64, (Connection, Arc<AtomicBool>)>,
     next_id: u64,
     abort: Arc<AtomicBool>,
 }
@@ -1872,7 +1956,7 @@ impl RequestSqlBridge {
                             }
                         }
                         match SqlStorageConfig::open_configured_connection(path.as_deref()) {
-                            Ok(mut conn) => {
+                            Ok((mut conn, in_host_savepoint)) => {
                                 let abort = self.abort.clone();
                                 let _ = conn.progress_handler(
                                     1000,
@@ -1880,7 +1964,7 @@ impl RequestSqlBridge {
                                 );
                                 let id = self.next_id;
                                 self.next_id += 1;
-                                self.handles.insert(id, conn);
+                                self.handles.insert(id, (conn, in_host_savepoint));
                                 json!({ "id": id }).to_string()
                             }
                             Err(e) => classify_sqlite_error(&e).to_string(),
@@ -1893,10 +1977,10 @@ impl RequestSqlBridge {
                 let id = arg(0).parse::<u64>().unwrap_or(0);
                 let sql = arg(1);
                 let params_raw = arg(2).trim();
-                let Some(conn) = self.handles.get(&id) else {
+                let Some((conn, in_host_savepoint)) = self.handles.get(&id) else {
                     return json!({ "error": format!("invalid sqlite connection handle {id}"), "code": 21, "unique": false }).to_string();
                 };
-                match Self::run_execute(conn, sql, params_raw) {
+                match Self::run_execute(conn, in_host_savepoint, sql, params_raw) {
                     Ok(v) => v.to_string(),
                     Err(e) => classify_sqlite_error(&e).to_string(),
                 }
@@ -1905,7 +1989,7 @@ impl RequestSqlBridge {
                 let id = arg(0).parse::<u64>().unwrap_or(0);
                 let sql = arg(1);
                 let params_raw = arg(2).trim();
-                let Some(conn) = self.handles.get(&id) else {
+                let Some((conn, _)) = self.handles.get(&id) else {
                     return json!({ "error": format!("invalid sqlite connection handle {id}"), "code": 21, "unique": false }).to_string();
                 };
                 match Self::run_query(conn, sql, params_raw) {
@@ -1916,7 +2000,7 @@ impl RequestSqlBridge {
             "seed_json" => {
                 let id = arg(0).parse::<u64>().unwrap_or(0);
                 let payload = arg(1);
-                let Some(conn) = self.handles.get(&id) else {
+                let Some((conn, _)) = self.handles.get(&id) else {
                     return json!({ "error": format!("invalid sqlite connection handle {id}"), "code": 21, "unique": false }).to_string();
                 };
                 match apply_seed_json(conn, payload, Some(&self.abort)) {
@@ -2043,7 +2127,12 @@ impl RequestSqlBridge {
         }
     }
 
-    fn run_execute(conn: &Connection, sql: &str, params_raw: &str) -> Result<Value, String> {
+    fn run_execute(
+        conn: &Connection,
+        in_host_savepoint: &AtomicBool,
+        sql: &str,
+        params_raw: &str,
+    ) -> Result<Value, String> {
         static DDL_SP_SEQ: AtomicU64 = AtomicU64::new(1);
         let lower = sql.to_ascii_lowercase();
         let may_mutate_schema = lower.contains("alter") || lower.contains("create") || lower.contains("rename");
@@ -2055,7 +2144,8 @@ impl RequestSqlBridge {
                 || lower.contains("release")
                 || lower.contains("commit")
                 || lower.contains("rollback")
-                || lower.contains("begin"))
+                || lower.contains("begin")
+                || lower.contains("end"))
         {
             return Err("Cannot mix transaction/savepoint control with multi-statement DDL".into());
         }
@@ -2067,27 +2157,35 @@ impl RequestSqlBridge {
         let sp_name = format!("softn_ddl_{}", DDL_SP_SEQ.fetch_add(1, Ordering::Relaxed));
         let use_sp = may_mutate_schema && conn.execute_batch(&format!("SAVEPOINT {sp_name}")).is_ok();
 
-        let exec_res: Result<Value, String> = if is_multi {
-            conn.execute_batch(sql)
-                .map_err(|e| e.to_string())
-                .map(|()| {
-                    json!({
-                        "rows_affected": conn.changes(),
-                        "last_insert_rowid": conn.last_insert_rowid(),
-                    })
-                })
-        } else {
-            match conn.prepare(sql) {
-                Ok(mut stmt) => match Self::bind_params(&mut stmt, params_raw) {
-                    Ok(_) => stmt.raw_execute().map_err(|e| e.to_string()).map(|rows_affected| {
+        let exec_res: Result<Value, String> = {
+            let _sp_guard = if use_sp {
+                in_host_savepoint.store(true, Ordering::Release);
+                Some(SavepointFlagReset(in_host_savepoint))
+            } else {
+                None
+            };
+            if is_multi {
+                conn.execute_batch(sql)
+                    .map_err(|e| e.to_string())
+                    .map(|()| {
                         json!({
-                            "rows_affected": rows_affected,
+                            "rows_affected": conn.changes(),
                             "last_insert_rowid": conn.last_insert_rowid(),
                         })
-                    }),
-                    Err(e) => Err(e),
-                },
-                Err(e) => Err(e.to_string()),
+                    })
+            } else {
+                match conn.prepare(sql) {
+                    Ok(mut stmt) => match Self::bind_params(&mut stmt, params_raw) {
+                        Ok(_) => stmt.raw_execute().map_err(|e| e.to_string()).map(|rows_affected| {
+                            json!({
+                                "rows_affected": rows_affected,
+                                "last_insert_rowid": conn.last_insert_rowid(),
+                            })
+                        }),
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e.to_string()),
+                }
             }
         };
 
@@ -2285,7 +2383,7 @@ fn sanitize_php_overlay(ov: &mut PhpVfsOverlay, backend_entry: &str) {
 
 fn merge_and_save_php_overlay(
     path: &Path,
-    shared_overlay: &Mutex<PhpVfsOverlay>,
+    shared_overlay: &Mutex<Arc<PhpVfsOverlay>>,
     initial: &PhpVfsOverlay,
     mut final_req: PhpVfsOverlay,
     backend_entry: &str,
@@ -2299,8 +2397,16 @@ fn merge_and_save_php_overlay(
     {
         return;
     }
-    let Ok(mut shared) = shared_overlay.lock() else {
+    let Ok(mut shared_guard) = shared_overlay.lock() else {
         return;
+    };
+    let mut owned_copy: Option<PhpVfsOverlay> = None;
+    let shared: &mut PhpVfsOverlay = match Arc::get_mut(&mut *shared_guard) {
+        Some(ov) => ov,
+        None => {
+            owned_copy = Some(clone_php_overlay(&*shared_guard));
+            owned_copy.as_mut().unwrap()
+        }
     };
     // Apply deletions first to reclaim quota, then only accept new/updated writes that fit
     // within MAX_OVERLAY_BYTES so incoming writes can never alphabetically evict existing files.
@@ -2348,8 +2454,11 @@ fn merge_and_save_php_overlay(
             shared.dirs.remove(d);
         }
     }
-    sanitize_php_overlay(&mut shared, backend_entry);
-    save_php_overlay(path, &mut shared, backend_entry, last_saved);
+    sanitize_php_overlay(shared, backend_entry);
+    save_php_overlay(path, shared, backend_entry, last_saved);
+    if let Some(updated) = owned_copy {
+        *shared_guard = Arc::new(updated);
+    }
 }
 
 fn load_php_overlay(path: &Path, backend_entry: &str) -> PhpVfsOverlay {
@@ -2599,7 +2708,7 @@ fn execute_php_request(
     };
     let mut target_query = req.query.clone();
 
-    if !htaccess_map.is_empty() {
+    if !req.htaccess_evaluated && !htaccess_map.is_empty() {
         match evaluate_htaccess_chain(
             htaccess_map,
             &target_path,
@@ -2831,14 +2940,18 @@ fn execute_php_request(
     }
     if let Err(err) = init_res {
         tracing::error!("ZIPP PHP runtime error: {err}");
+        let err_body = if raw_bytes.is_empty() {
+            b"Internal backend error".to_vec()
+        } else {
+            match clamp_response_body(raw_bytes) {
+                Ok(b) => b,
+                Err(resp) => return resp,
+            }
+        };
         return ContainerHttpResponse {
             status: 500,
             headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-            body: if raw_bytes.is_empty() {
-                b"Internal backend error".to_vec()
-            } else {
-                raw_bytes
-            },
+            body: err_body,
         };
     }
 
@@ -3313,8 +3426,60 @@ impl WarmRustWorker {
 
 // ── Public Multi-User Container Backend Runtime ──
 
+#[derive(Clone)]
+pub struct CachedStaticAsset {
+    pub mime: &'static str,
+    pub bytes: Bytes,
+    pub etag: String,
+    pub immutable: bool,
+}
+
+fn compute_etag(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(18);
+    hex.push('"');
+    for b in &digest[..8] {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    hex.push('"');
+    hex
+}
+
+fn is_fingerprinted_asset_path(rel: &str) -> bool {
+    let file_name = rel.rsplit('/').next().unwrap_or(rel);
+    let Some((stem, ext)) = file_name.rsplit_once('.') else {
+        return false;
+    };
+    let ext_lower = ext.to_ascii_lowercase();
+    if !matches!(
+        ext_lower.as_str(),
+        "js" | "mjs" | "css" | "wasm" | "woff2" | "woff" | "ttf" | "otf" | "png" | "jpg" | "jpeg"
+            | "webp" | "avif" | "gif" | "svg" | "ico"
+    ) {
+        return false;
+    }
+    // Match Vite/Webpack/esbuild content hashes (`app-Ab12Cd34.js`, `chunk.a1b2c3d4.css`)
+    if let Some((_, suffix)) = stem.rsplit_once(['-', '.']) {
+        if suffix.len() >= 8
+            && suffix.len() <= 32
+            && suffix.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && suffix.bytes().any(|b| b.is_ascii_digit())
+            && suffix.bytes().any(|b| b.is_ascii_alphabetic())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub enum StaticOrBackend {
-    Static { mime: &'static str, bytes: Vec<u8> },
+    Static {
+        mime: &'static str,
+        bytes: Bytes,
+        etag: String,
+        immutable: bool,
+    },
     Deny(u16),
     Redirect(u16, String),
     NotFound,
@@ -3332,6 +3497,7 @@ pub struct ContainerBackendRuntime {
     private_exact_paths: HashSet<String>,
     private_dir_prefixes: Vec<String>,
     vfs: Arc<HashMap<String, Vec<u8>>>,
+    static_assets: HashMap<String, CachedStaticAsset>,
     vfs_dirs: Arc<HashSet<String>>,
     htaccess_map: Arc<HashMap<String, ParsedHtaccess>>,
     tx: crossbeam_channel::Sender<WorkerJob>,
@@ -3444,7 +3610,7 @@ impl ContainerBackendRuntime {
         let htaccess_arc = Arc::new(htaccess_map);
 
         let overlay_path = data_dir.join("php-overlay.json");
-        let php_overlay = Arc::new(Mutex::new(load_php_overlay(&overlay_path, &entry_key)));
+        let php_overlay = Arc::new(Mutex::new(Arc::new(load_php_overlay(&overlay_path, &entry_key))));
         let last_saved_overlay = Arc::new(Mutex::new(
             fs::read(&overlay_path).unwrap_or_default(),
         ));
@@ -3564,12 +3730,13 @@ impl ContainerBackendRuntime {
                         let dispatch_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             match runtime_kind {
                                 BackendRuntimeKind::Php => {
-                                    // Snapshot an isolated per-request overlay so concurrent requests
-                                    // never observe uncommitted or protected writes mid-execution.
+                                    // Take an O(1) Arc snapshot under the mutex; clone only once for
+                                    // the isolated per-request overlay so concurrent requests never
+                                    // observe uncommitted or protected writes mid-execution.
                                     let initial_ov = php_overlay
                                         .lock()
-                                        .map(|ov| clone_php_overlay(&ov))
-                                        .unwrap_or_default();
+                                        .map(|ov| Arc::clone(&ov))
+                                        .unwrap_or_else(|_| Arc::new(PhpVfsOverlay::default()));
                                     let req_ov = Arc::new(Mutex::new(clone_php_overlay(&initial_ov)));
                                     let out = execute_php_request(
                                         &job.req,
@@ -3687,6 +3854,27 @@ impl ContainerBackendRuntime {
             return Err(err);
         }
 
+        // Precompute zero-copy Bytes, strong ETag, and immutability metadata for all public
+        // static frontend files once at bundle load time.
+        let mut static_assets = HashMap::new();
+        for (path, bytes) in vfs.iter() {
+            let lower = normalize_vfs_key(path).to_ascii_lowercase();
+            let is_priv = is_private_static_path(path)
+                || private_exact_paths.contains(&lower)
+                || private_dir_prefixes.iter().any(|p| lower.starts_with(p));
+            if !is_priv {
+                static_assets.insert(
+                    path.clone(),
+                    CachedStaticAsset {
+                        mime: mime_type_for(path),
+                        bytes: Bytes::from(bytes.clone()),
+                        etag: compute_etag(bytes),
+                        immutable: is_fingerprinted_asset_path(path),
+                    },
+                );
+            }
+        }
+
         tracing::info!(
             "Started ZIPP safe-sandbox container backend (runtime={}, mode={}, workers={}, routes={:?})",
             runtime_kind.as_str(),
@@ -3705,6 +3893,7 @@ impl ContainerBackendRuntime {
             private_exact_paths,
             private_dir_prefixes,
             vfs,
+            static_assets,
             vfs_dirs,
             htaccess_map: htaccess_arc,
             tx,
@@ -3725,8 +3914,9 @@ impl ContainerBackendRuntime {
             .any(|prefix| lower.starts_with(prefix))
     }
 
-    /// Resolve a public static asset path inside `frontendRoot` (or bundle root), refusing private files.
-    pub fn resolve_static_asset(&self, req_path: &str) -> Result<Option<(&'static str, Vec<u8>)>, u16> {
+    /// Resolve a public static asset path inside `frontendRoot` (or bundle root) with zero-copy
+    /// `Bytes` and precomputed `ETag`/immutability metadata, refusing private files.
+    pub fn resolve_static_asset_cached(&self, req_path: &str) -> Result<Option<CachedStaticAsset>, u16> {
         let rel = normalize_vfs_key(req_path);
         if !rel.is_empty() && self.is_private_path(&rel) {
             return Err(403);
@@ -3768,8 +3958,8 @@ impl ContainerBackendRuntime {
             if self.is_private_path(&cand) {
                 return Err(403);
             }
-            if let Some(bytes) = self.vfs.get(&cand) {
-                return Ok(Some((mime_type_for(&cand), bytes.clone())));
+            if let Some(asset) = self.static_assets.get(&cand) {
+                return Ok(Some(asset.clone()));
             }
         }
 
@@ -3786,18 +3976,27 @@ impl ContainerBackendRuntime {
                         self.frontend_root
                             .as_ref()
                             .map(|r| format!("{r}/index.html"))
-                            .filter(|p| self.vfs.contains_key(p))
+                            .filter(|p| self.static_assets.contains_key(p))
                     })
-                    .or_else(|| self.vfs.contains_key("index.html").then(|| "index.html".to_owned()));
+                    .or_else(|| self.static_assets.contains_key("index.html").then(|| "index.html".to_owned()));
                 if let Some(html_path) = fallback {
-                    if let Some(bytes) = self.vfs.get(&html_path) {
-                        return Ok(Some(("text/html; charset=utf-8", bytes.clone())));
+                    if let Some(asset) = self.static_assets.get(&html_path) {
+                        let mut spa = asset.clone();
+                        spa.mime = "text/html; charset=utf-8";
+                        spa.immutable = false;
+                        return Ok(Some(spa));
                     }
                 }
             }
         }
 
         Ok(None)
+    }
+
+    /// Resolve a public static asset path inside `frontendRoot` (or bundle root), refusing private files.
+    pub fn resolve_static_asset(&self, req_path: &str) -> Result<Option<(&'static str, Vec<u8>)>, u16> {
+        self.resolve_static_asset_cached(req_path)
+            .map(|opt| opt.map(|a| (a.mime, a.bytes.to_vec())))
     }
 
     /// Single-pass ingress resolver: decodes URL escapes, evaluates `.htaccess` deny/redirect rules
@@ -3864,8 +4063,13 @@ impl ContainerBackendRuntime {
             if prefix == "/" || prefix == "/*" {
                 let rel = normalize_vfs_key(&effective_path);
                 if !rel.is_empty() && !rel.ends_with(".html") && !rel.ends_with(".htm") {
-                    return match self.resolve_static_asset(&effective_path) {
-                        Ok(Some((mime, bytes))) => StaticOrBackend::Static { mime, bytes },
+                    return match self.resolve_static_asset_cached(&effective_path) {
+                        Ok(Some(asset)) => StaticOrBackend::Static {
+                            mime: asset.mime,
+                            bytes: asset.bytes,
+                            etag: asset.etag,
+                            immutable: asset.immutable,
+                        },
                         Ok(None) => StaticOrBackend::Backend {
                             path: effective_path,
                             query: effective_query,
@@ -3894,8 +4098,13 @@ impl ContainerBackendRuntime {
                 };
             }
         }
-        match self.resolve_static_asset(&effective_path) {
-            Ok(Some((mime, bytes))) => StaticOrBackend::Static { mime, bytes },
+        match self.resolve_static_asset_cached(&effective_path) {
+            Ok(Some(asset)) => StaticOrBackend::Static {
+                mime: asset.mime,
+                bytes: asset.bytes,
+                etag: asset.etag,
+                immutable: asset.immutable,
+            },
             Ok(None) => StaticOrBackend::NotFound,
             Err(code) => StaticOrBackend::Deny(code),
         }
@@ -4080,6 +4289,7 @@ echo json_encode(['error' => 'Not found']);
             client_ip: "127.0.0.1".into(),
             host: "localhost".into(),
             https: false,
+            htaccess_evaluated: false,
         };
         let req2 = ContainerHttpRequest {
             method: "POST".into(),
@@ -4090,6 +4300,7 @@ echo json_encode(['error' => 'Not found']);
             client_ip: "127.0.0.2".into(),
             host: "localhost".into(),
             https: false,
+            htaccess_evaluated: false,
         };
         let (r1, r2) = tokio::join!(rt.dispatch(req1), rt.dispatch(req2));
         assert_eq!(r1.status, 201, "r1 body: {}", String::from_utf8_lossy(&r1.body));
@@ -4106,6 +4317,7 @@ echo json_encode(['error' => 'Not found']);
                 client_ip: "127.0.0.3".into(),
                 host: "localhost".into(),
                 https: false,
+                htaccess_evaluated: false,
             })
             .await;
         assert_eq!(list_resp.status, 200);
@@ -4176,6 +4388,7 @@ function handleRequest(req) {
                 client_ip: "127.0.0.1".into(),
                 host: "localhost".into(),
                 https: false,
+                htaccess_evaluated: false,
             })
             .await;
         assert_eq!(post.status, 201);
@@ -4190,6 +4403,7 @@ function handleRequest(req) {
                 client_ip: "127.0.0.1".into(),
                 host: "localhost".into(),
                 https: false,
+                htaccess_evaluated: false,
             })
             .await;
         assert_eq!(get.status, 200);
@@ -4207,6 +4421,7 @@ function handleRequest(req) {
                 client_ip: "127.0.0.1".into(),
                 host: "localhost".into(),
                 https: false,
+                htaccess_evaluated: false,
             })
             .await;
         assert_eq!(loop_resp.status, 503);
@@ -4256,6 +4471,7 @@ def handle_request(req):
                 client_ip: "127.0.0.1".into(),
                 host: "localhost".into(),
                 https: false,
+                htaccess_evaluated: false,
             })
             .await;
         assert_eq!(py_resp.status, 200, "py body: {}", String::from_utf8_lossy(&py_resp.body));
@@ -4345,7 +4561,7 @@ def handle_request(req):
         assert!(!is_private_static_path("assets/app.js"));
 
         // 2. SQLite authorizer & SAVEPOINT post-DDL guard must block ALTER TABLE ... RENAME TO _host_table.
-        let conn = SqlStorageConfig::open_configured_connection(None).unwrap();
+        let (conn, _) = SqlStorageConfig::open_configured_connection(None).unwrap();
         conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)", []).unwrap();
         assert!(conn.execute("CREATE TABLE _secret (id INTEGER PRIMARY KEY)", []).is_err());
         // Writable busy_timeout must be denied (read-only allowed)
@@ -4400,5 +4616,34 @@ def handle_request(req):
         assert!(is_protected_php_overlay_path(".env.local", "index.php"));
         assert!(is_protected_php_overlay_path("manifest.json", "index.php"));
         assert!(!is_protected_php_overlay_path("uploads/note.txt", "index.php"));
+
+        // 4. Round-5 hardening: .htaccess never expands sensitive auth/cookie headers,
+        //    and SQLite DDL savepoint authorizer blocks `END;` / `RELEASE` escape attempts.
+        let mut sens_headers = HashMap::new();
+        sens_headers.insert("cookie".into(), "session=secret123".into());
+        sens_headers.insert("authorization".into(), "Bearer tok".into());
+        sens_headers.insert("proxy-authorization".into(), "Basic abc".into());
+        sens_headers.insert("x-custom".into(), "ok".into());
+        let expanded = expand_apache_vars(
+            "c=%{HTTP:Cookie};a=%{HTTP:Authorization};p=%{HTTP:Proxy-Authorization};x=%{HTTP:X-Custom}",
+            "/test",
+            "/test",
+            "",
+            "GET",
+            "example.com",
+            true,
+            &sens_headers,
+        );
+        assert_eq!(expanded, "c=;a=;p=;x=ok");
+        assert!(!expanded.contains("secret123"));
+        assert!(!expanded.contains("Bearer"));
+
+        // Attempt to break out of host DDL savepoint via `END;` or `RELEASE` in multi-statement SQL
+        let end_attempt: Value = serde_json::from_str(&bridge.call(
+            "execute",
+            &[h.clone(), "ALTER TABLE items_v2 RENAME TO _pwn; END;".into(), "[]".into()],
+        ))
+        .unwrap();
+        assert!(end_attempt.get("error").is_some(), "END; savepoint escape must be blocked: {end_attempt}");
     }
 }

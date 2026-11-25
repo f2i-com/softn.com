@@ -80,9 +80,10 @@ function parseIpv6Groups(host: string): number[] | null {
 
 function embeddedIpv4FromIpv6(g: number[]): [number, number, number, number] | null {
   const isV4Mapped = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff;
+  const isV4Translated = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0xffff && g[5] === 0;
   const isV4Compat = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0 && (g[6] !== 0 || g[7] > 1);
   const isNat64WellKnown = g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0;
-  if (isV4Mapped || isV4Compat || isNat64WellKnown) {
+  if (isV4Mapped || isV4Translated || isV4Compat || isNat64WellKnown) {
     return [(g[6] >> 8) & 0xff, g[6] & 0xff, (g[7] >> 8) & 0xff, g[7] & 0xff];
   }
   return null;
@@ -141,29 +142,61 @@ function isPrivateOrLocalHost(hostname: string): boolean {
     hostname.endsWith('.local') ||
     hostname.endsWith('.internal') ||
     hostname.endsWith('.home.arpa') ||
-    hostname.endsWith('.localdomain')
+    hostname.endsWith('.localdomain') ||
+    hostname.endsWith('.lan') ||
+    hostname.endsWith('.home') ||
+    hostname.endsWith('.corp') ||
+    hostname.endsWith('.intranet') ||
+    hostname.endsWith('.private')
   ) {
+    return true;
+  }
+  // Single-label hostnames (`router`, `intranet`, `db`) resolve on local search domains, never public DNS.
+  if (!hostname.includes('.') && !hostname.startsWith('[') && hostname !== '') {
     return true;
   }
   const v4 = parseIpv4Octets(hostname);
   if (v4) return isPrivateOrLocalIpv4(v4);
   if (hostname.startsWith('[') && hostname.includes('%')) return true;
   const v6 = parseIpv6Groups(hostname);
-  if (!v6) return false;
+  if (!v6) return hostname.startsWith('['); // Fail closed on unparseable bracketed IPv6 literals
   if (v6.every((n) => n === 0)) return true; // ::
   if (v6[0] === 0 && v6[1] === 0 && v6[2] === 0 && v6[3] === 0 && v6[4] === 0 && v6[5] === 0 && v6[6] === 0 && v6[7] === 1) {
     return true; // ::1
   }
   if ((v6[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
   if ((v6[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((v6[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 site-local
   if ((v6[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  if (v6[0] === 0x0100 && v6[1] === 0 && v6[2] === 0 && v6[3] === 0) return true; // 100::/64 discard
   if (v6[0] === 0x0064 && v6[1] === 0xff9b && (v6[2] === 0 || v6[2] === 1)) return true; // NAT64 64:ff9b::/96 & 64:ff9b:1::/48
-  if (v6[0] === 0x2001 && v6[1] === 0x0db8) return true; // documentation
+  if (v6[0] === 0x2001 && (v6[1] === 0x0000 || v6[1] === 0x0db8)) return true; // Teredo 2001::/32 & documentation
   if (v6[0] === 0x2001 && v6[1] === 0x0002 && v6[2] === 0) return true; // benchmarking 2001:2::/48
   if (v6[0] === 0x2001 && ((v6[1] & 0xfff0) === 0x0010 || (v6[1] & 0xfff0) === 0x0020)) return true; // ORCHID / ORCHIDv2
+  if (v6[0] === 0x2002) return true; // 6to4 2002::/16 (can embed private IPv4)
   if (v6[0] === 0x5f00) return true; // SRv6 5f00::/16
   const embedded = embeddedIpv4FromIpv6(v6);
   return embedded ? isPrivateOrLocalIpv4(embedded) : false;
+}
+
+function effectivePort(url: URL): string {
+  if (url.port) return url.port;
+  return url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '';
+}
+
+function isEmbeddingHostOrigin(parsed: URL, normalizedHost: string): boolean {
+  try {
+    const here = (globalThis as { location?: { origin?: string; href?: string } }).location;
+    if (!here) return false;
+    const rawOrigin = here.origin && here.origin !== 'null' ? here.origin : here.href ? new URL(here.href).origin : '';
+    if (!rawOrigin || rawOrigin === 'null') return false;
+    const emb = new URL(rawOrigin);
+    if (emb.protocol !== 'https:' && emb.protocol !== 'http:') return false;
+    const embHost = emb.hostname.toLowerCase().replace(/\.+$/, '');
+    return embHost !== '' && normalizedHost === embHost && parsed.protocol === emb.protocol && effectivePort(parsed) === effectivePort(emb);
+  } catch {
+    return false;
+  }
 }
 
 /** Check whether an external URL is allowed under `permission.json`'s `net` capability. */
@@ -195,18 +228,19 @@ export function isExternalUrlAllowed(
 
   const hosts = netPerm.allowed_hosts;
   const isPrivate = isPrivateOrLocalHost(hostname);
+  const isEmbedding = isEmbeddingHostOrigin(parsed, hostname);
   if (!hosts || hosts.length === 0) {
-    // Broad `net` without an explicit host allowlist may reach public hosts, never private/loopback/LAN hosts.
-    return !isPrivate;
+    // Broad `net` without an explicit host allowlist may reach public hosts, never private/loopback/LAN or the embedding origin.
+    return !isPrivate && !isEmbedding;
   }
   return hosts.some((rule) => {
     const cleanRule = rule.trim().toLowerCase().replace(/\.+$/, '');
     if (!cleanRule) return false;
     if (cleanRule === '*') {
-      return !isPrivate;
+      return !isPrivate && !isEmbedding;
     }
     if (cleanRule.startsWith('*.')) {
-      if (isPrivate) return false;
+      if (isPrivate || isEmbedding) return false;
       const suffix = cleanRule.slice(2);
       return hostname === suffix || hostname.endsWith(`.${suffix}`);
     }
@@ -271,6 +305,9 @@ export function sanitizeHostAssetUrl(
 
   // Same-page hash anchors (`<a href="#top">`, SVG `<use href="#icon">`) are always safe
   if (originalTrimmed.startsWith('#')) return originalTrimmed;
+
+  // SVG `<use>` loads another document (external SVG or host-origin blob); only same-document `#id` refs are allowed.
+  if (tagName === 'use') return null;
 
   // Block dangerous executable schemes unconditionally
   if (/^(?:javascript|vbscript|file):/i.test(trimmed)) return null;

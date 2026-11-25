@@ -523,7 +523,8 @@ export function rewriteViewportUnitsInValue(value: string): string {
  * to `[data-softn-viewport]` inside a CSS selector list, without touching attribute selectors,
  * class/id names, or strings.
  */
-export function rewritePageSelectorList(selector: string): string {
+export function rewritePageSelectorList(selector: string, depth = 0): string {
+  if (depth >= MAX_CSS_NESTING_DEPTH) return ':not(*)';
   // Fast exit when none of `:root`, `html`, `body` can occur.
   if (!/(?::root|\bhtml\b|\bbody\b)/i.test(selector)) return selector;
 
@@ -592,7 +593,7 @@ export function rewritePageSelectorList(selector: string): string {
           const parenEnd = skipBalanced(selector, pseudo.end);
           if (SELECTOR_PSEUDOS.has(lower) && parenEnd > pseudo.end + 1) {
             const inner = selector.slice(pseudo.end + 1, parenEnd - 1);
-            out += `${selector.slice(i, pseudo.end + 1)}${rewritePageSelectorList(inner)})`;
+            out += `${selector.slice(i, pseudo.end + 1)}${rewritePageSelectorList(inner, depth + 1)})`;
           } else {
             out += selector.slice(i, parenEnd);
           }
@@ -644,6 +645,45 @@ export function rewritePageSelectorList(selector: string): string {
   }
 
   return out;
+}
+
+function decodeCssValueIdentifiers(rawVal: string): string {
+  let out = '';
+  let i = 0;
+  while (i < rawVal.length) {
+    const c = rawVal[i];
+    if (c === '/' && rawVal[i + 1] === '*') {
+      const close = rawVal.indexOf('*/', i + 2);
+      i = close < 0 ? rawVal.length : close + 2;
+      out += ' ';
+      continue;
+    }
+    if (c === '\\') {
+      const esc = readEscape(rawVal, i);
+      out += esc.char;
+      i = esc.end;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * Block CSS `appearance: base*` (e.g. `base-select`, which promotes `<select>` pickers into the
+ * browser top layer outside the container box) as well as dynamic `appearance` values (`var()`,
+ * `env()`, `attr()`, `if()`) that could resolve to `base-select` at computed-value time.
+ */
+function isBlockedAppearanceDeclaration(rawProp: string, rawVal: string): boolean {
+  const cleanProp = stripCssCommentsAndSpace(rawProp);
+  if (!cleanProp || !startsName(cleanProp, 0)) return false;
+  const propName = readName(cleanProp, 0).name.toLowerCase();
+  if (propName !== 'appearance' && propName !== '-webkit-appearance' && propName !== '-moz-appearance') {
+    return false;
+  }
+  const decoded = decodeCssValueIdentifiers(rawVal).replace(/\s*!important\s*$/i, '').trim().toLowerCase();
+  return /\bbase(?:-[a-z0-9-]+)?\b/.test(decoded) || /\b(?:var|env|attr|if)\s*\(/.test(decoded);
 }
 
 function transformCssBlock(
@@ -774,10 +814,18 @@ function transformCssBlock(
     }
 
     // Standard `property: value` declaration
-    if (firstColon >= 0 && opts.rewriteViewportUnits) {
-      const propPart = css.slice(i, firstColon + 1);
+    if (firstColon >= 0) {
+      const rawProp = css.slice(i, firstColon);
       const valPart = css.slice(firstColon + 1, j);
-      out += propPart + rewriteViewportUnitsInValue(valPart);
+      if (isBlockedAppearanceDeclaration(rawProp, valPart)) {
+        i = j < end && css[j] === ';' ? j + 1 : j;
+        continue;
+      }
+      if (opts.rewriteViewportUnits) {
+        out += `${rawProp}:${rewriteViewportUnitsInValue(valPart)}`;
+      } else {
+        out += css.slice(i, j);
+      }
     } else {
       out += css.slice(i, j);
     }
@@ -802,13 +850,15 @@ export function transformContainerCss(
 ): string {
   if (!css) return css;
   if (options.inline) {
-    if (!options.rewriteViewportUnits) return css;
     // Inline `style="..."` has `prop: value;` pairs, while animation keyframe / SVG values
     // have no declaration colon — handle both without rewriting CSS property names.
     if (css.includes(':')) {
-      return transformCssBlock(css, 0, css.length, 'declarations', { scopeSelectors: false, rewriteViewportUnits: true });
+      return transformCssBlock(css, 0, css.length, 'declarations', {
+        scopeSelectors: false,
+        rewriteViewportUnits: options.rewriteViewportUnits,
+      });
     }
-    return rewriteViewportUnitsInValue(css);
+    return options.rewriteViewportUnits ? rewriteViewportUnitsInValue(css) : css;
   }
   return transformCssBlock(css, 0, css.length, 'rules', {
     scopeSelectors: options.scopeSelectors,
@@ -849,7 +899,7 @@ function parseSingleFontFamily(raw: string): { name: string; quoted: boolean } |
   return joined ? { name: joined, quoted: false } : null;
 }
 
-function splitTopLevelCss(input: string, sep: string): string[] {
+export function splitTopLevelCss(input: string, sep: string): string[] {
   const out: string[] = [];
   let start = 0;
   let i = 0;

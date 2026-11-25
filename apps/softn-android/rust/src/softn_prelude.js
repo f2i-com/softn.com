@@ -184,6 +184,9 @@ var softn = {};
           }
           __zippHostCall("take_bytes");
           var bytes = __zippHostBytes.slice(0, len);
+          if (__zippHostBytes.length > 262144) {
+            __zippHostBytes = new Uint8Array(65536);
+          }
           var textBody = "";
           if (info.contentType && /^(text\/|application\/(json|javascript|xml)|image\/svg)/.test(String(info.contentType))) {
             try { textBody = new TextDecoder().decode(bytes); } catch (e) {}

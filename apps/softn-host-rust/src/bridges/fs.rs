@@ -341,7 +341,11 @@ impl FsBridge for NativeFsBridge {
         };
         let existing_meta = std::fs::symlink_metadata(&resolved).ok();
         let existing_len = existing_meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        let new_entries = if existing_meta.is_some() { 0 } else { 1 };
+        let missing_dirs = resolved
+            .parent()
+            .map(|p| count_missing_ancestors(&canonical_root, p))
+            .unwrap_or(0);
+        let new_entries = missing_dirs.saturating_add(if existing_meta.is_some() { 0 } else { 1 });
         if used_entries.saturating_add(new_entries) > MAX_SANDBOX_ENTRIES {
             return Err("Sandbox file count quota exceeded".into());
         }
@@ -354,8 +358,15 @@ impl FsBridge for NativeFsBridge {
         self.ensure_parent(&resolved)?;
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
-        let mut file = open_nofollow(&mut opts, &resolved)
-            .map_err(|e| format!("Write error: {}", e))?;
+        let mut file = match open_nofollow(&mut opts, &resolved) {
+            Ok(f) => f,
+            Err(e) => {
+                if missing_dirs > 0 {
+                    usage_guard.cached = None;
+                }
+                return Err(format!("Write error: {}", e));
+            }
+        };
         if let Err(e) = file.write_all(content.as_bytes()) {
             usage_guard.cached = None;
             return Err(format!("Write error: {}", e));
@@ -385,7 +396,11 @@ impl FsBridge for NativeFsBridge {
         if existing_len.saturating_add(content.len() as u64) > MAX_SANDBOX_FILE_BYTES as u64 {
             return Err("File would exceed sandbox size limit".into());
         }
-        let new_entries = if existing_meta.is_some() { 0 } else { 1 };
+        let missing_dirs = resolved
+            .parent()
+            .map(|p| count_missing_ancestors(&canonical_root, p))
+            .unwrap_or(0);
+        let new_entries = missing_dirs.saturating_add(if existing_meta.is_some() { 0 } else { 1 });
         if used_entries.saturating_add(new_entries) > MAX_SANDBOX_ENTRIES {
             return Err("Sandbox file count quota exceeded".into());
         }
@@ -396,8 +411,15 @@ impl FsBridge for NativeFsBridge {
         self.ensure_parent(&resolved)?;
         let mut opts = std::fs::OpenOptions::new();
         opts.create(true).append(true);
-        let mut file = open_nofollow(&mut opts, &resolved)
-            .map_err(|e| format!("Append error: {}", e))?;
+        let mut file = match open_nofollow(&mut opts, &resolved) {
+            Ok(f) => f,
+            Err(e) => {
+                if missing_dirs > 0 {
+                    usage_guard.cached = None;
+                }
+                return Err(format!("Append error: {}", e));
+            }
+        };
         if let Err(e) = file.write_all(content.as_bytes()) {
             usage_guard.cached = None;
             return Err(format!("Write error: {}", e));
@@ -454,17 +476,34 @@ impl FsBridge for NativeFsBridge {
                 pair
             }
         };
-        if used_entries >= MAX_SANDBOX_ENTRIES {
+        let new_dirs = count_missing_ancestors(&canonical_root, &resolved);
+        if used_entries.saturating_add(new_dirs) > MAX_SANDBOX_ENTRIES {
             return Err("Sandbox file count quota exceeded".into());
         }
-        let existed = resolved.exists();
-        std::fs::create_dir_all(&resolved)
-            .map_err(|e| format!("Mkdir error: {}", e))?;
-        if !existed {
-            usage_guard.cached = Some((used_bytes, used_entries.saturating_add(1)));
+        if new_dirs > 0 {
+            if let Err(e) = std::fs::create_dir_all(&resolved) {
+                usage_guard.cached = None;
+                return Err(format!("Mkdir error: {}", e));
+            }
+            usage_guard.cached = Some((used_bytes, used_entries.saturating_add(new_dirs)));
         }
         Ok(())
     }
+}
+
+/// Count how many missing directory entries `create_dir_all(target)` will create
+/// under `canonical_root` (inclusive of `target`).
+fn count_missing_ancestors(canonical_root: &Path, target: &Path) -> usize {
+    let mut missing = 0usize;
+    let mut cur = target;
+    while cur != canonical_root && !cur.exists() {
+        missing = missing.saturating_add(1);
+        match cur.parent() {
+            Some(parent) => cur = parent,
+            None => break,
+        }
+    }
+    missing
 }
 
 #[cfg(test)]

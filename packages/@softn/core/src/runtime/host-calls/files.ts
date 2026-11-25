@@ -152,7 +152,8 @@ export async function saveFile(gate: HostGate, call: PendingHostCall): Promise<u
   // one an app starts on a timer, as many as it likes, attributed to the
   // host's site, nor one an app behind another starts on the other's click.
   const activation = typeof navigator === 'undefined' ? undefined : (navigator as { userActivation?: { isActive?: boolean } }).userActivation;
-  if ((activation && activation.isActive === false) || !gate.pressedHere()) {
+  const pressOk = gate.consumePress ? gate.consumePress() : gate.pressedHere();
+  if ((activation && activation.isActive === false) || !pressOk) {
     return { error: 'A file is saved when the person asks for it: call files.saveFile from a click or a key press in the app.' };
   }
   const name = downloadName(rawName);

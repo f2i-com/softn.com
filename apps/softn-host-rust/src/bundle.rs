@@ -679,10 +679,7 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
                 backend.runtime
             ));
         }
-        if backend.entry.trim().is_empty()
-            || backend.entry.contains("..")
-            || Path::new(&backend.entry).is_absolute()
-        {
+        if !is_safe_relative_path(&backend.entry, false) {
             return Err(format!("Invalid container backend entry path: {:?}", backend.entry));
         }
         if let Some(mode) = &backend.mode {
@@ -691,13 +688,13 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
             }
         }
         if let Some(root) = &backend.root {
-            if root.contains("..") || Path::new(root).is_absolute() {
+            if !is_safe_relative_path(root, true) {
                 return Err(format!("Invalid container backend root path: {:?}", root));
             }
         }
     }
     if let Some(frontend_root) = &manifest.frontend_root {
-        if frontend_root.contains("..") || Path::new(frontend_root).is_absolute() {
+        if !is_safe_relative_path(frontend_root, true) {
             return Err(format!("Invalid frontendRoot path: {:?}", frontend_root));
         }
     }
@@ -743,10 +740,39 @@ fn default_route_transactions(manifest: &mut ServerManifest) {
     }
 }
 
+/// Ensure a bundle-relative path has no traversal, NUL, drive prefix, or root component
+/// (catching Windows rooted `\foo` and drive-relative `C:foo` on all platforms).
+pub(crate) fn is_safe_relative_path(raw: &str, allow_cur_dir_only: bool) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || raw.contains('\0')
+        || raw.starts_with('/')
+        || raw.starts_with('\\')
+        || raw.contains("..")
+    {
+        return false;
+    }
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+    let mut has_normal = false;
+    for comp in Path::new(raw).components() {
+        match comp {
+            std::path::Component::Normal(_) => has_normal = true,
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return false,
+        }
+    }
+    has_normal || (allow_cur_dir_only && trimmed == ".")
+}
+
 /// Validate a script path stays within the bundle directory.
 pub(crate) fn validate_script_path(bundle_path: &Path, relative: &str) -> Result<PathBuf, String> {
-    // Reject path traversal and absolute paths (which would overwrite the base in join())
-    if relative.contains("..") || Path::new(relative).is_absolute() {
+    // Reject path traversal, absolute, rooted (`\foo`), and drive-relative (`C:foo`) paths.
+    if !is_safe_relative_path(relative, false) {
         return Err(format!("Path traversal rejected in script path: {}", relative));
     }
     let full = bundle_path.join(relative);

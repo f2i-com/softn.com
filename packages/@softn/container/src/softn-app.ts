@@ -661,12 +661,14 @@ export async function mountSoftNContainer(
   let threeHostPromise: Promise<SplitRealmSceneHost | null> | null = null;
   const persistStorage = options.persistStorage !== false;
   const storage = persistStorage ? options.storage ?? browserStorage() : undefined;
+  let cachedPersistedBytes: number | null = null;
   // What another tab keeps for the same app, told to its Worker as it happens: each tab reads
   // what the other kept before it writes over it. (Each kept the stores it had read when it
   // started, so the same app open in two tabs wrote the other's records away.)
   // A key of the app's that another tab, or another of the same app in this page, changed.
   const heard = (key: string) => {
     if (disposed || !key.startsWith(storageBase) || !storage) return;
+    cachedPersistedBytes = null;
     const rest = key.slice(storageBase.length);
     // What is kept there now: the event's own value may be older than what this tab kept
     // since, and handed on, this tab's view went back to it.
@@ -747,6 +749,7 @@ export async function mountSoftNContainer(
     }
     if (changes.size === 0) return Promise.resolve(true);
     if (backing.kind === 'localStorage') {
+      cachedPersistedBytes = null;
       // Held to the one quota with the rest the app keeps, all of it or none: a part refused
       // puts back what the others were (kept a part at a time, half a transaction could be).
       // Told to the same app elsewhere in this page.
@@ -1792,12 +1795,24 @@ export async function mountSoftNContainer(
       fontScope,
       callbacks: {
         onStyleFonts: (sheet, fontFacesCss) => {
-          if (fontFacesCss) {
-            if (!dynamicFontSheets.has(sheet) && dynamicFontSheets.size >= 64) {
-              const oldest = dynamicFontSheets.keys().next().value;
-              if (oldest !== undefined) dynamicFontSheets.delete(oldest);
+          const MAX_DYNAMIC_FONT_BYTES = 512 * 1024;
+          if (fontFacesCss && fontFacesCss.length <= MAX_DYNAMIC_FONT_BYTES) {
+            let totalFontBytes = 0;
+            for (const [k, css] of dynamicFontSheets) {
+              if (k !== sheet) totalFontBytes += css.length;
             }
-            dynamicFontSheets.set(sheet, fontFacesCss);
+            while (
+              (dynamicFontSheets.size >= 64 && !dynamicFontSheets.has(sheet)) ||
+              (dynamicFontSheets.size > 0 && totalFontBytes + fontFacesCss.length > MAX_DYNAMIC_FONT_BYTES)
+            ) {
+              const oldest = dynamicFontSheets.keys().next().value;
+              if (oldest === undefined || oldest === sheet) break;
+              totalFontBytes -= dynamicFontSheets.get(oldest)?.length ?? 0;
+              dynamicFontSheets.delete(oldest);
+            }
+            if (totalFontBytes + fontFacesCss.length <= MAX_DYNAMIC_FONT_BYTES) {
+              dynamicFontSheets.set(sheet, fontFacesCss);
+            }
           } else {
             dynamicFontSheets.delete(sheet);
           }
@@ -2146,13 +2161,45 @@ export async function mountSoftNContainer(
             if (!persistStorage || !owns() || currentPatcher !== patcher) break;
             // A value that would take what the app keeps past its quota is not kept: the
             // Worker refuses it first, and this holds whatever the Worker sends.
-            if (msg.op === 'set' && (typeof msg.key !== 'string' || typeof msg.value !== 'string' || !storageWriteFits(storageBase, msg.key, msg.value, limits.storageQuotaBytes, storage))) {
-              break;
-            }
             {
+              let oldStorageBytes = 0;
+              if (msg.op === 'set') {
+                if (typeof msg.key !== 'string' || typeof msg.value !== 'string') break;
+                if (storage) {
+                  try {
+                    const prev = storage.getItem(`${storageBase}ls:${msg.key}`);
+                    if (prev !== null) oldStorageBytes = (msg.key.length + prev.length) * 2;
+                  } catch {
+                    oldStorageBytes = 0;
+                  }
+                  if (cachedPersistedBytes === null) {
+                    cachedPersistedBytes = persistedTotalBytes(storageBase, storage);
+                  }
+                  const nextTotal = cachedPersistedBytes - oldStorageBytes + (msg.key.length + msg.value.length) * 2;
+                  if (nextTotal > limits.storageQuotaBytes) break;
+                }
+              } else if (msg.op === 'remove' && typeof msg.key === 'string' && storage && cachedPersistedBytes !== null) {
+                try {
+                  const prev = storage.getItem(`${storageBase}ls:${msg.key}`);
+                  if (prev !== null) oldStorageBytes = (msg.key.length + prev.length) * 2;
+                } catch {
+                  cachedPersistedBytes = null;
+                }
+              }
               const changed = msg.op === 'clear' ? persistedStorageKeys(storageBase, storage) : typeof msg.key === 'string' ? [`${storageBase}ls:${msg.key}`] : [];
               const kept = applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value, storage);
               storageKept(kept);
+              if (kept && storage) {
+                if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string' && cachedPersistedBytes !== null) {
+                  cachedPersistedBytes = Math.max(0, cachedPersistedBytes - oldStorageBytes + (msg.key.length + msg.value.length) * 2);
+                } else if (msg.op === 'remove' && cachedPersistedBytes !== null) {
+                  cachedPersistedBytes = Math.max(0, cachedPersistedBytes - oldStorageBytes);
+                } else if (msg.op === 'clear') {
+                  cachedPersistedBytes = null;
+                }
+              } else if (!kept) {
+                cachedPersistedBytes = null;
+              }
               if (kept || !storage) {
                 if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
                   const oldVal = Object.prototype.hasOwnProperty.call(liveSession.localStorage, msg.key)
@@ -2187,6 +2234,7 @@ export async function mountSoftNContainer(
           case 'db-write':
             // Its records take what its localStorage has left of the one quota.
             if (persistStorage && owns() && currentPatcher === patcher) {
+              cachedPersistedBytes = null;
               storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes - persistedStorageBytes(storageBase, storage) - persistedIdbBytes(storageBase, storage), storage));
             }
             break;

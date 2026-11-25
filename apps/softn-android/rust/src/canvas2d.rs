@@ -42,6 +42,11 @@ const MAX_DATA_URL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CANVASES: usize = 64;
 const MAX_GRADIENTS: usize = 4096;
 const MAX_PATTERNS: usize = 1024;
+const MAX_PATTERN_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SVG_INPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SVG_EMBEDDED_IMAGES: usize = 8;
+const MAX_SVG_DECODED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SVG_IMAGE_DIM: u32 = 4096;
 const MAX_IMAGES: usize = 128;
 const MAX_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SAVE_STACK: usize = 256;
@@ -354,6 +359,7 @@ thread_local! {
     static CANVASES: RefCell<HashMap<u32, Canvas2D>> = RefCell::new(HashMap::new());
     static GRADIENTS: RefCell<HashMap<u32, Gradient>> = RefCell::new(HashMap::new());
     static PATTERNS: RefCell<HashMap<u32, PatternSource>> = RefCell::new(HashMap::new());
+    static PATTERN_CACHE_BYTES: RefCell<usize> = const { RefCell::new(0) };
     /// Decoded images, by URL, for `drawImage` and patterns.
     static IMAGES: RefCell<HashMap<String, Arc<Pixmap>>> = RefCell::new(HashMap::new());
     static IMAGE_CACHE_BYTES: RefCell<usize> = const { RefCell::new(0) };
@@ -370,7 +376,152 @@ pub(crate) fn reset_all() {
     CANVASES.with(|c| c.borrow_mut().clear());
     GRADIENTS.with(|g| g.borrow_mut().clear());
     PATTERNS.with(|p| p.borrow_mut().clear());
+    PATTERN_CACHE_BYTES.with(|b| *b.borrow_mut() = 0);
+    COLOR_CACHE.with(|c| c.borrow_mut().clear());
     clear_image_cache();
+}
+
+/// Sanitize untrusted SVG bytes before handing them to `zipp_renderer::rasterize_svg` / `svg_size`.
+///
+/// `usvg::Options::default()` resolves local filesystem paths in `<image href="...">` and
+/// decodes unbounded embedded `data:` images. This sanitizer strips DTD/ENTITY declarations,
+/// strips all non-`#` `href`/`xlink:href` references except bounded raster `data:image/*;base64`
+/// images (capped at 8 images / 32 MiB total decoded pixels), and strips non-`#` CSS `url(...)`.
+pub(crate) fn sanitize_svg_for_raster(raw: &[u8]) -> Option<Vec<u8>> {
+    if raw.is_empty() || raw.len() > MAX_SVG_INPUT_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(raw).ok()?;
+    let lower_full = text.to_ascii_lowercase();
+    if lower_full.contains("<!entity") || lower_full.contains("<!doctype") {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0usize;
+    let mut img_count = 0usize;
+    let mut img_decoded_bytes = 0usize;
+
+    let validate_data_image = |val: &str, count: &mut usize, total_bytes: &mut usize| -> bool {
+        let trimmed = val.trim();
+        if trimmed.contains('&') {
+            return false;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        let rest = if let Some(r) = lower.strip_prefix("data:image/png;base64,") {
+            &trimmed[trimmed.len() - r.len()..]
+        } else if let Some(r) = lower.strip_prefix("data:image/jpeg;base64,") {
+            &trimmed[trimmed.len() - r.len()..]
+        } else if let Some(r) = lower.strip_prefix("data:image/jpg;base64,") {
+            &trimmed[trimmed.len() - r.len()..]
+        } else if let Some(r) = lower.strip_prefix("data:image/gif;base64,") {
+            &trimmed[trimmed.len() - r.len()..]
+        } else if let Some(r) = lower.strip_prefix("data:image/webp;base64,") {
+            &trimmed[trimmed.len() - r.len()..]
+        } else {
+            return false;
+        };
+        if *count >= MAX_SVG_EMBEDDED_IMAGES || rest.len() > 11_000_000 {
+            return false;
+        }
+        let cleaned_b64: String = rest.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        use base64::Engine as _;
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&cleaned_b64) else {
+            return false;
+        };
+        if decoded.len() > 8 * 1024 * 1024 {
+            return false;
+        }
+        let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(&decoded)).with_guessed_format() else {
+            return false;
+        };
+        let Ok((w, h)) = reader.into_dimensions() else {
+            return false;
+        };
+        if w == 0 || h == 0 || w > MAX_SVG_IMAGE_DIM || h > MAX_SVG_IMAGE_DIM {
+            return false;
+        }
+        let Some(px_bytes) = (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(4)) else {
+            return false;
+        };
+        let next_total = total_bytes.saturating_add(px_bytes);
+        if next_total > MAX_SVG_DECODED_IMAGE_BYTES {
+            return false;
+        }
+        *count += 1;
+        *total_bytes = next_total;
+        true
+    };
+
+    while i < len {
+        // Match `href` / `xlink:href` / `<prefix>:href` attributes (case-insensitive)
+        if (bytes[i] == b'h' || bytes[i] == b'H')
+            && i + 4 <= len
+            && bytes[i..i + 4].eq_ignore_ascii_case(b"href")
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'-'))
+        {
+            let mut j = i + 4;
+            while j < len && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < len && bytes[j] == b'=' {
+                j += 1;
+                while j < len && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < len && (bytes[j] == b'"' || bytes[j] == b'\'') {
+                    let quote = bytes[j];
+                    let val_start = j + 1;
+                    let mut val_end = val_start;
+                    while val_end < len && bytes[val_end] != quote {
+                        val_end += 1;
+                    }
+                    let val = &text[val_start..val_end];
+                    let trimmed = val.trim();
+                    let keep = (trimmed.starts_with('#') && !trimmed.contains('&'))
+                        || validate_data_image(trimmed, &mut img_count, &mut img_decoded_bytes);
+                    out.push_str(&text[i..val_start]);
+                    if keep {
+                        out.push_str(val);
+                    }
+                    if val_end < len {
+                        out.push(quote as char);
+                        i = val_end + 1;
+                    } else {
+                        i = val_end;
+                    }
+                    continue;
+                }
+            }
+        }
+        // Strip non-fragment CSS `url(...)` references
+        if (bytes[i] == b'u' || bytes[i] == b'U')
+            && i + 4 <= len
+            && bytes[i..i + 4].eq_ignore_ascii_case(b"url(")
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'-'))
+        {
+            let inner_start = i + 4;
+            if let Some(rel_close) = text[inner_start..].find(')') {
+                let inner = text[inner_start..inner_start + rel_close]
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim();
+                if inner.starts_with('#') && !inner.contains('&') {
+                    out.push_str(&text[i..inner_start + rel_close + 1]);
+                } else {
+                    out.push_str("none");
+                }
+                i = inner_start + rel_close + 1;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    Some(out.into_bytes())
 }
 
 #[derive(Default)]
@@ -482,6 +633,12 @@ thread_local! {
 
 fn parse_color(css: &str) -> Option<Color> {
     let trimmed = css.trim();
+    if trimmed.len() > 128 {
+        return color::parse_color(trimmed).ok().map(|parsed| {
+            let c = parsed.to_alpha_color::<color::Srgb>().to_rgba8();
+            Color::from_rgba8(c.r, c.g, c.b, c.a)
+        });
+    }
     COLOR_CACHE.with(|cache| {
         let mut map = cache.borrow_mut();
         if let Some(&hit) = map.get(trimmed) {
@@ -577,7 +734,7 @@ fn image(
         Arc::new(
             Pixmap::from_vec(data, IntSize::from_wh(w.max(1), h.max(1)).ok_or("empty image")?).ok_or("bad image")?,
         )
-    } else if let Some(svg_pixmap) = zipp_renderer::rasterize_svg(&raw) {
+    } else if let Some(svg_pixmap) = sanitize_svg_for_raster(&raw).and_then(|s| zipp_renderer::rasterize_svg(&s)) {
         if svg_pixmap.width() > MAX_CANVAS_DIM || svg_pixmap.height() > MAX_CANVAS_DIM {
             return Err(format!("image {url}: rasterized SVG exceeds {MAX_CANVAS_DIM} limit"));
         }
@@ -1290,13 +1447,23 @@ fn run(
             let pixmap = source(cmd.get(2).unwrap_or(&Json::Null), bundle, blobs)?;
             let repeat = str_arg(3) != "no-repeat";
             let id = num(1) as u32;
+            let new_bytes = pixmap.data().len();
             PATTERNS.with(|p| {
-                let mut map = p.borrow_mut();
-                if !map.contains_key(&id) && map.len() >= MAX_PATTERNS {
-                    return Err("canvas pattern limit exceeded".to_string());
-                }
-                map.insert(id, PatternSource { pixmap, repeat });
-                Ok(())
+                PATTERN_CACHE_BYTES.with(|b| {
+                    let mut map = p.borrow_mut();
+                    let mut total = b.borrow_mut();
+                    let old_bytes = map.get(&id).map(|old| old.pixmap.data().len()).unwrap_or(0);
+                    if !map.contains_key(&id) && map.len() >= MAX_PATTERNS {
+                        return Err("canvas pattern limit exceeded".to_string());
+                    }
+                    let next_total = total.saturating_sub(old_bytes).saturating_add(new_bytes);
+                    if next_total > MAX_PATTERN_CACHE_BYTES {
+                        return Err("canvas pattern memory limit exceeded".to_string());
+                    }
+                    *total = next_total;
+                    map.insert(id, PatternSource { pixmap, repeat });
+                    Ok(())
+                })
             })?;
             return Ok(());
         }
@@ -1682,5 +1849,20 @@ mod tests {
         );
         assert!(err2.is_err());
         reset_all();
+    }
+
+    #[test]
+    fn sanitize_svg_for_raster_blocks_entities_external_refs_and_excess_images() {
+        // Reject DTD / ENTITY declarations outright.
+        let xxe = b"<!DOCTYPE svg [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><svg/>";
+        assert!(sanitize_svg_for_raster(xxe).is_none());
+
+        // Strip filesystem / remote hrefs and non-fragment CSS url(...), keep #fragment refs.
+        let dirty = br#"<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs><rect fill="url(#g)" filter="url(https://evil.test/f)"/><image href="/etc/passwd"/><image xlink:href="file:///C:/secret.png"/></svg>"#;
+        let clean = String::from_utf8(sanitize_svg_for_raster(dirty).unwrap()).unwrap();
+        assert!(clean.contains("url(#g)"));
+        assert!(!clean.contains("/etc/passwd"));
+        assert!(!clean.contains("secret.png"));
+        assert!(!clean.contains("evil.test"));
     }
 }

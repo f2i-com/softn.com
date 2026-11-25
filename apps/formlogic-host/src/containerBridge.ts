@@ -97,7 +97,7 @@ export function isSafeClientPath(name: string, manifest?: Record<string, unknown
   if (
     /^(?:__softn_generated__\/)?(?:server|backend|private|db|database|migrations)\//.test(lower) ||
     /(?:^|\/)\.git(?:\/|$)/.test(lower) ||
-    /\.(?:sql|php|phtml|php5|php8|phar|inc|tpl|rs|py|logic|db|sqlite|sqlite3|db-wal|db-shm|db-journal|htpasswd|htaccess|ini|bak|sh)$/i.test(lower) ||
+    /\.(?:sql|php|phtml|php5|php7|php8|pht|phps|phar|inc|tpl|rs|py|logic|db|sqlite|sqlite3|db-wal|db-shm|db-journal|htpasswd|htaccess|ini|bak|sh|log)$/i.test(lower) ||
     base === '.env' ||
     base.startsWith('.env.') ||
     base === 'seed.json' ||
@@ -279,8 +279,11 @@ class PortCookieJar {
         const aEq = attr.indexOf('=');
         const aKey = (aEq >= 0 ? attr.slice(0, aEq) : attr).trim().toLowerCase();
         const aVal = aEq >= 0 ? attr.slice(aEq + 1).trim() : '';
-        if (aKey === 'path' && aVal.startsWith('/') && !/[\r\n\0]/.test(aVal)) {
-          path = aVal;
+        if (aKey === 'path' && aVal.startsWith('/') && !/[\r\n\0]/.test(aVal) && !/(?:^|\/)\.\.(?:\/|$)/.test(aVal)) {
+          const collapsed = aVal.replace(/\/{2,}/g, '/');
+          // Normalize mount-prefixed `/.../api/...` cookie paths to container-relative `/api/...`
+          const apiIdx = collapsed.indexOf('/api/');
+          path = apiIdx > 0 ? collapsed.slice(apiIdx) : collapsed;
         } else if (aKey === 'max-age') {
           const secs = Number(aVal);
           if (Number.isFinite(secs)) {
@@ -471,6 +474,8 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
         }
       }
       cookieJar.ingest(headers);
+      // Never expose raw Set-Cookie headers (which may carry HttpOnly session tokens) to the untrusted guest JS.
+      const guestHeaders = headers.filter(([name]) => name !== 'set-cookie' && name !== 'set-cookie2');
       let body: Uint8Array;
       if (raw.body instanceof Uint8Array) {
         body = raw.body;
@@ -490,7 +495,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
       } else {
         body = new Uint8Array(0);
       }
-      return { status, ...(statusText ? { statusText } : {}), headers, body };
+      return { status, ...(statusText ? { statusText } : {}), headers: guestHeaders, body };
     },
     dispose(): void {
       disposed = true;

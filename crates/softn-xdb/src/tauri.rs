@@ -301,6 +301,9 @@ pub struct NetworkControl {
     gate: Arc<SyncGate>,
     default_db: SharedDb,
     pending_restore: StdMutex<Option<PendingRestore>>,
+    /// Serializes network start/stop/restart lifecycle transitions so startup
+    /// auto-init and `set_network_enabled` can never race and orphan a live node.
+    lifecycle_lock: tokio::sync::Mutex<()>,
 }
 
 impl NetworkControl {
@@ -322,6 +325,7 @@ impl NetworkControl {
             gate,
             default_db,
             pending_restore: StdMutex::new(pending),
+            lifecycle_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -768,9 +772,14 @@ fn finish_setup(
     if settings.enabled {
         info!("XDB peer networking enabled by persisted opt-in (trusted LAN)");
         let app_handle = app.handle().clone();
-        let gate = control.gate();
+        let control_clone = control.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = init_network(app_handle, db, network, settings.options(), gate).await {
+            let _lifecycle = control_clone.lifecycle_lock.lock().await;
+            let current = control_clone.settings();
+            if !current.enabled {
+                return;
+            }
+            if let Err(e) = init_network(app_handle, db, network, current.options(), control_clone.gate()).await {
                 error!("Failed to initialize XDB network: {}", e);
             }
         });
@@ -822,8 +831,13 @@ async fn init_network(
     let node = NetworkNode::new(db.clone(), event_tx, options, gate).await?;
     info!("XDB Network started with peer ID: {}", node.local_peer_id());
 
-    // Store the network node
-    *network.lock().await = Some(node);
+    // Store the network node and shut down any replaced instance so no swarm task is orphaned.
+    let previous = { network.lock().await.replace(node) };
+    if let Some(prev) = previous {
+        if let Err(e) = prev.shutdown().await {
+            warn!("Failed to shutdown replaced XDB network node: {}", e);
+        }
+    }
 
     // Setup event forwarding to frontend
     setup_network_events(app_handle, event_rx);
@@ -1264,6 +1278,7 @@ pub async fn set_network_enabled(
     discovery: Option<bool>,
     listen: Option<bool>,
 ) -> Result<NetworkSettings, String> {
+    let _lifecycle = control.lifecycle_lock.lock().await;
     let mut settings = control.settings();
     settings.enabled = enabled;
     if let Some(d) = discovery {

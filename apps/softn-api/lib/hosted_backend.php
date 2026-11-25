@@ -148,6 +148,10 @@ final class HostedBackend
             throw new ApiError(503, 'Server-hosted backends are disabled on this SoftN directory.');
         }
 
+        // Read the raw request body BEFORE acquiring catalog.lock (LOCK_EX) so a slow-POST
+        // client trickling up to 10 MiB over the network cannot stall the entire directory.
+        $rawBody = ($req->method === 'GET' || $req->method === 'HEAD') ? '' : $req->body();
+
         $slug = Apps::resolveSlug($slugGiven);
         $row = Apps::requireBundle($slug);
         $hosting = Apps::hostingInfo($row);
@@ -172,12 +176,6 @@ final class HostedBackend
         $versionNum = (int) $ver['version'];
         $shaPrefix = substr((string) $ver['sha256'], 0, 12);
 
-        $rateKey = Config::limitKey($req->ip) . "|$slug";
-        Db::rateLimit('hostedBackend', $rateKey);
-
-        // Read the raw request body BEFORE releasing locks or spawning the sandbox worker.
-        $rawBody = ($req->method === 'GET' || $req->method === 'HEAD') ? '' : $req->body();
-
         // Acquire storage.lock (LOCK_SH) BEFORE releasing catalog.lock so a concurrent retire()
         // or moveAppFolder() cannot delete or move `$appDir` between release and lock acquisition.
         $storageLock = @fopen($dataDirRoot . '/storage.lock', 'c');
@@ -188,6 +186,8 @@ final class HostedBackend
 
         $slot = null;
         try {
+            $rateKey = Config::limitKey($req->ip) . "|$slug";
+            Db::rateLimit('hostedBackend', $rateKey);
             $slot = self::acquireSlot($dataDirRoot);
             if (!is_file($bundlePath)) {
                 throw new ApiError(404, 'The bundle file is missing.');

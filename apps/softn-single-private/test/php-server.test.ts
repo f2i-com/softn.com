@@ -1139,4 +1139,56 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
       rmSync(site, { recursive: true, force: true });
     }
   });
+
+  it('supports opt-in prerender View-Source HTML, JSON-LD under CSP, and ETag/304 when viewerToken is false', async () => {
+    const richBundle = zipSync({
+      'manifest.json': strToU8(JSON.stringify({ ...manifest, description: 'Public dashboard app' })),
+      'ui/main.ui': strToU8(
+        '<logic src="../logic/main.logic" />\n' +
+          '<App><Heading>Status Board</Heading><Text>All systems green.</Text>' +
+          '<Link href="https://status.example.test">Live Status</Link>' +
+          '<Link href="javascript:alert(1)">Blocked</Link></App>'
+      ),
+      'logic/main.logic': strToU8('let privateToken = "NEVER_IN_HTML";'),
+    });
+    const richPath = join(root, 'private/prerender.softn');
+    writeFileSync(richPath, richBundle);
+    try {
+      // Default prerender=false keeps private bundle UI out of initial HTML
+      writeFileSync(join(root, 'private/serve.config.php'), config(`'bundle' => __DIR__ . '/prerender.softn',`));
+      const privHtml = await (await fetch(`${origin}/`)).text();
+      expect(privHtml).not.toContain('data-softn-ssr="single"');
+      expect(privHtml).not.toContain('All systems green.');
+      expect(privHtml).toContain('application/ld+json');
+
+      // Opt-in prerender=true + viewerToken=false emits sanitized HTML, JSON-LD, ETag & 304
+      writeFileSync(
+        join(root, 'private/serve.config.php'),
+        config(`'bundle' => __DIR__ . '/prerender.softn', 'prerender' => true, 'viewerToken' => false,`)
+      );
+      const res = await fetch(`${origin}/`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-cache');
+      const etag = res.headers.get('etag');
+      expect(etag).toBeTruthy();
+      const csp = res.headers.get('content-security-policy') ?? '';
+      expect(csp).toMatch(/^base-uri 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'/);
+      const html = await res.text();
+      expect(html).toContain('data-softn-ssr="single"');
+      expect(html).toContain('<h2>Status Board</h2>');
+      expect(html).toContain('<p>All systems green.</p>');
+      expect(html).toContain('<a href="https://status.example.test" rel="noopener noreferrer">Live Status</a>');
+      expect(html).not.toContain('javascript:alert');
+      expect(html).not.toContain('NEVER_IN_HTML');
+
+      const notMod = await fetch(`${origin}/`, { headers: { 'If-None-Match': etag! } });
+      expect(notMod.status).toBe(304);
+
+      // Invalid non-boolean prerender fails closed with 503
+      writeFileSync(join(root, 'private/serve.config.php'), config(`'prerender' => 'yes',`));
+      expect((await fetch(`${origin}/`)).status).toBe(503);
+    } finally {
+      writeFileSync(join(root, 'private/serve.config.php'), config());
+    }
+  });
 });

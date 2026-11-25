@@ -182,10 +182,13 @@ function stripLeadingComments(expr: string): string {
   return s;
 }
 
+const MAX_JSX_SCAN_DEPTH = 128;
+
 class JsxScanner {
   private readonly src: string;
   private readonly len: number;
   private pos = 0;
+  private depth = 0;
 
   constructor(src: string) {
     this.src = src;
@@ -268,30 +271,38 @@ class JsxScanner {
   }
 
   private scanTemplate(): string {
-    let out = '`';
-    this.pos++; // `
-    while (this.pos < this.len) {
-      const ch = this.src.charCodeAt(this.pos);
-      if (ch === 92) {
-        out += this.src.slice(this.pos, this.pos + 2);
-        this.pos += 2;
-        continue;
-      }
-      if (ch === 96) {
-        out += '`';
-        this.pos++;
-        break;
-      }
-      if (ch === 36 && this.pos + 1 < this.len && this.src.charCodeAt(this.pos + 1) === 123) {
-        out += '${';
-        this.pos += 2;
-        out += this.scanCode(true);
-        out += '}';
-        continue;
-      }
-      out += this.src[this.pos++];
+    if (this.depth >= MAX_JSX_SCAN_DEPTH) {
+      throw new SyntaxError('JSX template nesting depth exceeded maximum limit');
     }
-    return out;
+    this.depth++;
+    try {
+      let out = '`';
+      this.pos++; // `
+      while (this.pos < this.len) {
+        const ch = this.src.charCodeAt(this.pos);
+        if (ch === 92) {
+          out += this.src.slice(this.pos, this.pos + 2);
+          this.pos += 2;
+          continue;
+        }
+        if (ch === 96) {
+          out += '`';
+          this.pos++;
+          break;
+        }
+        if (ch === 36 && this.pos + 1 < this.len && this.src.charCodeAt(this.pos + 1) === 123) {
+          out += '${';
+          this.pos += 2;
+          out += this.scanCode(true);
+          out += '}';
+          continue;
+        }
+        out += this.src[this.pos++];
+      }
+      return out;
+    } finally {
+      this.depth--;
+    }
   }
 
   /** Scan a JSX string attribute (`"..."` or `'...'`): backslashes are literal in JSX attributes. */

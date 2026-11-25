@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mountSoftNContainer } from '../src/index';
+import { ContainerArchive } from '../src/archive';
+import { isExternalUrlAllowed, sanitizeHostAssetUrl } from '../src/sanitize';
+import { transformContainerCss } from '../src/css-policy';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LITE_WASM = path.join(PKG_ROOT, 'dist', 'runtime', 'engines', 'zipp-javascript-lite.wasm');
@@ -103,5 +106,32 @@ describe('Container Sandbox Security, Egress Enforcement & Instruction Limits', 
     ).rejects.toThrow();
 
     expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('blocks embedding host origin under wildcard egress, strips appearance:base-select and remote <use href>', async () => {
+    // Broad wildcard net permission must not implicitly grant access to the embedding host origin.
+    const hostOrigin = window.location.origin;
+    const wildcardNet = { enabled: true, allowed_hosts: ['*'], allow_http: true };
+    expect(isExternalUrlAllowed(`${hostOrigin}/api/admin`, wildcardNet, true)).toBe(false);
+    // Single-label intranet hostnames and .lan/.corp suffixes are rejected as private/local.
+    expect(isExternalUrlAllowed('https://intranet/secret', wildcardNet, true)).toBe(false);
+    expect(isExternalUrlAllowed('https://printer.lan/status', wildcardNet, true)).toBe(false);
+    expect(isExternalUrlAllowed('https://api.public-example.org/v1', wildcardNet, true)).toBe(true);
+
+    // SVG <use href> only allows local fragment references.
+    const archive = await ContainerArchive.open({ 'index.html': '<svg></svg>' });
+    const perms = { permissions: { net: wildcardNet } };
+    expect(sanitizeHostAssetUrl('href', '#icon-home', 'use', 'index.html', archive, perms, true)).toBe('#icon-home');
+    expect(sanitizeHostAssetUrl('href', 'https://evil.example/sprite.svg#x', 'use', 'index.html', archive, perms, true)).toBeNull();
+    expect(sanitizeHostAssetUrl('xlink:href', 'data:image/svg+xml,<svg/>', 'use', 'index.html', archive, perms, true)).toBeNull();
+    archive.dispose();
+
+    // CSS appearance: base-select / base-picker / var(...) are stripped to prevent top-layer clickjacking.
+    const css = transformContainerCss(
+      'select { appearance: base-select; -webkit-appearance: base-picker; color: blue; } .x { appearance: var(--a); }',
+      { scopeSelectors: false, rewriteViewportUnits: false }
+    );
+    expect(css).not.toMatch(/base-select|base-picker|var\(--a\)/i);
+    expect(css).toContain('color: blue');
   });
 });

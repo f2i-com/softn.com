@@ -250,12 +250,13 @@ ErrorDocument 404 /index.html
   RewriteCond %{REQUEST_FILENAME} -f
   RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ - [R=404,L,NC]
 
-  # An app's page, when a browser asks for it, comes through the API so the
-  # <meta> tags carry the app's own name and picture: a link pasted into a
-  # chat unfurls as the app, not as the site. The site's other pages are the
-  # SPA, at the end.
-  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  # An app's page always comes through the API so the <meta> tags, JSON-LD and
+  # pre-rendered semantic HTML reach browsers, social unfurlers and crawlers
+  # alike (including clients sending Accept: */* or no Accept header).
   RewriteRule ^app/[^/]+/?$ api/index.php [L]
+
+  # Dynamic XML sitemap of published public apps.
+  RewriteRule ^sitemap-apps\.xml$ api/index.php [L]
 
   # An app's play page: the single-app shell under /play/ with the app's
   # configuration written in by the API. The shell's own files sit beside
@@ -395,8 +396,15 @@ server {
     # the admin key above all. The site ships no such file.
     location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
 
-    # An app's page goes through the API so its <meta> tags are its own.
+    # An app's page goes through the API so its <meta> tags, JSON-LD and
+    # pre-rendered HTML are its own.
     location ~ ^/app/[^/]+/?$ {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
+    # Dynamic XML sitemap of published public apps.
+    location = /sitemap-apps.xml {
         fastcgi_pass unix:/run/php/php-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
         include fastcgi_params;
@@ -830,7 +838,7 @@ async function writeDocumentation() {
   if (!fs.existsSync(path.join(outDir, 'sitemap-docs.xml'))) throw new Error('The documentation build produced no sitemap-docs.xml');
   fs.writeFileSync(
     path.join(outDir, 'robots.txt'),
-    `User-agent: *\nDisallow: /data/\nDisallow: /api/\n\nSitemap: ${result.origin}/sitemap-docs.xml\n`,
+    `User-agent: *\nDisallow: /data/\nDisallow: /api/\n\nSitemap: ${result.origin}/sitemap-docs.xml\nSitemap: ${result.origin}/sitemap-apps.xml\n`,
   );
   return result;
 }

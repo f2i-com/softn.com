@@ -52,6 +52,11 @@ use crate::http_cache::BlobStore;
 const MAX_WEBGL_CONTEXTS: usize = 16;
 const MAX_GL_OBJECTS: usize = 16_384;
 const MAX_WEBGL_DIM: i32 = 4096;
+const MAX_WEBGL_3D_TEXELS: u64 = 16_777_216;
+const MAX_WEBGL_VRAM_BYTES: usize = 256 * 1024 * 1024;
+const MAX_DRAW_VERTICES: i32 = 16_000_000;
+const MAX_DRAW_INSTANCES: i32 = 1_000_000;
+const MAX_DRAW_TOTAL_VERTICES: u64 = 64_000_000;
 const MAX_DATA_URL_BYTES: usize = 32 * 1024 * 1024;
 
 struct Batch {
@@ -158,7 +163,10 @@ pub(crate) fn host_call(
     // A draw the GL thread is still on after half a minute (a hung driver, or
     // a huge one on the CPU) gives the page an error rather than freezing it.
     let reply = reply_rx.recv_timeout(std::time::Duration::from_secs(30)).map_err(|e| match e {
-        mpsc::RecvTimeoutError::Timeout => "Error: WebGL did not answer in 30 seconds".to_string(),
+        mpsc::RecvTimeoutError::Timeout => {
+            GL_THREAD.with(|t| *t.borrow_mut() = None);
+            "Error: WebGL did not answer in 30 seconds".to_string()
+        }
         mpsc::RecvTimeoutError::Disconnected => {
             GL_THREAD.with(|t| *t.borrow_mut() = None);
             "Error: WebGL stopped".to_string()
@@ -225,9 +233,15 @@ struct Context {
     gl: glow::Context,
     /// OpenGL ES rather than desktop OpenGL.
     es: bool,
+    /// Whether PIXEL_PACK_BUFFER / PIXEL_UNPACK_BUFFER are supported (OpenGL ES 3+ or desktop GL).
+    supports_pbo: bool,
     flid: u32,
     width: i32,
     height: i32,
+    /// Aggregate tracked GPU memory allocated via buffers, textures, and renderbuffers on this context.
+    vram_bytes: usize,
+    buffer_bytes: HashMap<glow::Buffer, usize>,
+    renderbuffer_bytes: HashMap<glow::Renderbuffer, usize>,
     /// The canvas: multisampled (`samples` > 0) when antialiased, and then
     /// resolved into `resolve` to be read.
     fbo: glow::Framebuffer,
@@ -389,9 +403,13 @@ impl Host {
                     raw,
                     gl,
                     es,
+                    supports_pbo: platform.supports_pbo(),
                     flid,
                     width: 0,
                     height: 0,
+                    vram_bytes: 0,
+                    buffer_bytes: HashMap::new(),
+                    renderbuffer_bytes: HashMap::new(),
                     fbo,
                     color,
                     depth,
@@ -872,7 +890,9 @@ impl Context {
             let rgba_img = img.to_rgba8();
             let (w, h) = (rgba_img.width() as i32, rgba_img.height() as i32);
             (w, h, rgba_img.into_raw())
-        } else if let Some(svg_pm) = zipp_renderer::rasterize_svg(&raw) {
+        } else if let Some(svg_pm) = crate::canvas2d::sanitize_svg_for_raster(&raw)
+            .and_then(|s| zipp_renderer::rasterize_svg(&s))
+        {
             if svg_pm.width() > MAX_WEBGL_DIM as u32 || svg_pm.height() > MAX_WEBGL_DIM as u32 {
                 return Err(format!("texture {url}: rasterized SVG exceeds {MAX_WEBGL_DIM} limit"));
             }
@@ -915,16 +935,98 @@ impl Context {
     unsafe fn with_tight_unpack(&self, upload: impl FnOnce(&glow::Context)) {
         let gl = &self.gl;
         unsafe {
-            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+            if self.supports_pbo {
+                gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+            }
             for name in [glow::UNPACK_ROW_LENGTH, glow::UNPACK_SKIP_ROWS, glow::UNPACK_SKIP_PIXELS] {
                 gl.pixel_store_i32(name, 0);
             }
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             upload(gl);
-            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.state.unpack_buffer);
+            if self.supports_pbo {
+                gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.state.unpack_buffer);
+            }
             for name in [glow::UNPACK_ROW_LENGTH, glow::UNPACK_SKIP_ROWS, glow::UNPACK_SKIP_PIXELS, glow::UNPACK_ALIGNMENT] {
                 gl.pixel_store_i32(name, self.state.pixel_store(name));
             }
+        }
+    }
+
+    fn track_vram_delta(&mut self, old_bytes: usize, new_bytes: usize) -> Result<(), String> {
+        let next = self.vram_bytes.saturating_sub(old_bytes).saturating_add(new_bytes);
+        if next > MAX_WEBGL_VRAM_BYTES {
+            return Err("OutOfMemoryError: WebGL context VRAM budget exceeded".into());
+        }
+        self.vram_bytes = next;
+        Ok(())
+    }
+
+    fn bound_buffer_for(&self, target: u32) -> Option<glow::Buffer> {
+        match target {
+            glow::ARRAY_BUFFER => self.state.array_buffer,
+            glow::ELEMENT_ARRAY_BUFFER => self.state.current_element_buffer(),
+            glow::PIXEL_PACK_BUFFER => self.state.pack_buffer,
+            glow::PIXEL_UNPACK_BUFFER => self.state.unpack_buffer,
+            _ => None,
+        }
+    }
+
+    fn check_3d_texels(w: i32, h: i32, d: i32) -> Result<usize, String> {
+        let texels = (w.max(0) as u64)
+            .saturating_mul(h.max(0) as u64)
+            .saturating_mul(d.max(0) as u64);
+        if texels > MAX_WEBGL_3D_TEXELS {
+            return Err(format!("InvalidValueError: 3D texture texel count ({texels}) exceeds limit ({MAX_WEBGL_3D_TEXELS})"));
+        }
+        Ok((texels as usize).saturating_mul(4))
+    }
+
+    unsafe fn detach_and_delete_buffer(&mut self, b: glow::Buffer) {
+        if self.state.array_buffer == Some(b) {
+            self.state.array_buffer = None;
+        }
+        if self.state.pack_buffer == Some(b) {
+            self.state.pack_buffer = None;
+        }
+        if self.state.unpack_buffer == Some(b) {
+            self.state.unpack_buffer = None;
+        }
+        for slot in self.state.vao_element_buffers.values_mut() {
+            if *slot == Some(b) {
+                *slot = None;
+            }
+        }
+        if let Some(old_sz) = self.buffer_bytes.remove(&b) {
+            self.vram_bytes = self.vram_bytes.saturating_sub(old_sz);
+        }
+        unsafe { self.gl.delete_buffer(b) };
+    }
+
+    unsafe fn detach_and_delete_framebuffer(&mut self, fb: glow::Framebuffer) {
+        unsafe { self.gl.delete_framebuffer(fb) };
+        let canvas = Some(self.fbo);
+        let mut rebound = false;
+        for bound in [&mut self.state.draw_fb, &mut self.state.read_fb] {
+            if *bound == Some(fb) {
+                *bound = canvas;
+                rebound = true;
+            }
+        }
+        if rebound {
+            unsafe {
+                self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.state.draw_fb);
+                self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, self.state.read_fb);
+            }
+        }
+    }
+
+    unsafe fn detach_and_delete_renderbuffer(&mut self, rb: glow::Renderbuffer) {
+        if let Some(old_sz) = self.renderbuffer_bytes.remove(&rb) {
+            self.vram_bytes = self.vram_bytes.saturating_sub(old_sz);
+        }
+        unsafe { self.gl.delete_renderbuffer(rb) };
+        if self.state.renderbuffer == Some(rb) {
+            self.state.renderbuffer = None;
         }
     }
 
@@ -958,31 +1060,23 @@ impl Context {
                     }
                     let b = self.gl.create_buffer()?;
                     if let Some(old) = self.buffers.insert(id, b) {
-                        self.gl.delete_buffer(old);
+                        self.detach_and_delete_buffer(old);
                     }
                 }
                 "deleteBuffer" => {
                     if let Some(b) = self.buffers.remove(&u(1)) {
-                        if self.state.array_buffer == Some(b) {
-                            self.state.array_buffer = None;
-                        }
-                        if self.state.pack_buffer == Some(b) {
-                            self.state.pack_buffer = None;
-                        }
-                        if self.state.unpack_buffer == Some(b) {
-                            self.state.unpack_buffer = None;
-                        }
-                        for slot in self.state.vao_element_buffers.values_mut() {
-                            if *slot == Some(b) {
-                                *slot = None;
-                            }
-                        }
-                        self.gl.delete_buffer(b);
+                        self.detach_and_delete_buffer(b);
                     }
                 }
                 "bindBuffer" => {
+                    let target = u(1);
+                    if !self.supports_pbo
+                        && matches!(target, glow::PIXEL_PACK_BUFFER | glow::PIXEL_UNPACK_BUFFER)
+                    {
+                        return Err("InvalidEnumError: PBO targets require OpenGL ES 3+".into());
+                    }
                     let b = self.buffers.get(&u(2)).copied();
-                    match u(1) {
+                    match target {
                         glow::ARRAY_BUFFER => self.state.array_buffer = b,
                         glow::ELEMENT_ARRAY_BUFFER => {
                             self.state
@@ -993,19 +1087,34 @@ impl Context {
                         glow::PIXEL_UNPACK_BUFFER => self.state.unpack_buffer = b,
                         _ => {}
                     }
-                    self.gl.bind_buffer(u(1), b);
+                    self.gl.bind_buffer(target, b);
                 }
                 "bindBufferBase" => self.gl.bind_buffer_base(u(1), u(2), self.buffers.get(&u(3)).copied()),
                 "bindBufferRange" => {
                     self.gl.bind_buffer_range(u(1), u(2), self.buffers.get(&u(3)).copied(), int(4), int(5));
                 }
-                "bufferData" => self.gl.buffer_data_u8_slice(u(1), bytes(u(2) as usize, u(3) as usize)?, u(4)),
+                "bufferData" => {
+                    let target = u(1);
+                    let slice = bytes(u(2) as usize, u(3) as usize)?;
+                    if let Some(b) = self.bound_buffer_for(target) {
+                        let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
+                        self.track_vram_delta(old_sz, slice.len())?;
+                        self.buffer_bytes.insert(b, slice.len());
+                    }
+                    self.gl.buffer_data_u8_slice(target, slice, u(4));
+                }
                 "bufferSize" => {
+                    let target = u(1);
                     let sz = int(2);
                     if sz < 0 || (sz as usize) > MAX_READ_BYTES {
                         return Err("InvalidValueError: bufferSize out of bounds".into());
                     }
-                    self.gl.buffer_data_size(u(1), sz, u(3));
+                    if let Some(b) = self.bound_buffer_for(target) {
+                        let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
+                        self.track_vram_delta(old_sz, sz as usize)?;
+                        self.buffer_bytes.insert(b, sz as usize);
+                    }
+                    self.gl.buffer_data_size(target, sz, u(3));
                 }
                 "bufferSubData" => self.gl.buffer_sub_data_u8_slice(u(1), int(2), bytes(u(3) as usize, u(4) as usize)?),
                 "copyBufferSubData" => self.gl.copy_buffer_sub_data(u(1), u(2), int(3), int(4), int(5)),
@@ -1391,6 +1500,8 @@ impl Context {
                     {
                         return Err("InvalidValueError: texStorage3D dimensions out of range".into());
                     }
+                    let est = Self::check_3d_texels(w, h, d)?;
+                    self.track_vram_delta(0, est)?;
                     self.gl.tex_storage_3d(u(1), levels, u(3), w, h, d);
                 }
                 "texImage2D" => {
@@ -1399,29 +1510,28 @@ impl Context {
                         return Err("InvalidValueError: texImage2D dimensions out of range".into());
                     }
                     let at = num(8);
-                    // Unbind any PIXEL_UNPACK_BUFFER during client-memory uploads so OpenGL
-                    // never treats the host slice pointer as a PBO byte offset.
-                    if self.state.unpack_buffer.is_some() {
-                        self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-                    }
-                    if at < 0.0 {
-                        self.gl.tex_image_2d(target, level, internal, w, h, 0, format, ty, glow::PixelUnpackData::Slice(None));
+                    // Validate client payload BEFORE unbinding PIXEL_UNPACK_BUFFER so an early `?`
+                    // error can never leave GL's unpack buffer desynced from `self.state.unpack_buffer`.
+                    let prepared = if at < 0.0 {
+                        None
                     } else {
                         let page = bytes(at as usize, u(9) as usize)?;
-                        let upload_res = self.check_upload(page.len(), w, h, 1, format, ty)
-                            .and_then(|_| self.unpack_bytes(page, w, h, format, ty));
-                        if self.state.unpack_buffer.is_some() && upload_res.is_err() {
-                            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.state.unpack_buffer);
-                        }
-                        let data = upload_res?;
-                        self.gl.tex_image_2d(target, level, internal, w, h, 0, format, ty, glow::PixelUnpackData::Slice(Some(&data)));
+                        self.check_upload(page.len(), w, h, 1, format, ty)?;
+                        Some(self.unpack_bytes(page, w, h, format, ty)?)
+                    };
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
+                        self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
                     }
-                    if self.state.unpack_buffer.is_some() {
+                    match prepared.as_deref() {
+                        None => self.gl.tex_image_2d(target, level, internal, w, h, 0, format, ty, glow::PixelUnpackData::Slice(None)),
+                        Some(data) => self.gl.tex_image_2d(target, level, internal, w, h, 0, format, ty, glow::PixelUnpackData::Slice(Some(data))),
+                    }
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.state.unpack_buffer);
                     }
                 }
                 "texImage2DPbo" => {
-                    if self.state.unpack_buffer.is_none() {
+                    if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texImage2DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
                     let (level, w, h) = (int(2), int(4), int(5));
@@ -1447,16 +1557,16 @@ impl Context {
                     let page = bytes(u(9) as usize, u(10) as usize)?;
                     self.check_upload(page.len(), w, h, 1, format, ty)?;
                     let data = self.unpack_bytes(page, w, h, format, ty)?;
-                    if self.state.unpack_buffer.is_some() {
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
                     }
                     self.gl.tex_sub_image_2d(target, level, x, y, w, h, format, ty, glow::PixelUnpackData::Slice(Some(&data)));
-                    if self.state.unpack_buffer.is_some() {
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.state.unpack_buffer);
                     }
                 }
                 "texSubImage2DPbo" => {
-                    if self.state.unpack_buffer.is_none() {
+                    if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texSubImage2DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
                     let pixels = glow::PixelUnpackData::BufferOffset(u(9));
@@ -1479,21 +1589,23 @@ impl Context {
                     {
                         return Err("InvalidValueError: texImage3D dimensions out of range".into());
                     }
+                    let est = Self::check_3d_texels(w, h, d)?;
                     let at = num(9);
                     let data = if at < 0.0 { None } else { Some(bytes(at as usize, u(10) as usize)?) };
                     if let Some(data) = data {
                         self.check_upload(data.len(), w, h, d, format, ty)?;
                     }
-                    if self.state.unpack_buffer.is_some() {
+                    self.track_vram_delta(0, est)?;
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
                     }
                     self.gl.tex_image_3d(target, level, internal, w, h, d, 0, format, ty, glow::PixelUnpackData::Slice(data));
-                    if self.state.unpack_buffer.is_some() {
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.state.unpack_buffer);
                     }
                 }
                 "texImage3DPbo" => {
-                    if self.state.unpack_buffer.is_none() {
+                    if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texImage3DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
                     let (level, w, h, d) = (int(2), int(4), int(5), int(6));
@@ -1504,6 +1616,8 @@ impl Context {
                     {
                         return Err("InvalidValueError: texImage3DPbo dimensions out of range".into());
                     }
+                    let est = Self::check_3d_texels(w, h, d)?;
+                    self.track_vram_delta(0, est)?;
                     let pixels = glow::PixelUnpackData::BufferOffset(u(9));
                     self.gl.tex_image_3d(u(1), level, int(3), w, h, d, 0, u(7), u(8), pixels);
                 }
@@ -1512,23 +1626,29 @@ impl Context {
                     if !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) || !(0..=2048).contains(&d) {
                         return Err("InvalidValueError: texSubImage3D dimensions out of range".into());
                     }
+                    let _ = Self::check_3d_texels(w, h, d)?;
                     let data = bytes(u(11) as usize, u(12) as usize)?;
                     self.check_upload(data.len(), w, h, d, u(9), u(10))?;
                     let pixels = glow::PixelUnpackData::Slice(Some(data));
-                    if self.state.unpack_buffer.is_some() {
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
                     }
                     self.gl.tex_sub_image_3d(u(1), int(2), int(3), int(4), int(5), w, h, d, u(9), u(10), pixels);
-                    if self.state.unpack_buffer.is_some() {
+                    if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.state.unpack_buffer);
                     }
                 }
                 "texSubImage3DPbo" => {
-                    if self.state.unpack_buffer.is_none() {
+                    if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texSubImage3DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
+                    let (w, h, d) = (int(6), int(7), int(8));
+                    if !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) || !(0..=2048).contains(&d) {
+                        return Err("InvalidValueError: texSubImage3DPbo dimensions out of range".into());
+                    }
+                    let _ = Self::check_3d_texels(w, h, d)?;
                     let pixels = glow::PixelUnpackData::BufferOffset(u(11));
-                    self.gl.tex_sub_image_3d(u(1), int(2), int(3), int(4), int(5), int(6), int(7), int(8), u(9), u(10), pixels);
+                    self.gl.tex_sub_image_3d(u(1), int(2), int(3), int(4), int(5), w, h, d, u(9), u(10), pixels);
                 }
                 "copyTexImage2D" => {
                     let resolved = self.begin_resolved_read();
@@ -1570,21 +1690,12 @@ impl Context {
                     }
                     let fb = self.gl.create_framebuffer()?;
                     if let Some(old) = self.framebuffers.insert(id, fb) {
-                        self.gl.delete_framebuffer(old);
+                        self.detach_and_delete_framebuffer(old);
                     }
                 }
                 "deleteFramebuffer" => {
                     if let Some(fb) = self.framebuffers.remove(&u(1)) {
-                        self.gl.delete_framebuffer(fb);
-                        // Deleting a bound framebuffer binds the canvas's.
-                        let canvas = Some(self.fbo);
-                        for bound in [&mut self.state.draw_fb, &mut self.state.read_fb] {
-                            if *bound == Some(fb) {
-                                *bound = canvas;
-                            }
-                        }
-                        self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.state.draw_fb);
-                        self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, self.state.read_fb);
+                        self.detach_and_delete_framebuffer(fb);
                     }
                 }
                 "bindFramebuffer" => {
@@ -1626,15 +1737,12 @@ impl Context {
                     }
                     let rb = self.gl.create_renderbuffer()?;
                     if let Some(old) = self.renderbuffers.insert(id, rb) {
-                        self.gl.delete_renderbuffer(old);
+                        self.detach_and_delete_renderbuffer(old);
                     }
                 }
                 "deleteRenderbuffer" => {
                     if let Some(rb) = self.renderbuffers.remove(&u(1)) {
-                        self.gl.delete_renderbuffer(rb);
-                        if self.state.renderbuffer == Some(rb) {
-                            self.state.renderbuffer = None;
-                        }
+                        self.detach_and_delete_renderbuffer(rb);
                     }
                 }
                 "bindRenderbuffer" => {
@@ -1647,6 +1755,12 @@ impl Context {
                     if !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) {
                         return Err("InvalidValueError: renderbufferStorage dimensions out of range".into());
                     }
+                    if let Some(rb) = self.state.renderbuffer {
+                        let est = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+                        let old_sz = self.renderbuffer_bytes.get(&rb).copied().unwrap_or(0);
+                        self.track_vram_delta(old_sz, est)?;
+                        self.renderbuffer_bytes.insert(rb, est);
+                    }
                     // WebGL's DEPTH_STENCIL is a sized format on the desktop.
                     let format = if u(2) == 0x84f9 { glow::DEPTH24_STENCIL8 } else { u(2) };
                     self.gl.renderbuffer_storage(u(1), format, w, h);
@@ -1655,6 +1769,15 @@ impl Context {
                     let (samples, w, h) = (int(2), int(4), int(5));
                     if !(0..=16).contains(&samples) || !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) {
                         return Err("InvalidValueError: renderbufferStorageMultisample dimensions out of range".into());
+                    }
+                    if let Some(rb) = self.state.renderbuffer {
+                        let est = (w as usize)
+                            .saturating_mul(h as usize)
+                            .saturating_mul(samples.max(1) as usize)
+                            .saturating_mul(4);
+                        let old_sz = self.renderbuffer_bytes.get(&rb).copied().unwrap_or(0);
+                        self.track_vram_delta(old_sz, est)?;
+                        self.renderbuffer_bytes.insert(rb, est);
                     }
                     let format = if u(3) == 0x84f9 { glow::DEPTH24_STENCIL8 } else { u(3) };
                     self.gl.renderbuffer_storage_multisample(u(1), samples, format, w, h);
@@ -1666,6 +1789,11 @@ impl Context {
                     }
                     let v = self.gl.create_vertex_array()?;
                     if let Some(old) = self.vaos.insert(id, v) {
+                        self.state.vao_element_buffers.remove(&id);
+                        if self.state.current_vao == id {
+                            self.state.current_vao = 0;
+                            self.gl.bind_vertex_array(None);
+                        }
                         self.gl.delete_vertex_array(old);
                     }
                 }
@@ -1834,8 +1962,8 @@ impl Context {
                 }
                 "drawArrays" => {
                     let (first, count) = (int(2), int(3));
-                    if first < 0 || count < 0 {
-                        return Err("InvalidValueError: drawArrays negative first or count".into());
+                    if first < 0 || count < 0 || count > MAX_DRAW_VERTICES {
+                        return Err("InvalidValueError: drawArrays first or count out of range".into());
                     }
                     self.gl.draw_arrays(u(1), first, count);
                 }
@@ -1844,15 +1972,21 @@ impl Context {
                         return Err("InvalidOperationError: drawElements requires a bound ELEMENT_ARRAY_BUFFER".into());
                     }
                     let (count, offset) = (int(2), int(4));
-                    if count < 0 || offset < 0 {
-                        return Err("InvalidValueError: drawElements negative count or offset".into());
+                    if count < 0 || offset < 0 || count > MAX_DRAW_VERTICES {
+                        return Err("InvalidValueError: drawElements count or offset out of range".into());
                     }
                     self.gl.draw_elements(u(1), count, u(3), offset);
                 }
                 "drawArraysInstanced" => {
                     let (first, count, instances) = (int(2), int(3), int(4));
-                    if first < 0 || count < 0 || instances < 0 {
-                        return Err("InvalidValueError: drawArraysInstanced negative argument".into());
+                    if first < 0
+                        || count < 0
+                        || instances < 0
+                        || count > MAX_DRAW_VERTICES
+                        || instances > MAX_DRAW_INSTANCES
+                        || (count as u64).saturating_mul(instances as u64) > MAX_DRAW_TOTAL_VERTICES
+                    {
+                        return Err("InvalidValueError: drawArraysInstanced argument out of range".into());
                     }
                     self.gl.draw_arrays_instanced(u(1), first, count, instances);
                 }
@@ -1861,8 +1995,14 @@ impl Context {
                         return Err("InvalidOperationError: drawElementsInstanced requires a bound ELEMENT_ARRAY_BUFFER".into());
                     }
                     let (count, offset, instances) = (int(2), int(4), int(5));
-                    if count < 0 || offset < 0 || instances < 0 {
-                        return Err("InvalidValueError: drawElementsInstanced negative argument".into());
+                    if count < 0
+                        || offset < 0
+                        || instances < 0
+                        || count > MAX_DRAW_VERTICES
+                        || instances > MAX_DRAW_INSTANCES
+                        || (count as u64).saturating_mul(instances as u64) > MAX_DRAW_TOTAL_VERTICES
+                    {
+                        return Err("InvalidValueError: drawElementsInstanced argument out of range".into());
                     }
                     self.gl.draw_elements_instanced(u(1), count, u(3), offset, instances);
                 }
@@ -1870,7 +2010,7 @@ impl Context {
                     let (x, y, w, h, format, ty) = (int(1), int(2), int(3), int(4), u(5), u(6));
                     let resolved = self.begin_resolved_read();
                     if num(7) >= 0.0 {
-                        if self.state.pack_buffer.is_none() {
+                        if !self.supports_pbo || self.state.pack_buffer.is_none() {
                             self.end_resolved_read(resolved);
                             return Err("InvalidOperationError: readPixels PBO requires a bound PIXEL_PACK_BUFFER".into());
                         }
@@ -1885,9 +2025,13 @@ impl Context {
                                 format!("InvalidOperationError: readPixels: format {format:#x}, type {ty:#x}, {w}x{h}")
                             })?;
                         let mut buf = vec![0u8; len];
-                        self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                        if self.supports_pbo {
+                            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                        }
                         self.gl.read_pixels(x, y, w, h, format, ty, glow::PixelPackData::Slice(Some(&mut buf)));
-                        self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, self.state.pack_buffer);
+                        if self.supports_pbo {
+                            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, self.state.pack_buffer);
+                        }
                         out = len.to_string();
                         reply.bytes = Some(buf);
                     }
@@ -1992,6 +2136,10 @@ mod wgl {
         /// Always desktop OpenGL.
         pub(super) fn es(&self) -> bool {
             false
+        }
+
+        pub(super) fn supports_pbo(&self) -> bool {
+            true
         }
 
         pub(super) fn new() -> Result<Self, String> {
@@ -2237,6 +2385,10 @@ mod egl {
 
         pub(super) fn es(&self) -> bool {
             true
+        }
+
+        pub(super) fn supports_pbo(&self) -> bool {
+            self.gles_major >= 3
         }
 
         pub(super) fn proc_address(&self, name: &str) -> *const c_void {

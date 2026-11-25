@@ -103,21 +103,38 @@ function isObjectAncestor(candidate: import('three').Object3D, node: import('thr
   return false;
 }
 
+function disposeMaterialWithTextures(mat: unknown): void {
+  if (!mat || typeof mat !== 'object') return;
+  for (const val of Object.values(mat as Record<string, unknown>)) {
+    if (val && typeof val === 'object' && (val as { isTexture?: boolean; dispose?: () => void }).isTexture) {
+      try { (val as { dispose?: () => void }).dispose?.(); } catch { /* ignore */ }
+    }
+  }
+  try { (mat as { dispose?: () => void }).dispose?.(); } catch { /* ignore */ }
+}
+
 function disposeObjectTree(root: import('three').Object3D): void {
   root.traverse((node) => {
     const m = node as {
       geometry?: { dispose?: () => void };
-      material?: { dispose?: () => void } | Array<{ dispose?: () => void }>;
+      material?: unknown | unknown[];
     };
     try { m.geometry?.dispose?.(); } catch { /* ignore */ }
     if (Array.isArray(m.material)) {
       for (const mat of m.material) {
-        try { mat?.dispose?.(); } catch { /* ignore */ }
+        disposeMaterialWithTextures(mat);
       }
-    } else {
-      try { m.material?.dispose?.(); } catch { /* ignore */ }
+    } else if (m.material) {
+      disposeMaterialWithTextures(m.material);
     }
   });
+}
+
+function estimateBase64Bytes(b64: string): number {
+  const len = b64.length;
+  if (len === 0) return 0;
+  const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((len * 3) / 4) - pad);
 }
 
 function decodeTypedArray(typeCode: string, b64: string): Float32Array | Uint16Array | Uint32Array | Int32Array | Int16Array | Int8Array | Uint8Array | Uint8ClampedArray {
@@ -645,6 +662,8 @@ export class ThreeWorkerHost {
             const inst = entry.objects.get(id) as import('three').InstancedMesh | undefined;
             if (!inst || !inst.isInstancedMesh) break;
             if (typeof op[3] === 'string' && op[3].length > 0) {
+              const estBytes = estimateBase64Bytes(op[3]);
+              if (estBytes > MAX_UPLOAD_BYTES || !this.trackResourceBytes(entry, `im-mat:${id}`, estBytes)) break;
               const arr = decodeTypedArray('f32', op[3]) as Float32Array;
               if (!this.trackResourceBytes(entry, `im-mat:${id}`, arr.byteLength)) break;
               if (inst.instanceMatrix.array.length !== arr.length) {
@@ -659,6 +678,8 @@ export class ThreeWorkerHost {
               inst.count = Math.max(0, Math.min(maxAllowed, Math.floor(op[2])));
             }
             if (typeof op[4] === 'string' && op[4].length > 0) {
+              const estBytes = estimateBase64Bytes(op[4]);
+              if (estBytes > MAX_UPLOAD_BYTES || !this.trackResourceBytes(entry, `im-col:${id}`, estBytes)) break;
               const colArr = decodeTypedArray('f32', op[4]) as Float32Array;
               if (!this.trackResourceBytes(entry, `im-col:${id}`, colArr.byteLength)) break;
               const hadColor = Boolean(inst.instanceColor);
@@ -843,6 +864,8 @@ export class ThreeWorkerHost {
       for (const [name, aSpec] of Object.entries(attrs)) {
         if (BLOCKED_THREE_KEYS.has(name)) continue;
         if (!aSpec || typeof aSpec.b64 !== 'string') continue;
+        const estBytes = estimateBase64Bytes(aSpec.b64);
+        if (estBytes > MAX_UPLOAD_BYTES || !this.trackResourceBytes(entry, `geo:${id}:attr:${name}`, estBytes)) continue;
         const arr = decodeTypedArray(String(aSpec.tc || 'f32'), aSpec.b64);
         if (!this.trackResourceBytes(entry, `geo:${id}:attr:${name}`, arr.byteLength)) continue;
         const itemSize = Number(aSpec.s) || 3;
@@ -857,9 +880,12 @@ export class ThreeWorkerHost {
     if ('index' in spec) {
       const idx = spec.index as { tc?: string; b64?: string } | null;
       if (idx && typeof idx.b64 === 'string') {
-        const arr = decodeTypedArray(String(idx.tc || 'u16'), idx.b64);
-        if (this.trackResourceBytes(entry, `geo:${id}:index`, arr.byteLength)) {
-          geo.setIndex(new THREE.BufferAttribute(arr, 1));
+        const estBytes = estimateBase64Bytes(idx.b64);
+        if (estBytes <= MAX_UPLOAD_BYTES && this.trackResourceBytes(entry, `geo:${id}:index`, estBytes)) {
+          const arr = decodeTypedArray(String(idx.tc || 'u16'), idx.b64);
+          if (this.trackResourceBytes(entry, `geo:${id}:index`, arr.byteLength)) {
+            geo.setIndex(new THREE.BufferAttribute(arr, 1));
+          }
         }
       } else {
         this.releaseResourceBytes(entry, `geo:${id}:index`);

@@ -28,8 +28,10 @@ export const PLACEHOLDERS = [
   '{{ICON_TAG}}',
   '{{THEME_COLOR}}',
   '{{PWA_TAGS}}',
+  '{{STRUCTURED_DATA}}',
   '{{BOOT_JSON}}',
   '{{LOADING_TEXT}}',
+  '{{SSR_CONTENT}}',
 ];
 
 export function shellTemplate(tags) {
@@ -44,6 +46,7 @@ export function shellTemplate(tags) {
     <title>{{TITLE}}</title>
     {{ICON_TAG}}
     {{PWA_TAGS}}
+    {{STRUCTURED_DATA}}
     <style>
       html,
       body {
@@ -67,6 +70,27 @@ export function shellTemplate(tags) {
         border-radius: 50%;
         animation: turn 0.8s linear infinite;
       }
+      .softn-ssr {
+        max-width: 42rem;
+        margin-top: 8px;
+        padding: 0 24px;
+        text-align: center;
+        opacity: 0.85;
+        line-height: 1.5;
+      }
+      .softn-ssr h1 {
+        font-size: 1.15rem;
+        margin: 0 0 6px;
+      }
+      .softn-ssr p {
+        margin: 4px 0;
+        font-size: 0.9rem;
+      }
+      .softn-ssr [data-softn-preview] {
+        margin-top: 12px;
+        text-align: left;
+        font-size: 0.9rem;
+      }
       @keyframes turn {
         to {
           transform: rotate(360deg);
@@ -86,6 +110,7 @@ export function shellTemplate(tags) {
     <div id="root">
       <div id="boot" role="status">
         <span class="wheel" aria-hidden="true"></span><span>{{LOADING_TEXT}}</span>
+        {{SSR_CONTENT}}
       </div>
     </div>
     <noscript>This application needs JavaScript enabled.</noscript>
@@ -148,6 +173,10 @@ return [
     'withhold' => [],
     // How long a browser may keep an entry it fetched.
     'cacheSeconds' => 3600,
+    // Set to true to include sanitized server-rendered HTML from the app's
+    // public UI entry in the initial document for SEO and View Source (respects
+    // withhold rules; disabled by default for private deployments).
+    // 'prerender' => false,
     // The installable app and link previews. true takes the defaults: the
     // placeholder icons in webroot/pwa-icons/, webroot/apple-touch-icon.png and
     // webroot/share.png (replace them with your own artwork), the title as the
