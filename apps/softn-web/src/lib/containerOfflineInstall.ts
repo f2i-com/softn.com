@@ -112,12 +112,18 @@ async function performInstall(app: ContainerInstallApp, options: ContainerInstal
   const fullEngine = usesHostEngine(needs.tiers)
     ? (options.installFullEngine ?? installFullEngine)(signal).then(() => true, () => false)
     : true;
+  let workerScriptText = '';
   const fetched = await Promise.all(
     files.map(async (url) => {
       try {
         const response = await fetchFn(url, { cache: 'reload', credentials: 'same-origin', signal });
         // The body is read to its end: a response cut short is not a file held.
-        if (response.ok) await response.arrayBuffer();
+        if (response.ok) {
+          const buf = await response.arrayBuffer();
+          if (url.endsWith('/container-worker.js') && buf.byteLength > 32) {
+            workerScriptText = new TextDecoder().decode(buf);
+          }
+        }
         return response.ok;
       } catch {
         return false;
@@ -129,6 +135,50 @@ async function performInstall(app: ContainerInstallApp, options: ContainerInstal
   files.forEach((url, index) => {
     if (!fetched[index]) result.missing.push(url.slice(host.runtimeUrl.length));
   });
+
+  // Also cache static shared `worker-chunks/chunk-*.js` and any optional `worker-chunks/*.js`
+  // or Worker-side `vendor/three.js` referenced by the built `container-worker.js`.
+  if (workerScriptText) {
+    const extraFiles = new Set<string>();
+    const wantedChunkPrefixes: string[] = ['chunk-'];
+    const wf = new Set(needs.workerFeatures ?? []);
+    if (needs.three) wantedChunkPrefixes.push('three-worker-host-', 'guest-three-native-');
+    if (needs.three || wf.has('webgl')) wantedChunkPrefixes.push('webgl-worker-host-', 'guest-webgl-');
+    if (wf.has('indexeddb')) wantedChunkPrefixes.push('guest-indexeddb-');
+    if (wf.has('react')) wantedChunkPrefixes.push('guest-react-vendor-');
+    if (wf.has('jsx')) wantedChunkPrefixes.push('jsx-transform-');
+    if (wf.has('worker')) wantedChunkPrefixes.push('guest-worker-scope-');
+    if (wf.has('vendors')) wantedChunkPrefixes.push('guest-vendors-');
+    for (const m of workerScriptText.matchAll(/["']\.\/(worker-chunks\/[A-Za-z0-9._-]+\.js)["']/g)) {
+      const rel = m[1];
+      const baseName = rel.slice('worker-chunks/'.length);
+      if (wantedChunkPrefixes.some((p) => baseName.startsWith(p))) {
+        extraFiles.add(rel);
+      }
+    }
+    if (needs.three) {
+      extraFiles.add('vendor/three.js');
+      if (needs.models) extraFiles.add('vendor/gltf-loader.js');
+    }
+    if (extraFiles.size > 0) {
+      const extraList = [...extraFiles];
+      const extraOk = await Promise.all(
+        extraList.map(async (rel) => {
+          try {
+            const response = await fetchFn(host.runtimeUrl + rel, { cache: 'reload', credentials: 'same-origin', signal });
+            if (response.ok) await response.arrayBuffer();
+            return response.ok;
+          } catch {
+            return false;
+          }
+        })
+      );
+      if (signal?.aborted) return cancelled();
+      extraList.forEach((rel, index) => {
+        if (!extraOk[index]) result.missing.push(rel);
+      });
+    }
+  }
 
   // What the container loads the first time an app draws a scene or names one of its elements.
   const absent = await container.preloadContainerFeatures(needs, host);

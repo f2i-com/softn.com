@@ -15,7 +15,7 @@ declare(strict_types=1);
 
 final class Prerender
 {
-    public const VERSION = 3;
+    public const VERSION = 4;
     private const MAX_ENTRY_BYTES = 262144;
     private const MAX_SNAPSHOT_BYTES = 524288;
     private const MAX_IMPORT_FILES = 16;
@@ -96,8 +96,9 @@ final class Prerender
 
         $cacheFile = null;
         if ($cacheDir !== null && $bundleSha !== '') {
-            $suffix = ($withholdBackend ? '-client' : '') . $snapTag;
-            $cacheFile = rtrim($cacheDir, '/\\') . '/page-meta-v' . self::VERSION . '-' . substr($bundleSha, 0, 16) . $suffix . '.json';
+            $pathHash = substr(hash('sha256', $bundlePath . '|' . ($activeSnapshot ?? '')), 0, 8);
+            $suffix = ($withholdBackend ? '-client' : '') . '-' . $pathHash . $snapTag;
+            $cacheFile = rtrim($cacheDir, '/\\') . '/page-meta-v' . self::VERSION . '-' . substr($bundleSha, 0, 32) . $suffix . '.json';
             $cached = @file_get_contents($cacheFile);
             if (is_string($cached)) {
                 $decoded = json_decode($cached, true);
@@ -123,7 +124,7 @@ final class Prerender
         if ($activeSnapshot !== null) {
             $rawSnap = @file_get_contents($activeSnapshot, false, null, 0, self::MAX_SNAPSHOT_BYTES);
             if (is_string($rawSnap) && trim($rawSnap) !== '') {
-                $sanitizedSnap = self::sanitizeHtml($rawSnap);
+                $sanitizedSnap = self::sanitizeHtml($rawSnap, self::MAX_SNAPSHOT_BYTES);
                 if ($sanitizedSnap !== '') {
                     $result['previewHtml'] = $sanitizedSnap;
                     $result['sourceType'] = 'snapshot';
@@ -347,7 +348,7 @@ final class Prerender
             if ($stat === false || (int) $stat['size'] === 0 || (int) $stat['size'] > self::MAX_SNAPSHOT_BYTES) continue;
             $raw = $zip->getFromName($zipName, self::MAX_SNAPSHOT_BYTES);
             if (!is_string($raw) || trim($raw) === '') continue;
-            $sanitized = self::sanitizeHtml($raw);
+            $sanitized = self::sanitizeHtml($raw, self::MAX_SNAPSHOT_BYTES);
             if ($sanitized !== '') {
                 return ['html' => $sanitized, 'file' => $rel];
             }
@@ -447,8 +448,9 @@ final class Prerender
      *
      * @return string[]
      */
-    private static function extractTaggedHtmlLiterals(string $src): array
+    private static function extractTaggedHtmlLiterals(string $src, int $recursionDepth = 0): array
     {
+        if ($recursionDepth >= 8) return [];
         $out = [];
         $len = strlen($src);
         $pos = 0;
@@ -493,8 +495,8 @@ final class Prerender
                         $j++;
                     }
                     $expr = substr($src, $exprStart, max(0, $j - $exprStart - 1));
-                    if (str_contains($expr, 'html`')) {
-                        foreach (self::extractTaggedHtmlLiterals($expr) as $nested) {
+                    if (str_contains($expr, 'html`') && $recursionDepth < 7) {
+                        foreach (self::extractTaggedHtmlLiterals($expr, $recursionDepth + 1) as $nested) {
                             $buf .= ' ' . $nested . ' ';
                         }
                     } else {
@@ -625,10 +627,14 @@ final class Prerender
         foreach ($imports as $comp => $body) {
             if (strlen($content) >= self::MAX_ENTRY_BYTES) break;
             $pattern = '/<' . preg_quote($comp, '/') . '(?:\s[^<>]*?)?\/>/';
+            $runningLen = strlen($content);
             $expanded = preg_replace_callback(
                 $pattern,
-                static function () use ($body, &$content): string {
-                    return strlen($content) + strlen($body) <= self::MAX_ENTRY_BYTES ? "\n" . $body . "\n" : '';
+                static function (array $m) use ($body, &$runningLen): string {
+                    $delta = strlen($body) + 2 - strlen($m[0]);
+                    if ($runningLen + $delta > self::MAX_ENTRY_BYTES) return $m[0];
+                    $runningLen += $delta;
+                    return "\n" . $body . "\n";
                 },
                 $content,
                 2
@@ -662,22 +668,24 @@ final class Prerender
      * Sanitize static HTML (from a Container v2 entry) into safe, balanced,
      * nicely formatted semantic HTML5 suitable for search engines and View Source.
      */
-    public static function sanitizeHtml(string $raw): string
+    public static function sanitizeHtml(string $raw, int $maxBytes = self::MAX_ENTRY_BYTES): string
     {
-        if (strlen($raw) > self::MAX_ENTRY_BYTES) {
-            $raw = substr($raw, 0, self::MAX_ENTRY_BYTES);
+        if (strlen($raw) > $maxBytes) {
+            $raw = substr($raw, 0, $maxBytes);
         }
-        // Extract body contents when a full document is supplied.
-        if (preg_match('/<body\b[^>]*>([\s\S]*?)<\/body>/i', $raw, $m) === 1) {
-            $raw = $m[1];
-        } else {
-            $raw = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head>/i', '', $raw) ?? $raw;
-        }
-        // Strip non-content / active / embedded subtrees completely.
+        // Strip comments, doctype, and non-content / active / embedded subtrees BEFORE
+        // locating <body> so a literal `<body>...</body>` inside a <script> or comment cannot
+        // hijack extraction.
         $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
         $raw = preg_replace('/<!DOCTYPE[^>]*>/i', '', $raw) ?? $raw;
-        $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1>/i', '', $raw) ?? $raw;
+        $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1\s*>/i', '', $raw) ?? $raw;
         $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|input|meta|link|base|canvas|audio|video)\b[^>]*\/?>/i', '', $raw) ?? $raw;
+        // Extract body contents when a full document is supplied.
+        if (preg_match('/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i', $raw, $m) === 1) {
+            $raw = $m[1];
+        } else {
+            $raw = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head\s*>/i', '', $raw) ?? $raw;
+        }
 
         $root = ['tag' => '#root', 'attrs' => '', 'children' => []];
         $stack = [&$root];
@@ -692,7 +700,7 @@ final class Prerender
                 if (preg_match('/^<\/([a-zA-Z][a-zA-Z0-9:-]*)\s*>$/', $tok, $cm) === 1) {
                     $closeTag = strtolower($cm[1]);
                     if (!isset(self::ALLOWED_HTML_TAGS[$closeTag]) || isset(self::VOID_TAGS[$closeTag])) continue;
-                    // Pop up to matching tag (by original source tag name, so downgraded h1->h2 or a->span closes cleanly).
+                    // Pop up to matching tag (by original source tag name, so downgraded h1->h2, main->section or a->span closes cleanly).
                     for ($idx = count($stack) - 1; $idx >= 1; $idx--) {
                         if (($stack[$idx]['orig'] ?? $stack[$idx]['tag']) === $closeTag) {
                             while (count($stack) > $idx) array_pop($stack);
@@ -709,14 +717,16 @@ final class Prerender
                     if (!isset(self::ALLOWED_HTML_TAGS[$tag])) continue;
                     if (count($stack) - 1 >= self::MAX_DEPTH) continue;
 
-                    // Downgrade h1 inside app preview to h2 so the page retains a single h1.
+                    // Downgrade h1 inside app preview to h2 so the page retains a single h1,
+                    // and map <main> to <section> so the outer page never has nested <main> landmarks.
                     if ($tag === 'h1') $tag = 'h2';
+                    elseif ($tag === 'main') $tag = 'section';
 
                     $attrs = '';
                     if ($tag === 'a') {
                         $href = self::extractSafeHref($rawAttrs);
                         if ($href !== null) {
-                            $attrs = ' href="' . self::esc($href) . '" rel="noopener noreferrer"';
+                            $attrs = ' href="' . self::esc($href) . '" rel="nofollow ugc noopener noreferrer"';
                         } else {
                             $tag = 'span';
                         }
@@ -758,7 +768,7 @@ final class Prerender
         }
         $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
         $raw = preg_replace('/^\s*\/\/[^\n]*$/m', '', $raw) ?? $raw;
-        $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*>[\s\S]*?<\/\1>/i', '', $raw) ?? $raw;
+        $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*>[\s\S]*?<\/\1\s*>/i', '', $raw) ?? $raw;
         $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*\/?>/i', '', $raw) ?? $raw;
         // Remove SoftN template control directives (#if, #else, #each, #end, /if, /each).
         $raw = preg_replace('/^\s*[#\/](?:if|else|elseif|elif|each|for|end|slot)\b[^\n]*$/mi', '', $raw) ?? $raw;
@@ -838,7 +848,7 @@ final class Prerender
                 if ($htmlTag === 'a') {
                     $href = self::extractSafeHref($rawAttrs);
                     if ($href !== null) {
-                        $attrs = ' href="' . self::esc($href) . '" rel="noopener noreferrer"';
+                        $attrs = ' href="' . self::esc($href) . '" rel="nofollow ugc noopener noreferrer"';
                     } else {
                         $htmlTag = 'span';
                     }

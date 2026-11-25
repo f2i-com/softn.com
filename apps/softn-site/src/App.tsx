@@ -92,12 +92,18 @@ export default function App(): React.ReactElement {
   }, [route.path]);
 
   // The canonical URL, description and robots line for the route (lib/meta).
-  // Only a change of page reapplies them, so the description an app's page
-  // sets once its app has loaded is not reset by a search or a filter.
-  const metaKey = selected.kind === 'app' ? `app:${selected.slug}` : selected.kind;
+  // Directory category/filter params update canonical & robots; app pages keep
+  // their loaded description until switching to another app or page.
+  const dirQueryKey =
+    selected.kind === 'directory'
+      ? `${route.query.get('category') ?? ''}|${route.query.get('subcategory') ?? ''}|${Boolean(
+          route.query.get('q') || route.query.get('tag') || route.query.get('author') || route.query.get('cap') || route.query.get('hosting')
+        )}`
+      : '';
+  const metaKey = selected.kind === 'app' ? `app:${selected.slug}` : selected.kind === 'directory' ? `dir:${dirQueryKey}` : selected.kind;
   useEffect(() => {
-    applyMeta(metaFor(selectPage(route.path)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- metaKey is the page; route.path within one page changes nothing here
+    applyMeta(metaFor(selectPage(route.path), route.query));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- metaKey captures the page and canonical directory params
   }, [metaKey]);
 
   // pushState does not perform native fragment scrolling. Wait until the

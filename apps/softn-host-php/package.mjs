@@ -113,10 +113,12 @@ function bakeAppSeoHtml(htmlBuf,manifest,clientFiles) {
   const desc=String(manifest.description||`${title} — a SoftN web application.`).slice(0,300);
   html=html.replace(/<title>[\s\S]*?<\/title>/i,()=>`<title>${escHtml(title)}</title>`);
   const ld=JSON.stringify({'@context':'https://schema.org','@type':'WebApplication',name:title,description:desc,operatingSystem:'Any',applicationCategory:'UtilitiesApplication',...(manifest.version?{softwareVersion:String(manifest.version)}:{})}).replace(/</g,'\\u003C').replace(/>/g,'\\u003E').replace(/&/g,'\\u0026');
-  const headMeta=`    <meta name="description" content="${escHtml(desc)}" />\n    <meta property="og:type" content="website" />\n    <meta property="og:title" content="${escHtml(title)}" />\n    <meta property="og:description" content="${escHtml(desc)}" />\n    <meta name="twitter:card" content="summary" />\n    <meta name="twitter:title" content="${escHtml(title)}" />\n    <meta name="twitter:description" content="${escHtml(desc)}" />\n    <script type="application/ld+json">${ld}</script>\n  </head>`;
+  const headMeta=`    <link rel="preload" href="./app.softn" as="fetch" crossorigin="anonymous" fetchpriority="high" />\n    <meta name="description" content="${escHtml(desc)}" />\n    <meta property="og:type" content="website" />\n    <meta property="og:title" content="${escHtml(title)}" />\n    <meta property="og:description" content="${escHtml(desc)}" />\n    <meta name="twitter:card" content="summary" />\n    <meta name="twitter:title" content="${escHtml(title)}" />\n    <meta name="twitter:description" content="${escHtml(desc)}" />\n    <script type="application/ld+json">${ld}</script>\n  </head>`;
   html=html.replace(/<\/head>/i,()=>headMeta);
   const mainEntry=typeof manifest.main==='string'?manifest.main.replace(/^\/+/,''):'';
-  const entryName=[mainEntry,'index.html','ui/main.ui'].find(n=>n&&clientFiles[n]&&/\.(?:ui|html?)$/i.test(n)&&!/^(?:server|backend|private)\//i.test(n));
+  const frontendRoot=typeof manifest.frontendRoot==='string'?manifest.frontendRoot.replace(/^\/+|\/+$/g,''):'';
+  const entryCandidates=[mainEntry,...(frontendRoot?[`${frontendRoot}/index.html`]:[]),'index.html','ui/main.ui'];
+  const entryName=entryCandidates.find(n=>n&&clientFiles[n]&&/\.(?:ui|html?)$/i.test(n)&&!/^(?:server|backend|private)\//i.test(n));
   const preview=entryName?sanitizeStaticPreview(Buffer.from(clientFiles[entryName]).toString('utf8'),entryName.toLowerCase().endsWith('.ui')):'';
   const ssr=`        <article class="softn-ssr" data-softn-ssr="packaged">\n          <h1>${escHtml(title)}</h1>\n          <p>${escHtml(desc)}</p>${preview?`\n          <section data-softn-preview="rendered" aria-label="Rendered application preview">\n            ${preview}\n          </section>`:''}\n        </article>`;
   if(/<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?<\/div>/i.test(html)) {
@@ -180,13 +182,13 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
     entries['webroot/runtime.config.json']=Buffer.from(JSON.stringify(deploymentConfig(manifest,clientBytes,permissionMode),null,2));
     if(entries['webroot/index.html'])entries['webroot/index.html']=bakeAppSeoHtml(entries['webroot/index.html'],publicManifest,clientFiles);
     if(operator)tree(operator,'backend/operator/');
-    prunedRuntime=pruneHostedRuntimeEntries(entries,{...publicManifest,backend:manifest.backend,server:manifest.server},clientFiles,{webrootPrefix:'webroot/'});
-    const appKeys=Object.keys(entries).filter(n=>n.startsWith('backend/app/'));
+    prunedRuntime=pruneHostedRuntimeEntries(entries,{...publicManifest,backend:manifest.backend,server:manifest.server},clientFiles,{webrootPrefix:'webroot/',remoteHostedBackend:Boolean(manifest.backend)});
     const backendType=String(manifest.backend?.runtime??manifest.backend?.type??manifest.server?.runtime??'').toLowerCase();
+    const backendServerKeys=Object.keys(entries).filter(n=>/^backend\/app\/(?:backend|server)\//i.test(n));
     backendEngineFilter=new Set();
-    if(backendType.includes('php')||appKeys.some(n=>/\.php$/i.test(n)))backendEngineFilter.add('zipp-php');
-    if(backendType.includes('ts')||backendType.includes('typescript')||appKeys.some(n=>/\.(?:ts|tsx|mts)$/i.test(n)))backendEngineFilter.add('zipp-typescript');
-    if(backendType.includes('rust')||appKeys.some(n=>/\.(?:rs|wasm)$/i.test(n)))backendEngineFilter.add('zipp-rust');
+    if(backendType.includes('php')||(!backendType&&backendServerKeys.some(n=>/\.php$/i.test(n))))backendEngineFilter.add('zipp-php');
+    if(backendType.includes('ts')||backendType.includes('typescript')||(!backendType&&backendServerKeys.some(n=>/\.(?:ts|tsx|mts)$/i.test(n))))backendEngineFilter.add('zipp-typescript');
+    if(backendType.includes('rust')||(!backendType&&backendServerKeys.some(n=>/\.(?:rs|wasm)$/i.test(n))))backendEngineFilter.add('zipp-rust');
   }
   add('backend/wasm/zipp_wasm.mjs',join(wasmDir,'zipp_wasm.js'));
   const original=readFileSync(join(wasmDir,'zipp_wasm_bg.wasm'));

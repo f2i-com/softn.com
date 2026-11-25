@@ -5,7 +5,7 @@ import { launchApp } from '../lib/launch';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
 import { runtimeAppUrl } from '../lib/appUrls';
 import type { Route } from '../lib/router';
-import { applyMeta, metaFor, setDescription } from '../lib/meta';
+import { applyMeta, metaFor, setDescription, setImage, setTitle } from '../lib/meta';
 import { AppGrid, Thumb } from '../components/directory/AppCard';
 import { StarInput, Stars } from '../components/directory/Stars';
 import { ShareMenu } from '../components/directory/ShareMenu';
@@ -241,8 +241,9 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
       .then((a) => {
         if (ac.signal.aborted) return;
         setApp(a);
-        document.title = `${a.name} — SoftN`;
+        setTitle(`${a.name} — SoftN`);
         if (a.description) setDescription(a.description);
+        if (a.thumbnail) setImage(a.thumbnail, `${a.name} on SoftN`);
         // A link opened by its manifest name lands on the slug.
         if (a.slug !== slug) window.history.replaceState({}, '', `/app/${a.slug}${window.location.search}`);
       })
@@ -311,10 +312,10 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
   useEffect(() => {
     if (!error) return;
     if (error.status === 404) {
-      document.title = 'App not found — SoftN';
       applyMeta(metaFor({ kind: 'not-found' }));
+      setTitle('App not found — SoftN');
     } else {
-      document.title = 'App not loaded — SoftN';
+      setTitle('App not loaded — SoftN');
     }
   }, [error]);
 
@@ -408,7 +409,7 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
         <div className="app-head">
           <div className="app-head-media">
             <button type="button" className="app-hero-thumb" onClick={play} aria-label={`Play ${app.name}`}>
-              <Thumb app={app} />
+              <Thumb app={app} priority />
               <span className="app-hero-play">
                 <PlayGlyph size={22} />
                 Play

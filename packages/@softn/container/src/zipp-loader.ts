@@ -242,10 +242,12 @@ async function compileWasmSource(source: BufferSource | WebAssembly.Module | str
     if (!resp.ok) {
       throw new Error(`Failed to fetch ZIPP engine (${url.pathname}): HTTP ${resp.status}`);
     }
-    const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim();
+    const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
     if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
       try {
-        return await WebAssembly.compileStreaming(resp.clone());
+        const mod = await WebAssembly.compileStreaming(resp.clone());
+        void resp.body?.cancel().catch(() => {});
+        return mod;
       } catch {
         // Fallback to buffered compile
       }

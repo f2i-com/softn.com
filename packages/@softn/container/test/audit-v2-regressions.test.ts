@@ -1017,4 +1017,165 @@ describe('SoftN v2 Round-2 Security Audit Regressions', () => {
     // Exact non-metadata local host allowlist (used by same-origin/local dev tests) still works
     expect(isExternalUrlAllowed('http://localhost:5173/api', { enabled: true, allow_http: true, allowed_hosts: ['localhost'] }, true)).toBe(true);
   });
+
+  it('strips appearance / vendor-prefixed appearance from element.animate PropertyIndexedKeyframes', async () => {
+    const hostEl = document.createElement('div');
+    const seenKeyframes: unknown[] = [];
+    const origAnimate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes: unknown) {
+      seenKeyframes.push(keyframes);
+      return {
+        cancel() {},
+        finish() {},
+        pause() {},
+        play() {},
+        addEventListener() {},
+        removeEventListener() {},
+      } as unknown as Animation;
+    };
+    try {
+      const handle = await mountSoftNContainer(hostEl, {
+        source: {
+          'manifest.json': JSON.stringify({ name: 'Anim Escape Test', main: 'index.html' }),
+          'index.html': `<!DOCTYPE html><html><body><select id="s"><option>A</option></select><script>
+            const el = document.getElementById('s');
+            el.animate({
+              appearance: ['base-select', 'base-select'],
+              webkitAppearance: ['base-select'],
+              '-webkit-appearance': ['base-select'],
+              mozAppearance: ['base-select'],
+              opacity: [0.5, 1]
+            }, { duration: 100 });
+          </script></body></html>`,
+        },
+        isolation: 'inline',
+        persistStorage: false,
+        engineWasm: { lite: LITE_WASM },
+      });
+      await settle(40);
+      expect(seenKeyframes.length).toBeGreaterThan(0);
+      const kf = seenKeyframes[0] as Record<string, unknown>;
+      expect(kf).not.toHaveProperty('appearance');
+      expect(kf).not.toHaveProperty('webkitAppearance');
+      expect(kf).not.toHaveProperty('-webkit-appearance');
+      expect(kf).not.toHaveProperty('mozAppearance');
+      expect(kf).toHaveProperty('opacity');
+      handle.dispose();
+    } finally {
+      Element.prototype.animate = origAnimate;
+    }
+  });
+
+  it('keeps guest-webgl TypedArray, ImageData, ArrayBuffer, and readPixels codecs free of ReferenceError', async () => {
+    const hostEl = document.createElement('div');
+    const runtimeErrors: string[] = [];
+    const seenUploads: string[] = [];
+    const origOffscreenCanvas = (globalThis as Record<string, unknown>).OffscreenCanvas;
+    const origImageData = (globalThis as Record<string, unknown>).ImageData;
+    class FakeImageData {
+      data: Uint8ClampedArray;
+      width: number;
+      height: number;
+      constructor(data: Uint8ClampedArray, w: number, h: number) {
+        this.data = data;
+        this.width = w;
+        this.height = h;
+      }
+    }
+    class FakeOffscreenCanvas {
+      width: number;
+      height: number;
+      constructor(w: number, h: number) {
+        this.width = w;
+        this.height = h;
+      }
+      getContext(kind: string) {
+        if (kind !== 'webgl2' && kind !== 'webgl') return null;
+        return {
+          ARRAY_BUFFER: 34962,
+          STATIC_DRAW: 35044,
+          TEXTURE_2D: 3553,
+          RGBA: 6408,
+          UNSIGNED_BYTE: 5121,
+          VERTEX_SHADER: 35633,
+          FRAGMENT_SHADER: 35632,
+          LOW_FLOAT: 36336,
+          MEDIUM_FLOAT: 36337,
+          HIGH_FLOAT: 36338,
+          LOW_INT: 36339,
+          MEDIUM_INT: 36340,
+          HIGH_INT: 36341,
+          getParameter: () => 0,
+          getSupportedExtensions: () => [],
+          getContextAttributes: () => ({ alpha: true }),
+          getShaderPrecisionFormat: () => ({ rangeMin: 127, rangeMax: 127, precision: 23 }),
+          createBuffer: () => ({ __fake: 'buf' }),
+          bindBuffer: () => {},
+          bufferData: (_target: number, data: unknown) => {
+            seenUploads.push(data instanceof Float32Array ? 'f32' : data instanceof ArrayBuffer ? 'ab' : typeof data);
+          },
+          texImage2D: (_t: number, _l: number, _ifmt: number, _fmt: number, _ty: number, src: unknown) => {
+            seenUploads.push(src && typeof src === 'object' && 'width' in (src as Record<string, unknown>) ? 'imgdata' : typeof src);
+          },
+          readPixels: (_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: Uint8Array) => {
+            dst[0] = 10;
+            dst[1] = 20;
+            dst[2] = 30;
+            dst[3] = 255;
+          },
+          getExtension: () => null,
+        };
+      }
+      transferToImageBitmap() {
+        return { close() {} };
+      }
+    }
+    (globalThis as Record<string, unknown>).OffscreenCanvas = FakeOffscreenCanvas;
+    (globalThis as Record<string, unknown>).ImageData = FakeImageData;
+    try {
+      const handle = await mountSoftNContainer(hostEl, {
+        source: {
+          'manifest.json': JSON.stringify({ name: 'WebGL Codec Test', main: 'index.html' }),
+          'index.html': `<!DOCTYPE html><html><body><canvas id="c" width="4" height="4"></canvas><div id="out"></div><script>
+            const c = document.getElementById('c');
+            const gl = c.getContext('webgl2');
+            const out = document.getElementById('out');
+            if (!gl) {
+              out.textContent = 'no-gl';
+            } else {
+              const buf = gl.createBuffer();
+              gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+              gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 2, 3]), gl.STATIC_DRAW);
+              gl.bufferData(gl.ARRAY_BUFFER, new ArrayBuffer(16), gl.STATIC_DRAW);
+              const img = new ImageData(2, 2);
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+              const px = new Uint8Array(4);
+              gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+              out.textContent = 'ok:' + Array.from(px).join(',');
+            }
+          </script></body></html>`,
+        },
+        isolation: 'inline',
+        persistStorage: false,
+        engineWasm: { lite: LITE_WASM },
+        onError: (err) => runtimeErrors.push(err.message),
+      });
+      await settle(60);
+      expect(runtimeErrors).toEqual([]);
+      expect(handle.shadowRoot.querySelector('#out')?.textContent).toBe('ok:10,20,30,255');
+      expect(seenUploads).toEqual(expect.arrayContaining(['f32', 'ab', 'imgdata']));
+      handle.dispose();
+    } finally {
+      if (origOffscreenCanvas === undefined) {
+        delete (globalThis as Record<string, unknown>).OffscreenCanvas;
+      } else {
+        (globalThis as Record<string, unknown>).OffscreenCanvas = origOffscreenCanvas;
+      }
+      if (origImageData === undefined) {
+        delete (globalThis as Record<string, unknown>).ImageData;
+      } else {
+        (globalThis as Record<string, unknown>).ImageData = origImageData;
+      }
+    }
+  });
 });

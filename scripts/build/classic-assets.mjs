@@ -17,6 +17,7 @@ function filesFrom(manifest, roots) {
     if (!chunk) throw new Error(`Missing chunk in the Vite manifest: ${key}`);
     files.add(chunk.file);
     for (const css of chunk.css ?? []) files.add(css);
+    for (const asset of chunk.assets ?? []) files.add(asset);
     for (const dependency of chunk.imports ?? []) visit(dependency);
   }
   for (const key of roots) visit(key);

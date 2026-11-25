@@ -11,10 +11,10 @@
  */
 
 import { base64ToBytes, bytesToBase64 } from './archive';
-import {
+import type {
   BackendWorkerSession,
-  type BackendToHostMsg,
-  type HostToBackendMsg,
+  BackendToHostMsg,
+  HostToBackendMsg,
 } from './backend-runtime';
 import {
   ALLOWED_BACKEND_METHODS,
@@ -408,24 +408,8 @@ export class LocalBackendTransport implements BackendTransport {
 
   private async boot(options: LocalBackendTransportOptions, useWorker: boolean): Promise<void> {
     try {
-      const persisted = this.persistStorage
-        ? await loadPersistedBlobs(this.storagePrefix, this.storage)
-        : {
-            dbs: Object.create(null) as Record<string, Uint8Array>,
-            phpOverlay: undefined,
-            rustOverlay: undefined,
-            cookies: undefined,
-          };
-
-      if (this.disposed) return;
-      this.persistedDbSizes.clear();
-      for (const [dbKey, bytes] of Object.entries(persisted.dbs)) {
-        if (bytes instanceof Uint8Array) this.persistedDbSizes.set(dbKey, bytes.byteLength);
-      }
-      if (persisted.cookies) {
-        this.cookieJar.hydrate(persisted.cookies);
-      }
-
+      // Spawn the backend Worker immediately so its script downloads and parses
+      // in parallel with loading persisted SQLite/overlay blobs from IndexedDB.
       if (useWorker) {
         const base = options.runtimeUrl.replace(/\/?$/, '/');
         const workerUrl = `${base}backend-worker.js`;
@@ -439,8 +423,31 @@ export class LocalBackendTransport implements BackendTransport {
           this.rejectAllPending(err);
         });
         this.worker = w;
-      } else {
-        this.inlineSession = new BackendWorkerSession((msg) => {
+      }
+
+      const [persisted, inlineCtor] = await Promise.all([
+        this.persistStorage
+          ? loadPersistedBlobs(this.storagePrefix, this.storage)
+          : Promise.resolve({
+              dbs: Object.create(null) as Record<string, Uint8Array>,
+              phpOverlay: undefined,
+              rustOverlay: undefined,
+              cookies: undefined,
+            }),
+        useWorker ? Promise.resolve(null) : import('./backend-runtime').then((m) => m.BackendWorkerSession),
+      ]);
+
+      if (this.disposed) return;
+      this.persistedDbSizes.clear();
+      for (const [dbKey, bytes] of Object.entries(persisted.dbs)) {
+        if (bytes instanceof Uint8Array) this.persistedDbSizes.set(dbKey, bytes.byteLength);
+      }
+      if (persisted.cookies) {
+        this.cookieJar.hydrate(persisted.cookies);
+      }
+
+      if (!useWorker && inlineCtor) {
+        this.inlineSession = new inlineCtor((msg) => {
           this.handleBackendMessage(msg);
         });
       }

@@ -454,6 +454,9 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
 
   // Expose Canvas2D hooks so the on-demand WebGL guest module (guest-webgl.ts) can attach when loaded.
   g.__softnMirrorPictureRef = mirrorPicture;
+  g.__softnPictureRef = pictureRef;
+  g.__softnBytesTo64 = bytesToB64;
+  g.__softnClearCanvas2DDrawing = function (ctx) { if (__drawing === ctx) __drawing = null; };
   g.__softnRegisterCanvasGone = function (el, id) { if (__canvasGone && id) __canvasGone.register(el, id); };
 
   if (g.HTMLElement) {

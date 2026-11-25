@@ -95,7 +95,8 @@ async function onThisDevice(url: URL): Promise<boolean> {
 }
 
 function compileResponse(response: Response): Promise<WebAssembly.Module> {
-  return typeof WebAssembly.compileStreaming === 'function' && response.headers.get('Content-Type') === 'application/wasm'
+  const ct = (response.headers.get('Content-Type') ?? '').split(';')[0].trim().toLowerCase();
+  return typeof WebAssembly.compileStreaming === 'function' && ct === 'application/wasm'
     ? WebAssembly.compileStreaming(response)
     : response.arrayBuffer().then((bytes) => WebAssembly.compile(bytes));
 }

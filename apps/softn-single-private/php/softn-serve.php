@@ -375,7 +375,7 @@ function softn_config(string $private): array
     $withhold = $raw['withhold'] ?? [];
     if (!is_array($withhold)) softn_fail(503, 'withhold must be a list of paths.');
     foreach ($withhold as $pattern) {
-        if (!is_string($pattern) || $pattern === '' || $pattern === 'manifest.json') softn_fail(503, 'withhold must list non-empty paths other than manifest.json.');
+        if (!is_string($pattern) || $pattern === '' || strtolower(ltrim(str_replace('\\', '/', $pattern), '/')) === 'manifest.json') softn_fail(503, 'withhold must list non-empty paths other than manifest.json.');
     }
     $cacheSeconds = $raw['cacheSeconds'] ?? 3600;
     if (!is_int($cacheSeconds) || $cacheSeconds < 0 || $cacheSeconds > 31536000) softn_fail(503, 'cacheSeconds must be between 0 and 31536000.');
@@ -1102,12 +1102,12 @@ function softn_prerender_safe_href(string $attrs): ?string
 
 function softn_prerender_html(string $raw): string
 {
-    if (preg_match('/<body\b[^>]*>([\s\S]*?)<\/body>/i', $raw, $m) === 1) $raw = $m[1];
-    else $raw = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head>/i', '', $raw) ?? $raw;
     $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
     $raw = preg_replace('/<!DOCTYPE[^>]*>/i', '', $raw) ?? $raw;
-    $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1>/i', '', $raw) ?? $raw;
+    $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1\s*>/i', '', $raw) ?? $raw;
     $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|input|meta|link|base|canvas|audio|video)\b[^>]*\/?>/i', '', $raw) ?? $raw;
+    if (preg_match('/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i', $raw, $m) === 1) $raw = $m[1];
+    else $raw = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head\s*>/i', '', $raw) ?? $raw;
     $allowed = ['h1'=>1,'h2'=>1,'h3'=>1,'h4'=>1,'h5'=>1,'h6'=>1,'p'=>1,'ul'=>1,'ol'=>1,'li'=>1,'section'=>1,'article'=>1,'header'=>1,'main'=>1,'footer'=>1,'nav'=>1,'aside'=>1,'div'=>1,'span'=>1,'a'=>1,'strong'=>1,'b'=>1,'em'=>1,'i'=>1,'code'=>1,'pre'=>1,'blockquote'=>1,'table'=>1,'thead'=>1,'tbody'=>1,'tr'=>1,'th'=>1,'td'=>1,'dl'=>1,'dt'=>1,'dd'=>1,'figure'=>1,'figcaption'=>1,'hr'=>1,'br'=>1,'label'=>1,'button'=>1];
     $voids = ['br'=>1,'hr'=>1];
     $esc = static fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
@@ -1133,10 +1133,11 @@ function softn_prerender_html(string $raw): string
                 if (!isset($allowed[$t]) || count($stack) - 1 >= 32) continue;
                 $self = ($om[3] ?? '') === '/' || isset($voids[$t]);
                 if ($t === 'h1') $t = 'h2';
+                elseif ($t === 'main') $t = 'section';
                 $attrs = '';
                 if ($t === 'a') {
                     $href = softn_prerender_safe_href($om[2] ?? '');
-                    if ($href !== null) $attrs = ' href="' . $esc($href) . '" rel="noopener noreferrer"';
+                    if ($href !== null) $attrs = ' href="' . $esc($href) . '" rel="nofollow ugc noopener noreferrer"';
                     else $t = 'span';
                 } elseif ($t === 'button') {
                     $attrs = ' type="button"';
@@ -1158,7 +1159,7 @@ function softn_prerender_html(string $raw): string
 function softn_prerender_ui(string $raw): string
 {
     $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
-    $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*>[\s\S]*?<\/\1>/i', '', $raw) ?? $raw;
+    $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*>[\s\S]*?<\/\1\s*>/i', '', $raw) ?? $raw;
     $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*\/?>/i', '', $raw) ?? $raw;
     $raw = preg_replace('/^\s*[#\/](?:if|else|elseif|elif|each|for|end|slot)\b[^\n]*$/mi', '', $raw) ?? $raw;
     $map = ['heading'=>'h2','title'=>'h2','h1'=>'h2','h2'=>'h2','h3'=>'h3','h4'=>'h4','h5'=>'h5','h6'=>'h6','text'=>'p','paragraph'=>'p','p'=>'p','subtitle'=>'p','caption'=>'p','section'=>'section','card'=>'section','panel'=>'section','article'=>'article','header'=>'header','footer'=>'footer','nav'=>'nav','main'=>'section','aside'=>'aside','alert'=>'aside','list'=>'ul','ul'=>'ul','ol'=>'ol','listitem'=>'li','li'=>'li','button'=>'button','link'=>'a','a'=>'a','badge'=>'span','tag'=>'span','label'=>'label','span'=>'span','code'=>'code','pre'=>'pre','divider'=>'hr','hr'=>'hr','br'=>'br','app'=>'div','page'=>'div','box'=>'div','stack'=>'div','row'=>'div','col'=>'div','column'=>'div','grid'=>'div','flex'=>'div','container'=>'div','div'=>'div'];
@@ -1230,7 +1231,7 @@ function softn_prerender_ui(string $raw): string
             $attrs = '';
             if ($ht === 'a') {
                 $href = softn_prerender_safe_href($om[2]);
-                if ($href !== null) $attrs = ' href="' . $esc($href) . '" rel="noopener noreferrer"';
+                if ($href !== null) $attrs = ' href="' . $esc($href) . '" rel="nofollow ugc noopener noreferrer"';
                 else $ht = 'span';
             } elseif ($ht === 'button') {
                 $attrs = ' type="button"';
@@ -1298,6 +1299,20 @@ function softn_prerender_serialize(array $children, int $indent, int &$bytes): s
         }
     }
     return implode("\n", $parts);
+}
+
+function softn_if_none_match(string $etag): bool
+{
+    $inm = $_SERVER['HTTP_IF_NONE_MATCH'] ?? null;
+    if (!is_string($inm) || $inm === '') return false;
+    if (trim($inm) === '*') return true;
+    if (preg_match_all('/"[^"]*"/', $inm, $m) > 0) {
+        foreach ($m[0] as $cand) {
+            $norm = preg_replace('/-(?:gzip|br|zstd|deflate)"$/i', '"', $cand) ?? $cand;
+            if ($cand === $etag || $norm === $etag) return true;
+        }
+    }
+    return false;
 }
 
 function softn_shell(array $config, string $private): never
@@ -1392,20 +1407,16 @@ function softn_shell(array $config, string $private): never
     header('Content-Type: text/html; charset=utf-8');
     header("Content-Security-Policy: base-uri 'self'; object-src 'none'; script-src $scriptSrc; worker-src 'self' blob:; frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
     if (!$config['frameAncestors']) header('X-Frame-Options: SAMEORIGIN');
+    if ($config['pwa'] !== null && $config['pwa']['siteUrl'] === null) {
+        header('Vary: Host');
+    }
     if (!$config['viewerToken']) {
         $etag = '"' . substr(hash('sha256', $page), 0, 24) . '"';
         header('Cache-Control: no-cache');
         header('ETag: ' . $etag);
-        $inm = $_SERVER['HTTP_IF_NONE_MATCH'] ?? null;
-        if (is_string($inm) && $inm !== '') {
-            foreach (explode(',', $inm) as $cand) {
-                $cand = trim($cand);
-                if (str_starts_with($cand, 'W/')) $cand = substr($cand, 2);
-                if ($cand === '*' || $cand === $etag) {
-                    http_response_code(304);
-                    exit;
-                }
-            }
+        if (softn_if_none_match($etag)) {
+            http_response_code(304);
+            exit;
         }
     } else {
         header('Cache-Control: no-store');
@@ -1511,16 +1522,9 @@ function softn_entry(array $config, string $name, bool $icon): never
     // what an SVG or a PDF opened directly would run under if a browser ever
     // navigated here without the header the guard refuses on.
     header('Content-Security-Policy: sandbox');
-    $conditional = $_SERVER['HTTP_IF_NONE_MATCH'] ?? null;
-    if (is_string($conditional)) {
-        foreach (explode(',', $conditional) as $candidate) {
-            $candidate = trim($candidate);
-            if (str_starts_with($candidate, 'W/')) $candidate = substr($candidate, 2);
-            if ($candidate === $etag || $candidate === '*') {
-                http_response_code(304);
-                exit;
-            }
-        }
+    if (softn_if_none_match($etag)) {
+        http_response_code(304);
+        exit;
     }
     $head = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD';
     $range = $_SERVER['HTTP_RANGE'] ?? null;

@@ -455,6 +455,7 @@ final class Bundle
         }
         try {
             $written = 0;
+            $hasSetMtime = method_exists($dst, 'setMtimeIndex');
             for ($i = 0; $i < $src->numFiles; $i++) {
                 $name = (string) $src->getNameIndex($i);
                 if ($name === '' || str_ends_with($name, '/')) continue;
@@ -464,6 +465,7 @@ final class Bundle
                     unset($cleanManifest['backend'], $cleanManifest['server'], $cleanManifest['databases'], $cleanManifest['ssrEntry']);
                     $cleanManifest['engine'] = 2;
                     $dst->addFromString($rel, json_encode($cleanManifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+                    if ($hasSetMtime) $dst->setMtimeIndex($written, 315532800);
                     $written++;
                     continue;
                 }
@@ -480,6 +482,7 @@ final class Bundle
                 $bytes = $src->getFromIndex($i);
                 if (!is_string($bytes)) continue;
                 $dst->addFromString($rel, $bytes);
+                if ($hasSetMtime) $dst->setMtimeIndex($written, 315532800);
                 $written++;
             }
             if ($written === 0) {
@@ -493,7 +496,7 @@ final class Bundle
                 throw new ApiError(503, 'Cannot store client bundle archive.');
             }
             if (is_string($sha) && strlen($sha) === 64) {
-                @file_put_contents($cachePath . '.sha256', $sha);
+                self::writeShaFileAtomically($cachePath . '.sha256', $sha);
             }
             return $cachePath;
         } catch (Throwable $e) {
@@ -501,6 +504,16 @@ final class Bundle
             @$src->close();
             if (is_file($tmp)) @unlink($tmp);
             throw $e;
+        }
+    }
+
+    private static function writeShaFileAtomically(string $shaFile, string $sha): void
+    {
+        $tmp = $shaFile . '.tmp.' . bin2hex(random_bytes(4));
+        if (@file_put_contents($tmp, $sha) === strlen($sha)) {
+            if (!@rename($tmp, $shaFile)) @unlink($tmp);
+        } else {
+            @unlink($tmp);
         }
     }
 
@@ -520,7 +533,7 @@ final class Bundle
         }
         $sha = hash_file('sha256', $path);
         if (is_string($sha) && strlen($sha) === 64) {
-            @file_put_contents($shaFile, $sha);
+            self::writeShaFileAtomically($shaFile, $sha);
             return $sha;
         }
         return $fallbackSha;

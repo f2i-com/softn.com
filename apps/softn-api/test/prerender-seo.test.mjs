@@ -74,7 +74,7 @@ test('hosted /app and /play pages emit sanitized View-Source SSR HTML, JSON-LD, 
   assert.match(shareHtml, /<h2>Daily Field Checklist<\/h2>/);
   assert.match(shareHtml, /<p>Inspect equipment before shift start\.<\/p>/);
   assert.match(shareHtml, /<button type="button">Add Entry<\/button>/);
-  assert.match(shareHtml, /<a href="https:\/\/docs\.example\.test\/guide" rel="noopener noreferrer">Read Guide<\/a>/);
+  assert.match(shareHtml, /<a href="https:\/\/docs\.example\.test\/guide" rel="nofollow ugc noopener noreferrer">Read Guide<\/a>/);
   assert.doesNotMatch(shareHtml, /javascript:alert/);
   assert.doesNotMatch(shareHtml, /DO_NOT_RENDER_LOGIC/);
   assert.doesNotMatch(shareHtml, /secretRuntimeVar/);
@@ -83,23 +83,29 @@ test('hosted /app and /play pages emit sanitized View-Source SSR HTML, JSON-LD, 
   assert.ok(ldMatch, 'share page includes JSON-LD');
   const ld = JSON.parse(ldMatch[1]);
   assert.equal(ld['@type'], 'WebApplication');
+  assert.equal(ld.applicationCategory, 'UtilitiesApplication');
   assert.equal(ld.name, 'Field Notes');
   assert.equal(ld.url, `${SITE}/app/${uiSlug}`);
   assert.equal(ld.softwareVersion, String(pubUiRes.json.app.version));
 
-  // Conditional GET returns 304 Not Modified
+  // Conditional GET returns 304 Not Modified (including Apache mod_deflate `-gzip` ETag suffix)
   const share304 = await fetch(`${s.base}/app/${uiSlug}`, {
     headers: { 'If-None-Match': shareEtag },
   });
   assert.equal(share304.status, 304);
   assert.equal(await share304.text(), '');
+  const shareGzip304 = await fetch(`${s.base}/app/${uiSlug}`, {
+    headers: { 'If-None-Match': shareEtag.replace(/"$/, '-gzip"') },
+  });
+  assert.equal(shareGzip304.status, 304);
 
-  // Play page carries rendered HTML inside #boot, JSON-LD, and ETag/304
+  // Play page carries rendered HTML inside #boot, preload link for bundle, JSON-LD, and ETag/304
   const playRes = await fetch(`${s.base}/play/${uiSlug}`, { headers: { Accept: 'text/html' } });
   assert.equal(playRes.status, 200);
   const playEtag = playRes.headers.get('etag');
   assert.ok(playEtag, 'play page sends an ETag');
   const playHtml = await playRes.text();
+  assert.match(playHtml, /<link rel="preload" href="\/api\/apps\/[^"]+\/bundle\.softn\?[^"]+" as="fetch" crossorigin="anonymous" fetchpriority="high" \/>/);
   assert.match(playHtml, /id="boot"/);
   assert.match(playHtml, /data-softn-ssr="play"/);
   assert.match(playHtml, /Daily Field Checklist/);
@@ -146,6 +152,8 @@ test('hosted /app and /play pages emit sanitized View-Source SSR HTML, JSON-LD, 
   const v2Html = await (await fetch(`${s.base}/app/${v2Slug}`)).text();
   assert.match(v2Html, /<h2>Ledger Overview<\/h2>/);
   assert.match(v2Html, /<p>Track balances safely\.<\/p>/);
+  assert.match(v2Html, /<a href="https:\/\/ledger\.example\.test" rel="nofollow ugc noopener noreferrer">Docs<\/a>/);
+  assert.doesNotMatch(v2Html, /data-softn-preview="rendered"[\s\S]*?<main\b/);
   assert.doesNotMatch(v2Html, /onclick=/);
   assert.doesNotMatch(v2Html, /window\.pwn/);
   assert.doesNotMatch(v2Html, /<iframe/);
@@ -212,10 +220,13 @@ test('hosted /app and /play pages emit sanitized View-Source SSR HTML, JSON-LD, 
   assert.match(dirHtml, /data-softn-ssr="directory"/);
   assert.match(dirHtml, /"@type":"CollectionPage"/);
   assert.match(dirHtml, /"@type":"ItemList"/);
+  assert.match(dirHtml, /"@type":"BreadcrumbList"/);
   assert.match(dirHtml, new RegExp(`href="/app/${uiSlug}"`));
   assert.match(dirHtml, new RegExp(`href="/app/${spaSlug}"`));
   const dirQueryHtml = await (await fetch(`${s.base}/apps?q=farm`)).text();
   assert.match(dirQueryHtml, /<meta name="robots" content="noindex,follow" \/>/);
+  const dirTagHtml = await (await fetch(`${s.base}/apps?tag=notes`)).text();
+  assert.match(dirTagHtml, /<meta name="robots" content="noindex,follow" \/>/);
   const dirEmptyCatHtml = await (await fetch(`${s.base}/apps?category=no-such-category-xyz`)).text();
   assert.match(dirEmptyCatHtml, /<meta name="robots" content="noindex,follow" \/>/);
 

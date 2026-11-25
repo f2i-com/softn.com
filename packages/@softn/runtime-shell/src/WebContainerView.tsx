@@ -104,6 +104,7 @@ export function WebContainerView({
           // The build's own folder and core's engine for the Python tiers (containerHost.ts).
           ...hostedContainerOptions(),
           ...(runtimeUrl ? { runtimeUrl } : {}),
+          ...(initialPage ? { initialPage } : {}),
           appId,
           ...(storagePrefix ? { storagePrefix } : {}),
           ...(backendUrl ? { backendUrl } : {}),
@@ -142,8 +143,11 @@ export function WebContainerView({
         // Whatever changed while it started (the person pressed Allow during the boot).
         mounted.setGrantedCapabilities(grantedRef.current as Capability[]);
         mounted.setActive(activeRef.current);
-        if (initialPage && initialPage !== mounted.manifest.main) {
+        const normPage = initialPage ? initialPage.replace(/^\//, '') : '';
+        const normCurrent = mounted.currentPath.replace(/^\//, '');
+        if (initialPage && initialPage !== mounted.manifest.main && normCurrent !== normPage && !/\.html?$/i.test(initialPage)) {
           await mounted.navigate(initialPage).catch(() => undefined);
+          if (cancelled) return;
         }
         setBooting(false);
         onReadyRef.current?.();

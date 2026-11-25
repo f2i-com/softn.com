@@ -121,19 +121,19 @@ export const GUEST_WEBGL_SOURCE = String.raw`
         var c2dId = v.__softnNode || 0;
         if (c2dId && typeof g.__softnPushExtraOp === 'function') g.__softnPushExtraOp(['k2d', c2dId, v.width, v.height, v.__ctx2d._cmds.splice(0, v.__ctx2d._cmds.length)]);
         else v.__ctx2d._cmds.length = 0;
-        if (__drawing === v.__ctx2d) __drawing = null;
+        if (typeof g.__softnClearCanvas2DDrawing === 'function') g.__softnClearCanvas2DDrawing(v.__ctx2d);
       }
       est.n += pending.length * 40;
       return ['$c2d', v.__softnNode || 0, v.width || 300, v.height || 150, pending];
     }
     if (v.tagName === 'IMG') {
-      var ref = pictureRef(v);
+      var ref = typeof g.__softnPictureRef === 'function' ? g.__softnPictureRef(v) : null;
       if (ref && typeof g.__softnMirrorPictureRef === 'function') g.__softnMirrorPictureRef(ref, v, false);
       return ['$img', ref || ''];
     }
-    if (v instanceof GuestImageData || (v.data && typeof v.width === 'number' && typeof v.height === 'number' && ArrayBuffer.isView(v.data))) {
+    if ((typeof g.ImageData === 'function' && v instanceof g.ImageData) || (v.data && typeof v.width === 'number' && typeof v.height === 'number' && ArrayBuffer.isView(v.data))) {
       var idBytes = new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.byteLength);
-      var idB64 = bytesToB64(idBytes);
+      var idB64 = typeof g.__softnBytesTo64 === 'function' ? g.__softnBytesTo64(idBytes) : '';
       est.n += idB64.length;
       return ['$imagedata', v.width, v.height, idB64];
     }
@@ -151,12 +151,12 @@ export const GUEST_WEBGL_SOURCE = String.raw`
         return ['$u32', Array.prototype.slice.call(v)];
       }
       var u8 = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-      var b64 = bytesToB64(u8);
+      var b64 = typeof g.__softnBytesTo64 === 'function' ? g.__softnBytesTo64(u8) : '';
       est.n += b64.length;
       return ['$b', glTypeCode(v), b64];
     }
     if (v instanceof ArrayBuffer) {
-      var abB64 = bytesToB64(new Uint8Array(v));
+      var abB64 = typeof g.__softnBytesTo64 === 'function' ? g.__softnBytesTo64(new Uint8Array(v)) : '';
       est.n += abB64.length;
       return ['$b', 'ab', abB64];
     }
@@ -290,8 +290,8 @@ export const GUEST_WEBGL_SOURCE = String.raw`
   WebGLRenderingContext.prototype.readPixels = function (x, y, w, h, format, type, pixels) {
     if (!pixels || !ArrayBuffer.isView(pixels)) return;
     var res = this._flush(['readPixels', x, y, w, h, format, type, pixels.byteLength, glTypeCode(pixels)]);
-    if (res && typeof res.__glB64 === 'string') {
-      var raw = b64ToBytes(res.__glB64);
+    if (res && typeof res.__glB64 === 'string' && typeof g.__softnBytesFrom64 === 'function') {
+      var raw = g.__softnBytesFrom64(res.__glB64);
       var dst = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
       dst.set(raw.subarray(0, dst.length));
     }

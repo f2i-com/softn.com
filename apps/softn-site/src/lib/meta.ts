@@ -20,24 +20,41 @@ export const HOME_DESCRIPTION =
 export interface PageMeta {
   /** Path of the canonical URL, on the canonical origin. */
   path: string;
+  title?: string;
   description: string;
   indexable: boolean;
 }
 
-export function metaFor(page: Page): PageMeta {
+export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
   switch (page.kind) {
     case 'home':
-      return { path: '/', description: HOME_DESCRIPTION, indexable: true };
-    case 'directory':
+      return { path: '/', title: HOME_TITLE, description: HOME_DESCRIPTION, indexable: true };
+    case 'directory': {
+      const cat = (query?.get('category') ?? '').trim().toLowerCase();
+      const sub = (query?.get('subcategory') ?? '').trim().toLowerCase();
+      const hasDynamicFilter = Boolean(
+        query?.get('q')?.trim()
+        || query?.get('tag')?.trim()
+        || query?.get('author')?.trim()
+        || query?.get('cap')?.trim()
+        || query?.get('hosting')?.trim()
+      );
+      const params = new URLSearchParams();
+      if (cat) params.set('category', cat);
+      if (sub) params.set('subcategory', sub);
+      const qs = params.toString();
       return {
-        path: '/apps',
+        path: qs ? `/apps?${qs}` : '/apps',
+        title: cat ? `${cat.charAt(0).toUpperCase()}${cat.slice(1)} Apps — SoftN` : 'Apps Directory — SoftN',
         description:
           'Apps people made with SoftN: games, tools and experiments that run in your browser, with their source to read and remix.',
-        indexable: true,
+        indexable: !hasDynamicFilter,
       };
+    }
     case 'publish':
       return {
         path: '/publish',
+        title: 'Publish a SoftN App — SoftN',
         description:
           'Put a .softn app in the SoftN directory. No account: publishing gives you an edit key, and a script can publish with one request.',
         indexable: true,
@@ -93,12 +110,36 @@ export function applyMeta(meta: PageMeta, doc: Document = document): void {
   });
   canonical.href = url;
   metaTag(doc, 'property', 'og:url').content = url;
+  if (meta.title) setTitle(meta.title, doc);
   setDescription(meta.description, doc);
   const robots = doc.head.querySelector<HTMLMetaElement>('meta[name="robots"]');
   if (meta.indexable) {
     if (robots && /noindex/i.test(robots.content)) robots.remove();
   } else {
     metaTag(doc, 'name', 'robots').content = 'noindex';
+  }
+}
+
+/** Update document title together with Open Graph and Twitter card titles. */
+export function setTitle(title: string, doc: Document = document): void {
+  const text = title.trim();
+  if (!text) return;
+  doc.title = text;
+  metaTag(doc, 'property', 'og:title').content = text;
+  metaTag(doc, 'name', 'twitter:title').content = text;
+}
+
+/** Update Open Graph and Twitter card image tags on SPA navigation. */
+export function setImage(imageUrl: string, alt?: string, doc: Document = document): void {
+  const raw = imageUrl.trim();
+  if (!raw) return;
+  const origin = canonicalOrigin(doc);
+  const abs = /^https?:\/\//i.test(raw) ? raw : `${origin}${raw.startsWith('/') ? raw : `/${raw}`}`;
+  metaTag(doc, 'property', 'og:image').content = abs;
+  metaTag(doc, 'name', 'twitter:image').content = abs;
+  if (alt && alt.trim()) {
+    metaTag(doc, 'property', 'og:image:alt').content = alt.trim();
+    metaTag(doc, 'name', 'twitter:image:alt').content = alt.trim();
   }
 }
 

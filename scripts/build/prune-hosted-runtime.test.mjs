@@ -159,3 +159,38 @@ test('Classic .ui app using <Camera> keeps media chunk but still prunes QR scann
   assert.equal(shouldPruneWebrootAsset('assets/qr-reader-AbCd1234.js', needs), true);
   assert.equal(shouldPruneWebrootAsset('assets/zxing_reader-AbCd1234.wasm', needs), true);
 });
+
+test('HTML prose mentioning Intl does not drop lite engine, and remoteHostedBackend drops browser backend WASM', () => {
+  const manifest = { id: 'php-app', name: 'PHP App', main: 'index.html', backend: { runtime: 'php' } };
+  const clientFiles = {
+    'manifest.json': b(JSON.stringify(manifest)),
+    'index.html': b('<!doctype html><p>Built for Intl customers</p><script>document.title="ok";</script>'),
+  };
+  const needs = analyzeHostedAppNeeds(manifest, clientFiles, { remoteHostedBackend: true });
+  assert.equal(needs.containerNeedsLiteEngine, true);
+  assert.equal(needs.usesContainerSqlite, false);
+  assert.equal(needs.usesBrowserPhpBackend, false);
+  assert.equal(shouldPruneWebrootAsset('assets/container-runtime/0123456789ab/engines/zipp-javascript-lite.wasm', needs), false);
+  assert.equal(shouldPruneWebrootAsset('assets/container-runtime/0123456789ab/engines/zipp-php.wasm', needs), true);
+  assert.equal(shouldPruneWebrootAsset('assets/container-runtime/0123456789ab/engines/xdb-wasm.wasm', needs), true);
+  assert.equal(shouldPruneWebrootAsset('assets/core-runtime/zipp_torch.wasm', needs), true);
+  assert.equal(shouldPruneWebrootAsset('assets/core-runtime/runtime/models/gguf_wasm_bg.wasm', needs), true);
+});
+
+test('Vue SFC and programmatic softn-chart + QRReader decouple from media cleanly', () => {
+  const vueNeeds = analyzeHostedAppNeeds({ id: 'v', name: 'V', main: 'index.html' }, {
+    'index.html': b('<!doctype html><script type="module/ts" src="App.vue"></script>'),
+    'App.vue': b('<script setup>import * as THREE from "three"; document.createElement("softn-chart");</script>'),
+  });
+  assert.equal(vueNeeds.usesThree, true);
+  assert.equal(vueNeeds.usesContainerChart, true);
+  assert.equal(vueNeeds.containerNeedsTypescriptEngine, true);
+
+  const qrOnlyNeeds = analyzeHostedAppNeeds({ id: 'q', name: 'Q', main: 'ui/main.ui' }, {
+    'ui/main.ui': b('<App><QRReader /></App>'),
+  });
+  assert.equal(qrOnlyNeeds.usesQrScanner, true);
+  assert.equal(qrOnlyNeeds.classicFeatures.media, false);
+  assert.equal(shouldPruneWebrootAsset('assets/qr-reader-AbCd1234.js', qrOnlyNeeds), false);
+  assert.equal(shouldPruneWebrootAsset('assets/media-AbCd1234.js', qrOnlyNeeds), true);
+});

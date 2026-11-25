@@ -11,18 +11,29 @@ import { Stars } from './Stars';
  * app's own colour; an app with neither gets its initial on that colour, so
  * a grid of them still reads as a shelf of apps and not a shelf of holes.
  */
-export function Thumb({ app, className = '', loading = 'lazy' }: {
+export function Thumb({ app, className = '', loading = 'lazy', priority = false }: {
   app: AppCardData;
   className?: string;
   loading?: 'eager' | 'lazy';
+  priority?: boolean;
 }): React.ReactElement {
   const [failedUrl, setFailedUrl] = React.useState<string>();
   const tint = app.primary ?? '#2a3040';
   const ground = { background: `linear-gradient(135deg, ${tint}, color-mix(in srgb, ${tint} 55%, #000))` };
   if (app.thumbnail && app.thumbnail !== failedUrl && (app.thumbnailKind === 'image' || app.thumbnailKind === 'icon')) {
+    const isIcon = app.thumbnailKind === 'icon';
     return (
       <div className={`thumb thumb-${app.thumbnailKind} ${className}`} style={ground}>
-        <img src={app.thumbnail} alt="" loading={loading} decoding="async" onError={() => setFailedUrl(app.thumbnail)} />
+        <img
+          src={app.thumbnail}
+          alt=""
+          width={isIcon ? 256 : 640}
+          height={isIcon ? 256 : 400}
+          loading={priority ? 'eager' : loading}
+          {...(priority ? ({ fetchpriority: 'high' } as Record<string, string>) : {})}
+          decoding="async"
+          onError={() => setFailedUrl(app.thumbnail)}
+        />
       </div>
     );
   }
@@ -262,7 +273,7 @@ export function Featured({ apps, categories }: { apps: AppCardData[]; categories
       <h2 id="featured-title" className="featured-heading">Featured apps</h2>
       <div className="featured-grid">
         <article className="featured-card featured-lead">
-          <Thumb app={lead} loading="eager" />
+          <Thumb app={lead} loading="eager" priority />
           <div className="featured-shade" aria-hidden="true" />
           <div className="featured-body">
             {leadCategory && (

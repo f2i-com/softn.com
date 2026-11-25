@@ -1794,6 +1794,10 @@ export class HostDomPatcher {
       const byProperty: PropertyIndexedKeyframes = {};
       for (const [name, list] of Object.entries(rawFrames as Record<string, unknown>).slice(0, 64)) {
         if (!/^[A-Za-z][A-Za-z-]{0,63}$/.test(name) || name === 'easing' || name === 'composite' || name === 'offset') continue;
+        const lowerKey = name.toLowerCase();
+        if (lowerKey === 'appearance' || lowerKey === 'webkitappearance' || lowerKey === 'mozappearance' || lowerKey === '-webkit-appearance' || lowerKey === '-moz-appearance') {
+          continue;
+        }
         const values = (Array.isArray(list) ? list : [list]).slice(0, MAX_KEYFRAMES).map(value).filter((v): v is string | number => v !== null);
         if (values.length > 0) (byProperty as Record<string, unknown>)[name] = values.map(String);
       }
@@ -2342,6 +2346,7 @@ export class HostDomPatcher {
   private installResizeObserver(): void {
     if (typeof ResizeObserver !== 'function') return;
     this.resizeObserver = new ResizeObserver(() => {
+      this.cachedOriginBox = null;
       this.scheduleBoxMeasure();
     });
   }
@@ -2357,10 +2362,11 @@ export class HostDomPatcher {
       // Also observe up to 2 ancestor wrappers of any measured <canvas> (e.g. R3F events.connected div)
       // so controllers reading element.clientWidth/clientHeight never observe 0 on first interaction.
       for (const id of [...this.measuredIds]) {
+        if (this.measuredIds.size >= HostDomPatcher.MAX_MEASURED_IDS) break;
         const node = this.nodes.get(id);
         if (node instanceof HTMLCanvasElement && node.isConnected) {
           let anc = node.parentElement;
-          for (let depth = 0; depth < 2 && anc; depth++, anc = anc.parentElement) {
+          for (let depth = 0; depth < 2 && anc && this.measuredIds.size < HostDomPatcher.MAX_MEASURED_IDS; depth++, anc = anc.parentElement) {
             const aid = Number(anc.getAttribute(NODE_ID_ATTR));
             if (Number.isInteger(aid) && aid > 1 && !this.measuredIds.has(aid)) {
               this.measuredIds.add(aid);
@@ -2447,6 +2453,8 @@ export class HostDomPatcher {
     this.shadowRoots.clear();
     this.guestRootCustomProps.clear();
     this.styleSheets.clear();
+    this.dirtyStyleSheets.clear();
+    this.cachedOriginBox = null;
     this.styleTextOwner.clear();
     this.inlineStyleCache.clear();
     this.writtenSheets.clear();
@@ -2576,9 +2584,15 @@ function serializeDomEvent(
     out.altKey = me.altKey;
     out.metaKey = me.metaKey;
     if (targetEl) {
-      const rect = targetEl.getBoundingClientRect();
-      out.offsetX = me.clientX - rect.left;
-      out.offsetY = me.clientY - rect.top;
+      const isHighFreqMove = e.type === 'mousemove' || e.type === 'pointermove';
+      if (isHighFreqMove && targetEl === e.target && typeof me.offsetX === 'number' && typeof me.offsetY === 'number') {
+        out.offsetX = me.offsetX;
+        out.offsetY = me.offsetY;
+      } else {
+        const rect = targetEl.getBoundingClientRect();
+        out.offsetX = me.clientX - rect.left;
+        out.offsetY = me.clientY - rect.top;
+      }
     }
   }
   // An image that loaded says how large its picture is.

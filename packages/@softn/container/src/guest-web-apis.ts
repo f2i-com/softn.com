@@ -1729,7 +1729,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     AppWorker.prototype.postMessage = function (data) {
       if (arguments.length === 0) throw new TypeError("Failed to execute 'postMessage' on 'Worker': 1 argument required, but only 0 present.");
       if (this._over) return;
-      var packed = g.__softnClone.pack(data);
+      var packed = g.__softnClone ? g.__softnClone.pack(data) : JSON.stringify(data);
       bridge.call('worker.post', [this._id, packed], function () {});
     };
     AppWorker.prototype.terminate = function () {
@@ -1775,7 +1775,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       var worker = appWorkers[id];
       if (!worker) return;
       var data;
-      try { data = g.__softnClone.unpack(packed); } catch (e) { told(worker, 'messageerror', { data: null }); return; }
+      try { data = g.__softnClone ? g.__softnClone.unpack(packed) : JSON.parse(packed); } catch (e) { told(worker, 'messageerror', { data: null }); return; }
       told(worker, 'message', { data: data, ports: [] });
     };
     g.__softnWorkerFailedAt = function (id, message) {

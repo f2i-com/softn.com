@@ -650,7 +650,7 @@ export const MAX_EVAL_SCRIPT_BYTES = 65_000;
 /** Whether a classic script is too long to be run by `eval`. */
 export function tooLongForEval(code: string): boolean {
   if (code.length * 3 <= MAX_EVAL_SCRIPT_BYTES) return false;
-  return new TextEncoder().encode(code).length > MAX_EVAL_SCRIPT_BYTES;
+  return utf8Length(code) > MAX_EVAL_SCRIPT_BYTES;
 }
 
 /**

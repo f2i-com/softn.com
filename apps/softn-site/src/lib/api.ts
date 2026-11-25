@@ -382,14 +382,15 @@ export async function replaceKey(slug: string, editKey: string): Promise<{ editK
  */
 export function recordRun(slug: string): void {
   try {
-    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(10_000) : undefined;
     // A launch: the press of Play. The runtime counts the run itself, when
     // the app is up, so a bundle that failed to open is a launch and not a run.
+    // Do not attach an AbortSignal tied to this page's realm: in Chromium,
+    // combining `keepalive: true` with `AbortSignal.timeout(...)` causes the
+    // request to fail with `net::ERR_ABORTED` on immediate navigation.
     fetch(`/api/apps/${encodeURIComponent(slug)}/runs`, {
       method: 'POST',
       credentials: 'same-origin',
       keepalive: true,
-      signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stage: 'launch' }),
     }).catch(() => {

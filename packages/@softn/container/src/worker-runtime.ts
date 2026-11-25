@@ -559,12 +559,28 @@ export class ContainerWorkerSession {
   private bundledThreeDetected = false;
   private readonly fallbackGlueFactory?: () => Promise<Record<string, unknown>>;
 
-  private async ensureWebGLHost(): Promise<WebGLWorkerHost> {
-    if (!this.webglHost) {
-      const { WebGLWorkerHost: Ctor } = await import('./webgl-worker-host');
-      this.webglHost = new Ctor();
+  private webglHostPromise: Promise<WebGLWorkerHost> | null = null;
+  private threeHostPromise: Promise<ThreeWorkerHost> | null = null;
+
+  private ensureWebGLHost(): Promise<WebGLWorkerHost> {
+    if (this.webglHost) return Promise.resolve(this.webglHost);
+    if (!this.webglHostPromise) {
+      this.webglHostPromise = import('./webgl-worker-host')
+        .then(({ WebGLWorkerHost: Ctor }) => {
+          const host = new Ctor();
+          if (this.disposed) {
+            host.disposeAll();
+            return host;
+          }
+          this.webglHost = host;
+          return host;
+        })
+        .catch((err) => {
+          this.webglHostPromise = null;
+          throw err;
+        });
     }
-    return this.webglHost;
+    return this.webglHostPromise;
   }
 
   private async ensureWebGLGuestSource(): Promise<string> {
@@ -583,12 +599,25 @@ export class ContainerWorkerSession {
     return this.guestReactVendorSource;
   }
 
-  private async ensureThreeHost(): Promise<ThreeWorkerHost> {
-    if (!this.threeHost) {
-      const { ThreeWorkerHost: Ctor } = await import('./three-worker-host');
-      this.threeHost = new Ctor();
+  private ensureThreeHost(): Promise<ThreeWorkerHost> {
+    if (this.threeHost) return Promise.resolve(this.threeHost);
+    if (!this.threeHostPromise) {
+      this.threeHostPromise = import('./three-worker-host')
+        .then(({ ThreeWorkerHost: Ctor }) => {
+          const host = new Ctor();
+          if (this.disposed) {
+            host.disposeAll();
+            return host;
+          }
+          this.threeHost = host;
+          return host;
+        })
+        .catch((err) => {
+          this.threeHostPromise = null;
+          throw err;
+        });
     }
-    return this.threeHost;
+    return this.threeHostPromise;
   }
 
   private async ensureThreeNative(): Promise<void> {
@@ -1018,6 +1047,7 @@ export class ContainerWorkerSession {
       if (needsIndexedDb) preloadOptional.push(this.ensureIndexedDbSource());
       if (needsReactVendor) preloadOptional.push(this.ensureReactVendorSource());
       if (preloadOptional.length > 0) await Promise.all(preloadOptional);
+      if (this.disposed) return;
       const indexedDbSource = needsIndexedDb ? await this.ensureIndexedDbSource() : '';
 
       // Pre-link all reachable VFS & inline-supplied vendor ES modules
@@ -1070,8 +1100,11 @@ export class ContainerWorkerSession {
       const programBytes =
         fixedProgramBytes() +
         (indexedDbSource ? utf8Length(indexedDbSource) : 0) +
+        (this.guestWebglSource ? utf8Length(this.guestWebglSource) : 0) +
+        (this.guestReactVendorSource ? utf8Length(this.guestReactVendorSource) : 0) +
+        (this.guestThreeNativeSource ? utf8Length(this.guestThreeNativeSource) : 0) +
         utf8Length(prelude) +
-        utf8Length(JSON.stringify(msg.seed.body)) +
+        utf8Length(seedJson) +
         factoryBlocks.reduce((sum, block) => sum + utf8Length(block), 0) +
         msg.scripts.reduce((sum, s) => sum + utf8Length(s.code ?? ''), 0);
       const aheadBytes = Math.max(0, Math.min(MAX_AHEAD_BYTES, MAX_PROGRAM_BYTES - PROGRAM_SLACK_BYTES - programBytes));
@@ -1407,9 +1440,11 @@ export class ContainerWorkerSession {
           onDemand.clear();
         }
       };
+      if (this.disposed || this.engine !== engine) return;
       const broken = new Map<string, string>();
       let standbyFailures = 0;
       for (let attempt = 0; ; attempt++) {
+        if (this.disposed || this.engine !== engine) return;
         const { source, lines, segments } = program(broken);
         this.sourceMap.clear();
         for (const seg of segments) this.sourceMap.addSegment(seg);
@@ -5106,7 +5141,17 @@ export class ContainerWorkerSession {
     }
     this.pendingHostReqs.clear();
     this.webglHost?.disposeAll();
+    this.webglHost = null;
+    this.webglHostPromise = null;
     this.threeHost?.disposeAll();
+    this.threeHost = null;
+    this.threeHostPromise = null;
+    for (const mirror of this.mirrors.values()) {
+      try {
+        mirror.canvas.width = 1;
+        mirror.canvas.height = 1;
+      } catch { /* ignore */ }
+    }
     this.mirrors.clear();
     this.mirrorPixels = 0;
     for (const picture of this.mirrorPictures.values()) picture.bitmap?.close();

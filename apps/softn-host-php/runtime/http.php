@@ -249,6 +249,7 @@ if($result['status']===429&&is_file(softn_rate_marker($backend,$rateKey,time()))
 if(isset($result['bodyRaw'])) {
     if(isset($result['headers'])&&is_array($result['headers'])) {
         $replacedCt=false;
+        $replacedCc=false;
         $blockedResponseHeaders=[
             'status'=>true,'transfer-encoding'=>true,'connection'=>true,'content-length'=>true,
             'x-sendfile'=>true,'x-sendfile2'=>true,'x-lighttpd-send-file'=>true,
@@ -302,6 +303,10 @@ if(isset($result['bodyRaw'])) {
             }
             if($lk==='content-type') {
                 if(!$replacedCt){header($k.': '.$v,true);$replacedCt=true;}
+                continue;
+            }
+            if($lk==='cache-control') {
+                if(!$replacedCc){header($k.': '.$v,true);$replacedCc=true;}
                 continue;
             }
             header($k.': '.$v,false);

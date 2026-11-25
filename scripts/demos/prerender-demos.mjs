@@ -52,13 +52,17 @@ function findApps(dataDir, requestedSlugs) {
       if (fs.existsSync(metaPath)) {
         try {
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-          if (meta.hidden || meta.playUrl) continue;
-          const slug = String(meta.slug || entry.name);
+          const app = meta.app && typeof meta.app === 'object' ? meta.app : meta;
+          if (app.hidden || app.play_url || app.playUrl) continue;
+          const slug = String(app.slug || entry.name);
           if (requestedSlugs.length > 0 && !requestedSlugs.includes(slug)) continue;
           const versions = Array.isArray(meta.versions) ? meta.versions : [];
-          const latest = versions[versions.length - 1] || null;
+          const latest = versions.reduce(
+            (best, cur) => (!best || Number(cur?.version ?? 0) > Number(best?.version ?? 0) ? cur : best),
+            null
+          );
           const sha256 = String(latest?.sha256 || '');
-          found.push({ slug, dir: full, name: String(meta.name || slug), sha256 });
+          found.push({ slug, dir: full, name: String(app.name || slug), sha256 });
         } catch {
           // Skip unreadable metadata
         }
@@ -203,7 +207,7 @@ function serializeRenderedAppInPage() {
     if (outTag === 'a') {
       const rawHref = (el.getAttribute('href') || '').trim();
       if (/^https?:\/\//i.test(rawHref)) {
-        attrs = ` href="${esc(rawHref)}" rel="noopener noreferrer"`;
+        attrs = ` href="${esc(rawHref)}" rel="nofollow ugc noopener noreferrer"`;
       } else {
         outTag = 'span';
       }

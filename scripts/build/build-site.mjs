@@ -172,8 +172,8 @@ ErrorDocument 404 /index.html
 </IfModule>
 
 <IfModule mod_deflate.c>
-  AddOutputFilterByType DEFLATE text/html text/plain text/css text/javascript
-  AddOutputFilterByType DEFLATE application/javascript application/json
+  AddOutputFilterByType DEFLATE text/html text/plain text/css text/javascript text/xml
+  AddOutputFilterByType DEFLATE application/javascript application/json application/xml
   AddOutputFilterByType DEFLATE application/manifest+json application/wasm image/svg+xml
 </IfModule>
 
@@ -224,7 +224,7 @@ ErrorDocument 404 /index.html
 <IfModule mod_headers.c>
   # Caches must not hand a brotli body to a client that did not ask for one.
   # The same optional twin suffix as the cache rules above, for the same reason.
-  <FilesMatch "\.(?:css|js|mjs|map|wasm|svg|json|html?|txt|webmanifest)(?:\.(?:br|gz))?$">
+  <FilesMatch "\.(?:css|js|mjs|map|wasm|svg|json|html?|txt|xml|md|ui|logic|webmanifest)(?:\.(?:br|gz))?$">
     Header append Vary Accept-Encoding
   </FilesMatch>
 </IfModule>
@@ -266,7 +266,6 @@ ErrorDocument 404 /index.html
   # that names a real file is a file. The bare directory is nothing to look
   # at; the directory of apps is.
   RewriteRule ^play/?$ /apps [R=302,L]
-  RewriteCond %{HTTP_ACCEPT} text/html [NC]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteRule ^play/[^/]+/?$ api/index.php [L]
 
@@ -335,6 +334,8 @@ map $uri $softn_site_page {
 
 map "$sent_http_content_type|$uri" $softn_cache_control {
     default                                                        "public, max-age=3600";
+    # Dynamic PHP-FPM routes set their own Cache-Control; empty value suppresses Nginx add_header duplication.
+    ~\|/(?:api(?:/|$)|apps/?$|publish/?$|app/[^/]+/?$|play/[^/]+/?$|sitemap-apps\.xml$) "";
     ~^text/html                                                    "no-cache, max-age=0, must-revalidate";
     ~^application/(?:json|manifest\+json)                          "no-cache, max-age=0, must-revalidate";
     ~*\|.*/(?:registerSW|sw|service-worker|coi)\.js$               "no-cache, max-age=0, must-revalidate";
@@ -425,7 +426,6 @@ server {
         try_files $uri @softn_play;
     }
     location @softn_play {
-        if ($softn_html_navigation = 0) { return 404; }
         fastcgi_pass unix:/run/php/php-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
         include fastcgi_params;
@@ -446,8 +446,8 @@ server {
 
     gzip on;
     gzip_vary on;
-    gzip_types text/plain text/css text/javascript application/javascript application/json
-               application/manifest+json application/wasm image/svg+xml;
+    gzip_types text/plain text/css text/javascript text/xml application/javascript application/json
+               application/xml application/manifest+json application/wasm image/svg+xml;
 
     # Configure TLS here, or terminate HTTPS at the reverse proxy/CDN.
 
@@ -477,7 +477,7 @@ server {
     # Missing static files must stay 404s, including extensionless files in
     # asset/catalogue directories and ordinary files with an extension.
     location ~ ^/(?:assets|demos|softn-files|shared|web/(?:assets|demos)|builder/assets|studio/assets|play/assets)(?:/|$) {
-        try_files $uri =404;
+        try_files $uri $uri/ =404;
     }
     location ~* /[^/]*\.[^/]+$ {
         try_files $uri =404;

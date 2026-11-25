@@ -1177,12 +1177,15 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
       expect(html).toContain('data-softn-ssr="single"');
       expect(html).toContain('<h2>Status Board</h2>');
       expect(html).toContain('<p>All systems green.</p>');
-      expect(html).toContain('<a href="https://status.example.test" rel="noopener noreferrer">Live Status</a>');
+      expect(html).toContain('<a href="https://status.example.test" rel="nofollow ugc noopener noreferrer">Live Status</a>');
+      expect(res.headers.get('vary')).toBe('Host');
       expect(html).not.toContain('javascript:alert');
       expect(html).not.toContain('NEVER_IN_HTML');
 
       const notMod = await fetch(`${origin}/`, { headers: { 'If-None-Match': etag! } });
       expect(notMod.status).toBe(304);
+      const notModGzip = await fetch(`${origin}/`, { headers: { 'If-None-Match': etag!.replace(/"$/, '-gzip"') } });
+      expect(notModGzip.status).toBe(304);
 
       // Invalid non-boolean prerender fails closed with 503
       writeFileSync(join(root, 'private/serve.config.php'), config(`'prerender' => 'yes',`));

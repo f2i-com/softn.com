@@ -629,17 +629,38 @@ export class BackendWorkerSession {
         }
       }
 
-      // 2. Load XDB SQLite WASM & pre-seed declared/discovered databases (SQL + JSON seeds!)
+      // 2. Load XDB SQLite WASM & backend ZIPP engine in parallel to eliminate serial boot latency!
       this.emitStatus({
         phase: 'loading-sqlite',
-        message: 'Loading SQLite database engine…',
+        message: 'Loading SQLite & backend runtime…',
         percent: 25,
       });
-      const xdbBindings = await loadXdbWasm({
-        runtimeUrl: msg.runtimeUrl,
-        explicitSource: msg.xdbModule,
-        glueUrl: msg.xdbGlueUrl,
-      });
+      const backendTier: ZippEngineTier | null = this.backend
+        ? this.backend.runtime === 'rust'
+          ? 'rust'
+          : this.backend.runtime === 'php'
+            ? 'php'
+            : this.backend.runtime === 'typescript'
+              ? 'typescript'
+              : this.backend.runtime === 'python'
+                ? 'python'
+                : 'javascript'
+        : null;
+      const [xdbBindings, preloadedZippBindings] = await Promise.all([
+        loadXdbWasm({
+          runtimeUrl: msg.runtimeUrl,
+          explicitSource: msg.xdbModule,
+          glueUrl: msg.xdbGlueUrl,
+        }),
+        backendTier
+          ? loadZippEngine({
+              tier: backendTier,
+              runtimeUrl: msg.runtimeUrl,
+              explicitSource: msg.engineModule,
+            })
+          : Promise.resolve(null),
+      ]);
+      if (this.disposed) return;
       const dbCount = msg.databases?.length ?? 0;
       const persistedCount = msg.initialPersistedDbs ? Object.keys(msg.initialPersistedDbs).length : 0;
       this.emitStatus({
@@ -672,7 +693,7 @@ export class BackendWorkerSession {
       this.sqlManager.flushDirty();
 
       // 3. Boot backend runtime (if configured)
-      if (this.backend) {
+      if (this.backend && preloadedZippBindings) {
         const runtimeLabel =
           this.backend.runtime === 'rust'
             ? 'Rust'
@@ -688,22 +709,7 @@ export class BackendWorkerSession {
           message: `Loading ${runtimeLabel} WebAssembly runtime…`,
           percent: 52,
         });
-        const tier: ZippEngineTier =
-          this.backend.runtime === 'rust'
-            ? 'rust'
-            : this.backend.runtime === 'php'
-              ? 'php'
-              : this.backend.runtime === 'typescript'
-                ? 'typescript'
-                : this.backend.runtime === 'python'
-                  ? 'python'
-                  : 'javascript';
-
-        this.zippBindings = await loadZippEngine({
-          tier,
-          runtimeUrl: msg.runtimeUrl,
-          explicitSource: msg.engineModule,
-        });
+        this.zippBindings = preloadedZippBindings;
 
         const budgetHooks: XdbBudgetHooks = {
           hostStepsRemaining: this.zippBindings.hostStepsRemaining,

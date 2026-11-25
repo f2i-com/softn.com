@@ -1,4 +1,48 @@
+import fs from 'node:fs';
+import { transformSync } from 'esbuild';
 import { defineConfig } from 'tsup';
+
+const GUEST_SOURCE_FILE_RE =
+  /(?:^|[\\/])(?:guest-(?:canvas-and-ext|web-apis|browser-globals|indexeddb|webgl|react-vendor|three-native|worker-scope)|shell-source)\.ts$/;
+
+/**
+ * Minify embedded JS inside `String.raw\`...\`` guest prelude sources at build time.
+ * Strips ~250 KB of comments and whitespace from `container-worker.js` and `worker-chunks/`,
+ * cutting both Worker download size and ZIPP VM startup parsing time while preserving all
+ * identifiers (safe for `eval`, `Function`, and `globalThis.__softn*` bridges).
+ */
+function minifyGuestSourceLiterals(source: string): string {
+  return source.replace(/String\.raw`([\s\S]*?)`/g, (full, body: string) => {
+    if (body.length < 256 || body.includes('${')) return full;
+    const hasEntities = body.includes('@ENTITIES@');
+    const prep = hasEntities ? body.replace(/@ENTITIES@/g, '__SOFTN_ENTITIES_PLACEHOLDER__') : body;
+    try {
+      const res = transformSync(prep, {
+        loader: 'js',
+        minifyWhitespace: true,
+        minifySyntax: true,
+        minifyIdentifiers: false,
+        target: 'es2020',
+      });
+      const out = hasEntities
+        ? res.code.replace(/__SOFTN_ENTITIES_PLACEHOLDER__/g, '@ENTITIES@')
+        : res.code;
+      return JSON.stringify(out);
+    } catch {
+      return full;
+    }
+  });
+}
+
+const minifyGuestSourcesPlugin = {
+  name: 'softn-minify-guest-sources',
+  setup(build: { onLoad: (opts: { filter: RegExp }, cb: (args: { path: string }) => { contents: string; loader: 'ts' }) => void }) {
+    build.onLoad({ filter: GUEST_SOURCE_FILE_RE }, (args) => {
+      const raw = fs.readFileSync(args.path, 'utf8');
+      return { contents: minifyGuestSourceLiterals(raw), loader: 'ts' };
+    });
+  },
+};
 
 export default defineConfig([
   // 1. NPM / Workspace Library Entries (`dist/index.js`, `dist/mount.js`, `dist/archive.js`, `dist/esm-linker.js`)
@@ -19,6 +63,7 @@ export default defineConfig([
     treeshake: true,
     noExternal: ['@softn/bundle-format', 'fflate'],
     external: ['three', /^three\//, /^node:/],
+    esbuildPlugins: [minifyGuestSourcesPlugin],
   },
   // 2. Drop-in Browser Runtime (`/runtime/softn.js` + lazy chunks in `/runtime/`)
   // Works directly via `<script type="module" src="/runtime/softn.js"></script>` on any static server!
@@ -37,6 +82,7 @@ export default defineConfig([
     treeshake: true,
     noExternal: ['@softn/bundle-format', 'fflate'],
     external: ['three', /^three\//, /^node:/],
+    esbuildPlugins: [minifyGuestSourcesPlugin],
   },
   // 3. Dedicated Frontend Web Worker (`/runtime/container-worker.js` + lazy `/runtime/worker-chunks/*.js`)
   {
@@ -54,6 +100,7 @@ export default defineConfig([
     treeshake: true,
     noExternal: ['@softn/bundle-format', 'fflate'],
     external: [/^node:/],
+    esbuildPlugins: [minifyGuestSourcesPlugin],
     esbuildOptions(options) {
       options.chunkNames = 'worker-chunks/[name]-[hash]';
     },

@@ -235,7 +235,7 @@ function getSharedCompiledEngine(url: string): Promise<WebAssembly.Module> {
     existing = (async () => {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`Failed to fetch ${url}: HTTP ${resp.status}`);
-      const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim();
+      const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
       if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
         try {
           const compiled = await WebAssembly.compileStreaming(resp.clone());
@@ -597,7 +597,15 @@ export async function mountSoftNContainer(
   const allowedCaps = new Set<Capability>(requestedCaps);
   let deviceBridge: ContainerDeviceBridge | null = options.deviceBridge ?? null;
   let deviceBridgeModPromise: Promise<typeof import('./device-bridge')> | null = null;
-  const loadDeviceBridge = () => (deviceBridgeModPromise ??= import('./device-bridge'));
+  const loadDeviceBridge = () => {
+    if (!deviceBridgeModPromise) {
+      deviceBridgeModPromise = import('./device-bridge').catch((err) => {
+        deviceBridgeModPromise = null;
+        throw err;
+      });
+    }
+    return deviceBridgeModPromise;
+  };
 
   // What is granted before the first script runs: everything the archive (or host override)
   // permits when preapproved, else only declared capabilities from initialGrantedCapabilities.
@@ -1225,6 +1233,10 @@ export async function mountSoftNContainer(
     idbChannel?.close();
     idbChannel = null;
     teardownPage();
+    if (deviceBridge && !options.deviceBridge) {
+      try { deviceBridge.dispose?.(); } catch { /* ignore */ }
+      deviceBridge = null;
+    }
     localBackendTransport?.dispose();
     localBackendTransport = null;
     ownedRemoteTransport?.dispose();
@@ -1234,34 +1246,62 @@ export async function mountSoftNContainer(
     if (owns()) shadowRoot.replaceChildren();
   };
 
+  // When a local backend engine is loaded (e.g. zipp-php.wasm or zipp-rust.wasm), reuse that
+  // already-compiled WebAssembly.Module for the frontend worker whenever it satisfies the frontend
+  // JS tier (saves ~7.6 MB download + a second full WASM compile on every full-stack app!).
+  let sharedLocalBackendEngine: { tier: ZippEngineTier; source: ZippEngineSource } | null = null;
+
+  const savedSessionPromise: Promise<PersistedContainerSession | null> = persistStorage
+    ? loadContainerSession(storageBase).catch(() => null)
+    : Promise.resolve(null);
+
   try {
     if (!backendTransport && (archive.manifest.backend || effectiveDatabases.length > 0)) {
       const backendVfs = archive.exportBackendVfs();
-      let backendEngineSource: ZippEngineSource | undefined;
-      if (archive.manifest.backend) {
-        const bRt = archive.manifest.backend.runtime;
-        const bTier: ZippEngineTier =
-          bRt === 'rust' ? 'rust' : bRt === 'php' ? 'php' : bRt === 'typescript' ? 'typescript' : bRt === 'python' ? 'python' : 'javascript';
+      const bTier: ZippEngineTier | null = archive.manifest.backend
+        ? (() => {
+            const bRt = archive.manifest.backend.runtime;
+            return bRt === 'rust'
+              ? 'rust'
+              : bRt === 'php'
+                ? 'php'
+                : bRt === 'typescript'
+                  ? 'typescript'
+                  : bRt === 'python'
+                    ? 'python'
+                    : 'javascript';
+          })()
+        : null;
+
+      const resolveBackendEngine = async (): Promise<ZippEngineSource | undefined> => {
+        if (!bTier) return undefined;
         const suppliedBackend = options.engineWasm?.[bTier];
         const resolvedBackend = typeof suppliedBackend === 'function' ? await suppliedBackend() : suppliedBackend;
-        if (resolvedBackend instanceof WebAssembly.Module) {
-          backendEngineSource = resolvedBackend;
-        } else if (typeof resolvedBackend === 'string') {
-          backendEngineSource = useWorkerIsolation ? await getSharedCompiledEngine(resolvedBackend) : resolvedBackend;
-        } else if (resolvedBackend) {
-          backendEngineSource =
-            resolvedBackend instanceof ArrayBuffer
-              ? new Uint8Array(resolvedBackend)
-              : new Uint8Array(resolvedBackend.buffer, resolvedBackend.byteOffset, resolvedBackend.byteLength);
-        } else if (useWorkerIsolation) {
-          backendEngineSource = await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[bTier]}`);
+        if (resolvedBackend instanceof WebAssembly.Module) return resolvedBackend;
+        if (typeof resolvedBackend === 'string') {
+          return useWorkerIsolation ? await getSharedCompiledEngine(resolvedBackend) : resolvedBackend;
         }
-      }
+        if (resolvedBackend) {
+          return resolvedBackend instanceof ArrayBuffer
+            ? new Uint8Array(resolvedBackend)
+            : new Uint8Array(resolvedBackend.buffer, resolvedBackend.byteOffset, resolvedBackend.byteLength);
+        }
+        if (useWorkerIsolation) {
+          return await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[bTier]}`);
+        }
+        return undefined;
+      };
 
-      const [{ LocalBackendTransport: LocalTransportCtor }, xdbSource] = await Promise.all([
+      // Fetch/compile backend WASM, XDB SQLite WASM, and local-backend-transport in parallel!
+      const [backendEngineSource, { LocalBackendTransport: LocalTransportCtor }, xdbSource] = await Promise.all([
+        resolveBackendEngine(),
         import('./local-backend-transport'),
         resolveXdbSource(),
       ]);
+
+      if (bTier && backendEngineSource) {
+        sharedLocalBackendEngine = { tier: bTier, source: backendEngineSource };
+      }
 
       localBackendTransport = new LocalTransportCtor({
         appId,
@@ -1283,7 +1323,15 @@ export async function mountSoftNContainer(
         onStatus: emitStatus,
       });
       backendTransport = localBackendTransport;
-      await backendTransport.ready;
+      // SSR apps need the backend ready to render the initial HTML document; API-only apps
+      // boot the backend in parallel with the frontend worker (`fetch()` awaits `this.ready`).
+      if (archive.manifest.ssrEntry || archive.manifest.backend?.mode === 'ssr') {
+        await backendTransport.ready;
+      } else {
+        void backendTransport.ready.catch((err) => {
+          if (!disposed) options.onError?.(err instanceof Error ? err : new Error(String(err)));
+        });
+      }
     } else if (backendTransport) {
       emitStatus({
         phase: 'booting-backend',
@@ -1303,9 +1351,7 @@ export async function mountSoftNContainer(
   }
 
   let currentUrlPath = options.initialPath ?? (archive.manifest.ssrEntry ? '/' : `/${archive.manifest.main}`);
-  const savedSession: PersistedContainerSession | null = persistStorage
-    ? await loadContainerSession(storageBase).catch(() => null)
-    : null;
+  const savedSession: PersistedContainerSession | null = await savedSessionPromise;
   const initialPersistedLs = persistStorage && storage ? loadPersistedStorage(storageBase, storage) : null;
   const liveSession: PersistedContainerSession = {
     urlPath: savedSession?.urlPath,
@@ -2531,37 +2577,56 @@ export async function mountSoftNContainer(
           percent: 88,
           detail: activeTier === 'typescript' ? 'Compiling TypeScript / JSX' : undefined,
         });
-        // The tier's engine: the host's own when it names one for this tier (bytes, a compiled
-        // module, an address, or a function asked only now, so a host that offers the engine
-        // its page already runs compiles nothing for an app on another tier), else the file
-        // in the runtime folder. An address is fetched and compiled once per page here, and
-        // the module handed to the Worker; without a Worker the session loads it itself.
-        const supplied = options.engineWasm?.[activeTier];
-        const explicitWasm = typeof supplied === 'function' ? await supplied() : supplied;
-        let engineSource: WebAssembly.Module | Uint8Array | string | undefined;
-        if (explicitWasm instanceof WebAssembly.Module) {
-          engineSource = explicitWasm;
-        } else if (typeof explicitWasm === 'string') {
-          engineSource = useWorkerIsolation ? await getSharedCompiledEngine(explicitWasm) : explicitWasm;
-        } else if (explicitWasm) {
-          engineSource =
-            explicitWasm instanceof ArrayBuffer
+
+        // Spawn container-worker.js immediately so its script downloads and parses in parallel
+        // with WASM engine resolution and IndexedDB hydration.
+        const workerUrl = options.workerUrl ?? `${runtimeUrl}container-worker.js`;
+        const worker = useWorkerIsolation ? startModuleWorker(workerUrl, { name: `softn:${appId}` }) : null;
+
+        const resolveFrontendEngine = async (): Promise<WebAssembly.Module | Uint8Array | string | undefined> => {
+          // Reuse an already-loaded local backend engine (e.g. zipp-php.wasm / zipp-rust.wasm)
+          // whenever it natively includes full JS (Intl/Temporal) for the active frontend tier.
+          if (sharedLocalBackendEngine) {
+            const bTier = sharedLocalBackendEngine.tier;
+            const coversFrontend =
+              bTier === activeTier ||
+              ((bTier === 'php' ||
+                bTier === 'rust' ||
+                bTier === 'python' ||
+                bTier === 'typescript' ||
+                bTier === 'javascript') &&
+                (activeTier === 'lite' || activeTier === 'javascript'));
+            if (coversFrontend) {
+              return sharedLocalBackendEngine.source;
+            }
+          }
+          const supplied = options.engineWasm?.[activeTier];
+          const explicitWasm = typeof supplied === 'function' ? await supplied() : supplied;
+          if (explicitWasm instanceof WebAssembly.Module) return explicitWasm;
+          if (typeof explicitWasm === 'string') {
+            return useWorkerIsolation ? await getSharedCompiledEngine(explicitWasm) : explicitWasm;
+          }
+          if (explicitWasm) {
+            return explicitWasm instanceof ArrayBuffer
               ? new Uint8Array(explicitWasm)
               : new Uint8Array(explicitWasm.buffer, explicitWasm.byteOffset, explicitWasm.byteLength);
-        } else if (useWorkerIsolation) {
-          engineSource = await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[activeTier]}`);
-        }
+          }
+          if (useWorkerIsolation) {
+            return await getSharedCompiledEngine(`${runtimeUrl}engines/${ENGINE_FILES[activeTier]}`);
+          }
+          return undefined;
+        };
 
-        // What the app's IndexedDB databases are kept as, read now (a new session reads them again).
-        let initialIdb: Record<string, string> = {};
-        if (persistStorage) {
+        const loadInitialIdb = async (): Promise<Record<string, string>> => {
+          if (!persistStorage) return {};
           idbBacking ??= (await indexedDbBacking(storageBase)) ?? localStorageBacking(storageBase, storage);
+          let out: Record<string, string> = {};
           try {
             const kept = await idbBacking.loadAll();
             idbParts.clear();
             idbPartsBytes = 0;
             for (const [name, value] of kept) setIdbPart(name, value);
-            initialIdb = Object.fromEntries(kept);
+            out = Object.fromEntries(kept);
           } catch {
             // Not read: the app starts with no databases.
           }
@@ -2569,8 +2634,22 @@ export async function mountSoftNContainer(
             idbChannel = new BroadcastChannel(`softn-idb:${storageBase}`);
             idbChannel.onmessage = (event: MessageEvent) => idbToldElsewhere((event.data as { names?: unknown } | null)?.names);
           }
+          return out;
+        };
+
+        let engineSource: WebAssembly.Module | Uint8Array | string | undefined;
+        let initialIdb: Record<string, string>;
+        try {
+          [engineSource, initialIdb] = await Promise.all([resolveFrontendEngine(), loadInitialIdb()]);
+        } catch (err) {
+          worker?.terminate();
+          throw err;
         }
-        if (disposed || !owns() || currentPatcher !== patcher) { resolveReady(); return; }
+        if (disposed || !owns() || currentPatcher !== patcher) {
+          worker?.terminate();
+          resolveReady();
+          return;
+        }
         const initMsg: HostToWorkerMsg = {
           type: 'init',
           appId,
@@ -2603,10 +2682,7 @@ export async function mountSoftNContainer(
           limits,
         };
 
-        if (useWorkerIsolation) {
-          const workerUrl = options.workerUrl ?? `${runtimeUrl}container-worker.js`;
-          // Behind the embedding page's service worker wherever the folder is (worker-start.ts).
-          const worker = startModuleWorker(workerUrl, { name: `softn:${appId}` });
+        if (useWorkerIsolation && worker) {
           worker.addEventListener('message', (ev: MessageEvent<WorkerToHostMsg>) => {
             onWorkerMessage(ev.data);
           });
@@ -2761,6 +2837,10 @@ export async function mountSoftNContainer(
         : `/${initialFrontendPath}`;
       recordHistory(initialUrl, true);
       await mountPage(archive.manifest.main);
+    }
+    // Backend booted in parallel with the frontend; ensure it has settled before resolving mountSoftNContainer().
+    if (localBackendTransport && !disposed) {
+      await localBackendTransport.ready;
     }
   } catch (err) {
     disposeContainer();

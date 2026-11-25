@@ -230,7 +230,10 @@ try {
 function is_page_request(): bool
 {
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
-    return is_string($path) && preg_match('#^(?:/api/page)?/(?:app|play)/[^/]+/?$#', rawurldecode($path)) === 1;
+    if (!is_string($path)) return false;
+    $decoded = rawurldecode($path);
+    return preg_match('#^(?:(?:/api/page)?/(?:app|play)/[^/]+|/(?:apps|publish))/?$#', $decoded) === 1
+        || $decoded === '/sitemap-apps.xml';
 }
 
 /**

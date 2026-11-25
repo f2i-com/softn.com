@@ -455,7 +455,11 @@ final class Request
         if (trim($raw) === '*') return true;
         $want = preg_replace('#^W/#', '', trim($etag)) ?? $etag;
         preg_match_all('#"[^"]*"#', $raw, $m);
-        return in_array($want, $m[0], true);
+        foreach ($m[0] as $cand) {
+            $norm = preg_replace('/-(?:gzip|br|zstd|deflate)"$/i', '"', $cand) ?? $cand;
+            if ($cand === $want || $norm === $want) return true;
+        }
+        return false;
     }
 
     /** The body limit this route was given; what a 413 from here names. */

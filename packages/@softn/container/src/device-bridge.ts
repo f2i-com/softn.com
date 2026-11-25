@@ -102,6 +102,8 @@ export interface ContainerDeviceBridge {
     isAvailable(): boolean | Promise<boolean>;
     notify(options: { title: string; body?: string; id?: number }): Promise<{ ok: boolean; id: number }>;
   };
+
+  dispose?(): void;
 }
 
 const NAMESPACE_CAPABILITY: Readonly<Record<string, Capability | null>> = {
@@ -437,6 +439,17 @@ export function createWebDeviceBridge(): ContainerDeviceBridge {
         });
         return { ok: true, id };
       },
+    },
+
+    dispose() {
+      for (const dev of bleDevices.values()) {
+        try {
+          if (dev.gatt?.connected) dev.gatt.disconnect();
+        } catch {
+          // Ignore BLE disconnect errors during teardown
+        }
+      }
+      bleDevices.clear();
     },
   };
 }

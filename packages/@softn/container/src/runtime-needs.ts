@@ -16,7 +16,7 @@ import type { ZippEngineTier } from './types';
 export interface ContainerRuntimeNeeds {
   /** Every engine tier one of the app's pages or embedded backend starts on, each once. */
   tiers: ZippEngineTier[];
-  /** A script imports `three`: the page's side of a 3D scene is loaded when one is drawn. */
+  /** A script imports or bundles `three`: the page's side of a 3D scene is loaded when one is drawn. */
   three: boolean;
   /** The app carries a glTF model, which a scene loads with the model loader. */
   models: boolean;
@@ -24,15 +24,25 @@ export interface ContainerRuntimeNeeds {
   extensions: string[];
   /** Whether the app embeds a backend or SQLite database (requires `xdb-wasm.wasm` and `backend-worker.js`). */
   sqlite?: boolean;
+  /** Optional lazy Worker subsystem feature names needed by this app (`webgl`, `indexeddb`, `react`, `jsx`, `worker`, `vendors`). */
+  workerFeatures?: string[];
+  /** Whether the app declares hardware/device capabilities requiring `device-bridge`. */
+  device?: boolean;
 }
 
 /** The `<softn-*>` elements whose code the container carries itself (ui-extensions/registry.ts). */
 const BUILT_IN_EXTENSIONS = ['softn-chart', 'softn-datagrid'] as const;
 
-const TEXT_FILE = /\.(?:html?|m?js|jsx|ts|tsx|mts|py|css|json|svg|txt|md)$/i;
-const SCRIPT_FILE = /\.(?:html?|m?js|jsx|ts|tsx|mts)$/i;
+const TEXT_FILE = /\.(?:html?|m?js|jsx|ts|tsx|mts|vue|py|css|json|svg|txt|md)$/i;
+const SCRIPT_FILE = /\.(?:html?|m?js|jsx|ts|tsx|mts|vue)$/i;
 const IMPORTS_THREE = /\bfrom\s*['"]three(?:\/[^'"]*)?['"]|\bimport\s*\(\s*['"]three(?:\/[^'"]*)?['"]\s*\)|\bimport\s*['"]three(?:\/[^'"]*)?['"]/;
 const MODEL_FILE = /\.(?:glb|gltf)$/i;
+const USES_WEBGL = /\b(?:webgl2?|experimental-webgl|WebGLRenderingContext|WebGL2RenderingContext|WebGLRenderer|OrbitControls|GLTFLoader)\b|\bTHREE\s*\.\s*[A-Z]|['"](?:three(?:\/[^'"]*)?|softn-vendor:three|babylonjs|@babylonjs\/core|pixi\.js|regl|twgl\.js|playcanvas)['"]|getContext\s*\(\s*(?!['"]2d['"])/;
+const USES_IDB = /\b(?:indexedDB|webkitIndexedDB|mozIndexedDB|IDBKeyRange|IDBDatabase|IDBRequest|IDBTransaction|IDBObjectStore|IDBIndex|IDBCursor|Dexie|localforage|openDB)\b|\bnew\s+(?:Worker|SharedWorker)\s*\(|\bSharedWorker\b|['"](?:idb|dexie|localforage)['"]/;
+const USES_REACT = /['"](?:react|react-dom(?:\/client)?|react\/jsx(?:-dev)?-runtime|softn-vendor:react[^'"]*)['"]/;
+const USES_WORKER = /\b(?:new\s+Worker|SharedWorker)\s*\(/;
+const USES_VENDORS = /['"](?:preact(?:\/[^'"]*)?|htm|marked|softn-vendor:(?:preact|htm|marked|three)[^'"]*)['"]/;
+const DEVICE_CAPS = new Set(['camera', 'bluetooth', 'location', 'haptics', 'notifications']);
 
 export async function containerRuntimeNeeds(
   source: Uint8Array | ArrayBuffer | Record<string, string | Uint8Array>
@@ -73,9 +83,21 @@ export async function containerRuntimeNeeds(
     needs.tiers = [...tiers];
 
     const scripts = Object.entries(textFiles).filter(([name]) => SCRIPT_FILE.test(name));
-    needs.three = scripts.some(([, text]) => IMPORTS_THREE.test(text));
+    const hasBundledThree = (text: string) => text.includes('THREE.WebGLRenderer') && text.includes('isWebGLRenderer');
+    needs.three = scripts.some(([, text]) => IMPORTS_THREE.test(text) || hasBundledThree(text));
     needs.models = names.some((name) => MODEL_FILE.test(name));
     needs.extensions = BUILT_IN_EXTENSIONS.filter((tag) => scripts.some(([, text]) => text.includes(tag)));
+
+    const workerFeatures: string[] = [];
+    const hasJsx = scripts.some(([name]) => /\.(?:jsx|tsx)$/i.test(name));
+    if (needs.three || scripts.some(([, text]) => USES_WEBGL.test(text))) workerFeatures.push('webgl');
+    if (scripts.some(([, text]) => USES_IDB.test(text))) workerFeatures.push('indexeddb');
+    if (hasJsx) workerFeatures.push('jsx');
+    if (hasJsx || scripts.some(([, text]) => USES_REACT.test(text))) workerFeatures.push('react');
+    if (scripts.some(([, text]) => USES_WORKER.test(text))) workerFeatures.push('worker');
+    if (needs.three || scripts.some(([, text]) => USES_VENDORS.test(text))) workerFeatures.push('vendors');
+    if (workerFeatures.length > 0) needs.workerFeatures = workerFeatures;
+    if (archive.requestedCapabilities.some((cap) => DEVICE_CAPS.has(cap))) needs.device = true;
     return needs;
   } finally {
     archive.dispose();
@@ -90,7 +112,7 @@ export async function containerRuntimeNeeds(
  * it the copy in the runtime folder (`vendor/three.js`) is the one a scene would load.
  */
 export async function preloadContainerFeatures(
-  needs: Pick<ContainerRuntimeNeeds, 'three' | 'models' | 'extensions'>,
+  needs: Pick<ContainerRuntimeNeeds, 'three' | 'models' | 'extensions' | 'sqlite' | 'device'>,
   options: { runtimeUrl?: string; hostThree?: () => Promise<unknown> } = {}
 ): Promise<string[]> {
   const wanted: Array<[string, () => Promise<unknown>]> = [];
@@ -99,6 +121,12 @@ export async function preloadContainerFeatures(
     const base = (options.runtimeUrl ?? '/runtime/').replace(/\/?$/, '/');
     wanted.push(['Three.js', options.hostThree ?? (() => import(/* @vite-ignore */ `${base}vendor/three.js`))]);
     if (needs.models) wanted.push(['the model loader', () => import('three/examples/jsm/loaders/GLTFLoader.js')]);
+  }
+  if (needs.sqlite) {
+    wanted.push(['local-backend', () => import('./local-backend-transport')]);
+  }
+  if (needs.device) {
+    wanted.push(['device-bridge', () => import('./device-bridge')]);
   }
   for (const tag of needs.extensions) {
     if (tag === 'softn-chart') wanted.push([tag, () => import('./ui-extensions/chart')]);

@@ -21,30 +21,32 @@ type Rule = { cls: string; re: RegExp; quotes?: string; oneLine?: boolean };
 
 // In logic, a tag only counts when the name is capitalised or is the `logic`
 // block — otherwise every `a<b` in a `.logic` file would open an element.
-const LOGIC_TAG: Rule = { cls: 'tok-tag', re: /^<\/?(?:[A-Z][\w.]*|logic|script|style)\b/ };
+const LOGIC_TAG: Rule = { cls: 'tok-tag', re: /<\/?(?:[A-Z][\w.]*|logic|script|style)\b/y };
 
 // Order is the whole design here: the first rule that matches at a position
 // wins, so the specific marks have to be tried before the general ones.
+// Every regex uses the sticky `/y` flag so tokenization indexes directly into
+// `source` in O(N) without O(N²) `rest.slice(...)` allocations.
 const RULES: Rule[] = [
-  { cls: 'tok-com', re: /^\/\/[^\n]*/ },
-  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'|^`(?:[^`\\]|\\.)*`/, quotes: '"\'`' },
+  { cls: 'tok-com', re: /\/\/[^\n]*/y },
+  { cls: 'tok-str', re: /(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/y, quotes: '"\'`' },
   // SoftN's control-flow directives.
-  { cls: 'tok-mark', re: /^#(?:if|else|each|empty|end)\b/ },
+  { cls: 'tok-mark', re: /#(?:if|else|each|empty|end)\b/y },
   LOGIC_TAG,
-  { cls: 'tok-tag', re: /^\/?>/ },
+  { cls: 'tok-tag', re: /\/?>/y },
   // Event handlers and two-way bindings.
-  { cls: 'tok-mark', re: /^[@:][A-Za-z_][\w-]*/ },
-  { cls: 'tok-mark', re: /^[{}]/ },
+  { cls: 'tok-mark', re: /[@:][A-Za-z_][\w-]*/y },
+  { cls: 'tok-mark', re: /[{}]/y },
   {
     cls: 'tok-mark',
-    re: /^\b(?:let|const|var|function|return|if|else|for|while|await|async|new|class|import|export|from|typeof|of|in|try|catch|throw)\b/,
+    re: /\b(?:let|const|var|function|return|if|else|for|while|await|async|new|class|import|export|from|typeof|of|in|try|catch|throw)\b/y,
   },
-  { cls: 'tok-num', re: /^\b(?:true|false|null|undefined|\d+(?:\.\d+)?)\b/ },
+  { cls: 'tok-num', re: /\b(?:true|false|null|undefined|\d+(?:\.\d+)?)\b/y },
   // An attribute name, recognised by the `=` that follows it.
-  { cls: 'tok-attr', re: /^[A-Za-z_][\w-]*(?=\s*=)/ },
-  { cls: 'tok-punc', re: /^[=(),;[\]]/ },
+  { cls: 'tok-attr', re: /[A-Za-z_][\w-]*(?=\s*=)/y },
+  { cls: 'tok-punc', re: /[=(),;[\]]/y },
   // Anything else: identifiers, whitespace, operators, prose inside elements.
-  { cls: 'tok-expr', re: /^[^\s<>{}"'`@:#=(),;[\]/]+|^\s+|^./ },
+  { cls: 'tok-expr', re: /(?:[^\s<>{}"'`@:#=(),;[\]/]+|\s+|.)/y },
 ];
 
 /**
@@ -53,15 +55,15 @@ const RULES: Rule[] = [
  * `#each`, so no single list can be right about both.
  */
 const PYTHON_RULES: Rule[] = [
-  { cls: 'tok-com', re: /^#[^\n]*/ },
-  { cls: 'tok-str', re: /^(?:"""[\s\S]*?"""|'''[\s\S]*?''')|^"(?:[^"\\\n]|\\.)*"|^'(?:[^'\\\n]|\\.)*'/, quotes: '"\'', oneLine: true },
+  { cls: 'tok-com', re: /#[^\n]*/y },
+  { cls: 'tok-str', re: /(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/y, quotes: '"\'', oneLine: true },
   {
     cls: 'tok-mark',
-    re: /^\b(?:def|global|nonlocal|return|if|elif|else|for|while|in|not|and|or|is|import|from|as|with|class|lambda|pass|break|continue|try|except|finally|raise|yield|del|assert)\b/,
+    re: /\b(?:def|global|nonlocal|return|if|elif|else|for|while|in|not|and|or|is|import|from|as|with|class|lambda|pass|break|continue|try|except|finally|raise|yield|del|assert)\b/y,
   },
-  { cls: 'tok-num', re: /^\b(?:True|False|None|\d+(?:\.\d+)?)\b/ },
-  { cls: 'tok-punc', re: /^[=(),:[\]]/ },
-  { cls: 'tok-expr', re: /^[^\s#"'=(),:[\]]+|^\s+|^./ },
+  { cls: 'tok-num', re: /\b(?:True|False|None|\d+(?:\.\d+)?)\b/y },
+  { cls: 'tok-punc', re: /[=(),:[\]]/y },
+  { cls: 'tok-expr', re: /(?:[^\s#"'=(),:[\]]+|\s+|.)/y },
 ];
 
 /**
@@ -74,80 +76,80 @@ const PYTHON_RULES: Rule[] = [
  * no stretch is read twice.
  */
 const MARKUP_RULES: Rule[] = [
-  { cls: 'tok-com', re: /^<!--[\s\S]*?(?:-->|$)/ },
-  { cls: 'tok-tag', re: /^<![A-Za-z][^>]*>?/ },
-  ...RULES.map((rule) => (rule === LOGIC_TAG ? { cls: 'tok-tag', re: /^<\/?[A-Za-z][\w.:-]*(?=[\s/>]|$)/ } : rule)),
+  { cls: 'tok-com', re: /<!--[\s\S]*?(?:-->|$)/y },
+  { cls: 'tok-tag', re: /<![A-Za-z][^>]*>?/y },
+  ...RULES.map((rule) => (rule === LOGIC_TAG ? { cls: 'tok-tag', re: /<\/?[A-Za-z][\w.:-]*(?=[\s/>]|$)/y } : rule)),
 ];
 
 const JSON_RULES: Rule[] = [
-  { cls: 'tok-attr', re: /^"(?:[^"\\]|\\.)*"(?=\s*:)/, quotes: '"' },
-  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"/, quotes: '"' },
-  { cls: 'tok-num', re: /^\b(?:true|false|null)\b|^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ },
-  { cls: 'tok-punc', re: /^[{}[\]:,]/ },
-  { cls: 'tok-expr', re: /^\s+|^[^\s"{}[\]:,]+|^./ },
+  { cls: 'tok-attr', re: /"(?:[^"\\]|\\.)*"(?=\s*:)/y, quotes: '"' },
+  { cls: 'tok-str', re: /"(?:[^"\\]|\\.)*"/y, quotes: '"' },
+  { cls: 'tok-num', re: /(?:\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/y },
+  { cls: 'tok-punc', re: /[{}[\]:,]/y },
+  { cls: 'tok-expr', re: /(?:\s+|[^\s"{}[\]:,]+|.)/y },
 ];
 
 const PHP_RULES: Rule[] = [
-  { cls: 'tok-com', re: /^\/\/[^\n]*|^\/\*[\s\S]*?(?:\*\/|$)|^#[^\n]*/ },
-  { cls: 'tok-tag', re: /^<\?(?:php)?|^\?>/i },
-  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'/, quotes: '"\'' },
-  { cls: 'tok-attr', re: /^\$[A-Za-z_]\w*/ },
+  { cls: 'tok-com', re: /(?:\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|#[^\n]*)/y },
+  { cls: 'tok-tag', re: /(?:<\?(?:php)?|\?>)/iy },
+  { cls: 'tok-str', re: /(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/y, quotes: '"\'' },
+  { cls: 'tok-attr', re: /\$[A-Za-z_]\w*/y },
   {
     cls: 'tok-mark',
-    re: /^\b(?:declare|strict_types|namespace|use|class|interface|trait|function|fn|return|if|elseif|else|foreach|for|while|switch|case|match|try|catch|finally|throw|new|echo|print|exit|require|require_once|include|public|private|protected|static|readonly|const|array|as)\b/,
+    re: /\b(?:declare|strict_types|namespace|use|class|interface|trait|function|fn|return|if|elseif|else|foreach|for|while|switch|case|match|try|catch|finally|throw|new|echo|print|exit|require|require_once|include|public|private|protected|static|readonly|const|array|as)\b/y,
   },
-  { cls: 'tok-num', re: /^\b(?:true|false|null|\d+(?:\.\d+)?)\b/i },
-  { cls: 'tok-punc', re: /^->|^=>|^::|^[=(){}[\],;.]/ },
-  { cls: 'tok-expr', re: /^[^\s/"'#$=(){}[\],;.<>?]+|^\s+|^./ },
+  { cls: 'tok-num', re: /\b(?:true|false|null|\d+(?:\.\d+)?)\b/iy },
+  { cls: 'tok-punc', re: /(?:->|=>|::|[=(){}[\],;.])/y },
+  { cls: 'tok-expr', re: /(?:[^\s/"'#$=(){}[\],;.<>?]+|\s+|.)/y },
 ];
 
 const RUST_RULES: Rule[] = [
-  { cls: 'tok-com', re: /^\/\/[^\n]*|^\/\*[\s\S]*?(?:\*\/|$)/ },
-  { cls: 'tok-attr', re: /^#!?\[[^\]]*\]/ },
-  { cls: 'tok-str', re: /^b?"(?:[^"\\]|\\.)*"/, quotes: '"' },
+  { cls: 'tok-com', re: /(?:\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))/y },
+  { cls: 'tok-attr', re: /#!?\[[^\]]*\]/y },
+  { cls: 'tok-str', re: /b?"(?:[^"\\]|\\.)*"/y, quotes: '"' },
   {
     cls: 'tok-mark',
-    re: /^\b(?:as|async|await|break|const|continue|crate|dyn|else|enum|extern|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|type|unsafe|use|where|while)\b/,
+    re: /\b(?:as|async|await|break|const|continue|crate|dyn|else|enum|extern|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|type|unsafe|use|where|while)\b/y,
   },
   {
     cls: 'tok-tag',
-    re: /^\b(?:bool|char|str|String|Vec|Option|Result|Box|Arc|Rc|HashMap|BTreeMap|i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|Some|None|Ok|Err)\b/,
+    re: /\b(?:bool|char|str|String|Vec|Option|Result|Box|Arc|Rc|HashMap|BTreeMap|i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|Some|None|Ok|Err)\b/y,
   },
-  { cls: 'tok-num', re: /^\b(?:true|false|0x[\da-fA-F_]+|0b[01_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[uif](?:8|16|32|64|128|size))?)\b/ },
-  { cls: 'tok-punc', re: /^->|^=>|^::|^[=(){}[\],;.:]/ },
-  { cls: 'tok-expr', re: /^[^\s/"'#=(){}[\],;.:]+|^\s+|^./ },
+  { cls: 'tok-num', re: /\b(?:true|false|0x[\da-fA-F_]+|0b[01_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[uif](?:8|16|32|64|128|size))?)\b/y },
+  { cls: 'tok-punc', re: /(?:->|=>|::|[=(){}[\],;.:])/y },
+  { cls: 'tok-expr', re: /(?:[^\s/"'#=(){}[\],;.:]+|\s+|.)/y },
 ];
 
 const SQL_RULES: Rule[] = [
-  { cls: 'tok-com', re: /^--[^\n]*|^\/\*[\s\S]*?(?:\*\/|$)/ },
-  { cls: 'tok-str', re: /^'(?:[^'\\]|''|\\.)*'|^"(?:[^"\\]|\\.)*"/, quotes: '"\'' },
+  { cls: 'tok-com', re: /(?:--[^\n]*|\/\*[\s\S]*?(?:\*\/|$))/y },
+  { cls: 'tok-str', re: /(?:'(?:[^'\\]|''|\\.)*'|"(?:[^"\\]|\\.)*")/y, quotes: '"\'' },
   {
     cls: 'tok-mark',
-    re: /^\b(?:SELECT|FROM|WHERE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|INDEX|VIEW|TRIGGER|IF|NOT|EXISTS|PRIMARY|KEY|FOREIGN|REFERENCES|AUTOINCREMENT|UNIQUE|DEFAULT|CHECK|CONSTRAINT|JOIN|LEFT|RIGHT|INNER|OUTER|ON|GROUP|BY|ORDER|ASC|DESC|LIMIT|OFFSET|HAVING|UNION|ALL|AS|AND|OR|IN|IS|LIKE|GLOB|BETWEEN|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK|PRAGMA|WITH|RETURNING|CONFLICT|DO|NOTHING|REPLACE)\b/i,
+    re: /\b(?:SELECT|FROM|WHERE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|INDEX|VIEW|TRIGGER|IF|NOT|EXISTS|PRIMARY|KEY|FOREIGN|REFERENCES|AUTOINCREMENT|UNIQUE|DEFAULT|CHECK|CONSTRAINT|JOIN|LEFT|RIGHT|INNER|OUTER|ON|GROUP|BY|ORDER|ASC|DESC|LIMIT|OFFSET|HAVING|UNION|ALL|AS|AND|OR|IN|IS|LIKE|GLOB|BETWEEN|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK|PRAGMA|WITH|RETURNING|CONFLICT|DO|NOTHING|REPLACE)\b/iy,
   },
-  { cls: 'tok-tag', re: /^\b(?:INTEGER|INT|TEXT|REAL|BLOB|NUMERIC|BOOLEAN|VARCHAR|CHAR|DATETIME|TIMESTAMP|DATE|JSON)\b/i },
-  { cls: 'tok-num', re: /^\b(?:NULL|TRUE|FALSE|\d+(?:\.\d+)?)\b/i },
-  { cls: 'tok-punc', re: /^[=(),;.*<>!+-]/ },
-  { cls: 'tok-expr', re: /^[^\s/"'-=(),;.*<>!+]+|^\s+|^./ },
+  { cls: 'tok-tag', re: /\b(?:INTEGER|INT|TEXT|REAL|BLOB|NUMERIC|BOOLEAN|VARCHAR|CHAR|DATETIME|TIMESTAMP|DATE|JSON)\b/iy },
+  { cls: 'tok-num', re: /\b(?:NULL|TRUE|FALSE|\d+(?:\.\d+)?)\b/iy },
+  { cls: 'tok-punc', re: /[=(),;.*<>!+-]/y },
+  { cls: 'tok-expr', re: /(?:[^\s/"'-=(),;.*<>!+]+|\s+|.)/y },
 ];
 
 const CSS_RULES: Rule[] = [
-  { cls: 'tok-com', re: /^\/\*[\s\S]*?(?:\*\/|$)/ },
-  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'/, quotes: '"\'' },
-  { cls: 'tok-mark', re: /^@[a-zA-Z-]+/ },
-  { cls: 'tok-attr', re: /^[a-zA-Z_-][\w-]*(?=\s*:)/ },
-  { cls: 'tok-num', re: /^#[0-9a-fA-F]{3,8}\b|^-?\d+(?:\.\d+)?(?:px|rem|em|vh|vw|dvh|%|ms|s|deg|fr)?\b/ },
-  { cls: 'tok-punc', re: /^[{}():;,]/ },
-  { cls: 'tok-expr', re: /^[^\s/"'@{}:;,()]+|^\s+|^./ },
+  { cls: 'tok-com', re: /\/\*[\s\S]*?(?:\*\/|$)/y },
+  { cls: 'tok-str', re: /(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/y, quotes: '"\'' },
+  { cls: 'tok-mark', re: /@[a-zA-Z-]+/y },
+  { cls: 'tok-attr', re: /[a-zA-Z_-][\w-]*(?=\s*:)/y },
+  { cls: 'tok-num', re: /(?:#[0-9a-fA-F]{3,8}\b|-?\d+(?:\.\d+)?(?:px|rem|em|vh|vw|dvh|%|ms|s|deg|fr)?\b)/y },
+  { cls: 'tok-punc', re: /[{}():;,]/y },
+  { cls: 'tok-expr', re: /(?:[^\s/"'@{}:;,()]+|\s+|.)/y },
 ];
 
 const SHELL_RULES: Rule[] = [
-  { cls: 'tok-com', re: /^#[^\n]*/ },
-  { cls: 'tok-str', re: /^"(?:[^"\\]|\\.)*"|^'(?:[^'\\]|\\.)*'/, quotes: '"\'' },
-  { cls: 'tok-attr', re: /^\[[^\]]+\]|^[A-Za-z_][\w.-]*(?=\s*[=:])/ },
-  { cls: 'tok-num', re: /^\b(?:true|false|yes|no|on|off|\d+(?:\.\d+)?)\b/i },
-  { cls: 'tok-punc', re: /^[=:,[\]{}]/ },
-  { cls: 'tok-expr', re: /^[^\s#"'=:,[\]{}]+|^\s+|^./ },
+  { cls: 'tok-com', re: /#[^\n]*/y },
+  { cls: 'tok-str', re: /(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/y, quotes: '"\'' },
+  { cls: 'tok-attr', re: /(?:\[[^\]]+\]|[A-Za-z_][\w.-]*(?=\s*[=:]))/y },
+  { cls: 'tok-num', re: /\b(?:true|false|yes|no|on|off|\d+(?:\.\d+)?)\b/iy },
+  { cls: 'tok-punc', re: /[=:,[\]{}]/y },
+  { cls: 'tok-expr', re: /(?:[^\s#"'=:,[\]{}]+|\s+|.)/y },
 ];
 
 /** Which rules a source is read with. */
@@ -223,7 +225,7 @@ export function highlight(source: string, language: HighlightLanguage = 'softn')
                     ? MARKUP_RULES
                     : RULES;
   const out: React.ReactElement[] = [];
-  let rest = source;
+  const len = source.length;
   let pos = 0;
   // By quote character: no string it opens before this index closes. The
   // source is a publisher's, and a file of quotes that never close — every
@@ -247,14 +249,16 @@ export function highlight(source: string, language: HighlightLanguage = 'softn')
     pending = '';
   };
 
-  while (rest.length > 0) {
+  while (pos < len) {
     let matched = false;
+    const ch = source[pos];
     for (const rule of rules) {
-      const opensString = rule.quotes !== undefined && rule.quotes.includes(rest[0]);
-      if (opensString && pos < (unclosed.get(rest[0]) ?? 0)) continue;
-      const m = rule.re.exec(rest);
+      const opensString = rule.quotes !== undefined && rule.quotes.includes(ch);
+      if (opensString && pos < (unclosed.get(ch) ?? 0)) continue;
+      rule.re.lastIndex = pos;
+      const m = rule.re.exec(source);
       if (!m || m[0].length === 0) {
-        if (opensString) unclosed.set(rest[0], unclosedUntil(source, pos, rule.oneLine === true));
+        if (opensString) unclosed.set(ch, unclosedUntil(source, pos, rule.oneLine === true));
         continue;
       }
       if (rule.cls !== pendingCls) {
@@ -262,7 +266,6 @@ export function highlight(source: string, language: HighlightLanguage = 'softn')
         pendingCls = rule.cls;
       }
       pending += m[0];
-      rest = rest.slice(m[0].length);
       pos += m[0].length;
       matched = true;
       break;
@@ -274,8 +277,7 @@ export function highlight(source: string, language: HighlightLanguage = 'softn')
         flush();
         pendingCls = 'tok-expr';
       }
-      pending += rest[0];
-      rest = rest.slice(1);
+      pending += ch;
       pos += 1;
     }
   }
@@ -303,6 +305,7 @@ export function Code({
   label?: string;
   language?: HighlightLanguage;
 }): React.ReactElement {
+  const highlighted = React.useMemo(() => highlight(source, language), [source, language]);
   return (
     <pre
       className={className}
@@ -310,7 +313,7 @@ export function Code({
       role={label ? 'region' : undefined}
       aria-label={label}
     >
-      <code>{highlight(source, language)}</code>
+      <code>{highlighted}</code>
     </pre>
   );
 }

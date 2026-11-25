@@ -120,22 +120,80 @@ final class Pages
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $origin = self::origin();
 
-        $category = is_string($_GET['category'] ?? null) ? trim((string) $_GET['category']) : '';
+        $rawCat = is_string($_GET['category'] ?? null) ? strtolower(trim((string) $_GET['category'])) : '';
+        $subcategory = is_string($_GET['subcategory'] ?? null) ? strtolower(trim((string) $_GET['subcategory'])) : '';
+        if ($rawCat !== '' && str_contains($rawCat, '/')) {
+            [$catHead, $catTail] = explode('/', $rawCat, 2);
+            $category = trim($catHead);
+            if ($subcategory === '') $subcategory = trim($catTail);
+        } else {
+            $category = $rawCat;
+        }
+        if ($category !== '' && $subcategory === '') {
+            $alias = Categories::legacyAlias($category);
+            if ($alias !== null) {
+                [$category, $subcategory] = $alias;
+            }
+        }
         $query = is_string($_GET['q'] ?? null) ? trim((string) $_GET['q']) : '';
+        $tag = is_string($_GET['tag'] ?? null) ? strtolower(trim((string) $_GET['tag'])) : '';
+        $author = is_string($_GET['author'] ?? null) ? strtolower(trim((string) $_GET['author'])) : '';
+        $cap = is_string($_GET['cap'] ?? null) ? strtolower(trim((string) $_GET['cap'])) : '';
+        $hostingFilter = is_string($_GET['hosting'] ?? null) ? strtolower(trim((string) $_GET['hosting'])) : '';
+        $rawPage = $_GET['page'] ?? '1';
+        $page = is_string($rawPage) && ctype_digit($rawPage) ? max(1, min(1000, (int) $rawPage)) : 1;
+
         $rows = array_values(array_filter(Catalog::all(), static fn(array $r): bool => empty($r['hidden'])));
         usort($rows, static fn(array $a, array $b): int => ((int) ($b['runs'] ?? 0)) <=> ((int) ($a['runs'] ?? 0)) ?: ((int) ($b['updated_at'] ?? 0)) <=> ((int) ($a['updated_at'] ?? 0)));
 
         $catCounts = [];
         foreach ($rows as $r) {
-            $c = trim((string) ($r['category'] ?? ''));
+            $c = strtolower(trim((string) ($r['category'] ?? '')));
             if ($c !== '') $catCounts[$c] = ($catCounts[$c] ?? 0) + 1;
         }
         arsort($catCounts);
 
         $filtered = $rows;
         if ($category !== '') {
-            $catLower = strtolower($category);
-            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower((string) ($r['category'] ?? '')) === $catLower));
+            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower((string) ($r['category'] ?? '')) === $category));
+        }
+        if ($subcategory !== '') {
+            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower((string) ($r['subcategory'] ?? '')) === $subcategory));
+        }
+        if ($tag !== '') {
+            $filtered = array_values(array_filter($filtered, static function (array $r) use ($tag): bool {
+                $tags = json_decode((string) ($r['tags'] ?? '[]'), true);
+                if (!is_array($tags)) return false;
+                foreach ($tags as $t) {
+                    if (is_string($t) && strtolower($t) === $tag) return true;
+                }
+                return false;
+            }));
+        }
+        if ($author !== '') {
+            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower(trim((string) ($r['author'] ?? ''))) === $author));
+        }
+        if ($cap !== '') {
+            $filtered = array_values(array_filter($filtered, static function (array $r) use ($cap): bool {
+                $caps = json_decode((string) ($r['capabilities'] ?? '[]'), true);
+                $caps = is_array($caps) ? $caps : [];
+                return match ($cap) {
+                    'nonet' => !in_array('net', $caps, true),
+                    'none' => $caps === [],
+                    'worker' => ($r['execution'] ?? '') === 'worker',
+                    'backend' => is_string($r['backend_runtime'] ?? null) && $r['backend_runtime'] !== '',
+                    default => in_array($cap, $caps, true),
+                };
+            }));
+        }
+        if ($hostingFilter !== '') {
+            $filtered = array_values(array_filter($filtered, static function (array $r) use ($hostingFilter): bool {
+                $info = Apps::hostingInfo($r);
+                if ($hostingFilter === 'backend') {
+                    return is_string($r['backend_runtime'] ?? null) && $r['backend_runtime'] !== '';
+                }
+                return $info['mode'] === $hostingFilter;
+            }));
         }
         if ($query !== '') {
             $qLower = strtolower($query);
@@ -145,14 +203,34 @@ final class Pages
             ));
         }
 
+        $perPage = 48;
         $total = count($filtered);
-        $title = $category !== '' ? ucfirst($category) . ' Apps — SoftN' : 'Apps Directory — SoftN';
+        $totalPages = max(1, (int) ceil($total / $perPage));
+        $slice = $page <= $totalPages ? array_slice($filtered, ($page - 1) * $perPage, $perPage) : [];
+
+        $labelParts = [];
+        if ($category !== '') $labelParts[] = ucfirst($category);
+        if ($subcategory !== '') $labelParts[] = ucfirst(str_replace('-', ' ', $subcategory));
+        $headingLabel = $labelParts !== [] ? implode(' · ', $labelParts) . ' Apps' : 'SoftN Apps Directory';
+        $title = ($labelParts !== [] ? implode(' — ', $labelParts) . ' Apps' : 'Apps Directory')
+            . ($page > 1 ? " (Page $page)" : '') . ' — SoftN';
         $desc = $category !== ''
-            ? "Browse $total $category apps on SoftN. Run them directly in your browser sandbox, view their source, or remix them."
+            ? "Browse $total " . implode(' / ', $labelParts) . " apps on SoftN. Run them directly in your browser sandbox, view their source, or remix them."
             : "Browse $total apps built with SoftN: business tools, games, simulations, and interactive web apps that run safely in one .softn file.";
-        $canonicalPath = $category !== '' ? '/apps?category=' . rawurlencode($category) : '/apps';
+
+        $buildDirUrl = static function (int $targetPage) use ($category, $subcategory): string {
+            $params = [];
+            if ($category !== '') $params['category'] = $category;
+            if ($subcategory !== '') $params['subcategory'] = $subcategory;
+            if ($targetPage > 1) $params['page'] = (string) $targetPage;
+            return '/apps' . ($params !== [] ? '?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986) : '');
+        };
+        $canonicalPath = $buildDirUrl(min($page, $totalPages));
         $url = $origin === null ? null : $origin . $canonicalPath;
-        $robots = ($query !== '' || ($category !== '' && $total === 0)) ? 'noindex,follow' : 'index,follow,max-image-preview:large';
+        $hasDynamicFilter = $query !== '' || $tag !== '' || $author !== '' || $cap !== '' || $hostingFilter !== '';
+        $robots = ($hasDynamicFilter || $page > $totalPages || (($category !== '' || $subcategory !== '') && $total === 0))
+            ? 'noindex,follow'
+            : 'index,follow,max-image-preview:large';
 
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
         foreach ([
@@ -172,8 +250,8 @@ final class Pages
             : self::replaceOnce('#<link\s+rel="canonical"\s+href="[^"]*"#', fn() => '<link rel="canonical" href="' . $e($url) . '"', $html);
 
         $itemElements = [];
-        $pos = 1;
-        foreach (array_slice($filtered, 0, 48) as $r) {
+        $pos = ($page - 1) * $perPage + 1;
+        foreach ($slice as $r) {
             $slug = (string) ($r['slug'] ?? '');
             if ($slug === '' || !Catalog::validSlug($slug)) continue;
             $item = [
@@ -198,17 +276,49 @@ final class Pages
         if ($url !== null) $collectionLd['url'] = $url;
         $ldJson = json_encode($collectionLd, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 
+        $crumbsJson = '';
+        if ($origin !== null) {
+            $crumbItems = [
+                ['@type' => 'ListItem', 'position' => 1, 'name' => 'SoftN', 'item' => "$origin/"],
+                ['@type' => 'ListItem', 'position' => 2, 'name' => 'Apps', 'item' => "$origin/apps"],
+            ];
+            if ($category !== '') {
+                $crumbItems[] = ['@type' => 'ListItem', 'position' => 3, 'name' => ucfirst($category), 'item' => "$origin/apps?category=" . rawurlencode($category)];
+                if ($subcategory !== '') {
+                    $crumbItems[] = ['@type' => 'ListItem', 'position' => 4, 'name' => ucfirst(str_replace('-', ' ', $subcategory)), 'item' => "$origin/apps?category=" . rawurlencode($category) . '&subcategory=' . rawurlencode($subcategory)];
+                }
+            }
+            $encodedCrumbs = json_encode([
+                '@context' => 'https://schema.org',
+                '@type' => 'BreadcrumbList',
+                'itemListElement' => $crumbItems,
+            ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+            if (is_string($encodedCrumbs)) $crumbsJson = $encodedCrumbs;
+        }
+
+        $relLinks = '';
+        if (!$hasDynamicFilter && $origin !== null) {
+            if ($page > 1 && $page <= $totalPages) {
+                $relLinks .= '    <link rel="prev" href="' . $e($origin . $buildDirUrl($page - 1)) . '" />' . "\n";
+            }
+            if ($page < $totalPages) {
+                $relLinks .= '    <link rel="next" href="' . $e($origin . $buildDirUrl($page + 1)) . '" />' . "\n";
+            }
+        }
+
         $extraHead = '<meta name="robots" content="' . $e($robots) . '" />' . "\n"
             . '    <meta name="twitter:title" content="' . $e($title) . '" />' . "\n"
             . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . $relLinks
             . (is_string($ldJson) ? '    <script type="application/ld+json">' . $ldJson . '</script>' . "\n" : '')
+            . ($crumbsJson !== '' ? '    <script type="application/ld+json">' . $crumbsJson . '</script>' . "\n" : '')
             . '  </head>';
         $html = str_replace('</head>', $extraHead, $html);
 
         $lines = [
             '      <main id="boot" data-softn-ssr="directory">',
             '        <header>',
-            '          <h1>' . $e($category !== '' ? ucfirst($category) . ' Apps' : 'SoftN Apps Directory') . '</h1>',
+            '          <h1>' . $e($headingLabel) . '</h1>',
             '          <p>' . $e($desc) . '</p>',
         ];
         if ($catCounts !== []) {
@@ -220,7 +330,7 @@ final class Pages
         }
         $lines[] = '        </header>';
         $lines[] = '        <section aria-label="Published applications">';
-        foreach (array_slice($filtered, 0, 48) as $r) {
+        foreach ($slice as $r) {
             $slug = (string) ($r['slug'] ?? '');
             if ($slug === '' || !Catalog::validSlug($slug)) continue;
             $rName = (string) ($r['name'] ?? $slug);
@@ -234,6 +344,13 @@ final class Pages
             $lines[] = '          </article>';
         }
         $lines[] = '        </section>';
+        if ($totalPages > 1 && !$hasDynamicFilter) {
+            $pager = [];
+            if ($page > 1 && $page <= $totalPages) $pager[] = '<a rel="prev" href="' . $e($buildDirUrl($page - 1)) . '">Previous page</a>';
+            $pager[] = 'Page ' . $page . ' of ' . $totalPages;
+            if ($page < $totalPages) $pager[] = '<a rel="next" href="' . $e($buildDirUrl($page + 1)) . '">Next page</a>';
+            $lines[] = '        <nav aria-label="Pagination">' . implode(' · ', $pager) . '</nav>';
+        }
         $lines[] = '      </main>';
 
         $html = self::injectRootSsr($html, implode("\n", $lines));
@@ -405,7 +522,8 @@ final class Pages
             return self::problem($err->getMessage(), $err->status);
         }
         $html = (string) file_get_contents($shell);
-        $config = json_encode(self::playConfig($row, $ver, $forceLocal), JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        $cfg = self::playConfig($row, $ver, $forceLocal);
+        $config = json_encode($cfg, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($config === false) return Response::html('<!doctype html><title>SoftN</title><p>The app could not be described.</p>', 500);
         $name = (string) $row['name'];
         $desc = (string) ($row['description'] ?? '');
@@ -414,11 +532,14 @@ final class Pages
         // JSON_HEX_TAG has turned every < and > into \u003C and \u003E, so
         // nothing in a name or a description can close this element early.
         $origin = self::origin();
-        $prerender = self::prerenderFor($slug, $row, $ver);
+        $prerender = self::prerenderFor($slug, $row, $ver, is_string($cfg['sha256'] ?? null) ? $cfg['sha256'] : null);
         $image = ($origin ?? '') . "/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
         $canonicalUrl = $origin === null ? null : "$origin/app/$slug";
         $playPageUrl = $origin === null ? null : "$origin/play/$slug";
         $jsonLd = self::webAppJsonLd($row, $ver, $desc, $canonicalUrl, $origin !== null ? $image : null, $playPageUrl);
+        $preloadBundle = is_string($cfg['bundle'] ?? null) && $cfg['bundle'] !== ''
+            ? '    <link rel="preload" href="' . $e($cfg['bundle']) . '" as="fetch" crossorigin="anonymous" fetchpriority="high" />' . "\n"
+            : '';
         // The shell draws its boot screen dark, the `theme` above. An app
         // whose project declares light is drawn light whatever that theme
         // says, so its boot screen is too, rather than opening dark and
@@ -443,6 +564,7 @@ final class Pages
             . '    <meta name="twitter:image" content="' . $e($image) . '" />' . "\n"
             . '    <meta name="twitter:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
             . ($canonicalUrl === null ? '' : '    <link rel="canonical" href="' . $e($canonicalUrl) . '" />' . "\n")
+            . $preloadBundle
             . ($jsonLd !== '' ? '    <script type="application/ld+json">' . $jsonLd . '</script>' . "\n" : '')
             . $boot
             . '    <script type="application/json" id="softn-runtime-config">' . $config . '</script>' . "\n  </head>";
@@ -532,7 +654,7 @@ final class Pages
         }
         $lines[] = '</urlset>';
         $xml = implode("\n", $lines) . "\n";
-        return self::conditionalResponse($xml, 'application/xml; charset=utf-8', 'public, max-age=300');
+        return self::conditionalResponse($xml, 'application/xml; charset=utf-8', 'public, max-age=300, stale-while-revalidate=3600');
     }
 
     /**
@@ -567,10 +689,12 @@ final class Pages
      */
     public static function declaredSide(string $slug, array $ver): ?string
     {
-        $appDir = Catalog::path($slug);
-        $srcPath = $appDir . '/' . (string) ($ver['file'] ?? '');
-        $sha = (string) ($ver['sha256'] ?? '');
-        return Prerender::forBundle($srcPath, $sha, Config::dataDir() . '/page-cache', false)['themeMode'];
+        try {
+            $row = Apps::row($slug);
+        } catch (ApiError) {
+            return null;
+        }
+        return self::prerenderFor($slug, $row, $ver)['themeMode'];
     }
 
     /**
@@ -581,7 +705,7 @@ final class Pages
      * @param array<string, mixed> $ver
      * @return array{themeMode: ?string, previewHtml: string, sourceType: string, entryFile: ?string}
      */
-    private static function prerenderFor(string $slug, array $row, array $ver): array
+    private static function prerenderFor(string $slug, array $row, array $ver, ?string $resolvedClientSha = null): array
     {
         $hosting = Apps::hostingInfo($row);
         $appDir = Catalog::path($slug);
@@ -593,14 +717,33 @@ final class Pages
         if ($withhold) {
             $cachePath = $appDir . '/backend-cache/client-v' . (int) ($ver['version'] ?? 0) . '-' . substr($bundleSha, 0, 12) . '.softn';
             try {
-                $bundlePath = Bundle::clientBundlePath($srcPath, $cachePath);
-                $sha = Bundle::clientBundleSha256($srcPath, $cachePath, $bundleSha);
+                if ($resolvedClientSha !== null && is_file($cachePath)) {
+                    $bundlePath = $cachePath;
+                    $sha = $resolvedClientSha;
+                } else {
+                    $bundlePath = Bundle::clientBundlePath($srcPath, $cachePath);
+                    $sha = Bundle::clientBundleSha256($srcPath, $cachePath, $bundleSha);
+                }
             } catch (Throwable) {
                 return ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
             }
             return Prerender::forBundle($bundlePath, $sha, $pageCache, true, $snapshotPath, $bundleSha);
         }
         return Prerender::forBundle($srcPath, $bundleSha, $pageCache, false, $snapshotPath);
+    }
+
+    /** Map SoftN category IDs to valid Schema.org SoftwareApplication categories. */
+    private static function schemaCategory(string $category): string
+    {
+        return match (strtolower(trim($category))) {
+            'business', 'productivity' => 'BusinessApplication',
+            'games' => 'GameApplication',
+            'education', 'simulations' => 'EducationalApplication',
+            'creative' => 'MultimediaApplication',
+            'ai', 'experiments', 'demos' => 'DeveloperApplication',
+            'tools', 'other', '' => 'UtilitiesApplication',
+            default => 'UtilitiesApplication',
+        };
     }
 
     /**
@@ -617,7 +760,7 @@ final class Pages
             '@type' => 'WebApplication',
             'name' => (string) $row['name'],
             'description' => $desc,
-            'applicationCategory' => (string) ($row['category'] ?: 'UtilitiesApplication'),
+            'applicationCategory' => self::schemaCategory((string) ($row['category'] ?? '')),
             'operatingSystem' => 'Any',
             'offers' => ['@type' => 'Offer', 'price' => '0', 'priceCurrency' => 'USD'],
         ];
@@ -809,11 +952,15 @@ final class Pages
         ];
         $inm = $_SERVER['HTTP_IF_NONE_MATCH'] ?? null;
         if (is_string($inm) && $inm !== '') {
-            foreach (explode(',', $inm) as $cand) {
-                $cand = trim($cand);
-                if (str_starts_with($cand, 'W/')) $cand = substr($cand, 2);
-                if ($cand === '*' || $cand === $etag) {
-                    return Response::notModified($headers);
+            if (trim($inm) === '*') {
+                return Response::notModified($headers);
+            }
+            if (preg_match_all('/"[^"]*"/', $inm, $m) > 0) {
+                foreach ($m[0] as $cand) {
+                    $norm = preg_replace('/-(?:gzip|br|zstd|deflate)"$/i', '"', $cand) ?? $cand;
+                    if ($cand === $etag || $norm === $etag) {
+                        return Response::notModified($headers);
+                    }
                 }
             }
         }

@@ -32,6 +32,8 @@ export const RUNTIME_BLOB_URL = /^blob:https:\/\/app\.softn\.local\/([\w-]{1,64}
 const MAX_RUNTIME_BLOBS = 512;
 const MAX_RUNTIME_BLOB_BYTES = 64 * 1024 * 1024;
 
+const ARCHIVE_TEXT_DECODER = new TextDecoder();
+
 const TEXT_EXTENSIONS = new Set([
   'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'mts', 'tsx', 'jsx', 'vue',
   'py', 'php', 'phtml', 'inc', 'tpl', 'rs', 'toml', 'sql', 'htaccess',
@@ -362,10 +364,9 @@ export class ContainerArchive {
       const normalizedList = rawNames.map((n) => (rawPrefix && n.startsWith(rawPrefix) ? n.slice(rawPrefix.length) : n)).filter(Boolean);
       const manifestRawName = rawNames.find((n) => (rawPrefix && n.startsWith(rawPrefix) ? n.slice(rawPrefix.length) : n) === 'manifest.json');
       const peekManifestBytes = manifestRawName ? zipArchive.read(manifestRawName) : null;
-      const keepBackend = hasEmbeddedContainerBackend(peekManifestBytes ? new TextDecoder().decode(peekManifestBytes) : null, normalizedList);
+      const keepBackend = hasEmbeddedContainerBackend(peekManifestBytes ? ARCHIVE_TEXT_DECODER.decode(peekManifestBytes) : null, normalizedList);
       const normalizedNames = new Set<string>();
       const initialText = new Map<string, string>();
-      const decoder = new TextDecoder();
 
       for (const rawName of rawNames) {
         const norm = rawPrefix && rawName.startsWith(rawPrefix) ? rawName.slice(rawPrefix.length) : rawName;
@@ -374,7 +375,7 @@ export class ContainerArchive {
         if (isTextPath(norm)) {
           const entryBytes = zipArchive.read(rawName);
           if (entryBytes) {
-            initialText.set(norm, decoder.decode(entryBytes));
+            initialText.set(norm, ARCHIVE_TEXT_DECODER.decode(entryBytes));
             zipArchive.forget(rawName);
           }
         }

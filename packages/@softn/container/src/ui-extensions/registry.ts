@@ -41,6 +41,7 @@ export function ensureUiExtension(tagName: string, runtimeUrl = '/runtime/'): Pr
       ? registered()
       : loadBuiltinExtension(lower, runtimeUrl)
   ).catch((err) => {
+    inFlight.delete(lower);
     console.warn(`[SoftN] Could not load UI extension <${lower}>:`, err);
   });
 

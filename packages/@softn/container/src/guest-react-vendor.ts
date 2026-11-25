@@ -490,8 +490,9 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
           if (match) used.push(match);
         }
         // Unmount unused old records before inserting/moving
+        var usedSet = new Set(used);
         for (var ui = 0; ui < prevList.length; ui++) {
-          if (used.indexOf(prevList[ui]) < 0) unmountRec(prevList[ui]);
+          if (!usedSet.has(prevList[ui])) unmountRec(prevList[ui]);
         }
         // Reconcile right-to-left so cursor is always the exact beforeNode!
         var cursor = beforeNode || null;

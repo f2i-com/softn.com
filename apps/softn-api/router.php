@@ -103,6 +103,8 @@ if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts
             'softn' => 'application/octet-stream', 'wasm' => 'application/wasm', 'webmanifest' => 'application/manifest+json',
             'mjs' => 'text/javascript', 'js' => 'text/javascript', 'css' => 'text/css', 'json' => 'application/json',
             'map' => 'application/json', 'html' => 'text/html; charset=utf-8', 'txt' => 'text/plain; charset=utf-8',
+            'xml' => 'application/xml; charset=utf-8', 'md' => 'text/markdown; charset=utf-8',
+            'glb' => 'model/gltf-binary', 'gltf' => 'model/gltf+json', 'bin' => 'application/octet-stream',
             'svg' => 'image/svg+xml', 'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'webp' => 'image/webp',
             'gif' => 'image/gif', 'ico' => 'image/x-icon', 'woff' => 'font/woff', 'woff2' => 'font/woff2', 'ttf' => 'font/ttf',
             'wav' => 'audio/wav', 'mp3' => 'audio/mpeg', 'ogg' => 'audio/ogg', 'mp4' => 'video/mp4', 'webm' => 'video/webm',
@@ -121,7 +123,8 @@ if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts
         if (!str_ends_with($path, '/')) {
             // One leading slash: `//evil.example/..`, which Windows' realpath()
             // folds into a folder here, is a link to another site in Location.
-            header('Location: /' . ltrim($path, '/\\') . '/', true, 308);
+            $qs = (string) ($_SERVER['QUERY_STRING'] ?? '');
+            header('Location: /' . ltrim($path, '/\\') . '/' . ($qs !== '' ? '?' . $qs : ''), true, 308);
             return true;
         }
         header('Content-Type: text/html; charset=utf-8');
