@@ -218,13 +218,35 @@ function isEmbeddingHostOrigin(parsed: URL, normalizedHost: string): boolean {
   }
 }
 
-/** Check whether an external URL targets the embedding host's own hostname (or exact origin when `originOnly` is true). */
+function isLoopbackHostname(normalizedHost: string): boolean {
+  if (normalizedHost === 'localhost' || normalizedHost.endsWith('.localhost')) return true;
+  const v4 = parseIpv4Octets(normalizedHost);
+  if (v4) return v4[0] === 127;
+  const v6 = parseIpv6Groups(normalizedHost);
+  if (v6) {
+    if (v6[0] === 0 && v6[1] === 0 && v6[2] === 0 && v6[3] === 0 && v6[4] === 0 && v6[5] === 0 && v6[6] === 0 && v6[7] === 1) {
+      return true;
+    }
+    const embedded = embeddedIpv4FromIpv6(v6);
+    return embedded ? embedded[0] === 127 : false;
+  }
+  return false;
+}
+
+/**
+ * Check whether an external URL targets the embedding host.
+ * Always blocks exact same-origin (even when explicitly allowlisted). For non-loopback
+ * hosts, passive subresources also block other ports/schemes of the embedding hostname;
+ * on loopback, distinct ports are separate local origins and still require explicit host
+ * allowlisting and user consent.
+ */
 function targetsEmbeddingHost(rawUrl: string, originOnly = false): boolean {
   try {
     const parsed = new URL(rawUrl);
     const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, '');
     if (!hostname) return true;
-    return originOnly ? isEmbeddingHostOrigin(parsed, hostname) : isEmbeddingHostHostname(hostname);
+    if (originOnly || isLoopbackHostname(hostname)) return isEmbeddingHostOrigin(parsed, hostname);
+    return isEmbeddingHostHostname(hostname);
   } catch {
     return true;
   }

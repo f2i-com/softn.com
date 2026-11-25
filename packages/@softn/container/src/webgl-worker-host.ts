@@ -13,8 +13,7 @@
  * - Cleanly releases GPU contexts (`WEBGL_lose_context`) on canvas sweep or container dispose.
  */
 
-import { base64ToBytes, bytesToBase64 } from './archive';
-import { canvasSide } from './host-policy';
+import { base64ToBytes, bytesToBase64, canvasSide } from './worker-gpu-utils';
 
 const MAX_WEBGL_CONTEXTS = 16;
 const MAX_WEBGL_HANDLES = 32_768;

@@ -85,8 +85,9 @@ const IN_PLACE_PAGE: usize = 4096;
 const MAX_CALL_MESSAGE_BYTES: usize = 2 * 1024 * 1024 + 24_576;
 const MAX_OUTCOME_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
-/// A `db.query` call: the operation and its arguments as JSON, answered with JSON.
-pub type CallHandler = Box<dyn FnMut(&str, &str) -> String>;
+/// A `db.query` call: the operation, its arguments as JSON (empty when oversized),
+/// and the raw argument byte length reported by the guest, answered with JSON.
+pub type CallHandler = Box<dyn FnMut(&str, &str, usize) -> String>;
 
 thread_local! {
     /// The job's call handler. It holds the request's database connection,
@@ -257,7 +258,26 @@ fn ask(caller: &mut Caller<'_, State>, kind: i32, ptr: i32, len: i32) -> Option<
         2 => MAX_OUTCOME_MESSAGE_BYTES,
         _ => return None,
     };
-    let len = usize::try_from(len).ok().filter(|n| *n <= max_len)?;
+    let len = usize::try_from(len).ok()?;
+    // For oversized `db.query` host calls (`kind == 1`), read only the short operation
+    // prefix (<= 128 bytes) without allocating the oversized argument buffer so `host_calls`
+    // can still enforce capability checks and return the exact byte-limit error message.
+    if kind == 1 && len > max_len {
+        let memory = caller.get_export("memory").and_then(|e| e.into_memory())?;
+        let prefix_len = len.min(128);
+        let mut prefix = vec![0u8; prefix_len];
+        memory.read(&*caller, ptr as u32 as usize, &mut prefix).ok()?;
+        let split = prefix.iter().position(|b| *b == 0)?;
+        let op = std::str::from_utf8(&prefix[..split]).ok()?;
+        let raw_args_len = len.saturating_sub(split + 1);
+        let answer = CALL.with(|slot| slot.borrow_mut().as_mut().map(|call| call(op, "", raw_args_len)))?.into_bytes();
+        let length = i32::try_from(answer.len()).ok()?;
+        caller.data_mut().answer = answer;
+        return Some(length);
+    }
+    if len > max_len {
+        return None;
+    }
     let mut message = Vec::new();
     if len > 0 {
         let memory = caller.get_export("memory").and_then(|e| e.into_memory())?;
@@ -271,7 +291,7 @@ fn ask(caller: &mut Caller<'_, State>, kind: i32, ptr: i32, len: i32) -> Option<
             let split = message.iter().position(|b| *b == 0)?;
             let op = std::str::from_utf8(&message[..split]).ok()?;
             let args = std::str::from_utf8(&message[split + 1..]).ok()?;
-            CALL.with(|slot| slot.borrow_mut().as_mut().map(|call| call(op, args)))?.into_bytes()
+            CALL.with(|slot| slot.borrow_mut().as_mut().map(|call| call(op, args, args.len())))?.into_bytes()
         }
         2 => {
             state.outcome = Some(message);
@@ -291,7 +311,7 @@ mod tests {
     /// A validate job: compile `source` (its top level runs) and look for `ping`.
     fn validate(guest: &Guest, source: &str, heap: u64) -> Value {
         let job = serde_json::json!({ "mode": "validate", "source": source, "config": "{}", "handlers": ["ping"], "steps": 1_000_000, "heap": heap, "grant": false });
-        guest.run(&job, Box::new(|_, _| "null".into())).expect("the guest answers")
+        guest.run(&job, Box::new(|_, _, _| "null".into())).expect("the guest answers")
     }
 
     #[test]

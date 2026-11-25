@@ -283,12 +283,15 @@ describe('what a drawn component is given', () => {
   });
 
   it('takes the markup of a custom icon without what the markup would fetch', () => {
-    const icon = element('Icon', { svg: '<svg viewBox="0 0 8 8"><use href="https://example.com/sprite.svg#a"/><image href="https://example.com/p.png"/><circle r="4"/></svg>' });
+    const icon = element('Icon', {
+      svg: '<svg viewBox="0 0 8 8"><use href="https://example.com/sprite.svg#a"/><use href="#local-shape"/><image href="https://example.com/p.png"/><circle r="4"/></svg>',
+    });
     const given = drawnProps(icon, meta('Icon'));
     expect(String(given.svg)).toContain('<circle');
-    // The sanitiser keeps what was withheld under a name that fetches nothing.
-    expect(String(given.svg)).not.toMatch(/\s(xlink:)?href=|<image/);
-    expect(String(given.svg)).toContain('data-softn-withheld-href');
+    expect(String(given.svg)).toContain('href="#local-shape"');
+    // External <use href> and <image> fetches are stripped outright so no remote SVG/image can load.
+    expect(String(given.svg)).not.toContain('https://example.com');
+    expect(String(given.svg)).not.toMatch(/<image/);
   });
 
   // A new Dashboard is a SmartStats, a SmartCards and a SmartList with example rows written

@@ -14,7 +14,7 @@ export const ViewportTileMap=React.memo(function ViewportTileMap(props:SizedTile
  const {mapWidth,mapHeight,tileSize=32,scale=1,src,className,style}=props;
  React.useEffect(()=>{
   let live=true;image.current=null;dirty.current=true;setReady(false);
-  if(!src||!isSafeUrl(src))return;
+  if(!src||!isSafeUrl(src,true))return;
   const img=new window.Image();img.crossOrigin='anonymous';
   img.onload=()=>{if(!live)return;
    // Rasterise a vector tileset once, rather than once per tile on every pan.

@@ -69,8 +69,10 @@ export function Image({
   // displayed — so neither can be handed to the DOM unchecked. A rejected URL
   // becomes undefined and renders the same "Failed to load" panel a broken
   // image does.
-  const safeSrc = src && isSafeUrl(src) ? src : undefined;
-  const safeFallbackSrc = fallbackSrc && isSafeUrl(fallbackSrc) ? fallbackSrc : undefined;
+  // `<Image>` only renders into a scriptless `<img>` sink, so bundled
+  // `data:image/svg+xml` assets (such as Studio's preview asset URLs) are safe.
+  const safeSrc = src && isSafeUrl(src, true) ? src : undefined;
+  const safeFallbackSrc = fallbackSrc && isSafeUrl(fallbackSrc, true) ? fallbackSrc : undefined;
 
   // The withholding itself is the renderer's: it strips a remote src from
   // every URL-bearing prop before any component is constructed, which is the

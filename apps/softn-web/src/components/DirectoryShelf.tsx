@@ -58,7 +58,7 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
               Business apps
             </a>
             <a className="softn-explore-pill" href={DEFAULT_URLS.apps}>
-              Browse all <span aria-hidden="true">↗</span>
+              Browse all apps <span aria-hidden="true">↗</span>
             </a>
           </div>
         )}

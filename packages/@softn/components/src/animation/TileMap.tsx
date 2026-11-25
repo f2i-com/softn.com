@@ -100,7 +100,7 @@ function LegacyTileMap({
   React.useEffect(() => {
     // The tileset is named by the bundle, and this assigns it to a real
     // `HTMLImageElement`, so it needs the same scheme check an `<img src>` gets.
-    if (!src || !isSafeUrl(src)) {
+    if (!src || !isSafeUrl(src, true)) {
       // No tileset, or one refused: the map is drawn with none. The last one
       // was kept, and the map went on painting from a tileset the page had
       // taken away.

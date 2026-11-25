@@ -125,29 +125,37 @@ final class Seed
         $indexPath = "$demos/index.json";
         if (!is_file($indexPath)) return;
 
-        // Fast steady-state short-circuit: verify index.json, config.json, thumbs dir,
-        // and each demo file's mtime+size against the cached stamp in `data/seeded` before
-        // booting the catalogue, acquiring `seed.lock`, or touching disk.
-        if ($from === null && is_file($flag) && is_dir("$dir/apps")) {
+        // Fast steady-state short-circuit: verify index.json, config.json, cache/seed.json,
+        // thumbs dir, and each demo bundle/thumbnail's mtime+size against the cached stamp in
+        // `data/seeded` before booting the catalogue, acquiring `seed.lock`, or touching disk.
+        if ($from === null && is_file($flag) && is_file("$dir/cache/seed.json") && is_dir("$dir/apps")) {
             $rawFlag = @file_get_contents($flag);
             $stamp = is_string($rawFlag) && str_starts_with($rawFlag, '{') ? json_decode($rawFlag, true) : null;
-            if (is_array($stamp) && ($stamp['v'] ?? 0) === 2 && ($stamp['demos'] ?? '') === $demos) {
+            if (is_array($stamp) && ($stamp['v'] ?? 0) === 3 && ($stamp['demos'] ?? '') === $demos) {
+                clearstatcache(true, "$dir/config.json");
+                clearstatcache(true, $indexPath);
+                clearstatcache(true, "$demos/thumbs");
                 $cfgStat = @stat("$dir/config.json");
                 $idxStat = @stat($indexPath);
                 $thMtime = is_dir("$demos/thumbs") ? (@filemtime("$demos/thumbs") ?: 0) : 0;
                 $cfgSig = is_array($cfgStat) ? ($cfgStat['mtime'] . ':' . $cfgStat['size']) : '';
                 $idxSig = is_array($idxStat) ? ($idxStat['mtime'] . ':' . $idxStat['size']) : '';
+                $seedCacheHash = @md5_file("$dir/cache/seed.json") ?: '';
                 if (
                     $cfgSig === ($stamp['cfg'] ?? null)
                     && $idxSig === ($stamp['idx'] ?? null)
                     && $thMtime === ($stamp['thumbs'] ?? null)
+                    && $seedCacheHash !== ''
+                    && $seedCacheHash === ($stamp['seedCache'] ?? null)
                     && is_array($stamp['files'] ?? null)
                 ) {
                     $allMatch = true;
                     foreach ($stamp['files'] as $fname => $sig) {
                         if (!is_string($fname) || !is_string($sig)) { $allMatch = false; break; }
-                        $st = @stat("$demos/$fname");
-                        if (!is_array($st) || ($st['mtime'] . ':' . $st['size']) !== $sig) {
+                        $target = "$demos/$fname";
+                        clearstatcache(true, $target);
+                        $st = @stat($target);
+                        if (!is_array($st) || ($st['mtime'] . ':' . $st['size'] . ':' . $st['ctime']) !== $sig) {
                             $allMatch = false;
                             break;
                         }
@@ -284,6 +292,7 @@ final class Seed
                 }
 
                 try {
+                    self::sha($file);
                     $created = Apps::create($file, $currentMeta, 'seed');
                     self::refreshThumbnail($created['app']['slug'], $demos, basename($entry['file']));
                 } catch (Throwable $e) {
@@ -308,21 +317,37 @@ final class Seed
                     error_log("softn-api: could not retire seed app $slug: " . $e->getMessage());
                 }
             }
+            self::saveStamps($dir);
             $fileSigs = [];
             foreach ($index as $entry) {
                 if (!is_array($entry) || !is_string($entry['file'] ?? null)) continue;
                 $bn = basename($entry['file']);
+                clearstatcache(true, "$demos/$bn");
                 $st = @stat("$demos/$bn");
-                if (is_array($st)) $fileSigs[$bn] = $st['mtime'] . ':' . $st['size'];
+                if (is_array($st)) $fileSigs[$bn] = $st['mtime'] . ':' . $st['size'] . ':' . $st['ctime'];
+                $base = (string) preg_replace('/\.softn$/', '', $bn);
+                foreach (['webp', 'png', 'jpg'] as $ext) {
+                    $relThumb = "thumbs/$base.$ext";
+                    $absThumb = "$demos/$relThumb";
+                    if (!is_file($absThumb)) continue;
+                    clearstatcache(true, $absThumb);
+                    $tst = @stat($absThumb);
+                    if (is_array($tst)) $fileSigs[$relThumb] = $tst['mtime'] . ':' . $tst['size'] . ':' . $tst['ctime'];
+                }
             }
+            clearstatcache(true, "$dir/config.json");
+            clearstatcache(true, $indexPath);
+            clearstatcache(true, "$demos/thumbs");
             $cfgStat = @stat("$dir/config.json");
             $idxStat = @stat($indexPath);
+            $seedCacheHash = is_file("$dir/cache/seed.json") ? (@md5_file("$dir/cache/seed.json") ?: '') : '';
             $stampData = json_encode([
-                'v' => 2,
+                'v' => 3,
                 'demos' => $demos,
                 'cfg' => is_array($cfgStat) ? ($cfgStat['mtime'] . ':' . $cfgStat['size']) : '',
                 'idx' => is_array($idxStat) ? ($idxStat['mtime'] . ':' . $idxStat['size']) : '',
                 'thumbs' => is_dir("$demos/thumbs") ? (@filemtime("$demos/thumbs") ?: 0) : 0,
+                'seedCache' => $seedCacheHash,
                 'files' => $fileSigs,
             ], JSON_UNESCAPED_SLASHES);
             if (is_string($stampData)) {

@@ -353,12 +353,9 @@ export function Launcher({
                           </span>
                           <span style={{ minWidth: 0 }}>
                             <span className="softn-launcher-card-name">{app.name}</span>
-                            <span
-                              id={`${describedBy}-meta`}
-                              className="softn-launcher-card-meta"
-                              title={engines.length > 0 ? `Installed runtime: ${engines.join(' + ')}` : undefined}
-                            >
-                              v{app.version}{app.format === 'web' && ' · Web app'}{app.format === 'classic' && ' · Classic'}
+                            <span id={`${describedBy}-meta`} className="softn-launcher-card-meta">
+                              v{app.version}{app.format === 'web' && ' · Web app'}{app.format === 'classic' && ' · Classic SoftN'}
+                              {engines.length > 0 && ` · ${engines.join(' + ')}`}
                             </span>
                           </span>
                         </span>

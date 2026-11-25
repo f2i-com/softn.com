@@ -248,7 +248,7 @@ export function Sprite({
     height: frameHeight,
     // Interpolating the sheet URL into a CSS value is the same trust decision
     // as putting it in an `<img src>`, and the sheet is named by the bundle.
-    backgroundImage: sheet && isSafeUrl(sheet) ? `url("${sheet.replace(/["\\]/g, '\\$&')}")` : undefined,
+    backgroundImage: sheet && isSafeUrl(sheet, true) ? `url("${sheet.replace(/["\\\r\n\f]/g, '\\$&')}")` : undefined,
     backgroundPosition: `-${initialX}px -${initialY}px`,
     backgroundRepeat: 'no-repeat',
     imageRendering: 'pixelated',

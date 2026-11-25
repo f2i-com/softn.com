@@ -787,7 +787,14 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       const name = attr.name.toLowerCase();
       if (!name.startsWith(WITHHELD_PREFIX)) continue;
       const original = name.slice(WITHHELD_PREFIX.length);
-      if (!URL_ATTRIBUTES.has(original) || !isSafeUrl(attr.value)) {
+      const allowSvgData =
+        (tag === 'img' && original === 'src') ||
+        (tag === 'image' && (original === 'href' || original === 'xlink:href'));
+      if (
+        !URL_ATTRIBUTES.has(original) ||
+        (tag === 'use' && (original === 'href' || original === 'xlink:href')) ||
+        !isSafeUrl(attr.value, allowSvgData)
+      ) {
         node.removeAttribute(attr.name);
         continue;
       }

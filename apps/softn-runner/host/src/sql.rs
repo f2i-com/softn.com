@@ -406,15 +406,7 @@ impl Sql {
         let deadline = crate::soft_deadline();
         let result = (|| {
             self.install(conn, writes, &wrote)?;
-            let mut ticks: u64 = 0;
-            conn.progress_handler(
-                1000,
-                Some(move || {
-                    ticks += 1;
-                    ticks > 10_000 || std::time::Instant::now() >= deadline
-                }),
-            )
-            .map_err(HostError::sqlite)?;
+            conn.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline)).map_err(HostError::sqlite)?;
             let mut statement = conn.prepare(text).map_err(HostError::sqlite)?;
             if kind == "execute" {
                 if !wrote.load(Ordering::Relaxed) || statement.column_count() != 0 {

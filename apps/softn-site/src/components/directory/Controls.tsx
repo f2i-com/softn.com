@@ -48,7 +48,7 @@ export function SearchBox({
   initial = '',
   autoFocus = false,
   onSearch,
-  placeholder = 'Search apps, games, tools…',
+  placeholder = 'Search apps — games, tools, anything',
 }: {
   initial?: string;
   autoFocus?: boolean;

@@ -1200,18 +1200,19 @@ describe('SoftN v2 Round-2 Security Audit Regressions', () => {
       )
     ).toBe(false);
 
-    // 3. Passive HTML/CSS subresource fetches to the embedding host are blocked even when allowed_hosts names it
-    const hostHostname = window.location.hostname || 'localhost';
+    // 3. Passive HTML/CSS subresource fetches to the embedding origin are blocked even when allowed_hosts names it
+    const hostOrigin = window.location.origin && window.location.origin !== 'null' ? window.location.origin : 'http://localhost';
+    const hostHostname = new URL(hostOrigin).hostname || 'localhost';
     const archive = await ContainerArchive.open({
       'manifest.json': JSON.stringify({ name: 'Passive Host Test', main: 'index.html' }),
       'index.html': '<!doctype html><p>hi</p>',
     });
     const hostPerms = { permissions: { net: { enabled: true, allow_http: true, allowed_hosts: [hostHostname] } } };
     expect(
-      sanitizeHostAssetUrl('src', `http://${hostHostname}/api/admin`, 'img', 'index.html', archive, hostPerms, true)
+      sanitizeHostAssetUrl('src', `${hostOrigin}/api/admin`, 'img', 'index.html', archive, hostPerms, true)
     ).toBeNull();
     expect(
-      sanitizeContainerCss(`div { background: url(http://${hostHostname}/api/admin); }`, 'index.html', archive, hostPerms, true)
+      sanitizeContainerCss(`div { background: url(${hostOrigin}/api/admin); }`, 'index.html', archive, hostPerms, true)
     ).not.toContain('/api/admin');
     archive.dispose();
 

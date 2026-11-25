@@ -245,7 +245,7 @@ impl Host {
             });
             let (db, sql, crypto, capabilities, writable) = (Rc::clone(&self.db), Rc::clone(&self.sql), Rc::clone(&self.crypto), self.capabilities.clone(), route.writable);
             let calls = Rc::clone(&state);
-            let answer = guest.run(&job, Box::new(move |op: &str, args_json: &str| -> String {
+            let answer = guest.run(&job, Box::new(move |op: &str, args_json: &str, raw_args_len: usize| -> String {
                 // A fault in a call (a library panicking on input the script chose) is that
                 // call's failure, caught here before it could cross the guest's frames.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Value, HostError> {
@@ -273,7 +273,7 @@ impl Host {
                     if call_state.calls > 512 || !known || !capabilities.iter().any(|c| c == family) {
                         return Err(denied());
                     }
-                    if args_json.len() > MAX_CALL_BYTES {
+                    if raw_args_len > MAX_CALL_BYTES || args_json.len() > MAX_CALL_BYTES {
                         return Err(HostError::own(format!("Host call arguments exceed {MAX_CALL_BYTES} bytes: {}", js::slice_units(op, 40))));
                     }
                     if !writable && op == "sql.execute" {

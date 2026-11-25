@@ -343,7 +343,7 @@ fn handle(
     let handlers: Vec<Value> = declared.iter().map(|r| r.get("handler").cloned().unwrap_or(Value::Null)).collect();
     let validation = guest.run(
         &serde_json::json!({ "mode": "validate", "source": source, "config": script_config(&app_config, development, photos_granted), "handlers": handlers, "steps": STEPS, "heap": crate::limits::limits().heap, "grant": false }),
-        Box::new(|_, _| "null".into()),
+        Box::new(|_, _, _| "null".into()),
     )?;
     if validation.get("ok") != Some(&Value::Bool(true)) {
         return Err(HostError::Library(validation.get("error").and_then(Value::as_str).unwrap_or("the logic did not validate").into()));

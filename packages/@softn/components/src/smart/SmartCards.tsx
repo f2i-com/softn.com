@@ -359,7 +359,7 @@ export function SmartCards<T extends Record<string, unknown>>({
             const rawImage = image ? getFieldValue(item, image) : null;
             const imageValue =
               typeof rawImage === 'string' &&
-              isSafeUrl(rawImage) &&
+              isSafeUrl(rawImage, true) &&
               describeMarkupEgress(rawImage, egress).allowed
                 ? rawImage
                 : null;
@@ -392,7 +392,7 @@ export function SmartCards<T extends Record<string, unknown>>({
                         height: '2.5rem',
                         borderRadius: 'var(--radius-full, 9999px)',
                         background: imageValue
-                          ? `url("${imageValue.replace(/["\\]/g, '\\$&')}") center/cover`
+                          ? `url("${imageValue.replace(/["\\\r\n\f]/g, '\\$&')}") center/cover`
                           : 'linear-gradient(135deg, var(--color-primary, #6366f1), var(--color-primary-600, #4f46e5))',
                         display: 'flex',
                         alignItems: 'center',

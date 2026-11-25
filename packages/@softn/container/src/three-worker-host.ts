@@ -11,8 +11,7 @@
  * mirrored scene graph, accelerating high-poly terrain picking by >200x vs the guest VM.
  */
 
-import { base64ToBytes, bytesToBase64 } from './archive';
-import { canvasSide } from './host-policy';
+import { base64ToBytes, bytesToBase64, canvasSide } from './worker-gpu-utils';
 import type { WebGLExecResolvers, WebGLFramePayload } from './webgl-worker-host';
 
 export interface ThreeFrameResolvers extends WebGLExecResolvers {

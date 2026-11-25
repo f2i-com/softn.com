@@ -219,7 +219,7 @@ function AvatarFace({
   // A profile picture URL usually arrives with the record it belongs to, so it
   // is bundle-supplied. Rejecting it here falls back to initials rather than
   // handing the scheme to the DOM.
-  const imgSrc = src && isSafeUrl(src) ? src : undefined;
+  const imgSrc = src && isSafeUrl(src, true) ? src : undefined;
   const showInitials = !imgSrc || failedSrc === imgSrc;
 
   const borderRadius = shape === 'circle' ? '50%' : shape === 'rounded' ? '0.5rem' : '0.25rem';
