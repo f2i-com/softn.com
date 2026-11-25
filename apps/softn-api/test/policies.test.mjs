@@ -348,7 +348,7 @@ $r = Request::fromGlobals();
 try { echo json_encode(['status' => 200, 'result' => Storage::run($r, ${JSON.stringify(app)}, $job['body'])]); }
 catch (ApiError $e) { echo json_encode(['status' => $e->status, 'error' => $e->getMessage()]); }`
     );
-    const p = spawn('php', ['-d', 'error_log=', file, s.dataDir], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn('php', ['-d', 'display_errors=0', '-d', 'error_log=', file, s.dataDir], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     p.stdout.on('data', (d) => (out += d));

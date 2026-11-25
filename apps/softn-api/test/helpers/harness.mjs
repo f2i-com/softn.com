@@ -130,26 +130,47 @@ export function pngDeclaring(width, height) {
  * process: a server that exits before its health check answered never
  * counts as up, and a fresh port is tried.
  */
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
+// Ports above 1023 that WHATWG Fetch (and Node's undici `fetch`) unconditionally
+// block as unsafe; e.g. 6000 (X11) and 10080 (Amanda). Kernel ephemeral ports
+// normally start at 32768+, but guard explicitly in case a host uses a lower range.
+const FETCH_BAD_PORTS = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
+
+export async function freePort() {
+  const held = [];
+  try {
+    for (let i = 0; i < 32; i++) {
+      const probe = net.createServer();
+      await new Promise((resolve, reject) => {
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', resolve);
+      });
       const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
-  });
+      if (!FETCH_BAD_PORTS.has(port)) {
+        await new Promise((resolve) => probe.close(resolve));
+        return port;
+      }
+      held.push(probe);
+    }
+    throw new Error('could not allocate a fetch-safe ephemeral port');
+  } finally {
+    await Promise.all(held.map((p) => new Promise((resolve) => p.close(resolve))));
+  }
 }
 
-export async function waitFor(url, ms = 20000) {
+export async function waitFor(url, ms = 20000, signal = undefined) {
   const until = Date.now() + ms;
   while (Date.now() < until) {
+    if (signal?.aborted) throw new Error(`${url} aborted`);
     try {
-      const r = await fetch(url);
+      const r = await fetch(url, signal ? { signal } : undefined);
       if (r.ok || r.status === 503) return r;
     } catch {
       /* not up yet */
     }
+    if (signal?.aborted) throw new Error(`${url} aborted`);
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error(`${url} did not come up`);
@@ -232,9 +253,18 @@ export async function startServer({ config = {}, ini = {}, env = {}, demos = fal
         if (/Failed to listen|Address already in use/i.test(line)) bindFailure = line.trim();
       }
     });
-    const exited = new Promise((resolve) => server.once('exit', (code) => resolve(code ?? -1)));
-    const outcome = await Promise.race([waitFor(`${base}/api/health`).then(() => 'up'), exited.then((code) => `exited ${code}`)]);
+    const probeAbort = new AbortController();
+    const exited = new Promise((resolve) => server.once('exit', (code) => {
+      probeAbort.abort();
+      resolve(code ?? -1);
+    }));
+    const outcome = await Promise.race([
+      waitFor(`${base}/api/health`, 20000, probeAbort.signal).then(() => 'up', () => 'down'),
+      exited.then((code) => `exited ${code}`),
+    ]);
+    probeAbort.abort();
     if (outcome === 'up' && server.exitCode === null) break;
+    server.kill();
     if (attempt >= 5) throw new Error(`php -S could not bind after ${attempt} attempts (${bindFailure || outcome})`);
   }
   const cfg = JSON.parse(fs.readFileSync(path.join(root, 'data/config.json'), 'utf8'));

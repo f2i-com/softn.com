@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { HAVE_PHP, skip, copyDir } from './helpers/harness.mjs';
+import { HAVE_PHP, skip, copyDir, freePort, waitFor } from './helpers/harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const apiDir = path.resolve(here, '..');
@@ -33,20 +33,6 @@ let root = '';
 let server = null;
 let base = '';
 let adminKey = '';
-
-async function waitFor(url, ms = 15000) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    try {
-      const r = await fetch(url);
-      if (r.ok || r.status === 503) return r;
-    } catch {
-      /* booting */
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error(`${url} did not come up`);
-}
 
 async function api(method, route, { body, headers = {}, raw } = {}) {
   const init = { method, headers: { ...headers } };
@@ -141,25 +127,44 @@ before(async () => {
     '<!doctype html><html><head><title>SoftN</title></head><body><div id="root"></div></body></html>'
   );
 
-  const port = 5910 + Math.floor(Math.random() * 150);
-  base = `http://127.0.0.1:${port}`;
-  fs.writeFileSync(
-    path.join(root, 'data/config.json'),
-    JSON.stringify({
-      siteOrigin: base,
-      seedDemos: false,
-      hostedBackend: {
-        runtimeDir: hostRuntimeDir,
-        enginesDir: containerEnginesDir,
-        coreWasmDir,
-      },
-    })
-  );
-  server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
-    stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env },
-  });
-  await waitFor(`${base}/api/health`);
+  for (let attempt = 1; ; attempt++) {
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    fs.writeFileSync(
+      path.join(root, 'data/config.json'),
+      JSON.stringify({
+        siteOrigin: base,
+        seedDemos: false,
+        hostedBackend: {
+          runtimeDir: hostRuntimeDir,
+          enginesDir: containerEnginesDir,
+          coreWasmDir,
+        },
+      })
+    );
+    server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: { ...process.env },
+    });
+    let bindFailure = '';
+    server.stderr.on('data', (d) => {
+      const s = String(d);
+      if (/Failed to listen|Address already in use/i.test(s)) bindFailure = s.trim();
+    });
+    const probeAbort = new AbortController();
+    const exited = new Promise((resolve) => server.once('exit', (code) => {
+      probeAbort.abort();
+      resolve(code ?? -1);
+    }));
+    const outcome = await Promise.race([
+      waitFor(`${base}/api/health`, 15000, probeAbort.signal).then(() => 'up', () => 'down'),
+      exited.then((code) => `exited ${code}`),
+    ]);
+    probeAbort.abort();
+    if (outcome === 'up' && server.exitCode === null) break;
+    server.kill();
+    if (attempt >= 5) throw new Error(`php -S could not bind after ${attempt} attempts (${bindFailure || outcome})`);
+  }
   const cfg = JSON.parse(fs.readFileSync(path.join(root, 'data/config.json'), 'utf8'));
   adminKey = cfg.adminKey;
 });

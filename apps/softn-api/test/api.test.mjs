@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 // The one PHP probe and skip reason every suite shares: a machine without
 // PHP skips these tests with the reason on each, and a warning on stderr.
-import { HAVE_PHP, skip } from './helpers/harness.mjs';
+import { HAVE_PHP, skip, freePort, waitFor } from './helpers/harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const apiDir = path.resolve(here, '..');
@@ -46,20 +46,6 @@ function copyDir(from, to) {
     if (entry.isDirectory()) copyDir(src, dest);
     else fs.copyFileSync(src, dest);
   }
-}
-
-async function waitFor(url, ms = 15000) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    try {
-      const r = await fetch(url);
-      if (r.ok || r.status === 503) return r;
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error(`${url} did not come up`);
 }
 
 async function api(method, route, { body, headers = {}, raw, query } = {}) {
@@ -147,22 +133,38 @@ before(async () => {
 <meta property="og:image:alt" content="SoftN" />
 </head><body><div id="root"></div></body></html>`
   );
-  const port = 5600 + Math.floor(Math.random() * 300);
-  base = `http://127.0.0.1:${port}`;
-  // siteOrigin is what a deployed site sets; the share and play pages carry
-  // no absolute address without it (hardening.test.mjs covers that case).
-  fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES }, siteOrigin: base, seedDemos: true }));
-  server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
-    stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env },
-  });
-  server.stderr.on('data', (d) => {
-    const s = String(d);
-    // The built-in server logs every request to stderr; only PHP's own
-    // complaints are worth seeing.
-    if (/PHP (Warning|Fatal|Parse|Notice)|softn-api:/.test(s)) process.stderr.write(s);
-  });
-  await waitFor(`${base}/api/health`);
+  for (let attempt = 1; ; attempt++) {
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    // siteOrigin is what a deployed site sets; the share and play pages carry
+    // no absolute address without it (hardening.test.mjs covers that case).
+    fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES }, siteOrigin: base, seedDemos: true }));
+    server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: { ...process.env },
+    });
+    let bindFailure = '';
+    server.stderr.on('data', (d) => {
+      const s = String(d);
+      if (/Failed to listen|Address already in use/i.test(s)) bindFailure = s.trim();
+      // The built-in server logs every request to stderr; only PHP's own
+      // complaints are worth seeing.
+      if (/PHP (Warning|Fatal|Parse|Notice)|softn-api:/.test(s)) process.stderr.write(s);
+    });
+    const probeAbort = new AbortController();
+    const exited = new Promise((resolve) => server.once('exit', (code) => {
+      probeAbort.abort();
+      resolve(code ?? -1);
+    }));
+    const outcome = await Promise.race([
+      waitFor(`${base}/api/health`, 15000, probeAbort.signal).then(() => 'up', () => 'down'),
+      exited.then((code) => `exited ${code}`),
+    ]);
+    probeAbort.abort();
+    if (outcome === 'up' && server.exitCode === null) break;
+    server.kill();
+    if (attempt >= 5) throw new Error(`php -S could not bind after ${attempt} attempts (${bindFailure || outcome})`);
+  }
   const cfg = JSON.parse(fs.readFileSync(path.join(root, 'data/config.json'), 'utf8'));
   adminKey = cfg.adminKey;
 });
@@ -1443,7 +1445,7 @@ test('a data directory PHP cannot use is a 503 with JSON and CORS headers, not a
   // The data directory named is a file, so it can be neither used nor made.
   const blocker = path.join(root, 'not-a-directory');
   fs.writeFileSync(blocker, '');
-  const port = Number(new URL(base).port) + 1;
+  const port = await freePort();
   const broken = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
     stdio: ['ignore', 'ignore', 'pipe'],
     env: { ...process.env, SOFTN_DATA_DIR: blocker },
