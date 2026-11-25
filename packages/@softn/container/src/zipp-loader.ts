@@ -246,11 +246,14 @@ async function compileWasmSource(source: BufferSource | WebAssembly.Module | str
     const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
     if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
       try {
-        const mod = await WebAssembly.compileStreaming(resp.clone());
-        void resp.body?.cancel().catch(() => {});
-        return mod;
+        return await WebAssembly.compileStreaming(resp);
       } catch {
-        // Fallback to buffered compile
+        // Fallback to buffered compile on a fresh response (avoiding resp.clone() RAM duplication on the hot path).
+        const retry = await fetch(url);
+        if (!retry.ok) {
+          throw new Error(`Failed to fetch ZIPP engine (${url.pathname}): HTTP ${retry.status}`);
+        }
+        return WebAssembly.compile(new Uint8Array(await retry.arrayBuffer()));
       }
     }
     return WebAssembly.compile(new Uint8Array(await resp.arrayBuffer()));
@@ -346,7 +349,30 @@ export async function loadZippEngine(options: {
         }
       }
     }
-    const module = await compileWasmSource(targetSource);
+    // Start fetching the deterministic `.glue.js` in parallel with WASM compile when possible.
+    const baseHref =
+      typeof document !== 'undefined'
+        ? document.baseURI
+        : typeof self !== 'undefined' && self.location
+          ? self.location.href
+          : undefined;
+    const speculativeGlueFile =
+      !isNodeRuntime() && !explicitSource && (tier === 'lite' || tier === 'typescript' || tier === 'php' || tier === 'rust')
+        ? glueFileFor(tier, null)
+        : null;
+    const speculativeGluePromise: Promise<Record<string, unknown> | null> = speculativeGlueFile
+      ? (() => {
+          const glueUrl = baseHref
+            ? new URL(`${normalizedBase}engines/${speculativeGlueFile}`, baseHref).href
+            : `${normalizedBase}engines/${speculativeGlueFile}`;
+          return (import(/* @vite-ignore */ glueUrl) as Promise<Record<string, unknown>>).catch(() => null);
+        })()
+      : Promise.resolve(null);
+
+    const [module, speculativeBindings] = await Promise.all([
+      compileWasmSource(targetSource),
+      speculativeGluePromise,
+    ]);
     const metaJson = readCustomSection(module, META_SECTION);
     const meta = metaJson ? (JSON.parse(metaJson) as Record<string, unknown>) : null;
     const glueText = readCustomSection(module, GLUE_SECTION);
@@ -355,19 +381,17 @@ export async function loadZippEngine(options: {
     // Prefer same-origin `.glue.js` in browser/Worker contexts so strict `script-src 'self'` CSPs succeed without `blob:` or `data:`
     if (!isNodeRuntime()) {
       const glueFile = glueFileFor(tier, meta);
-      const baseHref =
-        typeof document !== 'undefined'
-          ? document.baseURI
-          : typeof self !== 'undefined' && self.location
-            ? self.location.href
-            : undefined;
-      try {
-        const glueUrl = baseHref
-          ? new URL(`${normalizedBase}engines/${glueFile}`, baseHref).href
-          : `${normalizedBase}engines/${glueFile}`;
-        bindings = (await import(/* @vite-ignore */ glueUrl)) as Record<string, unknown>;
-      } catch {
-        bindings = null;
+      if (speculativeGlueFile === glueFile && speculativeBindings) {
+        bindings = speculativeBindings;
+      } else {
+        try {
+          const glueUrl = baseHref
+            ? new URL(`${normalizedBase}engines/${glueFile}`, baseHref).href
+            : `${normalizedBase}engines/${glueFile}`;
+          bindings = (await import(/* @vite-ignore */ glueUrl)) as Record<string, unknown>;
+        } catch {
+          bindings = null;
+        }
       }
     }
     if (!bindings) {

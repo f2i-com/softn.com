@@ -34,7 +34,8 @@ final class Pages
             if ($err->status === 404) {
                 $notFoundHtml = self::stripStaticHomeHead($html);
                 $notFoundHtml = preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $notFoundHtml, 1) ?? $notFoundHtml;
-                $notFoundHtml = preg_replace('#<meta\s+[^>]*property="og:url"[^>]*>\s*#s', '', $notFoundHtml, 1) ?? $notFoundHtml;
+                $notFoundHtml = preg_replace('#<meta\s+[^>]*name="description"[^>]*>\s*#s', '', $notFoundHtml, 1) ?? $notFoundHtml;
+                $notFoundHtml = preg_replace('#<meta\s+[^>]*property="og:(?:url|title|description)"[^>]*>\s*#s', '', $notFoundHtml) ?? $notFoundHtml;
                 $notFoundHtml = self::injectRootSsr($notFoundHtml, '');
                 $notFoundHtml = str_replace('</head>', '<meta name="robots" content="noindex" />' . "\n  </head>", $notFoundHtml);
                 return Response::html($notFoundHtml, 200, ['Cache-Control' => 'no-cache']);
@@ -56,16 +57,20 @@ final class Pages
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
         $ver = null;
+        $appDir = null;
         if ($playUrl === null) {
             try {
                 $ver = Apps::version($slug);
+                $appDir = Catalog::path($slug);
             } catch (ApiError) {
                 $ver = null;
             }
         }
+        // Release the global catalogue lock before any ZIP/prerender disk work.
+        Catalog::release();
         $prerender = $ver !== null
-            ? self::prerenderFor($slug, $row, $ver, null, '', "/play/$slug")
-            : ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
+            ? self::prerenderFor($slug, $row, $ver, null, '', "/play/$slug", $appDir)
+            : ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null, 'publicPages' => []];
 
         $html = self::stripStaticHomeHead($html);
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
@@ -172,18 +177,20 @@ final class Pages
             return '/apps' . ($params !== [] ? '?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986) : '');
         };
         $canonicalPath = $buildDirUrl(min($page, $totalPages));
-        $url = $origin === null ? null : $origin . $canonicalPath;
         $hasDynamicFilter = $query !== '' || $tag !== '' || $author !== '' || $cap !== '' || $hostingFilter !== '';
-        $robots = ($hasDynamicFilter || $page > $totalPages || (($category !== '' || $subcategory !== '') && $total === 0))
-            ? 'noindex,follow'
-            : 'index,follow,max-image-preview:large';
+        $isNoindex = $hasDynamicFilter || $page > $totalPages || (($category !== '' || $subcategory !== '') && $total === 0);
+        $robots = $isNoindex ? 'noindex,follow' : 'index,follow,max-image-preview:large';
+        // Avoid conflicting `noindex` + cross-URL `<link rel="canonical">` signals.
+        $url = ($origin === null || $isNoindex) ? null : ($origin . $canonicalPath);
 
+        $ogImg = $origin !== null ? "$origin/og.png" : null;
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
         foreach ([
             'name="description"' => $desc,
             'property="og:title"' => $title,
             'property="og:description"' => $desc,
             'property="og:url"' => $url,
+            ...($ogImg !== null ? ['property="og:image"' => $ogImg] : []),
         ] as $attr => $value) {
             if ($value === null) {
                 $html = preg_replace('#<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*>\s*#s', '', $html, 1) ?? $html;
@@ -255,6 +262,7 @@ final class Pages
         $extraHead = '<meta name="robots" content="' . $e($robots) . '" />' . "\n"
             . '    <meta name="twitter:title" content="' . $e($title) . '" />' . "\n"
             . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . ($ogImg !== null ? '    <meta name="twitter:image" content="' . $e($ogImg) . '" />' . "\n" . '    <meta name="twitter:image:alt" content="SoftN apps directory" />' . "\n" : '')
             . $relLinks
             . (is_string($ldJson) ? '    <script type="application/ld+json">' . $ldJson . '</script>' . "\n" : '')
             . ($crumbsJson !== '' ? '    <script type="application/ld+json">' . $crumbsJson . '</script>' . "\n" : '')
@@ -313,16 +321,21 @@ final class Pages
         $html = self::stripStaticHomeHead((string) file_get_contents($index));
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $origin = self::origin();
+        $isParameterizedPublish = (is_string($_GET['remix'] ?? null) && trim($_GET['remix']) !== '')
+            || (is_string($_GET['update'] ?? null) && trim($_GET['update']) !== '');
         $title = 'Publish a SoftN App — SoftN';
         $desc = 'Publish a .softn app bundle to the SoftN directory. No account required: publishing returns an edit key for updates.';
-        $url = $origin === null ? null : "$origin/publish";
+        $url = ($origin === null || $isParameterizedPublish) ? null : "$origin/publish";
+        $robots = $isParameterizedPublish ? 'noindex,follow' : 'index,follow';
 
+        $ogImg = $origin !== null ? "$origin/og.png" : null;
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
         foreach ([
             'name="description"' => $desc,
             'property="og:title"' => $title,
             'property="og:description"' => $desc,
             'property="og:url"' => $url,
+            ...($ogImg !== null ? ['property="og:image"' => $ogImg] : []),
         ] as $attr => $value) {
             if ($value === null) {
                 $html = preg_replace('#<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*>\s*#s', '', $html, 1) ?? $html;
@@ -334,9 +347,10 @@ final class Pages
             ? (preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $html, 1) ?? $html)
             : self::replaceOnce('#<link\s+rel="canonical"\s+href="[^"]*"#', fn() => '<link rel="canonical" href="' . $e($url) . '"', $html);
 
-        $extraHead = '<meta name="robots" content="index,follow" />' . "\n"
+        $extraHead = '<meta name="robots" content="' . $e($robots) . '" />' . "\n"
             . '    <meta name="twitter:title" content="' . $e($title) . '" />' . "\n"
             . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . ($ogImg !== null ? '    <meta name="twitter:image" content="' . $e($ogImg) . '" />' . "\n" . '    <meta name="twitter:image:alt" content="Publish a SoftN app" />' . "\n" : '')
             . '  </head>';
         $html = str_replace('</head>', $extraHead, $html);
 
@@ -462,13 +476,16 @@ final class Pages
             $playUrl = Apps::playUrl($row);
             if ($playUrl !== null) return Response::html('', 302, ['Location' => $playUrl, 'Cache-Control' => 'no-cache']);
             $ver = Apps::version($slug);
+            $appDir = Catalog::path($slug);
         } catch (ApiError $err) {
             // A real 404 with a way back, not the shell failing to load
             // something: a shared link to an app since unpublished should say so.
             return self::problem($err->getMessage(), $err->status);
         }
-        $html = (string) file_get_contents($shell);
         $cfg = self::playConfig($row, $ver, $forceLocal);
+        // Release the global catalogue lock before reading/extracting ZIP entries or building HTML.
+        Catalog::release();
+        $html = (string) file_get_contents($shell);
         $appName = (string) $row['name'];
         $appDesc = (string) ($row['description'] ?? '');
         $origin = self::origin();
@@ -479,7 +496,8 @@ final class Pages
             $ver,
             is_string($cfg['sha256'] ?? null) ? $cfg['sha256'] : null,
             $subPath,
-            $linkBase
+            $linkBase,
+            $appDir
         );
 
         $cleanSub = trim(str_replace('\\', '/', $subPath), '/');
@@ -499,6 +517,7 @@ final class Pages
         $hasSsrBackend = (bool) ($prerender['hasSsrBackend'] ?? false);
         $isMultiPage = count($publicPages) > 1;
         $isSubPage = $virtualPath !== '/';
+        $isDynamicSsrFallback = ($prerender['sourceType'] ?? '') === 'ssr-backend' && $isSubPage;
 
         if ($isMultiPage || $isSubPage || $hasSsrBackend) {
             $cfg['basePath'] = $linkBase;
@@ -520,8 +539,17 @@ final class Pages
             : ($appDesc !== '' ? $appDesc : "$appName — run this SoftN app directly in your browser.");
         $robots = is_string($prerender['pageRobots'] ?? null) && $prerender['pageRobots'] !== ''
             ? $prerender['pageRobots']
-            : 'index,follow,max-image-preview:large';
+            : ($isDynamicSsrFallback ? 'noindex,follow' : 'index,follow,max-image-preview:large');
+        $pageIsNoindex = preg_match('/(?:^|,)(?:noindex|none)(?:,|$)/', $robots) === 1;
 
+        $pageLang = is_string($prerender['pageLang'] ?? null) && $prerender['pageLang'] !== '' ? $prerender['pageLang'] : null;
+        if ($pageLang !== null) {
+            if (preg_match('#<html\b[^>]*\blang="[^"]*"#i', $html) === 1) {
+                $html = self::replaceOnce('#(<html\b[^>]*\blang=")[^"]*(")#i', fn(array $m) => $m[1] . $e($pageLang) . $m[2], $html);
+            } else {
+                $html = self::replaceOnce('#<html(?=\s|>)#i', fn() => '<html lang="' . $e($pageLang) . '"', $html);
+            }
+        }
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($pageTitle) . '</title>', $html);
         // JSON_HEX_TAG has turned every < and > into \u003C and \u003E, so
         // nothing in a name or a description can close this element early.
@@ -530,7 +558,11 @@ final class Pages
         $playPageUrl = $origin === null ? null : ($origin . $playPagePath);
         // Sub-pages and multi-page websites are self-canonical at their live URL;
         // single-page apps keep `/app/<slug>` as their canonical share address.
-        $canonicalUrl = $origin === null
+        // Omit canonical on noindex/dynamic-SSR fallback pages so signals never conflict.
+        $canonicalUrl = ($origin === null || $pageIsNoindex)
+            ? null
+            : (($isSubPage || $isMultiPage) ? $playPageUrl : "$origin/app/$slug");
+        $ogUrl = ($origin === null || $pageIsNoindex)
             ? null
             : (($isSubPage || $isMultiPage) ? $playPageUrl : "$origin/app/$slug");
 
@@ -552,7 +584,10 @@ final class Pages
         $preloadBundle = is_string($cfg['bundle'] ?? null) && $cfg['bundle'] !== ''
             ? '    <link rel="preload" href="' . $e($cfg['bundle']) . '" as="fetch" crossorigin="anonymous" fetchpriority="high" />' . "\n"
             : '';
-        $preloadEngines = self::preloadContainerEngineLinks($row, $cfg, $e, $prerender['engineTier'] ?? null);
+        $isWebContainer = ($prerender['sourceType'] ?? '') === 'html'
+            || ($prerender['sourceType'] ?? '') === 'ssr-backend'
+            || (is_string($row['backend_runtime'] ?? null) && trim($row['backend_runtime']) !== '');
+        $preloadEngines = self::preloadContainerEngineLinks($row, $cfg, $e, $prerender['engineTier'] ?? null, $isWebContainer);
         // The shell draws its boot screen dark, the `theme` above. An app
         // whose project declares light is drawn light whatever that theme
         // says, so its boot screen is too, rather than opening dark and
@@ -571,7 +606,7 @@ final class Pages
             . '    <meta property="og:description" content="' . $e($desc) . '" />' . "\n"
             . '    <meta property="og:image" content="' . $e($image) . '" />' . "\n"
             . '    <meta property="og:image:alt" content="' . $e("$pageTitle on SoftN") . '" />' . "\n"
-            . ($playPageUrl === null ? '' : '    <meta property="og:url" content="' . $e($playPageUrl) . '" />' . "\n")
+            . ($ogUrl === null ? '' : '    <meta property="og:url" content="' . $e($ogUrl) . '" />' . "\n")
             . '    <meta name="twitter:card" content="summary_large_image" />' . "\n"
             . '    <meta name="twitter:title" content="' . $e($pageTitle) . '" />' . "\n"
             . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
@@ -585,17 +620,24 @@ final class Pages
             . '    <script type="application/json" id="softn-runtime-config">' . $config . '</script>' . "\n  </head>";
         $html = str_replace('</head>', $inject, $html);
 
-        $ssrPlay = self::renderPlayBody($slug, $row, $pageTitle, $desc, $prerender['previewHtml'], $virtualPath, $publicPages);
-        if (preg_match('#<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?</div>#i', $html) === 1) {
+        $noindexPages = is_array($prerender['noindexPages'] ?? null) ? $prerender['noindexPages'] : [];
+        $indexablePages = $noindexPages === []
+            ? $publicPages
+            : array_values(array_diff($publicPages, $noindexPages));
+        $ssrPlay = self::renderPlayBody($slug, $row, $pageTitle, $desc, $prerender['previewHtml'], $virtualPath, $indexablePages);
+        // Place the semantic SSR <main id="softn-ssr-view"> OUTSIDE React's `#root` so
+        // client boot does not wipe crawlable SSR content before the runtime is ready
+        // (and preserves it if a crawler blocks bundle fetches).
+        if (preg_match('#<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?</div>\s*</div>#i', $html) === 1) {
             $html = self::replaceOnce(
-                '#(<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?)(</div>)#i',
-                fn(array $m) => $m[1] . "\n" . $ssrPlay . "\n      " . $m[2],
+                '#(<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?</div>\s*</div>)#i',
+                fn(array $m) => $m[1] . "\n" . $ssrPlay,
                 $html
             );
         } else {
             $html = self::replaceOnce(
                 '#<div\s+id="root"\s*>\s*</div>#i',
-                fn() => '<div id="root">' . "\n      <div id=\"boot\" role=\"status\">\n" . $ssrPlay . "\n      </div>\n    </div>",
+                fn() => '<div id="root"><div id="boot" role="status"><span>Loading…</span></div></div>' . "\n" . $ssrPlay,
                 $html
             );
         }
@@ -617,8 +659,43 @@ final class Pages
             ], 'Site origin is not configured.');
         }
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_XML1, 'UTF-8');
-        $rows = array_values(array_filter(Catalog::all(), static fn(array $r): bool => empty($r['hidden'])));
+        $allRows = Catalog::all();
+        $rows = array_values(array_filter($allRows, static fn(array $r): bool => empty($r['hidden'])));
         usort($rows, static fn(array $a, array $b): int => ((int) ($b['updated_at'] ?? 0)) <=> ((int) ($a['updated_at'] ?? 0)));
+
+        // Compute a lightweight fingerprint over the visible catalogue so warm sitemap requests
+        // serve directly from disk cache (~1 ms) without touching per-app bundles.
+        $fpParts = [$origin, 'v' . Prerender::VERSION, (string) count($rows)];
+        foreach (array_slice($rows, 0, 49900) as $r) {
+            $fpParts[] = ((string) ($r['slug'] ?? '')) . ':' . ((int) ($r['updated_at'] ?? 0)) . ':' . ((string) ($r['category'] ?? '')) . '/' . ((string) ($r['subcategory'] ?? ''));
+        }
+        $fpHash = substr(hash('sha256', implode('|', $fpParts)), 0, 20);
+        $cacheDir = Config::dataDir() . '/cache';
+        $sitemapCacheFile = $cacheDir . '/sitemap-apps-' . $fpHash . '.xml';
+        $cachedXml = @file_get_contents($sitemapCacheFile);
+        if (is_string($cachedXml) && str_starts_with($cachedXml, '<?xml')) {
+            Catalog::release();
+            return self::conditionalResponse($cachedXml, 'application/xml; charset=utf-8', 'public, max-age=300, stale-while-revalidate=3600');
+        }
+
+        // Snapshot version & appDir paths before releasing the global catalogue lock.
+        $snapshots = [];
+        foreach (array_slice($rows, 0, 49900) as $row) {
+            $slug = (string) ($row['slug'] ?? '');
+            if ($slug === '' || !Catalog::validSlug($slug)) continue;
+            $ver = null;
+            $appDir = null;
+            if (Apps::playUrl($row) === null) {
+                try {
+                    $ver = Apps::version($slug);
+                    $appDir = Catalog::path($slug);
+                } catch (Throwable) {
+                    $ver = null;
+                }
+            }
+            $snapshots[] = ['row' => $row, 'slug' => $slug, 'ver' => $ver, 'appDir' => $appDir];
+        }
+        Catalog::release();
 
         $urls = [
             ['loc' => "$origin/", 'lastmod' => null, 'image' => null, 'title' => null],
@@ -626,22 +703,35 @@ final class Pages
             ['loc' => "$origin/publish", 'lastmod' => null, 'image' => null, 'title' => null],
         ];
         $seenCats = [];
-        foreach ($rows as $row) {
-            $cat = trim((string) ($row['category'] ?? ''));
-            if ($cat !== '' && !isset($seenCats[strtolower($cat)])) {
-                $seenCats[strtolower($cat)] = true;
-                $urls[] = [
-                    'loc' => "$origin/apps?category=" . rawurlencode($cat),
-                    'lastmod' => null,
-                    'image' => null,
-                    'title' => null,
-                ];
+        $seenSubs = [];
+        foreach ($snapshots as $item) {
+            $cat = strtolower(trim((string) ($item['row']['category'] ?? '')));
+            if ($cat !== '') {
+                if (!isset($seenCats[$cat])) {
+                    $seenCats[$cat] = true;
+                    $urls[] = [
+                        'loc' => "$origin/apps?category=" . rawurlencode($cat),
+                        'lastmod' => null,
+                        'image' => null,
+                        'title' => null,
+                    ];
+                }
+                $sub = strtolower(trim((string) ($item['row']['subcategory'] ?? '')));
+                if ($sub !== '' && !isset($seenSubs["$cat/$sub"])) {
+                    $seenSubs["$cat/$sub"] = true;
+                    $urls[] = [
+                        'loc' => "$origin/apps?category=" . rawurlencode($cat) . '&subcategory=' . rawurlencode($sub),
+                        'lastmod' => null,
+                        'image' => null,
+                        'title' => null,
+                    ];
+                }
             }
         }
-        foreach (array_slice($rows, 0, 49900) as $row) {
+        foreach ($snapshots as $item) {
             if (count($urls) >= 49950) break;
-            $slug = (string) ($row['slug'] ?? '');
-            if ($slug === '' || !Catalog::validSlug($slug)) continue;
+            $row = $item['row'];
+            $slug = $item['slug'];
             $updated = (int) ($row['updated_at'] ?? 0);
             $lastmod = $updated > 0 ? gmdate('Y-m-d', $updated) : null;
             $urls[] = [
@@ -650,13 +740,17 @@ final class Pages
                 'image' => "$origin/api/apps/$slug/thumbnail?v=$updated",
                 'title' => (string) ($row['name'] ?? $slug),
             ];
-            if (Apps::playUrl($row) === null) {
+            if ($item['ver'] !== null && is_string($item['appDir'])) {
                 try {
-                    $ver = Apps::version($slug);
-                    $meta = self::prerenderFor($slug, $row, $ver, null, '', "/play/$slug");
+                    $meta = self::bundleMetaFor($slug, $row, $item['ver'], $item['appDir']);
                     $pages = is_array($meta['publicPages'] ?? null) ? $meta['publicPages'] : [];
+                    $noindexSet = array_fill_keys(
+                        is_array($meta['noindexPages'] ?? null) ? $meta['noindexPages'] : [],
+                        true
+                    );
                     if (count($pages) > 1) {
                         foreach ($pages as $p) {
+                            if (isset($noindexSet[$p])) continue;
                             if (count($urls) >= 49950) break;
                             $urls[] = [
                                 'loc' => $p === '' ? "$origin/play/$slug" : "$origin/play/$slug/$p",
@@ -691,6 +785,19 @@ final class Pages
         }
         $lines[] = '</urlset>';
         $xml = implode("\n", $lines) . "\n";
+        try {
+            if (!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
+            if (is_dir($cacheDir)) {
+                $tmp = $sitemapCacheFile . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
+                if (@file_put_contents($tmp, $xml) === strlen($xml)) {
+                    if (!@rename($tmp, $sitemapCacheFile)) @unlink($tmp);
+                } else {
+                    @unlink($tmp);
+                }
+            }
+        } catch (Throwable) {
+            // Read-only cache dir never breaks sitemap output.
+        }
         return self::conditionalResponse($xml, 'application/xml; charset=utf-8', 'public, max-age=300, stale-while-revalidate=3600');
     }
 
@@ -741,22 +848,74 @@ final class Pages
     }
 
     /**
-     * Emit `<link rel="preload" as="fetch">` hints for known local browser container
-     * WASM engines (e.g. `zipp-php.wasm` + `xdb-wasm.wasm`) so the browser starts
-     * downloading WASM in parallel with `bundle.softn` instead of waiting for JS parse.
+     * Read build-emitted `play/runtime-manifest.json` (with scandir fallback for test harnesses).
+     *
+     * @return array{runtimeBase: string, fullEngineUrl: ?string, containerMountUrl: ?string}
+     */
+    private static function playRuntimeManifest(): array
+    {
+        static $cached = null;
+        if ($cached !== null) return $cached;
+        $docRoot = dirname(__DIR__, 2);
+        $manifestPath = $docRoot . '/play/runtime-manifest.json';
+        if (is_file($manifestPath)) {
+            $decoded = json_decode((string) @file_get_contents($manifestPath), true);
+            if (is_array($decoded) && is_string($decoded['runtimeBase'] ?? null)) {
+                $safePath = static fn(mixed $v): ?string => (is_string($v) && str_starts_with($v, '/') && !str_starts_with($v, '//')) ? $v : null;
+                $cached = [
+                    'runtimeBase' => $safePath($decoded['runtimeBase']) ?? '',
+                    'fullEngineUrl' => $safePath($decoded['fullEngineUrl'] ?? null),
+                    'containerMountUrl' => $safePath($decoded['containerMountUrl'] ?? null),
+                ];
+                return $cached;
+            }
+        }
+        $runtimeBase = '';
+        $sharedDir = $docRoot . '/shared/container-runtime';
+        if (is_dir($sharedDir)) {
+            foreach (scandir($sharedDir) ?: [] as $entry) {
+                if (preg_match('/^[0-9a-f]{12}$/', $entry) === 1 && is_dir("$sharedDir/$entry/engines")) {
+                    $runtimeBase = "/shared/container-runtime/$entry/engines/";
+                    break;
+                }
+            }
+        }
+        $cached = ['runtimeBase' => $runtimeBase, 'fullEngineUrl' => null, 'containerMountUrl' => null];
+        return $cached;
+    }
+
+    /**
+     * Emit `<link rel="modulepreload">` / `<link rel="preload" as="fetch">` hints for
+     * v2 Web Container mount chunks and required WASM engines, skipping WASM preloads
+     * entirely for scriptless static HTML/CSS pages (`engineTier === 'none'`).
      *
      * @param array<string, mixed> $row
      * @param array<string, mixed> $cfg
      * @param callable(string): string $e
      */
-    private static function preloadContainerEngineLinks(array $row, array $cfg, callable $e, ?string $engineTier = null): string
-    {
+    private static function preloadContainerEngineLinks(
+        array $row,
+        array $cfg,
+        callable $e,
+        ?string $engineTier = null,
+        bool $isWebContainer = false
+    ): string {
+        $manifest = self::playRuntimeManifest();
+        $docRoot = dirname(__DIR__, 2);
+        $out = '';
+
+        // Preload `@softn/container/mount` chunk in parallel with `bundle.softn` for v2 apps.
+        if ($isWebContainer && is_string($manifest['containerMountUrl']) && $manifest['containerMountUrl'] !== '') {
+            $out .= '    <link rel="modulepreload" crossorigin href="' . $e($manifest['containerMountUrl']) . '" />' . "\n";
+        }
+
         $hasServerBackend = isset($cfg['backendUrl']);
         $rt = !$hasServerBackend && is_string($row['backend_runtime'] ?? null)
             ? strtolower(trim($row['backend_runtime']))
             : '';
         $engineFile = null;
         $needsXdb = false;
+        $needsFullCore = false;
         if ($rt !== '') {
             $engineFile = match ($rt) {
                 'php' => 'zipp-php.wasm',
@@ -764,39 +923,64 @@ final class Pages
                 'typescript' => 'zipp-typescript.wasm',
                 default => null,
             };
-            $needsXdb = $engineFile !== null;
+            $needsFullCore = in_array($rt, ['javascript', 'python'], true);
+            $needsXdb = $engineFile !== null || $needsFullCore;
+        } elseif ($engineTier === 'none') {
+            return $out;
         } elseif ($engineTier === 'lite') {
             $engineFile = 'zipp-javascript-lite.wasm';
         } elseif ($engineTier === 'typescript') {
             $engineFile = 'zipp-typescript.wasm';
+        } elseif ($engineTier === 'full') {
+            $needsFullCore = true;
         }
-        if ($engineFile === null) return '';
-        static $runtimeBase = null;
-        if ($runtimeBase === null) {
-            $runtimeBase = '';
-            $sharedDir = dirname(__DIR__, 2) . '/shared/container-runtime';
-            if (is_dir($sharedDir)) {
-                foreach (scandir($sharedDir) ?: [] as $entry) {
-                    if (preg_match('/^[0-9a-f]{12}$/', $entry) === 1 && is_dir("$sharedDir/$entry/engines")) {
-                        $runtimeBase = "/shared/container-runtime/$entry/engines/";
-                        break;
-                    }
-                }
+
+        $runtimeBase = $manifest['runtimeBase'];
+        if ($runtimeBase !== '' && $engineFile !== null) {
+            if (is_file($docRoot . $runtimeBase . $engineFile)) {
+                $out .= '    <link rel="preload" href="' . $e($runtimeBase . $engineFile) . '" as="fetch" crossorigin="anonymous" />' . "\n";
             }
         }
-        if ($runtimeBase === '') return '';
-        $engineDisk = dirname(__DIR__, 2) . $runtimeBase . $engineFile;
-        $out = '';
-        if (is_file($engineDisk)) {
-            $out .= '    <link rel="preload" href="' . $e($runtimeBase . $engineFile) . '" as="fetch" crossorigin="anonymous" />' . "\n";
+        if ($needsFullCore && is_string($manifest['fullEngineUrl']) && $manifest['fullEngineUrl'] !== '') {
+            if (is_file($docRoot . $manifest['fullEngineUrl'])) {
+                $out .= '    <link rel="preload" href="' . $e($manifest['fullEngineUrl']) . '" as="fetch" crossorigin="anonymous" />' . "\n";
+            }
         }
-        if ($needsXdb) {
-            $xdbDisk = dirname(__DIR__, 2) . $runtimeBase . 'xdb-wasm.wasm';
-            if (is_file($xdbDisk)) {
+        if ($needsXdb && $runtimeBase !== '') {
+            if (is_file($docRoot . $runtimeBase . 'xdb-wasm.wasm')) {
                 $out .= '    <link rel="preload" href="' . $e($runtimeBase . 'xdb-wasm.wasm') . '" as="fetch" crossorigin="anonymous" />' . "\n";
             }
         }
         return $out;
+    }
+
+    /**
+     * Load lightweight bundle-level metadata (theme, tier, publicPages, noindexPages)
+     * for `/sitemap-apps.xml` without touching per-page HTML previews.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $ver
+     * @return array{themeMode: ?string, engineTier: ?string, publicPages: array<int, string>, noindexPages: array<int, string>, hasSsrBackend: bool}
+     */
+    private static function bundleMetaFor(string $slug, array $row, array $ver, ?string $appDir = null): array
+    {
+        $hosting = Apps::hostingInfo($row);
+        $dir = $appDir ?? Catalog::path($slug);
+        $srcPath = $dir . '/' . (string) ($ver['file'] ?? '');
+        $bundleSha = (string) ($ver['sha256'] ?? '');
+        $withhold = (bool) $hosting['withholdBackend'];
+        $pageCache = Config::dataDir() . '/page-cache';
+        if ($withhold) {
+            $cachePath = $dir . '/backend-cache/client-v' . (int) ($ver['version'] ?? 0) . '-' . substr($bundleSha, 0, 12) . '.softn';
+            try {
+                $bundlePath = Bundle::clientBundlePath($srcPath, $cachePath);
+                $sha = Bundle::clientBundleSha256($srcPath, $cachePath, $bundleSha);
+            } catch (Throwable) {
+                return ['themeMode' => null, 'engineTier' => null, 'publicPages' => [], 'noindexPages' => [], 'hasSsrBackend' => false];
+            }
+            return Prerender::bundleMetaFor($bundlePath, $sha, $pageCache, true);
+        }
+        return Prerender::bundleMetaFor($srcPath, $bundleSha, $pageCache, false);
     }
 
     /**
@@ -813,10 +997,11 @@ final class Pages
         array $ver,
         ?string $resolvedClientSha = null,
         string $subPath = '',
-        ?string $linkBase = null
+        ?string $linkBase = null,
+        ?string $resolvedAppDir = null
     ): array {
         $hosting = Apps::hostingInfo($row);
-        $appDir = Catalog::path($slug);
+        $appDir = $resolvedAppDir ?? Catalog::path($slug);
         $srcPath = $appDir . '/' . (string) ($ver['file'] ?? '');
         $bundleSha = (string) ($ver['sha256'] ?? '');
         $withhold = (bool) $hosting['withholdBackend'];
@@ -842,8 +1027,10 @@ final class Pages
                     'pageTitle' => null,
                     'pageDescription' => null,
                     'pageRobots' => null,
+                    'pageLang' => null,
                     'virtualPath' => '/',
                     'publicPages' => [],
+                    'noindexPages' => [],
                     'hasSsrBackend' => false,
                 ];
             }
@@ -1121,15 +1308,16 @@ final class Pages
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $name = (string) $row['name'];
         $lines = [
-            '        <article class="softn-ssr" data-softn-ssr="play" data-softn-page="' . $e($virtualPath) . '">',
-            '          <h1>' . $e($pageTitle) . '</h1>',
-            '          <p>' . $e($desc) . '</p>',
+            '    <main id="softn-ssr-view" class="softn-ssr" data-softn-ssr="play" data-softn-page="' . $e($virtualPath) . '">',
+            '      <article>',
+            '        <h1>' . $e($pageTitle) . '</h1>',
+            '        <p>' . $e($desc) . '</p>',
         ];
         if ($previewHtml !== '') {
-            $indented = implode("\n", array_map(static fn(string $l): string => '            ' . $l, explode("\n", $previewHtml)));
-            $lines[] = '          <section data-softn-preview="rendered" aria-label="Rendered application preview">';
+            $indented = implode("\n", array_map(static fn(string $l): string => '          ' . $l, explode("\n", $previewHtml)));
+            $lines[] = '        <section data-softn-preview="rendered" aria-label="Rendered application preview">';
             $lines[] = $indented;
-            $lines[] = '          </section>';
+            $lines[] = '        </section>';
         }
         if (count($publicPages) > 1) {
             $pageLinks = [];
@@ -1138,10 +1326,11 @@ final class Pages
                 $label = $p === '' ? 'Home' : $p;
                 $pageLinks[] = '<a href="' . $e($href) . '">' . $e($label) . '</a>';
             }
-            $lines[] = '          <nav aria-label="Site pages">' . implode(' · ', $pageLinks) . '</nav>';
+            $lines[] = '        <nav aria-label="Site pages">' . implode(' · ', $pageLinks) . '</nav>';
         }
-        $lines[] = '          <p><a href="' . $e("/app/$slug") . '">About ' . $e($name) . '</a></p>';
-        $lines[] = '        </article>';
+        $lines[] = '        <p><a href="' . $e("/app/$slug") . '">About ' . $e($name) . '</a></p>';
+        $lines[] = '      </article>';
+        $lines[] = '    </main>';
         return implode("\n", $lines);
     }
 

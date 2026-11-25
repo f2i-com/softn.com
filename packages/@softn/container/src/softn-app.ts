@@ -238,11 +238,12 @@ function getSharedCompiledEngine(url: string): Promise<WebAssembly.Module> {
       const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
       if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
         try {
-          const compiled = await WebAssembly.compileStreaming(resp.clone());
-          void resp.body?.cancel().catch(() => undefined);
-          return compiled;
+          return await WebAssembly.compileStreaming(resp);
         } catch {
-          // Fallback to arrayBuffer compile
+          // Fallback to buffered compile on a fresh response (avoiding resp.clone() RAM duplication on the hot path).
+          const retry = await fetch(url);
+          if (!retry.ok) throw new Error(`Failed to fetch ${url}: HTTP ${retry.status}`);
+          return WebAssembly.compile(new Uint8Array(await retry.arrayBuffer()));
         }
       }
       return WebAssembly.compile(new Uint8Array(await resp.arrayBuffer()));
@@ -559,7 +560,7 @@ export async function mountSoftNContainer(
   });
 
   const rawSource = await loadArchiveSource(options.source);
-  const archive = await ContainerArchive.open(rawSource);
+  const archive = await ContainerArchive.open(rawSource, undefined, options.precomputedDigest);
   emitStatus({
     phase: 'opening',
     message: `Preparing ${archive.manifest.name}…`,
@@ -1257,6 +1258,7 @@ export async function mountSoftNContainer(
   // already-compiled WebAssembly.Module for the frontend worker whenever it satisfies the frontend
   // JS tier (saves ~7.6 MB download + a second full WASM compile on every full-stack app!).
   let sharedLocalBackendEngine: { tier: ZippEngineTier; source: ZippEngineSource } | null = null;
+  let cachedWorkerVfs: { textFiles: Record<string, string>; binaryFiles: Record<string, Uint8Array> } | null = null;
 
   const savedSessionPromise: Promise<PersistedContainerSession | null> = persistStorage
     ? loadContainerSession(storageBase).catch(() => null)
@@ -1741,9 +1743,10 @@ export async function mountSoftNContainer(
     if (prepared.seed.title) {
       options.onTitleChange?.(hostTitle(prepared.seed.title));
     }
-
-    const { textFiles, binaryFiles } = archive.exportWorkerVfs();
-    activeTier = selectEngineTier(prepared.scripts, textFiles, archive.manifest.pythonPackages);
+    options.onPageMetaChange?.({
+      ...prepared.meta,
+      title: prepared.meta.title ? hostTitle(prepared.meta.title) : undefined,
+    });
 
     // Resolve theme (`options.theme` -> `manifest.theme` -> system)
     const effectiveTheme =
@@ -2057,6 +2060,34 @@ export async function mountSoftNContainer(
     for (const tag of initialTags) {
       void ensureUiExtension(tag, runtimeUrl);
     }
+
+    // Zero-script static HTML fast path: when the page has no runnable `<script>`,
+    // no inline `on*` event handlers, and no embedded backend, mount the sanitized DOM
+    // immediately with zero Worker spawn and zero WASM compilation (all `<a href>`
+    // internal navigation and CSS interactions already run natively via HostDomPatcher).
+    const hasInlineEventHandler = (nodes: readonly { h?: Record<string, string>; c?: unknown[] }[]): boolean => {
+      for (const n of nodes) {
+        if (n.h && Object.keys(n.h).length > 0) return true;
+        if (Array.isArray(n.c) && hasInlineEventHandler(n.c as readonly { h?: Record<string, string>; c?: unknown[] }[])) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (
+      prepared.scripts.length === 0 &&
+      !backendTransport &&
+      !hasInlineEventHandler(prepared.seed.body as unknown as readonly { h?: Record<string, string>; c?: unknown[] }[])
+    ) {
+      emitStatus({ phase: 'ready', message: 'Ready', percent: 100 });
+      if (!disposed && owns() && currentPatcher === patcher) {
+        options.onPageChange?.(pagePath, archive.manifest);
+      }
+      return;
+    }
+
+    const { textFiles, binaryFiles } = (cachedWorkerVfs ??= archive.exportWorkerVfs());
+    activeTier = selectEngineTier(prepared.scripts, textFiles, archive.manifest.pythonPackages);
 
     // Boot Worker (or inline session when `isolation: 'inline'` or `Worker` is absent in JSDOM)
     await new Promise<void>((resolveReady, rejectReady) => {

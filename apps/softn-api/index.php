@@ -930,9 +930,11 @@ function handle(string $handler, array $args, Request $req): Response
         }
 
         case 'page':
+            header('X-Robots-Tag: noindex, nofollow');
             return Pages::app($args[0]);
 
         case 'playPage':
+            header('X-Robots-Tag: noindex, nofollow');
             Seed::ifEmpty();
             return Pages::play($args[0], ($req->query['mode'] ?? '') === 'local', (string) ($args[1] ?? ''));
 

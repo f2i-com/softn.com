@@ -266,6 +266,7 @@ ErrorDocument 404 /index.html
   # that names a real file is a file. The bare directory is nothing to look
   # at; the directory of apps is.
   RewriteRule ^play/?$ /apps [R=302,L]
+  RewriteRule ^play/index\.html$ /apps [R=301,L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteRule ^play/(?!assets(?:/|$))[^/]+(?:/.*)?$ api/index.php [L]
 
@@ -362,6 +363,7 @@ server {
     charset utf-8;
     autoindex off;
     server_tokens off;
+    absolute_redirect off;
 
     add_header X-Content-Type-Options "nosniff" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
@@ -424,6 +426,8 @@ server {
     # the API. A real file under /play/ (the shell's own chunks) is a file.
     location = /play { return 302 /apps; }
     location = /play/ { return 302 /apps; }
+    location = /play/index.html { return 301 /apps; }
+    location = /docs { return 301 /docs/; }
     location ~ ^/play/(?!assets(?:/|$))[^/]+(?:/.*)?$ {
         try_files $uri @softn_play;
     }
@@ -847,21 +851,35 @@ async function writeDocumentation() {
   if (!fs.existsSync(path.join(outDir, 'docs', 'index.html'))) throw new Error('The documentation build produced no docs/index.html');
   if (!fs.existsSync(path.join(outDir, 'sitemap-docs.xml'))) throw new Error('The documentation build produced no sitemap-docs.xml');
   fs.writeFileSync(
+    path.join(outDir, 'sitemap.xml'),
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      `  <sitemap><loc>${result.origin}/sitemap-docs.xml</loc></sitemap>`,
+      `  <sitemap><loc>${result.origin}/sitemap-apps.xml</loc></sitemap>`,
+      '</sitemapindex>',
+      '',
+    ].join('\n'),
+  );
+  fs.writeFileSync(
     path.join(outDir, 'robots.txt'),
     [
       'User-agent: *',
+      'Allow: /api/apps/',
       'Allow: /api/apps$',
       'Allow: /api/apps?',
-      'Allow: /api/apps/*/thumbnail',
       'Allow: /api/categories',
       'Disallow: /data/',
       'Disallow: /api/apps/*/bundle.softn',
       'Disallow: /api/apps/*/source',
       'Disallow: /api/apps/*/backend/',
+      'Disallow: /api/apps/*/storage',
+      'Disallow: /api/apps/*/runs',
       'Disallow: /api/git/',
       'Disallow: /api/admin/',
       'Disallow: /api/',
       '',
+      `Sitemap: ${result.origin}/sitemap.xml`,
       `Sitemap: ${result.origin}/sitemap-docs.xml`,
       `Sitemap: ${result.origin}/sitemap-apps.xml`,
       '',
@@ -1019,6 +1037,17 @@ for (const app of APPS) {
   const kept = collectSharedAssets(outDir, ['', ...[...APPS, PLAY].map((app) => app.into)], SHARED_ASSETS);
   if (!kept.names.some((name) => name.startsWith('zipp_wasm_bg-'))) throw new Error('No app shipped the ZIPP engine to share');
   if (!kept.names.some((name) => name.startsWith('core-runtime/'))) throw new Error("No app shipped core's workers to share");
+  // Emit a compact manifest beside play/index.html so Pages::play() avoids per-request scandir()
+  // and can emit exact <link rel="modulepreload"> / WASM preloads for v2 Web Container apps.
+  const fullEngineName = kept.names.find((name) => /^zipp_wasm_bg-.*\.wasm$/.test(name));
+  const mountChunkName = kept.names.find((name) => /^mount-[A-Za-z0-9_-]{8}\.js$/.test(name));
+  const sharedBase = `/${SHARED_ASSETS.replace(/^\/+|\/+$/g, '')}/`;
+  const playRuntimeManifest = {
+    runtimeBase: `${runtime.url.replace(/\/?$/, '/')}engines/`,
+    fullEngineUrl: fullEngineName ? `${sharedBase}${fullEngineName}` : null,
+    containerMountUrl: mountChunkName ? `${sharedBase}${mountChunkName}` : null,
+  };
+  fs.writeFileSync(path.join(outDir, PLAY.into, 'runtime-manifest.json'), JSON.stringify(playRuntimeManifest) + '\n');
   console.log(`\nWhat the site and its four apps built, once: ${kept.names.length} files in ${SHARED_ASSETS} (the builds held ${kept.copies} between them)`);
   console.log(`The web container's ${runtime.files.length} files, once: ${runtime.url}`);
 }

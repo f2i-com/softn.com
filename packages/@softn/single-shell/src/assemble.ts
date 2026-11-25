@@ -7,7 +7,7 @@
  * a bundle that opens on one host opens on the other, with the same grant
  * scope and the same refusal message.
  */
-import { awaitZippWasmSource, ManifestError } from '@softn/core/web-host';
+import { ManifestError } from '@softn/core/web-host';
 import type { PermissionConfig } from '@softn/core';
 import { extractPermissions, type BundleManifest } from '@softn/runtime-shell/bundleFiles';
 import type { processBundle } from '@softn/runtime-shell/bundleProcessor';
@@ -30,7 +30,8 @@ let classicTierConfigured = false;
 
 function tryConfigureClassicLiteEngine(
   source: ReturnType<typeof processBundle>,
-  textFiles: Map<string, string>
+  textFiles: Map<string, string>,
+  registerWasmSource: (source: Promise<WebAssembly.Module | null>) => void
 ): void {
   if (classicTierConfigured) return;
   if (typeof window === 'undefined' || typeof fetch !== 'function' || typeof WebAssembly !== 'object') return;
@@ -44,16 +45,18 @@ function tryConfigureClassicLiteEngine(
   const liteUrl = `${containerRuntimeUrl()}engines/zipp-javascript-lite.wasm`;
   classicTierConfigured = true;
   try {
-    awaitZippWasmSource(
+    registerWasmSource(
       fetch(liteUrl)
         .then(async (resp): Promise<WebAssembly.Module | null> => {
           if (!resp.ok) return null;
           const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
           if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
             try {
-              return await WebAssembly.compileStreaming(resp.clone());
+              return await WebAssembly.compileStreaming(resp);
             } catch {
-              // Fall back to buffered compile below
+              const retry = await fetch(liteUrl);
+              if (!retry.ok) return null;
+              return await WebAssembly.compile(await retry.arrayBuffer());
             }
           }
           return await WebAssembly.compile(await resp.arrayBuffer());
@@ -138,6 +141,10 @@ export async function assembleApplication(input: AssembleInput): Promise<Assembl
       : parsePermissions(extractPermissions(textFiles, raw) ?? { permissions: {} });
   let source: ReturnType<typeof processBundle>;
   if (containerCheck.isWebContainer) {
+    // Kick off container chunk download immediately so it overlaps with grantKey digest & React render.
+    if (typeof window !== 'undefined' && (import.meta as unknown as { env?: { MODE?: string } }).env?.MODE !== 'test') {
+      void import('@softn/container/mount').catch(() => undefined);
+    }
     if (manifestHint && !textFiles.has('manifest.json')) {
       textFiles.set('manifest.json', JSON.stringify(manifestHint));
     }
@@ -154,7 +161,7 @@ export async function assembleApplication(input: AssembleInput): Promise<Assembl
     mark('softn:compose:start');
     source = classic.processBundle(textFiles, raw);
     mark('softn:compose:end');
-    tryConfigureClassicLiteEngine(source, textFiles);
+    tryConfigureClassicLiteEngine(source, textFiles, classic.awaitZippWasmSource);
     mark('softn:xdb-seed:start');
     await classic.loadXDBData(textFiles, raw, appId);
     mark('softn:xdb-seed:end');

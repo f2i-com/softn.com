@@ -113,14 +113,6 @@ final class Seed
             if (!$shouldSeed) return;
         }
         $flag = "$dir/seeded";
-        Catalog::boot();
-        Categories::ensure();
-        // A built site keeps its example bundles beside the API, at
-        // dist/demos; a build without them (the default) has no directory
-        // there and seeds nothing. Only the API run from its source tree
-        // (apps/softn-api, in dev and the tests) may reach for the runtime's
-        // fetched bundles or a built dist/ instead — a built site tested
-        // inside the checkout must not pick up the developer's bundles.
         $demos = $from ?? $bundledDemos;
         if ($from === null && !is_dir($demos) && basename(dirname(__DIR__)) === 'softn-api') {
             $candidate = dirname(__DIR__, 3) . '/apps/softn-web/public/demos';
@@ -132,6 +124,47 @@ final class Seed
         }
         $indexPath = "$demos/index.json";
         if (!is_file($indexPath)) return;
+
+        // Fast steady-state short-circuit: verify index.json, config.json, thumbs dir,
+        // and each demo file's mtime+size against the cached stamp in `data/seeded` before
+        // booting the catalogue, acquiring `seed.lock`, or touching disk.
+        if ($from === null && is_file($flag) && is_dir("$dir/apps")) {
+            $rawFlag = @file_get_contents($flag);
+            $stamp = is_string($rawFlag) && str_starts_with($rawFlag, '{') ? json_decode($rawFlag, true) : null;
+            if (is_array($stamp) && ($stamp['v'] ?? 0) === 2 && ($stamp['demos'] ?? '') === $demos) {
+                $cfgStat = @stat("$dir/config.json");
+                $idxStat = @stat($indexPath);
+                $thMtime = is_dir("$demos/thumbs") ? (@filemtime("$demos/thumbs") ?: 0) : 0;
+                $cfgSig = is_array($cfgStat) ? ($cfgStat['mtime'] . ':' . $cfgStat['size']) : '';
+                $idxSig = is_array($idxStat) ? ($idxStat['mtime'] . ':' . $idxStat['size']) : '';
+                if (
+                    $cfgSig === ($stamp['cfg'] ?? null)
+                    && $idxSig === ($stamp['idx'] ?? null)
+                    && $thMtime === ($stamp['thumbs'] ?? null)
+                    && is_array($stamp['files'] ?? null)
+                ) {
+                    $allMatch = true;
+                    foreach ($stamp['files'] as $fname => $sig) {
+                        if (!is_string($fname) || !is_string($sig)) { $allMatch = false; break; }
+                        $st = @stat("$demos/$fname");
+                        if (!is_array($st) || ($st['mtime'] . ':' . $st['size']) !== $sig) {
+                            $allMatch = false;
+                            break;
+                        }
+                    }
+                    if ($allMatch) return;
+                }
+            }
+        }
+
+        Catalog::boot();
+        Categories::ensure();
+        // A built site keeps its example bundles beside the API, at
+        // dist/demos; a build without them (the default) has no directory
+        // there and seeds nothing. Only the API run from its source tree
+        // (apps/softn-api, in dev and the tests) may reach for the runtime's
+        // fetched bundles or a built dist/ instead — a built site tested
+        // inside the checkout must not pick up the developer's bundles.
         $index = json_decode((string) file_get_contents($indexPath), true);
         if (!is_array($index)) return;
 
@@ -275,7 +308,28 @@ final class Seed
                     error_log("softn-api: could not retire seed app $slug: " . $e->getMessage());
                 }
             }
-            @touch($flag);
+            $fileSigs = [];
+            foreach ($index as $entry) {
+                if (!is_array($entry) || !is_string($entry['file'] ?? null)) continue;
+                $bn = basename($entry['file']);
+                $st = @stat("$demos/$bn");
+                if (is_array($st)) $fileSigs[$bn] = $st['mtime'] . ':' . $st['size'];
+            }
+            $cfgStat = @stat("$dir/config.json");
+            $idxStat = @stat($indexPath);
+            $stampData = json_encode([
+                'v' => 2,
+                'demos' => $demos,
+                'cfg' => is_array($cfgStat) ? ($cfgStat['mtime'] . ':' . $cfgStat['size']) : '',
+                'idx' => is_array($idxStat) ? ($idxStat['mtime'] . ':' . $idxStat['size']) : '',
+                'thumbs' => is_dir("$demos/thumbs") ? (@filemtime("$demos/thumbs") ?: 0) : 0,
+                'files' => $fileSigs,
+            ], JSON_UNESCAPED_SLASHES);
+            if (is_string($stampData)) {
+                @file_put_contents($flag, $stampData, LOCK_EX);
+            } else {
+                @touch($flag);
+            }
         } finally {
             self::saveStamps($dir);
             flock($lock, LOCK_UN);

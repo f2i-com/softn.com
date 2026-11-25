@@ -31,7 +31,7 @@ export function Footer(): React.ReactElement {
               <a href="/apps?sort=newest">Newest</a>
               <a href="/apps?sort=remixed">Most remixed</a>
               <a href="/publish">Publish an app</a>
-              <a href="/api">The API</a>
+              <a href="/api" rel="nofollow">The API</a>
             </div>
 
             <div className="foot-col">

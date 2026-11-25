@@ -111,6 +111,6 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
       };
     }
   }
-  return { config, ...app, bundleData: bytes, icon, assets, warmup };
+  return { config, ...app, bundleData: bytes, bundleDigest: hash, icon, assets, warmup };
 }
 export type LoadedApplication = Awaited<ReturnType<typeof loadApplication>>;

@@ -1275,4 +1275,64 @@ describe('SoftN v2 Round-2 Security Audit Regressions', () => {
       else (globalThis as Record<string, unknown>).OffscreenCanvas = origOffscreen;
     }
   });
+
+  it('extracts per-page SEO metadata, skips WASM for scriptless static pages, and honors precomputedDigest', async () => {
+    const html = [
+      '<!doctype html>',
+      '<html lang="de">',
+      '<head>',
+      '  <title>Über Uns — Studio</title>',
+      '  <meta name="description" content="Design &amp; Engineering in München." />',
+      '  <meta name="robots" content="noindex, follow" />',
+      '  <link rel="stylesheet" href="styles.css" />',
+      '</head>',
+      '<body><main><h1>Hallo Welt</h1><p>Rein statisch.</p></main></body>',
+      '</html>',
+    ].join('\n');
+
+    const files = {
+      'manifest.json': JSON.stringify({ engine: 2, name: 'Static Site', main: 'index.html' }),
+      'index.html': html,
+      'styles.css': 'body { color: #123456; }',
+    };
+    const archive = await ContainerArchive.open(files);
+
+    const prepared = prepareHtmlDocument(html, 'index.html', archive, archive.permissions, false);
+    expect(prepared.scripts).toHaveLength(0);
+    expect(prepared.meta).toEqual({
+      title: 'Über Uns — Studio',
+      description: 'Design & Engineering in München.',
+      robots: 'noindex,follow',
+      lang: 'de',
+    });
+
+    // Mount scriptless HTML without any WASM engine URL — zero Worker/WASM fast path must succeed cleanly.
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    let capturedMeta: unknown = null;
+    try {
+      const handle = await mountSoftNContainer(target, {
+        source: files,
+        isolation: 'inline',
+        onPageMetaChange: (m) => {
+          capturedMeta = m;
+        },
+      });
+      try {
+        expect(handle.currentPath).toBe('/');
+        expect(capturedMeta).toEqual({
+          title: 'Über Uns — Studio',
+          description: 'Design & Engineering in München.',
+          robots: 'noindex,follow',
+          lang: 'de',
+        });
+        expect(handle.shadowRoot.textContent).toContain('Hallo Welt');
+        expect(handle.shadowRoot.textContent).toContain('Rein statisch.');
+      } finally {
+        handle.dispose();
+      }
+    } finally {
+      target.remove();
+    }
+  });
 });

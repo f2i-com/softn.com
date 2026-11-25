@@ -61,6 +61,11 @@ if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/(?:apps|publish)/?$#', $
     require "$root/api/index.php";
     return true;
 }
+// Raw /play/index.html is the unconfigured shell template, never a public page.
+if ($path === '/play/index.html') {
+    header('Location: /apps', true, 301);
+    return true;
+}
 // The shell's directory itself is nothing to look at: the directory is.
 if (preg_match('#^/play/?$#', $path)) {
     header('Location: /apps', true, 302);

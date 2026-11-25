@@ -107,7 +107,12 @@ export default function App(): React.ReactElement {
     const isInitialMount = !initialMetaApplied.current;
     initialMetaApplied.current = true;
     const pageNow = selectPage(route.path);
-    if (isInitialMount && pageNow.kind === 'app' && document.head.querySelector('meta[name="softn:app"]')) {
+    if (
+      isInitialMount &&
+      ((pageNow.kind === 'app' && document.head.querySelector('meta[name="softn:app"]')) ||
+        (pageNow.kind === 'directory' && document.querySelector('[data-softn-ssr="directory"]')) ||
+        (pageNow.kind === 'publish' && document.querySelector('[data-softn-ssr="publish"]')))
+    ) {
       return;
     }
     applyMeta(metaFor(pageNow, route.query));

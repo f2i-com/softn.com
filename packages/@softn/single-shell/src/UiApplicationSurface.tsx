@@ -9,6 +9,7 @@ import {
   pageTitle,
 } from '@softn/core';
 export { preloadRememberedFirstDraw } from '@softn/core/renderer';
+export { awaitZippWasmSource } from '@softn/core/web-host';
 export { loadXDBData, processBundle } from '@softn/runtime-shell/bundleProcessor';
 import { createImportResolver } from '@softn/runtime-shell/bundleProcessor';
 

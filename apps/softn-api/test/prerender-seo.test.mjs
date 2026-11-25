@@ -477,3 +477,121 @@ test('multi-page hosted SoftN website: per-page URLs, per-page View-Source HTML 
   assert.match(smXml, new RegExp(`<loc>${SITE}/play/${slug}/blog/sandboxed-web\\.html</loc>`));
   assert.doesNotMatch(smXml, /secret\.php/);
 });
+
+test('SEO & performance hardening: zero-script engineTier, noindex sitemap exclusion, lang/meta parsing, heading outline, sibling SSR view, and redirects', skip, async () => {
+  const s = await startServer({
+    prefix: 'softn-seo-perf-hardening-',
+    config: { seedDemos: false, siteOrigin: SITE },
+  });
+  servers.push(s);
+
+  // Create fake WASM engine + runtime-manifest so we verify preload omission on scriptless sites.
+  const enginesDir = path.join(s.root, 'shared', 'container-runtime', 'deadbeefcafe', 'engines');
+  fs.mkdirSync(enginesDir, { recursive: true });
+  fs.writeFileSync(path.join(enginesDir, 'zipp-javascript-lite.wasm'), 'fake-wasm');
+  fs.writeFileSync(
+    path.join(s.root, 'play', 'runtime-manifest.json'),
+    JSON.stringify({
+      runtimeBase: '/shared/container-runtime/deadbeefcafe/engines/',
+      fullEngineUrl: null,
+      containerMountUrl: '/shared/assets/mount-test.js',
+    })
+  );
+
+  // Scriptless multi-page site with French lang, `>` inside meta description, semantic tags, img alt, and a noindex sub-page.
+  const staticSite = zipSync({
+    'manifest.json': strToU8(
+      JSON.stringify({
+        engine: 2,
+        name: 'Atelier Nord',
+        version: '1.0.0',
+        description: 'Pure static HTML/CSS studio showcase.',
+        main: 'index.html',
+      })
+    ),
+    'index.html': strToU8(
+      '<!doctype html><html lang="fr"><head>' +
+        '<title>Atelier Nord — Accueil</title>' +
+        '<meta name="description" content="A > B comparison &amp; studio notes." />' +
+        '</head><body>' +
+        '<main><h1>Bienvenue chez Atelier Nord</h1><h2>Nos Projets</h2>' +
+        '<p>Publié le <time datetime="2026-11-25">25 novembre</time>.</p>' +
+        '<details><summary>FAQ rapide</summary><p>Sans JavaScript requis.</p></details>' +
+        '<img src="hero.png" alt="Architecture minimaliste" />' +
+        '<a href="draft.html">Brouillon privé</a>' +
+        '</main></body></html>'
+    ),
+    'draft.html': strToU8(
+      '<!doctype html><html lang="fr"><head>' +
+        '<title>Brouillon — Atelier Nord</title>' +
+        '<meta name="robots" content="noindex, follow" />' +
+        '<meta name="description" content="Unpublished draft preview." />' +
+        '</head><body><h1>Brouillon interne</h1><p>Ne pas indexer.</p></body></html>'
+    ),
+  });
+
+  const fd = new FormData();
+  fd.set('bundle', new Blob([staticSite]), 'atelier.softn');
+  fd.set('name', 'Atelier Nord');
+  fd.set('category', 'Business');
+  fd.set('subcategory', 'hospitality');
+  const pubRes = await s.api('POST', '/api/apps', { body: fd, headers: { 'X-Admin-Key': s.adminKey } });
+  assert.equal(pubRes.status, 201, pubRes.text);
+  const slug = pubRes.json.app.slug;
+
+  // 1. Root page: `<html lang="fr">`, description containing `>`, full h1->h2 / h2->h3 shift, semantic tags, img alt,
+  //    `<main id="softn-ssr-view">` outside `#root`, modulepreload mount chunk, and ZERO WASM preload!
+  const rootRes = await fetch(`${s.base}/play/${slug}`);
+  assert.equal(rootRes.status, 200);
+  const rootHtml = await rootRes.text();
+  assert.match(rootHtml, /<html lang="fr"/);
+  assert.match(rootHtml, /name="description" content="A &gt; B comparison &amp; studio notes\."/);
+  assert.match(rootHtml, /<h2>Bienvenue chez Atelier Nord<\/h2>/);
+  assert.match(rootHtml, /<h3>Nos Projets<\/h3>/);
+  assert.match(rootHtml, /<details>/);
+  assert.match(rootHtml, /<summary>FAQ rapide<\/summary>/);
+  assert.match(rootHtml, /<time>25 novembre<\/time>/);
+  assert.match(rootHtml, /<span>Architecture minimaliste<\/span>/);
+  assert.match(rootHtml, /<div id="root">[\s\S]*?<\/div>\s*<main id="softn-ssr-view" class="softn-ssr" data-softn-ssr="play"/);
+  assert.match(rootHtml, /<link rel="modulepreload" crossorigin href="\/shared\/assets\/mount-test\.js" \/>/);
+  assert.doesNotMatch(rootHtml, /zipp-javascript-lite\.wasm/, 'scriptless static HTML site must not preload 2.9 MB WASM');
+
+  // 2. Noindex sub-page omits conflicting canonical + og:url and carries noindex,follow
+  const draftRes = await fetch(`${s.base}/play/${slug}/draft.html`);
+  assert.equal(draftRes.status, 200);
+  const draftHtml = await draftRes.text();
+  assert.match(draftHtml, /<meta name="robots" content="noindex,follow" \/>/);
+  assert.doesNotMatch(draftHtml, /<link rel="canonical"/);
+  assert.doesNotMatch(draftHtml, /property="og:url"/);
+
+  // 3. Sitemap includes root page and subcategory URL, and excludes the noindex draft sub-page
+  const smRes = await fetch(`${s.base}/sitemap-apps.xml`);
+  assert.equal(smRes.status, 200);
+  const smXml = await smRes.text();
+  assert.match(smXml, new RegExp(`<loc>${SITE}/play/${slug}</loc>`));
+  assert.doesNotMatch(smXml, /draft\.html/, 'noindex sub-page must be excluded from sitemap');
+  assert.match(smXml, new RegExp(`<loc>${SITE}/apps\\?category=business</loc>`));
+  assert.match(smXml, new RegExp(`<loc>${SITE}/apps\\?category=business&amp;subcategory=hospitality</loc>`));
+
+  // 4. `/play/index.html` redirects 301 -> /apps; `/api/page/publish` sends X-Robots-Tag: noindex, nofollow
+  const playIndexRes = await fetch(`${s.base}/play/index.html`, { redirect: 'manual' });
+  assert.equal(playIndexRes.status, 301);
+  assert.equal(playIndexRes.headers.get('location'), '/apps');
+
+  const apiPageAppRes = await fetch(`${s.base}/api/page/app/${slug}`);
+  assert.equal(apiPageAppRes.status, 200);
+  assert.equal(apiPageAppRes.headers.get('x-robots-tag'), 'noindex, nofollow');
+
+  const apiPagePlayRes = await fetch(`${s.base}/api/page/play/${slug}`);
+  assert.equal(apiPagePlayRes.status, 200);
+  assert.equal(apiPagePlayRes.headers.get('x-robots-tag'), 'noindex, nofollow');
+
+  // 5. Parameterized `/publish?remix=foo` and `/apps?q=atelier` omit conflicting canonical + emit noindex,follow
+  const remixPubHtml = await (await fetch(`${s.base}/publish?remix=${slug}`)).text();
+  assert.match(remixPubHtml, /<meta name="robots" content="noindex,follow" \/>/);
+  assert.doesNotMatch(remixPubHtml, /<link rel="canonical"/);
+
+  const searchDirHtml = await (await fetch(`${s.base}/apps?q=atelier`)).text();
+  assert.match(searchDirHtml, /<meta name="robots" content="noindex,follow" \/>/);
+  assert.doesNotMatch(searchDirHtml, /<link rel="canonical"/);
+});

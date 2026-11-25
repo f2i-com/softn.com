@@ -15,7 +15,7 @@ declare(strict_types=1);
 
 final class Prerender
 {
-    public const VERSION = 6;
+    public const VERSION = 7;
     private const MAX_ENTRY_BYTES = 262144;
     private const MAX_SNAPSHOT_BYTES = 524288;
     private const MAX_IMPORT_FILES = 16;
@@ -34,6 +34,8 @@ final class Prerender
         'code' => true, 'pre' => true, 'blockquote' => true,
         'table' => true, 'thead' => true, 'tbody' => true, 'tr' => true, 'th' => true, 'td' => true,
         'dl' => true, 'dt' => true, 'dd' => true, 'figure' => true, 'figcaption' => true,
+        'details' => true, 'summary' => true, 'time' => true, 'abbr' => true, 'mark' => true,
+        'cite' => true, 'sub' => true, 'sup' => true,
         'hr' => true, 'br' => true, 'label' => true, 'button' => true,
     ];
 
@@ -45,7 +47,7 @@ final class Prerender
         'h1' => true, 'h2' => true, 'h3' => true, 'h4' => true, 'h5' => true, 'h6' => true,
         'p' => true, 'ul' => true, 'ol' => true, 'li' => true,
         'section' => true, 'article' => true, 'header' => true, 'main' => true, 'footer' => true, 'nav' => true, 'aside' => true,
-        'div' => true, 'pre' => true, 'blockquote' => true,
+        'div' => true, 'pre' => true, 'blockquote' => true, 'details' => true, 'summary' => true,
         'table' => true, 'thead' => true, 'tbody' => true, 'tr' => true,
         'dl' => true, 'dt' => true, 'dd' => true, 'figure' => true, 'figcaption' => true, 'hr' => true,
     ];
@@ -94,6 +96,82 @@ final class Prerender
      *
      * @return array{themeMode: ?string, previewHtml: string, sourceType: string, entryFile: ?string, engineTier: ?string, found: bool, pageTitle: ?string, pageDescription: ?string, pageRobots: ?string, virtualPath: string, publicPages: array<int, string>, hasSsrBackend: bool}
      */
+    /**
+     * Load cached or freshly extracted bundle-level metadata (shared across all
+     * pages of a bundle and used by `/sitemap-apps.xml` without touching per-page HTML).
+     *
+     * @return array{themeMode: ?string, engineTier: ?string, publicPages: array<int, string>, noindexPages: array<int, string>, hasSsrBackend: bool}
+     */
+    public static function bundleMetaFor(
+        string $bundlePath,
+        string $bundleSha,
+        ?string $cacheDir,
+        bool $withholdBackend
+    ): array {
+        $empty = [
+            'themeMode' => null,
+            'engineTier' => null,
+            'publicPages' => [],
+            'noindexPages' => [],
+            'hasSsrBackend' => false,
+        ];
+        if (!is_file($bundlePath)) return $empty;
+
+        $cacheFile = null;
+        if ($cacheDir !== null && $bundleSha !== '') {
+            $pathHash = substr(hash('sha256', $bundlePath), 0, 8);
+            $suffix = ($withholdBackend ? '-client' : '') . '-' . $pathHash;
+            $cacheFile = rtrim($cacheDir, '/\\') . '/bundle-meta-v' . self::VERSION . '-' . substr($bundleSha, 0, 32) . $suffix . '.json';
+            $cached = @file_get_contents($cacheFile);
+            if (is_string($cached)) {
+                $decoded = json_decode($cached, true);
+                if (is_array($decoded) && ($decoded['v'] ?? null) === self::VERSION) {
+                    $tm = $decoded['themeMode'] ?? null;
+                    $et = $decoded['engineTier'] ?? null;
+                    return [
+                        'themeMode' => ($tm === 'light' || $tm === 'dark') ? $tm : null,
+                        'engineTier' => in_array($et, ['none', 'lite', 'typescript', 'full'], true) ? $et : null,
+                        'publicPages' => is_array($decoded['publicPages'] ?? null)
+                            ? array_values(array_filter($decoded['publicPages'], 'is_string'))
+                            : [],
+                        'noindexPages' => is_array($decoded['noindexPages'] ?? null)
+                            ? array_values(array_filter($decoded['noindexPages'], 'is_string'))
+                            : [],
+                        'hasSsrBackend' => (bool) ($decoded['hasSsrBackend'] ?? false),
+                    ];
+                }
+            }
+        }
+
+        $meta = self::extractThemeAndTierFromZip($bundlePath);
+        if ($cacheFile !== null) {
+            self::writeCacheFile($cacheDir, $cacheFile, ['v' => self::VERSION] + $meta);
+        }
+        return $meta;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private static function writeCacheFile(?string $cacheDir, string $cacheFile, array $payload): void
+    {
+        if ($cacheDir === null) return;
+        try {
+            if (!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
+            if (is_dir($cacheDir)) {
+                $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+                if (is_string($encoded)) {
+                    $tmp = $cacheFile . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
+                    if (@file_put_contents($tmp, $encoded) === strlen($encoded)) {
+                        if (!@rename($tmp, $cacheFile)) @unlink($tmp);
+                    } else {
+                        @unlink($tmp);
+                    }
+                }
+            }
+        } catch (Throwable) {
+            // Read-only or full cache directories never break page rendering.
+        }
+    }
+
     public static function forBundlePage(
         string $bundlePath,
         string $bundleSha,
@@ -114,8 +192,10 @@ final class Prerender
             'pageTitle' => null,
             'pageDescription' => null,
             'pageRobots' => null,
+            'pageLang' => null,
             'virtualPath' => '/',
             'publicPages' => [],
+            'noindexPages' => [],
             'hasSsrBackend' => false,
         ];
         if (!is_file($bundlePath)) return $empty;
@@ -169,27 +249,39 @@ final class Prerender
                     $pt = $decoded['pageTitle'] ?? null;
                     $pd = $decoded['pageDescription'] ?? null;
                     $pr = $decoded['pageRobots'] ?? null;
+                    $pl = $decoded['pageLang'] ?? null;
                     $vp = $decoded['virtualPath'] ?? '/';
                     $pp = is_array($decoded['publicPages'] ?? null)
                         ? array_values(array_filter($decoded['publicPages'], 'is_string'))
+                        : [];
+                    $np = is_array($decoded['noindexPages'] ?? null)
+                        ? array_values(array_filter($decoded['noindexPages'], 'is_string'))
                         : [];
                     return [
                         'themeMode' => ($tm === 'light' || $tm === 'dark') ? $tm : null,
                         'previewHtml' => $decoded['previewHtml'],
                         'sourceType' => $decoded['sourceType'],
                         'entryFile' => is_string($ef) ? $ef : null,
-                        'engineTier' => in_array($et, ['lite', 'typescript', 'full'], true) ? $et : null,
+                        'engineTier' => in_array($et, ['none', 'lite', 'typescript', 'full'], true) ? $et : null,
                         'found' => (bool) $decoded['found'],
                         'pageTitle' => is_string($pt) && $pt !== '' ? $pt : null,
                         'pageDescription' => is_string($pd) && $pd !== '' ? $pd : null,
                         'pageRobots' => is_string($pr) && $pr !== '' ? $pr : null,
+                        'pageLang' => is_string($pl) && $pl !== '' ? $pl : null,
                         'virtualPath' => is_string($vp) && $vp !== '' ? $vp : '/',
                         'publicPages' => $pp,
+                        'noindexPages' => $np,
                         'hasSsrBackend' => (bool) ($decoded['hasSsrBackend'] ?? false),
                     ];
                 }
             }
         }
+
+        // Reuse cached bundle-level metadata (theme, tier, publicPages, noindexPages, hasSsrBackend)
+        // so sub-page misses never re-scan or re-decompress every JS/HTML file in the ZIP.
+        $bundleMeta = ($cacheDir !== null && $bundleSha !== '')
+            ? self::bundleMetaFor($bundlePath, $bundleSha, $cacheDir, $withholdBackend)
+            : null;
 
         if ($activeSnapshot !== null) {
             $rawSnap = @file_get_contents($activeSnapshot, false, null, 0, self::MAX_SNAPSHOT_BYTES);
@@ -197,7 +289,7 @@ final class Prerender
                 $snapMeta = self::extractHtmlPageMeta($rawSnap);
                 $sanitizedSnap = self::sanitizeHtml($rawSnap, self::MAX_SNAPSHOT_BYTES, $cleanLinkBase, '');
                 if ($sanitizedSnap !== '') {
-                    $meta = self::extractThemeAndTierFromZip($bundlePath);
+                    $meta = $bundleMeta ?? self::extractThemeAndTierFromZip($bundlePath);
                     $result = [
                         'themeMode' => $meta['themeMode'],
                         'previewHtml' => $sanitizedSnap,
@@ -208,38 +300,25 @@ final class Prerender
                         'pageTitle' => $snapMeta['title'],
                         'pageDescription' => $snapMeta['description'],
                         'pageRobots' => $snapMeta['robots'],
+                        'pageLang' => $snapMeta['lang'],
                         'virtualPath' => '/',
                         'publicPages' => $meta['publicPages'],
+                        'noindexPages' => $meta['noindexPages'],
                         'hasSsrBackend' => $meta['hasSsrBackend'],
                     ];
                 } else {
-                    $result = self::extractFromZip($bundlePath, $normSub, $trailingSlash, $cleanLinkBase);
+                    $result = self::extractFromZip($bundlePath, $normSub, $trailingSlash, $cleanLinkBase, $bundleMeta);
                 }
             } else {
-                $result = self::extractFromZip($bundlePath, $normSub, $trailingSlash, $cleanLinkBase);
+                $result = self::extractFromZip($bundlePath, $normSub, $trailingSlash, $cleanLinkBase, $bundleMeta);
             }
         } else {
-            $result = self::extractFromZip($bundlePath, $normSub, $trailingSlash, $cleanLinkBase);
+            $result = self::extractFromZip($bundlePath, $normSub, $trailingSlash, $cleanLinkBase, $bundleMeta);
         }
 
         // Only cache resolved pages so arbitrary 404 probes cannot flood page-cache/.
         if ($cacheFile !== null && $result['found']) {
-            try {
-                if (!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
-                if (is_dir($cacheDir)) {
-                    $encoded = json_encode(['v' => self::VERSION] + $result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-                    if (is_string($encoded)) {
-                        $tmp = $cacheFile . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
-                        if (@file_put_contents($tmp, $encoded) === strlen($encoded)) {
-                            if (!@rename($tmp, $cacheFile)) @unlink($tmp);
-                        } else {
-                            @unlink($tmp);
-                        }
-                    }
-                }
-            } catch (Throwable) {
-                // Read-only or full cache directories never break page rendering.
-            }
+            self::writeCacheFile($cacheDir, $cacheFile, ['v' => self::VERSION] + $result);
         }
 
         return $result;
@@ -272,13 +351,32 @@ final class Prerender
         return $snapshotPath;
     }
 
+    /** Whether an HTML document contains any runnable `<script>` or inline `on*` event handler. */
+    private static function htmlHasRunnableScript(string $html): bool
+    {
+        if (preg_match('/<script\b([^>]*)>/i', $html) === 1) {
+            if (preg_match_all('/<script\b([^>]*)>/i', $html, $sm) > 0) {
+                foreach ($sm[1] as $attrs) {
+                    $type = self::extractHtmlAttr($attrs, 'type');
+                    if ($type === null || $type === '') return true;
+                    $lt = strtolower(trim(explode(';', $type)[0]));
+                    if (!in_array($lt, ['application/ld+json', 'application/json', 'importmap', 'speculationrules', 'text/plain'], true)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return preg_match('/<[a-zA-Z][^>]*\son[a-z]{2,20}\s*=/i', $html) === 1;
+    }
+
     /**
      * Conservatively classify which frontend WASM engine tier a bundle will request
-     * (`'lite'`, `'typescript'`, or `'full'`) so `/play/<slug>` can emit exact
-     * `<link rel="preload" as="fetch">` hints without risking unused-preload warnings.
+     * (`'none'`, `'lite'`, `'typescript'`, or `'full'`) so `/play/<slug>` can emit exact
+     * `<link rel="preload" as="fetch">` hints without wasting bandwidth on static sites.
      */
     private static function detectEngineTierFromZip(ZipArchive $zip): string
     {
+        $hasScript = false;
         $hasTs = false;
         $needsFullJs = false;
         $limit = min($zip->numFiles, 512);
@@ -290,20 +388,32 @@ final class Prerender
             $lower = strtolower($norm);
             if (str_ends_with($lower, '.py')) return 'full';
             if (preg_match('/\.(?:ts|tsx|mts)$/', $lower) === 1) {
+                $hasScript = true;
                 $hasTs = true;
                 continue;
             }
             if (preg_match('/\.(?:html?|ui|logic|m?js|jsx|vue)$/', $lower) !== 1) continue;
+            $isHtml = str_ends_with($lower, '.html') || str_ends_with($lower, '.htm');
+            $isUi = str_ends_with($lower, '.ui');
+            if (!$isHtml && !$isUi) $hasScript = true;
+
             $stat = $zip->statIndex($i);
             if ($stat === false || (int) $stat['size'] > self::MAX_ENTRY_BYTES) {
                 // Large uninspected script file: stay conservative so we never preload the wrong engine.
+                $hasScript = true;
                 $needsFullJs = true;
                 continue;
             }
             $src = $zip->getFromIndex($i, self::MAX_ENTRY_BYTES);
             if (!is_string($src)) continue;
+            if ($isHtml && !$hasScript && self::htmlHasRunnableScript($src)) {
+                $hasScript = true;
+            } elseif ($isUi && !$hasScript && preg_match('/<(?:logic|script)\b|\bon:[a-z]+/i', $src) === 1) {
+                $hasScript = true;
+            }
             if (preg_match('/<script\b[^>]*\btype\s*=\s*["\']?(?:text\/)?python\b/i', $src) === 1) return 'full';
             if (preg_match('/<script\b[^>]*\btype\s*=\s*["\']?(?:text\/|module\/)?(?:ts|tsx|typescript)\b/i', $src) === 1) {
+                $hasScript = true;
                 $hasTs = true;
             }
             if (preg_match('/\b(?:Intl|Temporal)\b|\.(?:toLocale(?:String|DateString|TimeString|UpperCase|LowerCase)|localeCompare)\b/', $src) === 1) {
@@ -311,19 +421,20 @@ final class Prerender
             }
         }
         if ($hasTs) return 'typescript';
+        if (!$hasScript) return 'none';
         return $needsFullJs ? 'full' : 'lite';
     }
 
     /**
-     * Fast path when a live `ssr.html` snapshot is present: read `manifest.json`
-     * for `themeMode`, classify `engineTier`, and list public HTML pages without
-     * sanitizing UI/JS entries.
+     * Fast path for bundle-level metadata: read `manifest.json` for `themeMode`,
+     * classify `engineTier`, and list public HTML pages (plus any `noindex` pages)
+     * without sanitizing full page previews.
      *
-     * @return array{themeMode: ?string, engineTier: ?string, publicPages: array<int, string>, hasSsrBackend: bool}
+     * @return array{themeMode: ?string, engineTier: ?string, publicPages: array<int, string>, noindexPages: array<int, string>, hasSsrBackend: bool}
      */
     private static function extractThemeAndTierFromZip(string $bundlePath): array
     {
-        $empty = ['themeMode' => null, 'engineTier' => null, 'publicPages' => [], 'hasSsrBackend' => false];
+        $empty = ['themeMode' => null, 'engineTier' => null, 'publicPages' => [], 'noindexPages' => [], 'hasSsrBackend' => false];
         if (!class_exists('ZipArchive')) return $empty;
         $zip = new ZipArchive();
         if ($zip->open($bundlePath, ZipArchive::RDONLY) !== true) return $empty;
@@ -331,12 +442,13 @@ final class Prerender
             $tier = self::detectEngineTierFromZip($zip);
             [$prefix, $manifest] = self::readPrefixAndManifest($zip);
             $themeMode = self::themeModeFromManifest($manifest);
-            $publicPages = self::discoverPublicPages($zip, $manifest, $prefix);
+            [$publicPages, $noindexPages] = self::discoverPublicPagesAndRobots($zip, $manifest, $prefix);
             $hasSsrBackend = self::hasSsrBackend($zip, $manifest, $prefix);
             return [
                 'themeMode' => $themeMode,
                 'engineTier' => $tier,
                 'publicPages' => $publicPages,
+                'noindexPages' => $noindexPages,
                 'hasSsrBackend' => $hasSsrBackend,
             ];
         } catch (Throwable) {
@@ -464,16 +576,14 @@ final class Prerender
     }
 
     /**
-     * Discover all public static HTML routes inside the bundle (for multi-page
-     * website detection and `/sitemap-apps.xml`).
-     *
-     * Returns route paths relative to `/play/<slug>`: `""` for root index,
-     * `"about.html"`, `"blog/"` (for `blog/index.html`), `"blog/post.html"`.
+     * Discover all public static HTML routes inside the bundle AND identify any
+     * sub-pages declaring `noindex` / `none` in `<meta name="robots">` so
+     * `/sitemap-apps.xml` never submits noindex URLs.
      *
      * @param array<string, mixed>|null $manifest
-     * @return array<int, string>
+     * @return array{0: array<int, string>, 1: array<int, string>}
      */
-    private static function discoverPublicPages(ZipArchive $zip, ?array $manifest, string $prefix): array
+    private static function discoverPublicPagesAndRobots(ZipArchive $zip, ?array $manifest, string $prefix): array
     {
         $feRoot = self::frontendRootFromManifest($manifest);
         $fePrefix = $feRoot !== '' ? strtolower($feRoot) . '/' : '';
@@ -486,6 +596,7 @@ final class Prerender
         }
 
         $pages = [];
+        $routeToZip = [];
         $seen = [];
         $limit = min($zip->numFiles, 600);
         for ($i = 0; $i < $limit; $i++) {
@@ -524,13 +635,30 @@ final class Prerender
             if (isset($seen[$key])) continue;
             $seen[$key] = true;
             $pages[] = $route;
+            $routeToZip[$route] = $name;
         }
         usort($pages, static function (string $a, string $b): int {
             if ($a === '') return -1;
             if ($b === '') return 1;
             return strcmp($a, $b);
         });
-        return array_slice($pages, 0, self::MAX_PUBLIC_PAGES);
+        $pages = array_slice($pages, 0, self::MAX_PUBLIC_PAGES);
+
+        $noindexPages = [];
+        if (count($pages) > 1) {
+            foreach ($pages as $route) {
+                $zipName = $routeToZip[$route] ?? null;
+                if (!is_string($zipName)) continue;
+                $headSlice = $zip->getFromName($zipName, 8192);
+                if (!is_string($headSlice) || stripos($headSlice, 'robots') === false) continue;
+                $meta = self::extractHtmlPageMeta($headSlice);
+                $rob = $meta['robots'] ?? '';
+                if ($rob !== '' && preg_match('/(?:^|,)(?:noindex|none)(?:,|$)/', $rob) === 1) {
+                    $noindexPages[] = $route;
+                }
+            }
+        }
+        return [$pages, $noindexPages];
     }
 
     /**
@@ -617,13 +745,15 @@ final class Prerender
      * Extract theme mode, per-page SEO metadata, public page routes, and
      * sanitized rendered HTML directly from a bundle archive.
      *
-     * @return array{themeMode: ?string, previewHtml: string, sourceType: string, entryFile: ?string, engineTier: ?string, found: bool, pageTitle: ?string, pageDescription: ?string, pageRobots: ?string, virtualPath: string, publicPages: array<int, string>, hasSsrBackend: bool}
+     * @param array{themeMode: ?string, engineTier: ?string, publicPages: array<int, string>, noindexPages: array<int, string>, hasSsrBackend: bool}|null $bundleMeta
+     * @return array<string, mixed>
      */
     public static function extractFromZip(
         string $bundlePath,
         string $subPath = '',
         bool $trailingSlash = false,
-        ?string $linkBase = null
+        ?string $linkBase = null,
+        ?array $bundleMeta = null
     ): array {
         $empty = [
             'themeMode' => null,
@@ -635,8 +765,10 @@ final class Prerender
             'pageTitle' => null,
             'pageDescription' => null,
             'pageRobots' => null,
+            'pageLang' => null,
             'virtualPath' => $subPath === '' ? '/' : ('/' . $subPath),
             'publicPages' => [],
+            'noindexPages' => [],
             'hasSsrBackend' => false,
         ];
         if (!class_exists('ZipArchive')) return $empty;
@@ -645,11 +777,36 @@ final class Prerender
         if ($zip->open($bundlePath, ZipArchive::RDONLY) !== true) return $empty;
 
         try {
-            $engineTier = self::detectEngineTierFromZip($zip);
             [$prefix, $manifest] = self::readPrefixAndManifest($zip);
-            $themeMode = self::themeModeFromManifest($manifest);
-            $publicPages = self::discoverPublicPages($zip, $manifest, $prefix);
-            $hasSsrBackend = self::hasSsrBackend($zip, $manifest, $prefix);
+            $hasSsrBackend = $bundleMeta !== null
+                ? (bool) $bundleMeta['hasSsrBackend']
+                : self::hasSsrBackend($zip, $manifest, $prefix);
+
+            // Fast-fail missing sub-pages BEFORE scanning/decompressing the whole ZIP.
+            $virtualPath = '/';
+            $currentDir = '';
+            $entryName = null;
+            if ($subPath !== '') {
+                $resolved = self::resolveSubPageEntry($zip, $manifest, $prefix, $subPath, $trailingSlash);
+                $entryName = $resolved['entry'];
+                $virtualPath = $resolved['virtualPath'];
+                $currentDir = $resolved['currentDir'];
+                if ($entryName === null && !$hasSsrBackend) {
+                    $empty['virtualPath'] = $virtualPath;
+                    return $empty;
+                }
+            }
+
+            if ($bundleMeta !== null) {
+                $themeMode = $bundleMeta['themeMode'];
+                $engineTier = $bundleMeta['engineTier'];
+                $publicPages = $bundleMeta['publicPages'];
+                $noindexPages = $bundleMeta['noindexPages'];
+            } else {
+                $engineTier = self::detectEngineTierFromZip($zip);
+                $themeMode = self::themeModeFromManifest($manifest);
+                [$publicPages, $noindexPages] = self::discoverPublicPagesAndRobots($zip, $manifest, $prefix);
+            }
 
             $base = [
                 'themeMode' => $themeMode,
@@ -661,13 +818,13 @@ final class Prerender
                 'pageTitle' => null,
                 'pageDescription' => null,
                 'pageRobots' => null,
-                'virtualPath' => '/',
+                'pageLang' => null,
+                'virtualPath' => $virtualPath,
                 'publicPages' => $publicPages,
+                'noindexPages' => $noindexPages,
                 'hasSsrBackend' => $hasSsrBackend,
             ];
 
-            $virtualPath = '/';
-            $currentDir = '';
             if ($subPath === '') {
                 // 1. Prefer an explicit public pre-rendered HTML snapshot shipped inside the bundle for root.
                 $bundledSnap = self::extractBundledSnapshot($zip, $manifest, $prefix, $linkBase);
@@ -680,25 +837,18 @@ final class Prerender
                         'pageTitle' => $bundledSnap['title'],
                         'pageDescription' => $bundledSnap['description'],
                         'pageRobots' => $bundledSnap['robots'],
+                        'pageLang' => $bundledSnap['lang'],
                     ]);
                 }
                 $entryName = self::resolvePublicUiEntry($zip, $manifest, $prefix);
-            } else {
-                $resolved = self::resolveSubPageEntry($zip, $manifest, $prefix, $subPath, $trailingSlash);
-                $entryName = $resolved['entry'];
-                $virtualPath = $resolved['virtualPath'];
-                $currentDir = $resolved['currentDir'];
-                if ($entryName === null) {
-                    if ($hasSsrBackend && !preg_match('/\.(?:php|phtml|rs|sql|db|sqlite3?|env|ini|bak|log|sh|json|map|wasm|png|jpe?g|gif|webp|ico|woff2?|ttf|mp4|webm|mp3|wav)$/i', $subPath)) {
-                        $base['found'] = true;
-                        $base['sourceType'] = 'ssr-backend';
-                        $base['virtualPath'] = $virtualPath;
-                        return $base;
-                    }
-                    $base['found'] = false;
-                    $base['virtualPath'] = $virtualPath;
+            } elseif ($entryName === null) {
+                if ($hasSsrBackend && !preg_match('/\.(?:php|phtml|rs|sql|db|sqlite3?|env|ini|bak|log|sh|json|map|wasm|png|jpe?g|gif|webp|ico|woff2?|ttf|mp4|webm|mp3|wav)$/i', $subPath)) {
+                    $base['found'] = true;
+                    $base['sourceType'] = 'ssr-backend';
                     return $base;
                 }
+                $base['found'] = false;
+                return $base;
             }
 
             if ($entryName === null) {
@@ -710,7 +860,6 @@ final class Prerender
             if ($stat === false || (int) $stat['size'] === 0 || (int) $stat['size'] > self::MAX_ENTRY_BYTES) {
                 $base['found'] = true;
                 $base['entryFile'] = $relEntry;
-                $base['virtualPath'] = $virtualPath;
                 return $base;
             }
 
@@ -718,27 +867,18 @@ final class Prerender
             if (!is_string($content) || trim($content) === '') {
                 $base['found'] = true;
                 $base['entryFile'] = $relEntry;
-                $base['virtualPath'] = $virtualPath;
                 return $base;
             }
 
             $ext = strtolower((string) pathinfo($entryName, PATHINFO_EXTENSION));
             if ($ext === 'ui') {
                 $expanded = self::inlineUiImports($zip, $entryName, $content, $prefix);
-                return [
-                    'themeMode' => $themeMode,
+                return array_merge($base, [
                     'previewHtml' => self::renderUi($expanded, $linkBase, $currentDir),
                     'sourceType' => 'ui',
                     'entryFile' => $relEntry,
-                    'engineTier' => $engineTier,
                     'found' => true,
-                    'pageTitle' => null,
-                    'pageDescription' => null,
-                    'pageRobots' => null,
-                    'virtualPath' => $virtualPath,
-                    'publicPages' => $publicPages,
-                    'hasSsrBackend' => $hasSsrBackend,
-                ];
+                ]);
             }
             if ($ext === 'html' || $ext === 'htm') {
                 $pageMeta = self::extractHtmlPageMeta($content);
@@ -752,20 +892,20 @@ final class Prerender
                         $sanitized = $sanitized !== '' ? ($sanitized . "\n" . $jsHtml) : $jsHtml;
                     }
                 }
-                return [
-                    'themeMode' => $themeMode,
+                // If this specific HTML page has zero runnable scripts and no inline handlers,
+                // mark its per-page engineTier as 'none' so we skip preloading 2.9 MB WASM.
+                $pageTier = (!self::htmlHasRunnableScript($content) && !$hasSsrBackend) ? 'none' : $engineTier;
+                return array_merge($base, [
                     'previewHtml' => $sanitized,
                     'sourceType' => 'html',
                     'entryFile' => $relEntry,
-                    'engineTier' => $engineTier,
+                    'engineTier' => $pageTier,
                     'found' => true,
                     'pageTitle' => $pageMeta['title'],
                     'pageDescription' => $pageMeta['description'],
                     'pageRobots' => $pageMeta['robots'],
-                    'virtualPath' => $virtualPath,
-                    'publicPages' => $publicPages,
-                    'hasSsrBackend' => $hasSsrBackend,
-                ];
+                    'pageLang' => $pageMeta['lang'],
+                ]);
             }
 
             return $base;
@@ -822,6 +962,7 @@ final class Prerender
                     'title' => $meta['title'],
                     'description' => $meta['description'],
                     'robots' => $meta['robots'],
+                    'lang' => $meta['lang'],
                 ];
             }
         }
@@ -1145,15 +1286,28 @@ final class Prerender
 
     /**
      * Extract safe per-page `<title>`, `<meta name="description">` (or `og:description`),
-     * and `<meta name="robots">` from an HTML document's `<head>` without executing
-     * anything or trusting `<script>`/`<style>`/comment contents.
+     * `<meta name="robots">`, and `<html lang="...">` from an HTML document without
+     * executing anything or trusting `<script>`/`<style>`/comment contents.
      *
-     * @return array{title: ?string, description: ?string, robots: ?string}
+     * @return array{title: ?string, description: ?string, robots: ?string, lang: ?string}
      */
     public static function extractHtmlPageMeta(string $raw): array
     {
         $slice = strlen($raw) > 65536 ? substr($raw, 0, 65536) : $raw;
         $clean = self::stripNonContentHtml($slice, true);
+
+        $lang = null;
+        $htmlTags = self::scanOpenTagAttrs($clean, 'html', 1);
+        if ($htmlTags !== []) {
+            $rawLang = self::extractHtmlAttr($htmlTags[0], 'lang');
+            if ($rawLang !== null) {
+                $candLang = trim($rawLang);
+                if (preg_match('/^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8}){0,3}$/', $candLang) === 1) {
+                    $lang = $candLang;
+                }
+            }
+        }
+
         $head = $clean;
         if (preg_match('/<head\b[^>]*>([\s\S]*?)<\/head\s*>/i', $clean, $hm) === 1) {
             $head = $hm[1];
@@ -1172,22 +1326,20 @@ final class Prerender
         $description = null;
         $ogDesc = null;
         $robots = null;
-        if (preg_match_all('/<meta\b([^<>]{1,1024})>/i', $head, $mm) > 0) {
-            foreach ($mm[1] as $attrStr) {
-                $name = self::extractHtmlAttr($attrStr, 'name');
-                $prop = self::extractHtmlAttr($attrStr, 'property');
-                $content = self::extractHtmlAttr($attrStr, 'content');
-                if ($content === null) continue;
-                $key = strtolower(trim($name ?? $prop ?? ''));
-                if ($key === 'description' && $description === null) {
-                    $d = self::cleanTextNode($content);
-                    if ($d !== '') $description = self::clipUtf8($d, 320);
-                } elseif ($key === 'og:description' && $ogDesc === null) {
-                    $d = self::cleanTextNode($content);
-                    if ($d !== '') $ogDesc = self::clipUtf8($d, 320);
-                } elseif ($key === 'robots' && $robots === null) {
-                    $robots = self::sanitizeRobotsDirective($content);
-                }
+        foreach (self::scanOpenTagAttrs($head, 'meta', 64) as $attrStr) {
+            $name = self::extractHtmlAttr($attrStr, 'name');
+            $prop = self::extractHtmlAttr($attrStr, 'property');
+            $content = self::extractHtmlAttr($attrStr, 'content');
+            if ($content === null) continue;
+            $key = strtolower(trim($name ?? $prop ?? ''));
+            if ($key === 'description' && $description === null) {
+                $d = self::cleanTextNode($content);
+                if ($d !== '') $description = self::clipUtf8($d, 320);
+            } elseif ($key === 'og:description' && $ogDesc === null) {
+                $d = self::cleanTextNode($content);
+                if ($d !== '') $ogDesc = self::clipUtf8($d, 320);
+            } elseif ($key === 'robots' && $robots === null) {
+                $robots = self::sanitizeRobotsDirective($content);
             }
         }
 
@@ -1195,7 +1347,56 @@ final class Prerender
             'title' => $title,
             'description' => $description ?? $ogDesc,
             'robots' => $robots,
+            'lang' => $lang,
         ];
+    }
+
+    /**
+     * Linear O(N) quote-aware scanner that returns the raw attribute string of
+     * opening `<$tagName ...>` tags without PCRE quantifier blowup or backtracking.
+     *
+     * @return array<int, string>
+     */
+    private static function scanOpenTagAttrs(string $html, string $tagName, int $maxTags = 64): array
+    {
+        $out = [];
+        $len = strlen($html);
+        $needle = '<' . strtolower($tagName);
+        $nLen = strlen($needle);
+        $pos = 0;
+        while ($pos < $len && count($out) < $maxTags) {
+            $lt = stripos($html, $needle, $pos);
+            if ($lt === false) break;
+            $after = $lt + $nLen;
+            if ($after >= $len) break;
+            $boundary = $html[$after];
+            if ($boundary !== ' ' && $boundary !== "\t" && $boundary !== "\n" && $boundary !== "\r" && $boundary !== '/' && $boundary !== '>') {
+                $pos = $after;
+                continue;
+            }
+            $q = null;
+            $gt = null;
+            $scanEnd = min($len, $after + 2048);
+            for ($k = $after; $k < $scanEnd; $k++) {
+                $ch = $html[$k];
+                if ($q !== null) {
+                    if ($ch === $q) $q = null;
+                } elseif ($ch === '"' || $ch === "'") {
+                    $q = $ch;
+                } elseif ($ch === '>') {
+                    $gt = $k;
+                    break;
+                }
+            }
+            if ($gt === null) {
+                $pos = $after;
+                continue;
+            }
+            $attrs = substr($html, $after, $gt - $after);
+            $out[] = rtrim($attrs, "/ \t\r\n");
+            $pos = $gt + 1;
+        }
+        return $out;
     }
 
     private static function extractHtmlAttr(string $attrs, string $name): ?string
@@ -1355,6 +1556,7 @@ final class Prerender
             $raw = $strippedHead;
         }
 
+        $hasH1 = preg_match('/<h1(?:\s|>)/i', $raw) === 1;
         $root = ['tag' => '#root', 'attrs' => '', 'children' => []];
         $stack = [&$root];
         $nodes = 0;
@@ -1368,7 +1570,7 @@ final class Prerender
                 if (preg_match('/^<\/([a-zA-Z][a-zA-Z0-9:-]*)\s*>$/', $tok, $cm) === 1) {
                     $closeTag = strtolower($cm[1]);
                     if (!isset(self::ALLOWED_HTML_TAGS[$closeTag]) || isset(self::VOID_TAGS[$closeTag])) continue;
-                    // Pop up to matching tag (by original source tag name, so downgraded h1->h2, main->section or a->span closes cleanly).
+                    // Pop up to matching tag (by original source tag name, so shifted h1..h5, main->section or a->span closes cleanly).
                     for ($idx = count($stack) - 1; $idx >= 1; $idx--) {
                         if (($stack[$idx]['orig'] ?? $stack[$idx]['tag']) === $closeTag) {
                             while (count($stack) > $idx) array_pop($stack);
@@ -1381,14 +1583,30 @@ final class Prerender
                     $origTag = strtolower($om[1]);
                     $tag = $origTag;
                     $rawAttrs = $om[2] ?? '';
+                    // Preserve meaningful <img alt="..."> text without making external image requests.
+                    if ($origTag === 'img') {
+                        $rawAlt = self::extractHtmlAttr($rawAttrs, 'alt');
+                        if ($rawAlt !== null) {
+                            $altText = self::cleanTextNode($rawAlt);
+                            if ($altText !== '' && count($stack) - 1 < self::MAX_DEPTH) {
+                                $nodes++;
+                                $parent = &$stack[count($stack) - 1];
+                                $parent['children'][] = ['tag' => 'span', 'orig' => 'img', 'attrs' => '', 'children' => [$altText]];
+                            }
+                        }
+                        continue;
+                    }
                     $selfClosing = ($om[3] ?? '') === '/' || isset(self::VOID_TAGS[$tag]);
                     if (!isset(self::ALLOWED_HTML_TAGS[$tag])) continue;
                     if (count($stack) - 1 >= self::MAX_DEPTH) continue;
 
-                    // Downgrade h1 inside app preview to h2 so the page retains a single h1,
-                    // and map <main> to <section> so the outer page never has nested <main> landmarks.
-                    if ($tag === 'h1') $tag = 'h2';
-                    elseif ($tag === 'main') $tag = 'section';
+                    // Preserve a clean single-<h1> outline: when the preview contains <h1>, shift
+                    // heading levels down (h1->h2, h2->h3, ..., h5->h6), and map <main> to <section>.
+                    if ($hasH1 && strlen($tag) === 2 && $tag[0] === 'h' && $tag[1] >= '1' && $tag[1] <= '5') {
+                        $tag = 'h' . ((int) $tag[1] + 1);
+                    } elseif ($tag === 'main') {
+                        $tag = 'section';
+                    }
 
                     $attrs = '';
                     if ($tag === 'a') {

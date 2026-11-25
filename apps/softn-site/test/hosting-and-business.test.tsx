@@ -166,8 +166,8 @@ describe('Business Apps category & flexible hosting UI', () => {
     act(() => root.render(<AppPage slug={app.slug} categories={CATEGORIES} route={{ path: `/app/${app.slug}`, query: new URLSearchParams() }} />));
     await settle();
 
-    const playBtn = [...container.querySelectorAll('button')].find((b) => /Play hosted/i.test(b.textContent ?? ''));
-    expect(playBtn).toBeTruthy();
+    const playLink = [...container.querySelectorAll<HTMLAnchorElement>('a')].find((a) => /Play hosted/i.test(a.textContent ?? ''));
+    expect(playLink?.getAttribute('href')).toContain(app.slug);
     const localLink = [...container.querySelectorAll<HTMLAnchorElement>('a')].find((a) => /Run locally in browser/i.test(a.textContent ?? ''));
     expect(localLink?.getAttribute('href')).toContain('mode=local');
     expect(container.textContent).toContain('How it runs');

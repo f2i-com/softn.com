@@ -601,6 +601,13 @@ export interface PreparedDocument {
   placed: PlacedScript[];
   styles: string[];
   usesSoftnUiCss: boolean;
+  /** Sanitized per-page SEO metadata extracted from `<head>` and `<html>`. */
+  meta: {
+    title?: string;
+    description?: string;
+    robots?: string;
+    lang?: string;
+  };
   /** Populate `viewportEl` and fill `nodeMap` (`id -> Node`) with sanitized initial DOM nodes. */
   mountInitialDom: (viewportEl: HTMLElement, nodeMap: Map<number, Node>, docRootEl: HTMLElement) => string[];
 }
@@ -619,6 +626,32 @@ export function prepareHtmlDocument(
 ): PreparedDocument {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(htmlSource, 'text/html');
+
+  // Extract safe per-page SEO metadata before removing <head> elements.
+  const pageMeta: PreparedDocument['meta'] = {};
+  const rawTitle = (parsed.title || '').replace(/\s+/g, ' ').trim();
+  if (rawTitle) pageMeta.title = rawTitle.slice(0, 160);
+  const rawLang = (parsed.documentElement?.getAttribute('lang') ?? '').trim();
+  if (/^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8}){0,3}$/.test(rawLang)) {
+    pageMeta.lang = rawLang;
+  }
+  const descEl =
+    parsed.head?.querySelector('meta[name="description" i]') ??
+    parsed.head?.querySelector('meta[property="og:description" i]');
+  const rawDesc = (descEl?.getAttribute('content') ?? '').replace(/\s+/g, ' ').trim();
+  if (rawDesc) pageMeta.description = rawDesc.slice(0, 320);
+  const robotsEl = parsed.head?.querySelector('meta[name="robots" i]');
+  const rawRobots = (robotsEl?.getAttribute('content') ?? '').trim().toLowerCase();
+  if (rawRobots) {
+    const allowed = rawRobots
+      .split(/\s*,\s*/)
+      .filter((t) =>
+        ['index', 'noindex', 'follow', 'nofollow', 'noarchive', 'nosnippet', 'noimageindex', 'none', 'all'].includes(t) ||
+        /^max-image-preview:(?:none|standard|large)$/.test(t) ||
+        /^max-snippet:(?:-1|[0-9]{1,4})$/.test(t)
+      );
+    if (allowed.length > 0) pageMeta.robots = [...new Set(allowed)].join(',');
+  }
 
   const styles: string[] = [];
   const scripts: ExtractedScript[] = [];
@@ -647,9 +680,19 @@ export function prepareHtmlDocument(
           styles.push(SOFTN_UI_CSS);
         } else {
           const cssPath = archive.resolveFrontendExistingPath(href, entryPath);
-          const cssText = cssPath ? archive.readText(cssPath) : null;
-          if (cssText !== null && cssPath) {
-            styles.push(sanitizeContainerCss(cssText, cssPath, archive, permissions, netGranted));
+          if (cssPath) {
+            const cacheKey = `${cssPath}|${netGranted ? '1' : '0'}`;
+            const cachedCss = archive.getCachedCss(cacheKey);
+            if (cachedCss !== undefined) {
+              styles.push(cachedCss);
+            } else {
+              const cssText = archive.readText(cssPath);
+              if (cssText !== null) {
+                const sanitizedCss = sanitizeContainerCss(cssText, cssPath, archive, permissions, netGranted);
+                archive.setCachedCss(cacheKey, sanitizedCss);
+                styles.push(sanitizedCss);
+              }
+            }
           }
         }
       }
@@ -1065,6 +1108,7 @@ export function prepareHtmlDocument(
     placed,
     styles,
     usesSoftnUiCss,
+    meta: pageMeta,
     mountInitialDom,
   };
 }

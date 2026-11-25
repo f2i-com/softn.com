@@ -22,7 +22,7 @@ import { getLoadedUiSurface, preloadUiSurface, type LoadedUiSurface } from './ui
 // serves through this shell; drawn from the shared tokens, which come along.
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
 import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
-import type { SoftNContainerHandle } from '@softn/container';
+import type { ContainerPageMeta, SoftNContainerHandle } from '@softn/container';
 import {
   apply as applySiteTheme,
   readChoice as readThemeChoice,
@@ -85,6 +85,8 @@ export interface RunnableApplication {
   webContainer?: boolean;
   /** Raw `.softn` archive bytes when loaded from an archive. */
   bundleData?: Uint8Array;
+  /** Pre-verified SHA-256 hex digest of `bundleData` (avoids redundant hashing in container). */
+  bundleDigest?: string;
   /**
    * A web container's files, every one of them, for a host with no archive to hand over (the
    * PHP host serves an app's files one by one). Without the archive or this, the container
@@ -232,6 +234,77 @@ function normalizeRouteCompare(path: string): string {
   }
 }
 
+function setMetaContent(attr: 'name' | 'property', key: string, value: string): void {
+  if (typeof document === 'undefined' || !document.head) return;
+  let el = document.head.querySelector<HTMLMetaElement>(`meta[${attr}="${key}"]`);
+  if (!el) {
+    el = document.createElement('meta');
+    el.setAttribute(attr, key);
+    document.head.appendChild(el);
+  }
+  el.content = value;
+}
+
+/** Sync `<head>` canonical, OG, Twitter, description, robots, and `lang` on client-side route transitions. */
+function syncHostedHeadRoute(targetUrl: string, virtualPath: string, robots?: string): void {
+  if (typeof document === 'undefined' || !document.head) return;
+  const canonicalOrigin = (() => {
+    const existing = document.head.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.getAttribute('href');
+    if (existing) {
+      try {
+        const origin = new URL(existing).origin;
+        document.documentElement.dataset.softnCanonicalOrigin = origin;
+        return origin;
+      } catch {
+        /* ignore */
+      }
+    }
+    return document.documentElement.dataset.softnCanonicalOrigin || window.location.origin;
+  })();
+  const cleanUrl = `${canonicalOrigin}${targetUrl.split(/[?#]/)[0]}`;
+  const isNoindex = typeof robots === 'string' && /(?:^|,)(?:noindex|none)(?:,|$)/i.test(robots);
+
+  if (virtualPath === '/' || /^\/index\.html?$/i.test(virtualPath)) {
+    document.head.querySelector('meta[name="softn:page"]')?.remove();
+  } else {
+    setMetaContent('name', 'softn:page', virtualPath.split(/[?#]/)[0]);
+  }
+  if (isNoindex) {
+    document.head.querySelector('link[rel="canonical"]')?.remove();
+    document.head.querySelector('meta[property="og:url"]')?.remove();
+  } else {
+    let canon = document.head.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+    if (!canon) {
+      canon = document.createElement('link');
+      canon.rel = 'canonical';
+      document.head.appendChild(canon);
+    }
+    canon.href = cleanUrl;
+    setMetaContent('property', 'og:url', cleanUrl);
+  }
+  const ogType = document.head.querySelector<HTMLMetaElement>('meta[property="og:type"]');
+  if (ogType) ogType.content = virtualPath === '/' ? 'website' : 'article';
+}
+
+function syncHostedPageMeta(meta: ContainerPageMeta, fallbackTitle: string): void {
+  if (typeof document === 'undefined' || !document.head) return;
+  const title = meta.title?.trim() || fallbackTitle;
+  if (title) {
+    document.title = title;
+    setMetaContent('property', 'og:title', title);
+    setMetaContent('name', 'twitter:title', title);
+  }
+  if (meta.description) {
+    setMetaContent('name', 'description', meta.description);
+    setMetaContent('property', 'og:description', meta.description);
+    setMetaContent('name', 'twitter:description', meta.description);
+  }
+  setMetaContent('name', 'robots', meta.robots || 'index,follow,max-image-preview:large');
+  if (meta.lang) {
+    document.documentElement.lang = meta.lang;
+  }
+}
+
 export type { HostBackendCall } from './host';
 export function Application({ app, backendCall }: { app: RunnableApplication; backendCall?: HostBackendCall }) {
   const requested = inspectDeclaration(app.declared).requested;
@@ -336,19 +409,18 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   useEffect(() => () => imports?.dispose(), [imports]);
   const counted = useRef(false);
   const runsUrl = app.config.directory?.runs;
-  const onLoad = useMemo(
-    () =>
-      runsUrl
-        ? () => {
-            // Once per load of the page: a permission grant re-renders the
-            // runtime in place, and that is the same run.
-            if (counted.current) return;
-            counted.current = true;
-            countRun(runsUrl);
-          }
-        : undefined,
-    [runsUrl]
-  );
+  const onLoad = useCallback(() => {
+    // Remove the sibling View-Source SSR preview only once the live interactive app is ready,
+    // keeping crawlable SSR HTML intact if bundle loading fails in a bot or restricted environment.
+    if (typeof document !== 'undefined') {
+      document.getElementById('softn-ssr-view')?.remove();
+    }
+    if (!runsUrl || counted.current) return;
+    // Once per load of the page: a permission grant re-renders the
+    // runtime in place, and that is the same run.
+    counted.current = true;
+    countRun(runsUrl);
+  }, [runsUrl]);
   function allow() {
     // A failed write does not undo it: consent still applies for this session.
     saveGrant(app.grantKey);
@@ -376,6 +448,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   const routeBasePath = app.config.basePath;
   const containerHandleRef = useRef<SoftNContainerHandle | null>(null);
   const initialRouteSyncedRef = useRef(false);
+  const lastRouteRef = useRef<{ targetUrl: string; virtualPath: string } | null>(null);
   const setContainerHandle = useCallback((handle: SoftNContainerHandle | null) => {
     containerHandleRef.current = handle;
     if (!handle) initialRouteSyncedRef.current = false;
@@ -385,6 +458,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
       if (!routeBasePath || typeof window === 'undefined') return;
       const targetUrl = buildBrowserRouteUrl(routeBasePath, urlPath);
       if (!targetUrl) return;
+      lastRouteRef.current = { targetUrl, virtualPath: urlPath };
       const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
       const isInitialSync = !initialRouteSyncedRef.current;
       initialRouteSyncedRef.current = true;
@@ -401,8 +475,21 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
           window.scrollTo?.(0, 0);
         }
       }
+      if (!isInitialSync) {
+        syncHostedHeadRoute(targetUrl, urlPath);
+      }
     },
     [routeBasePath]
+  );
+  const handleContainerPageMetaChange = useCallback(
+    (meta: ContainerPageMeta) => {
+      if (!routeBasePath) return;
+      syncHostedPageMeta(meta, app.config.title);
+      if (lastRouteRef.current) {
+        syncHostedHeadRoute(lastRouteRef.current.targetUrl, lastRouteRef.current.virtualPath, meta.robots);
+      }
+    },
+    [app.config.title, routeBasePath]
   );
   useEffect(() => {
     if (!app.webContainer || !routeBasePath || typeof window === 'undefined') return;
@@ -573,6 +660,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
           {app.webContainer && containerSource ? (
             <WebContainerView
               source={containerSource}
+              precomputedDigest={app.bundleDigest}
               appId={app.appId}
               initialPath={app.config.initialPath}
               backendUrl={app.config.backendUrl}
@@ -586,6 +674,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               onReady={onLoad}
               onTitleChange={showTitle}
               onRouteChange={handleContainerRouteChange}
+              onPageMetaChange={handleContainerPageMetaChange}
               onHandle={setContainerHandle}
               loading={<Loading text={app.config.loadingText} />}
               error={(error: Error) => {

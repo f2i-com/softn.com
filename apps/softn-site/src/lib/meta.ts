@@ -73,16 +73,18 @@ export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
         imageAlt: HOME_IMAGE_ALT,
       };
     }
-    case 'publish':
+    case 'publish': {
+      const isParameterized = Boolean(query?.get('remix')?.trim() || query?.get('update')?.trim());
       return {
         path: '/publish',
         title: 'Publish a SoftN App — SoftN',
         description:
           'Put a .softn app in the SoftN directory. No account: publishing gives you an edit key, and a script can publish with one request.',
-        indexable: true,
+        indexable: !isParameterized,
         image: HOME_IMAGE_PATH,
         imageAlt: HOME_IMAGE_ALT,
       };
+    }
     case 'app':
       return {
         path: `/app/${encodeURIComponent(page.slug)}`,
@@ -122,24 +124,49 @@ function metaTag(doc: Document, attribute: 'name' | 'property', key: string): HT
  * file declares none.
  */
 function canonicalOrigin(doc: Document): string {
+  if (doc.head.childElementCount === 0) {
+    if (doc.documentElement) delete doc.documentElement.dataset.softnCanonicalOrigin;
+    return doc.location?.origin ?? '';
+  }
   const declared = doc.head.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.getAttribute('href');
   try {
-    if (declared) return new URL(declared).origin;
+    if (declared) {
+      const parsed = new URL(declared).origin;
+      if (doc.documentElement) doc.documentElement.dataset.softnCanonicalOrigin = parsed;
+      return parsed;
+    }
   } catch {
     /* a relative or broken href: fall through */
   }
+  const remembered = doc.documentElement?.dataset.softnCanonicalOrigin;
+  if (remembered) return remembered;
   return doc.location?.origin ?? '';
 }
 
 export function applyMeta(meta: PageMeta, doc: Document = document): void {
-  const url = `${canonicalOrigin(doc)}${meta.path}`;
-  const canonical = ensure(doc, 'link[rel="canonical"]', () => {
-    const link = doc.createElement('link');
-    link.rel = 'canonical';
-    return link;
-  });
-  canonical.href = url;
-  metaTag(doc, 'property', 'og:url').content = url;
+  const origin = canonicalOrigin(doc);
+  const url = `${origin}${meta.path}`;
+  // Clean up route-scoped tags left over from previous pages during SPA transitions.
+  doc.head.querySelectorAll('link[rel="prev"], link[rel="next"]').forEach((el) => el.remove());
+  if (!meta.path.startsWith('/app/')) {
+    doc.head.querySelector('meta[name="softn:app"]')?.remove();
+  }
+  const ogType = doc.head.querySelector<HTMLMetaElement>('meta[property="og:type"]');
+  if (ogType) ogType.content = meta.path.startsWith('/app/') ? 'article' : 'website';
+
+  if (meta.indexable) {
+    const canonical = ensure(doc, 'link[rel="canonical"]', () => {
+      const link = doc.createElement('link');
+      link.rel = 'canonical';
+      return link;
+    });
+    canonical.href = url;
+    metaTag(doc, 'property', 'og:url').content = url;
+  } else {
+    // Avoid contradictory `noindex` + cross-URL `<link rel="canonical">` signals.
+    doc.head.querySelector('link[rel="canonical"]')?.remove();
+    doc.head.querySelector('meta[property="og:url"]')?.remove();
+  }
   if (meta.title) setTitle(meta.title, doc);
   setDescription(meta.description, doc);
   if (meta.image) setImage(meta.image, meta.imageAlt, doc);

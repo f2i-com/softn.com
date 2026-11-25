@@ -100,8 +100,8 @@ describe('app listing lifecycle', () => {
     expect(under).toContain('in the directory');
     expect(document.title).toBe('App not found — SoftN');
     expect(document.querySelector<HTMLMetaElement>('meta[name="robots"]')?.content).toBe('noindex');
-    expect(document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href).not.toContain('no-such-app');
-    expect(document.querySelector<HTMLMetaElement>('meta[property="og:url"]')?.content).not.toContain('no-such-app');
+    expect(document.querySelector<HTMLLinkElement>('link[rel="canonical"]')).toBeNull();
+    expect(document.querySelector<HTMLMetaElement>('meta[property="og:url"]')).toBeNull();
     // A real app's page puts its own head back.
     applyMeta(metaFor({ kind: 'app', slug: 'demo' }));
     expect(document.querySelector('meta[name="robots"]')).toBeNull();

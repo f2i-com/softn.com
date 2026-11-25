@@ -323,6 +323,8 @@ export class ContainerArchive {
   private readonly textCache = new Map<string, string>();
   private readonly binaryCache = new Map<string, Uint8Array>();
   private readonly blobUrls = new Map<string, string>();
+  /** Sanitized external stylesheets cached per `(cssPath|netGranted|fontPrefix)` across multi-page navigations. */
+  private readonly sanitizedCssCache = new Map<string, string>();
   /** Blobs the app's script made an address for (`URL.createObjectURL`), by the address's id. */
   private readonly runtimeBlobs = new Map<string, { bytes: Uint8Array; type: string; url: string | null }>();
   private runtimeBlobBytes = 0;
@@ -353,11 +355,15 @@ export class ContainerArchive {
   /** Open a `.softn` container from ZIP bytes or an unpacked file map. */
   static async open(
     input: Uint8Array | ArrayBuffer | Record<string, string | Uint8Array>,
-    fallbackName = 'SoftN App'
+    fallbackName = 'SoftN App',
+    precomputedDigest?: string
   ): Promise<ContainerArchive> {
     if (input instanceof Uint8Array || input instanceof ArrayBuffer) {
       const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-      const digest = await sha256Hex(bytes);
+      const digest =
+        typeof precomputedDigest === 'string' && /^[a-f0-9]{64}$/i.test(precomputedDigest)
+          ? precomputedDigest.toLowerCase()
+          : await sha256Hex(bytes);
       const zipArchive = openBundleArchive(bytes);
       const rawNames = zipArchive.names();
       const rawPrefix = detectSingleRootPrefix(rawNames);
@@ -964,9 +970,19 @@ export class ContainerArchive {
     return direct && this.isFrontendPath(direct) ? direct : null;
   }
 
+  getCachedCss(key: string): string | undefined {
+    return this.sanitizedCssCache.get(key);
+  }
+
+  setCachedCss(key: string, css: string): void {
+    if (this.sanitizedCssCache.size >= 128) this.sanitizedCssCache.clear();
+    this.sanitizedCssCache.set(key, css);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.sanitizedCssCache.clear();
     if (typeof URL.revokeObjectURL === 'function') {
       for (const url of this.blobUrls.values()) {
         try {

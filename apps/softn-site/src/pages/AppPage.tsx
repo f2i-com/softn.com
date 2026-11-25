@@ -247,7 +247,10 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
         if (a.description) setDescription(a.description);
         if (a.thumbnail) setImage(a.thumbnail, `${a.name} on SoftN`);
         // A link opened by its manifest name lands on the slug.
-        if (a.slug !== slug) window.history.replaceState({}, '', `/app/${a.slug}${window.location.search}`);
+        if (a.slug !== slug) {
+          window.history.replaceState({}, '', `/app/${a.slug}${window.location.search}`);
+          applyMeta({ ...metaFor({ kind: 'app', slug: a.slug }), title: `${a.name} — SoftN`, description: a.description || metaFor({ kind: 'app', slug: a.slug }).description });
+        }
       })
       .catch((e) => {
         if (ac.signal.aborted) return;
@@ -316,7 +319,8 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
     if (error.status === 404) {
       applyMeta(metaFor({ kind: 'not-found' }));
       setTitle('App not found — SoftN');
-    } else {
+    } else if (error.status !== 0 || !document.head.querySelector('meta[name="softn:app"]')) {
+      // Avoid overwriting a server-rendered app title when a bot/network aborts the XHR (status 0).
       setTitle('App not loaded — SoftN');
     }
   }, [error]);
@@ -482,15 +486,24 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
                   <ExternalGlyph />
                 </a>
               ) : (
-                <button type="button" className="cta cta-primary" onClick={play}>
+                <a
+                  className="cta cta-primary"
+                  href={runUrl(app.slug)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    e.preventDefault();
+                    play();
+                  }}
+                >
                   <PlayGlyph />
                   {app.hosting?.serverHosted ? (app.hosting.mode === 'hybrid' ? 'Play hosted' : 'Open hosted app') : 'Play'}
-                </button>
+                </a>
               )}
               {!external && app.hosting?.serverHosted && app.hosting.browserSupported && (
                 <a
                   className="cta"
                   href={runUrl(app.slug, { local: true })}
+                  rel="nofollow"
                   onClick={() => void recordRun(app.slug)}
                   title="Download the .softn bundle and run frontend, backend and SQLite locally inside your browser sandbox"
                 >
@@ -500,21 +513,21 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
               {!external && (
                 <>
                   {!app.hosting?.withholdBackend && (
-                    <a className="cta" href={remixUrl}>
+                    <a className="cta" href={remixUrl} rel="nofollow">
                       Remix
                     </a>
                   )}
                   <button type="button" className="cta" onClick={() => setShowSource((s) => !s)} aria-expanded={showSource} aria-controls="source">
                     {showSource ? 'Hide source' : 'View source'}
                   </button>
-                  <a className="cta" href={app.urls.download ?? undefined} download={`${app.slug}.softn`}>
+                  <a className="cta" href={app.urls.download ?? undefined} rel="nofollow" download={`${app.slug}.softn`}>
                     {app.hosting?.withholdBackend ? 'Download client' : 'Download'}
                   </a>
                 </>
               )}
               <ShareMenu url={app.urls.page} title={shareTitle} text={shareText} />
               {editable && (
-                <a className="cta cta-edit" href={`/publish?update=${encodeURIComponent(app.slug)}`}>
+                <a className="cta cta-edit" href={`/publish?update=${encodeURIComponent(app.slug)}`} rel="nofollow">
                   Update
                 </a>
               )}
@@ -529,7 +542,7 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
               </p>
             ) : (
               <p className="app-edit-links muted">
-                Change it: <a href={app.urls.studio ?? undefined}>Studio</a> (have a model rewrite it) or <a href={app.urls.builder ?? undefined}>Builder</a> (by hand).
+                Change it: <a href={app.urls.studio ?? undefined} rel="nofollow">Studio</a> (have a model rewrite it) or <a href={app.urls.builder ?? undefined} rel="nofollow">Builder</a> (by hand).
               </p>
             )}
           </div>

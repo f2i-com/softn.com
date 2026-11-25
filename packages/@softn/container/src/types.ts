@@ -405,10 +405,20 @@ export type ZippEngineSource = BufferSource | WebAssembly.Module | string;
 /** An engine, or a function that answers one when its tier is first needed. */
 export type ZippEngineSupplier = ZippEngineSource | (() => ZippEngineSource | Promise<ZippEngineSource>);
 
+/** Extracted per-page SEO metadata from a guest HTML document's `<head>` and `<html>`. */
+export interface ContainerPageMeta {
+  title?: string;
+  description?: string;
+  robots?: string;
+  lang?: string;
+}
+
 /** Configuration for mounting a SoftN v2 container. */
 export interface SoftNContainerOptions {
   /** `.softn` ZIP bytes, URL to a `.softn` archive, or unpacked file map. */
   source: Uint8Array | ArrayBuffer | string | Record<string, string | Uint8Array>;
+  /** Optional pre-verified SHA-256 hex digest of `source` bytes (skips redundant full-bundle hashing). */
+  precomputedDigest?: string;
   /** Base URL where `/runtime/` assets (`engines/`, `vendor/`, `ui/`, `compat/`) are served. */
   runtimeUrl?: string;
   /** Dedicated-worker entry in the host's service-worker scope when its runtime files are shared. */
@@ -534,6 +544,8 @@ export interface SoftNContainerOptions {
   onPageChange?: (path: string, manifest: ContainerManifest) => void;
   /** Virtual URL path updates (`'/'`, `'/about.html'`, `'/blog/post.html'`) for host URL bar sync. */
   onRouteChange?: (urlPath: string, pushHistory: boolean) => void;
+  /** Per-page SEO metadata extracted from the active HTML page (`title`, `description`, `robots`, `lang`). */
+  onPageMetaChange?: (meta: ContainerPageMeta) => void;
   /** Let an embedding host present a web link clicked by the user. */
   onExternalLink?: (href: string) => void;
   /** Ready callback once initial scripts + `DOMContentLoaded` complete. */

@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Capability } from '@softn/bundle-format/capabilities';
 import type { PermissionConfig } from '@softn/core';
-import type { ContainerBootStatus, ContainerPermissions, SoftNContainerHandle } from '@softn/container';
+import type { ContainerBootStatus, ContainerPageMeta, ContainerPermissions, SoftNContainerHandle } from '@softn/container';
 import { hostedContainerOptions } from './containerHost';
 
 export interface WebContainerViewProps {
   /** Raw `.softn`/`.zip` archive bytes or unpacked VFS map. */
   source: Uint8Array | Record<string, string | Uint8Array>;
+  /** Optional pre-verified SHA-256 hex digest of `source` (skips redundant hashing on startup). */
+  precomputedDigest?: string;
   /** Where `@softn/container`'s runtime files are, when not where this build put them (containerHost.ts). */
   runtimeUrl?: string;
   /** Content-addressed identity for isolated container storage. */
@@ -39,6 +41,8 @@ export interface WebContainerViewProps {
   onTitleChange?: (title: string) => void;
   /** Fired when the container's virtual URL route changes (for syncing the host URL bar). */
   onRouteChange?: (urlPath: string, pushHistory: boolean) => void;
+  /** Fired with sanitized per-page SEO metadata (`title`, `description`, `robots`, `lang`). */
+  onPageMetaChange?: (meta: ContainerPageMeta) => void;
   /** Receives the live container handle when mounted and `null` on teardown. */
   onHandle?: (handle: SoftNContainerHandle | null) => void;
   /** Optional console listener. */
@@ -57,6 +61,7 @@ export interface WebContainerViewProps {
  */
 export function WebContainerView({
   source,
+  precomputedDigest,
   runtimeUrl,
   appId,
   storagePrefix,
@@ -73,6 +78,7 @@ export function WebContainerView({
   onReady,
   onTitleChange,
   onRouteChange,
+  onPageMetaChange,
   onHandle,
   onConsole,
   active = true,
@@ -91,6 +97,8 @@ export function WebContainerView({
   onTitleRef.current = onTitleChange;
   const onRouteChangeRef = useRef(onRouteChange);
   onRouteChangeRef.current = onRouteChange;
+  const onPageMetaChangeRef = useRef(onPageMetaChange);
+  onPageMetaChangeRef.current = onPageMetaChange;
   const onHandleRef = useRef(onHandle);
   onHandleRef.current = onHandle;
   const onConsoleRef = useRef(onConsole);
@@ -116,6 +124,7 @@ export function WebContainerView({
         if (cancelled) return;
         const mounted = await mountSoftNContainer(el, {
           source,
+          ...(precomputedDigest ? { precomputedDigest } : {}),
           // The build's own folder and core's engine for the Python tiers (containerHost.ts).
           ...hostedContainerOptions(),
           ...(runtimeUrl ? { runtimeUrl } : {}),
@@ -148,6 +157,7 @@ export function WebContainerView({
           },
           onTitleChange: (title) => onTitleRef.current?.(title),
           onRouteChange: (urlPath, pushHistory) => onRouteChangeRef.current?.(urlPath, pushHistory),
+          onPageMetaChange: (meta) => onPageMetaChangeRef.current?.(meta),
           onError: (err) => {
             console.error('[SoftN Container]', err);
           },

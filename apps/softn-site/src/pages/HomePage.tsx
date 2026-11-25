@@ -318,7 +318,7 @@ export function HomePage({
             </div>
           )}
           <div className="band-foot">
-            <a className="cta" href={`/apps?sort=${sort}`}>
+            <a className="cta" href={sort === 'trending' ? '/apps' : `/apps?sort=${sort}`}>
               Explore all apps
               <Arrow />
             </a>

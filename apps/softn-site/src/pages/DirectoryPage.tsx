@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type CapabilityFilter, type Category, type HostingFilter } from '../lib/api';
 import { navigate, type Route } from '../lib/router';
+import { setTitle } from '../lib/meta';
 import { AppGrid } from '../components/directory/AppCard';
 import { CAP_FILTERS, HOSTING_FILTERS, SORTS, CapabilityChips, CategoriesNotice, CategoryChips, HostingChips, Pagination, SearchBox, SortSelect, SubcategoryChips } from '../components/directory/Controls';
 
@@ -126,24 +127,28 @@ export function DirectoryPage({
   const hostingName = HOSTING_FILTERS.find((h) => h.id === hosting)?.name;
 
   // The title names what the list is narrowed to, in the order the heading
-  // over the grid does, so a tab or a bookmark says which list it is.
+  // over the grid does, so a tab, bookmark, or social preview says which list it is.
   useEffect(() => {
-    document.title = q
+    const pageSuffix = page > 1 ? ` (Page ${page})` : '';
+    const catLabel = current?.name ?? category;
+    const catHeading = /\bapps$/i.test(catLabel) ? catLabel : `${catLabel} Apps`;
+    const nextTitle = q
       ? `${q} — apps on SoftN`
       : author
-        ? `Apps by ${author} — SoftN`
+        ? `Apps by ${author}${pageSuffix} — SoftN`
         : category !== 'all'
           ? subcategory
-            ? `${currentSub?.name ?? subcategory} — ${current?.name ?? category} — SoftN`
-            : `${current?.name ?? category} apps — SoftN`
+            ? `${currentSub?.name ?? subcategory} — ${catLabel}${pageSuffix} — SoftN`
+            : `${catHeading}${pageSuffix} — SoftN`
           : tag
-            ? `Apps tagged #${tag} — SoftN`
+            ? `Apps tagged #${tag}${pageSuffix} — SoftN`
             : hostingName
-              ? `Apps: ${hostingName} — SoftN`
+              ? `Apps: ${hostingName}${pageSuffix} — SoftN`
               : capName
-                ? `Apps: ${capName} — SoftN`
-                : 'Apps — SoftN';
-  }, [q, author, category, subcategory, current?.name, currentSub?.name, tag, hostingName, capName]);
+                ? `Apps: ${capName}${pageSuffix} — SoftN`
+                : `Apps Directory${pageSuffix} — SoftN`;
+    setTitle(nextTitle);
+  }, [q, author, category, subcategory, current?.name, currentSub?.name, tag, hostingName, capName, page]);
 
   // An address that says page=abc, page=0 or page=1 means page 1, and the
   // address is made to say so — replaced, so back does not return to it.
