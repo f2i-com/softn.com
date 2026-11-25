@@ -179,5 +179,11 @@ export function warmFirstScreen(
       inflater?.terminate();
       mark('softn:asset-warm:end');
     });
-  return { done, abort: () => controller.abort() };
+  return {
+    done,
+    abort: () => {
+      controller.abort();
+      inflater?.terminate();
+    },
+  };
 }

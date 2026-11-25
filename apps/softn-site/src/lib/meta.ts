@@ -17,21 +17,38 @@ export const HOME_TITLE = 'SoftN — build apps you can run, edit and share';
 export const HOME_DESCRIPTION =
   'Build apps you can run, edit and share: try a real app in your browser, change it visually, in JavaScript or Python, or with AI, and publish your own. The source travels in one .softn file.';
 
+export const HOME_IMAGE_PATH = '/og.png';
+export const HOME_IMAGE_ALT = 'SoftN — a directory of sandboxed apps, and the runtime that runs them.';
+
 export interface PageMeta {
   /** Path of the canonical URL, on the canonical origin. */
   path: string;
   title?: string;
   description: string;
   indexable: boolean;
+  /** Default social card image path (reset on SPA navigation away from `/app/<slug>`). */
+  image?: string;
+  imageAlt?: string;
 }
 
 export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
   switch (page.kind) {
     case 'home':
-      return { path: '/', title: HOME_TITLE, description: HOME_DESCRIPTION, indexable: true };
+      return {
+        path: '/',
+        title: HOME_TITLE,
+        description: HOME_DESCRIPTION,
+        indexable: true,
+        image: HOME_IMAGE_PATH,
+        imageAlt: HOME_IMAGE_ALT,
+      };
     case 'directory': {
-      const cat = (query?.get('category') ?? '').trim().toLowerCase();
-      const sub = (query?.get('subcategory') ?? '').trim().toLowerCase();
+      const rawCat = (query?.get('category') ?? '').trim().toLowerCase();
+      const rawSub = (query?.get('subcategory') ?? '').trim().toLowerCase();
+      const cat = rawCat === 'all' ? '' : rawCat;
+      const sub = rawSub === 'all' ? '' : rawSub;
+      const rawPage = Number.parseInt((query?.get('page') ?? '').trim(), 10);
+      const pageNum = Number.isFinite(rawPage) && rawPage > 1 ? rawPage : 1;
       const hasDynamicFilter = Boolean(
         query?.get('q')?.trim()
         || query?.get('tag')?.trim()
@@ -42,13 +59,18 @@ export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
       const params = new URLSearchParams();
       if (cat) params.set('category', cat);
       if (sub) params.set('subcategory', sub);
+      if (pageNum > 1) params.set('page', String(pageNum));
       const qs = params.toString();
       return {
         path: qs ? `/apps?${qs}` : '/apps',
-        title: cat ? `${cat.charAt(0).toUpperCase()}${cat.slice(1)} Apps — SoftN` : 'Apps Directory — SoftN',
+        title: cat
+          ? `${cat.charAt(0).toUpperCase()}${cat.slice(1)} Apps${pageNum > 1 ? ` — Page ${pageNum}` : ''} — SoftN`
+          : `Apps Directory${pageNum > 1 ? ` — Page ${pageNum}` : ''} — SoftN`,
         description:
           'Apps people made with SoftN: games, tools and experiments that run in your browser, with their source to read and remix.',
         indexable: !hasDynamicFilter,
+        image: HOME_IMAGE_PATH,
+        imageAlt: HOME_IMAGE_ALT,
       };
     }
     case 'publish':
@@ -58,6 +80,8 @@ export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
         description:
           'Put a .softn app in the SoftN directory. No account: publishing gives you an edit key, and a script can publish with one request.',
         indexable: true,
+        image: HOME_IMAGE_PATH,
+        imageAlt: HOME_IMAGE_ALT,
       };
     case 'app':
       return {
@@ -66,7 +90,13 @@ export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
         indexable: true,
       };
     case 'not-found':
-      return { path: '/', description: HOME_DESCRIPTION, indexable: false };
+      return {
+        path: '/',
+        description: HOME_DESCRIPTION,
+        indexable: false,
+        image: HOME_IMAGE_PATH,
+        imageAlt: HOME_IMAGE_ALT,
+      };
   }
 }
 
@@ -112,6 +142,7 @@ export function applyMeta(meta: PageMeta, doc: Document = document): void {
   metaTag(doc, 'property', 'og:url').content = url;
   if (meta.title) setTitle(meta.title, doc);
   setDescription(meta.description, doc);
+  if (meta.image) setImage(meta.image, meta.imageAlt, doc);
   const robots = doc.head.querySelector<HTMLMetaElement>('meta[name="robots"]');
   if (meta.indexable) {
     if (robots && /noindex/i.test(robots.content)) robots.remove();

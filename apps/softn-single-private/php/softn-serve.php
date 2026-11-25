@@ -265,7 +265,28 @@ function softn_withheld_for_bundle(string $name, array $withhold, array $manifes
         if ($entry !== '') {
             if ($lower === $entry) return true;
             $slash = strpos($entry, '/');
-            if ($slash !== false && str_starts_with($lower, substr($entry, 0, $slash + 1))) return true;
+            if ($slash !== false) {
+                $entryDir = substr($entry, 0, $slash);
+                $feRoots = ['assets', 'css', 'js', 'public', 'static', 'dist', 'frontend', 'src'];
+                if ($entryDir !== '' && !in_array($entryDir, $feRoots, true) && str_starts_with($lower, $entryDir . '/')) {
+                    return true;
+                }
+            }
+        }
+        $frontendRoot = is_string($manifest['frontendRoot'] ?? null)
+            ? softn_norm_rel_path($manifest['frontendRoot'])
+            : '';
+        if ($frontendRoot !== '') {
+            $allowedRoot = ['permission.json' => true];
+            foreach (['icon', 'thumbnail'] as $metaKey) {
+                if (is_string($manifest[$metaKey] ?? null)) {
+                    $metaNorm = softn_norm_rel_path($manifest[$metaKey]);
+                    if ($metaNorm !== '') $allowedRoot[$metaNorm] = true;
+                }
+            }
+            if (!str_starts_with($lower, $frontendRoot . '/') && !isset($allowedRoot[$lower])) {
+                return true;
+            }
         }
         $ssrEntry = is_string($manifest['ssrEntry'] ?? null)
             ? softn_norm_rel_path($manifest['ssrEntry'])
@@ -528,6 +549,9 @@ function softn_is_https_request(): bool
 {
     if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') return true;
     if ((string)($_SERVER['SERVER_PORT'] ?? '') === '443') return true;
+    // Only trust X-Forwarded-Proto from loopback reverse proxies on the same host.
+    $remote = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+    if ($remote !== '127.0.0.1' && $remote !== '::1') return false;
     $parts = array_values(array_filter(array_map('trim', explode(',', (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))), static fn(string $v): bool => $v !== ''));
     $xfp = $parts !== [] ? strtolower($parts[count($parts) - 1]) : '';
     return $xfp === 'https';
@@ -929,6 +953,13 @@ function softn_manifest(ZipArchive $zip): array
     }
     if (is_string($manifest['description'] ?? null)) $out['description'] = $manifest['description'];
     if (is_string($manifest['icon'] ?? null)) $out['icon'] = $manifest['icon'];
+    if (is_string($manifest['thumbnail'] ?? null)) $out['thumbnail'] = $manifest['thumbnail'];
+    if (is_string($manifest['prerender'] ?? null) && softn_entry_ok($manifest['prerender'])) {
+        $out['prerender'] = $manifest['prerender'];
+    }
+    if (is_array($manifest['seo'] ?? null) && is_string($manifest['seo']['prerender'] ?? null) && softn_entry_ok($manifest['seo']['prerender'])) {
+        $out['seo'] = ['prerender' => $manifest['seo']['prerender']];
+    }
     $config = [];
     if (is_array($manifest['config'] ?? null)) {
         if (is_string($manifest['config']['execution'] ?? null)) $config['execution'] = $manifest['config']['execution'];
@@ -1046,7 +1077,17 @@ function softn_prerender_preview(ZipArchive $zip, array $manifest, array $config
             $fst = $zip->statIndex($i);
             if ($fst === false || (int)$fst['size'] === 0 || (int)$fst['size'] > 262144) continue;
             $src = $zip->getFromIndex($i, 262144);
-            if (!is_string($src) || !str_contains($src, 'html`')) continue;
+            if (!is_string($src) || $src === '') continue;
+            if ($fext === 'vue') {
+                if (preg_match('/<template\b[^>]*>([\s\S]*?)<\/template\s*>/i', $src, $vm) === 1) {
+                    $cleaned = preg_replace('/\{\{[\s\S]*?\}\}/', '', $vm[1]) ?? $vm[1];
+                    $chunks[] = $cleaned;
+                    $bytes += strlen($cleaned);
+                    $files++;
+                }
+                continue;
+            }
+            if (!str_contains($src, 'html`')) continue;
             $files++;
             $pos = 0; $slen = strlen($src);
             while ($pos < $slen && count($chunks) < 120) {
@@ -1100,14 +1141,82 @@ function softn_prerender_safe_href(string $attrs): ?string
     return preg_match('#^https?://[A-Za-z0-9.\-\[\]:]+(?:/.*)?$#i', $decoded) === 1 ? $decoded : null;
 }
 
+function softn_prerender_strip_non_content(string $raw): string
+{
+    static $dropSubtree = [
+        'script' => true, 'style' => true, 'noscript' => true, 'template' => true,
+        'iframe' => true, 'object' => true, 'embed' => true, 'svg' => true, 'math' => true,
+        'form' => true, 'textarea' => true, 'select' => true, 'canvas' => true,
+        'audio' => true, 'video' => true,
+    ];
+    static $dropSingle = ['input' => true, 'meta' => true, 'link' => true, 'base' => true];
+    $out = '';
+    $len = strlen($raw);
+    $i = 0;
+    while ($i < $len) {
+        $lt = strpos($raw, '<', $i);
+        if ($lt === false) { $out .= substr($raw, $i); break; }
+        if ($lt > $i) $out .= substr($raw, $i, $lt - $i);
+        if (substr_compare($raw, '<!--', $lt, 4) === 0) {
+            $end = strpos($raw, '-->', $lt + 4);
+            if ($end === false) break;
+            $i = $end + 3;
+            continue;
+        }
+        if ($lt + 1 < $len && $raw[$lt + 1] === '!') {
+            $gt = strpos($raw, '>', $lt + 2);
+            if ($gt === false) break;
+            $i = $gt + 1;
+            continue;
+        }
+        $gt = null; $q = null;
+        for ($k = $lt + 1; $k < $len; $k++) {
+            $ch = $raw[$k];
+            if ($q !== null) { if ($ch === $q) $q = null; }
+            elseif ($ch === '"' || $ch === "'") { $q = $ch; }
+            elseif ($ch === '>') { $gt = $k; break; }
+        }
+        if ($gt === null) break;
+        $tagSlice = substr($raw, $lt, $gt - $lt + 1);
+        if (preg_match('/^<\s*([a-zA-Z][a-zA-Z0-9:-]*)(?=[\s\/>])/', $tagSlice, $tm) === 1) {
+            $tag = strtolower($tm[1]);
+            $selfClosing = str_ends_with(rtrim(substr($tagSlice, 0, -1)), '/');
+            if (isset($dropSingle[$tag])) { $i = $gt + 1; continue; }
+            if (isset($dropSubtree[$tag])) {
+                $i = $gt + 1;
+                if (!$selfClosing) {
+                    $closePos = null; $searchFrom = $i;
+                    while ($searchFrom < $len) {
+                        $cand = stripos($raw, '</' . $tag, $searchFrom);
+                        if ($cand === false) break;
+                        $after = $cand + 2 + strlen($tag);
+                        while ($after < $len && ($raw[$after] === ' ' || $raw[$after] === "\t" || $raw[$after] === "\n" || $raw[$after] === "\r")) $after++;
+                        if ($after < $len && $raw[$after] === '>') { $closePos = $after + 1; break; }
+                        $searchFrom = $cand + 2;
+                    }
+                    if ($closePos === null) break;
+                    $i = $closePos;
+                }
+                continue;
+            }
+        }
+        $out .= $tagSlice;
+        $i = $gt + 1;
+    }
+    return $out;
+}
+
 function softn_prerender_html(string $raw): string
 {
-    $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
-    $raw = preg_replace('/<!DOCTYPE[^>]*>/i', '', $raw) ?? $raw;
-    $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1\s*>/i', '', $raw) ?? $raw;
-    $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|input|meta|link|base|canvas|audio|video)\b[^>]*\/?>/i', '', $raw) ?? $raw;
-    if (preg_match('/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i', $raw, $m) === 1) $raw = $m[1];
-    else $raw = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head\s*>/i', '', $raw) ?? $raw;
+    $raw = softn_prerender_strip_non_content($raw);
+    $bodyMatch = preg_match('/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i', $raw, $m);
+    if ($bodyMatch === false) return '';
+    if ($bodyMatch === 1) $raw = $m[1];
+    else {
+        $strippedHead = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head\s*>/i', '', $raw);
+        if ($strippedHead === null) return '';
+        $raw = $strippedHead;
+    }
     $allowed = ['h1'=>1,'h2'=>1,'h3'=>1,'h4'=>1,'h5'=>1,'h6'=>1,'p'=>1,'ul'=>1,'ol'=>1,'li'=>1,'section'=>1,'article'=>1,'header'=>1,'main'=>1,'footer'=>1,'nav'=>1,'aside'=>1,'div'=>1,'span'=>1,'a'=>1,'strong'=>1,'b'=>1,'em'=>1,'i'=>1,'code'=>1,'pre'=>1,'blockquote'=>1,'table'=>1,'thead'=>1,'tbody'=>1,'tr'=>1,'th'=>1,'td'=>1,'dl'=>1,'dt'=>1,'dd'=>1,'figure'=>1,'figcaption'=>1,'hr'=>1,'br'=>1,'label'=>1,'button'=>1];
     $voids = ['br'=>1,'hr'=>1];
     $esc = static fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
@@ -1400,7 +1509,9 @@ function softn_shell(array $config, string $private): never
             if (preg_match('/\bsrc\s*=/i', $attrs)) continue;
             if (preg_match('/\btype\s*=\s*["\']?\s*application\/(?:ld\+)?json\b/i', $attrs)) continue;
             if ($body === '') continue;
-            $inlineHashes["'sha256-" . base64_encode(hash('sha256', $body, true)) . "'"] = true;
+            // Browsers normalize CRLF/CR to LF before computing CSP script hashes (HTML5 spec).
+            $normalizedBody = str_replace(["\r\n", "\r"], "\n", $body);
+            $inlineHashes["'sha256-" . base64_encode(hash('sha256', $normalizedBody, true)) . "'"] = true;
         }
     }
     $scriptSrc = "'self' 'wasm-unsafe-eval'" . ($inlineHashes !== [] ? ' ' . implode(' ', array_keys($inlineHashes)) : '');
@@ -1408,7 +1519,7 @@ function softn_shell(array $config, string $private): never
     header("Content-Security-Policy: base-uri 'self'; object-src 'none'; script-src $scriptSrc; worker-src 'self' blob:; frame-ancestors 'self'" . ($config['frameAncestors'] ? ' ' . implode(' ', $config['frameAncestors']) : ''));
     if (!$config['frameAncestors']) header('X-Frame-Options: SAMEORIGIN');
     if ($config['pwa'] !== null && $config['pwa']['siteUrl'] === null) {
-        header('Vary: Host');
+        header('Vary: Host, X-Forwarded-Proto');
     }
     if (!$config['viewerToken']) {
         $etag = '"' . substr(hash('sha256', $page), 0, 24) . '"';

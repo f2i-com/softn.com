@@ -3,15 +3,15 @@ import { transformSync } from 'esbuild';
 import { defineConfig } from 'tsup';
 
 const GUEST_SOURCE_FILE_RE =
-  /(?:^|[\\/])(?:guest-(?:canvas-and-ext|web-apis|browser-globals|indexeddb|webgl|react-vendor|three-native|worker-scope)|shell-source)\.ts$/;
+  /(?:^|[\\/])(?:guest-(?:canvas-and-ext|web-apis|browser-globals|indexeddb|webgl|react-vendor|three-native|worker-scope|vendors)|shell-source|esm-linker)\.ts$/;
 
 /**
  * Minify embedded JS inside `String.raw\`...\`` guest prelude sources at build time.
- * Strips ~250 KB of comments and whitespace from `container-worker.js` and `worker-chunks/`,
- * cutting both Worker download size and ZIPP VM startup parsing time while preserving all
- * identifiers (safe for `eval`, `Function`, and `globalThis.__softn*` bridges).
+ * Strips ~300+ KB of comments, whitespace, and local identifiers from `container-worker.js`
+ * and `worker-chunks/`, cutting both Worker download size and ZIPP VM startup parsing time
+ * while preserving top-level bindings (`globalThis.__softn*`, `export` names, and `eval` scopes).
  */
-function minifyGuestSourceLiterals(source: string): string {
+function minifyGuestSourceLiterals(source: string, filePath: string): string {
   return source.replace(/String\.raw`([\s\S]*?)`/g, (full, body: string) => {
     if (body.length < 256 || body.includes('${')) return full;
     const hasEntities = body.includes('@ENTITIES@');
@@ -21,14 +21,15 @@ function minifyGuestSourceLiterals(source: string): string {
         loader: 'js',
         minifyWhitespace: true,
         minifySyntax: true,
-        minifyIdentifiers: false,
+        minifyIdentifiers: true,
         target: 'es2020',
       });
       const out = hasEntities
         ? res.code.replace(/__SOFTN_ENTITIES_PLACEHOLDER__/g, '@ENTITIES@')
         : res.code;
       return JSON.stringify(out);
-    } catch {
+    } catch (err) {
+      console.warn(`[container] Failed to minify guest source literal in ${filePath}:`, err instanceof Error ? err.message : String(err));
       return full;
     }
   });
@@ -39,7 +40,7 @@ const minifyGuestSourcesPlugin = {
   setup(build: { onLoad: (opts: { filter: RegExp }, cb: (args: { path: string }) => { contents: string; loader: 'ts' }) => void }) {
     build.onLoad({ filter: GUEST_SOURCE_FILE_RE }, (args) => {
       const raw = fs.readFileSync(args.path, 'utf8');
-      return { contents: minifyGuestSourceLiterals(raw), loader: 'ts' };
+      return { contents: minifyGuestSourceLiterals(raw, args.path), loader: 'ts' };
     });
   },
 };

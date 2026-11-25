@@ -372,6 +372,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       this.onWorkerMessage(evt);
     };
     this.worker.onerror = (evt: ErrorEvent) => {
+      if (generation !== this.generation) return;
       const details = [
         evt.message || 'worker_error',
         evt.filename ? `file=${evt.filename}` : '',
@@ -379,25 +380,14 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         evt.colno ? `col=${evt.colno}` : '',
         `url=${this.workerUrl.toString()}`,
       ].filter(Boolean).join(' | ');
-      const err = evt.error || new Error(details);
       console.error('[SoftN Worker] onerror', details, evt.error);
-      this.heard();
-      for (const [, p] of this.pending) p.reject(err);
-      this.pending.clear();
+      this.teardown(`worker_error:${details}`, true);
     };
     this.worker.onmessageerror = (evt: MessageEvent) => {
-      const err = new Error(`worker_message_error | url=${this.workerUrl.toString()}`);
+      if (generation !== this.generation) return;
       console.error('[SoftN Worker] onmessageerror', evt);
-      this.heard();
-      for (const [, p] of this.pending) p.reject(err);
-      this.pending.clear();
+      this.teardown(`worker_message_error:${this.workerUrl.toString()}`, true);
     };
-  }
-
-  /** The worker spoke: whatever was outstanding is no longer evidence of a hang. */
-  private heard(): void {
-    this.lastHeardAt = performance.now();
-    this.unanswered.clear();
   }
 
   private armWatchdog(): void {

@@ -81,4 +81,18 @@ describe('logic', () => {
     expect(languageOf(LOGIC_SAMPLE.file)).toBe('softn');
     expect(tagged(LOGIC_SAMPLE.source, languageOf(LOGIC_SAMPLE.file))).toEqual([]);
   });
+
+  it('highlights SQL identifiers with digits/underscores and CSS percentages cleanly', () => {
+    const sqlOut = tokens('SELECT user1_id FROM users WHERE count >= 2;', 'sql');
+    expect(sqlOut.map(([, text]) => text).join('')).toBe('SELECT user1_id FROM users WHERE count >= 2;');
+    expect(sqlOut).toContainEqual(['tok-mark', 'SELECT']);
+    expect(sqlOut).toContainEqual(['tok-num', '2']);
+    // `user1_id` must stay an expression token, not split at digit `1`
+    expect(sqlOut.some(([cls, txt]) => cls === 'tok-expr' && txt.includes('user1_id'))).toBe(true);
+
+    const cssOut = tokens('div { width: 100%; padding: 1.5rem; }', 'css');
+    expect(cssOut.map(([, text]) => text).join('')).toBe('div { width: 100%; padding: 1.5rem; }');
+    expect(cssOut).toContainEqual(['tok-num', '100%']);
+    expect(cssOut).toContainEqual(['tok-num', '1.5rem']);
+  });
 });

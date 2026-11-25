@@ -5,8 +5,8 @@
  * Provides a simplified API with onScan callback, facing mode, and sizing.
  */
 
-import React, { useCallback, useMemo, useRef } from 'react';
-import { isCapabilityAllowed, useCapability } from '@softn/core';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isCapabilityAllowed, useAppActive, useCapability } from '@softn/core';
 import { prepareZXingModule, Scanner, type IDetectedBarcode } from '@yudiel/react-qr-scanner';
 // The decoder, served by the host's own build rather than a CDN. The scanner
 // decodes with zxing-wasm, whose loader fetched the .wasm from jsDelivr the
@@ -69,6 +69,16 @@ export function QRReader({
   // published decision: either the `qr` capability — reading codes is what it
   // declares — or `camera` lets the scanner open the device. It mounts on the
   // render that follows the grant, with no reload.
+  const appShown = useAppActive();
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  );
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisibility = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
   const qrGrant = useCapability('qr');
   const cameraGrant = useCapability('camera');
   const consentPending = qrGrant === 'pending';
@@ -141,18 +151,24 @@ export function QRReader({
     );
   }
 
+  // Unmount <Scanner> whenever inactive or backgrounded (not just `paused`), because pausing
+  // only stops decoding while keeping the live camera MediaStream open.
+  const scannerRunning = active && appShown && pageVisible;
+
   return (
     <div style={frameStyle}>
-      <Scanner
-        onScan={handleScan}
-        paused={!active}
-        formats={SCAN_FORMATS}
-        constraints={constraints}
-        components={SCANNER_PARTS}
-        styles={SCANNER_STYLES}
-        scanDelay={100}
-        sound={false}
-      />
+      {scannerRunning ? (
+        <Scanner
+          onScan={handleScan}
+          paused={false}
+          formats={SCAN_FORMATS}
+          constraints={constraints}
+          components={SCANNER_PARTS}
+          styles={SCANNER_STYLES}
+          scanDelay={100}
+          sound={false}
+        />
+      ) : null}
     </div>
   );
 }

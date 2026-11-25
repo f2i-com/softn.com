@@ -1511,8 +1511,9 @@ function renderElement(
   // rather than only its top level.
   const egressPolicy = egressPolicyFor(context);
   if (typeof FinalComponent === 'string') {
-    // `src="images/logo.png"`: the bundle's file, before the URL check.
-    showBundleFiles(node, props, context.functions?.asset);
+    // `src="images/logo.png"`: the bundle's file, before the URL check. Under egress enforcement,
+    // unresolved relative/root-relative paths are stripped rather than left to hit the host origin.
+    showBundleFiles(node, props, context.functions?.asset, egressPolicy !== null);
     sanitizeUrlProps(props, node.tag, egressPolicy);
     if (svgElement) sanitizeSvgReferences(props, node.tag, egressPolicy);
     // After the URL check, which drops an action it refuses, and a link

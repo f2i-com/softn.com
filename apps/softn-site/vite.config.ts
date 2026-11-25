@@ -5,7 +5,7 @@ import { retireServiceWorkersPlugin } from '../../scripts/dev/dev-service-worker
 import { docsDevPlugin } from '../../scripts/dev/dev-docs.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
-import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
+import { sharedAssetsBase, sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -66,9 +66,35 @@ export default defineConfig(({ mode }) => {
     },
   };
 
+  // Preload the two primary Latin woff2 webfonts (hero display + body regular) so
+  // browsers start fetching them alongside CSS instead of waiting for @font-face parse.
+  const PRIMARY_FONT_RE = /(?:bricolage-grotesque-latin-wght-normal|ibm-plex-sans-latin-400-normal)-[^/]+\.woff2$/;
+  const preloadPrimaryFontsPlugin = {
+    name: 'softn-preload-primary-fonts',
+    transformIndexHtml: {
+      order: 'post' as const,
+      handler(_html: string, ctx: { bundle?: Record<string, { fileName?: string }> }) {
+        if (!ctx.bundle) return [];
+        const shared = sharedAssetsBase();
+        const tags: Array<{ tag: string; attrs: Record<string, string | boolean>; injectTo: 'head' }> = [];
+        for (const chunk of Object.values(ctx.bundle)) {
+          const file = chunk?.fileName;
+          if (!file || !PRIMARY_FONT_RE.test(file)) continue;
+          const href = shared && file.startsWith('assets/') ? shared + file.slice('assets/'.length) : `/${file}`;
+          tags.push({
+            tag: 'link',
+            attrs: { rel: 'preload', href, as: 'font', type: 'font/woff2', crossorigin: '' },
+            injectTo: 'head',
+          });
+        }
+        return tags;
+      },
+    },
+  };
+
   return {
     // scriptPolicyPlugin: what runs as script is this deployment's files only (scripts/build/script-policy.mjs).
-    plugins: [canonicalAppSlashesPlugin, retireServiceWorkersPlugin(), docsDevPlugin(), woff2OnlyFontsPlugin(), react(), scriptPolicyPlugin()],
+    plugins: [canonicalAppSlashesPlugin, retireServiceWorkersPlugin(), docsDevPlugin(), woff2OnlyFontsPlugin(), react(), preloadPrimaryFontsPlugin, scriptPolicyPlugin()],
     server: {
       port: env.VITE_PORT ? Number(env.VITE_PORT) : 1421,
       strictPort: true,

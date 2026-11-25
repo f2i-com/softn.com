@@ -29,17 +29,24 @@ export function renderConsentBar(
     'z-index:2147483647',
   ].join(';');
 
-  // What "the network" means for this app is part of what is being asked: the sites it
-  // names, or any site at all when it names none. The bar said "network" for both.
-  // A site is shown as a site's name is written; an entry that is not one reaches no site,
-  // and is not the app's to put words in the bar with.
-  const named = netHosts.filter((host) => HOST_NAME.test(host));
-  const reach =
-    netHosts.length === 0
-      ? 'any site'
-      : named.length === 0
-        ? 'no site'
-        : named.slice(0, 6).join(', ') + (named.length > 6 ? `, and ${named.length - 6} more` : '');
+  // Normalize hosts identically to `sanitize.ts:isExternalUrlAllowed` so a rule that
+  // actually grants network access (e.g. `*`, `*.example.com`, `API.EXAMPLE.COM.`, `[::1]`)
+  // is never misrepresented as `'no site'` in the consent prompt.
+  const normalizedHosts = netHosts
+    .map((host) => host.trim().toLowerCase().replace(/\.+$/, ''))
+    .filter((host) => host.length > 0);
+  const grantsAnySite = netHosts.length === 0 || normalizedHosts.includes('*');
+  const named = normalizedHosts.filter((host) => host !== '*' && HOST_NAME.test(host));
+  const unrecognizedCount = normalizedHosts.length - named.length - (grantsAnySite ? normalizedHosts.filter((h) => h === '*').length : 0);
+  const reach = grantsAnySite
+    ? 'any site'
+    : named.length === 0
+      ? unrecognizedCount > 0
+        ? `${unrecognizedCount} custom host rule${unrecognizedCount === 1 ? '' : 's'}`
+        : 'no site'
+      : named.slice(0, 6).join(', ') +
+        (named.length > 6 ? `, and ${named.length - 6} more` : '') +
+        (unrecognizedCount > 0 ? ` (+${unrecognizedCount} other rule${unrecognizedCount === 1 ? '' : 's'})` : '');
   const labels = requested.map((c) => (c === 'net' ? `${describeCapability(c).label} (${reach})` : describeCapability(c).label)).join(', ');
   const msg = document.createElement('span');
   msg.append(ownWord(appName), ` requests access to: ${labels}`);
@@ -72,8 +79,8 @@ export function renderConsentBar(
   return bar;
 }
 
-/** A site's name as an address has it. */
-const HOST_NAME = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/i;
+/** A site's name as an address has it (exact host, `*.domain` wildcard, or bracketed IPv6 literal). */
+const HOST_NAME = /^(?:(?:\*\.)?[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|\[[0-9a-f:.]{2,45}\])$/i;
 
 /**
  * A word of the app's own (its name, a file's name) among the bar's words: kept to itself,

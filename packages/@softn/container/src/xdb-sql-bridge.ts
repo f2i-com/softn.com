@@ -84,6 +84,7 @@ const EPHEMERAL_MAX_STEPS = 50_000_000n;
 const EPHEMERAL_MAX_PAGE_READS = 500_000n;
 
 const cachedXdbPromise: Map<string, Promise<LoadedXdbBindings>> = new Map();
+const cachedXdbByModule = new WeakMap<WebAssembly.Module, Promise<LoadedXdbBindings>>();
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && typeof process.versions?.node === 'string';
@@ -177,6 +178,11 @@ export async function loadXdbWasm(options: {
     }
   }
 
+  const explicitModule = explicitSource instanceof WebAssembly.Module ? explicitSource : null;
+  if (explicitModule) {
+    const cachedMod = cachedXdbByModule.get(explicitModule);
+    if (cachedMod) return cachedMod;
+  }
   const cacheKey = typeof explicitSource === 'string'
     ? `src:${explicitSource}`
     : explicitSource
@@ -258,7 +264,10 @@ export async function loadXdbWasm(options: {
     };
   })();
 
-  if (cacheKey) {
+  if (explicitModule) {
+    loadPromise.catch(() => cachedXdbByModule.delete(explicitModule));
+    cachedXdbByModule.set(explicitModule, loadPromise);
+  } else if (cacheKey) {
     loadPromise.catch(() => cachedXdbPromise.delete(cacheKey));
     cachedXdbPromise.set(cacheKey, loadPromise);
   }
@@ -699,7 +708,7 @@ export class XdbSqlManager {
     }
   }
 
-  /** Close a connection handle (ephemeral `:memory:` handles are freed immediately; persistent ones flush). */
+  /** Close a connection handle (ephemeral `:memory:` handles are freed immediately; persistent ones flush via `BackendWorkerSession`). */
   close(handleId: number): { ok: true } {
     const managed = this.handles.get(handleId);
     if (!managed) return { ok: true };
@@ -716,8 +725,6 @@ export class XdbSqlManager {
       } catch {
         // ignore
       }
-    } else if (managed.dirty && managed.persistent && !managed.conn.in_transaction()) {
-      this.flushOne(managed);
     }
     return { ok: true };
   }

@@ -181,6 +181,7 @@ export interface LoadedZippBindings {
 
 let glueInstanceCounter = 0;
 const compiledModuleCache = new Map<string, Promise<LoadedZippBindings>>();
+const compiledModuleByWasm = new WeakMap<WebAssembly.Module, Promise<LoadedZippBindings>>();
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && typeof process.versions?.node === 'string';
@@ -306,6 +307,11 @@ export async function loadZippEngine(options: {
     }
   }
 
+  const explicitModule = explicitSource instanceof WebAssembly.Module ? explicitSource : null;
+  if (explicitModule) {
+    const cachedMod = compiledModuleByWasm.get(explicitModule);
+    if (cachedMod) return cachedMod;
+  }
   const cacheKey = typeof explicitSource === 'string' ? `src:${explicitSource}` : explicitSource ? '' : `tier:${runtimeUrl}:${tier}`;
   if (cacheKey && compiledModuleCache.has(cacheKey)) {
     return compiledModuleCache.get(cacheKey)!;
@@ -396,7 +402,10 @@ export async function loadZippEngine(options: {
     };
   })();
 
-  if (cacheKey) {
+  if (explicitModule) {
+    compiledModuleByWasm.set(explicitModule, loadPromise);
+    loadPromise.catch(() => compiledModuleByWasm.delete(explicitModule));
+  } else if (cacheKey) {
     compiledModuleCache.set(cacheKey, loadPromise);
     loadPromise.catch(() => compiledModuleCache.delete(cacheKey));
   }

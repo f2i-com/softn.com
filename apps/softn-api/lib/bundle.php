@@ -359,17 +359,24 @@ final class Bundle
      *
      * @param array<string, true> $exactPrivate
      */
+    private static function normRelPath(mixed $value): string
+    {
+        if (!is_string($value)) return '';
+        $s = str_replace('\\', '/', trim($value));
+        $s = preg_replace('#^(?:\./)+#', '', ltrim($s, '/')) ?? ltrim($s, '/');
+        return strtolower(trim($s, '/'));
+    }
+
     private static function isBackendPrivatePath(string $name, string $backendRoot = '', array $exactPrivate = []): bool
     {
-        $clean = ltrim(str_replace('\\', '/', $name), '/');
-        if ($clean === '') return true;
-        $lower = strtolower($clean);
+        $lower = self::normRelPath($name);
+        if ($lower === '') return true;
         if (isset($exactPrivate[$lower])) return true;
-        $rootLower = strtolower($backendRoot);
+        $rootLower = self::normRelPath($backendRoot);
         if ($rootLower !== '' && ($lower === $rootLower || str_starts_with($lower, $rootLower . '/'))) return true;
         if (preg_match('#^(?:__softn_generated__/)?(?:server|backend|private|db|database|migrations)/#', $lower) === 1) return true;
         if (preg_match('#(?:^|/)\.git(?:/|$)#', $lower) === 1) return true;
-        return preg_match('#(?:^|/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|composer\.json|composer\.lock|seed\.json)$|\.(?:php|phtml|php5|php7|php8|pht|phps|phar|inc|tpl|rs|py|logic|db|db-wal|db-shm|db-journal|sqlite|sqlite3|sql|ini|bak|log|sh)$#i', $clean) === 1;
+        return preg_match('#(?:^|/)(?:\.htaccess|\.htpasswd|\.env(?:\.[^/]*)?|cargo\.toml|cargo\.lock|composer\.json|composer\.lock|seed\.json)$|\.(?:php|phtml|php5|php7|php8|pht|phps|phar|inc|tpl|rs|py|logic|db|sqlite|sqlite3|sql|ini|bak|log|sh|pem|key|secret|toml|yaml|yml)$|\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$#i', $lower) === 1;
     }
 
     /**
@@ -400,7 +407,7 @@ final class Bundle
         }
         $backendRoot = '';
         $exactPrivate = [];
-        $normRel = static fn(mixed $v): string => is_string($v) ? strtolower(trim(str_replace('\\', '/', $v), '/')) : '';
+        $normRel = static fn(mixed $v): string => self::normRelPath($v);
         $frontendRoot = $normRel($manifest['frontendRoot'] ?? null);
         $allowedRootFiles = ['permission.json' => true];
         foreach (['icon', 'thumbnail'] as $metaKey) {
@@ -409,12 +416,15 @@ final class Bundle
         }
         if (is_array($manifest['backend'] ?? null)) {
             if (is_string($manifest['backend']['root'] ?? null)) {
-                $backendRoot = trim(str_replace('\\', '/', $manifest['backend']['root']), '/');
-            } elseif (is_string($manifest['backend']['entry'] ?? null) && str_contains($manifest['backend']['entry'], '/')) {
-                $entryDir = explode('/', trim(str_replace('\\', '/', $manifest['backend']['entry']), '/'))[0];
-                $feRoots = ['assets', 'css', 'js', 'public', 'static', 'dist', 'frontend'];
-                if ($entryDir !== '' && !in_array(strtolower($entryDir), $feRoots, true)) {
-                    $backendRoot = $entryDir;
+                $backendRoot = $normRel($manifest['backend']['root']);
+            } elseif (is_string($manifest['backend']['entry'] ?? null)) {
+                $entryClean = $normRel($manifest['backend']['entry']);
+                if (str_contains($entryClean, '/')) {
+                    $entryDir = explode('/', $entryClean)[0];
+                    $feRoots = ['assets', 'css', 'js', 'public', 'static', 'dist', 'frontend', 'src'];
+                    if ($entryDir !== '' && !in_array($entryDir, $feRoots, true)) {
+                        $backendRoot = $entryDir;
+                    }
                 }
             }
             $entryRel = $normRel($manifest['backend']['entry'] ?? null);
@@ -474,7 +484,7 @@ final class Bundle
                 // inside frontendRoot plus root metadata/icons so sibling backend JS/TS modules
                 // outside frontendRoot can never leak into a withheld client bundle.
                 if ($frontendRoot !== '') {
-                    $relLower = strtolower(ltrim(str_replace('\\', '/', $rel), '/'));
+                    $relLower = $normRel($rel);
                     if (!str_starts_with($relLower, $frontendRoot . '/') && !isset($allowedRootFiles[$relLower])) {
                         continue;
                     }

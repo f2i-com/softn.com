@@ -38,9 +38,12 @@ const MAX_CAPTURED_KEYS = 32;
  * a drag that leaves the app needs and which carries no text.
  */
 const appElements = new Map<object, Element>();
+/** Runtimes managed by a renderer (`setAppElement` has been called for them); when unattached, fail closed. */
+const rendererOwnedApps = new WeakSet<object>();
 
 /** Where `owner`'s app is drawn; null when it is not drawn anywhere now. */
 export function setAppElement(owner: object, element: Element | null): void {
+  rendererOwnedApps.add(owner);
   if (element) {
     appElements.set(owner, element);
     watchPresses(element.ownerDocument?.defaultView ?? null);
@@ -175,7 +178,7 @@ const APP_BOX = '[data-softn-app]';
  */
 export function lastPressWasFor(owner: object): boolean {
   const element = appElements.get(owner);
-  if (!element) return true;
+  if (!element) return !rendererOwnedApps.has(owner);
   if (lastPressAt === 0 || Date.now() - lastPressAt > LAST_PRESS_TTL_MS) return false;
   const target = lastPress as (Node & { ownerDocument: Document | null }) | null;
   if (!target || typeof target.nodeType !== 'number') return false;
@@ -235,7 +238,7 @@ export function appHears(owner: object, event: Event): boolean {
   // sent to the window. Nothing typed into anything.
   if (!target || typeof target.nodeType !== 'number' || target.nodeType !== 1) return true;
   const element = appElements.get(owner);
-  if (!element) return !targetIsEditable(target);
+  if (!element) return rendererOwnedApps.has(owner) ? false : !targetIsEditable(target);
   if (element.contains(target)) return true;
   const shown = typeof element.checkVisibility === 'function' ? element.checkVisibility() : element.isConnected;
   if (!shown) return false;

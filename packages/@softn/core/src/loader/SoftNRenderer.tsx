@@ -2320,6 +2320,7 @@ export function SoftNRenderer({
             );
           }
           scriptRuntimeRef.current = runtime;
+          runtime.setAppRoot?.(containerRef.current);
 
           // A tap before the script has loaded — right after the app opens, or
           // right after Allow reloads it — waits for it rather than finding no
@@ -2876,7 +2877,7 @@ export function SoftNRenderer({
   // is drawn in (runtime/key-capture.ts).
   useEffect(() => {
     scriptRuntimeRef.current?.setAppRoot?.(containerElement);
-  }, [containerElement, scriptLoaded, state.document]);
+  }, [containerElement, scriptLoaded, state.document, startCount, restarts]);
 
   // What the page's code put on its html and body, drawn on the app's root.
   const rootVersion = useSyncExternalStore(
@@ -2917,9 +2918,12 @@ export function SoftNRenderer({
   const scopedStyle = useMemo(
     () =>
       styleContent && styleScoper === 'ready' && scopeCss
-        ? scopeCss.scopeAppCss(showBundleFilesInStyles(sanitizeBundleCSS(styleContent), assetResolver), appName)
+        ? scopeCss.scopeAppCss(
+            showBundleFilesInStyles(sanitizeBundleCSS(styleContent), assetResolver, runtimePermissionConfig != null),
+            appName
+          )
         : null,
-    [styleContent, assetResolver, appName, styleScoper]
+    [styleContent, assetResolver, appName, styleScoper, runtimePermissionConfig]
   );
 
   const context = useMemo<SoftNRenderContext>(() => {

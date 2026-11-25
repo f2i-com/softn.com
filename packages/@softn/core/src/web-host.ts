@@ -8,5 +8,5 @@ export { describeNetDestination } from './runtime/egress-policy';
 export { loadProgressItems, responseBodyLength, subscribeLoadProgress, trackLoad } from './runtime/load-progress';
 export { ScopedWorker } from './runtime/module-worker';
 export { carryAppSync, forgetAppSync } from './runtime/sync-app-state';
-export { cacheUncontrolledZippEngine, zippEngineBytes, zippEngineForWorker, zippWasmUrl } from './runtime/zipp-wasm-loader';
+export { awaitZippWasmSource, cacheUncontrolledZippEngine, zippEngineBytes, zippEngineForWorker, zippWasmUrl } from './runtime/zipp-wasm-loader';
 export { CAPABILITIES } from './runtime/capabilities';

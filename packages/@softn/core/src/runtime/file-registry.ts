@@ -48,10 +48,11 @@ export function getFileByRef(ref: string, requester?: object & { appId?: () => s
   if (!owner || owner === requester) return file;
   // A ref registered via another runtime's `pickFile` (a HostGate) belongs strictly to that gate.
   if ('checkPermission' in owner) return undefined;
-  // A ref registered via `<FileChooser>` carries `{ appId }` from AppScope; enforce appId match when both are known.
+  // A ref registered via `<FileChooser>` carries `{ appId }` from AppScope; fail closed if owner
+  // carries an appId and requester either lacks an appId or has a different appId.
   const ownerAppId = (owner as { appId?: unknown }).appId;
   const requesterAppId = typeof requester.appId === 'function' ? requester.appId() : undefined;
-  if (typeof ownerAppId === 'string' && typeof requesterAppId === 'string' && ownerAppId !== requesterAppId) {
+  if (typeof ownerAppId === 'string' && ownerAppId !== '' && ownerAppId !== requesterAppId) {
     return undefined;
   }
   return file;

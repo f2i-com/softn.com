@@ -7,7 +7,7 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { isCapabilityAllowed, useCapability } from '@softn/core';
+import { isCapabilityAllowed, useAppActive, useCapability } from '@softn/core';
 
 /** One per run of the start effect — see the effect at the bottom for why. */
 interface StartAttempt {
@@ -113,6 +113,16 @@ export function Camera({
   // needs the microphone declared as well. A grant arrives as a re-render and
   // the effect below starts the stream then, with no reload; a revocation
   // arrives the same way and stops it.
+  const appShown = useAppActive();
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  );
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisibility = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
   const cameraGrant = useCapability('camera');
   const micGrant = useCapability('mic');
   const consentPending = cameraGrant === 'pending';
@@ -124,7 +134,7 @@ export function Camera({
   // explicit `audio` that the declaration cannot honour is refused.
   const wantsAudio = audio ?? (mode === 'video' && micAllowed);
   const audioAllowed = !wantsAudio || micAllowed;
-  const permitted = active && cameraAllowed && audioAllowed;
+  const permitted = active && appShown && pageVisible && cameraAllowed && audioAllowed;
   const refusal = consentPending
     ? 'The camera stays off until you choose Allow in the permission bar at the top of this app.'
     : !cameraAllowed

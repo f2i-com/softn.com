@@ -266,3 +266,45 @@ test('/sitemap-apps.xml returns 404 when siteOrigin is not configured', skip, as
   const res = await fetch(`${bare.base}/sitemap-apps.xml`);
   assert.equal(res.status, 404);
 });
+
+test('Round-7 API/SSR hardening: unclosed <script> stripped, unknown /app drops canonical, POST /apps is 405, JSON has X-Robots-Tag, malformed Range is 416', skip, async () => {
+  const s = await startServer({
+    prefix: 'softn-r7-hardening-',
+    config: { seedDemos: false, siteOrigin: SITE },
+  });
+  servers.push(s);
+
+  const rawZip = zipSync({
+    'manifest.json': strToU8(JSON.stringify({ name: 'Unclosed Script App', version: '1.0.0', main: 'index.html' })),
+    'index.html': strToU8('<!doctype html><html><body><h1>Safe Heading</h1><script>var secret = "NEVER_SHOW_THIS";'),
+  });
+  const fd = new FormData();
+  fd.set('bundle', new Blob([rawZip]), 'unclosed.softn');
+  fd.set('name', 'Unclosed Script App');
+  const pubRes = await s.api('POST', '/api/apps', { body: fd, headers: { 'X-Admin-Key': s.adminKey } });
+  assert.equal(pubRes.status, 201, pubRes.text);
+  const slug = pubRes.json.app.slug;
+
+  const playHtml = await (await fetch(`${s.base}/play/${slug}`)).text();
+  assert.match(playHtml, /Safe Heading/);
+  assert.doesNotMatch(playHtml, /NEVER_SHOW_THIS/);
+
+  const unknownAppRes = await fetch(`${s.base}/app/no-such-app-r7`);
+  assert.equal(unknownAppRes.status, 200);
+  const unknownAppHtml = await unknownAppRes.text();
+  assert.match(unknownAppHtml, /<meta name="robots" content="noindex" \/>/);
+  assert.doesNotMatch(unknownAppHtml, /<link rel="canonical"/);
+  assert.doesNotMatch(unknownAppHtml, /property="og:url"/);
+
+  const postApps = await fetch(`${s.base}/apps`, { method: 'POST' });
+  assert.equal(postApps.status, 405);
+
+  const apiApps = await fetch(`${s.base}/api/apps`);
+  assert.equal(apiApps.status, 200);
+  assert.equal(apiApps.headers.get('x-robots-tag'), 'noindex');
+
+  const badRange = await fetch(`${s.base}/api/apps/${slug}/source/file?path=index.html`, {
+    headers: { Range: 'bytes=-' },
+  });
+  assert.equal(badRange.status, 416);
+});

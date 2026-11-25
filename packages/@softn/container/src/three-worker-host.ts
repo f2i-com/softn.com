@@ -103,29 +103,63 @@ function isObjectAncestor(candidate: import('three').Object3D, node: import('thr
   return false;
 }
 
-function disposeMaterialWithTextures(mat: unknown): void {
-  if (!mat || typeof mat !== 'object') return;
-  for (const val of Object.values(mat as Record<string, unknown>)) {
-    if (val && typeof val === 'object' && (val as { isTexture?: boolean; dispose?: () => void }).isTexture) {
-      try { (val as { dispose?: () => void }).dispose?.(); } catch { /* ignore */ }
-    }
-  }
-  try { (mat as { dispose?: () => void }).dispose?.(); } catch { /* ignore */ }
-}
-
-function disposeObjectTree(root: import('three').Object3D): void {
+function markSharedTemplateTree(root: import('three').Object3D): void {
   root.traverse((node) => {
     const m = node as {
-      geometry?: { dispose?: () => void };
+      geometry?: { userData?: Record<string, unknown> };
       material?: unknown | unknown[];
     };
-    try { m.geometry?.dispose?.(); } catch { /* ignore */ }
+    if (m.geometry && typeof m.geometry === 'object') {
+      m.geometry.userData = { ...(m.geometry.userData ?? {}), __softnSharedTemplate: true };
+    }
+    const markMat = (mat: unknown) => {
+      if (!mat || typeof mat !== 'object') return;
+      const rec = mat as { userData?: Record<string, unknown> } & Record<string, unknown>;
+      rec.userData = { ...(rec.userData ?? {}), __softnSharedTemplate: true };
+      for (const val of Object.values(rec)) {
+        if (val && typeof val === 'object' && (val as { isTexture?: boolean }).isTexture) {
+          const tex = val as { userData?: Record<string, unknown> };
+          tex.userData = { ...(tex.userData ?? {}), __softnSharedTemplate: true };
+        }
+      }
+    };
+    if (Array.isArray(m.material)) {
+      for (const mat of m.material) markMat(mat);
+    } else if (m.material) {
+      markMat(m.material);
+    }
+  });
+}
+
+function disposeMaterialWithTextures(mat: unknown, forceShared = false): void {
+  if (!mat || typeof mat !== 'object') return;
+  const matRec = mat as { userData?: Record<string, unknown>; dispose?: () => void } & Record<string, unknown>;
+  for (const val of Object.values(matRec)) {
+    if (val && typeof val === 'object' && (val as { isTexture?: boolean; dispose?: () => void }).isTexture) {
+      const tex = val as { userData?: Record<string, unknown>; dispose?: () => void };
+      if (!forceShared && tex.userData?.__softnSharedTemplate) continue;
+      try { tex.dispose?.(); } catch { /* ignore */ }
+    }
+  }
+  if (!forceShared && matRec.userData?.__softnSharedTemplate) return;
+  try { matRec.dispose?.(); } catch { /* ignore */ }
+}
+
+function disposeObjectTree(root: import('three').Object3D, forceShared = false): void {
+  root.traverse((node) => {
+    const m = node as {
+      geometry?: { userData?: Record<string, unknown>; dispose?: () => void };
+      material?: unknown | unknown[];
+    };
+    if (m.geometry && (forceShared || !m.geometry.userData?.__softnSharedTemplate)) {
+      try { m.geometry.dispose?.(); } catch { /* ignore */ }
+    }
     if (Array.isArray(m.material)) {
       for (const mat of m.material) {
-        disposeMaterialWithTextures(mat);
+        disposeMaterialWithTextures(mat, forceShared);
       }
     } else if (m.material) {
-      disposeMaterialWithTextures(m.material);
+      disposeMaterialWithTextures(m.material, forceShared);
     }
   });
 }
@@ -334,7 +368,11 @@ export class ThreeWorkerHost {
             loader.parse(
               payload,
               baseDir,
-              (gltf) => resolve(gltf?.scene ?? null),
+              (gltf) => {
+                const scene = gltf?.scene ?? null;
+                if (scene) markSharedTemplateTree(scene);
+                resolve(scene);
+              },
               () => resolve(null)
             );
           } catch {
@@ -347,7 +385,7 @@ export class ThreeWorkerHost {
         if (oldestKey !== undefined) {
           const evicted = this.gltfTemplateCache.get(oldestKey);
           this.gltfTemplateCache.delete(oldestKey);
-          void evicted?.then((tpl) => { if (tpl) disposeObjectTree(tpl); }).catch(() => undefined);
+          void evicted?.then((tpl) => { if (tpl) disposeObjectTree(tpl, true); }).catch(() => undefined);
         }
       }
       this.gltfTemplateCache.set(cleanSrc, templatePromise);
@@ -1348,7 +1386,7 @@ export class ThreeWorkerHost {
     }
     this.renderers.clear();
     for (const tplPromise of this.gltfTemplateCache.values()) {
-      void tplPromise.then((tpl) => { if (tpl) disposeObjectTree(tpl); }).catch(() => undefined);
+      void tplPromise.then((tpl) => { if (tpl) disposeObjectTree(tpl, true); }).catch(() => undefined);
     }
     this.gltfTemplateCache.clear();
   }

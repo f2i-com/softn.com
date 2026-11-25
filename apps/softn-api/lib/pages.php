@@ -33,6 +33,8 @@ final class Pages
             // so crawlers do not index soft-404 URLs while keeping the SPA shell.
             if ($err->status === 404) {
                 $notFoundHtml = self::stripStaticHomeHead($html);
+                $notFoundHtml = preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $notFoundHtml, 1) ?? $notFoundHtml;
+                $notFoundHtml = preg_replace('#<meta\s+[^>]*property="og:url"[^>]*>\s*#s', '', $notFoundHtml, 1) ?? $notFoundHtml;
                 $notFoundHtml = self::injectRootSsr($notFoundHtml, '');
                 $notFoundHtml = str_replace('</head>', '<meta name="robots" content="noindex" />' . "\n  </head>", $notFoundHtml);
                 return Response::html($notFoundHtml, 200, ['Cache-Control' => 'no-cache']);
@@ -120,93 +122,37 @@ final class Pages
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $origin = self::origin();
 
-        $rawCat = is_string($_GET['category'] ?? null) ? strtolower(trim((string) $_GET['category'])) : '';
-        $subcategory = is_string($_GET['subcategory'] ?? null) ? strtolower(trim((string) $_GET['subcategory'])) : '';
-        if ($rawCat !== '' && str_contains($rawCat, '/')) {
-            [$catHead, $catTail] = explode('/', $rawCat, 2);
-            $category = trim($catHead);
-            if ($subcategory === '') $subcategory = trim($catTail);
-        } else {
-            $category = $rawCat;
+        $rawQuery = [];
+        foreach (['q', 'category', 'subcategory', 'tag', 'author', 'cap', 'hosting', 'sort', 'page'] as $k) {
+            if (is_string($_GET[$k] ?? null)) $rawQuery[$k] = (string) $_GET[$k];
         }
-        if ($category !== '' && $subcategory === '') {
-            $alias = Categories::legacyAlias($category);
-            if ($alias !== null) {
-                [$category, $subcategory] = $alias;
-            }
-        }
-        $query = is_string($_GET['q'] ?? null) ? trim((string) $_GET['q']) : '';
-        $tag = is_string($_GET['tag'] ?? null) ? strtolower(trim((string) $_GET['tag'])) : '';
-        $author = is_string($_GET['author'] ?? null) ? strtolower(trim((string) $_GET['author'])) : '';
-        $cap = is_string($_GET['cap'] ?? null) ? strtolower(trim((string) $_GET['cap'])) : '';
-        $hostingFilter = is_string($_GET['hosting'] ?? null) ? strtolower(trim((string) $_GET['hosting'])) : '';
-        $rawPage = $_GET['page'] ?? '1';
-        $page = is_string($rawPage) && ctype_digit($rawPage) ? max(1, min(1000, (int) $rawPage)) : 1;
+        $rawQuery['perPage'] = '24';
+        $listed = Apps::list($rawQuery);
+        $category = strtolower((string) ($listed['category'] ?? ''));
+        if ($category === 'all') $category = '';
+        $subcategory = strtolower((string) ($listed['subcategory'] ?? ''));
+        if ($subcategory === 'all') $subcategory = '';
+        $query = trim((string) ($listed['query'] ?? ''));
+        $tag = strtolower(trim($rawQuery['tag'] ?? ''));
+        $author = trim($rawQuery['author'] ?? '');
+        $cap = strtolower(trim($rawQuery['cap'] ?? ''));
+        $hostingFilter = strtolower(trim($rawQuery['hosting'] ?? ''));
+        $rawPage = $rawQuery['page'] ?? '1';
+        $page = ctype_digit($rawPage) ? max(1, min(500, (int) $rawPage)) : 1;
 
-        $rows = array_values(array_filter(Catalog::all(), static fn(array $r): bool => empty($r['hidden'])));
-        usort($rows, static fn(array $a, array $b): int => ((int) ($b['runs'] ?? 0)) <=> ((int) ($a['runs'] ?? 0)) ?: ((int) ($b['updated_at'] ?? 0)) <=> ((int) ($a['updated_at'] ?? 0)));
-
+        $allVisible = array_values(array_filter(Catalog::all(), static fn(array $r): bool => empty($r['hidden'])));
         $catCounts = [];
-        foreach ($rows as $r) {
+        foreach ($allVisible as $r) {
             $c = strtolower(trim((string) ($r['category'] ?? '')));
             if ($c !== '') $catCounts[$c] = ($catCounts[$c] ?? 0) + 1;
         }
         arsort($catCounts);
 
-        $filtered = $rows;
-        if ($category !== '') {
-            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower((string) ($r['category'] ?? '')) === $category));
-        }
-        if ($subcategory !== '') {
-            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower((string) ($r['subcategory'] ?? '')) === $subcategory));
-        }
-        if ($tag !== '') {
-            $filtered = array_values(array_filter($filtered, static function (array $r) use ($tag): bool {
-                $tags = json_decode((string) ($r['tags'] ?? '[]'), true);
-                if (!is_array($tags)) return false;
-                foreach ($tags as $t) {
-                    if (is_string($t) && strtolower($t) === $tag) return true;
-                }
-                return false;
-            }));
-        }
-        if ($author !== '') {
-            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower(trim((string) ($r['author'] ?? ''))) === $author));
-        }
-        if ($cap !== '') {
-            $filtered = array_values(array_filter($filtered, static function (array $r) use ($cap): bool {
-                $caps = json_decode((string) ($r['capabilities'] ?? '[]'), true);
-                $caps = is_array($caps) ? $caps : [];
-                return match ($cap) {
-                    'nonet' => !in_array('net', $caps, true),
-                    'none' => $caps === [],
-                    'worker' => ($r['execution'] ?? '') === 'worker',
-                    'backend' => is_string($r['backend_runtime'] ?? null) && $r['backend_runtime'] !== '',
-                    default => in_array($cap, $caps, true),
-                };
-            }));
-        }
-        if ($hostingFilter !== '') {
-            $filtered = array_values(array_filter($filtered, static function (array $r) use ($hostingFilter): bool {
-                $info = Apps::hostingInfo($r);
-                if ($hostingFilter === 'backend') {
-                    return is_string($r['backend_runtime'] ?? null) && $r['backend_runtime'] !== '';
-                }
-                return $info['mode'] === $hostingFilter;
-            }));
-        }
-        if ($query !== '') {
-            $qLower = strtolower($query);
-            $filtered = array_values(array_filter($filtered, static fn(array $r): bool =>
-                str_contains(strtolower((string) ($r['name'] ?? '')), $qLower)
-                || str_contains(strtolower((string) ($r['description'] ?? '')), $qLower)
-            ));
-        }
-
-        $perPage = 48;
-        $total = count($filtered);
-        $totalPages = max(1, (int) ceil($total / $perPage));
-        $slice = $page <= $totalPages ? array_slice($filtered, ($page - 1) * $perPage, $perPage) : [];
+        $perPage = (int) $listed['perPage'];
+        $total = (int) $listed['total'];
+        $totalPages = max(1, (int) $listed['pages']);
+        $slice = $page <= $totalPages && is_array($listed['apps'] ?? null) ? $listed['apps'] : [];
+        $rows = $allVisible;
 
         $labelParts = [];
         if ($category !== '') $labelParts[] = ucfirst($category);
@@ -540,6 +486,7 @@ final class Pages
         $preloadBundle = is_string($cfg['bundle'] ?? null) && $cfg['bundle'] !== ''
             ? '    <link rel="preload" href="' . $e($cfg['bundle']) . '" as="fetch" crossorigin="anonymous" fetchpriority="high" />' . "\n"
             : '';
+        $preloadEngines = self::preloadContainerEngineLinks($row, $cfg, $e, $prerender['engineTier'] ?? null);
         // The shell draws its boot screen dark, the `theme` above. An app
         // whose project declares light is drawn light whatever that theme
         // says, so its boot screen is too, rather than opening dark and
@@ -565,6 +512,7 @@ final class Pages
             . '    <meta name="twitter:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
             . ($canonicalUrl === null ? '' : '    <link rel="canonical" href="' . $e($canonicalUrl) . '" />' . "\n")
             . $preloadBundle
+            . $preloadEngines
             . ($jsonLd !== '' ? '    <script type="application/ld+json">' . $jsonLd . '</script>' . "\n" : '')
             . $boot
             . '    <script type="application/json" id="softn-runtime-config">' . $config . '</script>' . "\n  </head>";
@@ -695,6 +643,65 @@ final class Pages
             return null;
         }
         return self::prerenderFor($slug, $row, $ver)['themeMode'];
+    }
+
+    /**
+     * Emit `<link rel="preload" as="fetch">` hints for known local browser container
+     * WASM engines (e.g. `zipp-php.wasm` + `xdb-wasm.wasm`) so the browser starts
+     * downloading WASM in parallel with `bundle.softn` instead of waiting for JS parse.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $cfg
+     * @param callable(string): string $e
+     */
+    private static function preloadContainerEngineLinks(array $row, array $cfg, callable $e, ?string $engineTier = null): string
+    {
+        $hasServerBackend = isset($cfg['backendUrl']);
+        $rt = !$hasServerBackend && is_string($row['backend_runtime'] ?? null)
+            ? strtolower(trim($row['backend_runtime']))
+            : '';
+        $engineFile = null;
+        $needsXdb = false;
+        if ($rt !== '') {
+            $engineFile = match ($rt) {
+                'php' => 'zipp-php.wasm',
+                'rust' => 'zipp-rust.wasm',
+                'typescript' => 'zipp-typescript.wasm',
+                default => null,
+            };
+            $needsXdb = $engineFile !== null;
+        } elseif ($engineTier === 'lite') {
+            $engineFile = 'zipp-javascript-lite.wasm';
+        } elseif ($engineTier === 'typescript') {
+            $engineFile = 'zipp-typescript.wasm';
+        }
+        if ($engineFile === null) return '';
+        static $runtimeBase = null;
+        if ($runtimeBase === null) {
+            $runtimeBase = '';
+            $sharedDir = dirname(__DIR__, 2) . '/shared/container-runtime';
+            if (is_dir($sharedDir)) {
+                foreach (scandir($sharedDir) ?: [] as $entry) {
+                    if (preg_match('/^[0-9a-f]{12}$/', $entry) === 1 && is_dir("$sharedDir/$entry/engines")) {
+                        $runtimeBase = "/shared/container-runtime/$entry/engines/";
+                        break;
+                    }
+                }
+            }
+        }
+        if ($runtimeBase === '') return '';
+        $engineDisk = dirname(__DIR__, 2) . $runtimeBase . $engineFile;
+        $out = '';
+        if (is_file($engineDisk)) {
+            $out .= '    <link rel="preload" href="' . $e($runtimeBase . $engineFile) . '" as="fetch" crossorigin="anonymous" />' . "\n";
+        }
+        if ($needsXdb) {
+            $xdbDisk = dirname(__DIR__, 2) . $runtimeBase . 'xdb-wasm.wasm';
+            if (is_file($xdbDisk)) {
+                $out .= '    <link rel="preload" href="' . $e($runtimeBase . 'xdb-wasm.wasm') . '" as="fetch" crossorigin="anonymous" />' . "\n";
+            }
+        }
+        return $out;
     }
 
     /**

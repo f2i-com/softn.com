@@ -87,7 +87,12 @@ const CORE_ENGINE_TIERS: ReadonlySet<ZippEngineTier> = new Set(['javascript', 'p
 const CORE_ENGINE_META = { variant: 'javascript-python-base' };
 
 export function usesHostEngine(tiers: readonly ZippEngineTier[]): boolean {
-  return tiers.some((tier) => CORE_ENGINE_TIERS.has(tier));
+  // Python tiers always need core's JS+Python engine. Full JS (`javascript`) is already
+  // covered natively by `zipp-php.wasm`, `zipp-rust.wasm`, or `zipp-typescript.wasm` when
+  // one of those backend/frontend tiers is present (reused via `sharedLocalBackendEngine`).
+  if (tiers.includes('python') || tiers.includes('python-torch')) return true;
+  if (!tiers.includes('javascript')) return false;
+  return !tiers.includes('php') && !tiers.includes('rust') && !tiers.includes('typescript');
 }
 
 /**

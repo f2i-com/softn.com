@@ -331,7 +331,9 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
       appId: runtimeAppId,
       storagePrefix: containerStoragePrefix(runtimeAppId),
       manifest: uiManifest,
-      textFiles: textFiles ? Object.fromEntries(textFiles) : undefined,
+      // Avoid synchronously cloning the entire textFiles map on mount when bundleBytes is available;
+      // LocalBackendTransport extracts text/binary entries lazily on the first backend request.
+      textFiles: bundleData ? undefined : (textFiles ? Object.fromEntries(textFiles) : undefined),
       bundleBytes: bundleData,
       persistStorage: true,
       isConsentPending: () => consentPendingRef.current,

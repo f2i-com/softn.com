@@ -422,6 +422,7 @@ export class SoftNScriptRuntime {
       disposed: () => this.disposed,
       pressedHere: () => lastPressWasFor(this),
       consumePress: () => consumeLastPressFor(this),
+      appId: () => this.appId,
     };
     this.gate = gate;
     this.network = new AppNetwork(gate, {

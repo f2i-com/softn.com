@@ -379,18 +379,41 @@ final class Apps
         $doc=Catalog::doc($slug);
         $rows=Catalog::all();
         $card = self::card($row, $rows);
+        $hosting = self::hostingInfo($row);
+        $withhold = (bool) $hosting['withholdBackend'];
+        $appDir = $withhold ? Catalog::path($slug) : '';
         $versions = [];
         usort($doc['versions'],fn($a,$b)=>$b['version']<=>$a['version']);
         foreach ($doc['versions'] as $r) {
+            $verNum = (int) $r['version'];
+            $verSize = (int) $r['size'];
+            $verSha = (string) $r['sha256'];
+            $verUrl = "/api/apps/$slug/bundle.softn?v=$verNum&sha256=$verSha";
+            if ($withhold) {
+                $srcPath = $appDir . '/' . (string) $r['file'];
+                $cachePath = $appDir . '/backend-cache/client-v' . $verNum . '-' . substr($verSha, 0, 12) . '.softn';
+                try {
+                    if (is_file($srcPath)) {
+                        $clientPath = Bundle::clientBundlePath($srcPath, $cachePath);
+                        $verSha = Bundle::clientBundleSha256($srcPath, $cachePath, $verSha);
+                        $verSize = (int) (@filesize($clientPath) ?: $verSize);
+                        $verUrl = "/api/apps/$slug/bundle.softn?v=$verNum&client=1&sha256=$verSha";
+                    } else {
+                        $verUrl = "/api/apps/$slug/bundle.softn?v=$verNum&client=1";
+                    }
+                } catch (Throwable) {
+                    $verUrl = "/api/apps/$slug/bundle.softn?v=$verNum&client=1";
+                }
+            }
             $versions[] = [
-                'version' => (int) $r['version'],
+                'version' => $verNum,
                 'manifestVersion' => (string) $r['manifest_version'],
-                'size' => (int) $r['size'],
-                'sha256' => (string) $r['sha256'],
+                'size' => $verSize,
+                'sha256' => $verSha,
                 'notes' => (string) $r['notes'],
                 'createdAt' => gmdate('c', (int) $r['created_at']),
                 // The address the play page uses: the digest makes it one content's, so it may be cached.
-                'bundle' => "/api/apps/$slug/bundle.softn?v=" . (int) $r['version'] . '&sha256=' . $r['sha256'],
+                'bundle' => $verUrl,
             ];
         }
         $breakdown = [1=>0,2=>0,3=>0,4=>0,5=>0];
@@ -484,7 +507,10 @@ final class Apps
         if ($subcategory === 'all') $subcategory = '';
         $sort=in_array($q['sort']??'',self::SORTS,true)?$q['sort']:($search!==''?'relevance':'trending');
         $perPage=max(1,min(48,(int)($q['perPage']??24)));$page=max(1,min(500,(int)($q['page']??1)));
-        $rows=[];$since=time()-7*86400;$all=Catalog::all();
+        $rows=[];$since=time()-7*86400;$sinceDay=floor($since/86400);$all=Catalog::all();
+        $authorLower = $author !== '' ? mb_strtolower($author) : '';
+        $searchLower = $search !== '' ? mb_strtolower($search) : '';
+        $searchWords = $searchLower !== '' ? (preg_split('/\s+/u', trim($searchLower)) ?: []) : [];
         foreach ($all as $r) {
             if ($r['hidden']) continue;
             $rCat = (string) $r['category'];
@@ -502,7 +528,7 @@ final class Apps
             }
             $tags=json_decode($r['tags'],true)?:[];$caps=json_decode($r['capabilities'],true)?:[];
             if ($tag!=='' && !in_array($tag,$tags,true)) continue;
-            if ($author!=='' && mb_strtolower($r['author'])!==mb_strtolower($author)) continue;
+            if ($authorLower!=='' && mb_strtolower($r['author'])!==$authorLower) continue;
             $hasBackend = is_string($r['backend_runtime'] ?? null) && $r['backend_runtime'] !== '';
             if (($cap==='none' && $caps) || ($cap==='nonet' && in_array('net',$caps,true)) || ($cap==='storage' && !in_array('storage',$caps,true)) || ($cap==='worker' && $r['execution']!=='worker') || ($cap==='backend' && !$hasBackend)) continue;
             if ($hostingFilter !== '') {
@@ -512,14 +538,19 @@ final class Apps
                 if ($hostingFilter === 'hybrid' && $h['mode'] !== 'hybrid') continue;
                 if ($hostingFilter === 'backend' && !$hasBackend) continue;
             }
-            $text=mb_strtolower($r['name'].' '.$r['description'].' '.implode(' ',$tags).' '.$r['author']);
-            $words=preg_split('/\s+/u',trim(mb_strtolower($search)))?:[];
-            if ($search!=='' && array_filter($words,fn($w)=>!str_contains($text,$w))) continue;
-            $r['_relevance']=$search!=='' && str_contains(mb_strtolower($r['name']),mb_strtolower($search))?1:0;
+            if ($searchLower !== '') {
+                $text=mb_strtolower($r['name'].' '.$r['description'].' '.implode(' ',$tags).' '.$r['author']);
+                foreach ($searchWords as $w) {
+                    if ($w !== '' && !str_contains($text, $w)) continue 2;
+                }
+                $r['_relevance'] = str_contains(mb_strtolower($r['name']), $searchLower) ? 1 : 0;
+            } else {
+                $r['_relevance'] = 0;
+            }
             $daily=Catalog::doc($r['slug'])['runsDaily'];$runs7=0;
             // Visitors, as one client can open an app 120 times a minute. A day
             // kept before they were counted apart counted each one once.
-            foreach ($daily as $d) if ($d['day']>=floor($since/86400)) $runs7+=$d['visitors']??$d['count'];
+            foreach ($daily as $d) if ($d['day']>=$sinceDay) $runs7+=$d['visitors']??$d['count'];
             $r['_trend']=$runs7*3+$r['remixes']*5+$r['rating_count']*2+$r['comments']+($r['created_at']>$since?4:0);
             $r['_average']=$r['rating_count']?$r['rating_sum']/$r['rating_count']:0;
             $rows[]=$r;

@@ -672,13 +672,18 @@ function decodeCssValueIdentifiers(rawVal: string): string {
 
 /**
  * Block CSS `appearance: base*` (e.g. `base-select`, which promotes `<select>` pickers into the
- * browser top layer outside the container box) as well as dynamic `appearance` values (`var()`,
- * `env()`, `attr()`, `if()`) that could resolve to `base-select` at computed-value time.
+ * browser top layer outside the container box), dynamic `appearance` values (`var()`, `env()`,
+ * `attr()`, `if()`), and `view-transition-name` (which promotes elements into the document-wide
+ * view-transition top layer if the host runs a view transition).
  */
 function isBlockedAppearanceDeclaration(rawProp: string, rawVal: string): boolean {
   const cleanProp = stripCssCommentsAndSpace(rawProp);
   if (!cleanProp || !startsName(cleanProp, 0)) return false;
   const propName = readName(cleanProp, 0).name.toLowerCase();
+  if (propName === 'view-transition-name') {
+    const decoded = decodeCssValueIdentifiers(rawVal).replace(/\s*!important\s*$/i, '').trim().toLowerCase();
+    return decoded !== 'none';
+  }
   if (propName !== 'appearance' && propName !== '-webkit-appearance' && propName !== '-moz-appearance') {
     return false;
   }

@@ -12,8 +12,10 @@ import {
   SoftNContainerError,
   mountSoftNContainer,
 } from '../src/index';
-import { extractFontFaces, namespaceContainerFonts, rewriteCss } from '../src/css-policy';
-import { isExternalUrlAllowed, prepareHtmlDocument } from '../src/sanitize';
+import { extractFontFaces, namespaceContainerFonts, rewriteCss, transformContainerCss } from '../src/css-policy';
+import { isExternalUrlAllowed, prepareHtmlDocument, sanitizeContainerCss, sanitizeHostAssetUrl } from '../src/sanitize';
+import { renderConsentBar } from '../src/consent-bar';
+import { WebGLWorkerHost } from '../src/webgl-worker-host';
 import { hostAttributeValue, hostElementName, isDeclaredElementProperty } from '../src/host-policy';
 import { evaluateHtaccessChain, parseHtaccess } from '../src/htaccess';
 import { isAllowedExternalVendorModule, resolveModuleSpecifier, transformEsModule } from '../src/esm-linker';
@@ -1176,6 +1178,101 @@ describe('SoftN v2 Round-2 Security Audit Regressions', () => {
       } else {
         (globalThis as Record<string, unknown>).ImageData = origImageData;
       }
+    }
+  });
+
+  it('Round-7 security hardening: consent-bar wildcards, Alibaba IMDS, passive host URLs, SMIL/CSS top-layer, WebGL delete/VRAM bounds', async () => {
+    // 1. Consent bar accurately reports `*`, `*.domain`, trailing-dot hosts, and IPv6 instead of `'no site'`
+    const starBar = renderConsentBar(['net'], 'TestApp', () => {}, ['*']);
+    expect(starBar.textContent).toContain('any site');
+    expect(starBar.textContent).not.toContain('no site');
+    const wildBar = renderConsentBar(['net'], 'TestApp', () => {}, ['*.api.example.com.', '[::1]']);
+    expect(wildBar.textContent).toContain('*.api.example.com');
+    expect(wildBar.textContent).toContain('[::1]');
+    expect(wildBar.textContent).not.toContain('no site');
+
+    // 2. Alibaba Cloud IMDS (100.100.100.200) is always blocked even if explicitly listed
+    expect(
+      isExternalUrlAllowed(
+        'http://100.100.100.200/latest/meta-data/',
+        { enabled: true, allow_http: true, allowed_hosts: ['100.100.100.200'] },
+        true
+      )
+    ).toBe(false);
+
+    // 3. Passive HTML/CSS subresource fetches to the embedding host are blocked even when allowed_hosts names it
+    const hostHostname = window.location.hostname || 'localhost';
+    const archive = await ContainerArchive.open({
+      'manifest.json': JSON.stringify({ name: 'Passive Host Test', main: 'index.html' }),
+      'index.html': '<!doctype html><p>hi</p>',
+    });
+    const hostPerms = { permissions: { net: { enabled: true, allow_http: true, allowed_hosts: [hostHostname] } } };
+    expect(
+      sanitizeHostAssetUrl('src', `http://${hostHostname}/api/admin`, 'img', 'index.html', archive, hostPerms, true)
+    ).toBeNull();
+    expect(
+      sanitizeContainerCss(`div { background: url(http://${hostHostname}/api/admin); }`, 'index.html', archive, hostPerms, true)
+    ).not.toContain('/api/admin');
+    archive.dispose();
+
+    // 4. SMIL `<set>`/`<animate>` cannot target `appearance`, `view-transition-name`, or `background-image`; CSS strips `view-transition-name`
+    const policyCtx = {
+      entryPath: 'index.html',
+      archive,
+      permissions: hostPerms,
+      netGranted: true,
+    };
+    expect(hostAttributeValue('set', 'attributename', 'appearance', policyCtx)).toBeNull();
+    expect(hostAttributeValue('animate', 'attributename', 'view-transition-name', policyCtx)).toBeNull();
+    expect(hostAttributeValue('set', 'attributename', 'background-image', policyCtx)).toBeNull();
+    expect(transformContainerCss('div { view-transition-name: steal; color: red; }', { scopeSelectors: false, rewriteViewportUnits: false })).not.toContain('view-transition-name');
+
+    // 5. WebGLWorkerHost rejects cross-kind delete eviction and caps cumulative VRAM allocations at 256 MB
+    const origOffscreen = (globalThis as Record<string, unknown>).OffscreenCanvas;
+    let deletedBufCalls = 0;
+    let bufferDataCalls = 0;
+    class MockGlOffscreen {
+      width: number;
+      height: number;
+      constructor(w: number, h: number) { this.width = w; this.height = h; }
+      getContext() {
+        return {
+          ARRAY_BUFFER: 0x8892,
+          STATIC_DRAW: 0x88e4,
+          getParameter: () => 0,
+          getSupportedExtensions: () => [],
+          getContextAttributes: () => ({}),
+          getShaderPrecisionFormat: () => ({ rangeMin: 127, rangeMax: 127, precision: 23 }),
+          createBuffer: () => ({ kind: 'buf' }),
+          createTexture: () => ({ kind: 'tex' }),
+          deleteBuffer: () => { deletedBufCalls++; },
+          deleteTexture: () => {},
+          bindBuffer: () => {},
+          bufferData: () => { bufferDataCalls++; },
+          getExtension: () => null,
+        };
+      }
+      transferToImageBitmap() { return { close() {} }; }
+    }
+    (globalThis as Record<string, unknown>).OffscreenCanvas = MockGlOffscreen;
+    try {
+      const host = new WebGLWorkerHost();
+      const info = host.init(1, 'webgl2', 16, 16)!;
+      const ctxId = Number(info.ctxId);
+      // Create a texture at handle 1, then attempt to delete it with `deleteBuffer` -> must be ignored!
+      host.exec(ctxId, [['c', 'createTexture', 1], ['d', 'deleteBuffer', 1]], null);
+      expect(deletedBufCalls).toBe(0);
+      // Allocate 10 x 30 MB buffers (= 300 MB > 256 MB cap) -> last allocations must be refused!
+      const cmds: unknown[][] = [];
+      for (let i = 2; i <= 11; i++) {
+        cmds.push(['c', 'createBuffer', i], ['v', 'bindBuffer', 0x8892, ['$h', i]], ['v', 'bufferData', 0x8892, 30 * 1024 * 1024, 0x88e4]);
+      }
+      host.exec(ctxId, cmds, null);
+      expect(bufferDataCalls).toBe(8); // 8 * 30 MB = 240 MB <= 256 MB; 9th (270 MB) blocked!
+      host.disposeAll();
+    } finally {
+      if (origOffscreen === undefined) delete (globalThis as Record<string, unknown>).OffscreenCanvas;
+      else (globalThis as Record<string, unknown>).OffscreenCanvas = origOffscreen;
     }
   });
 });

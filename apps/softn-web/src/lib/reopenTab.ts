@@ -25,6 +25,7 @@ export async function reopenTab(
   options: { initialPage?: string; isForeground?: () => boolean } = {}
 ): Promise<boolean> {
   const tabId = tab.id;
+  tab.warmup?.abort();
   tab.importResolver?.dispose();
   tab.assetResolver?.dispose();
   const directorySlug = tab.directorySlug ?? record.directorySlug;

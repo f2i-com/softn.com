@@ -26,11 +26,22 @@ export default defineConfig({
       // The runtime's own page, and the module `softn.js` loads into a page
       // of the author's site (src/page.tsx), at a name softn.js can find
       // beside itself: its other files are named for their contents.
-      input: { index: 'index.html', page: 'src/page.tsx' },
+      // When built solely as the site's `/play/` shell (`SOFTN_PLAY_STANDALONE=1`),
+      // omit the unused `page` entry so Rolldown does not split shared boot code
+      // into 10+ tiny cross-entry modulepreload chunks.
+      input: process.env.SOFTN_PLAY_STANDALONE === '1'
+        ? { index: 'index.html' }
+        : { index: 'index.html', page: 'src/page.tsx' },
       output: {
         entryFileNames: (chunk) => (chunk.name === 'page' ? 'softn-page.js' : 'assets/[name]-[hash].js'),
         codeSplitting: {
-          groups: [vendorThreeGroup],
+          groups: [
+            vendorThreeGroup,
+            {
+              name: 'vendor-react',
+              test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/,
+            },
+          ],
         },
       },
     },

@@ -410,6 +410,7 @@ export class LocalBackendTransport implements BackendTransport {
     try {
       // Spawn the backend Worker immediately so its script downloads and parses
       // in parallel with loading persisted SQLite/overlay blobs from IndexedDB.
+      let workerFailed = false;
       if (useWorker) {
         const base = options.runtimeUrl.replace(/\/?$/, '/');
         const workerUrl = `${base}backend-worker.js`;
@@ -418,9 +419,15 @@ export class LocalBackendTransport implements BackendTransport {
           this.handleBackendMessage(ev.data);
         });
         w.addEventListener('error', (ev) => {
+          workerFailed = true;
           const err = new Error(ev.message || 'Backend Worker crashed');
-          if (!this.isReady) this.rejectReady(err);
+          if (!this.isReady) {
+            this.rejectReady(err);
+          } else {
+            this.isReady = false;
+          }
           this.rejectAllPending(err);
+          this.onConsole?.('error', `[backend] ${err.message}`);
         });
         this.worker = w;
       }
@@ -437,7 +444,7 @@ export class LocalBackendTransport implements BackendTransport {
         useWorker ? Promise.resolve(null) : import('./backend-runtime').then((m) => m.BackendWorkerSession),
       ]);
 
-      if (this.disposed) return;
+      if (this.disposed || workerFailed) return;
       this.persistedDbSizes.clear();
       for (const [dbKey, bytes] of Object.entries(persisted.dbs)) {
         if (bytes instanceof Uint8Array) this.persistedDbSizes.set(dbKey, bytes.byteLength);

@@ -34,98 +34,116 @@ final class Config
     }
 
     /** @return array<string, mixed> */
+    private static function defaults(bool $withSecrets): array
+    {
+        $d = [
+            // Who may say where a request came from: the addresses and
+            // CIDR ranges (IPv4 and IPv6) of the proxies in front of this
+            // host, whose X-Forwarded-For is believed. Empty trusts nobody.
+            // `trustProxy: true` is the older switch and means the peer
+            // this request came in on, whoever it is; see README.
+            'trustedProxies' => [],
+            'trustProxy' => false,
+            'siteName' => 'SoftN',
+            // The request limits, in bytes; how each route gets one is
+            // Limits in http.php and the Limits section of the README.
+            // A config.json written by an earlier version carries the old
+            // 48 MB maxJsonBytes; lower it to this by hand.
+            'maxBundleBytes' => 32 * 1024 * 1024,
+            'maxThumbnailBytes' => 2 * 1024 * 1024,
+            'maxThumbnailSide' => 8192,
+            'maxThumbnailPixels' => 16 * 1000 * 1000,
+            'maxJsonBytes' => 256 * 1024,
+            'maxBackendBodyBytes' => 10 * 1024 * 1024,
+            // Whether the server executes ZIPP safe-sandbox backends for apps whose
+            // data/apps/.../<slug>/app.json sets hosting to "server" or "hybrid".
+            'allowServerHosting' => true,
+            // Whether public publishers (/publish, AI Studio, Builder, POST/PATCH /api/apps)
+            // may opt into server/hybrid hosting. Off by default for security: published apps
+            // always download to and run locally inside the visitor's browser sandbox unless
+            // the site owner explicitly sets "hosting" in the app's data JSON (app.json) or
+            // enables this setting in data/config.json.
+            'allowPublicServerHosting' => false,
+            // How apps are stored on disk under data/apps/:
+            //   'categorized' -> data/apps/<category>/[<subcategory>/]<slug>/
+            //   'flat'        -> data/apps/<slug>/
+            //   'auto'        -> categorized whenever category folders exist, else flat.
+            'folderLayout' => 'auto',
+            // When true (or SOFTN_AUTO_THUMB=1), apps missing a thumb.* image
+            // schedule a background headless browser capture via scripts/demos/auto-thumb.mjs.
+            'autoThumbnail' => false,
+            'autoThumbnailBaseUrl' => null,
+            // A Server-Timing header on every response with the catalogue's
+            // lock wait and hold, boot, cache rebuild and commit times —
+            // what scripts/bench/catalog-bench.mjs reads. Off unless asked.
+            'debugTimings' => false,
+            'maxVersionsPerApp' => 50,
+            // Past that number the oldest after version 1 goes to make room. False refuses the new one instead.
+            'dropOldVersions' => true,
+            'storage' => [
+                'maxCollections' => 32,
+                'maxRecordsPerCollection' => 20000,
+                'maxRecordBytes' => 16 * 1024,
+                'maxDatabaseBytes' => 64 * 1024 * 1024,
+                'maxQueryLimit' => 200,
+            ],
+            'limits' => [
+                // [count, seconds] per visitor
+                'publish' => [10, 3600],
+                'version' => [30, 3600],
+                // A wrong edit key given to git. A key cannot be guessed;
+                // this is for what a run of them costs.
+                'gitKey' => [30, 3600],
+                // Replacing an edit key (POST /apps/{slug}/key); an owner
+                // replacing the key of every app they hold, at once.
+                'rekey' => [30, 3600],
+                'comment' => [10, 600],
+                'rate' => [60, 600],
+                'run' => [120, 60],
+                'suggest' => [5, 3600],
+                'storageRead' => [600, 60],
+                'storageWrite' => [120, 60],
+                'hostedBackend' => [240, 60],
+            ],
+            // Empty data/ folder by default: demos are optional and only seeded when
+            // explicitly opted in via `seedDemos: true`, `npm run install:demos`, or a
+            // `--with-demos` site build that places demos/index.json beside api/.
+            'seedDemos' => is_file(dirname(__DIR__, 2) . '/demos/index.json'),
+        ];
+        if ($withSecrets) {
+            // Both are generated once. The salt keys the visitor hashes; the
+            // admin key is what the site owner presents to moderate.
+            $d = ['salt' => bin2hex(random_bytes(16)), 'adminKey' => bin2hex(random_bytes(20))] + $d;
+        }
+        return $d;
+    }
+
+    /** @return array<string, mixed> */
     private static function load(): array
     {
         if (self::$values !== null) return self::$values;
         $path = self::dataDir() . '/config.json';
+        // Fast path: config.json is atomically replaced by rename(), so once salt & adminKey
+        // are initialized we can read it lock-free without contending on config.lock every request.
+        if (is_file($path)) {
+            $decoded = Catalog::readJson($path);
+            if (is_array($decoded) && isset($decoded['salt'], $decoded['adminKey'])) {
+                self::$values = array_replace_recursive(self::defaults(false), $decoded);
+                return self::$values;
+            }
+        }
         $lock = fopen(self::dataDir() . '/config.lock', 'c');
         if (!$lock || !flock($lock, LOCK_EX)) throw new ApiError(503, 'Cannot lock configuration.');
         try {
-            $defaults = [
-                // Both are generated once. The salt keys the visitor hashes; the
-                // admin key is what the site owner presents to moderate.
-                'salt' => bin2hex(random_bytes(16)),
-                'adminKey' => bin2hex(random_bytes(20)),
-                // Who may say where a request came from: the addresses and
-                // CIDR ranges (IPv4 and IPv6) of the proxies in front of this
-                // host, whose X-Forwarded-For is believed. Empty trusts nobody.
-                // `trustProxy: true` is the older switch and means the peer
-                // this request came in on, whoever it is; see README.
-                'trustedProxies' => [],
-                'trustProxy' => false,
-                'siteName' => 'SoftN',
-                // The request limits, in bytes; how each route gets one is
-                // Limits in http.php and the Limits section of the README.
-                // A config.json written by an earlier version carries the old
-                // 48 MB maxJsonBytes; lower it to this by hand.
-                'maxBundleBytes' => 32 * 1024 * 1024,
-                'maxThumbnailBytes' => 2 * 1024 * 1024,
-                'maxThumbnailSide' => 8192,
-                'maxThumbnailPixels' => 16 * 1000 * 1000,
-                'maxJsonBytes' => 256 * 1024,
-                'maxBackendBodyBytes' => 10 * 1024 * 1024,
-                // Whether the server executes ZIPP safe-sandbox backends for apps whose
-                // data/apps/.../<slug>/app.json sets hosting to "server" or "hybrid".
-                'allowServerHosting' => true,
-                // Whether public publishers (/publish, AI Studio, Builder, POST/PATCH /api/apps)
-                // may opt into server/hybrid hosting. Off by default for security: published apps
-                // always download to and run locally inside the visitor's browser sandbox unless
-                // the site owner explicitly sets "hosting" in the app's data JSON (app.json) or
-                // enables this setting in data/config.json.
-                'allowPublicServerHosting' => false,
-                // How apps are stored on disk under data/apps/:
-                //   'categorized' -> data/apps/<category>/[<subcategory>/]<slug>/
-                //   'flat'        -> data/apps/<slug>/
-                //   'auto'        -> categorized whenever category folders exist, else flat.
-                'folderLayout' => 'auto',
-                // When true (or SOFTN_AUTO_THUMB=1), apps missing a thumb.* image
-                // schedule a background headless browser capture via scripts/demos/auto-thumb.mjs.
-                'autoThumbnail' => false,
-                'autoThumbnailBaseUrl' => null,
-                // A Server-Timing header on every response with the catalogue's
-                // lock wait and hold, boot, cache rebuild and commit times —
-                // what scripts/bench/catalog-bench.mjs reads. Off unless asked.
-                'debugTimings' => false,
-                'maxVersionsPerApp' => 50,
-                // Past that number the oldest after version 1 goes to make room. False refuses the new one instead.
-                'dropOldVersions' => true,
-                'storage' => [
-                    'maxCollections' => 32,
-                    'maxRecordsPerCollection' => 20000,
-                    'maxRecordBytes' => 16 * 1024,
-                    'maxDatabaseBytes' => 64 * 1024 * 1024,
-                    'maxQueryLimit' => 200,
-                ],
-                'limits' => [
-                    // [count, seconds] per visitor
-                    'publish' => [10, 3600],
-                    'version' => [30, 3600],
-                    // A wrong edit key given to git. A key cannot be guessed;
-                    // this is for what a run of them costs.
-                    'gitKey' => [30, 3600],
-                    // Replacing an edit key (POST /apps/{slug}/key); an owner
-                    // replacing the key of every app they hold, at once.
-                    'rekey' => [30, 3600],
-                    'comment' => [10, 600],
-                    'rate' => [60, 600],
-                    'run' => [120, 60],
-                    'suggest' => [5, 3600],
-                    'storageRead' => [600, 60],
-                    'storageWrite' => [120, 60],
-                    'hostedBackend' => [240, 60],
-                ],
-                // Empty data/ folder by default: demos are optional and only seeded when
-                // explicitly opted in via `seedDemos: true`, `npm run install:demos`, or a
-                // `--with-demos` site build that places demos/index.json beside api/.
-                'seedDemos' => is_file(dirname(__DIR__, 2) . '/demos/index.json'),
-            ];
+            $defaults = self::defaults(true);
             $values = $defaults;
+            $decoded = null;
             if (is_file($path)) {
                 $decoded = Catalog::readJson($path);
                 if (is_array($decoded)) $values = array_replace_recursive($defaults, $decoded);
             }
-            if (!is_file($path) || !isset($decoded['salt'], $decoded['adminKey'])) {
-                Catalog::writeJson($path,$values);
+            if (!is_file($path) || !is_array($decoded) || !isset($decoded['salt'], $decoded['adminKey'])) {
+                Catalog::writeJson($path, $values);
             }
             self::$values = $values;
             return $values;

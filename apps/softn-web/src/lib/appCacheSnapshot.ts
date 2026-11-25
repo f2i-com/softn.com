@@ -205,7 +205,11 @@ function replaceStorageRuns(
   const journalKey = `${RESTORE_JOURNAL_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const journal: RestoreJournal & { keys?: string[] } = {
     prefixes: runs.map((run) => run.prefix),
-    keys: runs.flatMap((run) => Object.keys(run.entries).map((suffix) => run.prefix + suffix)),
+    keys: runs.flatMap((run) =>
+      Object.keys(run.entries)
+        .filter((suffix) => !run.owns || run.owns(suffix))
+        .map((suffix) => run.prefix + suffix)
+    ),
     previous,
     at: Date.now(),
   };
@@ -242,8 +246,12 @@ function replaceStorageRuns(
   };
   try {
     for (const [key] of previous) localStorage.removeItem(key);
-    for (const { prefix, entries } of runs) {
+    for (const { prefix, entries, owns } of runs) {
       for (const [suffix, value] of Object.entries(entries)) {
+        if (owns && !owns(suffix)) {
+          result.skipped += 1;
+          continue;
+        }
         const key = prefix + suffix;
         localStorage.setItem(key, value);
         written.push(key);

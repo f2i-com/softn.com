@@ -152,18 +152,32 @@ const PAINT_ATTRIBUTES = new Set(['fill', 'stroke', 'filter', 'mask', 'clip-path
 /** The targets a link or form of the app's may name: a new tab, or itself. Never the page it is embedded in (`_top`, `_parent`) or a window by name. */
 const TARGETS = new Set(['_blank', '_self']);
 
-/** SVG attributes that an `<animate>` / `<set>` element must never retarget (addresses, styles, URL-bearing presentation refs). */
+/** SVG/CSS attributes & properties that an `<animate>` / `<set>` element must never retarget (addresses, styles, URL-bearing presentation refs, top-layer/view-transition escapes). */
 const FORBIDDEN_ANIMATION_TARGETS = new Set([
   'style',
   'target',
   'filter',
   'mask',
+  'mask-image',
   'clip-path',
   'cursor',
   'marker',
   'marker-start',
   'marker-mid',
   'marker-end',
+  'appearance',
+  '-webkit-appearance',
+  '-moz-appearance',
+  'view-transition-name',
+  'background',
+  'background-image',
+  'content',
+  'border-image',
+  'border-image-source',
+  'list-style',
+  'list-style-image',
+  'fill',
+  'stroke',
 ]);
 
 const SRCSET_DESCRIPTOR_RE = /^(?:[1-9]\d*w|(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?x)$/i;

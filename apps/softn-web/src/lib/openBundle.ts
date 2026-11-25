@@ -128,6 +128,8 @@ export interface OpenTab {
   webContainer?: boolean;
   /** Optional hosted ZIPP safe-sandbox backend URL when running a server-hosted container app. */
   backendUrl?: string;
+  /** First-screen binary asset warm-up handle, aborted when the tab closes or reopens. */
+  warmup?: FirstScreenWarmup;
   /**
    * The name its address is written with, where that is not `name`: the
    * bundle's own, for an app the person renamed in the runtime's editor to a
@@ -650,6 +652,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
         : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, previous: previousBuild, onAllow, onAsking },
       importResolver,
       assetResolver: containerCheck.isWebContainer ? undefined : createAssetResolver(binaryFiles, textFiles),
+      warmup,
       logicBasePath,
       preIncludedLogicPaths,
       python,

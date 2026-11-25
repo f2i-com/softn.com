@@ -1019,9 +1019,10 @@ final class Response
         $r = new self($status, [], $body);
         foreach ($headerPairs as $pair) {
             if (!is_array($pair) || count($pair) < 2) continue;
-            $name = trim(str_replace("\0", '', (string) $pair[0]));
+            $name = (string) $pair[0];
             $value = str_replace(["\r", "\n", "\0"], '', (string) $pair[1]);
-            if ($name === '' || !preg_match('/^[A-Za-z0-9!#$%&\'*+\-.^_`|~]+$/', $name)) continue;
+            // Never strip NUL bytes from header names (doing so would allow callers' blocklists to be bypassed).
+            if ($name === '' || !preg_match('/^[A-Za-z0-9!#$%&\'*+\-.^_`|~]+$/D', $name)) continue;
             $r->rawHeaders[] = [$name, $value];
         }
         return $r;
@@ -1032,7 +1033,11 @@ final class Response
     {
         $encoded = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($encoded === false) $encoded = '{"ok":false,"error":"The response could not be encoded."}';
-        return new self($status, $headers + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'], $encoded);
+        return new self($status, $headers + [
+            'Content-Type' => 'application/json; charset=utf-8',
+            'Cache-Control' => 'no-store',
+            'X-Robots-Tag' => 'noindex',
+        ], $encoded);
     }
 
     public static function noContent(): self

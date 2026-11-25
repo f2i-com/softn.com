@@ -195,7 +195,12 @@ const FILE_ATTRIBUTES = ['src', 'poster'] as const;
  * shows them. Only a value written in the page: one an expression makes is
  * the author's to resolve.
  */
-export function showBundleFiles(node: ElementNode, props: SoftNProps, asset: unknown): void {
+export function showBundleFiles(
+  node: ElementNode,
+  props: SoftNProps,
+  asset: unknown,
+  stripUnresolved = false
+): void {
   if (typeof asset !== 'function') return;
   for (const name of FILE_ATTRIBUTES) {
     const value = props[name];
@@ -207,9 +212,14 @@ export function showBundleFiles(node: ElementNode, props: SoftNProps, asset: unk
     try {
       url = (asset as (path: string) => unknown)(path);
     } catch {
+      if (stripUnresolved) delete props[name];
       continue;
     }
-    if (typeof url === 'string' && url !== '') props[name] = url;
+    if (typeof url === 'string' && url !== '') {
+      props[name] = url;
+    } else if (stripUnresolved) {
+      delete props[name];
+    }
   }
 }
 
@@ -217,9 +227,16 @@ export function showBundleFiles(node: ElementNode, props: SoftNProps, asset: unk
  * The same for a stylesheet: `background: url(images/paper.png)` in a page's
  * `<style>` or in a stylesheet it links shows the bundle's file. Run on the
  * rules after they are sanitised, which removes every address that leaves
- * the bundle, so what is left that names a file is relative.
+ * the bundle, so what is left that names a file is relative. When `stripUnresolved`
+ * is enabled (sandboxed bundle with egress enforcement), any relative or root-relative
+ * URL not present in the bundle is replaced with `none` so it cannot trigger a
+ * credentialed same-origin GET against the embedding host.
  */
-export function showBundleFilesInStyles(css: string, resolve: ((path: string) => string) | undefined): string {
+export function showBundleFilesInStyles(
+  css: string,
+  resolve: ((path: string) => string) | undefined,
+  stripUnresolved = false
+): string {
   if (!resolve || !/url\(/i.test(css)) return css;
   return css.replace(/url\(\s*(["']?)([^"')\s]+)\1\s*\)/gi, (whole, _quote: string, written: string) => {
     const path = bundlePathOf(written);
@@ -228,9 +245,10 @@ export function showBundleFilesInStyles(css: string, resolve: ((path: string) =>
     try {
       url = resolve(path);
     } catch {
-      return whole;
+      return stripUnresolved ? 'none' : whole;
     }
-    return typeof url === 'string' && url !== '' ? `url("${url}")` : whole;
+    if (typeof url === 'string' && url !== '') return `url("${url}")`;
+    return stripUnresolved ? 'none' : whole;
   });
 }
 

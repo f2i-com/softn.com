@@ -28,6 +28,8 @@ export interface HostGate {
   pressedHere(): boolean;
   /** Single-use press consumption for download/save calls so one click cannot flood multiple saves. */
   consumePress?(): boolean;
+  /** Owning app identifier for cross-app resource ownership checks (e.g. file-registry). */
+  appId?(): string | undefined;
 }
 
 /**

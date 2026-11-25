@@ -151,7 +151,9 @@ export function analyzeHostedAppNeeds(manifest, clientFiles, options = {}) {
     /\.html?$/i.test(mainEntry) ||
     manifest?.format === 'web' ||
     manifest?.format === 'container' ||
-    manifest?.engine === 2;
+    manifest?.engine === 2 ||
+    Boolean(manifest?.ssrEntry) ||
+    String(manifest?.backend?.mode ?? '').toLowerCase() === 'ssr';
   let hasPythonVfs = manifest?.runtime === 'python';
   let hasTypeScriptVfs = false;
   let hasJsx = false;
@@ -179,8 +181,19 @@ export function analyzeHostedAppNeeds(manifest, clientFiles, options = {}) {
     if (/\.(?:db|sqlite|sqlite3)$/i.test(lower) || lower === 'schema.sql' || lower.endsWith('/schema.sql')) {
       hasZeroConfigSqlite = true;
     }
-    if (lower.endsWith('.php') || lower.endsWith('.phtml')) hasZeroConfigPhp = true;
-    if (lower.endsWith('.rs')) hasZeroConfigRust = true;
+    // Match `archive.ts` zero-config backend discovery: only root or `server/`/`backend/`
+    // PHP/Rust files activate a local backend, never example/doc files nested elsewhere.
+    if ((lower.endsWith('.php') || lower.endsWith('.phtml')) && (!lower.includes('/') || /^(?:server|backend)\//.test(lower))) {
+      hasZeroConfigPhp = true;
+    }
+    if (
+      lower === 'cargo.toml' ||
+      lower === 'main.rs' ||
+      lower === 'src/main.rs' ||
+      /^(?:server|backend)\/(?:cargo\.toml|.*\.rs)$/.test(lower)
+    ) {
+      hasZeroConfigRust = true;
+    }
 
     if (TEXT_EXT_RE.test(lower)) {
       const txt = readClientText(clientFiles[name]);
@@ -278,6 +291,13 @@ export function analyzeHostedAppNeeds(manifest, clientFiles, options = {}) {
 
   // When a browser-local PHP or Rust backend engine is loaded, softn-app.ts reuses that
   // already-compiled module for frontend `lite`/`javascript` tiers too!
+  // Local JS, Python, or default-runtime backends rely on core's full engine (`hostedContainerOptions`).
+  const browserBackendUsesCoreWasm =
+    !remoteHostedBackend &&
+    hasEmbeddedBackend &&
+    !usesBrowserPhpBackend &&
+    !usesBrowserRustBackend &&
+    backendRuntime !== 'typescript';
   const browserBackendReusesFrontendJs = usesBrowserPhpBackend || usesBrowserRustBackend;
   const containerNeedsLiteEngine =
     hasHtmlPages && containerTiers.has('lite') && !browserBackendReusesFrontendJs;
@@ -285,6 +305,7 @@ export function analyzeHostedAppNeeds(manifest, clientFiles, options = {}) {
     hasHtmlPages && (containerTiers.has('typescript') || (!remoteHostedBackend && backendRuntime === 'typescript'));
   const needsFullCoreWasm =
     hasUiPages ||
+    browserBackendUsesCoreWasm ||
     (hasHtmlPages &&
       (containerTiers.has('python') ||
         (containerTiers.has('javascript') && !browserBackendReusesFrontendJs)));
@@ -412,7 +433,19 @@ export function shouldPruneWebrootAsset(relPath, needs) {
   // 8. Pure Container v2 app (no Classic .ui pages)
   if (!needs.hasUiPages && needs.hasHtmlPages) {
     if (CLASSIC_ONLY_CHUNKS.some((name) => matchesChunk(norm, name))) return true;
-    if (norm.startsWith('assets/core-runtime/')) return true;
+    if (norm.startsWith('assets/core-runtime/')) {
+      const keepTorch =
+        needs.usesTorch &&
+        (norm === 'assets/core-runtime/zipp_torch.wasm' ||
+          /^assets\/core-runtime\/zipp_torch-[^/]+\.js$/.test(norm) ||
+          norm.startsWith('assets/core-runtime/wasm-zipp-torch/'));
+      const keepAi =
+        needs.usesAi &&
+        (norm === 'assets/core-runtime/runtime/model-worker.js' ||
+          norm.startsWith('assets/core-runtime/runtime/models/') ||
+          norm.startsWith('assets/core-runtime/wasm-gguf/'));
+      if (!keepTorch && !keepAi) return true;
+    }
   }
 
   // 9. Pure Classic .ui app (no Container v2 HTML pages)

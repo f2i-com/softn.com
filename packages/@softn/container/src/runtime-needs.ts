@@ -120,7 +120,14 @@ export async function preloadContainerFeatures(
     wanted.push(['3D scenes', () => import('./vendor/webgl-scene-host')]);
     const base = (options.runtimeUrl ?? '/runtime/').replace(/\/?$/, '/');
     wanted.push(['Three.js', options.hostThree ?? (() => import(/* @vite-ignore */ `${base}vendor/three.js`))]);
-    if (needs.models) wanted.push(['the model loader', () => import('three/examples/jsm/loaders/GLTFLoader.js')]);
+    if (needs.models) {
+      wanted.push([
+        'the model loader',
+        options.hostThree
+          ? () => import('three/examples/jsm/loaders/GLTFLoader.js').catch(() => import(/* @vite-ignore */ `${base}vendor/gltf-loader.js`))
+          : () => import(/* @vite-ignore */ `${base}vendor/gltf-loader.js`).catch(() => import('three/examples/jsm/loaders/GLTFLoader.js')),
+      ]);
+    }
   }
   if (needs.sqlite) {
     wanted.push(['local-backend', () => import('./local-backend-transport')]);

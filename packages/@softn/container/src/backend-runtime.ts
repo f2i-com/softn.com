@@ -690,7 +690,8 @@ export class BackendWorkerSession {
         },
       });
       this.sqlManager.preseedConfiguredDatabases();
-      this.sqlManager.flushDirty();
+      // Defer cold-boot seed persistence so initial DB snapshot export never stalls boot latency.
+      this.scheduleSqlFlush();
 
       // 3. Boot backend runtime (if configured)
       if (this.backend && preloadedZippBindings) {
@@ -754,6 +755,7 @@ export class BackendWorkerSession {
   private buildVfsObjectForZipp(stripPrefix?: string): Record<string, string | { base64: string }> {
     const out: Record<string, string | { base64: string }> = Object.create(null);
     const prefix = stripPrefix ? stripPrefix.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') + '/' : '';
+    const heavyFrontendMediaRe = /\.(?:png|jpe?g|gif|webp|avif|ico|mp4|webm|mp3|wav|ogg|woff2?|ttf|otf|glb|gltf|wasm)$/i;
     for (const [k, v] of Object.entries(this.textFiles)) {
       if (prefix && k.startsWith(prefix)) {
         out[k.slice(prefix.length)] = v;
@@ -764,6 +766,12 @@ export class BackendWorkerSession {
     for (const [k, bytes] of Object.entries(this.binaryFiles)) {
       // Skip large binary DB images from ZIPP VFS (XDB opens DBs directly via app.sql.*)
       if (/\.(?:db|db-wal|db-shm|db-journal|sqlite|sqlite3)$/i.test(k)) continue;
+      // Skip heavy frontend media/font/3D/WASM binaries outside the backend root (or >64 KB
+      // in root PHP apps where `dispatchPhpRequest` serves static files straight from `binaryFiles`)
+      // to avoid base64-encoding megabytes into WASM linear memory on cold boot.
+      if (heavyFrontendMediaRe.test(k) && ((prefix && !k.startsWith(prefix)) || bytes.byteLength > 65_536)) {
+        continue;
+      }
       const entry = { base64: bytesToBase64(bytes) };
       if (prefix && k.startsWith(prefix)) {
         out[k.slice(prefix.length)] = entry;
@@ -973,7 +981,7 @@ export class BackendWorkerSession {
 
     // Restore per-request turn budget after boot
     engine.setInstructionBudget(Math.max(this.instructionBudget, 200_000_000));
-    this.sqlManager?.flushDirty();
+    this.scheduleSqlFlush();
     this.rustEngine = engine;
     // Immediately persist any files written during boot (such as freshly generated `.pit.secret`)
     this.persistRustOverlayIfChanged();
@@ -1254,14 +1262,8 @@ export class BackendWorkerSession {
         }
       }
 
-      // Flush mutating HTTP requests before returning so committed SQLite writes survive
-      // an immediate reload or preview dispose; coalesce any incidental GET writes.
-      if (msg.method !== 'GET' && msg.method !== 'HEAD') {
-        this.flushSqlNow();
-      } else {
-        this.scheduleSqlFlush();
-      }
-
+      // Deliver the HTTP response to the frontend immediately so mutating requests never stall
+      // on SQLite `.db` binary export / IndexedDB persistence, then flush dirty DBs right after.
       this.postToHost({
         type: 'response',
         reqId: msg.reqId,
@@ -1270,6 +1272,12 @@ export class BackendWorkerSession {
         headers,
         bodyBytes,
       });
+
+      if (msg.method !== 'GET' && msg.method !== 'HEAD') {
+        this.flushSqlNow();
+      } else {
+        this.scheduleSqlFlush();
+      }
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       this.postToHost({
@@ -1772,11 +1780,11 @@ export class BackendWorkerSession {
     }
     try { this.flushSqlNow(); } catch { /* ignore */ }
     this.disposed = true;
-    try { this.rustEngine?.dispose(); } catch { /* ignore */ }
-    try { this.phpApp?.dispose(); } catch { /* ignore */ }
-    try { this.phpWorkerEngine?.dispose(); } catch { /* ignore */ }
-    try { this.jsEngine?.dispose(); } catch { /* ignore */ }
-    try { this.pythonEngine?.dispose(); } catch { /* ignore */ }
+    try { this.rustEngine?.dispose(); this.rustEngine?.free?.(); } catch { /* ignore */ }
+    try { this.phpApp?.dispose(); this.phpApp?.free?.(); } catch { /* ignore */ }
+    try { this.phpWorkerEngine?.dispose(); this.phpWorkerEngine?.free?.(); } catch { /* ignore */ }
+    try { this.jsEngine?.dispose(); this.jsEngine?.free?.(); } catch { /* ignore */ }
+    try { this.pythonEngine?.dispose(); this.pythonEngine?.free?.(); } catch { /* ignore */ }
     try { this.sqlManager?.dispose(); } catch { /* ignore */ }
     this.rustEngine = null;
     this.phpApp = null;

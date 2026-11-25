@@ -90,8 +90,12 @@ function embeddedIpv4FromIpv6(g: number[]): [number, number, number, number] | n
 }
 
 function isMetadataOrUnspecifiedIpv4(v4: [number, number, number, number]): boolean {
-  const [a, b] = v4;
-  return a === 0 || (a === 169 && b === 254);
+  const [a, b, c, d] = v4;
+  return (
+    a === 0 ||
+    (a === 169 && b === 254) ||
+    (a === 100 && b === 100 && c === 100 && d === 200) // Alibaba Cloud IMDS
+  );
 }
 
 function isMetadataOrUnspecifiedHost(hostname: string): boolean {
@@ -184,6 +188,21 @@ function effectivePort(url: URL): string {
   return url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '';
 }
 
+function isEmbeddingHostHostname(normalizedHost: string): boolean {
+  try {
+    const here = (globalThis as { location?: { origin?: string; href?: string } }).location;
+    if (!here) return false;
+    const rawOrigin = here.origin && here.origin !== 'null' ? here.origin : here.href ? new URL(here.href).origin : '';
+    if (!rawOrigin || rawOrigin === 'null') return false;
+    const emb = new URL(rawOrigin);
+    if (emb.protocol !== 'https:' && emb.protocol !== 'http:') return false;
+    const embHost = emb.hostname.toLowerCase().replace(/\.+$/, '');
+    return embHost !== '' && normalizedHost === embHost;
+  } catch {
+    return false;
+  }
+}
+
 function isEmbeddingHostOrigin(parsed: URL, normalizedHost: string): boolean {
   try {
     const here = (globalThis as { location?: { origin?: string; href?: string } }).location;
@@ -196,6 +215,18 @@ function isEmbeddingHostOrigin(parsed: URL, normalizedHost: string): boolean {
     return embHost !== '' && normalizedHost === embHost && parsed.protocol === emb.protocol && effectivePort(parsed) === effectivePort(emb);
   } catch {
     return false;
+  }
+}
+
+/** Check whether an external URL targets the embedding host's own hostname (or exact origin when `originOnly` is true). */
+function targetsEmbeddingHost(rawUrl: string, originOnly = false): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, '');
+    if (!hostname) return true;
+    return originOnly ? isEmbeddingHostOrigin(parsed, hostname) : isEmbeddingHostHostname(hostname);
+  } catch {
+    return true;
   }
 }
 
@@ -297,7 +328,9 @@ export function sanitizeHostAssetUrl(
   basePath: string,
   archive: ContainerArchive,
   permissions: ContainerPermissions,
-  netGranted: boolean
+  netGranted: boolean,
+  /** True only for cookie-free CORS `fetch(..., { credentials: 'omit' })` image reads (still blocks exact same-origin). */
+  allowDistinctPortSameHost = false
 ): string | null {
   const trimmed = stripAsciiControlAndSpace(rawValue);
   const originalTrimmed = rawValue.trim();
@@ -392,9 +425,13 @@ export function sanitizeHostAssetUrl(
     return archive.getBlobUrl(vfsPath) ?? '';
   }
 
-  // External network resource (`<img src="https://...">`) -> enforce `net` permission
+  // External network resource (`<img src="https://...">`) -> enforce `net` permission.
+  // Never allow passive DOM subresource fetches to target the embedding host itself: browsers
+  // attach ambient host cookies to `<img>`/`<video>`/`<audio>` requests even if `allowed_hosts`
+  // explicitly listed the host's domain.
   if (/^https?:|^\/\//i.test(trimmed)) {
     const normalized = trimmed.startsWith('//') ? `https:${originalTrimmed}` : originalTrimmed;
+    if (targetsEmbeddingHost(normalized, allowDistinctPortSameHost)) return null;
     if (isExternalUrlAllowed(normalized, permissions.permissions?.net, netGranted)) {
       return normalized;
     }
@@ -434,7 +471,7 @@ export function sanitizeContainerCss(
     if (runtimeBlob) return archive.getRuntimeBlobUrl(runtimeBlob[1]);
     const vfs = archive.resolveFrontendExistingPath(target, basePath);
     if (vfs) return archive.getBlobUrl(vfs);
-    if (/^https?:/i.test(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
+    if (/^https?:/i.test(target) && !targetsEmbeddingHost(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
     return null;
   }, { keepHost: scope === 'shadow' });
 
@@ -814,10 +851,20 @@ export function prepareHtmlDocument(
     }
 
     // An image asked for with CORS from a site the app may reach: loaded by the patcher, which
-    // fetches it and shows it from a blob of what came (a canvas it is drawn into is read back).
-    if (lowerTag === 'img' && !ns && hostAttrs.crossorigin !== undefined && hostAttrs.src && /^https?:/i.test(hostAttrs.src)) {
-      hostAttrs[READABLE_ATTR] = hostAttrs.src;
-      delete hostAttrs.src;
+    // fetches it cookie-free (`credentials: 'omit'`) and shows it from a blob of what came
+    // (a canvas it is drawn into is read back). Distinct ports on the same host are allowed
+    // here when explicitly listed in `allowed_hosts`, while exact same-origin stays blocked.
+    if (lowerTag === 'img' && !ns && hostAttrs.crossorigin !== undefined) {
+      const readableSrc =
+        hostAttrs.src && /^https?:/i.test(hostAttrs.src)
+          ? hostAttrs.src
+          : typeof seedAttrs.src === 'string' && /^https?:|^\/\//i.test(seedAttrs.src.trim())
+            ? sanitizeHostAssetUrl('src', seedAttrs.src, 'img', entryPath, archive, permissions, netGranted, true)
+            : null;
+      if (readableSrc && /^https?:/i.test(readableSrc)) {
+        hostAttrs[READABLE_ATTR] = readableSrc;
+        delete hostAttrs.src;
+      }
     }
 
     // Every link gets `noopener noreferrer`; an external link opens in a new tab of its own.

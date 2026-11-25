@@ -32,6 +32,38 @@ body {
   overflow-x: hidden;
 }
 
+/* Styled SSR shell before React mounts: prevents unstyled FOUC/CLS while keeping semantic View-Source HTML. */
+#boot {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 5.5rem 1.5rem 3rem;
+  color: var(--paper);
+}
+#boot h1 {
+  font-family: var(--display, var(--body));
+  font-size: clamp(1.9rem, 4.5vw, 3.1rem);
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  margin-bottom: 1rem;
+}
+#boot p {
+  max-width: 46rem;
+  color: var(--dim);
+  margin-bottom: 1rem;
+}
+#boot nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin: 1.25rem 0 2rem;
+  font-size: 0.92rem;
+}
+#boot a {
+  color: var(--coral, #ff7a59);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 a {
   color: inherit;
   text-decoration: none;

@@ -15,7 +15,7 @@ declare(strict_types=1);
 
 final class Prerender
 {
-    public const VERSION = 4;
+    public const VERSION = 5;
     private const MAX_ENTRY_BYTES = 262144;
     private const MAX_SNAPSHOT_BYTES = 524288;
     private const MAX_IMPORT_FILES = 16;
@@ -84,7 +84,7 @@ final class Prerender
         ?string $snapshotPath = null,
         ?string $snapshotSha = null
     ): array {
-        $empty = ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
+        $empty = ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null, 'engineTier' => null];
         if (!is_file($bundlePath)) return $empty;
 
         $activeSnapshot = self::usableSnapshotPath($snapshotPath, $bundlePath, $bundleSha, $snapshotSha);
@@ -110,27 +110,39 @@ final class Prerender
                 ) {
                     $tm = $decoded['themeMode'] ?? null;
                     $ef = $decoded['entryFile'] ?? null;
+                    $et = $decoded['engineTier'] ?? null;
                     return [
                         'themeMode' => ($tm === 'light' || $tm === 'dark') ? $tm : null,
                         'previewHtml' => $decoded['previewHtml'],
                         'sourceType' => $decoded['sourceType'],
                         'entryFile' => is_string($ef) ? $ef : null,
+                        'engineTier' => in_array($et, ['lite', 'typescript', 'full'], true) ? $et : null,
                     ];
                 }
             }
         }
 
-        $result = self::extractFromZip($bundlePath);
         if ($activeSnapshot !== null) {
             $rawSnap = @file_get_contents($activeSnapshot, false, null, 0, self::MAX_SNAPSHOT_BYTES);
             if (is_string($rawSnap) && trim($rawSnap) !== '') {
                 $sanitizedSnap = self::sanitizeHtml($rawSnap, self::MAX_SNAPSHOT_BYTES);
                 if ($sanitizedSnap !== '') {
-                    $result['previewHtml'] = $sanitizedSnap;
-                    $result['sourceType'] = 'snapshot';
-                    $result['entryFile'] = 'ssr.html';
+                    $meta = self::extractThemeAndTierFromZip($bundlePath);
+                    $result = [
+                        'themeMode' => $meta['themeMode'],
+                        'previewHtml' => $sanitizedSnap,
+                        'sourceType' => 'snapshot',
+                        'entryFile' => 'ssr.html',
+                        'engineTier' => $meta['engineTier'],
+                    ];
+                } else {
+                    $result = self::extractFromZip($bundlePath);
                 }
+            } else {
+                $result = self::extractFromZip($bundlePath);
             }
+        } else {
+            $result = self::extractFromZip($bundlePath);
         }
 
         if ($cacheFile !== null) {
@@ -161,7 +173,7 @@ final class Prerender
         string $bundleSha,
         ?string $snapshotSha = null
     ): ?string {
-        if ($snapshotPath === null || $snapshotPath === '' || !is_file($snapshotPath)) return null;
+        if ($snapshotPath === null || $snapshotPath === '' || is_link($snapshotPath) || !is_file($snapshotPath)) return null;
         $size = @filesize($snapshotPath);
         if (!is_int($size) || $size <= 0 || $size > self::MAX_SNAPSHOT_BYTES) return null;
         $head = @file_get_contents($snapshotPath, false, null, 0, 256);
@@ -183,19 +195,114 @@ final class Prerender
     }
 
     /**
+     * Conservatively classify which frontend WASM engine tier a bundle will request
+     * (`'lite'`, `'typescript'`, or `'full'`) so `/play/<slug>` can emit exact
+     * `<link rel="preload" as="fetch">` hints without risking unused-preload warnings.
+     */
+    private static function detectEngineTierFromZip(ZipArchive $zip): string
+    {
+        $hasTs = false;
+        $needsFullJs = false;
+        $limit = min($zip->numFiles, 512);
+        for ($i = 0; $i < $limit; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (!is_string($name) || str_ends_with($name, '/')) continue;
+            $norm = ltrim(str_replace('\\', '/', $name), './');
+            if (preg_match('#^(?:backend|server|private)/#i', $norm) === 1) continue;
+            $lower = strtolower($norm);
+            if (str_ends_with($lower, '.py')) return 'full';
+            if (preg_match('/\.(?:ts|tsx|mts)$/', $lower) === 1) {
+                $hasTs = true;
+                continue;
+            }
+            if (preg_match('/\.(?:html?|ui|logic|m?js|jsx|vue)$/', $lower) !== 1) continue;
+            $stat = $zip->statIndex($i);
+            if ($stat === false || (int) $stat['size'] > self::MAX_ENTRY_BYTES) {
+                // Large uninspected script file: stay conservative so we never preload the wrong engine.
+                $needsFullJs = true;
+                continue;
+            }
+            $src = $zip->getFromIndex($i, self::MAX_ENTRY_BYTES);
+            if (!is_string($src)) continue;
+            if (preg_match('/<script\b[^>]*\btype\s*=\s*["\']?(?:text\/)?python\b/i', $src) === 1) return 'full';
+            if (preg_match('/<script\b[^>]*\btype\s*=\s*["\']?(?:text\/|module\/)?(?:ts|tsx|typescript)\b/i', $src) === 1) {
+                $hasTs = true;
+            }
+            if (preg_match('/\b(?:Intl|Temporal)\b|\.(?:toLocale(?:String|DateString|TimeString|UpperCase|LowerCase)|localeCompare)\b/', $src) === 1) {
+                $needsFullJs = true;
+            }
+        }
+        if ($hasTs) return 'typescript';
+        return $needsFullJs ? 'full' : 'lite';
+    }
+
+    /**
+     * Fast path when a live `ssr.html` snapshot is present: read only `manifest.json`
+     * for `themeMode` and classify `engineTier` without sanitizing any UI/JS entries.
+     *
+     * @return array{themeMode: ?string, engineTier: ?string}
+     */
+    private static function extractThemeAndTierFromZip(string $bundlePath): array
+    {
+        $empty = ['themeMode' => null, 'engineTier' => null];
+        if (!class_exists('ZipArchive')) return $empty;
+        $zip = new ZipArchive();
+        if ($zip->open($bundlePath, ZipArchive::RDONLY) !== true) return $empty;
+        try {
+            $tier = self::detectEngineTierFromZip($zip);
+            $manifestName = null;
+            if ($zip->locateName('manifest.json') !== false) {
+                $manifestName = 'manifest.json';
+            } elseif ($zip->numFiles > 0) {
+                $first = $zip->getNameIndex(0);
+                if (is_string($first)) {
+                    $slash = strpos($first, '/');
+                    if ($slash !== false && $slash > 0) {
+                        $cand = substr($first, 0, $slash + 1) . 'manifest.json';
+                        if ($zip->locateName($cand) !== false) $manifestName = $cand;
+                    }
+                }
+            }
+            $themeMode = null;
+            if ($manifestName !== null) {
+                $stat = $zip->statName($manifestName);
+                if ($stat !== false && (int) $stat['size'] <= self::MAX_ENTRY_BYTES) {
+                    $raw = $zip->getFromName($manifestName, self::MAX_ENTRY_BYTES);
+                    if (is_string($raw)) {
+                        if (str_starts_with($raw, "\xEF\xBB\xBF")) $raw = substr($raw, 3);
+                        $manifest = json_decode($raw, true, 32);
+                        if (is_array($manifest)) {
+                            $theme = is_array($manifest['config'] ?? null) ? ($manifest['config']['theme'] ?? null) : null;
+                            $mode = is_array($theme) ? ($theme['mode'] ?? null) : null;
+                            if ($mode === 'light' || $mode === 'dark') $themeMode = $mode;
+                            elseif (in_array($manifest['theme'] ?? null, ['light', 'dark'], true)) $themeMode = (string) $manifest['theme'];
+                        }
+                    }
+                }
+            }
+            return ['themeMode' => $themeMode, 'engineTier' => $tier];
+        } catch (Throwable) {
+            return $empty;
+        } finally {
+            $zip->close();
+        }
+    }
+
+    /**
      * Extract theme mode and sanitized rendered HTML directly from a bundle archive.
      *
      * @return array{themeMode: ?string, previewHtml: string, sourceType: string, entryFile: ?string}
      */
     public static function extractFromZip(string $bundlePath): array
     {
-        $empty = ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
+        $empty = ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null, 'engineTier' => null];
         if (!class_exists('ZipArchive')) return $empty;
 
         $zip = new ZipArchive();
         if ($zip->open($bundlePath, ZipArchive::RDONLY) !== true) return $empty;
 
         try {
+            $engineTier = self::detectEngineTierFromZip($zip);
             $prefix = '';
             $manifestName = null;
             if ($zip->locateName('manifest.json') !== false) {
@@ -256,22 +363,23 @@ final class Prerender
                     'previewHtml' => $bundledSnap['html'],
                     'sourceType' => 'snapshot',
                     'entryFile' => $bundledSnap['file'],
+                    'engineTier' => $engineTier,
                 ];
             }
 
             $entryName = self::resolvePublicUiEntry($zip, $manifest, $prefix);
             if ($entryName === null) {
-                return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
+                return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null, 'engineTier' => $engineTier];
             }
 
             $stat = $zip->statName($entryName);
             if ($stat === false || (int) $stat['size'] === 0 || (int) $stat['size'] > self::MAX_ENTRY_BYTES) {
-                return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => $entryName];
+                return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => $entryName, 'engineTier' => $engineTier];
             }
 
             $content = $zip->getFromName($entryName, self::MAX_ENTRY_BYTES);
             if (!is_string($content) || trim($content) === '') {
-                return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => $entryName];
+                return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => $entryName, 'engineTier' => $engineTier];
             }
 
             $ext = strtolower((string) pathinfo($entryName, PATHINFO_EXTENSION));
@@ -282,6 +390,7 @@ final class Prerender
                     'previewHtml' => self::renderUi($expanded),
                     'sourceType' => 'ui',
                     'entryFile' => $prefix !== '' && str_starts_with($entryName, $prefix) ? substr($entryName, strlen($prefix)) : $entryName,
+                    'engineTier' => $engineTier,
                 ];
             }
             if ($ext === 'html' || $ext === 'htm') {
@@ -300,10 +409,11 @@ final class Prerender
                     'previewHtml' => $sanitized,
                     'sourceType' => 'html',
                     'entryFile' => $prefix !== '' && str_starts_with($entryName, $prefix) ? substr($entryName, strlen($prefix)) : $entryName,
+                    'engineTier' => $engineTier,
                 ];
             }
 
-            return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
+            return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null, 'engineTier' => $engineTier];
         } catch (Throwable) {
             return $empty;
         } finally {
@@ -367,17 +477,24 @@ final class Prerender
      */
     private static function extractHtmlFromFrontendJs(ZipArchive $zip, ?array $manifest, string $prefix): string
     {
-        $feRoot = is_array($manifest) && is_string($manifest['frontendRoot'] ?? null)
-            ? trim(str_replace('\\', '/', $manifest['frontendRoot']), '/')
-            : '';
+        $normRel = static function (mixed $v): string {
+            if (!is_string($v)) return '';
+            $s = str_replace('\\', '/', trim($v));
+            $s = preg_replace('#^(?:\./)+#', '', ltrim($s, '/')) ?? ltrim($s, '/');
+            return strtolower(trim($s, '/'));
+        };
+        $feRoot = is_array($manifest) ? $normRel($manifest['frontendRoot'] ?? null) : '';
         $backendRoot = '';
         if (is_array($manifest) && is_array($manifest['backend'] ?? null)) {
             if (is_string($manifest['backend']['root'] ?? null)) {
-                $backendRoot = strtolower(trim(str_replace('\\', '/', $manifest['backend']['root']), '/'));
-            } elseif (is_string($manifest['backend']['entry'] ?? null) && str_contains($manifest['backend']['entry'], '/')) {
-                $firstDir = strtolower(explode('/', trim(str_replace('\\', '/', $manifest['backend']['entry']), '/'))[0]);
-                if (!in_array($firstDir, ['assets', 'css', 'js', 'public', 'static', 'dist', 'frontend', 'src'], true)) {
-                    $backendRoot = $firstDir;
+                $backendRoot = $normRel($manifest['backend']['root']);
+            } elseif (is_string($manifest['backend']['entry'] ?? null)) {
+                $entryClean = $normRel($manifest['backend']['entry']);
+                if (str_contains($entryClean, '/')) {
+                    $firstDir = explode('/', $entryClean)[0];
+                    if ($firstDir !== '' && !in_array($firstDir, ['assets', 'css', 'js', 'public', 'static', 'dist', 'frontend', 'src'], true)) {
+                        $backendRoot = $firstDir;
+                    }
                 }
             }
         }
@@ -665,6 +782,100 @@ final class Prerender
     }
 
     /**
+     * Linear O(N) stripper for HTML comments, DOCTYPE, and active/non-content
+     * subtrees (`<script>`, `<style>`, `<iframe>`, `<svg>`, etc.), handling
+     * unclosed tags to EOF without quadratic PCRE backtracking.
+     */
+    private static function stripNonContentHtml(string $raw): string
+    {
+        static $dropSubtree = [
+            'script' => true, 'style' => true, 'noscript' => true, 'template' => true,
+            'iframe' => true, 'object' => true, 'embed' => true, 'svg' => true, 'math' => true,
+            'form' => true, 'textarea' => true, 'select' => true, 'canvas' => true,
+            'audio' => true, 'video' => true,
+        ];
+        static $dropSingle = [
+            'input' => true, 'meta' => true, 'link' => true, 'base' => true,
+        ];
+        $out = '';
+        $len = strlen($raw);
+        $i = 0;
+        while ($i < $len) {
+            $lt = strpos($raw, '<', $i);
+            if ($lt === false) {
+                $out .= substr($raw, $i);
+                break;
+            }
+            if ($lt > $i) $out .= substr($raw, $i, $lt - $i);
+            // HTML comment <!-- ... --> (unclosed comment drops through EOF)
+            if (substr_compare($raw, '<!--', $lt, 4) === 0) {
+                $end = strpos($raw, '-->', $lt + 4);
+                if ($end === false) break;
+                $i = $end + 3;
+                continue;
+            }
+            // DOCTYPE / declaration <! ... >
+            if ($lt + 1 < $len && $raw[$lt + 1] === '!') {
+                $gt = strpos($raw, '>', $lt + 2);
+                if ($gt === false) break;
+                $i = $gt + 1;
+                continue;
+            }
+            // Scan tag end respecting quoted attributes
+            $gt = null;
+            $q = null;
+            for ($k = $lt + 1; $k < $len; $k++) {
+                $ch = $raw[$k];
+                if ($q !== null) {
+                    if ($ch === $q) $q = null;
+                } elseif ($ch === '"' || $ch === "'") {
+                    $q = $ch;
+                } elseif ($ch === '>') {
+                    $gt = $k;
+                    break;
+                }
+            }
+            if ($gt === null) break;
+            $tagSlice = substr($raw, $lt, $gt - $lt + 1);
+            if (preg_match('/^<\s*([a-zA-Z][a-zA-Z0-9:-]*)(?=[\s\/>])/', $tagSlice, $tm) === 1) {
+                $tag = strtolower($tm[1]);
+                $selfClosing = str_ends_with(rtrim(substr($tagSlice, 0, -1)), '/');
+                if (isset($dropSingle[$tag])) {
+                    $i = $gt + 1;
+                    continue;
+                }
+                if (isset($dropSubtree[$tag])) {
+                    $i = $gt + 1;
+                    if (!$selfClosing) {
+                        // Advance past matching closing tag; unclosed drops through EOF.
+                        $closePos = null;
+                        $searchFrom = $i;
+                        while ($searchFrom < $len) {
+                            $cand = stripos($raw, '</' . $tag, $searchFrom);
+                            if ($cand === false) break;
+                            $after = $cand + 2 + strlen($tag);
+                            while ($after < $len && ($raw[$after] === ' ' || $raw[$after] === "\t" || $raw[$after] === "\n" || $raw[$after] === "\r")) {
+                                $after++;
+                            }
+                            if ($after < $len && $raw[$after] === '>') {
+                                $closePos = $after + 1;
+                                break;
+                            }
+                            $searchFrom = $cand + 2;
+                        }
+                        if ($closePos === null) break;
+                        $i = $closePos;
+                    }
+                    continue;
+                }
+            }
+            $out .= $tagSlice;
+            $i = $gt + 1;
+        }
+        return $out;
+    }
+
+    /**
      * Sanitize static HTML (from a Container v2 entry) into safe, balanced,
      * nicely formatted semantic HTML5 suitable for search engines and View Source.
      */
@@ -673,18 +884,19 @@ final class Prerender
         if (strlen($raw) > $maxBytes) {
             $raw = substr($raw, 0, $maxBytes);
         }
-        // Strip comments, doctype, and non-content / active / embedded subtrees BEFORE
-        // locating <body> so a literal `<body>...</body>` inside a <script> or comment cannot
-        // hijack extraction.
-        $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
-        $raw = preg_replace('/<!DOCTYPE[^>]*>/i', '', $raw) ?? $raw;
-        $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|canvas|audio|video)\b[^>]*>[\s\S]*?<\/\1\s*>/i', '', $raw) ?? $raw;
-        $raw = preg_replace('/<(script|style|noscript|template|iframe|object|embed|svg|math|form|textarea|select|input|meta|link|base|canvas|audio|video)\b[^>]*\/?>/i', '', $raw) ?? $raw;
+        // Strip comments, doctype, and non-content / active / embedded subtrees in O(N)
+        // BEFORE locating <body> so a literal `<body>...</body>` inside a <script> or comment
+        // cannot hijack extraction and unclosed tags fail closed to EOF.
+        $raw = self::stripNonContentHtml($raw);
         // Extract body contents when a full document is supplied.
-        if (preg_match('/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i', $raw, $m) === 1) {
+        $bodyMatch = preg_match('/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i', $raw, $m);
+        if ($bodyMatch === false) return '';
+        if ($bodyMatch === 1) {
             $raw = $m[1];
         } else {
-            $raw = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head\s*>/i', '', $raw) ?? $raw;
+            $strippedHead = preg_replace('/<head\b[^>]*>[\s\S]*?<\/head\s*>/i', '', $raw);
+            if ($strippedHead === null) return '';
+            $raw = $strippedHead;
         }
 
         $root = ['tag' => '#root', 'attrs' => '', 'children' => []];

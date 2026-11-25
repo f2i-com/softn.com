@@ -92,17 +92,25 @@ export default function App(): React.ReactElement {
   }, [route.path]);
 
   // The canonical URL, description and robots line for the route (lib/meta).
-  // Directory category/filter params update canonical & robots; app pages keep
-  // their loaded description until switching to another app or page.
+  // Preserve SSR-rendered `<head>` tags on initial mount for `/app/<slug>` so
+  // crawlers/hydrators don't lose the app-specific description/image before the API
+  // response arrives; update immediately on any subsequent SPA navigation.
   const dirQueryKey =
     selected.kind === 'directory'
-      ? `${route.query.get('category') ?? ''}|${route.query.get('subcategory') ?? ''}|${Boolean(
+      ? `${route.query.get('category') ?? ''}|${route.query.get('subcategory') ?? ''}|${route.query.get('page') ?? ''}|${Boolean(
           route.query.get('q') || route.query.get('tag') || route.query.get('author') || route.query.get('cap') || route.query.get('hosting')
         )}`
       : '';
   const metaKey = selected.kind === 'app' ? `app:${selected.slug}` : selected.kind === 'directory' ? `dir:${dirQueryKey}` : selected.kind;
+  const initialMetaApplied = useRef(false);
   useEffect(() => {
-    applyMeta(metaFor(selectPage(route.path), route.query));
+    const isInitialMount = !initialMetaApplied.current;
+    initialMetaApplied.current = true;
+    const pageNow = selectPage(route.path);
+    if (isInitialMount && pageNow.kind === 'app' && document.head.querySelector('meta[name="softn:app"]')) {
+      return;
+    }
+    applyMeta(metaFor(pageNow, route.query));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- metaKey captures the page and canonical directory params
   }, [metaKey]);
 

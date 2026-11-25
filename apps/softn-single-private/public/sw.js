@@ -6,9 +6,21 @@
  * cookie-gated answers from the server and a redeployed application is seen on
  * the next visit. Paths are taken from the registration scope, so a deployment
  * under a sub-directory works unchanged. Bump VERSION when this file changes. */
-var VERSION = 'softn-serve-sw-4';
+var VERSION = 'softn-serve-sw-5';
 var base = new URL(self.registration.scope).pathname;
 var CACHE_NAME = base === '/' ? VERSION : VERSION + ':' + base;
+
+function cacheableAsset(pathname, responseClone) {
+  if (!responseClone || !responseClone.ok) return Promise.resolve(false);
+  var ct = (responseClone.headers.get('content-type') || '').toLowerCase();
+  if (ct.indexOf('text/html') === 0) return Promise.resolve(false);
+  if (/\.wasm$/i.test(pathname) && typeof WebAssembly !== 'undefined' && typeof WebAssembly.validate === 'function') {
+    return responseClone.clone().arrayBuffer().then(function (buf) {
+      return WebAssembly.validate(buf);
+    }).catch(function () { return false; });
+  }
+  return Promise.resolve(true);
+}
 var precache = [
   base + 'pwa-icons/icon-192.png',
   base + 'pwa-icons/icon-512.png',
@@ -88,7 +100,10 @@ self.addEventListener('fetch', function (event) {
       fetch(request).then(function (response) {
         if (response.ok) {
           var copy = response.clone();
-          caches.open(CACHE_NAME).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
+          cacheableAsset(url.pathname, copy).then(function (ok) {
+            if (!ok) return;
+            caches.open(CACHE_NAME).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
+          });
         }
         return response;
       }).catch(function (error) {
@@ -109,7 +124,10 @@ self.addEventListener('fetch', function (event) {
         return fetch(request).then(function (response) {
           if (response.ok) {
             var copy = response.clone();
-            caches.open(CACHE_NAME).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
+            cacheableAsset(url.pathname, copy).then(function (ok) {
+              if (!ok) return;
+              caches.open(CACHE_NAME).then(function (cache) { return cache.put(request, copy); }).catch(function () {});
+            });
           }
           return response;
         });

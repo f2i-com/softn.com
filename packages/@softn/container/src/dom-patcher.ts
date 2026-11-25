@@ -846,8 +846,10 @@ export class HostDomPatcher {
     // Shown from its own address, where a redirect took it was not the page's to know.
     if (lowerTag === 'img' && el instanceof HTMLImageElement && el.namespaceURI !== SVG_NS) {
       if (lowerName === 'src') {
-        if (clean !== null && /^https?:/i.test(clean) && el.hasAttribute('crossorigin')) {
-          this.readableImage(el, clean);
+        if (el.hasAttribute('crossorigin') && val !== null && /^https?:|^\/\//i.test(val.trim())) {
+          const trimmedVal = val.trim();
+          const normalizedVal = trimmedVal.startsWith('//') ? `https:${trimmedVal}` : trimmedVal;
+          this.readableImage(el, clean && /^https?:/i.test(clean) ? clean : normalizedVal);
           return;
         }
         this.cancelReadable(el);
@@ -1009,10 +1011,21 @@ export class HostDomPatcher {
     else this.shadowSheets.delete(sheet);
   }
 
-  /** Let go of a shadow tree: emptied, and no longer one of the app's. */
+  /** Let go of a shadow tree: emptied, listeners detached, stylesheets released, and no longer one of the app's. */
   private dropShadowRoot(root: ShadowRoot): void {
     this.shadowRoots.delete(root);
     this.rootIds.delete(root);
+    for (const { type, fn, capture } of this.listening) {
+      root.removeEventListener(type, fn, capture);
+    }
+    for (const sheet of root.querySelectorAll('style')) {
+      if (this.deleteStyleSheet(sheet) || this.links.delete(sheet)) {
+        this.callbacks.onStyleFonts?.(sheet, '');
+      }
+      this.shadowSheets.delete(sheet);
+      this.writtenSheets.delete(sheet);
+      this.dirtyStyleSheets.delete(sheet);
+    }
     root.replaceChildren();
   }
 
@@ -1189,7 +1202,7 @@ export class HostDomPatcher {
       } catch {
         return false;
       }
-      return sanitizeHostAssetUrl('src', url, 'img', this.entryPath, this.archive, this.permissions, this.netGranted) !== null;
+      return sanitizeHostAssetUrl('src', url, 'img', this.entryPath, this.archive, this.permissions, this.netGranted, true) !== null;
     };
     const failed = () => {
       if (!this.disposed && current()) img.dispatchEvent(new Event('error'));
@@ -1712,7 +1725,7 @@ export class HostDomPatcher {
       return;
     }
     const address = typeof Image === 'function' && this.imageCache.size < MAX_PRELOADED_IMAGES
-      ? sanitizeHostAssetUrl('src', src, 'img', this.entryPath, this.archive, this.permissions, this.netGranted)
+      ? sanitizeHostAssetUrl('src', src, 'img', this.entryPath, this.archive, this.permissions, this.netGranted, cors)
       : null;
     if (!address) {
       answer(false);
@@ -1772,7 +1785,15 @@ export class HostDomPatcher {
       for (const [name, v] of Object.entries(raw as Record<string, unknown>).slice(0, 64)) {
         if (!/^[A-Za-z][A-Za-z-]{0,63}$/.test(name)) continue;
         const lowerKey = name.toLowerCase();
-        if (lowerKey === 'appearance' || lowerKey === 'webkitappearance' || lowerKey === 'mozappearance' || lowerKey === '-webkit-appearance' || lowerKey === '-moz-appearance') {
+        if (
+          lowerKey === 'appearance' ||
+          lowerKey === 'webkitappearance' ||
+          lowerKey === 'mozappearance' ||
+          lowerKey === '-webkit-appearance' ||
+          lowerKey === '-moz-appearance' ||
+          lowerKey === 'viewtransitionname' ||
+          lowerKey === 'view-transition-name'
+        ) {
           continue;
         }
         if (name === 'offset') {
@@ -1795,7 +1816,15 @@ export class HostDomPatcher {
       for (const [name, list] of Object.entries(rawFrames as Record<string, unknown>).slice(0, 64)) {
         if (!/^[A-Za-z][A-Za-z-]{0,63}$/.test(name) || name === 'easing' || name === 'composite' || name === 'offset') continue;
         const lowerKey = name.toLowerCase();
-        if (lowerKey === 'appearance' || lowerKey === 'webkitappearance' || lowerKey === 'mozappearance' || lowerKey === '-webkit-appearance' || lowerKey === '-moz-appearance') {
+        if (
+          lowerKey === 'appearance' ||
+          lowerKey === 'webkitappearance' ||
+          lowerKey === 'mozappearance' ||
+          lowerKey === '-webkit-appearance' ||
+          lowerKey === '-moz-appearance' ||
+          lowerKey === 'viewtransitionname' ||
+          lowerKey === 'view-transition-name'
+        ) {
           continue;
         }
         const values = (Array.isArray(list) ? list : [list]).slice(0, MAX_KEYFRAMES).map(value).filter((v): v is string | number => v !== null);
@@ -1830,7 +1859,10 @@ export class HostDomPatcher {
       return;
     }
     this.animations.set(key, { el: node, animation });
-    animation.addEventListener('finish', () => ended('finished'));
+    animation.addEventListener('finish', () => {
+      this.animations.delete(key);
+      ended('finished');
+    });
     animation.addEventListener('cancel', () => {
       // Cancelled by the page (not asked for by the script, which is not told what it did itself).
       if (this.animations.delete(key)) ended('cancelled');
@@ -1871,7 +1903,7 @@ export class HostDomPatcher {
       // Only a file of the app's was: a picture by any other address was never drawn. One
       // the app asked for with CORS ('cors:' and its address) is loaded with CORS.
       const cors = ref.startsWith('cors:');
-      const address = sanitizeHostAssetUrl('src', cors ? ref.slice(5) : ref, 'img', this.entryPath, this.archive, this.permissions, this.netGranted);
+      const address = sanitizeHostAssetUrl('src', cors ? ref.slice(5) : ref, 'img', this.entryPath, this.archive, this.permissions, this.netGranted, cors);
       if (address) {
         const img = new Image();
         if (cors && /^https?:/i.test(address)) this.loadReadable(img, address);
@@ -2586,8 +2618,8 @@ function serializeDomEvent(
     if (targetEl) {
       const isHighFreqMove = e.type === 'mousemove' || e.type === 'pointermove';
       if (isHighFreqMove && targetEl === e.target && typeof me.offsetX === 'number' && typeof me.offsetY === 'number') {
-        out.offsetX = me.offsetX;
-        out.offsetY = me.offsetY;
+        out.offsetX = me.offsetX + targetEl.clientLeft;
+        out.offsetY = me.offsetY + targetEl.clientTop;
       } else {
         const rect = targetEl.getBoundingClientRect();
         out.offsetX = me.clientX - rect.left;

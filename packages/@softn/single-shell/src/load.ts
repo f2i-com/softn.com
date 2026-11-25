@@ -5,7 +5,7 @@ import {
   firstScreenAssets,
   type BundleManifest,
 } from '@softn/runtime-shell/bundleFiles';
-import { warmFirstScreen } from '@softn/runtime-shell/zipWarmup';
+import type { FirstScreenWarmup } from '@softn/runtime-shell/zipWarmup';
 import { unwrapContainerZipEntries } from '@softn/runtime-shell/containerBundle';
 import { readManifest } from '@softn/core/web-host';
 import { assembleApplication, mark } from './assemble';
@@ -84,9 +84,30 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
       ? extractIconDataUrl(binaryFiles, raw)
       : undefined;
   const assets = createAssetResolver(binaryFiles, textFiles);
-  const warmup = app.webContainer
-    ? { done: Promise.resolve(), abort: () => {} }
-    : warmFirstScreen(archive, bytes, firstScreenAssets(app.source, raw, binaryFiles));
+  let warmup: FirstScreenWarmup;
+  if (app.webContainer) {
+    warmup = { done: Promise.resolve(), abort: () => {} };
+  } else {
+    const names = firstScreenAssets(app.source, raw, binaryFiles);
+    if (names.length === 0) {
+      warmup = { done: Promise.resolve(), abort: () => {} };
+    } else {
+      let aborted = false;
+      let inner: FirstScreenWarmup | null = null;
+      const done = import('@softn/runtime-shell/zipWarmup').then(({ warmFirstScreen }) => {
+        if (aborted || archive.released) return;
+        inner = warmFirstScreen(archive, bytes, names);
+        return inner.done;
+      });
+      warmup = {
+        done,
+        abort: () => {
+          aborted = true;
+          inner?.abort();
+        },
+      };
+    }
+  }
   return { config, ...app, bundleData: bytes, icon, assets, warmup };
 }
 export type LoadedApplication = Awaited<ReturnType<typeof loadApplication>>;

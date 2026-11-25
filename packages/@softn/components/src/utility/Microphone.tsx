@@ -15,7 +15,7 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { isCapabilityAllowed, pcmToWavDataUrl, useCapability } from '@softn/core';
+import { isCapabilityAllowed, pcmToWavDataUrl, useAppActive, useCapability } from '@softn/core';
 
 /** One per run of the start effect — see the effect at the bottom for why. */
 interface StartAttempt {
@@ -223,9 +223,19 @@ export function Microphone({
   // never declared `mic` cannot open the device on an origin some other bundle
   // was granted it for. The device opens on the render that follows the grant,
   // with no reload, and closes on the render that withdraws it.
+  const appShown = useAppActive();
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  );
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisibility = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
   const micGrant = useCapability('mic');
   const consentPending = micGrant === 'pending';
-  const permitted = active && isCapabilityAllowed(micGrant);
+  const permitted = active && appShown && pageVisible && isCapabilityAllowed(micGrant);
 
   const [isOpen, setIsOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);

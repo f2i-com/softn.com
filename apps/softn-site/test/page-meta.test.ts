@@ -58,3 +58,12 @@ it('creates the tags a stripped-down head lacks, on this page’s origin', () =>
   expect(canonical()).toBe(`${window.location.origin}/apps`);
   expect(content('meta[name="description"]')).toBeTruthy();
 });
+
+it('normalizes category=all, preserves page > 1 in directory canonical, and resets og:image off /app/', () => {
+  applyMeta(metaFor(selectPage('/apps'), new URLSearchParams('category=all&page=2')));
+  expect(canonical()).toBe('https://softn.com/apps?page=2');
+  expect(content('meta[property="og:image"]')).toBe('https://softn.com/og.png');
+
+  applyMeta(metaFor(selectPage('/apps'), new URLSearchParams('category=games&page=1')));
+  expect(canonical()).toBe('https://softn.com/apps?category=games');
+});

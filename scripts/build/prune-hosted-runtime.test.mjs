@@ -194,3 +194,33 @@ test('Vue SFC and programmatic softn-chart + QRReader decouple from media cleanl
   assert.equal(shouldPruneWebrootAsset('assets/qr-reader-AbCd1234.js', qrOnlyNeeds), false);
   assert.equal(shouldPruneWebrootAsset('assets/media-AbCd1234.js', qrOnlyNeeds), true);
 });
+
+test('Round-7 pruner accuracy: local JS backend keeps core WASM, nested examples/hello.php does not prune lite WASM, Torch/AI stay in Container v2', () => {
+  // 1. Local JS backend needs core full WASM (hostedContainerOptions routes javascript backend to coreEngine)
+  const jsBackendNeeds = analyzeHostedAppNeeds(
+    { id: 'js-be', name: 'JS Backend', main: 'index.html', backend: { runtime: 'javascript', entry: 'server/app.js' } },
+    { 'index.html': b('<!doctype html><script>fetch("/api/hi")</script>'), 'server/app.js': b('export default () => ({})') }
+  );
+  assert.equal(jsBackendNeeds.needsFullCoreWasm, true);
+  assert.equal(shouldPruneWebrootAsset('assets/zipp_wasm_bg-AbCd1234.wasm', jsBackendNeeds), false);
+
+  // 2. Nested non-backend PHP example file must not trigger zero-config PHP backend or prune lite JS engine
+  const docPhpNeeds = analyzeHostedAppNeeds(
+    { id: 'docs-site', name: 'Docs', main: 'index.html' },
+    { 'index.html': b('<!doctype html><script>document.title="ok"</script>'), 'examples/hello.php': b('<?php echo 1;') }
+  );
+  assert.equal(docPhpNeeds.usesBrowserPhpBackend, false);
+  assert.equal(docPhpNeeds.containerNeedsLiteEngine, true);
+  assert.equal(shouldPruneWebrootAsset('assets/container-runtime/0123456789ab/engines/zipp-javascript-lite.wasm', docPhpNeeds), false);
+
+  // 3. Container v2 app with Torch + AI retains Torch/AI files inside assets/core-runtime/
+  const aiTorchNeeds = analyzeHostedAppNeeds(
+    { id: 'ai-py', name: 'AI Py', main: 'index.html', capabilities: ['ai'], python: { packages: ['torch'] } },
+    { 'index.html': b('<!doctype html><script type="text/python">import torch\n</script>') }
+  );
+  assert.equal(aiTorchNeeds.usesTorch, true);
+  assert.equal(aiTorchNeeds.usesAi, true);
+  assert.equal(shouldPruneWebrootAsset('assets/core-runtime/zipp_torch.wasm', aiTorchNeeds), false);
+  assert.equal(shouldPruneWebrootAsset('assets/core-runtime/runtime/model-worker.js', aiTorchNeeds), false);
+  assert.equal(shouldPruneWebrootAsset('assets/core-runtime/runtime/script-worker.js', aiTorchNeeds), true);
+});

@@ -321,7 +321,18 @@ export class SplitRealmSceneHost {
           const blobUrl = typeof path === 'string' ? this.archive.getBlobUrl(path) : null;
           if (blobUrl && this.inflightGltf < 8) {
             this.inflightGltf++;
-            void import('three/examples/jsm/loaders/GLTFLoader.js')
+            const baseRuntimeUrl = (this.runtimeUrl ?? '/runtime/').replace(/\/?$/, '/');
+            const loadGltfModule = (): Promise<{ GLTFLoader: typeof import('three/examples/jsm/loaders/GLTFLoader.js').GLTFLoader }> =>
+              this.hostThree
+                ? import('three/examples/jsm/loaders/GLTFLoader.js').catch(
+                    () => import(/* @vite-ignore */ `${baseRuntimeUrl}vendor/gltf-loader.js`)
+                  )
+                : (
+                    import(/* @vite-ignore */ `${baseRuntimeUrl}vendor/gltf-loader.js`) as Promise<{
+                      GLTFLoader: typeof import('three/examples/jsm/loaders/GLTFLoader.js').GLTFLoader;
+                    }>
+                  ).catch(() => import('three/examples/jsm/loaders/GLTFLoader.js'));
+            void loadGltfModule()
               .then(({ GLTFLoader }) => {
                 // A model names its buffers and textures by address, and the loader fetches
                 // whatever it names: a `.gltf` whose texture was `https://elsewhere/t.png`

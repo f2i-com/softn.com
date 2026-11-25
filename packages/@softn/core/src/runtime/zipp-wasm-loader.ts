@@ -76,22 +76,50 @@ export function adoptZippWasmSource(source: BufferSource | WebAssembly.Module): 
   if (!initializationStarted) configureZippWasmSource(source);
 }
 
-/**
- * Whether the browser can answer for `url` without the network: its HTTP
- * cache, or a service worker that holds it. Asked
- * with `only-if-cached`, which never goes to the network, and the body is
- * not read. A miss is a network error (the fetch rejects), so a rejection
- * is "not here"; so is an engine on another origin, which the option cannot
- * ask about, and which is then counted on every start.
- */
-async function onThisDevice(url: URL): Promise<boolean> {
+const ENGINE_SEEN_KEY = 'softn:zipp-engine-seen';
+
+function rememberEngineUrl(href: string): void {
   try {
-    const probe = await fetch(url, { cache: 'only-if-cached', mode: 'same-origin' });
-    void probe.body?.cancel().catch(() => undefined);
-    return probe.ok;
+    if (typeof localStorage === 'undefined') return;
+    const raw = localStorage.getItem(ENGINE_SEEN_KEY);
+    const list: string[] = raw ? (JSON.parse(raw) as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    if (list.includes(href)) return;
+    const next = [...list.slice(-7), href];
+    localStorage.setItem(ENGINE_SEEN_KEY, JSON.stringify(next));
+  } catch {
+    // Storage unavailable (private mode / quota / worker)
+  }
+}
+
+function wasEngineUrlSeen(href: string): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    const raw = localStorage.getItem(ENGINE_SEEN_KEY);
+    if (!raw) return false;
+    const list = JSON.parse(raw) as unknown;
+    return Array.isArray(list) && list.includes(href);
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether the browser is already expected to hold `url` locally (in Cache Storage or from
+ * a prior visit to this content-hashed immutable URL) WITHOUT issuing an `only-if-cached`
+ * network probe (which makes Chromium log a red `net::ERR_CACHE_MISS` console error on
+ * every cold load).
+ */
+async function onThisDevice(url: URL): Promise<boolean> {
+  if (wasEngineUrlSeen(url.href)) return true;
+  if (typeof caches !== 'undefined' && typeof caches.match === 'function') {
+    try {
+      const hit = await caches.match(url.href);
+      if (hit) return true;
+    } catch {
+      // Cache Storage unavailable
+    }
+  }
+  return false;
 }
 
 function compileResponse(response: Response): Promise<WebAssembly.Module> {
@@ -151,6 +179,7 @@ const compileEngine = retryableSingleFlight<WebAssembly.Module>(async () => {
   // compileStreaming insists on; any other label still serves the right bytes.
   const keep = cache ? response.clone() : undefined;
   const compiled = await compileResponse(response);
+  rememberEngineUrl(url.href);
   if (cache && keep) {
     // Refused storage or a full disk still lets the online preview use its module.
     await cache.put(url.href, keep).catch(() => {});

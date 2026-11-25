@@ -380,6 +380,7 @@ function App(): React.ReactElement {
         for (const controller of pendingInstalls.values()) controller.abort();
         pendingInstalls.clear();
         for (const tab of tabsRef.current) {
+          tab.warmup?.abort();
           tab.importResolver?.dispose();
           tab.assetResolver?.dispose();
         }
@@ -1101,6 +1102,7 @@ function App(): React.ReactElement {
       // images and models now rather than retain every bundle until the browser
       // tab eventually closes.
       const closingTab = openTabsRef.current.find((tab) => tab.id === tabId);
+      closingTab?.warmup?.abort();
       closingTab?.importResolver?.dispose();
       closingTab?.assetResolver?.dispose();
       // An open that was stopped is not one to offer again on some later

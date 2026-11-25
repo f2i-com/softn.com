@@ -282,7 +282,7 @@ if(isset($result['bodyRaw'])) {
                 if($eq===false||$eq===0)continue;
                 $cookieName=trim(substr($nv,0,$eq));
                 if($cookieName===''||!preg_match('/^[!#$%&\'*+\-.^_`|~0-9A-Za-z]+$/',$cookieName))continue;
-                $hasDomain=false;$hasSameSite=false;$sameSiteNone=false;$hasSecure=false;$hasRootPath=false;
+                $hasDomain=false;$hasSameSite=false;$sameSiteNone=false;$hasSecure=false;$hasRootPath=false;$pathCount=0;
                 for($ci=1,$cn=count($cookieParts);$ci<$cn;$ci++) {
                     $attrRaw=trim($cookieParts[$ci]);
                     if($attrRaw==='')continue;
@@ -291,12 +291,12 @@ if(isset($result['bodyRaw'])) {
                     $attrVal=isset($attrPair[1])?trim($attrPair[1]):'';
                     if($attrName==='domain'){$hasDomain=true;break;}
                     if($attrName==='secure')$hasSecure=true;
-                    if($attrName==='path'&&$attrVal==='/')$hasRootPath=true;
+                    if($attrName==='path'){$pathCount++;$hasRootPath=($attrVal==='/');}
                     if($attrName==='samesite'){$hasSameSite=true;if(strtolower($attrVal)==='none')$sameSiteNone=true;}
                 }
                 if($hasDomain)continue;
                 $isHttps=softn_request_is_https($_SERVER,softn_peer_is_trusted_proxy($remoteAddr,$trustedProxies));
-                if(stripos($cookieName,'__Host-')===0&&(!$hasSecure||!$isHttps||!$hasRootPath))continue;
+                if(stripos($cookieName,'__Host-')===0&&(!$hasSecure||!$isHttps||!$hasRootPath||$pathCount!==1))continue;
                 if(stripos($cookieName,'__Secure-')===0&&(!$hasSecure||!$isHttps))continue;
                 if($sameSiteNone&&!$hasSecure)continue;
                 if(!$hasSameSite)$v.='; SameSite=Lax';

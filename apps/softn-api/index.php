@@ -159,28 +159,46 @@ try {
     $pagePath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
     if (is_string($pagePath)) {
         $decodedPage = rawurldecode($pagePath);
+        $pageRes = null;
+        $isPageHit = false;
         if (preg_match('#^/apps/?$#', $decodedPage)) {
-            Seed::ifEmpty();
-            Pages::directory()->send();
-            exit;
+            $isPageHit = true;
+            if ($req->method === 'GET' || $req->method === 'HEAD') {
+                Seed::ifEmpty();
+                $pageRes = Pages::directory();
+            }
+        } elseif (preg_match('#^/publish/?$#', $decodedPage)) {
+            $isPageHit = true;
+            if ($req->method === 'GET' || $req->method === 'HEAD') {
+                $pageRes = Pages::publishPage();
+            }
+        } elseif (preg_match('#^/app/([^/]+)/?$#', $decodedPage, $pm)) {
+            $isPageHit = true;
+            if ($req->method === 'GET' || $req->method === 'HEAD') {
+                Seed::ifEmpty();
+                $pageRes = Pages::app($pm[1]);
+            }
+        } elseif (preg_match('#^/play/([^/]+)/?$#', $decodedPage, $pm)) {
+            $isPageHit = true;
+            if ($req->method === 'GET' || $req->method === 'HEAD') {
+                Seed::ifEmpty();
+                $pageRes = Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local');
+            }
+        } elseif ($decodedPage === '/sitemap-apps.xml') {
+            $isPageHit = true;
+            if ($req->method === 'GET' || $req->method === 'HEAD') {
+                Seed::ifEmpty();
+                $pageRes = Pages::sitemap();
+            }
         }
-        if (preg_match('#^/publish/?$#', $decodedPage)) {
-            Pages::publishPage()->send();
-            exit;
-        }
-        if (preg_match('#^/app/([^/]+)/?$#', $decodedPage, $pm)) {
-            Seed::ifEmpty();
-            Pages::app($pm[1])->send();
-            exit;
-        }
-        if (preg_match('#^/play/([^/]+)/?$#', $decodedPage, $pm)) {
-            Seed::ifEmpty();
-            Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local')->send();
-            exit;
-        }
-        if ($decodedPage === '/sitemap-apps.xml') {
-            Seed::ifEmpty();
-            Pages::sitemap()->send();
+        if ($isPageHit) {
+            Catalog::release();
+            server_timing();
+            if ($pageRes === null) {
+                Response::raw(405, [['Allow', 'GET, HEAD'], ['Content-Type', 'text/plain; charset=utf-8']], 'Method Not Allowed')->send();
+            } else {
+                $pageRes->send();
+            }
             exit;
         }
     }
@@ -700,11 +718,13 @@ function handle(string $handler, array $args, Request $req): Response
             if (is_string($range) && $total > 0 && preg_match('/^bytes=(\d*)-(\d*)$/', trim($range), $m)) {
                 $start = $m[1] === '' ? null : (int) $m[1];
                 $end = $m[2] === '' ? null : (int) $m[2];
-                if ($start === null && $end !== null && $end > 0) {
+                if ($start === null && ($end === null || $end <= 0)) {
+                    return Response::raw(416, [['Content-Range', "bytes */$total"], ['Content-Type', 'text/plain; charset=utf-8']], '');
+                }
+                if ($start === null) {
                     $start = max(0, $total - $end);
                     $end = $total - 1;
                 } else {
-                    $start ??= 0;
                     $end = $end === null ? $total - 1 : min($end, $total - 1);
                 }
                 if ($start >= $total || $start > $end) {

@@ -102,18 +102,18 @@ export function HomePage({
           <div className={showShelf ? 'hero-top hero-top-shelf' : 'hero-top hero-top-blueprint'}>
             <div className="hero-apps-head">
               <div className="hero-copy">
-                <p className="hero-eyebrow rise">
+                <p className="hero-eyebrow">
                   <span className="hero-eyebrow-dot" aria-hidden="true" />
                   Sandboxed Full-Stack Web Containers
                 </p>
-                <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
+                <h1 className="hero-title">
                   Full web apps — frontend and backend — sandboxed in your browser.
                 </h1>
-                <p className="hero-lede rise" style={{ animationDelay: '120ms' }}>
+                <p className="hero-lede">
                   Bring standard HTML, React, Vue, or TypeScript frontends — or optional <code>.ui</code> files — paired with sandboxed PHP (Slim 4), JS/TS, Rust, or Python backends and SQLite persisted in IndexedDB. Run locally with zero install, or host the exact same <code>.softn</code> bundle multi-user inside ZIPP safe-sandbox.
                 </p>
               </div>
-              <div className="hero-cta rise" style={{ animationDelay: '180ms' }}>
+              <div className="hero-cta">
                 <a className="cta cta-primary cta-large" href="/apps">
                   Explore all apps
                   <Arrow />
@@ -129,7 +129,7 @@ export function HomePage({
             </div>
 
             {showShelf ? (
-              <div className="hero-shelf rise" style={{ animationDelay: '160ms' }}>
+              <div className="hero-shelf">
                 {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} />}
                 {featuredSeenAt !== null && (
                   <p className="hero-shelf-note muted" role="status">
@@ -139,7 +139,7 @@ export function HomePage({
                 )}
               </div>
             ) : (
-              <aside className="hero-blueprint rise" style={{ animationDelay: '160ms' }} aria-label="Inside a SoftN v2 Web Container">
+              <aside className="hero-blueprint" aria-label="Inside a SoftN v2 Web Container">
                 <div className="blueprint-bar">
                   <span className="blueprint-file">order-desk.softn</span>
                   <span className="blueprint-pill">

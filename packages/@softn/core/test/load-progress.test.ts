@@ -118,15 +118,22 @@ describe("the engine's download", () => {
   /** A fresh loader whose fetch answers the engine, and says whether the browser already holds it. */
   async function engineLoader(onDevice: boolean) {
     vi.resetModules();
+    try {
+      globalThis.localStorage?.removeItem('softn:zipp-engine-seen');
+    } catch {
+      // ignore
+    }
+    const prevCaches = globalThis.caches;
+    Object.defineProperty(globalThis, 'caches', {
+      configurable: true,
+      value: {
+        match: vi.fn(async () => (onDevice ? new Response('held') : undefined)),
+      },
+    });
     const fetched = new Response(streamOf(8, 8), {
       headers: { 'Content-Type': 'application/wasm', 'Content-Length': '16' },
     });
-    // As a browser answers it: a miss with `only-if-cached` is a network error.
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-      if (init?.cache !== 'only-if-cached') return fetched;
-      if (onDevice) return new Response('held');
-      throw new TypeError('Failed to fetch');
-    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => fetched);
     const seen: { compiled?: unknown } = {};
     const module = {} as WebAssembly.Module;
     vi.spyOn(WebAssembly, 'compileStreaming').mockImplementation(async (source) => {
@@ -136,29 +143,41 @@ describe("the engine's download", () => {
     });
     const loader = await import('../src/runtime/zipp-wasm-loader');
     const progress = await import('../src/runtime/load-progress');
-    return { fetched, fetchSpy, seen, module, loader, progress };
+    const restoreCaches = () => {
+      Object.defineProperty(globalThis, 'caches', { configurable: true, value: prevCaches });
+    };
+    return { fetched, fetchSpy, seen, module, loader, progress, restoreCaches };
   }
 
   it('is counted when it comes over the network, and the response fetched is the one compiled', async () => {
-    const { fetched, seen, module, loader, progress } = await engineLoader(false);
-    await expect(loader.zippEngineForWorker()).resolves.toBe(module);
-    expect(seen.compiled).toBe(fetched);
-    await frame();
-    expect(progress.loadProgressItems().find((entry) => entry.id === 'engine')).toMatchObject({
-      kind: 'engine',
-      loaded: 16,
-      total: 16,
-      done: true,
-    });
+    const { fetched, fetchSpy, seen, module, loader, progress, restoreCaches } = await engineLoader(false);
+    try {
+      await expect(loader.zippEngineForWorker()).resolves.toBe(module);
+      expect(seen.compiled).toBe(fetched);
+      // Never sends an `only-if-cached` probe that triggers browser ERR_CACHE_MISS console errors.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      await frame();
+      expect(progress.loadProgressItems().find((entry) => entry.id === 'engine')).toMatchObject({
+        kind: 'engine',
+        loaded: 16,
+        total: 16,
+        done: true,
+      });
+    } finally {
+      restoreCaches();
+    }
   });
 
   it('is not counted, nor read beside the compile, when the browser already holds it', async () => {
-    const { fetched, fetchSpy, seen, module, loader, progress } = await engineLoader(true);
-    await expect(loader.zippEngineForWorker()).resolves.toBe(module);
-    expect(seen.compiled).toBe(fetched);
-    // Asked of the cache alone, never of the network.
-    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ cache: 'only-if-cached', mode: 'same-origin' });
-    await frame();
-    expect(progress.loadProgressItems().find((entry) => entry.id === 'engine')).toBeUndefined();
+    const { fetched, fetchSpy, seen, module, loader, progress, restoreCaches } = await engineLoader(true);
+    try {
+      await expect(loader.zippEngineForWorker()).resolves.toBe(module);
+      expect(seen.compiled).toBe(fetched);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      await frame();
+      expect(progress.loadProgressItems().find((entry) => entry.id === 'engine')).toBeUndefined();
+    } finally {
+      restoreCaches();
+    }
   });
 });

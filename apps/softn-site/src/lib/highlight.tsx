@@ -82,7 +82,7 @@ const MARKUP_RULES: Rule[] = [
 ];
 
 const JSON_RULES: Rule[] = [
-  { cls: 'tok-attr', re: /"(?:[^"\\]|\\.)*"(?=\s*:)/y, quotes: '"' },
+  { cls: 'tok-attr', re: /"(?:[^"\\]|\\.)*"(?=\s*:)/y },
   { cls: 'tok-str', re: /"(?:[^"\\]|\\.)*"/y, quotes: '"' },
   { cls: 'tok-num', re: /(?:\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/y },
   { cls: 'tok-punc', re: /[{}[\]:,]/y },
@@ -130,7 +130,7 @@ const SQL_RULES: Rule[] = [
   { cls: 'tok-tag', re: /\b(?:INTEGER|INT|TEXT|REAL|BLOB|NUMERIC|BOOLEAN|VARCHAR|CHAR|DATETIME|TIMESTAMP|DATE|JSON)\b/iy },
   { cls: 'tok-num', re: /\b(?:NULL|TRUE|FALSE|\d+(?:\.\d+)?)\b/iy },
   { cls: 'tok-punc', re: /[=(),;.*<>!+-]/y },
-  { cls: 'tok-expr', re: /(?:[^\s/"'-=(),;.*<>!+]+|\s+|.)/y },
+  { cls: 'tok-expr', re: /(?:[^\s/"'=(),;.*<>!+-]+|\s+|.)/y },
 ];
 
 const CSS_RULES: Rule[] = [
@@ -138,7 +138,7 @@ const CSS_RULES: Rule[] = [
   { cls: 'tok-str', re: /(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/y, quotes: '"\'' },
   { cls: 'tok-mark', re: /@[a-zA-Z-]+/y },
   { cls: 'tok-attr', re: /[a-zA-Z_-][\w-]*(?=\s*:)/y },
-  { cls: 'tok-num', re: /(?:#[0-9a-fA-F]{3,8}\b|-?\d+(?:\.\d+)?(?:px|rem|em|vh|vw|dvh|%|ms|s|deg|fr)?\b)/y },
+  { cls: 'tok-num', re: /(?:#[0-9a-fA-F]{3,8}\b|-?\d+(?:\.\d+)?(?:%|(?:px|rem|em|vh|vw|dvh|ms|s|deg|fr)\b|\b))/y },
   { cls: 'tok-punc', re: /[{}():;,]/y },
   { cls: 'tok-expr', re: /(?:[^\s/"'@{}:;,()]+|\s+|.)/y },
 ];

@@ -19,7 +19,38 @@ import { canvasSide } from './host-policy';
 const MAX_WEBGL_CONTEXTS = 16;
 const MAX_WEBGL_HANDLES = 32_768;
 const MAX_WEBGL_UPLOAD_BYTES = 32 * 1024 * 1024;
+const MAX_WEBGL_CUMULATIVE_BYTES = 256 * 1024 * 1024;
 const SERVER_HANDLE_BASE = 1_000_000_000;
+
+/** Explicit allowlist of WebGL object-creation methods permitted for `op === 'c'`. */
+const CREATE_KIND_BY_METHOD: Readonly<Record<string, string>> = {
+  createBuffer: 'buffer',
+  createTexture: 'texture',
+  createProgram: 'program',
+  createShader: 'shader',
+  createFramebuffer: 'framebuffer',
+  createRenderbuffer: 'renderbuffer',
+  createVertexArray: 'vao',
+  createQuery: 'query',
+  createSampler: 'sampler',
+  createTransformFeedback: 'transformFeedback',
+  fenceSync: 'sync',
+};
+
+/** Explicit allowlist of WebGL object-deletion methods permitted for `op === 'd'` and their expected object kind. */
+const DELETE_KIND_BY_METHOD: Readonly<Record<string, string>> = {
+  deleteBuffer: 'buffer',
+  deleteTexture: 'texture',
+  deleteProgram: 'program',
+  deleteShader: 'shader',
+  deleteFramebuffer: 'framebuffer',
+  deleteRenderbuffer: 'renderbuffer',
+  deleteVertexArray: 'vao',
+  deleteQuery: 'query',
+  deleteSampler: 'sampler',
+  deleteTransformFeedback: 'transformFeedback',
+  deleteSync: 'sync',
+};
 
 /** WebGL methods that mutate the default/active drawing buffer and schedule a frame presentation. */
 const DRAW_METHODS = new Set([
@@ -102,6 +133,15 @@ interface WebGLCtxEntry {
   gl: AnyWebGLContext;
   isWebGL2: boolean;
   handles: Map<number, unknown>;
+  /** Object kind recorded at creation (`buffer`, `texture`, etc.) to prevent cross-type delete eviction. */
+  handleKinds: Map<number, string>;
+  /** Cumulative GPU allocation accounting (`resourceKey` -> bytes) bounded by MAX_WEBGL_CUMULATIVE_BYTES. */
+  handleBytes: Map<string, number>;
+  allocatedBytes: number;
+  activeTextureUnit: number;
+  boundBuffers: Map<number, number>;
+  boundTextures: Map<string, number>;
+  boundRenderbuffer: number;
   /** O(1) reverse map from opaque WebGL object -> handle id (avoids O(N) scan in encodeSimpleReturn). */
   handleIds: WeakMap<object, number>;
   /** Cache `programHid:uniformName` -> server handle id so per-frame getUniformLocation calls never leak handles. */
@@ -277,6 +317,13 @@ export class WebGLWorkerHost {
       gl,
       isWebGL2,
       handles: new Map(),
+      handleKinds: new Map(),
+      handleBytes: new Map(),
+      allocatedBytes: 0,
+      activeTextureUnit: 0,
+      boundBuffers: new Map(),
+      boundTextures: new Map(),
+      boundRenderbuffer: 0,
       handleIds: new WeakMap(),
       uniformLocations: new Map(),
       extensions: new Map(),
@@ -479,7 +526,11 @@ export class WebGLWorkerHost {
           if (typeof fn !== 'function') continue;
           const decoded: unknown[] = [];
           for (let j = 2; j < cmd.length; j++) decoded.push(this.decodeArg(cmd[j], entry, resolvers));
+          if (!this.checkAndTrackAllocation(entry, method, decoded)) {
+            continue;
+          }
           fn.apply(gl, decoded);
+          this.updateBindingState(entry, method, cmd, decoded);
           if (method === 'linkProgram' && Array.isArray(cmd[2]) && cmd[2][0] === '$h') {
             const progPrefix = `${Number(cmd[2][1])}:`;
             for (const [key, uHid] of entry.uniformLocations) {
@@ -495,7 +546,10 @@ export class WebGLWorkerHost {
           }
         } else if (op === 'c') {
           const method = String(cmd[1]);
-          if (!entry.allowedMethods.has(method)) continue;
+          const kind = Object.prototype.hasOwnProperty.call(CREATE_KIND_BY_METHOD, method)
+            ? CREATE_KIND_BY_METHOD[method]
+            : undefined;
+          if (!kind || !entry.allowedMethods.has(method)) continue;
           const hid = Number(cmd[2]);
           const fn = glRec[method];
           // Reject duplicate handle IDs so overwriting `hid` cannot leak unbounded GPU objects under MAX_WEBGL_HANDLES.
@@ -505,14 +559,28 @@ export class WebGLWorkerHost {
           const created = fn.apply(gl, decoded);
           if (created !== null && created !== undefined) {
             entry.handles.set(hid, created);
+            entry.handleKinds.set(hid, kind);
             if (typeof created === 'object') entry.handleIds.set(created as object, hid);
           }
         } else if (op === 'd') {
           const method = String(cmd[1]);
-          if (!entry.allowedMethods.has(method)) continue;
+          const expectedKind = Object.prototype.hasOwnProperty.call(DELETE_KIND_BY_METHOD, method)
+            ? DELETE_KIND_BY_METHOD[method]
+            : undefined;
+          if (!expectedKind || !entry.allowedMethods.has(method)) continue;
           const hid = Number(cmd[2]);
           const obj = entry.handles.get(hid);
+          const actualKind = entry.handleKinds.get(hid);
+          const fn = glRec[method];
+          // Require matching object kind and invoke GL delete BEFORE removing from the handle table
+          // so invalid/mismatched delete calls cannot evict live GPU resources out of MAX_WEBGL_HANDLES.
+          if (typeof fn !== 'function' || obj === undefined || (actualKind !== undefined && actualKind !== expectedKind)) {
+            continue;
+          }
+          fn.call(gl, obj);
           entry.handles.delete(hid);
+          entry.handleKinds.delete(hid);
+          this.releaseHandleBytes(entry, hid);
           if (method === 'deleteProgram') {
             const progPrefix = `${hid}:`;
             for (const [key, uHid] of entry.uniformLocations) {
@@ -522,8 +590,6 @@ export class WebGLWorkerHost {
               }
             }
           }
-          const fn = glRec[method];
-          if (typeof fn === 'function' && obj !== undefined) fn.call(gl, obj);
         } else if (op === 'resize') {
           const w = Math.max(1, Math.min(4096, canvasSide(Number(cmd[1])) || 1));
           const h = Math.max(1, Math.min(4096, canvasSide(Number(cmd[2])) || 1));
@@ -666,6 +732,137 @@ export class WebGLWorkerHost {
     this.contexts.clear();
   }
 
+  private updateBindingState(entry: WebGLCtxEntry, method: string, rawCmd: unknown[], decoded: unknown[]): void {
+    const rawHandleId = (arg: unknown): number =>
+      Array.isArray(arg) && arg[0] === '$h' ? Number(arg[1]) || 0 : 0;
+    if (method === 'bindBuffer' && typeof decoded[0] === 'number') {
+      const hid = rawHandleId(rawCmd[3]);
+      if (hid > 0) entry.boundBuffers.set(decoded[0], hid);
+      else entry.boundBuffers.delete(decoded[0]);
+    } else if (method === 'activeTexture' && typeof decoded[0] === 'number') {
+      entry.activeTextureUnit = Math.max(0, decoded[0] - 0x84c0);
+    } else if (method === 'bindTexture' && typeof decoded[0] === 'number') {
+      const hid = rawHandleId(rawCmd[3]);
+      const key = `${entry.activeTextureUnit}:${decoded[0]}`;
+      if (hid > 0) entry.boundTextures.set(key, hid);
+      else entry.boundTextures.delete(key);
+    } else if (method === 'bindRenderbuffer') {
+      entry.boundRenderbuffer = rawHandleId(rawCmd[3]);
+    }
+  }
+
+  private trackHandleBytes(entry: WebGLCtxEntry, key: string, nextBytes: number): boolean {
+    const clamped = Number.isFinite(nextBytes) && nextBytes > 0 ? Math.ceil(nextBytes) : 0;
+    if (clamped > MAX_WEBGL_CUMULATIVE_BYTES) return false;
+    const prev = entry.handleBytes.get(key) ?? 0;
+    const nextTotal = entry.allocatedBytes - prev + clamped;
+    if (nextTotal > MAX_WEBGL_CUMULATIVE_BYTES) return false;
+    entry.allocatedBytes = Math.max(0, nextTotal);
+    if (clamped === 0) entry.handleBytes.delete(key);
+    else entry.handleBytes.set(key, clamped);
+    return true;
+  }
+
+  private releaseHandleBytes(entry: WebGLCtxEntry, hid: number): void {
+    const prefix = `${hid}:`;
+    for (const [k, sz] of [...entry.handleBytes]) {
+      if (k === String(hid) || k.startsWith(prefix)) {
+        entry.allocatedBytes = Math.max(0, entry.allocatedBytes - sz);
+        entry.handleBytes.delete(k);
+      }
+    }
+    for (const [target, bound] of [...entry.boundBuffers]) {
+      if (bound === hid) entry.boundBuffers.delete(target);
+    }
+    for (const [slot, bound] of [...entry.boundTextures]) {
+      if (bound === hid) entry.boundTextures.delete(slot);
+    }
+    if (entry.boundRenderbuffer === hid) entry.boundRenderbuffer = 0;
+  }
+
+  private checkAndTrackAllocation(entry: WebGLCtxEntry, method: string, decoded: unknown[]): boolean {
+    if (method === 'bufferData') {
+      const target = Number(decoded[0]) || 0;
+      const hid = entry.boundBuffers.get(target);
+      if (!hid) return true;
+      let bytes = 0;
+      const src = decoded[1];
+      if (typeof src === 'number') {
+        bytes = src;
+      } else if (ArrayBuffer.isView(src)) {
+        const lenOverride = typeof decoded[4] === 'number' && decoded[4] > 0 ? decoded[4] * ((src as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1) : 0;
+        bytes = lenOverride || src.byteLength;
+      } else if (src instanceof ArrayBuffer) {
+        bytes = src.byteLength;
+      }
+      return this.trackHandleBytes(entry, `${hid}:buf`, bytes);
+    }
+    if (method === 'texImage2D') {
+      const target = Number(decoded[0]) || 0;
+      const level = Number(decoded[1]) || 0;
+      // Cube-map faces (0x8515..0x851A) share the bound TEXTURE_CUBE_MAP (0x8513).
+      const bindTarget = target >= 0x8515 && target <= 0x851a ? 0x8513 : target;
+      const hid = entry.boundTextures.get(`${entry.activeTextureUnit}:${bindTarget}`);
+      if (!hid) return true;
+      let bytes = 0;
+      if (decoded.length >= 8 && typeof decoded[3] === 'number' && typeof decoded[4] === 'number') {
+        const w = Math.max(0, decoded[3]);
+        const h = Math.max(0, decoded[4]);
+        const src = decoded[8];
+        const srcBytes = ArrayBuffer.isView(src) ? src.byteLength : 0;
+        bytes = Math.max(w * h * 4, srcBytes);
+      } else if (decoded.length >= 6 && decoded[5] && typeof decoded[5] === 'object') {
+        const img = decoded[5] as { width?: number; height?: number };
+        bytes = Math.max(0, Number(img.width) || 0) * Math.max(0, Number(img.height) || 0) * 4;
+      }
+      return this.trackHandleBytes(entry, `${hid}:t2:${target}:${level}`, bytes);
+    }
+    if (method === 'texImage3D') {
+      const target = Number(decoded[0]) || 0;
+      const level = Number(decoded[1]) || 0;
+      const hid = entry.boundTextures.get(`${entry.activeTextureUnit}:${target}`);
+      if (!hid) return true;
+      const w = Math.max(0, Number(decoded[3]) || 0);
+      const h = Math.max(0, Number(decoded[4]) || 0);
+      const depth = Math.max(0, Number(decoded[5]) || 0);
+      const src = decoded[9];
+      const srcBytes = ArrayBuffer.isView(src) ? src.byteLength : 0;
+      return this.trackHandleBytes(entry, `${hid}:t3:${level}`, Math.max(w * h * depth * 4, srcBytes));
+    }
+    if (method === 'texStorage2D') {
+      const target = Number(decoded[0]) || 0;
+      const levels = Math.max(1, Number(decoded[1]) || 1);
+      const w = Math.max(0, Number(decoded[3]) || 0);
+      const h = Math.max(0, Number(decoded[4]) || 0);
+      const hid = entry.boundTextures.get(`${entry.activeTextureUnit}:${target}`);
+      if (!hid) return true;
+      const faces = target === 0x8513 ? 6 : 1;
+      const mipFactor = levels > 1 ? 1.34 : 1;
+      return this.trackHandleBytes(entry, `${hid}:ts2`, w * h * 4 * faces * mipFactor);
+    }
+    if (method === 'texStorage3D') {
+      const target = Number(decoded[0]) || 0;
+      const levels = Math.max(1, Number(decoded[1]) || 1);
+      const w = Math.max(0, Number(decoded[3]) || 0);
+      const h = Math.max(0, Number(decoded[4]) || 0);
+      const depth = Math.max(0, Number(decoded[5]) || 0);
+      const hid = entry.boundTextures.get(`${entry.activeTextureUnit}:${target}`);
+      if (!hid) return true;
+      const mipFactor = levels > 1 ? 1.34 : 1;
+      return this.trackHandleBytes(entry, `${hid}:ts3`, w * h * depth * 4 * mipFactor);
+    }
+    if (method === 'renderbufferStorage' || method === 'renderbufferStorageMultisample') {
+      const hid = entry.boundRenderbuffer;
+      if (!hid) return true;
+      const isMs = method === 'renderbufferStorageMultisample';
+      const samples = isMs ? Math.max(1, Number(decoded[1]) || 1) : 1;
+      const w = Math.max(0, Number(decoded[isMs ? 3 : 2]) || 0);
+      const h = Math.max(0, Number(decoded[isMs ? 4 : 3]) || 0);
+      return this.trackHandleBytes(entry, `${hid}:rb`, w * h * 4 * samples);
+    }
+    return true;
+  }
+
   private releaseEntry(entry: WebGLCtxEntry): void {
     try {
       const lose = entry.gl.getExtension('WEBGL_lose_context');
@@ -680,6 +877,12 @@ export class WebGLWorkerHost {
       // ignore
     }
     entry.handles.clear();
+    entry.handleKinds.clear();
+    entry.handleBytes.clear();
+    entry.boundBuffers.clear();
+    entry.boundTextures.clear();
+    entry.boundRenderbuffer = 0;
+    entry.allocatedBytes = 0;
     entry.uniformLocations.clear();
     entry.extensions.clear();
   }

@@ -335,7 +335,9 @@ map $uri $softn_site_page {
 map "$sent_http_content_type|$uri" $softn_cache_control {
     default                                                        "public, max-age=3600";
     # Dynamic PHP-FPM routes set their own Cache-Control; empty value suppresses Nginx add_header duplication.
-    ~\|/(?:api(?:/|$)|apps/?$|publish/?$|app/[^/]+/?$|play/[^/]+/?$|sitemap-apps\.xml$) "";
+    # Match HTML documents on /play/<slug> rather than static JS/WASM assets under /play/.
+    ~\|/(?:api(?:/|$)|apps/?$|publish/?$|app/[^/]+/?$|sitemap-apps\.xml$) "";
+    ~^text/html\|/play/[^/]+/?$                                    "";
     ~^text/html                                                    "no-cache, max-age=0, must-revalidate";
     ~^application/(?:json|manifest\+json)                          "no-cache, max-age=0, must-revalidate";
     ~*\|.*/(?:registerSW|sw|service-worker|coi)\.js$               "no-cache, max-age=0, must-revalidate";
@@ -846,7 +848,48 @@ async function writeDocumentation() {
   if (!fs.existsSync(path.join(outDir, 'sitemap-docs.xml'))) throw new Error('The documentation build produced no sitemap-docs.xml');
   fs.writeFileSync(
     path.join(outDir, 'robots.txt'),
-    `User-agent: *\nDisallow: /data/\nDisallow: /api/\n\nSitemap: ${result.origin}/sitemap-docs.xml\nSitemap: ${result.origin}/sitemap-apps.xml\n`,
+    [
+      'User-agent: *',
+      'Allow: /api/apps$',
+      'Allow: /api/apps?',
+      'Allow: /api/apps/*/thumbnail',
+      'Allow: /api/categories',
+      'Disallow: /data/',
+      'Disallow: /api/apps/*/bundle.softn',
+      'Disallow: /api/apps/*/source',
+      'Disallow: /api/apps/*/backend/',
+      'Disallow: /api/git/',
+      'Disallow: /api/admin/',
+      'Disallow: /api/',
+      '',
+      `Sitemap: ${result.origin}/sitemap-docs.xml`,
+      `Sitemap: ${result.origin}/sitemap-apps.xml`,
+      '',
+    ].join('\n'),
+  );
+  fs.writeFileSync(
+    path.join(outDir, 'llms.txt'),
+    [
+      '# SoftN',
+      '',
+      '> Single-file (.softn) sandboxed web applications — run standard HTML, React, Vue, TypeScript, or SoftN .ui frontends paired with sandboxed PHP, JS/TS, Rust, or Python backends and SQLite in a browser WebAssembly Worker or multi-user server.',
+      '',
+      '## Key URLs',
+      `- [Home](${result.origin}/): Overview, featured demos, and interactive sandbox architecture.`,
+      `- [Apps Directory](${result.origin}/apps): Public catalogue of runnable .softn apps with View-Source SSR previews.`,
+      `- [Documentation](${result.origin}/docs/): Guides on Web Containers, hosting, sandboxing, .ui markup, FormLogic, and AI publishing.`,
+      `- [Web Runtime](${result.origin}/web/): Browser runtime for opening and running .softn bundles offline.`,
+      `- [Visual Builder](${result.origin}/builder/): Visual editor for building and exporting .softn apps.`,
+      `- [AI Studio](${result.origin}/studio/): Code & AI workspace for authoring .softn bundles.`,
+      `- [Publish](${result.origin}/publish): Publish a .softn bundle to the directory.`,
+      '',
+      '## Machine-Readable Indexes',
+      `- Docs sitemap: ${result.origin}/sitemap-docs.xml`,
+      `- Apps sitemap: ${result.origin}/sitemap-apps.xml`,
+      `- Public directory API: ${result.origin}/api/apps`,
+      `- Categories API: ${result.origin}/api/categories`,
+      '',
+    ].join('\n'),
   );
   return result;
 }
@@ -916,6 +959,7 @@ for (const app of [...APPS, PLAY]) {
     VITE_BASE: app.base,
     SOFTN_SHARED_ASSETS: SHARED_ASSETS,
     SOFTN_SHARED_CONTAINER_RUNTIME: SHARED_CONTAINER_RUNTIME,
+    ...(app === PLAY ? { SOFTN_PLAY_STANDALONE: '1' } : {}),
   });
 }
 

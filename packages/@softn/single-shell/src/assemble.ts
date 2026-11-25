@@ -7,7 +7,7 @@
  * a bundle that opens on one host opens on the other, with the same grant
  * scope and the same refusal message.
  */
-import { ManifestError } from '@softn/core/web-host';
+import { awaitZippWasmSource, ManifestError } from '@softn/core/web-host';
 import type { PermissionConfig } from '@softn/core';
 import { extractPermissions, type BundleManifest } from '@softn/runtime-shell/bundleFiles';
 import type { processBundle } from '@softn/runtime-shell/bundleProcessor';
@@ -15,8 +15,55 @@ import {
   WEB_CONTAINER_SOURCE_SENTINEL,
   detectWebContainer,
 } from '@softn/runtime-shell/containerBundle';
+import { containerRuntimeUrl } from '@softn/runtime-shell/containerHost';
 import { digest, parsePermissions } from './config';
 import { preloadUiSurface } from './uiSurfaceLoader';
+
+/**
+ * Patterns requiring the full ZIPP JS+Python engine (`zipp_wasm_bg.wasm`, 7.25 MB) rather
+ * than the ABI-compatible `zipp-javascript-lite.wasm` (2.77 MB / 779 KB Brotli).
+ */
+const NEEDS_FULL_JS_ENGINE =
+  /\b(?:Intl|Temporal)\b|\.(?:toLocale(?:String|DateString|TimeString|UpperCase|LowerCase)|localeCompare)\b/;
+
+let classicTierConfigured = false;
+
+function tryConfigureClassicLiteEngine(
+  source: ReturnType<typeof processBundle>,
+  textFiles: Map<string, string>
+): void {
+  if (classicTierConfigured) return;
+  if (typeof window === 'undefined' || typeof fetch !== 'function' || typeof WebAssembly !== 'object') return;
+  if ((import.meta as unknown as { env?: { MODE?: string } }).env?.MODE === 'test') return;
+  if (source.languages.includes('python')) return;
+  if (NEEDS_FULL_JS_ENGINE.test(source.source)) return;
+  for (const [path, content] of textFiles) {
+    if (/\.py$/i.test(path)) return;
+    if (/\.(?:logic|ui|m?js|jsx|ts|tsx)$/i.test(path) && NEEDS_FULL_JS_ENGINE.test(content)) return;
+  }
+  const liteUrl = `${containerRuntimeUrl()}engines/zipp-javascript-lite.wasm`;
+  classicTierConfigured = true;
+  try {
+    awaitZippWasmSource(
+      fetch(liteUrl)
+        .then(async (resp): Promise<WebAssembly.Module | null> => {
+          if (!resp.ok) return null;
+          const ct = (resp.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+          if (ct === 'application/wasm' && typeof WebAssembly.compileStreaming === 'function') {
+            try {
+              return await WebAssembly.compileStreaming(resp.clone());
+            } catch {
+              // Fall back to buffered compile below
+            }
+          }
+          return await WebAssembly.compile(await resp.arrayBuffer());
+        })
+        .catch(() => null)
+    );
+  } catch {
+    // ZIPP initialization already started in this realm; keep the active engine.
+  }
+}
 
 /**
  * Startup phase boundaries on the performance timeline, `softn:<phase>:start`
@@ -107,6 +154,7 @@ export async function assembleApplication(input: AssembleInput): Promise<Assembl
     mark('softn:compose:start');
     source = classic.processBundle(textFiles, raw);
     mark('softn:compose:end');
+    tryConfigureClassicLiteEngine(source, textFiles);
     mark('softn:xdb-seed:start');
     await classic.loadXDBData(textFiles, raw, appId);
     mark('softn:xdb-seed:end');

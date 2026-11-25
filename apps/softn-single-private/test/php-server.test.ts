@@ -1178,7 +1178,7 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
       expect(html).toContain('<h2>Status Board</h2>');
       expect(html).toContain('<p>All systems green.</p>');
       expect(html).toContain('<a href="https://status.example.test" rel="nofollow ugc noopener noreferrer">Live Status</a>');
-      expect(res.headers.get('vary')).toBe('Host');
+      expect(res.headers.get('vary')).toBe('Host, X-Forwarded-Proto');
       expect(html).not.toContain('javascript:alert');
       expect(html).not.toContain('NEVER_IN_HTML');
 

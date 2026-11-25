@@ -225,6 +225,11 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
       }
       liveTransport = transport;
       await transport.ready;
+      if (disposed) {
+        transport.dispose();
+        if (liveTransport === transport) liveTransport = null;
+        throw new Error('Backend bridge was disposed while starting.');
+      }
       return {
         transport,
         match: container.matchBackendTarget,
@@ -232,6 +237,9 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
         statusTextFor: container.statusTextFor,
       };
     })();
+    transportPromise.catch(() => {
+      transportPromise = null;
+    });
     return transportPromise;
   }
 

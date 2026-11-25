@@ -235,9 +235,13 @@ final class HostedBackend
             foreach ($rawHeaders as $pair) {
                 if ($headerCount >= self::MAX_RESPONSE_HEADERS) break;
                 if (!is_array($pair) || count($pair) < 2) continue;
-                $name = trim((string) $pair[0]);
+                $rawName = (string) $pair[0];
+                // Validate raw header name BEFORE trimming/lowercasing/blocklist check so interior NUL bytes
+                // (e.g. `Set\0-Cookie`, `X-Accel\0-Redirect`) can never slip past blocklists and be reconstructed later.
+                if ($rawName === '' || !preg_match('/^[A-Za-z0-9!#$%&\'*+\-.^_`|~]+$/D', $rawName)) continue;
+                $name = $rawName;
                 $lower = strtolower($name);
-                if ($name === '' || self::isBlockedResponseHeader($lower)) continue;
+                if (self::isBlockedResponseHeader($lower)) continue;
                 $val = str_replace(["\r", "\n", "\0"], '', (string) $pair[1]);
                 if (strlen($val) > self::MAX_RESPONSE_HEADER_LEN) continue;
                 if ($lower === 'set-cookie') {
