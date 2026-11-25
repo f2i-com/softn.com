@@ -138,7 +138,7 @@ $routes = [
     ['DELETE', '#^/admin/comments/(\d+)$#', 'adminDeleteComment'],
     ['GET', '#^/admin/stats$#', 'adminStats'],
     ['GET', '#^/page/app/([^/]+)$#', 'page'],
-    ['GET', '#^/page/play/([^/]+)$#', 'playPage'],
+    ['GET', '#^/page/play/([^/]+)(?:/(.*))?$#', 'playPage'],
     ['GET', '#^/sitemap-apps\.xml$#', 'sitemap'],
 ];
 
@@ -178,11 +178,11 @@ try {
                 Seed::ifEmpty();
                 $pageRes = Pages::app($pm[1]);
             }
-        } elseif (preg_match('#^/play/([^/]+)/?$#', $decodedPage, $pm)) {
+        } elseif (preg_match('#^/play/([^/]+)(?:/(.*))?$#', $decodedPage, $pm) && $pm[1] !== 'assets') {
             $isPageHit = true;
             if ($req->method === 'GET' || $req->method === 'HEAD') {
                 Seed::ifEmpty();
-                $pageRes = Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local');
+                $pageRes = Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local', (string) ($pm[2] ?? ''));
             }
         } elseif ($decodedPage === '/sitemap-apps.xml') {
             $isPageHit = true;
@@ -250,7 +250,7 @@ function is_page_request(): bool
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
     if (!is_string($path)) return false;
     $decoded = rawurldecode($path);
-    return preg_match('#^(?:(?:/api/page)?/(?:app|play)/[^/]+|/(?:apps|publish))/?$#', $decoded) === 1
+    return preg_match('#^(?:(?:/api/page)?/(?:app/[^/]+/?|play/(?!assets(?:/|$))[^/]+(?:/.*)?)|/(?:apps|publish)/?)$#', $decoded) === 1
         || $decoded === '/sitemap-apps.xml';
 }
 
@@ -934,7 +934,7 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'playPage':
             Seed::ifEmpty();
-            return Pages::play($args[0], ($req->query['mode'] ?? '') === 'local');
+            return Pages::play($args[0], ($req->query['mode'] ?? '') === 'local', (string) ($args[1] ?? ''));
 
         case 'sitemap':
             Seed::ifEmpty();

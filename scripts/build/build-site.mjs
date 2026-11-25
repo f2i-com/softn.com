@@ -267,7 +267,7 @@ ErrorDocument 404 /index.html
   # at; the directory of apps is.
   RewriteRule ^play/?$ /apps [R=302,L]
   RewriteCond %{REQUEST_FILENAME} !-f
-  RewriteRule ^play/[^/]+/?$ api/index.php [L]
+  RewriteRule ^play/(?!assets(?:/|$))[^/]+(?:/.*)?$ api/index.php [L]
 
   # Canonical app roots keep relative assets and service-worker scopes correct.
   RewriteRule ^(web|builder|studio)$ $1/ [R=308,L,NE]
@@ -337,7 +337,7 @@ map "$sent_http_content_type|$uri" $softn_cache_control {
     # Dynamic PHP-FPM routes set their own Cache-Control; empty value suppresses Nginx add_header duplication.
     # Match HTML documents on /play/<slug> rather than static JS/WASM assets under /play/.
     ~\|/(?:api(?:/|$)|apps/?$|publish/?$|app/[^/]+/?$|sitemap-apps\.xml$) "";
-    ~^text/html\|/play/[^/]+/?$                                    "";
+    ~^text/html\|/play/(?!assets(?:/|$))[^/]+(?:/.*)?$             "";
     ~^text/html                                                    "no-cache, max-age=0, must-revalidate";
     ~^application/(?:json|manifest\+json)                          "no-cache, max-age=0, must-revalidate";
     ~*\|.*/(?:registerSW|sw|service-worker|coi)\.js$               "no-cache, max-age=0, must-revalidate";
@@ -424,7 +424,7 @@ server {
     # the API. A real file under /play/ (the shell's own chunks) is a file.
     location = /play { return 302 /apps; }
     location = /play/ { return 302 /apps; }
-    location ~ ^/play/[^/]+/?$ {
+    location ~ ^/play/(?!assets(?:/|$))[^/]+(?:/.*)?$ {
         try_files $uri @softn_play;
     }
     location @softn_play {

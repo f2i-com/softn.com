@@ -15,6 +15,8 @@ export interface WebContainerViewProps {
   storagePrefix?: string;
   /** Optional initial HTML page to navigate to inside the archive. */
   initialPage?: string;
+  /** Optional initial virtual URL path to boot directly onto (e.g. `'/about.html'`, `'/blog/post.html'`). */
+  initialPath?: string;
   /** Declared permissions from `permission.json` or operator sidecar. */
   declaredPermissions?: PermissionConfig;
   /** Currently granted capability list (updated dynamically when user clicks Allow on `PermissionBar`). */
@@ -33,8 +35,12 @@ export interface WebContainerViewProps {
   onStatus?: (status: ContainerBootStatus) => void;
   /** Fired once container initial scripts & `DOMContentLoaded` complete. */
   onReady?: () => void;
-  /** Fired when guest updates `document.title`. */
+  /** Fired when guest updates `document.title` or navigates to a page with a `<title>`. */
   onTitleChange?: (title: string) => void;
+  /** Fired when the container's virtual URL route changes (for syncing the host URL bar). */
+  onRouteChange?: (urlPath: string, pushHistory: boolean) => void;
+  /** Receives the live container handle when mounted and `null` on teardown. */
+  onHandle?: (handle: SoftNContainerHandle | null) => void;
   /** Optional console listener. */
   onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
   /**
@@ -55,6 +61,7 @@ export function WebContainerView({
   appId,
   storagePrefix,
   initialPage,
+  initialPath,
   declaredPermissions,
   grantedCapabilities,
   theme = 'auto',
@@ -65,6 +72,8 @@ export function WebContainerView({
   onStatus,
   onReady,
   onTitleChange,
+  onRouteChange,
+  onHandle,
   onConsole,
   active = true,
 }: WebContainerViewProps): React.ReactElement {
@@ -80,8 +89,14 @@ export function WebContainerView({
   onReadyRef.current = onReady;
   const onTitleRef = useRef(onTitleChange);
   onTitleRef.current = onTitleChange;
+  const onRouteChangeRef = useRef(onRouteChange);
+  onRouteChangeRef.current = onRouteChange;
+  const onHandleRef = useRef(onHandle);
+  onHandleRef.current = onHandle;
   const onConsoleRef = useRef(onConsole);
   onConsoleRef.current = onConsole;
+  const initialPathRef = useRef(initialPath);
+  if (!handleRef.current) initialPathRef.current = initialPath;
   const grantedRef = useRef(grantedCapabilities);
   grantedRef.current = grantedCapabilities;
   const activeRef = useRef(active);
@@ -105,6 +120,7 @@ export function WebContainerView({
           ...hostedContainerOptions(),
           ...(runtimeUrl ? { runtimeUrl } : {}),
           ...(initialPage ? { initialPage } : {}),
+          ...(initialPathRef.current ? { initialPath: initialPathRef.current } : {}),
           appId,
           ...(storagePrefix ? { storagePrefix } : {}),
           ...(backendUrl ? { backendUrl } : {}),
@@ -131,6 +147,7 @@ export function WebContainerView({
             else console[level]('[SoftN app]', text);
           },
           onTitleChange: (title) => onTitleRef.current?.(title),
+          onRouteChange: (urlPath, pushHistory) => onRouteChangeRef.current?.(urlPath, pushHistory),
           onError: (err) => {
             console.error('[SoftN Container]', err);
           },
@@ -140,6 +157,7 @@ export function WebContainerView({
           return;
         }
         handleRef.current = mounted;
+        onHandleRef.current?.(mounted);
         // Whatever changed while it started (the person pressed Allow during the boot).
         mounted.setGrantedCapabilities(grantedRef.current as Capability[]);
         mounted.setActive(activeRef.current);
@@ -161,6 +179,7 @@ export function WebContainerView({
 
     return () => {
       cancelled = true;
+      onHandleRef.current?.(null);
       handleRef.current?.dispose();
       handleRef.current = null;
     };

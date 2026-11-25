@@ -64,7 +64,7 @@ final class Pages
             }
         }
         $prerender = $ver !== null
-            ? self::prerenderFor($slug, $row, $ver)
+            ? self::prerenderFor($slug, $row, $ver, null, '', "/play/$slug")
             : ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
 
         $html = self::stripStaticHomeHead($html);
@@ -448,7 +448,7 @@ final class Pages
         return $config;
     }
 
-    public static function play(string $slugGiven, bool $forceLocal = false): Response
+    public static function play(string $slugGiven, bool $forceLocal = false, string $subPath = ''): Response
     {
         $shell = dirname(__DIR__, 2) . '/play/index.html';
         if (!is_file($shell)) {
@@ -469,20 +469,86 @@ final class Pages
         }
         $html = (string) file_get_contents($shell);
         $cfg = self::playConfig($row, $ver, $forceLocal);
+        $appName = (string) $row['name'];
+        $appDesc = (string) ($row['description'] ?? '');
+        $origin = self::origin();
+        $linkBase = "/play/$slug";
+        $prerender = self::prerenderFor(
+            $slug,
+            $row,
+            $ver,
+            is_string($cfg['sha256'] ?? null) ? $cfg['sha256'] : null,
+            $subPath,
+            $linkBase
+        );
+
+        $cleanSub = trim(str_replace('\\', '/', $subPath), '/');
+        if ($cleanSub !== '' && !($prerender['found'] ?? false)) {
+            return self::problem(
+                'That page does not exist in ' . $appName . '.',
+                404,
+                $linkBase,
+                'Back to ' . $appName
+            );
+        }
+
+        $virtualPath = is_string($prerender['virtualPath'] ?? null) && $prerender['virtualPath'] !== ''
+            ? $prerender['virtualPath']
+            : '/';
+        $publicPages = is_array($prerender['publicPages'] ?? null) ? $prerender['publicPages'] : [];
+        $hasSsrBackend = (bool) ($prerender['hasSsrBackend'] ?? false);
+        $isMultiPage = count($publicPages) > 1;
+        $isSubPage = $virtualPath !== '/';
+
+        if ($isMultiPage || $isSubPage || $hasSsrBackend) {
+            $cfg['basePath'] = $linkBase;
+            $cfg['initialPath'] = $virtualPath;
+        }
+
         $config = json_encode($cfg, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($config === false) return Response::html('<!doctype html><title>SoftN</title><p>The app could not be described.</p>', 500);
-        $name = (string) $row['name'];
-        $desc = (string) ($row['description'] ?? '');
-        if ($desc === '') $desc = "$name — run this SoftN app directly in your browser.";
-        $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($name) . '</title>', $html);
+
+        $pageTitle = ($isMultiPage || $isSubPage)
+            && is_string($prerender['pageTitle'] ?? null)
+            && $prerender['pageTitle'] !== ''
+            ? $prerender['pageTitle']
+            : $appName;
+        $desc = ($isMultiPage || $isSubPage)
+            && is_string($prerender['pageDescription'] ?? null)
+            && $prerender['pageDescription'] !== ''
+            ? $prerender['pageDescription']
+            : ($appDesc !== '' ? $appDesc : "$appName — run this SoftN app directly in your browser.");
+        $robots = is_string($prerender['pageRobots'] ?? null) && $prerender['pageRobots'] !== ''
+            ? $prerender['pageRobots']
+            : 'index,follow,max-image-preview:large';
+
+        $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($pageTitle) . '</title>', $html);
         // JSON_HEX_TAG has turned every < and > into \u003C and \u003E, so
         // nothing in a name or a description can close this element early.
-        $origin = self::origin();
-        $prerender = self::prerenderFor($slug, $row, $ver, is_string($cfg['sha256'] ?? null) ? $cfg['sha256'] : null);
         $image = ($origin ?? '') . "/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
-        $canonicalUrl = $origin === null ? null : "$origin/app/$slug";
-        $playPageUrl = $origin === null ? null : "$origin/play/$slug";
-        $jsonLd = self::webAppJsonLd($row, $ver, $desc, $canonicalUrl, $origin !== null ? $image : null, $playPageUrl);
+        $playPagePath = $isSubPage ? ($linkBase . $virtualPath) : $linkBase;
+        $playPageUrl = $origin === null ? null : ($origin . $playPagePath);
+        // Sub-pages and multi-page websites are self-canonical at their live URL;
+        // single-page apps keep `/app/<slug>` as their canonical share address.
+        $canonicalUrl = $origin === null
+            ? null
+            : (($isSubPage || $isMultiPage) ? $playPageUrl : "$origin/app/$slug");
+
+        $jsonLdBlocks = [];
+        if ($isSubPage || $isMultiPage) {
+            $pageLd = self::webPageJsonLd($row, $slug, $pageTitle, $desc, $playPageUrl, $origin !== null ? $image : null, $origin);
+            if ($pageLd !== '') $jsonLdBlocks[] = $pageLd;
+            $crumbsLd = self::playBreadcrumbJsonLd($origin, $row, $slug, $isSubPage ? $pageTitle : null, $playPageUrl);
+            if ($crumbsLd !== '') $jsonLdBlocks[] = $crumbsLd;
+        } else {
+            $appLd = self::webAppJsonLd($row, $ver, $desc, $canonicalUrl, $origin !== null ? $image : null, $playPageUrl);
+            if ($appLd !== '') $jsonLdBlocks[] = $appLd;
+        }
+        $jsonLdHtml = '';
+        foreach ($jsonLdBlocks as $ldBlock) {
+            $jsonLdHtml .= '    <script type="application/ld+json">' . $ldBlock . '</script>' . "\n";
+        }
+
         $preloadBundle = is_string($cfg['bundle'] ?? null) && $cfg['bundle'] !== ''
             ? '    <link rel="preload" href="' . $e($cfg['bundle']) . '" as="fetch" crossorigin="anonymous" fetchpriority="high" />' . "\n"
             : '';
@@ -496,29 +562,30 @@ final class Pages
             ? '    <style>html,body{background:#f5f5f8;color:#171821}.wheel{border-color:color-mix(in srgb,currentColor 20%,transparent);border-top-color:currentColor}</style>' . "\n"
             : '';
         $inject = '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n"
-            . '    <meta name="robots" content="index,follow,max-image-preview:large" />' . "\n"
+            . ($isSubPage ? '    <meta name="softn:page" content="' . $e($virtualPath) . '" />' . "\n" : '')
+            . '    <meta name="robots" content="' . $e($robots) . '" />' . "\n"
             . '    <meta name="description" content="' . $e($desc) . '" />' . "\n"
-            . '    <meta property="og:type" content="website" />' . "\n"
-            . '    <meta property="og:site_name" content="SoftN" />' . "\n"
-            . '    <meta property="og:title" content="' . $e($name) . '" />' . "\n"
+            . '    <meta property="og:type" content="' . ($isSubPage ? 'article' : 'website') . '" />' . "\n"
+            . '    <meta property="og:site_name" content="' . $e($isMultiPage ? $appName : 'SoftN') . '" />' . "\n"
+            . '    <meta property="og:title" content="' . $e($pageTitle) . '" />' . "\n"
             . '    <meta property="og:description" content="' . $e($desc) . '" />' . "\n"
             . '    <meta property="og:image" content="' . $e($image) . '" />' . "\n"
-            . '    <meta property="og:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
+            . '    <meta property="og:image:alt" content="' . $e("$pageTitle on SoftN") . '" />' . "\n"
             . ($playPageUrl === null ? '' : '    <meta property="og:url" content="' . $e($playPageUrl) . '" />' . "\n")
             . '    <meta name="twitter:card" content="summary_large_image" />' . "\n"
-            . '    <meta name="twitter:title" content="' . $e($name) . '" />' . "\n"
+            . '    <meta name="twitter:title" content="' . $e($pageTitle) . '" />' . "\n"
             . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
             . '    <meta name="twitter:image" content="' . $e($image) . '" />' . "\n"
-            . '    <meta name="twitter:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
+            . '    <meta name="twitter:image:alt" content="' . $e("$pageTitle on SoftN") . '" />' . "\n"
             . ($canonicalUrl === null ? '' : '    <link rel="canonical" href="' . $e($canonicalUrl) . '" />' . "\n")
             . $preloadBundle
             . $preloadEngines
-            . ($jsonLd !== '' ? '    <script type="application/ld+json">' . $jsonLd . '</script>' . "\n" : '')
+            . $jsonLdHtml
             . $boot
             . '    <script type="application/json" id="softn-runtime-config">' . $config . '</script>' . "\n  </head>";
         $html = str_replace('</head>', $inject, $html);
 
-        $ssrPlay = self::renderPlayBody($slug, $row, $desc, $prerender['previewHtml']);
+        $ssrPlay = self::renderPlayBody($slug, $row, $pageTitle, $desc, $prerender['previewHtml'], $virtualPath, $publicPages);
         if (preg_match('#<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?</div>#i', $html) === 1) {
             $html = self::replaceOnce(
                 '#(<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?)(</div>)#i',
@@ -572,15 +639,37 @@ final class Pages
             }
         }
         foreach (array_slice($rows, 0, 49900) as $row) {
+            if (count($urls) >= 49950) break;
             $slug = (string) ($row['slug'] ?? '');
             if ($slug === '' || !Catalog::validSlug($slug)) continue;
             $updated = (int) ($row['updated_at'] ?? 0);
+            $lastmod = $updated > 0 ? gmdate('Y-m-d', $updated) : null;
             $urls[] = [
                 'loc' => "$origin/app/$slug",
-                'lastmod' => $updated > 0 ? gmdate('Y-m-d', $updated) : null,
+                'lastmod' => $lastmod,
                 'image' => "$origin/api/apps/$slug/thumbnail?v=$updated",
                 'title' => (string) ($row['name'] ?? $slug),
             ];
+            if (Apps::playUrl($row) === null) {
+                try {
+                    $ver = Apps::version($slug);
+                    $meta = self::prerenderFor($slug, $row, $ver, null, '', "/play/$slug");
+                    $pages = is_array($meta['publicPages'] ?? null) ? $meta['publicPages'] : [];
+                    if (count($pages) > 1) {
+                        foreach ($pages as $p) {
+                            if (count($urls) >= 49950) break;
+                            $urls[] = [
+                                'loc' => $p === '' ? "$origin/play/$slug" : "$origin/play/$slug/$p",
+                                'lastmod' => $lastmod,
+                                'image' => null,
+                                'title' => null,
+                            ];
+                        }
+                    }
+                } catch (Throwable) {
+                    // Unreadable version never breaks sitemap generation.
+                }
+            }
         }
 
         $lines = [
@@ -611,16 +700,22 @@ final class Pages
      * answered, with a way back. The API's JSON is for a script, and this
      * address is in someone's chat.
      */
-    public static function problem(string $message, int $status): Response
+    public static function problem(string $message, int $status, ?string $backHref = null, ?string $backLabel = null): Response
     {
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         // Worded for an operator, whose site it is; a visitor is told what it means for them first.
         $say = $status === 404 ? '<h1>' . $e($message) . '</h1>' : '<h1>This page can’t be shown right now.</h1><p>' . $e($message) . '</p>';
+        $links = [];
+        if (is_string($backHref) && $backHref !== '' && is_string($backLabel) && $backLabel !== '') {
+            $links[] = '<a href="' . $e($backHref) . '">' . $e($backLabel) . '</a>';
+        }
+        $links[] = '<a href="/apps">Browse the directory</a>';
         return Response::html(
             '<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />'
+            . '<meta name="robots" content="noindex" />'
             . '<title>' . ($status === 404 ? 'Not here' : 'Unavailable') . ' — SoftN</title><style>html,body{margin:0;background:#171821;color:#f5f5f8;font-family:system-ui}'
             . 'main{min-height:100dvh;display:grid;place-content:center;text-align:center;gap:12px;padding:24px}a{color:#acb8ff}</style></head>'
-            . '<body><main>' . $say . '<p><a href="/apps">Browse the directory</a></p></main></body></html>',
+            . '<body><main>' . $say . '<p>' . implode(' · ', $links) . '</p></main></body></html>',
             $status,
             ['Cache-Control' => 'no-cache']
         );
@@ -705,15 +800,21 @@ final class Pages
     }
 
     /**
-     * Load cached pre-render data for a published app version, strictly reading
-     * the backend-stripped client bundle whenever `withholdBackend` is active.
+     * Load cached pre-render data for a published app version and optional sub-page,
+     * strictly reading the backend-stripped client bundle whenever `withholdBackend` is active.
      *
      * @param array<string, mixed> $row
      * @param array<string, mixed> $ver
-     * @return array{themeMode: ?string, previewHtml: string, sourceType: string, entryFile: ?string}
+     * @return array<string, mixed>
      */
-    private static function prerenderFor(string $slug, array $row, array $ver, ?string $resolvedClientSha = null): array
-    {
+    private static function prerenderFor(
+        string $slug,
+        array $row,
+        array $ver,
+        ?string $resolvedClientSha = null,
+        string $subPath = '',
+        ?string $linkBase = null
+    ): array {
         $hosting = Apps::hostingInfo($row);
         $appDir = Catalog::path($slug);
         $srcPath = $appDir . '/' . (string) ($ver['file'] ?? '');
@@ -732,11 +833,23 @@ final class Pages
                     $sha = Bundle::clientBundleSha256($srcPath, $cachePath, $bundleSha);
                 }
             } catch (Throwable) {
-                return ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
+                return [
+                    'themeMode' => null,
+                    'previewHtml' => '',
+                    'sourceType' => 'none',
+                    'entryFile' => null,
+                    'found' => false,
+                    'pageTitle' => null,
+                    'pageDescription' => null,
+                    'pageRobots' => null,
+                    'virtualPath' => '/',
+                    'publicPages' => [],
+                    'hasSsrBackend' => false,
+                ];
             }
-            return Prerender::forBundle($bundlePath, $sha, $pageCache, true, $snapshotPath, $bundleSha);
+            return Prerender::forBundlePage($bundlePath, $sha, $pageCache, true, $snapshotPath, $bundleSha, $subPath, $linkBase);
         }
-        return Prerender::forBundle($srcPath, $bundleSha, $pageCache, false, $snapshotPath);
+        return Prerender::forBundlePage($srcPath, $bundleSha, $pageCache, false, $snapshotPath, null, $subPath, $linkBase);
     }
 
     /** Map SoftN category IDs to valid Schema.org SoftwareApplication categories. */
@@ -922,17 +1035,94 @@ final class Pages
     }
 
     /**
-     * Semantic View-Source SSR HTML for `/play/<slug>`.
+     * Build `WebPage` JSON-LD for a page of a multi-page SoftN hosted website.
      *
      * @param array<string, mixed> $row
      */
-    private static function renderPlayBody(string $slug, array $row, string $desc, string $previewHtml): string
-    {
+    private static function webPageJsonLd(
+        array $row,
+        string $slug,
+        string $pageTitle,
+        string $desc,
+        ?string $pageUrl,
+        ?string $image,
+        ?string $origin
+    ): string {
+        $siteName = (string) ($row['name'] ?? $slug);
+        $siteObj = [
+            '@type' => 'WebSite',
+            'name' => $siteName,
+        ];
+        if ($origin !== null) $siteObj['url'] = "$origin/play/$slug";
+        $ld = [
+            '@context' => 'https://schema.org',
+            '@type' => 'WebPage',
+            'name' => $pageTitle,
+            'description' => $desc,
+            'isPartOf' => $siteObj,
+        ];
+        if ($pageUrl !== null) $ld['url'] = $pageUrl;
+        if ($image !== null) $ld['primaryImageOfPage'] = $image;
+        $updatedAt = (int) ($row['updated_at'] ?? 0);
+        if ($updatedAt > 0) $ld['dateModified'] = gmdate('c', $updatedAt);
+        $encoded = json_encode($ld, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * Build `BreadcrumbList` JSON-LD for a multi-page hosted website under `/play/<slug>`.
+     *
+     * @param array<string, mixed> $row
+     */
+    private static function playBreadcrumbJsonLd(
+        ?string $origin,
+        array $row,
+        string $slug,
+        ?string $subPageTitle,
+        ?string $subPageUrl
+    ): string {
+        if ($origin === null) return '';
+        $items = [
+            ['@type' => 'ListItem', 'position' => 1, 'name' => 'SoftN', 'item' => "$origin/"],
+            ['@type' => 'ListItem', 'position' => 2, 'name' => 'Apps', 'item' => "$origin/apps"],
+            ['@type' => 'ListItem', 'position' => 3, 'name' => (string) ($row['name'] ?? $slug), 'item' => "$origin/play/$slug"],
+        ];
+        if ($subPageTitle !== null && $subPageTitle !== '' && $subPageUrl !== null) {
+            $items[] = [
+                '@type' => 'ListItem',
+                'position' => 4,
+                'name' => $subPageTitle,
+                'item' => $subPageUrl,
+            ];
+        }
+        $encoded = json_encode([
+            '@context' => 'https://schema.org',
+            '@type' => 'BreadcrumbList',
+            'itemListElement' => $items,
+        ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * Semantic View-Source SSR HTML for `/play/<slug>` and `/play/<slug>/<subpath>`.
+     *
+     * @param array<string, mixed> $row
+     * @param array<int, string> $publicPages
+     */
+    private static function renderPlayBody(
+        string $slug,
+        array $row,
+        string $pageTitle,
+        string $desc,
+        string $previewHtml,
+        string $virtualPath = '/',
+        array $publicPages = []
+    ): string {
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $name = (string) $row['name'];
         $lines = [
-            '        <article class="softn-ssr" data-softn-ssr="play">',
-            '          <h1>' . $e($name) . '</h1>',
+            '        <article class="softn-ssr" data-softn-ssr="play" data-softn-page="' . $e($virtualPath) . '">',
+            '          <h1>' . $e($pageTitle) . '</h1>',
             '          <p>' . $e($desc) . '</p>',
         ];
         if ($previewHtml !== '') {
@@ -940,6 +1130,15 @@ final class Pages
             $lines[] = '          <section data-softn-preview="rendered" aria-label="Rendered application preview">';
             $lines[] = $indented;
             $lines[] = '          </section>';
+        }
+        if (count($publicPages) > 1) {
+            $pageLinks = [];
+            foreach ($publicPages as $p) {
+                $href = $p === '' ? "/play/$slug" : "/play/$slug/$p";
+                $label = $p === '' ? 'Home' : $p;
+                $pageLinks[] = '<a href="' . $e($href) . '">' . $e($label) . '</a>';
+            }
+            $lines[] = '          <nav aria-label="Site pages">' . implode(' · ', $pageLinks) . '</nav>';
         }
         $lines[] = '          <p><a href="' . $e("/app/$slug") . '">About ' . $e($name) . '</a></p>';
         $lines[] = '        </article>';

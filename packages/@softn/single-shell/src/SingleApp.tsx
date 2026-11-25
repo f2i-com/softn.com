@@ -22,6 +22,7 @@ import { getLoadedUiSurface, preloadUiSurface, type LoadedUiSurface } from './ui
 // serves through this shell; drawn from the shared tokens, which come along.
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
 import { WebContainerView } from '@softn/runtime-shell/WebContainerView';
+import type { SoftNContainerHandle } from '@softn/container';
 import {
   apply as applySiteTheme,
   readChoice as readThemeChoice,
@@ -48,6 +49,10 @@ export interface RunnableApplication {
     directory?: DirectoryConfig;
     /** Optional same-origin URL of a remote ZIPP-sandboxed multi-user backend (`softn-server`). */
     backendUrl?: string;
+    /** URL prefix for multi-page hosted routes (e.g. `"/play/harborline-studio"`). */
+    basePath?: string;
+    /** Initial virtual route inside the app (e.g. `"/"`, `"/about.html"`). */
+    initialPath?: string;
   };
   /** The bundle's icon as a data URL, when it has one the shell accepted. */
   icon?: string;
@@ -167,6 +172,66 @@ function countRun(url: string) {
     keepalive: true,
   }).catch(() => {});
 }
+/** Map a container virtual URL (`'/'`, `'/index.html'`, `'/about.html'`) under `basePath` (`'/play/<slug>'`). */
+function buildBrowserRouteUrl(basePath: string, virtualUrlPath: string): string | null {
+  try {
+    const parsed = new URL(virtualUrlPath || '/', 'https://app.softn.local/');
+    if (parsed.origin !== 'https://app.softn.local') return null;
+    const cleanBase = basePath.length > 1 ? basePath.replace(/\/+$/, '') : '';
+    let pathname = parsed.pathname;
+    if (pathname === '/' || /^\/index\.html?$/i.test(pathname)) {
+      pathname = '';
+    } else if (/^\/.+\/index\.html?$/i.test(pathname)) {
+      pathname = pathname.replace(/index\.html?$/i, '');
+    }
+    const pathOut = `${cleanBase}${pathname}` || '/';
+    let search = parsed.search;
+    if (!search && typeof window !== 'undefined' && window.location.search) {
+      const outer = new URLSearchParams(window.location.search);
+      if (outer.get('mode') === 'local') search = '?mode=local';
+    }
+    return `${pathOut}${search}${parsed.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract the container virtual URL path from the current browser location relative to `basePath`. */
+function parseVirtualPathFromBrowser(basePath: string): string | null {
+  if (typeof window === 'undefined') return null;
+  const cleanBase = basePath.length > 1 ? basePath.replace(/\/+$/, '') : '';
+  const { pathname, search, hash } = window.location;
+  let rel: string | null = null;
+  if (cleanBase === '') {
+    rel = pathname || '/';
+  } else if (pathname === cleanBase || pathname === `${cleanBase}/`) {
+    rel = '/';
+  } else if (pathname.startsWith(`${cleanBase}/`)) {
+    rel = pathname.slice(cleanBase.length);
+  }
+  if (rel === null) return null;
+  let guestSearch = search;
+  if (guestSearch) {
+    const params = new URLSearchParams(guestSearch);
+    if (params.get('mode') === 'local' && [...params.keys()].length === 1) {
+      guestSearch = '';
+    }
+  }
+  return `${rel}${guestSearch}${hash}`;
+}
+
+function normalizeRouteCompare(path: string): string {
+  try {
+    const u = new URL(path || '/', 'https://app.softn.local/');
+    let p = u.pathname;
+    if (/^\/index\.html?$/i.test(p)) p = '/';
+    else if (/^\/.+\/index\.html?$/i.test(p)) p = p.replace(/index\.html?$/i, '');
+    return `${p}${u.search}${u.hash}`;
+  } catch {
+    return path;
+  }
+}
+
 export type { HostBackendCall } from './host';
 export function Application({ app, backendCall }: { app: RunnableApplication; backendCall?: HostBackendCall }) {
   const requested = inspectDeclaration(app.declared).requested;
@@ -308,6 +373,52 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
   const containerSource = useMemo(() => (app.webContainer ? (app.bundleData ?? app.containerFiles ?? Object.fromEntries(app.textFiles)) : null), [app]);
   // The same list for the same answer, so the container is told of a grant when it changes.
   const containerGrants = useMemo(() => (granted ? inspectDeclaration(app.declared).requested : []), [granted, app]);
+  const routeBasePath = app.config.basePath;
+  const containerHandleRef = useRef<SoftNContainerHandle | null>(null);
+  const initialRouteSyncedRef = useRef(false);
+  const setContainerHandle = useCallback((handle: SoftNContainerHandle | null) => {
+    containerHandleRef.current = handle;
+    if (!handle) initialRouteSyncedRef.current = false;
+  }, []);
+  const handleContainerRouteChange = useCallback(
+    (urlPath: string, pushHistory: boolean) => {
+      if (!routeBasePath || typeof window === 'undefined') return;
+      const targetUrl = buildBrowserRouteUrl(routeBasePath, urlPath);
+      if (!targetUrl) return;
+      const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const isInitialSync = !initialRouteSyncedRef.current;
+      initialRouteSyncedRef.current = true;
+      if (targetUrl !== currentUrl) {
+        const currentPathname = window.location.pathname;
+        const targetPathname = targetUrl.split(/[?#]/)[0];
+        if (!isInitialSync && pushHistory) {
+          history.pushState({ softnRoute: urlPath }, '', targetUrl);
+        } else {
+          history.replaceState({ softnRoute: urlPath }, '', targetUrl);
+        }
+        if (targetPathname !== currentPathname && !targetUrl.includes('#')) {
+          content.current?.scrollTo?.(0, 0);
+          window.scrollTo?.(0, 0);
+        }
+      }
+    },
+    [routeBasePath]
+  );
+  useEffect(() => {
+    if (!app.webContainer || !routeBasePath || typeof window === 'undefined') return;
+    const onPopState = () => {
+      const handle = containerHandleRef.current;
+      if (!handle) return;
+      const target = parseVirtualPathFromBrowser(routeBasePath);
+      if (!target) return;
+      if (normalizeRouteCompare(target) === normalizeRouteCompare(handle.currentPath)) return;
+      void handle.navigate(target, { pushHistory: false }).catch((err) => {
+        console.warn('[SoftN] Back/Forward navigation failed:', err);
+      });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [app.webContainer, routeBasePath]);
   const [page, setPage] = useState<{ path: string; composed: ComposedBundleSource } | null>(null);
   const show = useCallback(
     (path: string | null): boolean => {
@@ -330,6 +441,15 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     },
     [app, main, uiRuntime]
   );
+  const initialUiAppliedRef = useRef(false);
+  useEffect(() => {
+    if (app.webContainer || !uiRuntime || main === null || initialUiAppliedRef.current) return;
+    const initPath = app.config.initialPath;
+    if (!initPath || initPath === '/') return;
+    initialUiAppliedRef.current = true;
+    const target = uiRuntime.bundlePageAt(app.textFiles, main, initPath.replace(/^\/+/, ''));
+    if (target && target !== main) show(target);
+  }, [app, main, show, uiRuntime]);
   const followLink = useCallback(
     (href: string): boolean => {
       if (!uiRuntime || app.followsLinks === false || main === null) return false;
@@ -342,22 +462,38 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
       // told apart from a fragment link, which leaves no page in history.
       const here = (history.state ?? {}) as Record<string, unknown>;
       if (typeof here.softnPage !== 'string') history.replaceState({ ...here, softnPage: from }, '');
-      history.pushState({ softnPage: path }, '');
+      const nextUrl = routeBasePath
+        ? buildBrowserRouteUrl(routeBasePath, path === main ? '/' : `/${path.replace(/^\/+/, '')}`)
+        : null;
+      if (nextUrl) history.pushState({ softnPage: path }, '', nextUrl);
+      else history.pushState({ softnPage: path }, '');
       content.current?.scrollTo?.(0, 0);
       return true;
     },
-    [app, main, page, show, uiRuntime]
+    [app, main, page, routeBasePath, show, uiRuntime]
   );
   useEffect(() => {
     if (app.webContainer || app.followsLinks === false) return;
     const back = (event: PopStateEvent) => {
       const path = (event.state as { softnPage?: unknown } | null)?.softnPage;
       // A move to a fragment of the page showing says no page: it stays.
-      if (typeof path === 'string') show(path);
+      if (typeof path === 'string') {
+        show(path);
+        return;
+      }
+      if (routeBasePath && uiRuntime && main !== null) {
+        const target = parseVirtualPathFromBrowser(routeBasePath);
+        if (target === '/' || target === null) {
+          show(main);
+        } else {
+          const resolved = uiRuntime.bundlePageAt(app.textFiles, main, target.replace(/^\/+/, ''));
+          if (resolved) show(resolved);
+        }
+      }
     };
     window.addEventListener('popstate', back);
     return () => window.removeEventListener('popstate', back);
-  }, [app, show]);
+  }, [app, main, routeBasePath, show, uiRuntime]);
   const shown = page?.composed ?? app;
   // The page's code set document.title: the window is the app's.
   const showTitle = useCallback((title: string) => {
@@ -438,6 +574,7 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
             <WebContainerView
               source={containerSource}
               appId={app.appId}
+              initialPath={app.config.initialPath}
               backendUrl={app.config.backendUrl}
               declaredPermissions={app.declared}
               grantedCapabilities={containerGrants}
@@ -448,6 +585,8 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
               }
               onReady={onLoad}
               onTitleChange={showTitle}
+              onRouteChange={handleContainerRouteChange}
+              onHandle={setContainerHandle}
               loading={<Loading text={app.config.loadingText} />}
               error={(error: Error) => {
                 reportFailure(error);
@@ -564,7 +703,11 @@ export function SingleApp({
           result.assets.dispose();
           return;
         }
-        document.title = result.config.title;
+        if (!result.config.initialPath || result.config.initialPath === '/') {
+          if (!document.title || document.title === 'Application') {
+            document.title = result.config.title;
+          }
+        }
         restoreFavicon = installFavicon(result.icon);
         setHosted(() => host);
         setApp(result);

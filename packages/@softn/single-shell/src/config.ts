@@ -55,6 +55,17 @@ export interface SingleConfig {
    * scrollbar beside the document's and a header that scrolls away.
    */
   layout?: 'app' | 'page';
+  /**
+   * URL prefix under which this hosted app's pages live (e.g. `"/play/harborline-studio"`).
+   * When set, in-app navigation syncs the browser address bar under `basePath` so reloading,
+   * sharing, Back/Forward, and Right-Click -> View Source reflect the exact current page.
+   */
+  basePath?: string;
+  /**
+   * Initial virtual route inside the app to boot directly onto (e.g. `"/"`, `"/about.html"`,
+   * `"/blog/sandboxed-web.html"`), injected by the server from the requested URL.
+   */
+  initialPath?: string;
 }
 export function localUrl(value: unknown, base: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 2048)
@@ -101,6 +112,8 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     'host',
     'backendUrl',
     'layout',
+    'basePath',
+    'initialPath',
   ];
   if (
     Object.keys(c).some((k) => !keys.includes(k)) ||
@@ -126,6 +139,36 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     throw Error('Preapproved deployments require a pinned bundle digest');
   if (c.layout !== undefined && c.layout !== 'app' && c.layout !== 'page')
     throw Error('Invalid layout');
+  let basePath: string | undefined;
+  if (c.basePath !== undefined) {
+    if (
+      typeof c.basePath !== 'string' ||
+      c.basePath.length === 0 ||
+      c.basePath.length > 256 ||
+      !c.basePath.startsWith('/') ||
+      c.basePath.startsWith('//') ||
+      /[\\?#\x00-\x1f\x7f]/.test(c.basePath) ||
+      /(?:^|\/)\.\.?(?:\/|$)/.test(c.basePath)
+    ) {
+      throw Error('Invalid base path');
+    }
+    basePath = c.basePath.length > 1 ? c.basePath.replace(/\/+$/, '') : '/';
+  }
+  let initialPath: string | undefined;
+  if (c.initialPath !== undefined) {
+    if (
+      typeof c.initialPath !== 'string' ||
+      c.initialPath.length === 0 ||
+      c.initialPath.length > 512 ||
+      !c.initialPath.startsWith('/') ||
+      c.initialPath.startsWith('//') ||
+      /[\\\x00-\x1f\x7f]/.test(c.initialPath) ||
+      /(?:^|\/)\.\.(?:\/|$)/.test(c.initialPath.split(/[?#]/)[0])
+    ) {
+      throw Error('Invalid initial path');
+    }
+    initialPath = c.initialPath;
+  }
   return {
     version: 1,
     id: c.id,
@@ -140,6 +183,8 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     host: c.host === undefined ? undefined : localUrl(c.host, base),
     backendUrl: c.backendUrl === undefined ? undefined : localUrl(c.backendUrl, base),
     layout: (c.layout as SingleConfig['layout']) ?? 'app',
+    ...(basePath !== undefined ? { basePath } : {}),
+    ...(initialPath !== undefined ? { initialPath } : {}),
   };
 }
 export function parsePermissions(value: unknown): PermissionConfig {

@@ -32,7 +32,10 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
     configUrl
   );
   // Identity comes from this origin's deployment config, not an untrusted manifest name.
-  const appId = 'single:' + new URL(configUrl).pathname + ':' + config.id;
+  // Multi-page hosted apps share one appId & grant scope across every sub-page under `basePath`.
+  const identityPath = config.basePath ?? new URL(configUrl).pathname;
+  const grantOriginUrl = config.basePath ? new URL(config.basePath, configUrl).href : configUrl;
+  const appId = 'single:' + identityPath + ':' + config.id;
   mark('softn:bundle-fetch:start');
   // An inline configuration names a version-addressed bundle with its digest
   // pinned, so the browser's cache may answer; see fetchBytes.
@@ -76,7 +79,7 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
     },
     sidecar: sidecar ? async () => decode(await fetchBytes(sidecar, signal, 65536, 'no-store', progress)) : undefined,
     appId,
-    grantScope: configUrl + hash,
+    grantScope: grantOriginUrl + hash,
     signal,
   });
   const icon =

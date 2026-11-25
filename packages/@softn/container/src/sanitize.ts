@@ -404,23 +404,41 @@ export function sanitizeHostAssetUrl(
   }
 
   // Virtual-origin or relative path -> resolve strictly from frontend VFS (never backend/private files)
-  const vfsPath = archive.resolveFrontendExistingPath(originalTrimmed, basePath);
+  let vfsPath = archive.resolveFrontendExistingPath(originalTrimmed, basePath);
+  if (!vfsPath && isLink && !/^https?:|^\/\//i.test(trimmed)) {
+    try {
+      const baseUrl = `${VIRTUAL_ORIGIN}/${basePath.replace(/^\/+/, '')}`;
+      const parsed = new URL(originalTrimmed, baseUrl);
+      if (parsed.origin === VIRTUAL_ORIGIN) {
+        const cleanPath = parsed.pathname.replace(/\/+$/, '');
+        const lastSeg = cleanPath.slice(cleanPath.lastIndexOf('/') + 1);
+        if (cleanPath && lastSeg && !lastSeg.includes('.')) {
+          vfsPath =
+            archive.resolveFrontendExistingPath(`${cleanPath}.html`, basePath) ??
+            archive.resolveFrontendExistingPath(`${cleanPath}.htm`, basePath);
+        }
+      }
+    } catch {
+      // Ignore unparseable URL
+    }
+  }
   if (vfsPath) {
     // A link to a file of the app's keeps the file's path: the patcher follows it inside the
     // container (a page) or does nothing (anything else). It is never given a `blob:`
     // address: one made by this page is this page's origin, and a link the person opens in
     // a new tab would show the app's file there as a document of the embedding site.
     if (isLink) {
+      const feLinkPath = archive.toFrontendVfsPath(vfsPath);
       try {
         const baseUrl = `${VIRTUAL_ORIGIN}/${basePath.replace(/^\/+/, '')}`;
         const parsed = new URL(originalTrimmed, baseUrl);
         if (parsed.search || parsed.hash) {
-          return `${vfsPath}${parsed.search}${parsed.hash}`;
+          return `${feLinkPath}${parsed.search}${parsed.hash}`;
         }
       } catch {
         // Fallback to plain resolved path
       }
-      return vfsPath;
+      return feLinkPath;
     }
     return archive.getBlobUrl(vfsPath) ?? '';
   }

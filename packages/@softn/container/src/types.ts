@@ -532,6 +532,8 @@ export interface SoftNContainerOptions {
   initialPage?: string;
   /** The HTML page that finished opening, including the first one. */
   onPageChange?: (path: string, manifest: ContainerManifest) => void;
+  /** Virtual URL path updates (`'/'`, `'/about.html'`, `'/blog/post.html'`) for host URL bar sync. */
+  onRouteChange?: (urlPath: string, pushHistory: boolean) => void;
   /** Let an embedding host present a web link clicked by the user. */
   onExternalLink?: (href: string) => void;
   /** Ready callback once initial scripts + `DOMContentLoaded` complete. */

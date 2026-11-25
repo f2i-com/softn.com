@@ -308,3 +308,172 @@ test('Round-7 API/SSR hardening: unclosed <script> stripped, unknown /app drops 
   });
   assert.equal(badRange.status, 416);
 });
+
+test('multi-page hosted SoftN website: per-page URLs, per-page View-Source HTML & SEO, link rewriting, 404s, and sitemap', skip, async () => {
+  const s = await startServer({
+    prefix: 'softn-multipage-seo-',
+    config: { seedDemos: false, siteOrigin: SITE },
+  });
+  servers.push(s);
+
+  const siteZip = zipSync({
+    'manifest.json': strToU8(
+      JSON.stringify({
+        engine: 2,
+        name: 'Harborline Studio',
+        version: '1.0.0',
+        description: 'Multi-page studio website hosted in a single SoftN bundle.',
+        main: 'index.html',
+      })
+    ),
+    'index.html': strToU8(
+      '<!doctype html><html lang="en"><head>' +
+        '<title>Harborline Studio — Craft Software & Design</title>' +
+        '<meta name="description" content="Home of Harborline Studio: fast, local-first web apps and design systems." />' +
+        '</head><body>' +
+        '<header><nav><a href="/">Home</a><a href="/about.html">About</a><a href="pricing.html">Pricing</a><a href="/blog/">Blog</a></nav></header>' +
+        '<main><h1>Welcome to Harborline</h1><p>One archive, multiple SEO-ready pages.</p>' +
+        '<a href="blog/sandboxed-web.html">Read our latest article</a>' +
+        '<a href="https://example.org/ext">External Reference</a>' +
+        '<a href="javascript:alert(1)">Bad Script Link</a>' +
+        '</main></body></html>'
+    ),
+    'about.html': strToU8(
+      '<!doctype html><html lang="en"><head>' +
+        '<title>About Harborline Studio</title>' +
+        '<meta name="description" content="Meet the engineers and designers behind Harborline Studio." />' +
+        '</head><body>' +
+        '<header><nav><a href="index.html">Home</a><a href="pricing.html">Pricing</a></nav></header>' +
+        '<main><h1>About Our Team</h1><p>Founded in Melbourne to build calm software.</p></main>' +
+        '</body></html>'
+    ),
+    'pricing.html': strToU8(
+      '<!doctype html><html lang="en"><head>' +
+        '<title>Pricing — Harborline Studio</title>' +
+        '<meta name="description" content="Transparent flat-rate plans for teams of every size." />' +
+        '<meta name="robots" content="index,follow,noarchive" />' +
+        '</head><body>' +
+        '<main><h1>Simple Pricing</h1><p>Starter tier starts at $29 per month.</p></main>' +
+        '</body></html>'
+    ),
+    'blog/index.html': strToU8(
+      '<!doctype html><html lang="en"><head>' +
+        '<title>Journal — Harborline Studio</title>' +
+        '<meta name="description" content="Notes on architecture, sandboxing, and web craft." />' +
+        '</head><body>' +
+        '<main><h1>Studio Journal</h1><p><a href="sandboxed-web.html">Sandboxed Web Apps</a></p><p><a href="../">Back Home</a></p></main>' +
+        '</body></html>'
+    ),
+    'blog/sandboxed-web.html': strToU8(
+      '<!doctype html><html lang="en"><head>' +
+        '<title>Building Sandboxed Multi-Page Websites — Harborline</title>' +
+        '<meta name="description" content="How SoftN combines real View-Source HTML with sandboxed execution." />' +
+        '</head><body>' +
+        '<article><h1>Sandboxed Multi-Page Websites</h1><p>Every route renders clean semantic HTML on the server.</p>' +
+        '<nav><a href="index.html">All Articles</a><a href="../about.html">About Us</a><a href="../">Home</a></nav>' +
+        '</article></body></html>'
+    ),
+    'backend/secret.php': strToU8('<?php echo "TOP_SECRET_DO_NOT_SERVE"; ?>'),
+  });
+
+  const fd = new FormData();
+  fd.set('bundle', new Blob([siteZip]), 'harborline.softn');
+  fd.set('name', 'Harborline Studio');
+  const pubRes = await s.api('POST', '/api/apps', { body: fd, headers: { 'X-Admin-Key': s.adminKey } });
+  assert.equal(pubRes.status, 201, pubRes.text);
+  const slug = pubRes.json.app.slug;
+
+  // 1. Root page `/play/<slug>`
+  const homeRes = await fetch(`${s.base}/play/${slug}`);
+  assert.equal(homeRes.status, 200);
+  const homeHtml = await homeRes.text();
+  assert.match(homeHtml, /<title>Harborline Studio — Craft Software &amp; Design<\/title>/);
+  assert.match(homeHtml, /name="description" content="Home of Harborline Studio: fast, local-first web apps and design systems\."/);
+  assert.match(homeHtml, new RegExp(`<link rel="canonical" href="${SITE}/play/${slug}" />`));
+  assert.match(homeHtml, /"@type":"WebPage"/);
+  assert.match(homeHtml, /"@type":"BreadcrumbList"/);
+  assert.match(homeHtml, /data-softn-page="\/"/);
+  assert.match(homeHtml, /Welcome to Harborline/);
+  assert.match(homeHtml, new RegExp(`href="/play/${slug}/about\\.html"`));
+  assert.match(homeHtml, new RegExp(`href="/play/${slug}/pricing\\.html"`));
+  assert.match(homeHtml, new RegExp(`href="/play/${slug}/blog/"`));
+  assert.match(homeHtml, new RegExp(`href="/play/${slug}/blog/sandboxed-web\\.html"`));
+  assert.match(homeHtml, /href="https:\/\/example\.org\/ext" rel="nofollow ugc noopener noreferrer"/);
+  assert.doesNotMatch(homeHtml, /javascript:alert/);
+  const homeCfg = JSON.parse(homeHtml.match(/<script type="application\/json" id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  assert.equal(homeCfg.basePath, `/play/${slug}`);
+  assert.equal(homeCfg.initialPath, '/');
+
+  // 2. Direct sub-page `/play/<slug>/about.html`
+  const aboutRes = await fetch(`${s.base}/play/${slug}/about.html`);
+  assert.equal(aboutRes.status, 200);
+  const aboutHtml = await aboutRes.text();
+  assert.match(aboutHtml, /<title>About Harborline Studio<\/title>/);
+  assert.match(aboutHtml, /name="description" content="Meet the engineers and designers behind Harborline Studio\."/);
+  assert.match(aboutHtml, new RegExp(`<link rel="canonical" href="${SITE}/play/${slug}/about\\.html" />`));
+  assert.match(aboutHtml, new RegExp(`property="og:url" content="${SITE}/play/${slug}/about\\.html"`));
+  assert.match(aboutHtml, /data-softn-page="\/about\.html"/);
+  assert.match(aboutHtml, /Founded in Melbourne to build calm software\./);
+  assert.doesNotMatch(aboutHtml, /Starter tier starts at \$29/);
+  const aboutCfg = JSON.parse(aboutHtml.match(/<script type="application\/json" id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  assert.equal(aboutCfg.basePath, `/play/${slug}`);
+  assert.equal(aboutCfg.initialPath, '/about.html');
+
+  // 3. Clean extensionless sub-page `/play/<slug>/about` resolves cleanly to about.html
+  const aboutCleanRes = await fetch(`${s.base}/play/${slug}/about`);
+  assert.equal(aboutCleanRes.status, 200);
+  const aboutCleanHtml = await aboutCleanRes.text();
+  assert.match(aboutCleanHtml, /<title>About Harborline Studio<\/title>/);
+  assert.match(aboutCleanHtml, new RegExp(`<link rel="canonical" href="${SITE}/play/${slug}/about\\.html" />`));
+  const aboutCleanCfg = JSON.parse(aboutCleanHtml.match(/<script type="application\/json" id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  assert.equal(aboutCleanCfg.initialPath, '/about.html');
+
+  // 4. Per-page robots meta on `/play/<slug>/pricing.html`
+  const pricingRes = await fetch(`${s.base}/play/${slug}/pricing.html`);
+  assert.equal(pricingRes.status, 200);
+  const pricingHtml = await pricingRes.text();
+  assert.match(pricingHtml, /<title>Pricing — Harborline Studio<\/title>/);
+  assert.match(pricingHtml, /<meta name="robots" content="index,follow,noarchive" \/>/);
+  assert.match(pricingHtml, /Starter tier starts at \$29 per month\./);
+
+  // 5. Nested directory index `/play/<slug>/blog/` and article `/play/<slug>/blog/sandboxed-web.html`
+  const blogDirRes = await fetch(`${s.base}/play/${slug}/blog/`);
+  assert.equal(blogDirRes.status, 200);
+  const blogDirHtml = await blogDirRes.text();
+  assert.match(blogDirHtml, /<title>Journal — Harborline Studio<\/title>/);
+  assert.match(blogDirHtml, new RegExp(`href="/play/${slug}/blog/sandboxed-web\\.html"`));
+  assert.match(blogDirHtml, new RegExp(`href="/play/${slug}"`));
+
+  const postRes = await fetch(`${s.base}/play/${slug}/blog/sandboxed-web.html`);
+  assert.equal(postRes.status, 200);
+  const postHtml = await postRes.text();
+  assert.match(postHtml, /<title>Building Sandboxed Multi-Page Websites — Harborline<\/title>/);
+  assert.match(postHtml, new RegExp(`<link rel="canonical" href="${SITE}/play/${slug}/blog/sandboxed-web\\.html" />`));
+  assert.match(postHtml, new RegExp(`href="/play/${slug}/blog/"`));
+  assert.match(postHtml, new RegExp(`href="/play/${slug}/about\\.html"`));
+  assert.match(postHtml, /Every route renders clean semantic HTML on the server\./);
+
+  // 6. Unknown sub-page, private backend file, and traversal attempts all return real 404 + noindex
+  const missingRes = await fetch(`${s.base}/play/${slug}/does-not-exist.html`);
+  assert.equal(missingRes.status, 404);
+  const missingHtml = await missingRes.text();
+  assert.match(missingHtml, /<meta name="robots" content="noindex" \/>/);
+  assert.match(missingHtml, new RegExp(`href="/play/${slug}"`));
+
+  const secretRes = await fetch(`${s.base}/play/${slug}/backend/secret.php`);
+  assert.equal(secretRes.status, 404);
+  assert.doesNotMatch(await secretRes.text(), /TOP_SECRET_DO_NOT_SERVE/);
+
+  const dotfileRes = await fetch(`${s.base}/play/${slug}/.env`);
+  assert.equal(dotfileRes.status, 404);
+
+  // 7. Sitemap lists /app/<slug> plus every discovered page under /play/<slug>
+  const smXml = await (await fetch(`${s.base}/sitemap-apps.xml`)).text();
+  assert.match(smXml, new RegExp(`<loc>${SITE}/app/${slug}</loc>`));
+  assert.match(smXml, new RegExp(`<loc>${SITE}/play/${slug}</loc>`));
+  assert.match(smXml, new RegExp(`<loc>${SITE}/play/${slug}/about\\.html</loc>`));
+  assert.match(smXml, new RegExp(`<loc>${SITE}/play/${slug}/pricing\\.html</loc>`));
+  assert.match(smXml, new RegExp(`<loc>${SITE}/play/${slug}/blog/</loc>`));
+  assert.match(smXml, new RegExp(`<loc>${SITE}/play/${slug}/blog/sandboxed-web\\.html</loc>`));
+  assert.doesNotMatch(smXml, /secret\.php/);
+});

@@ -137,3 +137,31 @@ describe('bounded fetch', () => {
     await expect(fetchBytes(base, new AbortController().signal, 10)).rejects.toThrow('size');
   });
 });
+
+describe('multi-page routing config fields', () => {
+  const valid = { version: 1, id: 'studio', title: 'Studio', bundle: '/api/apps/studio/bundle.softn' };
+
+  it('accepts safe root-relative basePath and initialPath and normalizes trailing basePath slash', () => {
+    const cfg = parseConfig(
+      { ...valid, basePath: '/play/studio/', initialPath: '/blog/post.html?tab=1#top' },
+      base
+    );
+    expect(cfg.basePath).toBe('/play/studio');
+    expect(cfg.initialPath).toBe('/blog/post.html?tab=1#top');
+  });
+
+  it.each([
+    ['//evil.test/play', '/'],
+    ['https://evil.test/play', '/'],
+    ['play/studio', '/'],
+    ['/play/../admin', '/'],
+    ['/play/studio?x=1', '/'],
+    ['/play/studio#frag', '/'],
+    ['/play/studio', 'about.html'],
+    ['/play/studio', '//evil.test/about.html'],
+    ['/play/studio', '/../../secret'],
+    ['/play/studio', '/about\\evil'],
+  ])('rejects unsafe routing config (%s, %s)', (basePath, initialPath) => {
+    expect(() => parseConfig({ ...valid, basePath, initialPath }, base)).toThrow();
+  });
+});

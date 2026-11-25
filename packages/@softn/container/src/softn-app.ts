@@ -16,7 +16,7 @@ import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar
 import type { ContainerDeviceBridge } from './device-bridge';
 import { HostDomPatcher } from './dom-patcher';
 import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
-import { hostFileName, hostLabel, slotsAreContained, type FontScopeContext } from './host-policy';
+import { hostFileName, hostLabel, hostTitle, slotsAreContained, type FontScopeContext } from './host-policy';
 import type { LocalBackendTransport } from './local-backend-transport';
 import { isSafeVirtualRoute, loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
 import { extractSanitizedFontFaces, prepareHtmlDocument } from './sanitize';
@@ -77,7 +77,7 @@ export interface SoftNContainerHandle {
   /** Active backend transport (local WASM Backend Worker or host-injected FormLogic remote transport). */
   readonly backendTransport?: BackendTransport;
   /** Navigate to another HTML page, SSR route, or virtual folder script inside the same container. */
-  navigate(path: string): Promise<void>;
+  navigate(path: string, options?: { pushHistory?: boolean }): Promise<void>;
   /** List virtual folders & files inside the container `.zip` archive. */
   listVirtualDirectory(virtualPath?: string): VirtualDirEntry[];
   /** Apply declarative JSON seed data to a named XDB SQLite database inside this container. */
@@ -1557,6 +1557,7 @@ export async function mountSoftNContainer(
     if (urlPath.startsWith('/')) {
       liveSession.urlPath = urlPath;
       persistSessionSoon();
+      options.onRouteChange?.(urlPath, pushHistory);
     }
   };
 
@@ -1604,7 +1605,22 @@ export async function mountSoftNContainer(
     }
 
     // 2. Static HTML page inside the archive (strictly frontend HTML, never backend/config/JS)
-    const resolved = archive.resolveFrontendPath(pathname, archive.manifest.main);
+    let resolved = archive.resolveFrontendPath(pathname, archive.manifest.main);
+    if (!resolved || !/\.html?$/i.test(resolved) || !archive.isFrontendPath(resolved) || !archive.has(resolved)) {
+      const trimmedPath = pathname.replace(/\/+$/, '');
+      const lastSeg = trimmedPath.slice(trimmedPath.lastIndexOf('/') + 1);
+      if (trimmedPath && lastSeg && !lastSeg.includes('.')) {
+        const htmlCand = archive.resolveFrontendPath(`${trimmedPath}.html`, archive.manifest.main);
+        const htmCand = archive.resolveFrontendPath(`${trimmedPath}.htm`, archive.manifest.main);
+        const alt =
+          htmlCand && archive.isFrontendPath(htmlCand) && archive.has(htmlCand)
+            ? htmlCand
+            : htmCand && archive.isFrontendPath(htmCand) && archive.has(htmCand)
+              ? htmCand
+              : null;
+        if (alt) resolved = alt;
+      }
+    }
     if (!resolved || !/\.html?$/i.test(resolved) || !archive.isFrontendPath(resolved) || !archive.has(resolved)) {
       throw new Error(`Cannot navigate to missing container page: ${rawTarget}`);
     }
@@ -1721,6 +1737,9 @@ export async function mountSoftNContainer(
     if (virtualUrlPath !== undefined) {
       const cleanVirtual = virtualUrlPath.startsWith('/') ? virtualUrlPath : `/${virtualUrlPath}`;
       prepared.seed.url = `${VIRTUAL_ORIGIN}${cleanVirtual}`;
+    }
+    if (prepared.seed.title) {
+      options.onTitleChange?.(hostTitle(prepared.seed.title));
     }
 
     const { textFiles, binaryFiles } = archive.exportWorkerVfs();
@@ -2191,6 +2210,7 @@ export async function mountSoftNContainer(
               updateNavUi();
               liveSession.urlPath = msg.urlPath;
               persistSessionSoon();
+              options.onRouteChange?.(msg.urlPath, true);
             }
             break;
 
@@ -2932,8 +2952,8 @@ export async function mountSoftNContainer(
     shadowRoot: pageRoot,
     frameRoot: shadowRoot,
     backendTransport,
-    async navigate(path: string) {
-      await navigateTo(path, true, true);
+    async navigate(path: string, navOptions?: { pushHistory?: boolean }) {
+      await navigateTo(path, navOptions?.pushHistory ?? true, true);
     },
     listVirtualDirectory(dirPath = ''): VirtualDirEntry[] {
       return archive.listVirtualDirectory(dirPath);
