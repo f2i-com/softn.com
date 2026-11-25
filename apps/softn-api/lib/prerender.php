@@ -15,8 +15,10 @@ declare(strict_types=1);
 
 final class Prerender
 {
-    public const VERSION = 1;
+    public const VERSION = 2;
     private const MAX_ENTRY_BYTES = 262144;
+    private const MAX_IMPORT_FILES = 16;
+    private const MAX_IMPORT_DEPTH = 4;
     private const MAX_OUTPUT_BYTES = 12288;
     private const MAX_NODES = 200;
     private const MAX_DEPTH = 32;
@@ -208,9 +210,10 @@ final class Prerender
 
             $ext = strtolower((string) pathinfo($entryName, PATHINFO_EXTENSION));
             if ($ext === 'ui') {
+                $expanded = self::inlineUiImports($zip, $entryName, $content, $prefix);
                 return [
                     'themeMode' => $themeMode,
-                    'previewHtml' => self::renderUi($content),
+                    'previewHtml' => self::renderUi($expanded),
                     'sourceType' => 'ui',
                     'entryFile' => $prefix !== '' && str_starts_with($entryName, $prefix) ? substr($entryName, strlen($prefix)) : $entryName,
                 ];
@@ -287,6 +290,93 @@ final class Prerender
         }
         $ext = strtolower((string) pathinfo($lower, PATHINFO_EXTENSION));
         return in_array($ext, ['ui', 'html', 'htm'], true);
+    }
+
+    /**
+     * Resolve relative `<import Name from="./sub.ui" />` references inside a
+     * `.ui` file so multi-file SoftN apps produce rich View-Source semantic HTML.
+     * Strictly bounded by depth, file count, and total expanded bytes.
+     *
+     * @param array<string, bool> $ancestors
+     */
+    private static function inlineUiImports(
+        ZipArchive $zip,
+        string $entryName,
+        string $content,
+        string $prefix,
+        int $depth = 0,
+        array $ancestors = [],
+        int &$fileBudget = self::MAX_IMPORT_FILES
+    ): string {
+        if ($depth >= self::MAX_IMPORT_DEPTH || $fileBudget <= 0) return $content;
+        if (!str_contains($content, '<import')) return $content;
+
+        $ancestors[$entryName] = true;
+        $baseRel = $prefix !== '' && str_starts_with($entryName, $prefix)
+            ? substr($entryName, strlen($prefix))
+            : $entryName;
+        $baseDir = str_contains($baseRel, '/') ? substr($baseRel, 0, (int) strrpos($baseRel, '/')) : '';
+
+        if (preg_match_all('/<import\s+([A-Z][A-Za-z0-9_]*)\s+from\s*=\s*(?:"([^"]+)"|\'([^\']+)\')\s*\/?>/', $content, $matches, PREG_SET_ORDER) < 1) {
+            return $content;
+        }
+
+        $imports = [];
+        foreach ($matches as $m) {
+            if ($fileBudget <= 0) break;
+            $comp = $m[1];
+            $rawTarget = $m[2] !== '' ? $m[2] : ($m[3] ?? '');
+            $resolvedRel = self::resolveRelativeUiPath($baseDir, $rawTarget);
+            if ($resolvedRel === null) continue;
+            if (!self::isSafePublicUiPath($resolvedRel) || strtolower((string) pathinfo($resolvedRel, PATHINFO_EXTENSION)) !== 'ui') {
+                continue;
+            }
+            $zipName = $prefix . $resolvedRel;
+            if (isset($ancestors[$zipName])) continue;
+            $stat = $zip->statName($zipName);
+            if ($stat === false || (int) $stat['size'] === 0 || (int) $stat['size'] > self::MAX_ENTRY_BYTES) continue;
+            $child = $zip->getFromName($zipName, self::MAX_ENTRY_BYTES);
+            if (!is_string($child) || trim($child) === '') continue;
+            $fileBudget--;
+            $imports[$comp] = self::inlineUiImports($zip, $zipName, $child, $prefix, $depth + 1, $ancestors, $fileBudget);
+        }
+
+        if ($imports === []) return $content;
+
+        foreach ($imports as $comp => $body) {
+            if (strlen($content) >= self::MAX_ENTRY_BYTES) break;
+            $pattern = '/<' . preg_quote($comp, '/') . '(?:\s[^<>]*?)?\/>/';
+            $expanded = preg_replace_callback(
+                $pattern,
+                static function () use ($body, &$content): string {
+                    return strlen($content) + strlen($body) <= self::MAX_ENTRY_BYTES ? "\n" . $body . "\n" : '';
+                },
+                $content,
+                2
+            );
+            if (is_string($expanded) && strlen($expanded) <= self::MAX_ENTRY_BYTES) {
+                $content = $expanded;
+            }
+        }
+        return $content;
+    }
+
+    private static function resolveRelativeUiPath(string $baseDir, string $target): ?string
+    {
+        $clean = str_replace('\\', '/', trim($target));
+        if ($clean === '' || str_contains($clean, "\0") || str_starts_with($clean, '/')) return null;
+        $combined = $baseDir !== '' ? ($baseDir . '/' . $clean) : $clean;
+        $parts = [];
+        foreach (explode('/', $combined) as $seg) {
+            if ($seg === '' || $seg === '.') continue;
+            if ($seg === '..') {
+                if ($parts === []) return null;
+                array_pop($parts);
+            } else {
+                $parts[] = $seg;
+            }
+        }
+        return $parts === [] ? null : implode('/', $parts);
     }
 
     /**
@@ -388,6 +478,7 @@ final class Prerender
             $raw = substr($raw, 0, self::MAX_ENTRY_BYTES);
         }
         $raw = preg_replace('/<!--[\s\S]*?-->/', '', $raw) ?? $raw;
+        $raw = preg_replace('/^\s*\/\/[^\n]*$/m', '', $raw) ?? $raw;
         $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*>[\s\S]*?<\/\1>/i', '', $raw) ?? $raw;
         $raw = preg_replace('/<(logic|script|style|data|import)\b[^>]*\/?>/i', '', $raw) ?? $raw;
         // Remove SoftN template control directives (#if, #else, #each, #end, /if, /each).
@@ -571,7 +662,54 @@ final class Prerender
             }
             $i = $j;
         }
+        // Strip SoftN template directives (#if(...), #else, #each(...), #end, /if, /each),
+        // including inline directives right after tags or with nested parentheses.
+        $out = self::stripUiDirectives($out);
         return self::cleanTextNode($out);
+    }
+
+    private static function stripUiDirectives(string $text): string
+    {
+        if (!str_contains($text, '#') && !str_contains($text, '/')) return $text;
+        $out = '';
+        $len = strlen($text);
+        $i = 0;
+        while ($i < $len) {
+            if (preg_match('/\G#(else\s+if|elseif|elif|if|each|for)\b/i', $text, $m, 0, $i) === 1) {
+                $i += strlen($m[0]);
+                while ($i < $len && ($text[$i] === ' ' || $text[$i] === "\t")) $i++;
+                if ($i < $len && $text[$i] === '(') {
+                    $depth = 1;
+                    $q = null;
+                    $i++;
+                    while ($i < $len && $depth > 0) {
+                        $c = $text[$i];
+                        if ($q !== null) {
+                            if ($c === '\\' && $i + 1 < $len) { $i += 2; continue; }
+                            if ($c === $q) $q = null;
+                        } else {
+                            if ($c === '"' || $c === "'" || $c === '`') $q = $c;
+                            elseif ($c === '(') $depth++;
+                            elseif ($c === ')') $depth--;
+                        }
+                        $i++;
+                    }
+                }
+                // Consume optional trailing `key=...` clause on #each
+                if (preg_match('/\G\s+key\s*=\s*\S*/i', $text, $km, 0, $i) === 1) {
+                    $i += strlen($km[0]);
+                }
+                $out .= ' ';
+                continue;
+            }
+            if (preg_match('/\G(?:#(?:else|end|slot)|\/(?:if|each|for))\b/i', $text, $m, 0, $i) === 1) {
+                $i += strlen($m[0]);
+                $out .= ' ';
+                continue;
+            }
+            $out .= $text[$i++];
+        }
+        return $out;
     }
 
     /** @param string[] $names */
