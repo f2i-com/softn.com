@@ -53,12 +53,12 @@ export function DirectoryShelf({ onOpen }: { onOpen: (bundle: string) => void })
           </h2>
         </div>
         {online && (
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
-            <a className="softn-explore-link" href={`${DEFAULT_URLS.apps}?category=business`}>
+          <div className="softn-explore-links">
+            <a className="softn-explore-pill" href={`${DEFAULT_URLS.apps}?category=business`}>
               Business apps
             </a>
-            <a className="softn-explore-link" href={DEFAULT_URLS.apps}>
-              Browse all apps <span aria-hidden="true">↗</span>
+            <a className="softn-explore-pill" href={DEFAULT_URLS.apps}>
+              Browse all <span aria-hidden="true">↗</span>
             </a>
           </div>
         )}

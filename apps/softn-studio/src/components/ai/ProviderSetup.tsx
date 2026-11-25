@@ -25,10 +25,10 @@ interface ProviderSetupProps {
   layout?: 'wide' | 'narrow';
 }
 
-const CHOICES: { type: ProviderType; title: string; line: string; icon: 'desktop' | 'key' }[] = [
+const CHOICES: { type: ProviderType; title: string; line: string; icon: 'desktop' | 'sparkles' | 'zap' }[] = [
   { type: 'local', title: 'Local model', line: 'Run Ollama, LM Studio or a compatible server on your computer.', icon: 'desktop' },
-  { type: 'openai', title: 'OpenAI API key', line: 'Use your own key. Usage is billed to your OpenAI account.', icon: 'key' },
-  { type: 'anthropic', title: 'Anthropic API key', line: 'Use your own key. Usage is billed to your Anthropic account.', icon: 'key' },
+  { type: 'openai', title: 'OpenAI API key', line: 'Use your own key. Usage is billed to your OpenAI account.', icon: 'sparkles' },
+  { type: 'anthropic', title: 'Anthropic API key', line: 'Use your own key. Usage is billed to your Anthropic account.', icon: 'zap' },
 ];
 
 const KEY_PAGES: Partial<Record<ProviderType, { href: string; label: string }>> = {

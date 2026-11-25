@@ -3,7 +3,8 @@ import { ApiError, getApp, replaceKey, type AppDetail } from '../../lib/api';
 import { forgetKey, rememberKey, savedKeys, savedKeysUnreadable } from '../../lib/keyStore';
 import { formatDate, runsLabel } from '../../lib/format';
 import { Thumb } from '../directory/AppCard';
-import { KeyBackupDownload, ReplaceKey } from './keys';
+import { KeyBackupDownload, KeyImport, ReplaceKey } from './keys';
+import { navigate } from '../../lib/router';
 import { errorText } from './shared';
 
 /**
@@ -56,6 +57,7 @@ export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.Rea
   const [confirmForget, setConfirmForget] = useState<string | null>(null);
   const [shownKeys, setShownKeys] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [manageSlug, setManageSlug] = useState('');
   const unreadable = savedKeysUnreadable();
   const slugs = Object.keys(keys);
   const slugList = slugs.join(',');
@@ -73,15 +75,46 @@ export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.Rea
 
   if (unreadable) {
     return (
-      <section className="yours">
-        <h2 className="section-title">Your apps</h2>
+      <section className="yours side-card">
+        <h2 className="side-title">Your apps</h2>
         <p className="form-error">
           The edit keys kept in this browser could not be read. Nothing here will touch them; if you have a backup, import it on the update page of the app it is for.
         </p>
       </section>
     );
   }
-  if (slugs.length === 0) return null;
+  if (slugs.length === 0) {
+    const cleanSlug = manageSlug.trim().replace(/^\/?app\//i, '').replace(/\/+$/, '');
+    return (
+      <section className="yours yours-empty side-card">
+        <h2 className="side-title">Already published an app?</h2>
+        <p className="muted">
+          No edit keys are saved in this browser yet. Open your app&rsquo;s update page with its slug and edit key, or restore keys from a backup file.
+        </p>
+        <form
+          className="yours-jump"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (cleanSlug) navigate(`/publish?update=${encodeURIComponent(cleanSlug)}`);
+          }}
+        >
+          <input
+            type="text"
+            value={manageSlug}
+            onChange={(e) => setManageSlug(e.target.value)}
+            placeholder="App slug (e.g. stayready-short-stay)"
+            aria-label="Existing app slug to update"
+          />
+          <button type="submit" className="cta cta-small" disabled={!cleanSlug}>
+            Manage
+          </button>
+        </form>
+        <div className="yours-restore">
+          <KeyImport onImported={() => setKeys(savedKeys())} />
+        </div>
+      </section>
+    );
+  }
 
   const forget = (slug: string) => {
     const result = forgetKey(slug);

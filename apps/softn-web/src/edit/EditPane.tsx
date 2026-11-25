@@ -777,8 +777,11 @@ export default function EditPane({ tabId, tab, host, shown }: EditPaneProps): Re
                 return (
                   <div key={group.kind} className="softn-edit-group">
                     <span className="softn-edit-group-name">{group.label}</span>
-                    {members.map((entry) =>
-                      entry.text ? (
+                    {members.map((entry) => {
+                      const slash = entry.path.lastIndexOf('/');
+                      const dir = slash >= 0 ? entry.path.slice(0, slash + 1) : '';
+                      const base = slash >= 0 ? entry.path.slice(slash + 1) : entry.path;
+                      return entry.text ? (
                         <span key={entry.path} className="softn-edit-file-row">
                           <button
                             type="button"
@@ -787,7 +790,10 @@ export default function EditPane({ tabId, tab, host, shown }: EditPaneProps): Re
                             title={entry.path}
                             onClick={() => setFile(entry.path)}
                           >
-                            <span className="softn-edit-file-name">{entry.path}</span>
+                            <span className="softn-edit-file-label">
+                              {dir && <span className="softn-edit-file-dir">{dir}</span>}
+                              <span className="softn-edit-file-name">{base}</span>
+                            </span>
                             {(entry.held || entry.changed) && (
                               // The dot is for the eye; the words beside it, drawn off screen, are what is read out with the file's name.
                               <>
@@ -804,10 +810,13 @@ export default function EditPane({ tabId, tab, host, shown }: EditPaneProps): Re
                         </span>
                       ) : (
                         <span key={entry.path} className="softn-edit-file softn-edit-file--named" title={entry.path}>
-                          <span className="softn-edit-file-name">{entry.path}</span>
+                          <span className="softn-edit-file-label">
+                            {dir && <span className="softn-edit-file-dir">{dir}</span>}
+                            <span className="softn-edit-file-name">{base}</span>
+                          </span>
                         </span>
-                      )
-                    )}
+                      );
+                    })}
                   </div>
                 );
               })}

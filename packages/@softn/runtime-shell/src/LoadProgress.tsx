@@ -31,6 +31,7 @@ export const FEATURE_LABELS: Readonly<Record<string, string>> = {
   editors: 'Editors',
   smart: 'Smart views',
   media: 'Camera and QR codes',
+  'qr-reader': 'QR scanner',
   animation: 'Animation',
   pickers: 'Date and colour pickers',
   games: 'Game components',

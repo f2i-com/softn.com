@@ -139,20 +139,22 @@ function Badges({
   );
 }
 
-/** More to try: the same category, and the same author, without repeating the app itself. */
+/** More to try: the same category, and the same author, without repeating the app itself or each other. */
 function Related({ app, categories }: { app: AppDetail; categories: Category[] }): React.ReactElement | null {
   const [same, setSame] = useState<AppCardData[]>([]);
-  const [byAuthor, setByAuthor] = useState<AppCardData[]>([]);
+  const [byAuthorRaw, setByAuthorRaw] = useState<AppCardData[]>([]);
   useEffect(() => {
     const ac = new AbortController();
-    listApps({ category: app.category, sort: 'trending', perPage: 9 }, ac.signal)
-      .then((r) => { if (!ac.signal.aborted) setSame(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)); })
+    listApps({ category: app.category, sort: 'trending', perPage: 8 }, ac.signal)
+      .then((r) => { if (!ac.signal.aborted) setSame(r.items.filter((a) => a.slug !== app.slug).slice(0, 3)); })
       .catch(() => { if (!ac.signal.aborted) setSame([]); });
-    listApps({ author: app.author, sort: 'newest', perPage: 9 }, ac.signal)
-      .then((r) => { if (!ac.signal.aborted) setByAuthor(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)); })
-      .catch(() => { if (!ac.signal.aborted) setByAuthor([]); });
+    listApps({ author: app.author, sort: 'newest', perPage: 10 }, ac.signal)
+      .then((r) => { if (!ac.signal.aborted) setByAuthorRaw(r.items.filter((a) => a.slug !== app.slug)); })
+      .catch(() => { if (!ac.signal.aborted) setByAuthorRaw([]); });
     return () => ac.abort();
   }, [app.slug, app.category, app.author]);
+  const sameSlugs = new Set(same.map((a) => a.slug));
+  const byAuthor = byAuthorRaw.filter((a) => !sameSlugs.has(a.slug)).slice(0, 3);
   const category = categories.find((c) => c.id === app.category);
   if (same.length === 0 && byAuthor.length === 0) return null;
   return (

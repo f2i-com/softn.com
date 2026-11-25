@@ -32,6 +32,16 @@ body {
   overflow-x: hidden;
 }
 
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+#root > main {
+  flex: 1 0 auto;
+}
+
 /* Styled SSR shell before React mounts: prevents unstyled FOUC/CLS while keeping semantic View-Source HTML. */
 #boot {
   max-width: 72rem;
@@ -607,6 +617,10 @@ main:focus-visible {
   border: 1px solid var(--line);
   background: var(--ink-3);
   color: var(--dim);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .start-card-recommended .start-badge {
   border-color: var(--mint-edge);
@@ -691,10 +705,17 @@ main:focus-visible {
     transform 180ms var(--ease);
 }
 
-.cta:hover {
+.cta:hover:not(:disabled) {
   background: var(--ink-3);
   border-color: var(--dimmer);
   transform: translateY(-1px);
+}
+
+.cta:disabled,
+.cta[aria-disabled='true'] {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .cta-primary {
@@ -703,9 +724,19 @@ main:focus-visible {
   border-color: var(--paper);
 }
 
-.cta-primary:hover {
+.cta-primary:hover:not(:disabled) {
   background: var(--invert-hover);
   border-color: var(--invert-hover);
+}
+
+.cta-primary:disabled,
+.cta-primary[aria-disabled='true'] {
+  opacity: 0.52;
+  background: var(--ink-3);
+  color: var(--dim);
+  border-color: var(--line);
+  cursor: not-allowed;
+  transform: none;
 }
 
 .cta-arrow {
@@ -857,8 +888,18 @@ main:focus-visible {
   min-width: 0;
   padding: clamp(1.25rem, 2.2vw, 1.625rem);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--ink-2);
+  box-shadow: inset 0 1px 0 var(--inset);
+  transition:
+    border-color 180ms var(--ease),
+    background 180ms var(--ease),
+    transform 180ms var(--ease);
+}
+.how-step:hover {
+  border-color: var(--line-strong);
+  background: var(--ink-3);
+  transform: translateY(-2px);
 }
 /* The way from one step to the next: a short rule across the gap between the cards. */
 .how-step:not(:last-child)::after {
@@ -1419,39 +1460,51 @@ main:focus-visible {
   color: var(--paper);
   background: var(--ink-3);
 }
-/* The list of apps: rows, in as many columns as the window has room for (one
-   on a phone, three on a laptop, four or five on a wide monitor). */
+/* The list of apps: two-zone cards with thumbnail, copy and Play on top, and
+   a clean full-width metadata strip across the foot so category, runs and
+   runtime badges are never clipped. */
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
-  gap: 0.5rem 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 23.5rem), 1fr));
+  gap: 0.75rem 0.875rem;
   margin-top: 1rem;
 }
-/* A row is an article; its name is the link and stretches over the row
-   (.app-card-link below), so the row is the box it stretches over. Picture,
-   words, Play: the middle track starts at nothing, so a long name cannot push
-   Play off the row. */
+/* A card is an article; its name is the link and stretches over the card
+   (.app-card-link below), while Play sits above it at the right of the top row. */
 .app-card {
   position: relative;
   display: grid;
-  grid-template-columns: 7rem minmax(0, 1fr) auto;
-  gap: 0.75rem;
+  grid-template-columns: 6.75rem minmax(0, 1fr) auto;
+  grid-template-rows: 1fr auto;
+  gap: 0.625rem 0.75rem;
   align-items: center;
   min-width: 0;
-  padding: 0.5rem 0.75rem 0.5rem 0.5rem;
+  padding: 0.75rem 0.875rem;
   background: var(--ink-2);
   border: 1px solid var(--line-soft);
-  border-radius: 12px;
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 var(--inset);
   transition:
     border-color 180ms var(--ease),
-    background 180ms var(--ease);
+    background 180ms var(--ease),
+    transform 180ms var(--ease),
+    box-shadow 180ms var(--ease);
 }
 .app-card:hover {
   border-color: var(--line-strong);
   background: var(--ink-3);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
 }
 .app-card .thumb {
-  border-radius: 7px;
+  border-radius: 9px;
+  border: 1px solid var(--line-soft);
+}
+.app-card .thumb-image img {
+  transition: transform 280ms var(--ease);
+}
+.app-card:hover .thumb-image img {
+  transform: scale(1.04);
 }
 .app-card .thumb-letter span {
   font-size: 1.625rem;
@@ -1463,11 +1516,11 @@ main:focus-visible {
 @media (max-width: 480px) {
   .app-card {
     grid-template-columns: 5.25rem minmax(0, 1fr) auto;
-    gap: 0.625rem;
-    padding-right: 0.5rem;
+    gap: 0.55rem 0.625rem;
+    padding: 0.6875rem 0.75rem;
   }
   /* A round button the size of a finger: the word took the room the row's
-     last fact needed. */
+     copy needed. */
   .app-card-play {
     width: 2.75rem;
     min-height: 2.75rem;
@@ -1508,17 +1561,15 @@ main:focus-visible {
 .app-card-body {
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: 0.2rem;
   min-width: 0;
 }
-/* One line each for the name and the line of facts, two for the description:
-   every row is the same height, so the columns of a wide window line up. */
 .app-card-name {
   font-family: var(--display);
   font-weight: 700;
-  font-size: 0.9375rem;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
+  font-size: 0.96875rem;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1526,41 +1577,63 @@ main:focus-visible {
 .app-card-desc {
   font-size: 0.8125rem;
   color: var(--dim);
-  line-height: 1.4;
+  line-height: 1.42;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-/* One line of facts. A fact the row has no room for goes to a second line,
-   which is not shown, so the line ends on a whole fact and not on half of
-   one. */
+/* Full-width metadata strip across the bottom of the card: never clips
+   category, rating, runs, runtime, or sandbox badges. */
 .app-card-meta {
+  grid-column: 1 / -1;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 0.5rem 0.625rem;
-  max-height: 1.25rem;
-  margin-top: 0.125rem;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line-soft);
   font-size: 0.75rem;
-  line-height: 1.5;
-  color: var(--dimmer);
-  white-space: nowrap;
+  line-height: 1.4;
+  color: var(--dim);
+  min-width: 0;
+}
+.app-card-facts {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
   overflow: hidden;
+}
+.app-card-badges {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .app-card-stat {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.28rem;
   flex: none;
+  white-space: nowrap;
 }
-/* Who made it gives way first when the line is too long for the row, down to
-   the width of the mint tag and no further. A block, so its text is what the
-   ellipsis cuts. */
-.app-card-author {
-  display: block;
+.app-card-cat {
   flex: 0 1 auto;
-  min-width: 2.75rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.app-card-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 9rem;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--dim);
@@ -1890,10 +1963,17 @@ main:focus-visible {
   width: 100%;
   border-radius: 16px;
   overflow: hidden;
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
   position: relative;
   padding: 0;
   text-align: left;
+}
+.app-hero-thumb .thumb-image img {
+  transition: transform 320ms var(--ease);
+}
+.app-hero-thumb:hover .thumb-image img {
+  transform: scale(1.025);
 }
 .app-hero-play {
   position: absolute;
@@ -1951,9 +2031,9 @@ main:focus-visible {
   background: var(--mint-glow-soft);
 }
 .badge-hosting {
-  color: var(--paper);
-  border-color: rgba(125, 211, 252, 0.35);
-  background: rgba(56, 189, 248, 0.1);
+  color: var(--mint);
+  border-color: var(--mint-edge);
+  background: var(--mint-glow-soft);
 }
 .badge-warn {
   border-color: rgba(255, 138, 76, 0.35);
@@ -2196,6 +2276,30 @@ main:focus-visible {
 .field textarea {
   resize: vertical;
 }
+.field input[type='file'] {
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--dim);
+  width: 100%;
+  min-width: 0;
+}
+.field input[type='file']::file-selector-button {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--paper);
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0.42rem 0.78rem;
+  margin-right: 0.65rem;
+  cursor: pointer;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease);
+}
+.field input[type='file']::file-selector-button:hover {
+  background: var(--ink);
+  border-color: var(--line-strong);
+}
 .comment-form input:focus,
 .comment-form textarea:focus,
 .field input:focus,
@@ -2426,10 +2530,13 @@ main:focus-visible {
   color: var(--paper);
 }
 .publish-api .source-code {
-  background: var(--ink-2);
+  background: var(--ink);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   overflow: auto;
+  margin-top: 0.75rem;
 }
 @media (max-width: 720px) {
   .source {
@@ -2712,9 +2819,9 @@ main:focus-visible {
 .publish-more-summary {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 0.35rem 1rem;
+  gap: 0.25rem 1rem;
   cursor: pointer;
   list-style: none;
   font-weight: 600;
@@ -2724,17 +2831,22 @@ main:focus-visible {
 .publish-more-summary::-webkit-details-marker {
   display: none;
 }
-.publish-more-summary::before {
+.publish-more-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+.publish-more-title::before {
   content: '▸';
   display: inline-block;
-  margin-right: 0.45rem;
   color: var(--dim);
   transition: transform 150ms var(--ease);
 }
-.publish-more[open] .publish-more-summary::before {
+.publish-more[open] .publish-more-title::before {
   transform: rotate(90deg);
 }
-.publish-more-summary .muted {
+.publish-more-hint {
   font-weight: 400;
   font-size: 0.8rem;
 }
@@ -2903,6 +3015,9 @@ main:focus-visible {
   flex-direction: column;
   gap: 0.75rem;
 }
+.suggest .cta {
+  align-self: flex-start;
+}
 .thumb-preview img {
   max-width: 240px;
   border-radius: 8px;
@@ -2918,7 +3033,43 @@ main:focus-visible {
   flex-wrap: wrap;
 }
 .publish-api {
-  margin-top: 3rem;
+  margin-top: 0;
+}
+.publish-api-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.publish-api-head .side-title {
+  margin-bottom: 0;
+}
+.yours-jump {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+.yours-jump input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+}
+.yours-jump input:focus {
+  outline: none;
+  border-color: var(--mint-edge);
+  box-shadow: 0 0 0 3px var(--mint-glow-soft);
+}
+.yours-restore {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line-soft);
 }
 .keybox {
   background: var(--ink-2);
@@ -2979,7 +3130,7 @@ main:focus-visible {
     grid-template-columns: minmax(0, 1fr);
   }
   .app-actions .cta {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     justify-content: center;
   }
   .stats {
@@ -3032,19 +3183,19 @@ main:focus-visible {
 .app-card-safe {
   color: var(--dimmer);
   border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 0 0.35rem;
+  border-radius: 999px;
+  padding: 0.08rem 0.45rem;
   font-family: var(--mono);
-  font-size: 0.6875rem;
+  font-size: 0.675rem;
 }
 .app-card-hosting {
   color: var(--mint);
   border: 1px solid var(--mint-edge);
   background: var(--mint-glow-soft);
-  border-radius: 5px;
-  padding: 0 0.38rem;
+  border-radius: 999px;
+  padding: 0.08rem 0.48rem;
   font-family: var(--mono);
-  font-size: 0.6875rem;
+  font-size: 0.675rem;
 }
 .app-card:focus-visible {
   outline: 2px solid var(--mint);
@@ -3063,24 +3214,47 @@ main:focus-visible {
 
 /* Subcategory pills nested under the active main category */
 .pills-sub {
-  margin-top: 0.55rem;
+  margin-top: 0.6rem;
   padding: 0.5rem 0.7rem;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ink);
+  border: 1px solid var(--line-soft);
   align-items: center;
   gap: 0.4rem;
 }
 .pills-sub-label {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--dim);
   margin-right: 0.2rem;
   white-space: nowrap;
 }
 .pill-sub {
   font-size: 0.76rem;
   padding: 0.28rem 0.68rem;
+}
+.pill-empty {
+  opacity: 0.65;
+}
+.pill-empty:hover,
+.pill-empty.on {
+  opacity: 1;
+}
+.pill-more-cats {
+  border-style: dashed;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--dim);
+}
+.pills-group-label {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+  min-width: 4.5rem;
+  white-space: nowrap;
 }
 
 /* Capability pills */
@@ -3186,7 +3360,7 @@ main:focus-visible {
   color: var(--dim);
 }
 .yours {
-  margin-top: 3rem;
+  margin-top: 0;
 }
 .yours-list {
   list-style: none;
@@ -3392,48 +3566,61 @@ main:focus-visible {
 }
 .directory-filters {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.25rem;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--line-soft);
+  background: var(--ink-2);
 }
 .directory-caps-desktop {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem 1rem;
-  align-items: center;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--line-soft);
 }
 .directory-filters .pills-caps {
   margin-top: 0;
+  align-items: center;
 }
 .directory-categories-mobile,
 .directory-caps-mobile {
   display: none;
 }
-/* A phone has the filters as compact fields that wrap cleanly without overflowing. */
+/* A phone has the filters as uniform compact fields in a clean 2-column grid. */
 @media (max-width: 600px) {
   .directory-categories-desktop,
   .directory-caps-desktop {
     display: none;
   }
   .directory-filters {
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.625rem;
+    padding: 0.75rem;
   }
   .directory-categories-mobile,
   .directory-caps-mobile {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 0.125rem;
-    flex: 1 1 0;
+    gap: 0.2rem;
     min-width: 0;
+  }
+  .directory-categories-mobile:first-of-type:not(:has(~ .directory-categories-mobile)) {
+    grid-column: 1 / -1;
   }
   .directory-categories-mobile select,
   .directory-caps-mobile select {
     width: 100%;
     min-width: 0;
-    min-height: 44px;
+    height: 44px;
+    padding: 0 0.75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 }
 .directory-active-filters {
@@ -3515,6 +3702,7 @@ main:focus-visible {
   z-index: 2;
   text-decoration: none;
 }
+.app-card:hover .app-card-play,
 .app-card-play:hover {
   background: var(--paper);
   border-color: var(--paper);
@@ -3558,10 +3746,18 @@ main:focus-visible {
   align-items: end;
   grid-column: 1 / -1;
   min-height: clamp(14.5rem, 20vw, 22rem);
-  border-radius: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
   overflow: hidden;
   background: #171c22;
   color: #fff;
+  box-shadow: var(--shadow);
+}
+.featured-lead > .thumb img {
+  transition: transform 360ms var(--ease);
+}
+.featured-lead:hover > .thumb img {
+  transform: scale(1.03);
 }
 .featured-lead > .thumb, .featured-shade {
   position: absolute;
@@ -3629,7 +3825,15 @@ main:focus-visible {
   align-items: center;
   gap: .625rem;
   min-height: 3.75rem;
-  border-bottom: 1px solid var(--line);
+  padding: 0.35rem 0.5rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--line-soft);
+  transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.featured-pick:hover {
+  background: var(--ink-2);
+  border-color: var(--line);
 }
 .featured-pick > .thumb {
   width: 3.25rem;
@@ -4216,7 +4420,7 @@ main:focus-visible {
 .band-dev .dev-grid {
   grid-template-columns: minmax(0, 1.42fr) minmax(290px, 0.82fr);
   gap: 1.5rem;
-  align-items: stretch;
+  align-items: start;
 }
 @media (max-width: 980px) {
   .band-dev .dev-grid {
@@ -4295,23 +4499,36 @@ main:focus-visible {
   .dev-flow-arrow {
     justify-content: center;
   }
+  .dev-flow-arrow > span:last-child {
+    display: inline-block;
+    transform: rotate(90deg);
+  }
+  .dev-code-badge {
+    display: none;
+  }
 }
 .dev-code-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  padding: 0.55rem 0.85rem;
+  gap: 0.5rem;
+  flex-wrap: nowrap;
+  padding: 0.5rem 0.75rem;
   background: var(--ink-3);
   border-bottom: 1px solid var(--line-soft);
 }
 .dev-tabs {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  flex-wrap: wrap;
+  gap: 0.25rem;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
   min-width: 0;
+  flex: 1 1 auto;
+}
+.dev-tabs::-webkit-scrollbar {
+  display: none;
 }
 .dev-tab {
   font-family: var(--mono);

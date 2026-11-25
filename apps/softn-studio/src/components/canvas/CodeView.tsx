@@ -32,6 +32,7 @@ interface CodeViewProps {
  */
 export function CodeView({ source, path, language, edit }: CodeViewProps): React.ReactElement {
   const lang = language ?? languageForPath(path);
+  const langLabel = lang === 'softn' && /\.html?$/i.test(path) ? 'HTML' : LANGUAGE_LABEL[lang];
   const lines = useMemo(
     () => tokenizeLines(source, source.length > HIGHLIGHT_LIMIT ? 'plain' : lang),
     [source, lang],
@@ -68,7 +69,7 @@ export function CodeView({ source, path, language, edit }: CodeViewProps): React
   return (
     <div className="st-codeview" data-language={lang}>
       <div className="st-codeview-bar">
-        <span className="st-codeview-lang">{LANGUAGE_LABEL[lang]}</span>
+        <span className="st-codeview-lang">{langLabel}</span>
         <span className="st-codeview-meta">
           {lines.length.toLocaleString()} line{lines.length === 1 ? '' : 's'}
           {source.length > HIGHLIGHT_LIMIT ? ', too large to colour' : ''}

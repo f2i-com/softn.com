@@ -203,7 +203,21 @@
 .softn-edit-file[aria-current='true'] { background: var(--ink-3); box-shadow: inset 2px 0 0 var(--mint); }
 .softn-edit-file--named { color: var(--dim); cursor: default; }
 .softn-edit-file--named:hover { background: transparent; }
-.softn-edit-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.softn-edit-file-label {
+  display: flex;
+  flex-direction: column-reverse;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.softn-edit-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.softn-edit-file-dir {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.62rem;
+  color: var(--dimmer);
+  line-height: 1.2;
+}
 .softn-edit-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); }
 .softn-edit-dot--held { background: var(--coral); }
 .softn-edit-file-remove,

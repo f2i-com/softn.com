@@ -115,10 +115,12 @@ button:where(.chrome-peek):focus-visible {
 .application-chrome {
   flex-shrink: 0;
 }
-/* The folded bar's corner tab on a directory's play page; the runtime's own. */
+/* The folded bar's corner tab on a directory's play page; the runtime's own.
+   Pinned below any active permission bar via --softn-tab-bar-height so it
+   never collides with consent text or Allow / Not now actions. */
 .chrome-peek {
   position: fixed;
-  top: 0;
+  top: var(--softn-tab-bar-height, 0px);
   right: 12px;
   z-index: 50;
   display: inline-flex;
@@ -128,14 +130,14 @@ button:where(.chrome-peek):focus-visible {
   border: 1px solid var(--line, #262c36);
   border-top: 0;
   border-radius: 0 0 8px 8px;
-  background: var(--nav-bg, rgba(16, 19, 23, 0.82));
+  background: var(--nav-bg, rgba(16, 19, 23, 0.86));
   color: var(--dim, #8b94a2);
   font: inherit;
   font-size: 0.72rem;
   cursor: pointer;
-  opacity: 0.6;
-  backdrop-filter: blur(6px);
-  transition: opacity 160ms ease;
+  opacity: 0.78;
+  backdrop-filter: blur(8px);
+  transition: opacity 160ms ease, color 160ms ease;
 }
 .chrome-peek:hover,
 .chrome-peek:focus-visible {

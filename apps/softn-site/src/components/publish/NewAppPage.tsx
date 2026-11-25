@@ -133,6 +133,7 @@ export function NewAppPage({
   const [result, setResult] = useState<Published | null>(null);
   const [keyKept, setKeyKept] = useState<KeyStoreResult>('stored');
   const [copied, setCopied] = useState(false);
+  const [curlCopied, setCurlCopied] = useState(false);
   const [batch, setBatch] = useState<BatchItem[] | null>(null);
   const [adminKey, setAdminKey] = useState('');
   /**
@@ -789,8 +790,8 @@ export function NewAppPage({
   const candidateSlug = slugifyName(name || info?.name || '');
   const matchingOwnedSlug = !parentSlug && candidateSlug && ownedKeys[candidateSlug] ? candidateSlug : null;
 
-  // Quick-pick category pills (up to 8 primary/populated categories).
-  const quickCategories = categories.slice(0, 8);
+  // Quick-pick category pills (all core/approved categories so none disappear from quick-pick).
+  const quickCategories = categories.filter((c) => !c.suggested || c.id === category).slice(0, 12);
   const allowPublicHosting = isPublicServerHostingAllowed();
   const hasBackend = Boolean(info?.backendRuntime);
   const effectiveHosting: HostingMode = allowPublicHosting ? hosting : 'browser';
@@ -1085,8 +1086,8 @@ export function NewAppPage({
             onToggle={(e) => setShowMore(e.currentTarget.open)}
           >
             <summary className="publish-more-summary">
-              <span>Optional details</span>
-              <span className="muted">Tags, custom screenshot{allowPublicHosting && !hasBackend ? ', hosting mode' : ''} &amp; release notes</span>
+              <span className="publish-more-title">Optional details</span>
+              <span className="muted publish-more-hint">Tags, custom screenshot{allowPublicHosting && !hasBackend ? ', hosting mode' : ''} &amp; release notes</span>
             </summary>
             <div className="publish-more-body">
               <label className="field">
@@ -1145,20 +1146,35 @@ export function NewAppPage({
         <aside className="publish-side" aria-label="Your apps and publishing from a script">
         <YourApps />
 
-        <section className="publish-api">
-          <h2 className="section-title">Or publish from a script</h2>
+        <section className="publish-api side-card">
+          <div className="publish-api-head">
+            <h2 className="side-title">Publish from a script</h2>
+            <button
+              type="button"
+              className="dev-copy-btn"
+              onClick={async () => {
+                const origin = typeof window !== 'undefined' ? window.location.origin : '';
+                const cmd = `curl -X POST ${origin}/api/apps \\\n  -F bundle=@my-app.softn \\\n  -F category=games -F author="A robot" -F "tags=arcade,ai-made"`;
+                if (await copyText(cmd)) {
+                  setCurlCopied(true);
+                  setTimeout(() => setCurlCopied(false), 1600);
+                }
+              }}
+            >
+              {curlCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
           <p className="muted">
-            The same thing, over HTTP. A build step, a bot, or a model with a tool can put an app in the directory with one request:
+            The same thing, over HTTP. A build step, a bot, or an AI agent can put an app in the directory with one request:
           </p>
-          {/* It scrolls sideways on every width (the route list's URL is longer
-              than the column), so it has to take focus to be scrolled by key. */}
           <pre className="source-code source-plain" tabIndex={0} role="region" aria-label="Publishing with curl">
             <code>{`curl -X POST ${typeof window !== 'undefined' ? window.location.origin : ''}/api/apps \\
   -F bundle=@my-app.softn \\
   -F category=games -F author="A robot" -F "tags=arcade,ai-made"
 
 # or JSON: { "bundleBase64": "...", "category": "games", "author": "A robot" }
-# The reply carries the page URL and the edit key. Full route list: ${typeof window !== 'undefined' ? window.location.origin : ''}/api`}</code>
+# The reply carries the page URL and the edit key.
+# Full route list: ${typeof window !== 'undefined' ? window.location.origin : ''}/api`}</code>
           </pre>
         </section>
         </aside>

@@ -131,10 +131,13 @@ export function FileEditor({ path, onClose, onPreview }: { path: string; onClose
     area.current?.focus();
   };
 
+  const lang = languageForPath(path);
+  const langLabel = lang === 'softn' && /\.html?$/i.test(path) ? 'HTML' : LANGUAGE_LABEL[lang];
+
   return (
-    <div ref={editorRef} className="st-codeview st-fileedit" data-language={languageForPath(path)}>
+    <div ref={editorRef} className="st-codeview st-fileedit" data-language={lang}>
       <div className="st-codeview-bar">
-        <span className="st-codeview-lang">{LANGUAGE_LABEL[languageForPath(path)]}</span>
+        <span className="st-codeview-lang">{langLabel}</span>
         <span className="st-codeview-meta" role="status">
           Editing {path}{unsaved ? ', not saved' : ''}
           {running && <span id={whyId}> · The AI is working: save when the run stops. What you type is kept.</span>}

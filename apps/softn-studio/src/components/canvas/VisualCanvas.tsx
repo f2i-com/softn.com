@@ -1383,9 +1383,13 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
                 )}
                 <div className="st-preview-tools" role="toolbar" aria-label="Preview controls">
                   {[
-                    { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
-                    { id: 'resetdata', icon: 'database' as const, label: 'Reset preview data (reseed from the .xdb files)' },
-                    { id: 'newtab', icon: 'maximize' as const, label: 'Expand preview' },
+                    ...(!showCode
+                      ? [
+                          { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
+                          { id: 'resetdata', icon: 'database' as const, label: 'Reset preview data (reseed from the .xdb files)' },
+                        ]
+                      : []),
+                    { id: 'newtab', icon: 'maximize' as const, label: showCode ? 'Expand view' : 'Expand preview' },
                   ].map((tool) => (
                     <button
                       key={tool.id}

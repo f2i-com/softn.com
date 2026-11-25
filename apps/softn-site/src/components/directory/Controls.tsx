@@ -48,7 +48,7 @@ export function SearchBox({
   initial = '',
   autoFocus = false,
   onSearch,
-  placeholder = 'Search apps — games, tools, anything',
+  placeholder = 'Search apps, games, tools…',
 }: {
   initial?: string;
   autoFocus?: boolean;
@@ -96,14 +96,21 @@ export function CategoryChips({
   hrefFor,
   onSelect,
   limit,
+  collapseEmpty = false,
 }: {
   categories: Category[];
   selected: string;
   hrefFor: (id: string) => string;
   onSelect?: (id: string) => void;
   limit?: number;
+  collapseEmpty?: boolean;
 }): React.ReactElement {
-  const shown = limit ? categories.filter((c) => !c.suggested || c.apps > 0).slice(0, limit) : categories;
+  const [showEmpty, setShowEmpty] = useState(false);
+  const allShown = limit ? categories.filter((c) => !c.suggested || c.apps > 0).slice(0, limit) : categories;
+  const populated = collapseEmpty ? allShown.filter((c) => c.apps > 0 || c.id === selected) : allShown;
+  const emptyCats = collapseEmpty ? allShown.filter((c) => c.apps === 0 && c.id !== selected) : [];
+  const hasCollapsedEmpty = collapseEmpty && populated.length > 0 && emptyCats.length > 0;
+  const shown = hasCollapsedEmpty && !showEmpty ? populated : allShown;
   const pill = (id: string, label: string, extra?: string) => (
     <a
       key={id}
@@ -126,7 +133,23 @@ export function CategoryChips({
   return (
     <div className="pills">
       {pill('all', 'All')}
-      {shown.map((c) => pill(c.id, `${c.emoji ? `${c.emoji} ` : ''}${c.name}${c.apps ? ` · ${c.apps}` : ''}`, c.suggested ? 'pill-suggested' : undefined))}
+      {shown.map((c) =>
+        pill(
+          c.id,
+          `${c.emoji ? `${c.emoji} ` : ''}${c.name}${c.apps ? ` · ${c.apps}` : ''}`,
+          [c.suggested ? 'pill-suggested' : '', c.apps === 0 ? 'pill-empty' : ''].filter(Boolean).join(' ') || undefined,
+        ),
+      )}
+      {hasCollapsedEmpty && (
+        <button
+          type="button"
+          className="pill pill-more-cats"
+          aria-expanded={showEmpty}
+          onClick={() => setShowEmpty((v) => !v)}
+        >
+          {showEmpty ? 'Hide empty' : `+${emptyCats.length} more`}
+        </button>
+      )}
     </div>
   );
 }
@@ -187,6 +210,7 @@ export function SubcategoryChips({
 export function CapabilityChips({ selected, onSelect }: { selected: CapabilityFilter | ''; onSelect: (id: CapabilityFilter | '') => void }): React.ReactElement {
   return (
     <div className="pills pills-caps" role="group" aria-label="Filter by what the app can reach">
+      <span className="pills-group-label" aria-hidden="true">Sandbox</span>
       {CAP_FILTERS.map((f) => (
         <button
           key={f.id}
@@ -207,6 +231,7 @@ export function CapabilityChips({ selected, onSelect }: { selected: CapabilityFi
 export function HostingChips({ selected, onSelect }: { selected: HostingFilter | ''; onSelect: (id: HostingFilter | '') => void }): React.ReactElement {
   return (
     <div className="pills pills-caps pills-hosting" role="group" aria-label="Filter by hosting mode">
+      <span className="pills-group-label" aria-hidden="true">Hosting</span>
       {HOSTING_FILTERS.map((f) => (
         <button
           key={f.id}

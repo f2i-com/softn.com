@@ -98,6 +98,9 @@ function PlayLink({ app, className, children }: { app: AppCardData; className: s
 export function AppCard({ app, category }: { app: AppCardData; category?: Category }): React.ReactElement {
   const official = app.source === 'seed';
   const subcategory = app.subcategory ? category?.subcategories?.find((s) => s.slug === app.subcategory) : undefined;
+  const hasRightBadges =
+    (!app.external && Boolean(app.hosting?.serverHosted || app.backendRuntime)) ||
+    (!app.external && !app.capabilities.includes('net'));
   return (
     <article className="app-card">
       <div className="app-card-media">
@@ -108,7 +111,15 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
           {app.name}
         </a>
         <p className="app-card-desc">{app.description || 'No description yet.'}</p>
-        <div className="app-card-meta">
+      </div>
+      {/* The word is drawn where there is room for it; a phone's row has the
+          glyph alone, and the link's name says the rest either way. */}
+      <PlayLink app={app} className="app-card-play">
+        <PlayGlyph size={12} />
+        <span className="app-card-play-label">Play</span>
+      </PlayLink>
+      <div className="app-card-meta">
+        <div className="app-card-facts">
           {/* The mint tag marks an app that ships with the site. Where its
               author is SoftN too, the tag is the byline: the row said
               "SoftN" twice, once in each colour. */}
@@ -145,42 +156,40 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
               {app.external.host}
             </span>
           )}
-          {!app.external && app.hosting?.serverHosted && (
-            <span
-              className="app-card-stat app-card-hosting"
-              title={
-                app.hosting.mode === 'hybrid'
-                  ? 'Hosted multi-user on SoftN (ZIPP safe-sandbox) or run locally in your browser sandbox'
-                  : 'Hosted multi-user on SoftN inside ZIPP safe-sandbox'
-              }
-            >
-              {app.hosting.mode === 'hybrid' ? 'hosted + local' : 'hosted on SoftN'}
-            </span>
-          )}
-          {!app.external && !app.hosting?.serverHosted && app.backendRuntime && (
-            <span
-              className="app-card-stat app-card-hosting"
-              title={`Runs its ${app.backendRuntime.toUpperCase()} backend + SQLite locally inside your browser sandbox`}
-            >
-              browser · {app.backendRuntime.toUpperCase()}
-            </span>
-          )}
-          {!app.external && !app.capabilities.includes('net') && (
-            <span
-              className="app-card-stat app-card-safe"
-              title="Makes no network requests of its own; a hosted service it declares, such as server storage, still reaches this site"
-            >
-              no net
-            </span>
-          )}
         </div>
+        {hasRightBadges && (
+          <div className="app-card-badges">
+            {!app.external && app.hosting?.serverHosted && (
+              <span
+                className="app-card-stat app-card-hosting"
+                title={
+                  app.hosting.mode === 'hybrid'
+                    ? 'Hosted multi-user on SoftN (ZIPP safe-sandbox) or run locally in your browser sandbox'
+                    : 'Hosted multi-user on SoftN inside ZIPP safe-sandbox'
+                }
+              >
+                {app.hosting.mode === 'hybrid' ? 'hosted + local' : 'hosted on SoftN'}
+              </span>
+            )}
+            {!app.external && !app.hosting?.serverHosted && app.backendRuntime && (
+              <span
+                className="app-card-stat app-card-hosting"
+                title={`Runs its ${app.backendRuntime.toUpperCase()} backend + SQLite locally inside your browser sandbox`}
+              >
+                {app.backendRuntime.toUpperCase()}
+              </span>
+            )}
+            {!app.external && !app.capabilities.includes('net') && (
+              <span
+                className="app-card-stat app-card-safe"
+                title="Makes no network requests of its own; a hosted service it declares, such as server storage, still reaches this site"
+              >
+                no net
+              </span>
+            )}
+          </div>
+        )}
       </div>
-      {/* The word is drawn where there is room for it; a phone's row has the
-          glyph alone, and the link's name says the rest either way. */}
-      <PlayLink app={app} className="app-card-play">
-        <PlayGlyph size={12} />
-        <span className="app-card-play-label">Play</span>
-      </PlayLink>
     </article>
   );
 }
@@ -214,6 +223,9 @@ export function AppGrid({
             <div className="app-card-body">
               <span className="app-card-name">&nbsp;</span>
               <p className="app-card-desc">&nbsp;</p>
+            </div>
+            <div className="app-card-meta">
+              <span className="app-card-stat">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>
             </div>
           </div>
         ))}

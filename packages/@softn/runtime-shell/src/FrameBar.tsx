@@ -147,7 +147,7 @@ const frameBarStyles = `
     white-space: nowrap;
     transition: color 160ms var(--ease), border-color 160ms var(--ease);
   }
-  .softn-frame-btn:hover { color: var(--paper); border-color: var(--dimmer); }
+  .softn-frame-btn:hover { color: var(--paper); border-color: var(--dimmer); background: var(--ink-3); }
   .softn-frame-btn:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
   /* Close stops the app, so it is set apart by weight and edge rather than by
      an accent: it was coral, the colour that means "the SoftN language". */
@@ -160,8 +160,9 @@ const frameBarStyles = `
     display: flex; align-items: center; justify-content: center;
     background: transparent; border: 1px solid var(--line); border-radius: 7px;
     color: var(--dim); font: inherit; font-size: 1rem; letter-spacing: 0.08em; cursor: pointer;
+    transition: color 160ms var(--ease), border-color 160ms var(--ease), background 160ms var(--ease);
   }
-  .softn-frame-menu-btn:hover, .softn-frame-menu-btn[aria-expanded="true"] { color: var(--paper); border-color: var(--dimmer); }
+  .softn-frame-menu-btn:hover, .softn-frame-menu-btn[aria-expanded="true"] { color: var(--paper); border-color: var(--dimmer); background: var(--ink-3); }
   .softn-frame-menu-btn:focus-visible, .softn-frame-menu-item:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
   .softn-frame-menu-list {
     position: absolute;
@@ -211,7 +212,7 @@ const frameBarStyles = `
   }
   @media (max-width: 480px) {
     .softn-frame-bar { padding: 0.2rem 0.65rem; }
-    .softn-frame-btn { min-width: 36px; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+    .softn-frame-btn, .softn-frame-menu-btn { min-width: 36px; min-height: 36px; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
     .softn-frame-mobile-label { display: none; }
     .softn-frame-mobile-icon { display: inline-flex; }
     .softn-frame-actions { gap: 0.25rem; }

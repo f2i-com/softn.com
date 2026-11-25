@@ -91,10 +91,10 @@ export const ENTRY_WATCH =
   "if(root.childElementCount>0&&!document.getElementById('boot'))return;" +
   "var box=document.createElement('div'),text=document.createElement('p'),again=document.createElement('button');" +
   "box.setAttribute('role','alert');" +
-  "box.style.cssText='min-height:100dvh;box-sizing:border-box;padding:24px;display:grid;place-content:center;justify-items:center;gap:12px;text-align:center;font:16px/1.5 system-ui';" +
-  "text.style.margin='0';" +
+  "box.style.cssText='min-height:100dvh;box-sizing:border-box;padding:24px;display:grid;place-content:center;justify-items:center;gap:14px;text-align:center;font:15px/1.55 system-ui;background:var(--ink,#101317);color:var(--paper,#f2f0ec)';" +
+  "text.style.cssText='margin:0;max-width:34rem;color:var(--dim,#8b94a2)';" +
   "text.textContent='This page could not load: part of it is missing. That can happen while the site is being updated.';" +
-  "again.type='button';again.textContent='Reload';" +
+  "again.type='button';again.textContent='Reload';again.style.cssText='padding:10px 20px;border-radius:8px;border:1px solid var(--paper,#f2f0ec);background:var(--paper,#f2f0ec);color:var(--ink,#101317);font:600 14px/1 system-ui;cursor:pointer';" +
   "again.addEventListener('click',function(){location.reload()});" +
   "box.appendChild(text);box.appendChild(again);" +
   "root.textContent='';root.appendChild(box)" +

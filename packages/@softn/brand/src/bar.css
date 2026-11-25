@@ -203,9 +203,9 @@
     order: 1;
     width: calc(100% + var(--gutter) * 2);
     margin-inline: calc(var(--gutter) * -1);
-    padding-inline: clamp(0.5rem, 2.5vw, 1rem);
+    padding-inline: calc(var(--gutter) - 0.25rem);
     justify-content: space-between;
-    gap: 0;
+    gap: 0.125rem;
     overflow-x: auto;
     scroll-padding-inline: var(--gutter);
     overscroll-behavior-x: contain;
@@ -225,6 +225,15 @@
     padding-block: 0;
     padding-inline: 0.25rem;
     border-top: 0;
+  }
+
+  .softn-bar .softn-theme-toggle {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+  }
+
+  .softn-bar-repo {
+    min-height: 2.25rem;
   }
 
   .softn-bar-links a:focus-visible {

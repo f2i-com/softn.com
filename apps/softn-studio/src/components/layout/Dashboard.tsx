@@ -367,7 +367,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <strong>{creatingStarter === starter.id ? 'Creating…' : starter.label}</strong>
                   <span id={`st-starter-name-${starter.id}`}>{starter.name}</span>
                 </span>
-                <Icon name="chevron-right" size={14} />
+                {!component && <Icon name="chevron-right" size={14} />}
               </button>
               {component && (
                 <button type="button" className="st-btn st-starter-component" aria-label={`Create ${component.label} starter`}

@@ -472,6 +472,13 @@ body {
   color: var(--dimmer);
 }
 
+/* Desktop keyboard exit hints do not apply to touch screens or narrow phones. */
+@media (pointer: coarse), (max-width: 720px) {
+  [data-editor-way-out] {
+    display: none !important;
+  }
+}
+
 /*
  * Where the open project came from, when that is Studio, and the way back
  * (components/toolbar/StudioOrigin.tsx): one slim line over the toolbar. The

@@ -94,8 +94,8 @@ function IconSave() {
 function IconExport() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M8 10.5V1.5" />
-      <polyline points="4.5 5.5 8 1.5 11.5 5.5" />
+      <path d="M8 2v8" />
+      <polyline points="4.5 6.5 8 10 11.5 6.5" />
       <path d="M2.5 10.5v2.5A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5v-2.5" />
     </svg>
   );
@@ -155,9 +155,9 @@ function IconClear() {
 function IconPublish() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M8 10.5V2.5" />
-      <polyline points="4.5 6 8 2.5 11.5 6" />
-      <path d="M2.5 10.5v2a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5v-2" />
+      <circle cx="8" cy="8" r="6" />
+      <path d="M2.3 8h11.4" />
+      <path d="M8 2a9.5 9.5 0 0 1 2.4 6A9.5 9.5 0 0 1 8 14a9.5 9.5 0 0 1-2.4-6A9.5 9.5 0 0 1 8 2z" />
     </svg>
   );
 }

@@ -245,6 +245,7 @@ export function DirectoryPage({
                     selected={category}
                     hrefFor={(id) => buildUrl({ ...filters, page: 1, category: id, subcategory: '' })}
                     onSelect={(id) => go({ category: id, subcategory: '' })}
+                    collapseEmpty
                   />
                   {current && (
                     <SubcategoryChips
@@ -287,9 +288,9 @@ export function DirectoryPage({
               </select>
             </label>
             <label className="sort directory-caps-mobile">
-              <span className="sort-label">What it can reach</span>
+              <span className="sort-label">Sandbox</span>
               <select aria-label="Filter apps by what they can reach" value={cap} onChange={(event) => go({ cap: asCap(event.target.value) })}>
-                <option value="">Anything</option>
+                <option value="">Any capabilities</option>
                 {CAP_FILTERS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
             </label>

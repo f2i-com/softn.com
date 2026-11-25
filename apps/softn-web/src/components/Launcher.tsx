@@ -292,24 +292,26 @@ export function Launcher({
               <div className="softn-launcher-section-head">
                 <div className="softn-launcher-section-heading">
                   <h2 className="softn-launcher-section-title">Your apps</h2>
-                  {groups.length > 1 && (
-                    <input className="softn-library-search" type="search" aria-label="Find a saved app"
-                      placeholder="Find a saved app" value={search} onChange={(event) => setSearch(event.target.value)} />
-                  )}
                   <span className="softn-launcher-section-count" role="status">
                     {query ? `${visibleGroups.length} of ${groups.length}` : groups.length}
                   </span>
                 </div>
-                {onRemoveAll && (
-                  <button
-                    type="button"
-                    className="softn-launcher-section-action softn-launcher-section-action--danger"
-                    onClick={onRemoveAll}
-                    title="Close running apps and remove all saved apps from this browser"
-                  >
-                    Remove all
-                  </button>
-                )}
+                <div className="softn-launcher-section-controls">
+                  {groups.length > 1 && (
+                    <input className="softn-library-search" type="search" aria-label="Find a saved app"
+                      placeholder="Find a saved app…" value={search} onChange={(event) => setSearch(event.target.value)} />
+                  )}
+                  {onRemoveAll && (
+                    <button
+                      type="button"
+                      className="softn-launcher-section-action softn-launcher-section-action--danger"
+                      onClick={onRemoveAll}
+                      title="Close running apps and remove all saved apps from this browser"
+                    >
+                      Remove all
+                    </button>
+                  )}
+                </div>
               </div>
               {visibleGroups.length === 0 && <p className="softn-launcher-sub">No saved apps match “{search.trim()}”.</p>}
               <div className="softn-launcher-grid">
@@ -351,9 +353,12 @@ export function Launcher({
                           </span>
                           <span style={{ minWidth: 0 }}>
                             <span className="softn-launcher-card-name">{app.name}</span>
-                            <span id={`${describedBy}-meta`} className="softn-launcher-card-meta">
-                              v{app.version}{app.format === 'web' && ' · Web app'}{app.format === 'classic' && ' · Classic SoftN'}
-                              {engines.length > 0 && ` · ${engines.join(' + ')}`}
+                            <span
+                              id={`${describedBy}-meta`}
+                              className="softn-launcher-card-meta"
+                              title={engines.length > 0 ? `Installed runtime: ${engines.join(' + ')}` : undefined}
+                            >
+                              v{app.version}{app.format === 'web' && ' · Web app'}{app.format === 'classic' && ' · Classic'}
                             </span>
                           </span>
                         </span>
@@ -491,11 +496,38 @@ export function Launcher({
                   );
                 })}
               </div>
+              <button
+                type="button"
+                className="softn-launcher-dropcard"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 15V4" />
+                  <path d="m7 9 5-5 5 5" />
+                  <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+                </svg>
+                <span>
+                  <strong>Drop a .softn or .zip file anywhere</strong> — or click here to open another app from disk.
+                </span>
+              </button>
             </section>
           ) : (
             <div className="softn-launcher-empty">
-              <strong>Your library starts here.</strong> Apps you open are saved in this browser so you can return to them.
-              Open a <strong>.softn</strong> file, explore <a href={`${directoryHref}?category=business`}>Business Apps</a>, or choose any app from <a href={directoryHref}>the directory</a>.
+              <div className="softn-launcher-empty-copy">
+                <strong>Your library starts here.</strong>
+                <p>
+                  Drop a <code>.softn</code> or <code>.zip</code> file anywhere on this window, explore{' '}
+                  <a href={`${directoryHref}?category=business`}>Business Apps</a>, or choose any app from{' '}
+                  <a href={directoryHref}>the directory</a>. Apps you open stay saved in this browser for instant offline return.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="softn-launcher-open softn-launcher-folder"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                Choose a bundle
+              </button>
             </div>
           )}
           </div>
