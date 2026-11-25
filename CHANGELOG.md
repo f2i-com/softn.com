@@ -6,6 +6,15 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.52
+
+- Upgrades the browser engines, FormLogic runtime package, vendored model stack, Android runtime, and Rust/WASI backend runners to **ZIPP v0.0.40** (`0cd3eab8`).
+- Completes multi-pass sandbox security hardening (Rounds 3–7) across **SoftN Container v2**, `@softn/core`, `@softn/bundle-format`, `@softn/runtime-shell`, `@softn/single-shell`, desktop loader, the Rust/PHP/Single-Private/FormLogic hosts, and adds the hardened `softn-android` native mobile runtime.
+- Adds **multi-page hosted SoftN websites** and full **View-Source SSR & SEO**: `/play/<slug>/<subpath>` serves per-page sanitized semantic HTML5 (rendered cleanly in a non-cloaked sibling `#softn-ssr-view`), per-page `<title>`, `<meta name="description">`, `<meta name="robots">`, `<html lang>`, canonical/OG/Twitter tags, `WebPage` + `BreadcrumbList` JSON-LD, rewritten internal links, real 404s, and live URL + `<head>` sync across client navigation and browser Back/Forward.
+- Adds a root `/sitemap.xml` sitemap index alongside cached `/sitemap-apps.xml` (including populated subcategories and automatic exclusion of `noindex` hosted sub-pages), crawler-friendly `robots.txt` rules, server-rendered `/apps` and `/publish` routes, crawlable `/play/<slug>` anchors, and `/play/index.html` → `/apps` redirects.
+- Improves startup and runtime performance across the board: dynamic on-demand loading of heavy container libraries (Three.js, WebGL, Charts, DataGrid, IndexedDB), a zero-script static HTML fast path that skips Worker/WASM boot and preload entirely, classic lite WASM tiering, build-time `play/runtime-manifest.json` modulepreload/WASM hints, standalone runtime pruning, lock-free steady-state catalog seeding, and split bundle metadata caching.
+- Refreshes and polishes the SoftN web UI across the landing page, apps directory, launcher, player shell, visual Builder, and AI Studio.
+
 ## v0.0.51
 
 - Upgrades the browser engines, FormLogic runtime package, vendored model stack, and Rust/WASI backend runners to **ZIPP v0.0.38** (`8cb8399f`).
