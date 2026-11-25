@@ -45,7 +45,8 @@ describe('registerRuntimeComponents', () => {
     expect(registry.getFeature('Scene3D')).toBe('scene3d');
     expect(registry.getLoadState('Button')).toBe('eager');
     expect(registry.getLoadState('LineChart')).toBe('idle');
-    expect(registry.getFeature('QRReader')).toBe('media');
+    expect(registry.getFeature('QRReader')).toBe('qr-reader');
+    expect(registry.getFeature('Camera')).toBe('media');
     // The light groups are loaders a page's first draw waits for; the heavy
     // features are drawn around.
     expect(registry.getLoadState('Select')).toBe('idle');
@@ -157,6 +158,7 @@ describe('the emitted entries', () => {
       'editors',
       'smart',
       'media',
+      'qr-reader',
       'animation',
       'pickers',
       'games',
@@ -204,6 +206,7 @@ describe('the emitted entries', () => {
       'editors',
       'smart',
       'media',
+      'qr-reader',
       'animation',
     ]) {
       const sub = pkg.exports[`./${entry}`];

@@ -1,10 +1,11 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig([
-  // 1. NPM / Workspace Library Entries (`dist/index.js`, `dist/archive.js`, `dist/esm-linker.js`)
+  // 1. NPM / Workspace Library Entries (`dist/index.js`, `dist/mount.js`, `dist/archive.js`, `dist/esm-linker.js`)
   {
     entry: {
       index: 'src/index.ts',
+      mount: 'src/mount.ts',
       archive: 'src/archive.ts',
       'esm-linker': 'src/esm-linker.ts',
     },
@@ -37,7 +38,7 @@ export default defineConfig([
     noExternal: ['@softn/bundle-format', 'fflate'],
     external: ['three', /^three\//, /^node:/],
   },
-  // 3. Dedicated Frontend Web Worker (`/runtime/container-worker.js`)
+  // 3. Dedicated Frontend Web Worker (`/runtime/container-worker.js` + lazy `/runtime/worker-chunks/*.js`)
   {
     entry: {
       'container-worker': 'src/worker-entry.ts',
@@ -49,10 +50,13 @@ export default defineConfig([
     clean: false,
     sourcemap: true,
     minify: true,
-    splitting: false,
+    splitting: true,
     treeshake: true,
     noExternal: ['@softn/bundle-format', 'fflate'],
     external: [/^node:/],
+    esbuildOptions(options) {
+      options.chunkNames = 'worker-chunks/[name]-[hash]';
+    },
   },
   // 4. Dedicated Full-Stack Backend & SQLite Web Worker (`/runtime/backend-worker.js`)
   {

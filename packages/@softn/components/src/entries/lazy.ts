@@ -44,6 +44,7 @@ const charts = () => import('./charts');
 const editors = () => import('./editors');
 const smart = () => import('./smart');
 const media = () => import('./media');
+const qrReader = () => import('./qr-reader');
 const animation = () => import('./animation');
 const scene3d = () => import('./scene3d');
 const pickers = () => import('./pickers');
@@ -163,13 +164,13 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
   SmartList: fromFeature('smart', smart, 'SmartList'),
   SmartTimeline: fromFeature('smart', smart, 'SmartTimeline'),
 
-  // Media: the camera, the microphone, the audio streamer and the QR pair,
-  // whose scanner alone is ~140 KB minified before its WASM decoder.
+  // Media: the camera, the microphone, the audio streamer and QR rendering.
   Camera: fromFeature('media', media, 'Camera'),
   Microphone: fromFeature('media', media, 'Microphone'),
   AudioStream: fromFeature('media', media, 'AudioStream'),
   QRCode: fromFeature('media', media, 'QRCode'),
-  QRReader: fromFeature('media', media, 'QRReader'),
+  // QR scanner in its own chunk (~140 KB + 919 KB zxing_reader.wasm).
+  QRReader: fromFeature('qr-reader', qrReader, 'QRReader'),
 
   // The date and colour pickers (~15 KB minified)
   DatePicker: fromFeature('pickers', pickers, 'DatePicker'),
@@ -194,7 +195,7 @@ export const lazyComponentRegistrations: Record<string, LazyComponentRegistratio
  */
 export const offlineExtras: Record<string, () => Promise<void>> = {
   Scene3D: () => scene3d().then((m) => m.preloadScene3DAddons()),
-  QRReader: () => media().then((m) => m.preloadQrDecoder()),
+  QRReader: () => qrReader().then((m) => m.preloadQrDecoder()),
   WasmApp: () => wasm().then((m) => m.preloadWasmApp()),
 };
 

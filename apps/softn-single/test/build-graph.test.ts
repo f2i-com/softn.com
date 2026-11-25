@@ -216,4 +216,42 @@ describe.skipIf(!built)('softn-single build graph', () => {
         `[build-graph] Three addon chunks (dynamic from scene3d):\n  ${addons.join('\n  ')}\n`
     );
   });
+
+  it('keeps optional container subsystems and worker-runtime out of the container mount static closure', () => {
+    const mountKey = Object.keys(manifest).find((k) => k.endsWith('/container/dist/mount.js'));
+    expect(mountKey, 'no chunk for @softn/container/mount').toBeDefined();
+    const mountClosure = staticClosure(manifest, [mountKey!]);
+    const FORBIDDEN_IN_MOUNT =
+      /worker-runtime|vendor-three|scene3d|three-worker-host|guest-three-native|webgl-scene-host|webgl-worker-host|guest-webgl|guest-indexeddb|guest-react-vendor|guest-vendors|guest-worker-scope|jsx-transform|device-bridge|local-backend-transport|virtual-nav-bar/i;
+    for (const [key, chunk] of mountClosure) {
+      expect(key, `container mount static closure contains ${key}`).not.toMatch(FORBIDDEN_IN_MOUNT);
+      expect(chunk.file, `container mount static closure contains ${chunk.file}`).not.toMatch(FORBIDDEN_IN_MOUNT);
+    }
+    const mountBytes = [...mountClosure.values()].reduce((sum, chunk) => sum + sizeOf(chunk.file), 0);
+    process.stdout.write(
+      `[build-graph] @softn/container/mount static closure: ${mountBytes} bytes over ${mountClosure.size} chunk(s)\n`
+    );
+    expect(mountBytes, `container mount closure regressed to ${mountBytes} bytes`).toBeLessThan(350_000);
+  });
+
+  it('keeps @yudiel/react-qr-scanner and zxing_reader.wasm out of the media chunk static closure', () => {
+    const mediaKey = Object.keys(manifest).find((k) => k.endsWith('/components/dist/media.js'));
+    expect(mediaKey, 'no chunk for the media feature').toBeDefined();
+    const mediaClosure = staticClosure(manifest, [mediaKey!]);
+    for (const [key, chunk] of mediaClosure) {
+      expect(key, `media static closure contains ${key}`).not.toMatch(/qr-reader|react-qr-scanner|zxing/i);
+      expect(chunk.file, `media static closure contains ${chunk.file}`).not.toMatch(/qr-reader|zxing/i);
+    }
+    const mediaFileBytes = sizeOf(manifest[mediaKey!].file);
+    process.stdout.write(
+      `[build-graph] media chunk (without QR scanner): ${manifest[mediaKey!].file} (${mediaFileBytes} B)\n`
+    );
+    expect(mediaFileBytes, `media chunk regressed to ${mediaFileBytes} bytes`).toBeLessThan(65_000);
+    const qrReaderKey = Object.keys(manifest).find((k) => k.endsWith('/components/dist/qr-reader.js'));
+    expect(qrReaderKey, 'qr-reader is emitted as its own dynamic chunk').toBeDefined();
+    expect(manifest[qrReaderKey!].isDynamicEntry).toBe(true);
+    process.stdout.write(
+      `[build-graph] qr-reader dynamic chunk: ${manifest[qrReaderKey!].file} (${sizeOf(manifest[qrReaderKey!].file)} B)\n`
+    );
+  });
 });

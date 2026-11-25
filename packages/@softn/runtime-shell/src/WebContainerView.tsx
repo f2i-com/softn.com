@@ -97,7 +97,7 @@ export function WebContainerView({
 
     void (async () => {
       try {
-        const { mountSoftNContainer } = await import('@softn/container');
+        const { mountSoftNContainer } = await import('@softn/container/mount');
         if (cancelled) return;
         const mounted = await mountSoftNContainer(el, {
           source,

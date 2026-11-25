@@ -6,6 +6,7 @@
   "type": "module",
   "sideEffects": [
     "./dist/index.js",
+    "./dist/mount.js",
     "./dist/runtime/softn.js"
   ],
   "files": [
@@ -18,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./mount": {
+      "types": "./dist/mount.d.ts",
+      "default": "./dist/mount.js"
     },
     "./archive": {
       "types": "./dist/archive.d.ts",

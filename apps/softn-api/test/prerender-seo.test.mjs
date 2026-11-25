@@ -11,6 +11,8 @@
  */
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import { startServer, skip } from './helpers/harness.mjs';
 
@@ -149,8 +151,79 @@ test('hosted /app and /play pages emit sanitized View-Source SSR HTML, JSON-LD, 
   assert.doesNotMatch(v2Html, /<iframe/);
   assert.doesNotMatch(v2Html, /javascript:evil/);
   assert.doesNotMatch(v2Html, /SUPER_SECRET_BACKEND_SOURCE/);
+  assert.match(v2Html, /"@type":"BreadcrumbList"/);
 
-  // 3. Dynamic XML sitemap lists public apps, excludes hidden ones, supports ETag/304
+  // 2b. Container v2 SPA bundle (`<div id="app"></div>` + frontend JS `html\`...\`` templates)
+  const spaBundle = zipSync({
+    'manifest.json': strToU8(
+      JSON.stringify({
+        engine: 2,
+        name: 'Farm Desk',
+        version: '1.0.0',
+        description: 'Paddock & harvest tracker.',
+        main: 'index.html',
+        backend: { runtime: 'php', entry: 'server/index.php' },
+      })
+    ),
+    'index.html': strToU8('<!doctype html><html><head><title>Farm Desk</title></head><body><div id="app"></div><script type="module" src="./js/main.js"></script></body></html>'),
+    'js/main.js': strToU8(
+      'export function view(s){ return html`<section><h1>Paddock Status</h1><p>Active spray schedule for ${s.name}.</p><button>Log Harvest</button></section>`; }'
+    ),
+    'server/index.php': strToU8('<?php echo "PRIVATE_FARM_SECRET"; ?>'),
+  });
+  const spaFd = new FormData();
+  spaFd.set('bundle', new Blob([spaBundle]), 'farm.softn');
+  spaFd.set('name', 'Farm Desk');
+  const pubSpa = await s.api('POST', '/api/apps', { body: spaFd, headers: { 'X-Admin-Key': s.adminKey } });
+  assert.equal(pubSpa.status, 201, pubSpa.text);
+  const spaSlug = pubSpa.json.app.slug;
+  const spaHtml = await (await fetch(`${s.base}/app/${spaSlug}`)).text();
+  assert.match(spaHtml, /<h2>Paddock Status<\/h2>/);
+  assert.match(spaHtml, /<button type="button">Log Harvest<\/button>/);
+  assert.doesNotMatch(spaHtml, /PRIVATE_FARM_SECRET/);
+
+  // 2c. Live-captured ssr.html snapshot (tagged with full source bundle sha256) overrides
+  // static extraction even when withholdBackend is active, and is strictly sanitized.
+  const spaDir = path.join(s.dataDir, 'apps', spaSlug);
+  const spaMeta = JSON.parse(fs.readFileSync(path.join(spaDir, 'app.json'), 'utf8'));
+  const spaSha = spaMeta.versions?.at(-1)?.sha256 ?? '';
+  assert.match(spaSha, /^[a-f0-9]{64}$/);
+  fs.writeFileSync(
+    path.join(spaDir, 'ssr.html'),
+    `<!-- softn-ssr-sha256: ${spaSha} -->\n<main><h1 onclick="evil()">Live Captured Farm Board</h1><p>12 paddocks monitored</p><script>alert(1)</script></main>`,
+    'utf8'
+  );
+  const snapPlayHtml = await (await fetch(`${s.base}/play/${spaSlug}`, { headers: { Accept: 'text/html' } })).text();
+  assert.match(snapPlayHtml, /data-softn-ssr="play"/);
+  assert.match(snapPlayHtml, /<h2>Live Captured Farm Board<\/h2>/);
+  assert.match(snapPlayHtml, /<p>12 paddocks monitored<\/p>/);
+  assert.doesNotMatch(snapPlayHtml, /onclick=/);
+  assert.doesNotMatch(snapPlayHtml, /alert\(1\)/);
+
+  // Recording a run increments `runs` and surfaces in WebApplication JSON-LD interactionStatistic
+  await s.api('POST', `/api/apps/${spaSlug}/runs`);
+  const spaWithRunsHtml = await (await fetch(`${s.base}/app/${spaSlug}`)).text();
+  assert.match(spaWithRunsHtml, /"userInteractionCount":1/);
+
+  // 2d. Directory (/apps) and Publish (/publish) pages emit full SSR HTML and SEO metadata
+  const dirRes = await fetch(`${s.base}/apps`);
+  assert.equal(dirRes.status, 200);
+  const dirHtml = await dirRes.text();
+  assert.match(dirHtml, /data-softn-ssr="directory"/);
+  assert.match(dirHtml, /"@type":"CollectionPage"/);
+  assert.match(dirHtml, /"@type":"ItemList"/);
+  assert.match(dirHtml, new RegExp(`href="/app/${uiSlug}"`));
+  assert.match(dirHtml, new RegExp(`href="/app/${spaSlug}"`));
+  const dirQueryHtml = await (await fetch(`${s.base}/apps?q=farm`)).text();
+  assert.match(dirQueryHtml, /<meta name="robots" content="noindex,follow" \/>/);
+  const dirEmptyCatHtml = await (await fetch(`${s.base}/apps?category=no-such-category-xyz`)).text();
+  assert.match(dirEmptyCatHtml, /<meta name="robots" content="noindex,follow" \/>/);
+
+  const pubPageHtml = await (await fetch(`${s.base}/publish`)).text();
+  assert.match(pubPageHtml, /data-softn-ssr="publish"/);
+  assert.match(pubPageHtml, /Publish a SoftN App/);
+
+  // 3. Dynamic XML sitemap lists public apps + image tags, excludes hidden ones, supports ETag/304
   const hiddenApp = await s.publish('Hidden App');
   await s.api('DELETE', `/api/apps/${hiddenApp.app.slug}`, {
     headers: { 'X-Edit-Key': hiddenApp.editKey },
@@ -161,7 +234,9 @@ test('hosted /app and /play pages emit sanitized View-Source SSR HTML, JSON-LD, 
   const smEtag = smRes.headers.get('etag');
   assert.ok(smEtag);
   const smXml = await smRes.text();
+  assert.match(smXml, /xmlns:image="http:\/\/www\.google\.com\/schemas\/sitemap-image\/1\.1"/);
   assert.match(smXml, new RegExp(`<loc>${SITE}/app/${uiSlug}</loc>`));
+  assert.match(smXml, new RegExp(`<image:loc>${SITE}/api/apps/${uiSlug}/thumbnail`));
   assert.match(smXml, new RegExp(`<loc>${SITE}/app/${v2Slug}</loc>`));
   assert.doesNotMatch(smXml, new RegExp(hiddenApp.app.slug));
   const sm304 = await fetch(`${s.base}/sitemap-apps.xml`, { headers: { 'If-None-Match': smEtag } });

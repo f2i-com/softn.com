@@ -55,9 +55,37 @@
     <!-- Twitter reads the og:* tags for everything else, but only once this
          one tells it the card is a large-image card. -->
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="SoftN — build apps you can run, edit and share" />
+    <meta
+      name="twitter:description"
+      content="Try a real app, change it and publish your own: a visual builder, JavaScript or Python, or your own AI, with the source in one .softn file."
+    />
+    <meta name="twitter:image" content="https://softn.com/og.png" />
+    <meta name="twitter:image:alt" content="SoftN — a directory of sandboxed apps, and the runtime that runs them." />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <script type="application/ld+json" id="softn-ld-json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","name":"SoftN","url":"https://softn.com/","logo":"https://softn.com/apple-touch-icon.png"},{"@type":"WebSite","name":"SoftN","url":"https://softn.com/","description":"Build apps you can run, edit and share in one .softn file.","potentialAction":{"@type":"SearchAction","target":"https://softn.com/apps?q={search_term_string}","query-input":"required name=search_term_string"}}]}</script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><!--softn:ssr-->
+      <main id="boot" data-softn-ssr="home">
+        <header>
+          <h1>SoftN — build apps you can run, edit and share</h1>
+          <p>Try a real app in your browser, change it visually, in JavaScript or Python, or with AI, and publish your own. The source travels in one .softn file.</p>
+          <nav aria-label="Primary">
+            <a href="/apps">Browse Apps Directory</a> ·
+            <a href="/web/">Open Web Runtime</a> ·
+            <a href="/builder/">Visual Builder</a> ·
+            <a href="/studio/">AI Studio</a> ·
+            <a href="/publish">Publish an App</a> ·
+            <a href="/docs/">Documentation</a>
+          </nav>
+        </header>
+        <section>
+          <h2>Single-file sandboxed web apps</h2>
+          <p>Run classic SoftN .ui applications and full-stack Web Container v2 apps directly in a sandboxed browser runtime or self-hosted server with zero lock-in.</p>
+        </section>
+      </main>
+    <!--/softn:ssr--></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

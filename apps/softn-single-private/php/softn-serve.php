@@ -974,8 +974,35 @@ function softn_icon_entry(ZipArchive $zip, array $manifest): ?array
 function softn_prerender_preview(ZipArchive $zip, array $manifest, array $config): string
 {
     if (!($config['prerender'] ?? false)) return '';
-    $main = is_string($manifest['main'] ?? null) ? ltrim(str_replace('\\', '/', $manifest['main']), '/') : '';
+    $backendUrl = $config['backendUrl'] ?? null;
     $frontendRoot = is_string($manifest['frontendRoot'] ?? null) ? trim(str_replace('\\', '/', $manifest['frontendRoot']), '/') : '';
+    $snapCandidates = [];
+    if (is_array($manifest['seo'] ?? null) && is_string($manifest['seo']['prerender'] ?? null)) {
+        $snapCandidates[] = ltrim(str_replace('\\', '/', $manifest['seo']['prerender']), '/');
+    }
+    if (is_string($manifest['prerender'] ?? null)) {
+        $snapCandidates[] = ltrim(str_replace('\\', '/', $manifest['prerender']), '/');
+    }
+    if ($frontendRoot !== '') {
+        $snapCandidates[] = $frontendRoot . '/prerender.html';
+        $snapCandidates[] = $frontendRoot . '/__softn_ssr__.html';
+    }
+    $snapCandidates[] = 'prerender.html';
+    $snapCandidates[] = '__softn_ssr__.html';
+    foreach ($snapCandidates as $snap) {
+        if (!softn_entry_ok($snap) || softn_withheld_for_bundle($snap, $config['withhold'], $manifest, $backendUrl)) continue;
+        $ext = strtolower((string)pathinfo($snap, PATHINFO_EXTENSION));
+        if ($ext !== 'html' && $ext !== 'htm') continue;
+        $st = $zip->statName($snap);
+        if ($st === false || (int)$st['size'] === 0 || (int)$st['size'] > 524288) continue;
+        $rawSnap = $zip->getFromName($snap, 524288);
+        if (is_string($rawSnap) && trim($rawSnap) !== '') {
+            $clean = softn_prerender_html($rawSnap);
+            if ($clean !== '') return $clean;
+        }
+    }
+
+    $main = is_string($manifest['main'] ?? null) ? ltrim(str_replace('\\', '/', $manifest['main']), '/') : '';
     $candidates = [];
     if ($main !== '') {
         $candidates[] = $main;
@@ -987,7 +1014,6 @@ function softn_prerender_preview(ZipArchive $zip, array $manifest, array $config
     $candidates[] = 'index.html';
     $candidates[] = 'ui/main.ui';
 
-    $backendUrl = $config['backendUrl'] ?? null;
     $entry = null;
     foreach ($candidates as $cand) {
         if (!softn_entry_ok($cand)) continue;
@@ -1002,7 +1028,59 @@ function softn_prerender_preview(ZipArchive $zip, array $manifest, array $config
     $raw = $zip->getFromName($entry, 262144);
     if (!is_string($raw) || trim($raw) === '') return '';
     $ext = strtolower((string)pathinfo($entry, PATHINFO_EXTENSION));
-    return $ext === 'ui' ? softn_prerender_ui($raw) : softn_prerender_html($raw);
+    if ($ext === 'ui') return softn_prerender_ui($raw);
+    $sanitized = softn_prerender_html($raw);
+    if (strlen(trim(strip_tags($sanitized))) < 40) {
+        $chunks = [];
+        $bytes = 0;
+        $files = 0;
+        for ($i = 0; $i < $zip->numFiles && $i < 600 && $files < 16 && $bytes < 262144; $i++) {
+            $n = $zip->getNameIndex($i);
+            if (!is_string($n) || str_ends_with($n, '/') || !softn_entry_ok($n)) continue;
+            if (softn_withheld_for_bundle($n, $config['withhold'], $manifest, $backendUrl)) continue;
+            $low = strtolower($n);
+            if ($frontendRoot !== '' && !str_starts_with($low, strtolower($frontendRoot) . '/')) continue;
+            if (preg_match('#^(?:server|backend|private|vendor|node_modules|kit|lib)/#', $low) === 1) continue;
+            $fext = strtolower((string)pathinfo($low, PATHINFO_EXTENSION));
+            if (!in_array($fext, ['js', 'mjs', 'jsx', 'tsx', 'vue'], true)) continue;
+            $fst = $zip->statIndex($i);
+            if ($fst === false || (int)$fst['size'] === 0 || (int)$fst['size'] > 262144) continue;
+            $src = $zip->getFromIndex($i, 262144);
+            if (!is_string($src) || !str_contains($src, 'html`')) continue;
+            $files++;
+            $pos = 0; $slen = strlen($src);
+            while ($pos < $slen && count($chunks) < 120) {
+                $idx = strpos($src, 'html`', $pos);
+                if ($idx === false) break;
+                if ($idx > 0 && preg_match('/[A-Za-z0-9_$]/', $src[$idx - 1]) === 1) { $pos = $idx + 5; continue; }
+                $j = $idx + 5; $buf = '';
+                while ($j < $slen) {
+                    $c = $src[$j];
+                    if ($c === '\\' && $j + 1 < $slen) { $j += 2; continue; }
+                    if ($c === '`') { $j++; break; }
+                    if ($c === '$' && $j + 1 < $slen && $src[$j + 1] === '{') {
+                        $d = 1; $q = null; $j += 2;
+                        while ($j < $slen && $d > 0) {
+                            $cc = $src[$j];
+                            if ($q !== null) { if ($cc === '\\' && $j + 1 < $slen) { $j += 2; continue; } if ($cc === $q) $q = null; }
+                            else { if ($cc === '"' || $cc === "'" || $cc === '`') $q = $cc; elseif ($cc === '{') $d++; elseif ($cc === '}') $d--; }
+                            $j++;
+                        }
+                        $buf .= ' ';
+                        continue;
+                    }
+                    $buf .= $c; $j++;
+                }
+                $pos = $j;
+                if (str_contains($buf, '<') && trim($buf) !== '') { $chunks[] = $buf; $bytes += strlen($buf); }
+            }
+        }
+        if ($chunks !== []) {
+            $jsHtml = softn_prerender_html(implode("\n", $chunks));
+            if ($jsHtml !== '') $sanitized = $sanitized !== '' ? ($sanitized . "\n" . $jsHtml) : $jsHtml;
+        }
+    }
+    return $sanitized;
 }
 
 function softn_prerender_clean_text(string $raw): string

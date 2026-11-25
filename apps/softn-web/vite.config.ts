@@ -74,7 +74,7 @@ export default defineConfig({
       workbox: {
         classicRoots: ['src/components/UiAppSurface.tsx', 'src/lib/offlineInstall.ts'],
         classicRuntime: true,
-        classicSharedRoots: ['../../packages/@softn/container/dist/index.js'],
+        classicSharedRoots: ['../../packages/@softn/container/dist/mount.js', '../../packages/@softn/container/dist/index.js'],
         // Every document the worker serves gets the isolation headers, from
         // the precache as much as from the network — see public/coi.js.
         importScripts: ['coi.js'],

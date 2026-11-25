@@ -87,6 +87,7 @@ export function isHostedRuntimeFile(relative) {
   return (
     relative === 'container-worker.js' ||
     relative === 'backend-worker.js' ||
+    relative.startsWith('worker-chunks/') ||
     relative.startsWith('engines/') ||
     relative.startsWith('vendor/')
   );

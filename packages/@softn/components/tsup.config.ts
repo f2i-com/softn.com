@@ -26,6 +26,7 @@ export default defineConfig({
     highlight: 'src/entries/highlight.ts',
     smart: 'src/entries/smart.ts',
     media: 'src/entries/media.ts',
+    'qr-reader': 'src/entries/qr-reader.ts',
     animation: 'src/entries/animation.ts',
     pickers: 'src/entries/pickers.ts',
     games: 'src/entries/games.ts',

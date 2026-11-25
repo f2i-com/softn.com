@@ -46,9 +46,11 @@ if (str_contains($path, ':')) {
     return true;
 }
 
-// /play/<slug> is a page the API renders — unless it names a real file in
-// the shell's directory, which the shell's own chunks do (/play/GLTFLoader-….js).
-if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/app/[^/]+/?$#', $path)
+// /apps, /publish, /app/<slug>, /sitemap-apps.xml and /play/<slug> are rendered
+// by the API with full SEO metadata and View-Source SSR HTML — unless /play/<name>
+// names a real file in the shell's directory (/play/GLTFLoader-….js).
+if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/(?:apps|publish)/?$#', $path)
+    || preg_match('#^/app/[^/]+/?$#', $path)
     || $path === '/sitemap-apps.xml'
     || (preg_match('#^/play/[^/]+/?$#', $path) && !is_file($root . rtrim($path, '/')))) {
     // The API leaves these to the server (Response::html), and here the server is this file.

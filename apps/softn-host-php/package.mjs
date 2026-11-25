@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 const here=dirname(fileURLToPath(import.meta.url));
 const {unzipSync}=await import(pathToFileURL(resolve(here,'../../node_modules/fflate/esm/index.mjs')));
 const {writeArchive}=await import(pathToFileURL(resolve(here,'../../scripts/lib/archive.mjs')));
+const {pruneHostedRuntimeEntries}=await import(pathToFileURL(resolve(here,'../../scripts/build/prune-hosted-runtime.mjs')));
 const sha=b=>createHash('sha256').update(b).digest('hex');
 export function deploymentConfig(manifest,clientBytes,permissionMode='prompt') {
   if(!['prompt','preapproved'].includes(permissionMode))throw new Error('Invalid permission mode');
@@ -118,8 +119,8 @@ function bakeAppSeoHtml(htmlBuf,manifest,clientFiles) {
   const entryName=[mainEntry,'index.html','ui/main.ui'].find(n=>n&&clientFiles[n]&&/\.(?:ui|html?)$/i.test(n)&&!/^(?:server|backend|private)\//i.test(n));
   const preview=entryName?sanitizeStaticPreview(Buffer.from(clientFiles[entryName]).toString('utf8'),entryName.toLowerCase().endsWith('.ui')):'';
   const ssr=`        <article class="softn-ssr" data-softn-ssr="packaged">\n          <h1>${escHtml(title)}</h1>\n          <p>${escHtml(desc)}</p>${preview?`\n          <section data-softn-preview="rendered" aria-label="Rendered application preview">\n            ${preview}\n          </section>`:''}\n        </article>`;
-  if(/<div\s+id="boot"\b[^>]*>[\s\S]*?<\/div>/i.test(html)) {
-    html=html.replace(/(<div\s+id="boot"\b[^>]*>[\s\S]*?)(<\/div>)/i,(_,a,b)=>`${a}\n${ssr}\n      ${b}`);
+  if(/<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?<\/div>/i.test(html)) {
+    html=html.replace(/(<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?)(<\/div>)/i,(_,a,b)=>`${a}\n${ssr}\n      ${b}`);
   } else if(/<div\s+id="root"\s*>\s*<\/div>/i.test(html)) {
     html=html.replace(/<div\s+id="root"\s*>\s*<\/div>/i,()=>`<div id="root"><div id="boot" role="status">\n${ssr}\n      </div></div>`);
   }
@@ -169,6 +170,8 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
     const runner=entries['backend/bin/'+RUNNER_BINARY];if(runner.subarray(0,4).toString('hex')!=='7f454c46'||runner.readUInt16LE(18)!==62)throw new Error('Expected Linux x86-64 softn-runner');
   }
   tree(notices,'backend/licenses/native/');
+  let prunedRuntime=null;
+  let backendEngineFilter=null;
   if(!template) {
     const manifest=JSON.parse(readFileSync(join(bundle,'manifest.json'),'utf8'));
     const clientBytes=readFileSync(client),clientFiles=unzipSync(clientBytes),publicManifest=JSON.parse(Buffer.from(clientFiles['manifest.json']).toString());
@@ -177,12 +180,20 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
     entries['webroot/runtime.config.json']=Buffer.from(JSON.stringify(deploymentConfig(manifest,clientBytes,permissionMode),null,2));
     if(entries['webroot/index.html'])entries['webroot/index.html']=bakeAppSeoHtml(entries['webroot/index.html'],publicManifest,clientFiles);
     if(operator)tree(operator,'backend/operator/');
+    prunedRuntime=pruneHostedRuntimeEntries(entries,{...publicManifest,backend:manifest.backend,server:manifest.server},clientFiles,{webrootPrefix:'webroot/'});
+    const appKeys=Object.keys(entries).filter(n=>n.startsWith('backend/app/'));
+    const backendType=String(manifest.backend?.runtime??manifest.backend?.type??manifest.server?.runtime??'').toLowerCase();
+    backendEngineFilter=new Set();
+    if(backendType.includes('php')||appKeys.some(n=>/\.php$/i.test(n)))backendEngineFilter.add('zipp-php');
+    if(backendType.includes('ts')||backendType.includes('typescript')||appKeys.some(n=>/\.(?:ts|tsx|mts)$/i.test(n)))backendEngineFilter.add('zipp-typescript');
+    if(backendType.includes('rust')||appKeys.some(n=>/\.(?:rs|wasm)$/i.test(n)))backendEngineFilter.add('zipp-rust');
   }
   add('backend/wasm/zipp_wasm.mjs',join(wasmDir,'zipp_wasm.js'));
   const original=readFileSync(join(wasmDir,'zipp_wasm_bg.wasm'));
   entries['backend/wasm/zipp_wasm_bg.wasm']=capWasmMemory(original,4096);
   if(containerEnginesDir) {
     for(const engineBase of ['zipp-php','zipp-typescript','zipp-rust']) {
+      if(backendEngineFilter&&!backendEngineFilter.has(engineBase))continue;
       for(const ext of ['.wasm','.glue.js']) {
         const src=join(containerEnginesDir,engineBase+ext);
         try {
@@ -196,6 +207,7 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
   }
   entries['backend/.htaccess']=Buffer.from('Require all denied\n');
   entries['BUILD-INFO.json']=Buffer.from(JSON.stringify({runtime:privateDir?'SoftN PHP-served single app + on-demand ZIPP WASM':'SoftN PHP + on-demand ZIPP WASM',template,backendOptional:templateClient,privateArchive:!!privateDir,builtAt:new Date(process.env.SOURCE_DATE_EPOCH?Number(process.env.SOURCE_DATE_EPOCH)*1000:Date.now()).toISOString(),wasmOriginalSha256:sha(original),wasmPackagedSha256:sha(entries['backend/wasm/zipp_wasm_bg.wasm']),wasmMemoryMaxBytes:268435456,instructionBudget:5000000,phpDeadlineSeconds:25,processSlotsDefault:4,processSlotsMax:16,
+    ...(prunedRuntime?{prunedUnusedRuntimeAssets:prunedRuntime.removed.length,prunedUnusedRuntimeBytes:prunedRuntime.savedBytes}:{}),
     // softn-runner's own ceilings, which the operator sets (request.php
     // softn_request_memory_mb; the runner's limits.rs): its engine's memory
     // and SQLite's each `requestMemoryMb` MiB, a script's heap 64 MiB less.

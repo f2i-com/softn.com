@@ -98,6 +98,9 @@ test('a host serves the Worker, the two engines core cannot stand in for and the
   // Three.js is hosted under vendor/three.js so container-worker.js (ThreeWorkerHost) can import it in its Worker.
   assert.equal(isHostedRuntimeFile('vendor/three.js'), true);
   assert.equal(isHostedRuntimeFile('vendor/marked.js'), true);
+  // On-demand Worker subsystem chunks are hosted alongside container-worker.js.
+  assert.equal(isHostedRuntimeFile('worker-chunks/guest-indexeddb-3NCZOVT3.js'), true);
+  assert.equal(isHostedRuntimeFile('worker-chunks/guest-indexeddb-3NCZOVT3.js.map'), false);
   // The drop-in's entry and chunks are compiled into the app, and never asked for.
   for (const name of ['softn.js', 'chunk-EMPE36JR.js', 'worker-runtime-I4CH3MDX.js']) assert.equal(isHostedRuntimeFile(name), false, name);
   for (const name of ['container-worker.js.map', 'engines/zipp-javascript-lite.wasm.br', 'vendor/three.js.gz']) assert.equal(isHostedRuntimeFile(name), false, name);

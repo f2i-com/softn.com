@@ -250,9 +250,11 @@ ErrorDocument 404 /index.html
   RewriteCond %{REQUEST_FILENAME} -f
   RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ - [R=404,L,NC]
 
-  # An app's page always comes through the API so the <meta> tags, JSON-LD and
-  # pre-rendered semantic HTML reach browsers, social unfurlers and crawlers
+  # Directory, publish and app pages come through the API so <meta> tags,
+  # JSON-LD and pre-rendered semantic HTML reach browsers, unfurlers and crawlers
   # alike (including clients sending Accept: */* or no Accept header).
+  RewriteRule ^apps/?$ api/index.php [QSA,L]
+  RewriteRule ^publish/?$ api/index.php [L]
   RewriteRule ^app/[^/]+/?$ api/index.php [L]
 
   # Dynamic XML sitemap of published public apps.
@@ -399,6 +401,12 @@ server {
     # An app's page goes through the API so its <meta> tags, JSON-LD and
     # pre-rendered HTML are its own.
     location ~ ^/app/[^/]+/?$ {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
+    # Directory, publish and app pages come through the API for SEO and View-Source SSR.
+    location ~ ^/(?:apps|publish)/?$ {
         fastcgi_pass unix:/run/php/php-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
         include fastcgi_params;

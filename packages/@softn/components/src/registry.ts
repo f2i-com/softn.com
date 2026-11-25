@@ -19,6 +19,7 @@ import { editorComponents } from './entries/editors';
 import { scene3dComponents } from './entries/scene3d';
 import { smartComponents } from './entries/smart';
 import { mediaComponents } from './entries/media';
+import { qrReaderComponents } from './entries/qr-reader';
 import { pickerComponents } from './entries/pickers';
 import { gameComponents } from './entries/games';
 import { wasmComponents } from './entries/wasm';
@@ -34,6 +35,7 @@ export const builtinComponents = {
   ...scene3dComponents,
   ...smartComponents,
   ...mediaComponents,
+  ...qrReaderComponents,
   ...pickerComponents,
   ...gameComponents,
   ...wasmComponents,

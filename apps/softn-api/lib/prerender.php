@@ -15,12 +15,13 @@ declare(strict_types=1);
 
 final class Prerender
 {
-    public const VERSION = 2;
+    public const VERSION = 3;
     private const MAX_ENTRY_BYTES = 262144;
+    private const MAX_SNAPSHOT_BYTES = 524288;
     private const MAX_IMPORT_FILES = 16;
     private const MAX_IMPORT_DEPTH = 4;
-    private const MAX_OUTPUT_BYTES = 12288;
-    private const MAX_NODES = 200;
+    private const MAX_OUTPUT_BYTES = 24576;
+    private const MAX_NODES = 400;
     private const MAX_DEPTH = 32;
 
     /** @var array<string, bool> */
@@ -70,17 +71,32 @@ final class Prerender
 
     /**
      * Load cached or freshly extracted pre-render metadata for a bundle.
+     * Optionally uses a live-captured `$snapshotPath` (e.g. `data/apps/<slug>/ssr.html`)
+     * when fresh, always passing it through `sanitizeHtml()`.
      *
      * @return array{themeMode: ?string, previewHtml: string, sourceType: string, entryFile: ?string}
      */
-    public static function forBundle(string $bundlePath, string $bundleSha, ?string $cacheDir, bool $withholdBackend): array
-    {
+    public static function forBundle(
+        string $bundlePath,
+        string $bundleSha,
+        ?string $cacheDir,
+        bool $withholdBackend,
+        ?string $snapshotPath = null,
+        ?string $snapshotSha = null
+    ): array {
         $empty = ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
         if (!is_file($bundlePath)) return $empty;
 
+        $activeSnapshot = self::usableSnapshotPath($snapshotPath, $bundlePath, $bundleSha, $snapshotSha);
+        $snapTag = '';
+        if ($activeSnapshot !== null) {
+            $st = @stat($activeSnapshot);
+            $snapTag = '-s' . substr(hash('sha256', (string) ($st['mtime'] ?? 0) . ':' . (string) ($st['size'] ?? 0)), 0, 8);
+        }
+
         $cacheFile = null;
         if ($cacheDir !== null && $bundleSha !== '') {
-            $suffix = $withholdBackend ? '-client' : '';
+            $suffix = ($withholdBackend ? '-client' : '') . $snapTag;
             $cacheFile = rtrim($cacheDir, '/\\') . '/page-meta-v' . self::VERSION . '-' . substr($bundleSha, 0, 16) . $suffix . '.json';
             $cached = @file_get_contents($cacheFile);
             if (is_string($cached)) {
@@ -104,6 +120,17 @@ final class Prerender
         }
 
         $result = self::extractFromZip($bundlePath);
+        if ($activeSnapshot !== null) {
+            $rawSnap = @file_get_contents($activeSnapshot, false, null, 0, self::MAX_SNAPSHOT_BYTES);
+            if (is_string($rawSnap) && trim($rawSnap) !== '') {
+                $sanitizedSnap = self::sanitizeHtml($rawSnap);
+                if ($sanitizedSnap !== '') {
+                    $result['previewHtml'] = $sanitizedSnap;
+                    $result['sourceType'] = 'snapshot';
+                    $result['entryFile'] = 'ssr.html';
+                }
+            }
+        }
 
         if ($cacheFile !== null) {
             try {
@@ -125,6 +152,33 @@ final class Prerender
         }
 
         return $result;
+    }
+
+    private static function usableSnapshotPath(
+        ?string $snapshotPath,
+        string $bundlePath,
+        string $bundleSha,
+        ?string $snapshotSha = null
+    ): ?string {
+        if ($snapshotPath === null || $snapshotPath === '' || !is_file($snapshotPath)) return null;
+        $size = @filesize($snapshotPath);
+        if (!is_int($size) || $size <= 0 || $size > self::MAX_SNAPSHOT_BYTES) return null;
+        $head = @file_get_contents($snapshotPath, false, null, 0, 256);
+        if (is_string($head) && preg_match('/<!--\s*softn-ssr-sha256:\s*([a-f0-9]{16,64})\s*-->/i', $head, $m) === 1) {
+            $tag = strtolower($m[1]);
+            $matchesClient = $bundleSha !== '' && str_starts_with(strtolower($bundleSha), $tag);
+            $matchesSource = is_string($snapshotSha) && $snapshotSha !== '' && str_starts_with(strtolower($snapshotSha), $tag);
+            if (($bundleSha !== '' || (is_string($snapshotSha) && $snapshotSha !== '')) && !$matchesClient && !$matchesSource) {
+                return null;
+            }
+            return $snapshotPath;
+        }
+        $snapMtime = @filemtime($snapshotPath);
+        $bundleMtime = @filemtime($bundlePath);
+        if (is_int($snapMtime) && is_int($bundleMtime) && $snapMtime < $bundleMtime) {
+            return null;
+        }
+        return $snapshotPath;
     }
 
     /**
@@ -193,6 +247,17 @@ final class Prerender
                 }
             }
 
+            // 1. Prefer an explicit public pre-rendered HTML snapshot shipped inside the bundle.
+            $bundledSnap = self::extractBundledSnapshot($zip, $manifest, $prefix);
+            if ($bundledSnap !== null) {
+                return [
+                    'themeMode' => $themeMode,
+                    'previewHtml' => $bundledSnap['html'],
+                    'sourceType' => 'snapshot',
+                    'entryFile' => $bundledSnap['file'],
+                ];
+            }
+
             $entryName = self::resolvePublicUiEntry($zip, $manifest, $prefix);
             if ($entryName === null) {
                 return ['themeMode' => $themeMode, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
@@ -219,9 +284,19 @@ final class Prerender
                 ];
             }
             if ($ext === 'html' || $ext === 'htm') {
+                $sanitized = self::sanitizeHtml($content);
+                $plainLen = strlen(trim(strip_tags($sanitized)));
+                // When index.html is an empty JS SPA shell (`<div id="app"></div>`), safely
+                // extract static HTML templates from public frontend JS/JSX/Vue modules.
+                if ($plainLen < 40) {
+                    $jsHtml = self::extractHtmlFromFrontendJs($zip, $manifest, $prefix);
+                    if ($jsHtml !== '') {
+                        $sanitized = $sanitized !== '' ? ($sanitized . "\n" . $jsHtml) : $jsHtml;
+                    }
+                }
                 return [
                     'themeMode' => $themeMode,
-                    'previewHtml' => self::sanitizeHtml($content),
+                    'previewHtml' => $sanitized,
                     'sourceType' => 'html',
                     'entryFile' => $prefix !== '' && str_starts_with($entryName, $prefix) ? substr($entryName, strlen($prefix)) : $entryName,
                 ];
@@ -233,6 +308,210 @@ final class Prerender
         } finally {
             $zip->close();
         }
+    }
+
+    /**
+     * Check whether the bundle explicitly includes a pre-rendered public HTML snapshot.
+     *
+     * @param array<string, mixed>|null $manifest
+     * @return array{html: string, file: string}|null
+     */
+    private static function extractBundledSnapshot(ZipArchive $zip, ?array $manifest, string $prefix): ?array
+    {
+        $candidates = [];
+        if (is_array($manifest)) {
+            $seo = is_array($manifest['seo'] ?? null) ? $manifest['seo'] : null;
+            if (is_array($seo) && is_string($seo['prerender'] ?? null)) {
+                $candidates[] = ltrim(str_replace('\\', '/', $seo['prerender']), '/');
+            }
+            if (is_string($manifest['prerender'] ?? null)) {
+                $candidates[] = ltrim(str_replace('\\', '/', $manifest['prerender']), '/');
+            }
+            $feRoot = is_string($manifest['frontendRoot'] ?? null)
+                ? trim(str_replace('\\', '/', $manifest['frontendRoot']), '/')
+                : '';
+            if ($feRoot !== '') {
+                $candidates[] = $feRoot . '/prerender.html';
+                $candidates[] = $feRoot . '/__softn_ssr__.html';
+            }
+        }
+        $candidates[] = 'prerender.html';
+        $candidates[] = '__softn_ssr__.html';
+
+        foreach ($candidates as $rel) {
+            if (!self::isSafePublicUiPath($rel)) continue;
+            $ext = strtolower((string) pathinfo($rel, PATHINFO_EXTENSION));
+            if ($ext !== 'html' && $ext !== 'htm') continue;
+            $zipName = $prefix . $rel;
+            $stat = $zip->statName($zipName);
+            if ($stat === false || (int) $stat['size'] === 0 || (int) $stat['size'] > self::MAX_SNAPSHOT_BYTES) continue;
+            $raw = $zip->getFromName($zipName, self::MAX_SNAPSHOT_BYTES);
+            if (!is_string($raw) || trim($raw) === '') continue;
+            $sanitized = self::sanitizeHtml($raw);
+            if ($sanitized !== '') {
+                return ['html' => $sanitized, 'file' => $rel];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Zero-execution HTML extraction for Container v2 JS/Vue/SPA bundles whose
+     * `index.html` is a minimal mount point (`<div id="app"></div>`).
+     * Scans only public frontend files (never server/backend/private/vendor),
+     * extracts static `html\`...\`` template literals and Vue `<template>` blocks,
+     * strips dynamic `${...}` expressions, and sanitizes strictly to semantic HTML5.
+     *
+     * @param array<string, mixed>|null $manifest
+     */
+    private static function extractHtmlFromFrontendJs(ZipArchive $zip, ?array $manifest, string $prefix): string
+    {
+        $feRoot = is_array($manifest) && is_string($manifest['frontendRoot'] ?? null)
+            ? trim(str_replace('\\', '/', $manifest['frontendRoot']), '/')
+            : '';
+        $backendRoot = '';
+        if (is_array($manifest) && is_array($manifest['backend'] ?? null)) {
+            if (is_string($manifest['backend']['root'] ?? null)) {
+                $backendRoot = strtolower(trim(str_replace('\\', '/', $manifest['backend']['root']), '/'));
+            } elseif (is_string($manifest['backend']['entry'] ?? null) && str_contains($manifest['backend']['entry'], '/')) {
+                $firstDir = strtolower(explode('/', trim(str_replace('\\', '/', $manifest['backend']['entry']), '/'))[0]);
+                if (!in_array($firstDir, ['assets', 'css', 'js', 'public', 'static', 'dist', 'frontend', 'src'], true)) {
+                    $backendRoot = $firstDir;
+                }
+            }
+        }
+
+        $candidates = [];
+        for ($i = 0; $i < $zip->numFiles && $i < 600; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (!is_string($name) || str_ends_with($name, '/')) continue;
+            $rel = $prefix !== '' && str_starts_with($name, $prefix) ? substr($name, strlen($prefix)) : $name;
+            if ($rel === '' || str_contains($rel, "\0") || str_contains($rel, '\\') || str_contains($rel, '..')) continue;
+            $lower = strtolower(ltrim($rel, '/'));
+            if ($feRoot !== '' && !str_starts_with($lower, strtolower($feRoot) . '/')) continue;
+            if (preg_match('#^(?:server|backend|private|db|database|migrations|vendor|node_modules|kit|lib|libs|__softn_generated__)/#', $lower) === 1) {
+                continue;
+            }
+            if ($backendRoot !== '' && ($lower === $backendRoot || str_starts_with($lower, $backendRoot . '/'))) {
+                continue;
+            }
+            if (preg_match('#/(?:vendor|node_modules|chunks?)/#', $lower) === 1) continue;
+            $ext = strtolower((string) pathinfo($lower, PATHINFO_EXTENSION));
+            if (!in_array($ext, ['js', 'mjs', 'jsx', 'tsx', 'vue'], true)) continue;
+            // Prioritize entry & view/page files before utility modules.
+            $score = 50;
+            if (preg_match('#(?:^|/)(?:main|app|index)\.(?:js|mjs|jsx|tsx|vue)$#', $lower) === 1) $score = 10;
+            elseif (preg_match('#(?:^|/)(?:views|pages|screens|routes)/#', $lower) === 1) $score = 20;
+            elseif (preg_match('#(?:^|/)(?:components|ui)/#', $lower) === 1) $score = 30;
+            $candidates[] = ['score' => $score, 'zip' => $name, 'rel' => $rel, 'ext' => $ext];
+        }
+
+        usort($candidates, static fn(array $a, array $b): int => $a['score'] <=> $b['score'] ?: strcmp($a['rel'], $b['rel']));
+
+        $chunks = [];
+        $totalBytes = 0;
+        $filesScanned = 0;
+        foreach ($candidates as $cand) {
+            if ($filesScanned >= self::MAX_IMPORT_FILES || $totalBytes >= self::MAX_ENTRY_BYTES) break;
+            $stat = $zip->statName($cand['zip']);
+            if ($stat === false || (int) $stat['size'] === 0 || (int) $stat['size'] > self::MAX_ENTRY_BYTES) continue;
+            $src = $zip->getFromName($cand['zip'], self::MAX_ENTRY_BYTES);
+            if (!is_string($src) || $src === '') continue;
+            $filesScanned++;
+
+            if ($cand['ext'] === 'vue') {
+                if (preg_match('/<template\b[^>]*>([\s\S]*?)<\/template>/i', $src, $vm) === 1) {
+                    $cleaned = preg_replace('/\{\{[\s\S]*?\}\}/', '', $vm[1]) ?? $vm[1];
+                    $chunks[] = $cleaned;
+                    $totalBytes += strlen($cleaned);
+                }
+                continue;
+            }
+
+            if (str_contains($src, 'html`')) {
+                foreach (self::extractTaggedHtmlLiterals($src) as $frag) {
+                    $chunks[] = $frag;
+                    $totalBytes += strlen($frag);
+                    if ($totalBytes >= self::MAX_ENTRY_BYTES) break;
+                }
+            }
+        }
+
+        if ($chunks === []) return '';
+        return self::sanitizeHtml(implode("\n", $chunks));
+    }
+
+    /**
+     * Extract static HTML fragments from JS tagged template literals (`html\`...\``),
+     * stripping `${...}` dynamic interpolations via balanced brace scanning.
+     *
+     * @return string[]
+     */
+    private static function extractTaggedHtmlLiterals(string $src): array
+    {
+        $out = [];
+        $len = strlen($src);
+        $pos = 0;
+        while ($pos < $len && count($out) < 120) {
+            $idx = strpos($src, 'html`', $pos);
+            if ($idx === false) break;
+            // Ensure `html` is not the suffix of another identifier (e.g. `myhtml\``).
+            if ($idx > 0 && preg_match('/[A-Za-z0-9_$]/', $src[$idx - 1]) === 1) {
+                $pos = $idx + 5;
+                continue;
+            }
+            $i = $idx + 5;
+            $buf = '';
+            while ($i < $len) {
+                $ch = $src[$i];
+                if ($ch === '\\' && $i + 1 < $len) {
+                    $next = $src[$i + 1];
+                    $buf .= ($next === '`' || $next === '$' || $next === '\\') ? $next : ('\\' . $next);
+                    $i += 2;
+                    continue;
+                }
+                if ($ch === '`') {
+                    $i++;
+                    break;
+                }
+                if ($ch === '$' && $i + 1 < $len && $src[$i + 1] === '{') {
+                    // Skip balanced `${ ... }` expression, recursively collecting any nested `html\`...\`` inside it.
+                    $depth = 1;
+                    $quote = null;
+                    $exprStart = $i + 2;
+                    $j = $exprStart;
+                    while ($j < $len && $depth > 0) {
+                        $c = $src[$j];
+                        if ($quote !== null) {
+                            if ($c === '\\' && $j + 1 < $len) { $j += 2; continue; }
+                            if ($c === $quote) $quote = null;
+                        } else {
+                            if ($c === '"' || $c === "'" || $c === '`') $quote = $c;
+                            elseif ($c === '{') $depth++;
+                            elseif ($c === '}') $depth--;
+                        }
+                        $j++;
+                    }
+                    $expr = substr($src, $exprStart, max(0, $j - $exprStart - 1));
+                    if (str_contains($expr, 'html`')) {
+                        foreach (self::extractTaggedHtmlLiterals($expr) as $nested) {
+                            $buf .= ' ' . $nested . ' ';
+                        }
+                    } else {
+                        $buf .= ' ';
+                    }
+                    $i = $j;
+                    continue;
+                }
+                $buf .= $ch;
+                $i++;
+            }
+            $pos = $i;
+            if (str_contains($buf, '<') && trim($buf) !== '') {
+                $out[] = $buf;
+            }
+        }
+        return $out;
     }
 
     /**
@@ -782,9 +1061,25 @@ final class Prerender
         }
 
         $rawChildren = is_array($node['children'] ?? null) ? $node['children'] : [];
-        // Collapse redundant nested <div> wrappers that hold only a single element child.
-        if ($tag === 'div' && $attrs === '' && count($rawChildren) === 1 && is_array($rawChildren[0])) {
-            return self::serializeNode($rawChildren[0], $indent, $bytes);
+        // Collapse redundant wrapper <div> elements that hold no attributes and no direct
+        // inline text, so View Source stays crisp and semantic instead of deep div ladders.
+        if ($tag === 'div' && $attrs === '') {
+            $hasDirectText = false;
+            foreach ($rawChildren as $rc) {
+                if (is_string($rc) && trim($rc) !== '') {
+                    $hasDirectText = true;
+                    break;
+                }
+            }
+            if (!$hasDirectText) {
+                $unwrapped = [];
+                foreach ($rawChildren as $rc) {
+                    if ($bytes >= self::MAX_OUTPUT_BYTES) break;
+                    $s = self::serializeNode($rc, $indent, $bytes);
+                    if ($s !== '') $unwrapped[] = $s;
+                }
+                return implode("\n", $unwrapped);
+            }
         }
 
         $innerParts = [];

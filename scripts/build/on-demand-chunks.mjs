@@ -21,7 +21,7 @@
  * after the facade it starts at — dist/scene3d.js becomes
  * assets/scene3d-<hash>.js. Three.js itself is `vendor-three` below.
  */
-export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation', 'pickers', 'games', 'wasm'];
+export const featureChunks = ['scene3d', 'charts', 'editors', 'smart', 'media', 'qr-reader', 'animation', 'pickers', 'games', 'wasm'];
 
 /**
  * The light classic component groups. A classic page's first draw waits for
@@ -116,6 +116,19 @@ export const onDemandGlobIgnores = [
   fullEngineGlob,
   '**/assets/zxing_reader-*.wasm',
   '**/assets/vendor-three-*.js',
+  '**/assets/webgl-scene-host-*.js',
+  '**/assets/local-backend-transport-*.js',
+  '**/assets/device-bridge-*.js',
+  '**/assets/virtual-nav-bar-*.js',
+  '**/assets/guest-indexeddb-*.js',
+  '**/assets/guest-three-native-*.js',
+  '**/assets/guest-vendors-*.js',
+  '**/assets/guest-worker-scope-*.js',
+  '**/assets/guest-webgl-*.js',
+  '**/assets/guest-react-vendor-*.js',
+  '**/assets/three-worker-host-*.js',
+  '**/assets/webgl-worker-host-*.js',
+  '**/assets/jsx-transform-*.js',
   ...featureChunks.map((name) => `**/assets/${name}-*.js`),
   ...threeAddonChunks.map((name) => `**/assets/${name}-*.js`),
   ...onDemandRuntimeChunks.map((name) => `**/assets/${name}-*.js`),
@@ -182,7 +195,7 @@ export const onDemandRuntimeCaching = [
     handler: 'CacheFirst',
     options: {
       cacheName: 'softn-container-runtime',
-      expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 30 },
+      expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 30 },
       cacheableResponse: { statuses: [0, 200] },
     },
   },

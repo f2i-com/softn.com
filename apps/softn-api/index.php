@@ -154,22 +154,35 @@ try {
         exit;
     }
 
-    // A browser navigation to /app/<slug> or /play/<slug> lands here through
-    // the rewrite in .htaccess; the request path is the page's own.
+    // A browser navigation to /apps, /publish, /app/<slug>, /play/<slug>, or
+    // /sitemap-apps.xml lands here through the rewrite in .htaccess / router.php.
     $pagePath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
-    if (is_string($pagePath) && preg_match('#^/app/([^/]+)/?$#', rawurldecode($pagePath), $pm)) {
-        Pages::app($pm[1])->send();
-        exit;
-    }
-    if (is_string($pagePath) && preg_match('#^/play/([^/]+)/?$#', rawurldecode($pagePath), $pm)) {
-        Seed::ifEmpty();
-        Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local')->send();
-        exit;
-    }
-    if (is_string($pagePath) && $pagePath === '/sitemap-apps.xml') {
-        Seed::ifEmpty();
-        Pages::sitemap()->send();
-        exit;
+    if (is_string($pagePath)) {
+        $decodedPage = rawurldecode($pagePath);
+        if (preg_match('#^/apps/?$#', $decodedPage)) {
+            Seed::ifEmpty();
+            Pages::directory()->send();
+            exit;
+        }
+        if (preg_match('#^/publish/?$#', $decodedPage)) {
+            Pages::publishPage()->send();
+            exit;
+        }
+        if (preg_match('#^/app/([^/]+)/?$#', $decodedPage, $pm)) {
+            Seed::ifEmpty();
+            Pages::app($pm[1])->send();
+            exit;
+        }
+        if (preg_match('#^/play/([^/]+)/?$#', $decodedPage, $pm)) {
+            Seed::ifEmpty();
+            Pages::play($pm[1], ($_GET['mode'] ?? '') === 'local')->send();
+            exit;
+        }
+        if ($decodedPage === '/sitemap-apps.xml') {
+            Seed::ifEmpty();
+            Pages::sitemap()->send();
+            exit;
+        }
     }
 
     $matched = match_route($req->method, $req->path, $routes);

@@ -14450,7 +14450,9 @@
       "Camera",
       "Microphone",
       "AudioStream",
-      "QRCode",
+      "QRCode"
+    ],
+    "qr-reader": [
       "QRReader"
     ],
     "pickers": [

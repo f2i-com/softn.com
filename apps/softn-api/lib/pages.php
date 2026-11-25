@@ -32,7 +32,9 @@ final class Pages
             // The site says it has no such app; mark unknown share pages noindex
             // so crawlers do not index soft-404 URLs while keeping the SPA shell.
             if ($err->status === 404) {
-                $notFoundHtml = str_replace('</head>', '<meta name="robots" content="noindex" />' . "\n  </head>", $html);
+                $notFoundHtml = self::stripStaticHomeHead($html);
+                $notFoundHtml = self::injectRootSsr($notFoundHtml, '');
+                $notFoundHtml = str_replace('</head>', '<meta name="robots" content="noindex" />' . "\n  </head>", $notFoundHtml);
                 return Response::html($notFoundHtml, 200, ['Cache-Control' => 'no-cache']);
             }
             return self::problem($err->getMessage(), $err->status);
@@ -63,6 +65,7 @@ final class Pages
             ? self::prerenderFor($slug, $row, $ver)
             : ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
 
+        $html = self::stripStaticHomeHead($html);
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
         $replace = [
             'name="description"' => $desc,
@@ -86,22 +89,202 @@ final class Pages
             ? (preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $html, 1) ?? $html)
             : self::replaceOnce('#<link\s+rel="canonical"\s+href="[^"]*"#', fn() => '<link rel="canonical" href="' . $e($url) . '"', $html);
 
-        $jsonLd = self::webAppJsonLd($row, $ver, $desc, $url, $origin !== null ? $image : null);
+        $playAbs = $origin === null ? null : ($playUrl ?? "$origin/play/$slug");
+        $jsonLd = self::webAppJsonLd($row, $ver, $desc, $url, $origin !== null ? $image : null, $playAbs);
+        $crumbsLd = self::breadcrumbJsonLd($origin, $row, $slug);
         $extraHead = '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n"
+            . '    <meta name="robots" content="index,follow,max-image-preview:large" />' . "\n"
             . '    <meta name="twitter:title" content="' . $e($title) . '" />' . "\n"
             . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
             . '    <meta name="twitter:image" content="' . $e($image) . '" />' . "\n"
             . '    <meta name="twitter:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
             . ($jsonLd !== '' ? '    <script type="application/ld+json">' . $jsonLd . '</script>' . "\n" : '')
+            . ($crumbsLd !== '' ? '    <script type="application/ld+json">' . $crumbsLd . '</script>' . "\n" : '')
             . '  </head>';
         $html = str_replace('</head>', $extraHead, $html);
 
         $ssrMain = self::renderAppBody($slug, $row, $ver, $desc, $playUrl, $prerender['previewHtml']);
-        $html = self::replaceOnce(
-            '#<div\s+id="root"\s*>\s*</div>#i',
-            fn() => '<div id="root">' . "\n" . $ssrMain . "\n    </div>",
-            $html
-        );
+        $html = self::injectRootSsr($html, $ssrMain);
+        return self::conditionalResponse($html, 'text/html; charset=utf-8', 'no-cache');
+    }
+
+    /**
+     * Server-rendered directory page (`/apps`) with full crawlable app links,
+     * category links, and `CollectionPage` + `ItemList` + `BreadcrumbList` JSON-LD.
+     */
+    public static function directory(): Response
+    {
+        $index = dirname(__DIR__, 2) . '/index.html';
+        if (!is_file($index)) return Response::html('<!doctype html><title>SoftN</title><p>The site is not built.</p>', 500);
+        $html = self::stripStaticHomeHead((string) file_get_contents($index));
+        $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $origin = self::origin();
+
+        $category = is_string($_GET['category'] ?? null) ? trim((string) $_GET['category']) : '';
+        $query = is_string($_GET['q'] ?? null) ? trim((string) $_GET['q']) : '';
+        $rows = array_values(array_filter(Catalog::all(), static fn(array $r): bool => empty($r['hidden'])));
+        usort($rows, static fn(array $a, array $b): int => ((int) ($b['runs'] ?? 0)) <=> ((int) ($a['runs'] ?? 0)) ?: ((int) ($b['updated_at'] ?? 0)) <=> ((int) ($a['updated_at'] ?? 0)));
+
+        $catCounts = [];
+        foreach ($rows as $r) {
+            $c = trim((string) ($r['category'] ?? ''));
+            if ($c !== '') $catCounts[$c] = ($catCounts[$c] ?? 0) + 1;
+        }
+        arsort($catCounts);
+
+        $filtered = $rows;
+        if ($category !== '') {
+            $catLower = strtolower($category);
+            $filtered = array_values(array_filter($filtered, static fn(array $r): bool => strtolower((string) ($r['category'] ?? '')) === $catLower));
+        }
+        if ($query !== '') {
+            $qLower = strtolower($query);
+            $filtered = array_values(array_filter($filtered, static fn(array $r): bool =>
+                str_contains(strtolower((string) ($r['name'] ?? '')), $qLower)
+                || str_contains(strtolower((string) ($r['description'] ?? '')), $qLower)
+            ));
+        }
+
+        $total = count($filtered);
+        $title = $category !== '' ? ucfirst($category) . ' Apps — SoftN' : 'Apps Directory — SoftN';
+        $desc = $category !== ''
+            ? "Browse $total $category apps on SoftN. Run them directly in your browser sandbox, view their source, or remix them."
+            : "Browse $total apps built with SoftN: business tools, games, simulations, and interactive web apps that run safely in one .softn file.";
+        $canonicalPath = $category !== '' ? '/apps?category=' . rawurlencode($category) : '/apps';
+        $url = $origin === null ? null : $origin . $canonicalPath;
+        $robots = ($query !== '' || ($category !== '' && $total === 0)) ? 'noindex,follow' : 'index,follow,max-image-preview:large';
+
+        $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
+        foreach ([
+            'name="description"' => $desc,
+            'property="og:title"' => $title,
+            'property="og:description"' => $desc,
+            'property="og:url"' => $url,
+        ] as $attr => $value) {
+            if ($value === null) {
+                $html = preg_replace('#<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*>\s*#s', '', $html, 1) ?? $html;
+            } else {
+                $html = self::replaceOnce('#(<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*content=")[^"]*(")#s', fn(array $m) => $m[1] . $e($value) . $m[2], $html);
+            }
+        }
+        $html = $url === null
+            ? (preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $html, 1) ?? $html)
+            : self::replaceOnce('#<link\s+rel="canonical"\s+href="[^"]*"#', fn() => '<link rel="canonical" href="' . $e($url) . '"', $html);
+
+        $itemElements = [];
+        $pos = 1;
+        foreach (array_slice($filtered, 0, 48) as $r) {
+            $slug = (string) ($r['slug'] ?? '');
+            if ($slug === '' || !Catalog::validSlug($slug)) continue;
+            $item = [
+                '@type' => 'ListItem',
+                'position' => $pos++,
+                'name' => (string) ($r['name'] ?? $slug),
+            ];
+            if ($origin !== null) $item['url'] = "$origin/app/$slug";
+            $itemElements[] = $item;
+        }
+        $collectionLd = [
+            '@context' => 'https://schema.org',
+            '@type' => 'CollectionPage',
+            'name' => $title,
+            'description' => $desc,
+            'mainEntity' => [
+                '@type' => 'ItemList',
+                'numberOfItems' => count($itemElements),
+                'itemListElement' => $itemElements,
+            ],
+        ];
+        if ($url !== null) $collectionLd['url'] = $url;
+        $ldJson = json_encode($collectionLd, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+
+        $extraHead = '<meta name="robots" content="' . $e($robots) . '" />' . "\n"
+            . '    <meta name="twitter:title" content="' . $e($title) . '" />' . "\n"
+            . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . (is_string($ldJson) ? '    <script type="application/ld+json">' . $ldJson . '</script>' . "\n" : '')
+            . '  </head>';
+        $html = str_replace('</head>', $extraHead, $html);
+
+        $lines = [
+            '      <main id="boot" data-softn-ssr="directory">',
+            '        <header>',
+            '          <h1>' . $e($category !== '' ? ucfirst($category) . ' Apps' : 'SoftN Apps Directory') . '</h1>',
+            '          <p>' . $e($desc) . '</p>',
+        ];
+        if ($catCounts !== []) {
+            $catLinks = ['<a href="/apps">All (' . count($rows) . ')</a>'];
+            foreach (array_slice($catCounts, 0, 16, true) as $catId => $cnt) {
+                $catLinks[] = '<a href="/apps?category=' . $e(rawurlencode($catId)) . '">' . $e($catId) . ' (' . $cnt . ')</a>';
+            }
+            $lines[] = '          <nav aria-label="Categories">' . implode(' · ', $catLinks) . '</nav>';
+        }
+        $lines[] = '        </header>';
+        $lines[] = '        <section aria-label="Published applications">';
+        foreach (array_slice($filtered, 0, 48) as $r) {
+            $slug = (string) ($r['slug'] ?? '');
+            if ($slug === '' || !Catalog::validSlug($slug)) continue;
+            $rName = (string) ($r['name'] ?? $slug);
+            $rDesc = (string) ($r['description'] ?? '');
+            $rCat = trim((string) ($r['category'] ?? ''));
+            $lines[] = '          <article>';
+            $lines[] = '            <h2><a href="' . $e("/app/$slug") . '">' . $e($rName) . '</a></h2>';
+            if ($rDesc !== '') $lines[] = '            <p>' . $e($rDesc) . '</p>';
+            $meta = $rCat !== '' ? $e($rCat) . ' · ' : '';
+            $lines[] = '            <p>' . $meta . '<a href="' . $e("/play/$slug") . '">Play ' . $e($rName) . '</a></p>';
+            $lines[] = '          </article>';
+        }
+        $lines[] = '        </section>';
+        $lines[] = '      </main>';
+
+        $html = self::injectRootSsr($html, implode("\n", $lines));
+        return self::conditionalResponse($html, 'text/html; charset=utf-8', 'no-cache');
+    }
+
+    /**
+     * Server-rendered publish page (`/publish`) with SEO metadata and SSR HTML.
+     */
+    public static function publishPage(): Response
+    {
+        $index = dirname(__DIR__, 2) . '/index.html';
+        if (!is_file($index)) return Response::html('<!doctype html><title>SoftN</title><p>The site is not built.</p>', 500);
+        $html = self::stripStaticHomeHead((string) file_get_contents($index));
+        $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $origin = self::origin();
+        $title = 'Publish a SoftN App — SoftN';
+        $desc = 'Publish a .softn app bundle to the SoftN directory. No account required: publishing returns an edit key for updates.';
+        $url = $origin === null ? null : "$origin/publish";
+
+        $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
+        foreach ([
+            'name="description"' => $desc,
+            'property="og:title"' => $title,
+            'property="og:description"' => $desc,
+            'property="og:url"' => $url,
+        ] as $attr => $value) {
+            if ($value === null) {
+                $html = preg_replace('#<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*>\s*#s', '', $html, 1) ?? $html;
+            } else {
+                $html = self::replaceOnce('#(<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*content=")[^"]*(")#s', fn(array $m) => $m[1] . $e($value) . $m[2], $html);
+            }
+        }
+        $html = $url === null
+            ? (preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $html, 1) ?? $html)
+            : self::replaceOnce('#<link\s+rel="canonical"\s+href="[^"]*"#', fn() => '<link rel="canonical" href="' . $e($url) . '"', $html);
+
+        $extraHead = '<meta name="robots" content="index,follow" />' . "\n"
+            . '    <meta name="twitter:title" content="' . $e($title) . '" />' . "\n"
+            . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . '  </head>';
+        $html = str_replace('</head>', $extraHead, $html);
+
+        $body = implode("\n", [
+            '      <main id="boot" data-softn-ssr="publish">',
+            '        <h1>Publish a SoftN App</h1>',
+            '        <p>' . $e($desc) . '</p>',
+            '        <nav><a href="/apps">Browse Apps Directory</a> · <a href="/docs/">Read Documentation</a></nav>',
+            '      </main>',
+        ]);
+        $html = self::injectRootSsr($html, $body);
         return self::conditionalResponse($html, 'text/html; charset=utf-8', 'no-cache');
     }
 
@@ -235,7 +418,7 @@ final class Pages
         $image = ($origin ?? '') . "/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
         $canonicalUrl = $origin === null ? null : "$origin/app/$slug";
         $playPageUrl = $origin === null ? null : "$origin/play/$slug";
-        $jsonLd = self::webAppJsonLd($row, $ver, $desc, $canonicalUrl, $origin !== null ? $image : null);
+        $jsonLd = self::webAppJsonLd($row, $ver, $desc, $canonicalUrl, $origin !== null ? $image : null, $playPageUrl);
         // The shell draws its boot screen dark, the `theme` above. An app
         // whose project declares light is drawn light whatever that theme
         // says, so its boot screen is too, rather than opening dark and
@@ -245,16 +428,20 @@ final class Pages
             ? '    <style>html,body{background:#f5f5f8;color:#171821}.wheel{border-color:color-mix(in srgb,currentColor 20%,transparent);border-top-color:currentColor}</style>' . "\n"
             : '';
         $inject = '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n"
+            . '    <meta name="robots" content="index,follow,max-image-preview:large" />' . "\n"
             . '    <meta name="description" content="' . $e($desc) . '" />' . "\n"
             . '    <meta property="og:type" content="website" />' . "\n"
             . '    <meta property="og:site_name" content="SoftN" />' . "\n"
             . '    <meta property="og:title" content="' . $e($name) . '" />' . "\n"
             . '    <meta property="og:description" content="' . $e($desc) . '" />' . "\n"
             . '    <meta property="og:image" content="' . $e($image) . '" />' . "\n"
+            . '    <meta property="og:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
             . ($playPageUrl === null ? '' : '    <meta property="og:url" content="' . $e($playPageUrl) . '" />' . "\n")
             . '    <meta name="twitter:card" content="summary_large_image" />' . "\n"
             . '    <meta name="twitter:title" content="' . $e($name) . '" />' . "\n"
             . '    <meta name="twitter:description" content="' . $e($desc) . '" />' . "\n"
+            . '    <meta name="twitter:image" content="' . $e($image) . '" />' . "\n"
+            . '    <meta name="twitter:image:alt" content="' . $e("$name on SoftN") . '" />' . "\n"
             . ($canonicalUrl === null ? '' : '    <link rel="canonical" href="' . $e($canonicalUrl) . '" />' . "\n")
             . ($jsonLd !== '' ? '    <script type="application/ld+json">' . $jsonLd . '</script>' . "\n" : '')
             . $boot
@@ -262,9 +449,9 @@ final class Pages
         $html = str_replace('</head>', $inject, $html);
 
         $ssrPlay = self::renderPlayBody($slug, $row, $desc, $prerender['previewHtml']);
-        if (preg_match('#<div\s+id="boot"\b[^>]*>[\s\S]*?</div>#i', $html) === 1) {
+        if (preg_match('#<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?</div>#i', $html) === 1) {
             $html = self::replaceOnce(
-                '#(<div\s+id="boot"\b[^>]*>[\s\S]*?)(</div>)#i',
+                '#(<div\s+id="boot"(?=\s|>)[^>]*>[\s\S]*?)(</div>)#i',
                 fn(array $m) => $m[1] . "\n" . $ssrPlay . "\n      " . $m[2],
                 $html
             );
@@ -297,27 +484,49 @@ final class Pages
         usort($rows, static fn(array $a, array $b): int => ((int) ($b['updated_at'] ?? 0)) <=> ((int) ($a['updated_at'] ?? 0)));
 
         $urls = [
-            ['loc' => "$origin/", 'lastmod' => null],
-            ['loc' => "$origin/apps", 'lastmod' => null],
-            ['loc' => "$origin/publish", 'lastmod' => null],
+            ['loc' => "$origin/", 'lastmod' => null, 'image' => null, 'title' => null],
+            ['loc' => "$origin/apps", 'lastmod' => null, 'image' => null, 'title' => null],
+            ['loc' => "$origin/publish", 'lastmod' => null, 'image' => null, 'title' => null],
         ];
-        foreach (array_slice($rows, 0, 49997) as $row) {
+        $seenCats = [];
+        foreach ($rows as $row) {
+            $cat = trim((string) ($row['category'] ?? ''));
+            if ($cat !== '' && !isset($seenCats[strtolower($cat)])) {
+                $seenCats[strtolower($cat)] = true;
+                $urls[] = [
+                    'loc' => "$origin/apps?category=" . rawurlencode($cat),
+                    'lastmod' => null,
+                    'image' => null,
+                    'title' => null,
+                ];
+            }
+        }
+        foreach (array_slice($rows, 0, 49900) as $row) {
             $slug = (string) ($row['slug'] ?? '');
             if ($slug === '' || !Catalog::validSlug($slug)) continue;
             $updated = (int) ($row['updated_at'] ?? 0);
             $urls[] = [
                 'loc' => "$origin/app/$slug",
                 'lastmod' => $updated > 0 ? gmdate('Y-m-d', $updated) : null,
+                'image' => "$origin/api/apps/$slug/thumbnail?v=$updated",
+                'title' => (string) ($row['name'] ?? $slug),
             ];
         }
 
         $lines = [
             '<?xml version="1.0" encoding="UTF-8"?>',
-            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">',
         ];
         foreach ($urls as $u) {
             $entry = '  <url><loc>' . $e($u['loc']) . '</loc>';
             if ($u['lastmod'] !== null) $entry .= '<lastmod>' . $u['lastmod'] . '</lastmod>';
+            if ($u['image'] !== null) {
+                $entry .= '<image:image><image:loc>' . $e($u['image']) . '</image:loc>';
+                if ($u['title'] !== null && $u['title'] !== '') {
+                    $entry .= '<image:title>' . $e($u['title']) . '</image:title>';
+                }
+                $entry .= '</image:image>';
+            }
             $entry .= '</url>';
             $lines[] = $entry;
         }
@@ -380,6 +589,7 @@ final class Pages
         $bundleSha = (string) ($ver['sha256'] ?? '');
         $withhold = (bool) $hosting['withholdBackend'];
         $pageCache = Config::dataDir() . '/page-cache';
+        $snapshotPath = $appDir . '/ssr.html';
         if ($withhold) {
             $cachePath = $appDir . '/backend-cache/client-v' . (int) ($ver['version'] ?? 0) . '-' . substr($bundleSha, 0, 12) . '.softn';
             try {
@@ -388,9 +598,9 @@ final class Pages
             } catch (Throwable) {
                 return ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null];
             }
-            return Prerender::forBundle($bundlePath, $sha, $pageCache, true);
+            return Prerender::forBundle($bundlePath, $sha, $pageCache, true, $snapshotPath, $bundleSha);
         }
-        return Prerender::forBundle($srcPath, $bundleSha, $pageCache, false);
+        return Prerender::forBundle($srcPath, $bundleSha, $pageCache, false, $snapshotPath);
     }
 
     /**
@@ -400,7 +610,7 @@ final class Pages
      * @param array<string, mixed> $row
      * @param array<string, mixed>|null $ver
      */
-    private static function webAppJsonLd(array $row, ?array $ver, string $desc, ?string $url, ?string $image): string
+    private static function webAppJsonLd(array $row, ?array $ver, string $desc, ?string $url, ?string $image, ?string $playUrl = null): string
     {
         $ld = [
             '@context' => 'https://schema.org',
@@ -412,9 +622,36 @@ final class Pages
             'offers' => ['@type' => 'Offer', 'price' => '0', 'priceCurrency' => 'USD'],
         ];
         if ($url !== null) $ld['url'] = $url;
-        if ($image !== null) $ld['image'] = $image;
+        if ($playUrl !== null) $ld['installUrl'] = $playUrl;
+        if ($image !== null) {
+            $ld['image'] = $image;
+            $ld['screenshot'] = $image;
+        }
         $versionStr = is_array($ver) ? (string) ($ver['version'] ?? '') : '';
         if ($versionStr !== '') $ld['softwareVersion'] = $versionStr;
+        $createdAt = (int) ($row['created_at'] ?? 0);
+        if ($createdAt > 0) $ld['datePublished'] = gmdate('c', $createdAt);
+        $updatedAt = (int) ($row['updated_at'] ?? 0);
+        if ($updatedAt > 0) $ld['dateModified'] = gmdate('c', $updatedAt);
+        $ratingCount = (int) ($row['rating_count'] ?? 0);
+        $ratingSum = (int) ($row['rating_sum'] ?? 0);
+        if ($ratingCount > 0 && $ratingSum > 0) {
+            $ld['aggregateRating'] = [
+                '@type' => 'AggregateRating',
+                'ratingValue' => round($ratingSum / $ratingCount, 2),
+                'ratingCount' => $ratingCount,
+                'bestRating' => 5,
+                'worstRating' => 1,
+            ];
+        }
+        $runCount = (int) ($row['runs'] ?? 0);
+        if ($runCount > 0) {
+            $ld['interactionStatistic'] = [
+                '@type' => 'InteractionCounter',
+                'interactionType' => 'https://schema.org/UseAction',
+                'userInteractionCount' => $runCount,
+            ];
+        }
         $author = trim((string) ($row['author'] ?? ''));
         if ($author !== '') $ld['author'] = ['@type' => 'Person', 'name' => $author];
         $tags = json_decode((string) ($row['tags'] ?? '[]'), true);
@@ -424,6 +661,68 @@ final class Pages
         }
         $encoded = json_encode($ld, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * Build `BreadcrumbList` JSON-LD for `/app/<slug>` (`SoftN -> Apps -> [Category] -> App`).
+     *
+     * @param array<string, mixed> $row
+     */
+    private static function breadcrumbJsonLd(?string $origin, array $row, string $slug): string
+    {
+        if ($origin === null) return '';
+        $items = [
+            ['@type' => 'ListItem', 'position' => 1, 'name' => 'SoftN', 'item' => "$origin/"],
+            ['@type' => 'ListItem', 'position' => 2, 'name' => 'Apps', 'item' => "$origin/apps"],
+        ];
+        $pos = 3;
+        $cat = trim((string) ($row['category'] ?? ''));
+        if ($cat !== '') {
+            $items[] = [
+                '@type' => 'ListItem',
+                'position' => $pos++,
+                'name' => $cat,
+                'item' => "$origin/apps?category=" . rawurlencode($cat),
+            ];
+        }
+        $items[] = [
+            '@type' => 'ListItem',
+            'position' => $pos,
+            'name' => (string) ($row['name'] ?? $slug),
+            'item' => "$origin/app/$slug",
+        ];
+        $encoded = json_encode([
+            '@context' => 'https://schema.org',
+            '@type' => 'BreadcrumbList',
+            'itemListElement' => $items,
+        ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /** Strip static homepage-only head tags before injecting route-specific SEO tags. */
+    private static function stripStaticHomeHead(string $html): string
+    {
+        $html = preg_replace('#<script\s+type="application/ld\+json"\s+id="softn-ld-json"[^>]*>[\s\S]*?</script>\s*#i', '', $html) ?? $html;
+        $html = preg_replace('#<meta\s+name="(?:twitter:(?:title|description|image|image:alt)|robots)"[^>]*>\s*#i', '', $html) ?? $html;
+        return $html;
+    }
+
+    /** Inject route-specific SSR markup inside `#root`, replacing static home SSR or empty `#root`. */
+    private static function injectRootSsr(string $html, string $ssrBody): string
+    {
+        $replacement = $ssrBody === '' ? '' : ("\n" . $ssrBody . "\n    ");
+        if (str_contains($html, '<!--softn:ssr-->')) {
+            return self::replaceOnce(
+                '#<!--softn:ssr-->[\s\S]*?<!--/softn:ssr-->#',
+                fn() => $replacement,
+                $html
+            );
+        }
+        return self::replaceOnce(
+            '#<div\s+id="root"\s*>\s*</div>#i',
+            fn() => '<div id="root">' . $replacement . '</div>',
+            $html
+        );
     }
 
     /**

@@ -71,25 +71,34 @@ export function shellTemplate(tags) {
         animation: turn 0.8s linear infinite;
       }
       .softn-ssr {
-        max-width: 42rem;
-        margin-top: 8px;
-        padding: 0 24px;
-        text-align: center;
-        opacity: 0.85;
-        line-height: 1.5;
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
       }
-      .softn-ssr h1 {
-        font-size: 1.15rem;
-        margin: 0 0 6px;
-      }
-      .softn-ssr p {
-        margin: 4px 0;
-        font-size: 0.9rem;
-      }
-      .softn-ssr [data-softn-preview] {
-        margin-top: 12px;
-        text-align: left;
-        font-size: 0.9rem;
+      @media (scripting: none) {
+        .wheel {
+          display: none;
+        }
+        .softn-ssr {
+          position: static;
+          width: auto;
+          height: auto;
+          margin: 0 auto;
+          overflow: visible;
+          clip: auto;
+          clip-path: none;
+          white-space: normal;
+          max-width: 52rem;
+          padding: 24px;
+          line-height: 1.55;
+        }
       }
       @keyframes turn {
         to {

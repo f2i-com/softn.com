@@ -2167,7 +2167,8 @@ export class HostDomPatcher {
       const activeId = activeEl instanceof Element && this.owns(activeEl) ? this.findNearestNodeId(activeEl) : null;
       syncChanges.push(['f', activeId ?? 0]);
 
-      const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this), this.origin());
+      const allowCachedOrigin = eventType === 'mousemove' || eventType === 'pointermove' || eventType === 'touchmove';
+      const props = serializeDomEvent(e, targetEl, this.findNearestNodeId.bind(this), this.origin(allowCachedOrigin));
       const answered =
         !held
           ? undefined
@@ -2273,9 +2274,9 @@ export class HostDomPatcher {
    * drawn as far off as the app was from the window's corner, and an app learned where in
    * the embedding page it had been put.
    */
-  private origin(): AppOrigin {
+  private origin(allowCached = false): AppOrigin {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    if (!this.cachedOriginBox || now - this.cachedOriginBox.at > 120) {
+    if (!allowCached || !this.cachedOriginBox || now - this.cachedOriginBox.at > 120) {
       const box = typeof this.docRootEl.getBoundingClientRect === 'function' ? this.docRootEl.getBoundingClientRect() : null;
       this.cachedOriginBox = { left: box?.left ?? 0, top: box?.top ?? 0, at: now };
     }

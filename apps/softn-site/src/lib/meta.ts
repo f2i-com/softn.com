@@ -95,8 +95,11 @@ export function applyMeta(meta: PageMeta, doc: Document = document): void {
   metaTag(doc, 'property', 'og:url').content = url;
   setDescription(meta.description, doc);
   const robots = doc.head.querySelector<HTMLMetaElement>('meta[name="robots"]');
-  if (meta.indexable) robots?.remove();
-  else metaTag(doc, 'name', 'robots').content = 'noindex';
+  if (meta.indexable) {
+    if (robots && /noindex/i.test(robots.content)) robots.remove();
+  } else {
+    metaTag(doc, 'name', 'robots').content = 'noindex';
+  }
 }
 
 /** A page with a better description than its route's — an app's own — sets it here. */
@@ -105,4 +108,5 @@ export function setDescription(description: string, doc: Document = document): v
   if (!text) return;
   metaTag(doc, 'name', 'description').content = text;
   metaTag(doc, 'property', 'og:description').content = text;
+  metaTag(doc, 'name', 'twitter:description').content = text;
 }

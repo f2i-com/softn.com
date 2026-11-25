@@ -33,19 +33,14 @@ import {
   utf8Length,
 } from './esm-linker';
 import { GUEST_EXTENSIONS_SOURCE } from './guest-canvas-and-ext';
-import { BUILTIN_VENDOR_MODULES } from './guest-vendors';
-import { transformJsx } from './jsx-transform';
 import { GUEST_BROWSER_GLOBALS_SOURCE } from './guest-browser-globals';
 import { GUEST_WEB_APIS_SOURCE } from './guest-web-apis';
-import { GUEST_INDEXEDDB_SOURCE } from './guest-indexeddb';
-import { GUEST_WORKER_SCOPE_SOURCE } from './guest-worker-scope';
 import { blobWithin, bytesWithin, textWithin } from './capped-body';
 import { isExternalUrlAllowed, sameSite } from './sanitize';
 import { isSafeVirtualRoute } from './session-store';
 import { loadZippEngine, type LoadedZippBindings, type ZippEngineInstance } from './zipp-loader';
-import { WebGLWorkerHost } from './webgl-worker-host';
-import { ThreeWorkerHost } from './three-worker-host';
-import { GUEST_THREE_NATIVE_SOURCE, hasBundledThree, instrumentBundledThree } from './guest-three-native';
+import type { WebGLWorkerHost } from './webgl-worker-host';
+import type { ThreeWorkerHost } from './three-worker-host';
 import { SourceMapRegistry, type EvalFallbackSource, type SourceSegment } from './source-map';
 import type {
   Canvas2DCmd,
@@ -268,12 +263,17 @@ const BUILTIN_MODULES = [
   'softn:location',
   'softn:haptics',
   'softn:notifications',
+];
+
+/** On-demand hosted React 18 compat modules loaded only when an app uses JSX/TSX or imports React. */
+const REACT_VENDOR_MODULES = [
   'softn-vendor:react',
   'softn-vendor:react-dom',
   'softn-vendor:react-dom/client',
   'softn-vendor:react/jsx-runtime',
   'softn-vendor:react/jsx-dev-runtime',
 ];
+const REACT_VENDOR_MODULE_SET = new Set(REACT_VENDOR_MODULES);
 
 /** The name of a part of one of the app's IndexedDB databases: its description, a store's list of pages, a page. Nothing else is read, written or listed. */
 const IDB_PART_NAME = /^[msp]\[/;
@@ -326,11 +326,20 @@ const MAX_PROGRAM_BYTES = 16 * 1024 * 1024;
 const PROGRAM_SLACK_BYTES = 512 * 1024;
 const MAX_AHEAD_BYTES = 10 * 1024 * 1024;
 
+/** Fast check for whether a JS module/script contains an inlined/bundled Three.js library. */
+function hasBundledThree(code: string): boolean {
+  return code.includes('THREE.WebGLRenderer') && code.includes('isWebGLRenderer');
+}
+
+const USES_WEBGL_RE = /\b(?:webgl2?|experimental-webgl|WebGLRenderingContext|WebGL2RenderingContext|WebGLRenderer|OrbitControls|GLTFLoader)\b|\bTHREE\s*\.\s*[A-Z]|['"](?:three(?:\/[^'"]*)?|softn-vendor:three|babylonjs|@babylonjs\/core|pixi\.js|regl|twgl\.js|playcanvas)['"]|getContext\s*\(\s*(?!['"]2d['"])/;
+const USES_IDB_RE = /\b(?:indexedDB|webkitIndexedDB|mozIndexedDB|IDBKeyRange|IDBDatabase|IDBRequest|IDBTransaction|IDBObjectStore|IDBIndex|IDBCursor|Dexie|localforage|openDB)\b|\bnew\s+(?:Worker|SharedWorker)\s*\(|\bSharedWorker\b|['"](?:idb|dexie|localforage)['"]/;
+const USES_REACT_VENDOR_RE = /['"](?:react|react-dom(?:\/client)?|react\/jsx(?:-dev)?-runtime|softn-vendor:react[^'"]*)['"]/;
+
 let fixedBytes = 0;
-/** The bytes of the layers every program has. */
+/** The bytes of the base layers every program has (optional layers like IndexedDB/Three are added only when loaded). */
 function fixedProgramBytes(): number {
   if (fixedBytes === 0) {
-    fixedBytes = [ESM_REGISTRY_PREAMBLE, GUEST_EXTENSIONS_SOURCE, GUEST_BROWSER_GLOBALS_SOURCE, GUEST_WEB_APIS_SOURCE, GUEST_INDEXEDDB_SOURCE, GUEST_WORKER_SCOPE_SOURCE, CLASSIC_GLOBALS_HELPER, WARNINGS_MARKED].reduce((sum, part) => sum + utf8Length(part), 0);
+    fixedBytes = [ESM_REGISTRY_PREAMBLE, GUEST_EXTENSIONS_SOURCE, GUEST_BROWSER_GLOBALS_SOURCE, GUEST_WEB_APIS_SOURCE, CLASSIC_GLOBALS_HELPER, WARNINGS_MARKED].reduce((sum, part) => sum + utf8Length(part), 0);
   }
   return fixedBytes;
 }
@@ -535,11 +544,92 @@ function guestRecord(record: DbRecord): DbRecord {
 
 export class ContainerWorkerSession {
   private readonly postToHost: (msg: WorkerToHostMsg, transfer?: Transferable[]) => void;
-  private readonly webglHost = new WebGLWorkerHost();
-  private readonly threeHost = new ThreeWorkerHost();
+  private webglHost: WebGLWorkerHost | null = null;
+  private threeHost: ThreeWorkerHost | null = null;
+  private guestThreeNativeSource: string | null = null;
+  private instrumentBundledThreeFn: ((code: string) => { code: string; patched: boolean }) | null = null;
+  private transformJsxFn: ((code: string) => string) | null = null;
+  private guestIndexedDbSource: string | null = null;
+  private guestWorkerScopeSource: string | null = null;
+  private guestWebglSource: string | null = null;
+  private guestReactVendorSource: string | null = null;
+  private builtinVendorModules: Readonly<Record<string, string>> | null = null;
+  private reactVendorRequested = false;
   private externalThreeLoaded = false;
   private bundledThreeDetected = false;
   private readonly fallbackGlueFactory?: () => Promise<Record<string, unknown>>;
+
+  private async ensureWebGLHost(): Promise<WebGLWorkerHost> {
+    if (!this.webglHost) {
+      const { WebGLWorkerHost: Ctor } = await import('./webgl-worker-host');
+      this.webglHost = new Ctor();
+    }
+    return this.webglHost;
+  }
+
+  private async ensureWebGLGuestSource(): Promise<string> {
+    if (!this.guestWebglSource) {
+      const { GUEST_WEBGL_SOURCE } = await import('./guest-webgl');
+      this.guestWebglSource = GUEST_WEBGL_SOURCE;
+    }
+    return this.guestWebglSource;
+  }
+
+  private async ensureReactVendorSource(): Promise<string> {
+    if (!this.guestReactVendorSource) {
+      const { GUEST_REACT_VENDOR_SOURCE } = await import('./guest-react-vendor');
+      this.guestReactVendorSource = GUEST_REACT_VENDOR_SOURCE;
+    }
+    return this.guestReactVendorSource;
+  }
+
+  private async ensureThreeHost(): Promise<ThreeWorkerHost> {
+    if (!this.threeHost) {
+      const { ThreeWorkerHost: Ctor } = await import('./three-worker-host');
+      this.threeHost = new Ctor();
+    }
+    return this.threeHost;
+  }
+
+  private async ensureThreeNative(): Promise<void> {
+    if (!this.guestThreeNativeSource || !this.instrumentBundledThreeFn) {
+      const mod = await import('./guest-three-native');
+      this.guestThreeNativeSource = mod.GUEST_THREE_NATIVE_SOURCE;
+      this.instrumentBundledThreeFn = mod.instrumentBundledThree;
+    }
+  }
+
+  private async ensureJsxTransform(): Promise<(code: string) => string> {
+    if (!this.transformJsxFn) {
+      const { transformJsx } = await import('./jsx-transform');
+      this.transformJsxFn = transformJsx;
+    }
+    return this.transformJsxFn;
+  }
+
+  private async ensureIndexedDbSource(): Promise<string> {
+    if (!this.guestIndexedDbSource) {
+      const { GUEST_INDEXEDDB_SOURCE } = await import('./guest-indexeddb');
+      this.guestIndexedDbSource = GUEST_INDEXEDDB_SOURCE;
+    }
+    return this.guestIndexedDbSource;
+  }
+
+  private async ensureWorkerScopeSource(): Promise<string> {
+    if (!this.guestWorkerScopeSource) {
+      const { GUEST_WORKER_SCOPE_SOURCE } = await import('./guest-worker-scope');
+      this.guestWorkerScopeSource = GUEST_WORKER_SCOPE_SOURCE;
+    }
+    return this.guestWorkerScopeSource;
+  }
+
+  private async ensureBuiltinVendors(): Promise<Readonly<Record<string, string>>> {
+    if (!this.builtinVendorModules) {
+      const { BUILTIN_VENDOR_MODULES } = await import('./guest-vendors');
+      this.builtinVendorModules = BUILTIN_VENDOR_MODULES;
+    }
+    return this.builtinVendorModules;
+  }
 
   private engine: ZippEngineInstance | null = null;
   private textFiles: Record<string, string> = {};
@@ -899,6 +989,36 @@ export class ContainerWorkerSession {
 
       this.bundledThreeDetected = false;
       this.externalThreeLoaded = false;
+      this.reactVendorRequested = false;
+
+      // Dynamically load ONLY the optional Worker subsystems this app actually uses
+      // (JSX compiler, WebGL proxy, Three.js accelerator, IndexedDB shim, React 18 vendor shim).
+      const appTexts: string[] = [];
+      let needsJsx = false;
+      for (const s of msg.scripts) {
+        if (typeof s.code === 'string') appTexts.push(s.code);
+        if (/\.(?:tsx|jsx)$/i.test(s.originPath)) needsJsx = true;
+      }
+      for (const [k, v] of Object.entries(this.textFiles)) {
+        if (typeof v === 'string') appTexts.push(v);
+        if (/\.(?:tsx|jsx)$/i.test(k)) needsJsx = true;
+      }
+      const needsBundledThree = typeof OffscreenCanvas === 'function' && appTexts.some((t) => hasBundledThree(t));
+      const needsWebgl = needsBundledThree || appTexts.some((t) => USES_WEBGL_RE.test(t));
+      const needsIndexedDb = appTexts.some((t) => USES_IDB_RE.test(t));
+      const needsReactVendor = needsJsx || appTexts.some((t) => USES_REACT_VENDOR_RE.test(t));
+      if (needsReactVendor) {
+        this.reactVendorRequested = true;
+        for (const modName of REACT_VENDOR_MODULES) this.definedModules.add(modName);
+      }
+      const preloadOptional: Array<Promise<unknown>> = [];
+      if (needsJsx) preloadOptional.push(this.ensureJsxTransform());
+      if (needsBundledThree) preloadOptional.push(this.ensureThreeNative(), this.ensureThreeHost());
+      if (needsWebgl) preloadOptional.push(this.ensureWebGLHost(), this.ensureWebGLGuestSource());
+      if (needsIndexedDb) preloadOptional.push(this.ensureIndexedDbSource());
+      if (needsReactVendor) preloadOptional.push(this.ensureReactVendorSource());
+      if (preloadOptional.length > 0) await Promise.all(preloadOptional);
+      const indexedDbSource = needsIndexedDb ? await this.ensureIndexedDbSource() : '';
 
       // Pre-link all reachable VFS & inline-supplied vendor ES modules
       this.sourceMap.clear();
@@ -927,8 +1047,8 @@ export class ContainerWorkerSession {
         if (s.kind !== 'classic') continue;
         const rewritten = classicImportsRewritten(s.code, `${VIRTUAL_ORIGIN}/${s.originPath.replace(/^\/+/, '')}`);
         let codeOut = rewritten.code;
-        if (typeof OffscreenCanvas === 'function' && hasBundledThree(codeOut)) {
-          const inst = instrumentBundledThree(codeOut);
+        if (typeof OffscreenCanvas === 'function' && hasBundledThree(codeOut) && this.instrumentBundledThreeFn) {
+          const inst = this.instrumentBundledThreeFn(codeOut);
           if (inst.patched) {
             codeOut = inst.code;
             this.bundledThreeDetected = true;
@@ -949,6 +1069,7 @@ export class ContainerWorkerSession {
       // an app that started before went past it, and the app did not start.)
       const programBytes =
         fixedProgramBytes() +
+        (indexedDbSource ? utf8Length(indexedDbSource) : 0) +
         utf8Length(prelude) +
         utf8Length(JSON.stringify(msg.seed.body)) +
         factoryBlocks.reduce((sum, block) => sum + utf8Length(block), 0) +
@@ -969,10 +1090,12 @@ export class ContainerWorkerSession {
           Object.values(this.textFiles).some((t) => hasBundledThree(t)) ||
           msg.scripts.some((s) => typeof s.code === 'string' && hasBundledThree(s.code)));
       if (importsThreeVendor && typeof OffscreenCanvas === 'function') {
-        const [nativeLoaded, threeVendorSource] = await Promise.all([
-          this.threeHost.ensureLoaded(this.runtimeUrl),
+        const [threeHost, , threeVendorSource] = await Promise.all([
+          this.ensureThreeHost(),
+          this.ensureThreeNative(),
           this.fetchExternalVendorModuleSource('three'),
         ]);
+        const nativeLoaded = await threeHost.ensureLoaded(this.runtimeUrl);
         if (nativeLoaded && threeVendorSource && !this.disposed) {
           this.mirrorCanvases = true;
           this.externalThreeLoaded = true;
@@ -996,7 +1119,8 @@ export class ContainerWorkerSession {
           }
         }
       } else if (hasBundledThreeApp && typeof OffscreenCanvas === 'function') {
-        const nativeLoaded = await this.threeHost.ensureLoaded(this.runtimeUrl);
+        const [threeHost] = await Promise.all([this.ensureThreeHost(), this.ensureThreeNative()]);
+        const nativeLoaded = await threeHost.ensureLoaded(this.runtimeUrl);
         if (nativeLoaded && !this.disposed) {
           this.mirrorCanvases = true;
           this.externalThreeLoaded = true;
@@ -1023,8 +1147,8 @@ export class ContainerWorkerSession {
           if (text.length < 16_000 || !/\.(?:js|cjs)$/i.test(path) || started.has(path) || this.definedModules.has(`${VIRTUAL_ORIGIN}/${path}`) || text.startsWith('#!')) continue;
           const url = `${VIRTUAL_ORIGIN}/${path}`;
           let code = classicImportsRewritten(text, url).code;
-          if (typeof OffscreenCanvas === 'function' && hasBundledThree(code)) {
-            const inst = instrumentBundledThree(code);
+          if (typeof OffscreenCanvas === 'function' && hasBundledThree(code) && this.instrumentBundledThreeFn) {
+            const inst = this.instrumentBundledThreeFn(code);
             if (inst.patched) {
               code = inst.code;
               this.bundledThreeDetected = true;
@@ -1106,6 +1230,14 @@ export class ContainerWorkerSession {
         }
       }
 
+      const webglGuestSource = (needsWebgl || this.externalThreeLoaded || this.bundledThreeDetected)
+        ? await this.ensureWebGLGuestSource()
+        : '';
+      if (webglGuestSource && !this.webglHost) await this.ensureWebGLHost();
+      const reactVendorSource = this.reactVendorRequested
+        ? await this.ensureReactVendorSource()
+        : '';
+
       // The program, with each long classic script that would not compile written as one
       // that says so in its turn: as a browser runs a page whose script does not parse, the
       // others run. (Written into the program, one that did not parse stopped the whole app.)
@@ -1137,13 +1269,15 @@ export class ContainerWorkerSession {
         `globalThis.__softnSubtle = ${typeof crypto !== 'undefined' && typeof crypto.subtle === 'object' && crypto.subtle !== null};`,
         prelude,
         GUEST_EXTENSIONS_SOURCE,
-        ...(this.externalThreeLoaded ? [GUEST_THREE_NATIVE_SOURCE] : []),
+        ...(webglGuestSource ? [webglGuestSource] : []),
+        ...(reactVendorSource ? [reactVendorSource] : []),
+        ...(this.externalThreeLoaded && this.guestThreeNativeSource ? [this.guestThreeNativeSource] : []),
         // After both: `window` becomes the global object, with what each of them put on it.
         GUEST_BROWSER_GLOBALS_SOURCE,
         // Blob, XMLHttpRequest, WebSocket, images, customElements: over what the three above set up.
         GUEST_WEB_APIS_SOURCE,
-        // IndexedDB, kept through the Worker's own store.
-        GUEST_INDEXEDDB_SOURCE,
+        // IndexedDB, loaded dynamically ONLY when the app references IndexedDB APIs.
+        ...(indexedDbSource ? [indexedDbSource] : []),
         ...modules,
         // What a classic script declares, made the page's (both kinds use it); and the scripts
         // too long for eval, each a function run in its turn below.
@@ -1374,9 +1508,9 @@ export class ContainerWorkerSession {
       return { factoryCode, staticImports: [], dynamicImports: [] };
     }
     const isCompiledSidecar = code !== this.textFiles[filePath];
-    let source = !isCompiledSidecar && /\.(?:tsx|jsx)$/i.test(lower) ? transformJsx(code) : code;
-    if (typeof OffscreenCanvas === 'function' && moduleUrl !== 'softn-vendor:three' && hasBundledThree(source)) {
-      const inst = instrumentBundledThree(source);
+    let source = !isCompiledSidecar && /\.(?:tsx|jsx)$/i.test(lower) && this.transformJsxFn ? this.transformJsxFn(code) : code;
+    if (typeof OffscreenCanvas === 'function' && moduleUrl !== 'softn-vendor:three' && hasBundledThree(source) && this.instrumentBundledThreeFn) {
+      const inst = this.instrumentBundledThreeFn(source);
       if (inst.patched) {
         source = inst.code;
         this.bundledThreeDetected = true;
@@ -1409,6 +1543,12 @@ export class ContainerWorkerSession {
     defined.add(moduleUrl);
     collected?.push(moduleUrl);
 
+    if (/\.(?:tsx|jsx)$/i.test(filePath) && !this.transformJsxFn) {
+      await this.ensureJsxTransform();
+    }
+    if (typeof OffscreenCanvas === 'function' && moduleUrl !== 'softn-vendor:three' && hasBundledThree(code) && !this.instrumentBundledThreeFn) {
+      await this.ensureThreeNative();
+    }
     const { factoryCode, staticImports, dynamicImports, headerLines } = this.transformModuleByPath(code, filePath, moduleUrl);
     if (displayFile || startLine !== undefined) {
       this.moduleSources.set(moduleUrl, {
@@ -1428,6 +1568,11 @@ export class ContainerWorkerSession {
           await this.collectModuleGraph(depCode, resolved.path, resolved.url, outBlocks, collected, named, defined);
         }
       } else if (resolved.kind === 'vendor' && !defined.has(resolved.url)) {
+        if (REACT_VENDOR_MODULE_SET.has(resolved.url)) {
+          this.reactVendorRequested = true;
+          for (const modName of REACT_VENDOR_MODULES) defined.add(modName);
+          continue;
+        }
         const vendorSource = await this.fetchVendorModuleSource(resolved.name);
         if (vendorSource !== null) {
           await this.collectModuleGraph(vendorSource, `vendor/${resolved.name}.js`, resolved.url, outBlocks, collected, named, defined);
@@ -1523,9 +1668,10 @@ export class ContainerWorkerSession {
       const given = this.vendorModules[name];
       return typeof given === 'string' ? given : null;
     }
-    // Built-in on-demand vendor shims (marked, preact, htm, three proxy) — zero VM cost unless imported.
-    if (Object.prototype.hasOwnProperty.call(BUILTIN_VENDOR_MODULES, name)) {
-      return BUILTIN_VENDOR_MODULES[name];
+    // Built-in on-demand vendor shims (marked, preact, htm, three proxy) — dynamically loaded only when imported.
+    const builtinVendors = await this.ensureBuiltinVendors();
+    if (Object.prototype.hasOwnProperty.call(builtinVendors, name)) {
+      return builtinVendors[name];
     }
     return this.fetchExternalVendorModuleSource(name);
   }
@@ -1846,7 +1992,7 @@ export class ContainerWorkerSession {
         ...(rafReply ? { rafReply: true } : {}),
       });
     }
-    if (this.webglHost.hasActiveContexts()) {
+    if (this.webglHost?.hasActiveContexts()) {
       for (const frame of this.webglHost.takeDirtyFrames()) {
         this.postToHost(
           {
@@ -1860,7 +2006,7 @@ export class ContainerWorkerSession {
         );
       }
     }
-    if (this.threeHost.hasActiveRenderers()) {
+    if (this.threeHost?.hasActiveRenderers()) {
       for (const frame of this.threeHost.takeDirtyFrames()) {
         this.postToHost(
           {
@@ -1982,11 +2128,20 @@ export class ContainerWorkerSession {
             const blocks: string[] = [];
             const collected: string[] = [];
             if (!defined.has(resolved.url)) {
-              const vendorSrc = await this.fetchVendorModuleSource(resolved.name);
-              if (vendorSrc === null) {
-                throw new Error(`Hosted vendor library "${resolved.name}" is not available`);
+              if (REACT_VENDOR_MODULE_SET.has(resolved.url)) {
+                const reactSrc = await this.ensureReactVendorSource();
+                for (const modName of REACT_VENDOR_MODULES) {
+                  defined.add(modName);
+                  collected.push(modName);
+                }
+                blocks.push(reactSrc);
+              } else {
+                const vendorSrc = await this.fetchVendorModuleSource(resolved.name);
+                if (vendorSrc === null) {
+                  throw new Error(`Hosted vendor library "${resolved.name}" is not available`);
+                }
+                await this.collectModuleGraph(vendorSrc, `vendor/${resolved.name}.js`, resolved.url, blocks, collected, undefined, defined);
               }
-              await this.collectModuleGraph(vendorSrc, `vendor/${resolved.name}.js`, resolved.url, blocks, collected, undefined, defined);
             }
             this.resolveCallbackAndFlush(callId, this.moduleReply(resolved.url, blocks, collected, 'vendor', defined));
             return;
@@ -3257,6 +3412,7 @@ export class ContainerWorkerSession {
         if (kind === 'webgl') {
           const sub = String(args[0] ?? '');
           if (sub === 'init') {
+            if (!this.webglHost) return null;
             let attrs: Record<string, unknown> | undefined;
             try { attrs = args[5] ? (JSON.parse(String(args[5])) as Record<string, unknown>) : undefined; } catch { attrs = undefined; }
             const res = this.webglHost.init(Number(args[1]) || 0, String(args[2] ?? 'webgl2'), Number(args[3]) || 300, Number(args[4]) || 150, attrs);
@@ -3264,9 +3420,10 @@ export class ContainerWorkerSession {
             return res;
           }
           if (sub === 'ext') {
-            return this.webglHost.getExtension(Number(args[1]) || 0, String(args[2] ?? ''));
+            return this.webglHost?.getExtension(Number(args[1]) || 0, String(args[2] ?? '')) ?? null;
           }
           if (sub === 'exec') {
+            if (!this.webglHost) return null;
             let cmds: unknown[] = [];
             let syncCmd: unknown[] | null = null;
             try { cmds = args[2] ? (JSON.parse(String(args[2])) as unknown[]) : []; } catch { cmds = []; }
@@ -3282,10 +3439,10 @@ export class ContainerWorkerSession {
           if (sub === 'dispose') {
             const cid = Number(args[1]) || 0;
             if (args[2] === 'canvas') {
-              this.webglHost.disposeCanvas(cid);
-              this.threeHost.disposeCanvas(cid);
+              this.webglHost?.disposeCanvas(cid);
+              this.threeHost?.disposeCanvas(cid);
             } else {
-              this.webglHost.disposeContext(cid);
+              this.webglHost?.disposeContext(cid);
             }
             return true;
           }
@@ -3294,6 +3451,7 @@ export class ContainerWorkerSession {
         if (kind === 'three') {
           const sub = String(args[0] ?? '');
           if (sub === 'init') {
+            if (!this.threeHost) return null;
             let opts: Record<string, unknown> | undefined;
             try { opts = args[4] ? (JSON.parse(String(args[4])) as Record<string, unknown>) : undefined; } catch { opts = undefined; }
             const res = this.threeHost.init(Number(args[1]) || 0, Number(args[2]) || 300, Number(args[3]) || 150, opts);
@@ -3301,6 +3459,7 @@ export class ContainerWorkerSession {
             return res;
           }
           if (sub === 'frame') {
+            if (!this.threeHost) return null;
             let ops: unknown[] = [];
             try { ops = args[2] ? (JSON.parse(String(args[2])) as unknown[]) : []; } catch { ops = []; }
             return this.threeHost.frame(Number(args[1]) || 0, ops, String(args[3] ?? ''), {
@@ -3319,7 +3478,7 @@ export class ContainerWorkerSession {
                 return null;
               },
               onAsyncDirty: () => {
-                if (this.disposed || !this.threeHost.hasActiveRenderers()) return;
+                if (this.disposed || !this.threeHost?.hasActiveRenderers()) return;
                 for (const frame of this.threeHost.takeDirtyFrames()) {
                   this.postToHost(
                     {
@@ -3336,6 +3495,7 @@ export class ContainerWorkerSession {
             });
           }
           if (sub === 'raycast') {
+            if (!this.threeHost) return [];
             let payload: unknown[] = [];
             try { payload = args[2] ? (JSON.parse(String(args[2])) as unknown[]) : []; } catch { payload = []; }
             if (payload.length < 6) return [];
@@ -3352,8 +3512,8 @@ export class ContainerWorkerSession {
           }
           if (sub === 'dispose') {
             const id = Number(args[1]) || 0;
-            if (args[2] === 'canvas') this.threeHost.disposeCanvas(id);
-            else this.threeHost.disposeRenderer(id);
+            if (args[2] === 'canvas') this.threeHost?.disposeCanvas(id);
+            else this.threeHost?.disposeRenderer(id);
             return true;
           }
           return null;
@@ -3674,6 +3834,10 @@ export class ContainerWorkerSession {
   /** The program an app Worker runs: the layers of the app's page, a worker's scope, and its script. */
   private async appWorkerProgram(worker: AppWorker, code: string, path: string, module: boolean, name: string, href: string, withOnDemand = true): Promise<{ source: string; onDemand: number }> {
     const onDemand: string[] = [];
+    const workerScopeSource = await this.ensureWorkerScopeSource();
+    // Guest Workers rely on g.__softnClone (defined in guest-indexeddb.ts) for structured-clone postMessage.
+    const workerIdbSource = await this.ensureIndexedDbSource();
+    const workerNeedsReactInit = USES_REACT_VENDOR_RE.test(code);
     const parts: string[] = [
       `globalThis.__softnWorkerSpec = ${JSON.stringify({ name, href })};`,
       ESM_REGISTRY_PREAMBLE,
@@ -3681,22 +3845,30 @@ export class ContainerWorkerSession {
       `globalThis.__softnSubtle = ${typeof crypto !== 'undefined' && typeof crypto.subtle === 'object' && crypto.subtle !== null};`,
       shellPrelude(JSON.stringify({ body: [], next: 2, url: href })),
       GUEST_EXTENSIONS_SOURCE,
+      ...(workerNeedsReactInit ? [await this.ensureReactVendorSource()] : []),
       GUEST_BROWSER_GLOBALS_SOURCE,
       GUEST_WEB_APIS_SOURCE,
-      GUEST_INDEXEDDB_SOURCE,
-      GUEST_WORKER_SCOPE_SOURCE,
+      ...(workerIdbSource ? [workerIdbSource] : []),
+      workerScopeSource,
       WARNINGS_MARKED,
       CLASSIC_GLOBALS_HELPER,
       `function __softnContainerWorkerMessage(packed) { return globalThis.__softnWorkerIncoming(packed); }`,
       `function __softnContainerTake(failed) { return globalThis.__softnDocTake(failed); }`,
     ];
+    if (workerNeedsReactInit) {
+      for (const modName of REACT_VENDOR_MODULES) worker.defined.add(modName);
+    }
     // The modules it names in an import() written as text: those that cannot be compiled when
     // asked for (past 64 KB, or any in a TypeScript app) are compiled with it, as the page's are.
     const named: Array<{ spec: string; from: string }> = [];
     if (module) {
       const entryUrl = href.startsWith(`${VIRTUAL_ORIGIN}/`) ? href : `${VIRTUAL_ORIGIN}/${path}`;
       const blocks: string[] = [];
+      const hadReactBefore = worker.defined.has('softn-vendor:react');
       await this.collectModuleGraph(code, path, entryUrl, blocks, undefined, named, worker.defined);
+      if (!hadReactBefore && worker.defined.has('softn-vendor:react')) {
+        parts.push(await this.ensureReactVendorSource());
+      }
       parts.push(...blocks);
       if (withOnDemand) this.collectOnDemand(named, onDemand, workerAheadBytes(code), worker.defined);
       parts.push(...onDemand);
@@ -4933,8 +5105,8 @@ export class ContainerWorkerSession {
       p.reject(new Error('Container worker disposed'));
     }
     this.pendingHostReqs.clear();
-    this.webglHost.disposeAll();
-    this.threeHost.disposeAll();
+    this.webglHost?.disposeAll();
+    this.threeHost?.disposeAll();
     this.mirrors.clear();
     this.mirrorPixels = 0;
     for (const picture of this.mirrorPictures.values()) picture.bitmap?.close();

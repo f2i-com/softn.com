@@ -28,6 +28,7 @@
     "apps:publish": "node scripts/demos/softn-apps/publish.mjs",
     "apps:build": "node scripts/demos/softn-apps/build.mjs",
     "apps:seed": "node scripts/demos/softn-apps/seed.mjs",
+    "apps:prerender": "node scripts/demos/prerender-demos.mjs",
     "package:site": "node scripts/release/package-site.mjs",
     "package:docs": "node scripts/release/package-docs.mjs",
     "build:single": "npm run build:packages && npm run build -w @softn/single",

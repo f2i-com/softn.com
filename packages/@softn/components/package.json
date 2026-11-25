@@ -88,6 +88,10 @@
       "types": "./dist/media.d.ts",
       "default": "./dist/media.js"
     },
+    "./qr-reader": {
+      "types": "./dist/qr-reader.d.ts",
+      "default": "./dist/qr-reader.js"
+    },
     "./animation": {
       "types": "./dist/animation.d.ts",
       "default": "./dist/animation.js"

@@ -13,16 +13,16 @@ import { inspectDeclaration, type Capability } from '@softn/bundle-format/capabi
 import { base64ToBytes, bytesToBase64, ContainerArchive, VIRTUAL_ORIGIN } from './archive';
 import { buildBackendRoutingConfig, matchBackendTarget, RemoteBackendTransport } from './backend-transport';
 import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar';
-import { createWebDeviceBridge, dispatchDeviceBridgeCall } from './device-bridge';
+import type { ContainerDeviceBridge } from './device-bridge';
 import { HostDomPatcher } from './dom-patcher';
 import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
 import { hostFileName, hostLabel, slotsAreContained, type FontScopeContext } from './host-policy';
-import { LocalBackendTransport } from './local-backend-transport';
+import type { LocalBackendTransport } from './local-backend-transport';
 import { isSafeVirtualRoute, loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
 import { extractSanitizedFontFaces, prepareHtmlDocument } from './sanitize';
 import { FRAME_BASE_CSS, PAGE_BASE_CSS } from './ui-css';
 import { ensureUiExtension } from './ui-extensions/registry';
-import { renderVirtualNavBar, type VirtualNavBarController } from './virtual-nav-bar';
+import type { VirtualNavBarController } from './virtual-nav-bar';
 import { selectEngineTier } from './zipp-loader';
 import {
   SoftNContainerError,
@@ -595,7 +595,9 @@ export async function mountSoftNContainer(
     ? inspectDeclaration(permissions).requested
     : archive.requestedCapabilities;
   const allowedCaps = new Set<Capability>(requestedCaps);
-  const deviceBridge = options.deviceBridge ?? createWebDeviceBridge();
+  let deviceBridge: ContainerDeviceBridge | null = options.deviceBridge ?? null;
+  let deviceBridgeModPromise: Promise<typeof import('./device-bridge')> | null = null;
+  const loadDeviceBridge = () => (deviceBridgeModPromise ??= import('./device-bridge'));
 
   // What is granted before the first script runs: everything the archive (or host override)
   // permits when preapproved, else only declared capabilities from initialGrantedCapabilities.
@@ -1162,9 +1164,12 @@ export async function mountSoftNContainer(
     if (localBackendTransport) return localBackendTransport;
     if (lazySqliteBoot) return lazySqliteBoot;
     lazySqliteBoot = (async () => {
+      const [{ LocalBackendTransport: LocalTransportCtor }, xdbSource] = await Promise.all([
+        import('./local-backend-transport'),
+        resolveXdbSource(),
+      ]);
       const backendVfs = archive.exportBackendVfs();
-      const xdbSource = await resolveXdbSource();
-      const transport = new LocalBackendTransport({
+      const transport = new LocalTransportCtor({
         appId,
         storagePrefix: storageBase,
         persistStorage,
@@ -1253,9 +1258,12 @@ export async function mountSoftNContainer(
         }
       }
 
-      const xdbSource = await resolveXdbSource();
+      const [{ LocalBackendTransport: LocalTransportCtor }, xdbSource] = await Promise.all([
+        import('./local-backend-transport'),
+        resolveXdbSource(),
+      ]);
 
-      localBackendTransport = new LocalBackendTransport({
+      localBackendTransport = new LocalTransportCtor({
         appId,
         storagePrefix: storageBase,
         persistStorage,
@@ -1372,6 +1380,7 @@ export async function mountSoftNContainer(
   };
 
   if (options.virtualNav && typeof document !== 'undefined') {
+    const { renderVirtualNavBar } = await import('./virtual-nav-bar');
     navEl = document.createElement('div');
     navEl.setAttribute('data-softn-virtual-nav', '');
     navEl.style.cssText = CONSENT_STYLE;
@@ -2452,10 +2461,15 @@ export async function mountSoftNContainer(
                   break;
                 }
               }
-              void dispatchDeviceBridgeCall(deviceBridge, namespace, method, params, grantedCaps, permissions).then(
-                (res) => reply(true, res),
-                (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
-              );
+              void loadDeviceBridge()
+                .then((mod) => {
+                  if (!deviceBridge) deviceBridge = mod.createWebDeviceBridge();
+                  return mod.dispatchDeviceBridgeCall(deviceBridge, namespace, method, params, grantedCaps, permissions);
+                })
+                .then(
+                  (res) => reply(true, res),
+                  (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+                );
               break;
             }
             reply(false, undefined, `Unknown host-request kind: ${msg.kind}`);
